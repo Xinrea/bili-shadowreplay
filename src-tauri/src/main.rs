@@ -4,11 +4,11 @@
 mod recorder;
 
 use custom_error::custom_error;
+use recorder::BiliRecorder;
 use std::collections::HashMap;
+
 use std::process::Command;
 use std::sync::{Arc, Mutex};
-
-use recorder::BiliRecorder;
 use tauri::{CustomMenuItem, SystemTray, SystemTrayEvent, SystemTrayMenu, SystemTrayMenuItem};
 use tauri::{Manager, WindowEvent};
 
@@ -29,6 +29,8 @@ fn show_in_folder(path: String) {
 
     #[cfg(target_os = "linux")]
     {
+        use std::fs::metadata;
+        use std::path::PathBuf;
         if path.contains(",") {
             // see https://gitlab.freedesktop.org/dbus/dbus/-/issues/76
             let new_path = match metadata(&path).unwrap().is_dir() {

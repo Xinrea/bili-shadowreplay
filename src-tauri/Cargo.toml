@@ -1,0 +1,36 @@
+[package]
+name = "bili-shadowreplay"
+version = "0.0.0"
+description = "A Tauri App"
+authors = ["Xinrea"]
+license = ""
+repository = ""
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[build-dependencies]
+tauri-build = { version = "1.2", features = [] }
+
+[dependencies]
+tauri = { version = "1.2", features = ["dialog-all", "fs-all", "http-all", "protocol-asset", "shell-open", "system-tray"] }
+serde_json = "1.0"
+reqwest = { version = "0.11", features = ["blocking", "json"] }
+serde_derive = "1.0.158"
+serde = "1.0.158"
+m3u8-rs = "5.0.3"
+async-std = "1.12.0"
+futures = "0.3.27"
+ffmpeg-sidecar = "0.3.3"
+sqlite = "0.30.4"
+chrono = "0.4.24"
+toml = "0.7.3"
+custom_error = "1.9.2"
+felgens = "0.3.1"
+regex = "1.7.3"
+tokio = "1.27.0"
+
+[features]
+# this feature is used for production builds or when `devPath` points to the filesystem
+# DO NOT REMOVE!!
+custom-protocol = ["tauri/custom-protocol"]

@@ -1,6 +1,6 @@
 [package]
 name = "bili-shadowreplay"
-version = "0.0.0"
+version = "0.0.3"
 description = "A Tauri App"
 authors = ["Xinrea"]
 license = ""
@@ -29,6 +29,7 @@ custom_error = "1.9.2"
 felgens = "0.3.1"
 regex = "1.7.3"
 tokio = "1.27.0"
+platform-dirs = "0.3.0"
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem

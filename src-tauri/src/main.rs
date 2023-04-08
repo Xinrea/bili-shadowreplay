@@ -12,6 +12,8 @@ use std::sync::{Arc, Mutex};
 use tauri::{CustomMenuItem, SystemTray, SystemTrayEvent, SystemTrayMenu, SystemTrayMenuItem};
 use tauri::{Manager, WindowEvent};
 
+use platform_dirs::AppDirs;
+
 custom_error! {StateError
     RecorderAlreadyExists = "Recorder already exists",
     RecorderCreateError = "Recorder create error",
@@ -73,11 +75,11 @@ pub struct Config {
     output: String,
 }
 
-const DEFAULT_CONFIG_PATH: &str = "Conf.toml";
-
 impl Config {
     pub fn load() -> Self {
-        if let Ok(content) = std::fs::read_to_string(DEFAULT_CONFIG_PATH) {
+        let app_dirs = AppDirs::new(Some("bili-shadowreplay"), false).unwrap();
+        let config_path = app_dirs.config_dir.join("Conf.toml");
+        if let Ok(content) = std::fs::read_to_string(config_path) {
             if let Ok(config) = toml::from_str(&content) {
                 return config;
             }
@@ -86,8 +88,18 @@ impl Config {
             rooms: Vec::new(),
             admin_uid: Vec::new(),
             max_len: 300,
-            cache: "tmp/".to_string(),
-            output: "clip/".to_string(),
+            cache: app_dirs
+                .cache_dir
+                .join("cache")
+                .to_str()
+                .unwrap()
+                .to_string(),
+            output: app_dirs
+                .data_dir
+                .join("output")
+                .to_str()
+                .unwrap()
+                .to_string(),
         };
         config.save();
         config
@@ -95,7 +107,11 @@ impl Config {
 
     pub fn save(&self) {
         let content = toml::to_string(&self).unwrap();
-        std::fs::write("Conf.toml", content).unwrap();
+        let app_dirs = AppDirs::new(Some("bili-shadowreplay"), false).unwrap();
+        // Create app dirs if not exists
+        std::fs::create_dir_all(&app_dirs.config_dir).unwrap();
+        let config_path = app_dirs.config_dir.join("Conf.toml");
+        std::fs::write(config_path, content).unwrap();
     }
 
     pub fn add(&mut self, room: u64) {
@@ -115,6 +131,9 @@ impl Config {
 
     pub fn set_cache_path(&mut self, path: &str) {
         // Copy all files in cache to new cache
+        if self.cache == path {
+            return;
+        }
         let old_cache = self.cache.clone();
         copy_dir_all(old_cache, path).unwrap();
         self.cache = path.to_string();
@@ -239,8 +258,8 @@ impl State {
 }
 
 #[tauri::command]
-fn get_summary(state: tauri::State<State>) -> Summary {
-    state.get_summary()
+async fn get_summary(state: tauri::State<'_, State>) -> Result<Summary, ()> {
+    Ok(state.get_summary())
 }
 
 #[tauri::command]

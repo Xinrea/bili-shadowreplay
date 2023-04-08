@@ -99,13 +99,11 @@ impl BiliRecorder {
     fn check_status(&self) -> bool {
         if let Ok(room_info) = self.client.get_room_info(self.room_id) {
             let live_status = room_info.live_status == 1;
-            if live_status && !*self.live_status.read().unwrap() {
-                // Live status changed from offline to online, reset recorder and then update m3u8 url and stream type.
-                self.reset();
-                if let Ok((index_url, stream_type)) = self.client.get_play_url(room_info.room_id) {
-                    self.m3u8_url.write().unwrap().replace_range(.., &index_url);
-                    *self.stream_type.write().unwrap() = stream_type;
-                }
+            // Live status changed from offline to online, reset recorder and then update m3u8 url and stream type.
+            self.reset();
+            if let Ok((index_url, stream_type)) = self.client.get_play_url(room_info.room_id) {
+                self.m3u8_url.write().unwrap().replace_range(.., &index_url);
+                *self.stream_type.write().unwrap() = stream_type;
             }
             *self.live_status.write().unwrap() = live_status;
             live_status

@@ -221,6 +221,7 @@ impl State {
                     live_status: *recorder.live_status.read().unwrap(),
                 };
                 summary.rooms.push(room_info);
+                summary.rooms.sort_by(|a, b| a.room_id.cmp(&b.room_id));
                 summary
             },
         )
@@ -229,13 +230,18 @@ impl State {
     pub fn add_recorder(&self, room_id: u64) -> Result<(), StateError> {
         let mut recorders = self.recorders.lock().unwrap();
         if recorders.get(&room_id).is_some() {
-            Err(StateError::RecorderAlreadyExists)
-        } else if let Ok(recorder) = BiliRecorder::new(room_id, self.config.clone()) {
-            recorder.run();
-            recorders.insert(room_id, recorder);
-            Ok(())
-        } else {
-            Err(StateError::RecorderCreateError)
+            return Err(StateError::RecorderAlreadyExists);
+        }
+        match BiliRecorder::new(room_id, self.config.clone()) {
+            Ok(recorder) => {
+                recorder.run();
+                recorders.insert(room_id, recorder);
+                Ok(())
+            }
+            Err(e) => {
+                println!("create recorder failed: {:?}", e);
+                Err(StateError::RecorderCreateError)
+            }
         }
     }
 
@@ -347,6 +353,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for room_id in conf.rooms {
         std::fs::remove_dir_all(format!("{}/{}", conf.cache, room_id)).unwrap_or(());
         if state.add_recorder(room_id).is_err() {
+            println!("Failed to add recorder for room {}", room_id);
             continue;
         }
     }

@@ -30,6 +30,8 @@ felgens = "0.3.1"
 regex = "1.7.3"
 tokio = "1.27.0"
 platform-dirs = "0.3.0"
+pct-str = "1.2.0"
+md5 = "0.7.0"
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem

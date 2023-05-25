@@ -424,9 +424,11 @@ impl BiliRecorder {
             Utc::now().format("%Y-%m-%d-%H-%M-%S"),
             d
         );
-        let args = format!("-i concat:{} -c copy {}", file_list, file_name);
+        println!("{}", file_name);
+        let args = format!("-i concat:{} -c copy", file_list);
         FfmpegCommand::new()
             .args(args.split(' '))
+            .output(file_name.clone())
             .spawn()
             .unwrap()
             .iter()

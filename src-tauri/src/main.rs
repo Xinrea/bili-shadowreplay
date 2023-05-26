@@ -273,7 +273,7 @@ fn add_recorder(state: tauri::State<State>, room_id: u64) -> Result<(), String> 
     // Config update
     let mut config = state.config.lock().unwrap();
     if config.rooms.contains(&room_id) {
-        return Err("Room already exists".to_string());
+        return Err("直播间已存在".to_string());
     }
     if let Err(e) = state.add_recorder(room_id) {
         Err(e.to_string())

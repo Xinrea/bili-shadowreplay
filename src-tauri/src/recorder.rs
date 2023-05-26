@@ -7,6 +7,7 @@ use ffmpeg_sidecar::{
     event::{FfmpegEvent, LogLevel},
 };
 use m3u8_rs::Playlist;
+use notify_rust::Notification;
 use regex::Regex;
 use std::error::Error;
 use std::sync::{Arc, Mutex, RwLock};
@@ -165,7 +166,24 @@ impl BiliRecorder {
                             duration = num_part.parse::<u64>().unwrap_or(60) as f64;
                         }
                         if let Err(e) = self.clip(room, duration) {
+                            if let Err(e) = Notification::new()
+                                .summary("BiliBili ShadowReplay")
+                                .body(format!("生成切片失败: {} - {}s", room, duration).as_str())
+                                .icon("bili-shadowreplay")
+                                .show()
+                            {
+                                println!("notification error: {}", e);
+                            }
                             println!("clip error: {}", e);
+                        } else {
+                            if let Err(e) = Notification::new()
+                                .summary("BiliBili ShadowReplay")
+                                .body(format!("生成切片成功: {} - {}s", room, duration).as_str())
+                                .icon("bili-shadowreplay")
+                                .show()
+                            {
+                                println!("notification error: {}", e);
+                            }
                         }
                     }
                 }

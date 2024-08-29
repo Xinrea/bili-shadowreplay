@@ -252,6 +252,10 @@ impl BiliClient {
             .headers(self.headers.clone())
             .send()?
             .json()?;
+        let code = res["code"].as_u64().ok_or(BiliClientError::InvalidValue)?;
+        if code != 0 {
+            return Err(BiliClientError::InvalidCode);
+        }
 
         let room_id = res["data"]["room_id"]
             .as_u64()

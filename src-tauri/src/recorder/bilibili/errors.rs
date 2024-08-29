@@ -3,6 +3,7 @@ use custom_error::custom_error;
 custom_error! {pub BiliClientError
     InvalidResponse = "Invalid response",
     InitClientError = "Client init error",
+    InvalidCode = "Invalid Code",
     InvalidValue = "Invalid value",
     InvalidIndex = "Invalid index",
     InvalidPlaylist = "Invalid playlist",

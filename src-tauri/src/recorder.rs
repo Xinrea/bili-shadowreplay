@@ -1,6 +1,6 @@
 pub mod bilibili;
-use bilibili::BiliClient;
 use bilibili::errors::BiliClientError;
+use bilibili::BiliClient;
 use chrono::prelude::*;
 use ffmpeg_sidecar::{
     command::FfmpegCommand,
@@ -108,7 +108,13 @@ impl BiliRecorder {
             let live_status = room_info.live_status == 1;
             // Live status changed from offline to online, reset recorder and then update m3u8 url and stream type.
             self.reset().await;
-            if let Ok((index_url, stream_type)) = self.client.read().await.get_play_url(room_info.room_id).await {
+            if let Ok((index_url, stream_type)) = self
+                .client
+                .read()
+                .await
+                .get_play_url(room_info.room_id)
+                .await
+            {
                 self.m3u8_url.write().await.replace_range(.., &index_url);
                 *self.stream_type.write().await = stream_type;
             }
@@ -125,20 +131,20 @@ impl BiliRecorder {
         thread::spawn(move || {
             let runtime = tokio::runtime::Runtime::new().unwrap();
             runtime.block_on(async move {
-           while !*self_clone.quit.lock().await {
-                if self_clone.check_status().await {
-                    // Live status is ok, start recording.
-                    while !*self_clone.quit.lock().await {
-                        if let Err(e) = self_clone.update_entries().await {
-                            println!("update entries error: {}", e);
-                            break;
+                while !*self_clone.quit.lock().await {
+                    if self_clone.check_status().await {
+                        // Live status is ok, start recording.
+                        while !*self_clone.quit.lock().await {
+                            if let Err(e) = self_clone.update_entries().await {
+                                println!("update entries error: {}", e);
+                                break;
+                            }
                         }
                     }
+                    // Every 10s check live status.
+                    thread::sleep(std::time::Duration::from_secs(10));
                 }
-                // Every 10s check live status.
-                thread::sleep(std::time::Duration::from_secs(10));
-            }
-            println!("recording thread {} quit.", self_clone.room_id);
+                println!("recording thread {} quit.", self_clone.room_id);
             });
         });
         // Thread for danmaku
@@ -153,7 +159,9 @@ impl BiliRecorder {
 
     async fn danmu(&self) {
         let (tx, rx) = mpsc::unbounded_channel();
-        let ws = ws_socket_object(tx, self.room_id);
+        let cookies = self.config.read().await.cookies.clone();
+        let uid = self.config.read().await.uid.parse().unwrap();
+        let ws = ws_socket_object(tx, uid, self.room_id, cookies.as_str());
         if let Err(e) = tokio::select! {v = ws => v, v = self.recv(self.room_id,rx) => v} {
             println!("{}", e);
         }
@@ -324,8 +332,7 @@ impl BiliRecorder {
     async fn update_entries(&self) -> Result<(), BiliClientError> {
         let parsed = self.get_playlist().await;
         // Check header if None
-        if self.header.read().await.is_none()
-            && *self.stream_type.read().await == StreamType::FMP4
+        if self.header.read().await.is_none() && *self.stream_type.read().await == StreamType::FMP4
         {
             // Get url from EXT-X-MAP
             let header_url = self.get_header_url().await?;
@@ -339,11 +346,17 @@ impl BiliRecorder {
                 length: 0.0,
             };
             // Download header
-            if let Err(e) = self.client.read().await.download_ts(
-                &self.config.read().await.cache,
-                self.room_id,
-                &full_header_url,
-            ).await {
+            if let Err(e) = self
+                .client
+                .read()
+                .await
+                .download_ts(
+                    &self.config.read().await.cache,
+                    self.room_id,
+                    &full_header_url,
+                )
+                .await
+            {
                 println!("Error downloading header: {:?}", e);
             }
             *self.header.write().await = Some(header);
@@ -372,8 +385,11 @@ impl BiliRecorder {
                     let room_id = self.room_id;
                     let config = self.config.clone();
                     handles.push(tokio::task::spawn(async move {
-                        if let Err(e) =
-                            client.read().await.download_ts(&config.read().await.cache, room_id, &ts_url).await
+                        if let Err(e) = client
+                            .read()
+                            .await
+                            .download_ts(&config.read().await.cache, room_id, &ts_url)
+                            .await
                         {
                             println!("download ts failed: {}", e);
                         }
@@ -436,7 +452,8 @@ impl BiliRecorder {
         }
         let mut file_list = String::new();
         for e in to_combine {
-            file_list += &BiliClient::url_to_file_name(&self.config.read().await.cache, room_id, &e.url).1;
+            file_list +=
+                &BiliClient::url_to_file_name(&self.config.read().await.cache, room_id, &e.url).1;
             file_list += "|";
         }
         let output_path = self.config.read().await.output.clone();

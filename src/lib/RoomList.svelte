@@ -4,7 +4,7 @@
   import { message, save } from "@tauri-apps/api/dialog";
   import { open } from "@tauri-apps/api/shell";
   import { copyFile, exists, removeFile } from "@tauri-apps/api/fs";
-  import { update_await_block_branch } from "svelte/internal";
+  import QRCode from 'qrcode';
   interface Summary {
     count: number;
     rooms: {
@@ -23,6 +23,8 @@
   }
   let summary: Summary;
   async function setup() {
+    console.log("setup");
+    await invoke("init_recorders");
     await update_summary();
     await get_config();
     setInterval(async () => {
@@ -103,6 +105,8 @@
     cache_path: "",
     clip_path: "",
     admins: "",
+    login: false,
+    uid: "",
   };
 
   interface Config {
@@ -110,6 +114,8 @@
     cache: string;
     max_len: number;
     output: string;
+    login: boolean;
+    uid: string;
   }
 
   async function get_config() {
@@ -119,6 +125,9 @@
     setting_model.cache_path = config.cache;
     setting_model.clip_path = config.output;
     setting_model.admins = config.admin_uid.join(",");
+    setting_model.login = config.login;
+    setting_model.uid = config.uid;
+    console.log(config);
   }
 
   async function apply_config() {
@@ -128,6 +137,36 @@
     await invoke("set_admins", {
       admins: setting_model.admins.split(",").map((x) => parseInt(x)),
     });
+  }
+
+  let oauth_key = "";
+  let check_interval = null;
+  async function handle_qr() {
+    if (check_interval) {
+      clearInterval(check_interval);
+    }
+    let qr_info: { url: string, oauthKey: string } = await invoke("get_qr");
+    oauth_key = qr_info.oauthKey;
+    const canvas = document.getElementById('qr');
+    QRCode.toCanvas(canvas, qr_info.url, function (error) {
+      if (error) {
+        console.log(error);
+        return;
+      }
+      canvas.style.display = 'block';
+      check_interval = setInterval(check_qr, 2000);
+    })
+    console.log(qr_info);
+  }
+
+  async function check_qr() {
+    let qr_status: {code: number, cookies: string} = await invoke("get_qr_status", { qrcodeKey: oauth_key });
+    if (qr_status.code == 0) {
+      clearInterval(check_interval);
+      setting_model.login = true;
+      setting_model.uid = qr_status.cookies.match(/DedeUserID=(\d+)/)[1];
+      await invoke("set_cookies", { cookies: qr_status.cookies });
+    }
   }
 </script>
 
@@ -500,6 +539,28 @@
     <label class="modal-box relative" for="">
       <h3 class="text-lg font-bold">设置</h3>
       <div class="flex flex-col">
+        {#if setting_model.login}
+          <div class="flex items-center flex-col">
+            <div class="badge badge-success">已登录（UID：{setting_model.uid}）</div>
+            <button
+              class="btn btn-sm btn-error my-4"
+              on:click={() => {
+                setting_model.login = false;
+                invoke("logout");
+              }}>退出登录</button
+            >
+          </div>
+        {:else}
+          <div class="flex items-center flex-col">
+            <canvas id="qr" style="display: none;"></canvas>
+            <button
+              class="btn btn-sm btn-primary my-4"
+              on:click={() => {
+                handle_qr();
+              }}>获取/刷新登录二维码</button>
+          </div>
+        {/if}
+        <hr />
         <label class="flex items-center my-2"
           >缓存时长：<input
             type="number"

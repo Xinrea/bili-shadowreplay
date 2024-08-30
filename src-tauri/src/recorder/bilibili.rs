@@ -3,7 +3,7 @@ use errors::BiliClientError;
 use pct_str::PctString;
 use pct_str::URIReserved;
 use regex::Regex;
-use reqwest::blocking::Client;
+use reqwest::Client;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::json;
@@ -169,6 +169,20 @@ pub struct UserInfo {
     pub user_avatar_url: String,
 }
 
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QrInfo {
+    pub oauth_key: String,
+    pub url: String,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QrStatus {
+    pub code: u8,
+    pub cookies: String,
+}
+
 impl BiliClient {
     pub fn new() -> Result<BiliClient, BiliClientError> {
         let mut headers = reqwest::header::HeaderMap::new();
@@ -208,14 +222,69 @@ impl BiliClient {
         }
     }
 
-    pub fn get_user_info(&self, user_id: u64) -> Result<UserInfo, BiliClientError> {
+    pub fn set_cookies(&mut self, cookies: &str) {
+        self.headers.insert(
+            "cookie",
+            cookies.parse().expect("parse cookie failed"),
+        );
+    }
+
+    pub fn logout(&mut self) {
+        self.headers.remove("cookie");
+    }
+
+    pub async fn get_qr(&self) -> Result<QrInfo, BiliClientError> {
+        let res: serde_json::Value = self
+            .client
+            .get("https://passport.bilibili.com/x/passport-login/web/qrcode/generate")
+            .headers(self.headers.clone())
+            .send()
+            .await?
+            .json()
+            .await?;
+        Ok(QrInfo {
+            oauth_key: res["data"]["qrcode_key"]
+                .as_str()
+                .ok_or(BiliClientError::InvalidValue)?
+                .to_string(),
+            url: res["data"]["url"]
+                .as_str()
+                .ok_or(BiliClientError::InvalidValue)?
+                .to_string(),
+        })
+    }
+
+    pub async fn get_qr_status(&self, qrcode_key: &str) -> Result<QrStatus, BiliClientError> {
+        let res: serde_json::Value = self
+            .client
+            .get(format!(
+                "https://passport.bilibili.com/x/passport-login/web/qrcode/poll?qrcode_key={}",
+                qrcode_key
+            ))
+            .headers(self.headers.clone())
+            .send().await?
+            .json().await?;
+        let code: u8 = res["data"]["code"].as_u64().unwrap_or(400) as u8;
+        let mut cookies: String = "".to_string();
+        if code == 0 {
+            let url = res["data"]["url"]
+                .as_str()
+                .ok_or(BiliClientError::InvalidValue)?
+                .to_string();
+            let query_str = url.split('?').last().unwrap();
+            cookies = query_str.replace('&', ";");
+        }
+        Ok(QrStatus { code, cookies })
+    }
+
+    pub async fn get_user_info(&self, user_id: u64) -> Result<UserInfo, BiliClientError> {
         let params: Value = json!({
             "mid": user_id.to_string(),
             "platform": "web",
             "web_location": "1550101",
             "token": ""
         });
-        let params = self.get_sign(params)?;
+        let params = self.get_sign(params).await?;
         let res: serde_json::Value = self
             .client
             .get(format!(
@@ -223,8 +292,8 @@ impl BiliClient {
                 params
             ))
             .headers(self.headers.clone())
-            .send()?
-            .json()?;
+            .send().await?
+            .json().await?;
         Ok(UserInfo {
             user_id,
             user_name: res["data"]["name"]
@@ -242,7 +311,7 @@ impl BiliClient {
         })
     }
 
-    pub fn get_room_info(&self, room_id: u64) -> Result<RoomInfo, BiliClientError> {
+    pub async fn get_room_info(&self, room_id: u64) -> Result<RoomInfo, BiliClientError> {
         let res: serde_json::Value = self
             .client
             .get(format!(
@@ -250,8 +319,8 @@ impl BiliClient {
                 room_id
             ))
             .headers(self.headers.clone())
-            .send()?
-            .json()?;
+            .send().await?
+            .json().await?;
         let code = res["code"].as_u64().ok_or(BiliClientError::InvalidValue)?;
         if code != 0 {
             return Err(BiliClientError::InvalidCode);
@@ -288,7 +357,7 @@ impl BiliClient {
         })
     }
 
-    pub fn get_play_url(&self, room_id: u64) -> Result<(String, StreamType), BiliClientError> {
+    pub async fn get_play_url(&self, room_id: u64) -> Result<(String, StreamType), BiliClientError> {
         let res: PlayUrlResponse = self
             .client
             .get(format!(
@@ -296,16 +365,16 @@ impl BiliClient {
                 room_id
             ))
             .headers(self.headers.clone())
-            .send()?
-            .json()?;
+            .send().await?
+            .json().await?;
         if res.code == 0 {
-            if let Some(stream) = res.data.playurl_info.playurl.stream.get(0) {
+            if let Some(stream) = res.data.playurl_info.playurl.stream.first() {
                 // Get fmp4 format
                 if let Some(format) = stream.format.get(1) {
                     self.get_url_from_format(format)
                         .ok_or(BiliClientError::InvalidFormat)
                         .map(|url| (url, StreamType::FMP4))
-                } else if let Some(format) = stream.format.get(0) {
+                } else if let Some(format) = stream.format.first() {
                     self.get_url_from_format(format)
                         .ok_or(BiliClientError::InvalidFormat)
                         .map(|url| (url, StreamType::TS))
@@ -321,8 +390,8 @@ impl BiliClient {
     }
 
     fn get_url_from_format(&self, format: &Format) -> Option<String> {
-        if let Some(codec) = format.codec.get(0) {
-            if let Some(url_info) = codec.url_info.get(0) {
+        if let Some(codec) = format.codec.first() {
+            if let Some(url_info) = codec.url_info.first() {
                 let base_url = codec.base_url.strip_suffix('?').unwrap();
                 let extra = "?".to_owned() + &url_info.extra.clone();
                 let host = url_info.host.clone();
@@ -337,16 +406,16 @@ impl BiliClient {
         }
     }
 
-    pub fn get_index_content(&self, url: &String) -> Result<String, BiliClientError> {
+    pub async fn get_index_content(&self, url: &String) -> Result<String, BiliClientError> {
         Ok(self
             .client
             .get(url.to_owned() + self.extra.lock().unwrap().as_str())
             .headers(self.headers.clone())
-            .send()?
-            .text()?)
+            .send().await?
+            .text().await?)
     }
 
-    pub fn download_ts(
+    pub async fn download_ts(
         &self,
         cache_path: &str,
         room_id: u64,
@@ -355,9 +424,9 @@ impl BiliClient {
         let (tmp_path, file_name) = Self::url_to_file_name(cache_path, room_id, url);
         std::fs::create_dir_all(tmp_path).expect("create tmp_path failed");
         let url = url.to_owned() + self.extra.lock().unwrap().as_str();
-        let res = self.client.get(url).headers(self.headers.clone()).send()?;
+        let res = self.client.get(url).headers(self.headers.clone()).send().await?;
         let mut file = std::fs::File::create(file_name).unwrap();
-        let mut content = std::io::Cursor::new(res.bytes()?);
+        let mut content = std::io::Cursor::new(res.bytes().await?);
         std::io::copy(&mut content, &mut file).unwrap();
         Ok(())
     }
@@ -371,7 +440,7 @@ impl BiliClient {
     }
 
     // Method from js code
-    pub fn get_sign(&self, mut parameters: Value) -> Result<String, BiliClientError> {
+    pub async fn get_sign(&self, mut parameters: Value) -> Result<String, BiliClientError> {
         let table = vec![
             46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42,
             19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60,
@@ -381,8 +450,8 @@ impl BiliClient {
             .client
             .get("https://api.bilibili.com/x/web-interface/nav")
             .headers(self.headers.clone())
-            .send()?
-            .json()?;
+            .send().await?
+            .json().await?;
         let re = Regex::new(r"wbi/(.*).png").unwrap();
         let img = re
             .captures(nav_info["data"]["wbi_img"]["img_url"].as_str().unwrap())

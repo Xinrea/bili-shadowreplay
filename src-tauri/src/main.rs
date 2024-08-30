@@ -4,17 +4,21 @@
 mod recorder;
 
 use custom_error::custom_error;
+use recorder::bilibili::errors::BiliClientError;
+use recorder::bilibili::{BiliClient, QrInfo, QrStatus};
 use recorder::BiliRecorder;
 use std::collections::HashMap;
 
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tauri::{CustomMenuItem, SystemTray, SystemTrayEvent, SystemTrayMenu, SystemTrayMenuItem};
 use tauri::{Manager, WindowEvent};
+use tokio::sync::{Mutex, RwLock};
 
 use platform_dirs::AppDirs;
 
-custom_error! {StateError
+custom_error! {
+    StateError
     RecorderAlreadyExists = "Recorder already exists",
     RecorderCreateError = "Recorder create error",
 }
@@ -73,6 +77,9 @@ pub struct Config {
     max_len: u64,
     cache: String,
     output: String,
+    login: bool,
+    uid: String,
+    cookies: String,
 }
 
 impl Config {
@@ -100,6 +107,9 @@ impl Config {
                 .to_str()
                 .unwrap()
                 .to_string(),
+            login: false,
+            uid: "".to_string(),
+            cookies: "".to_string(),
         };
         config.save();
         config
@@ -152,6 +162,30 @@ impl Config {
         self.max_len = len;
         self.save();
     }
+
+    pub fn set_cookies(&mut self, cookies: &str) {
+        self.cookies = cookies.to_string();
+        // match(/DedeUserID=(\d+)/)[1
+        self.uid = cookies
+            .split("DedeUserID=")
+            .collect::<Vec<&str>>()
+            .get(1)
+            .unwrap()
+            .split(";")
+            .collect::<Vec<&str>>()
+            .first()
+            .unwrap()
+            .to_string();
+        self.login = true;
+        self.save();
+    }
+
+    pub fn logout(&mut self) {
+        self.cookies = "".to_string();
+        self.uid = "".to_string();
+        self.login = false;
+        self.save();
+    }
 }
 
 fn copy_dir_all(
@@ -173,8 +207,9 @@ fn copy_dir_all(
 
 #[derive(Clone)]
 struct State {
-    config: Arc<Mutex<Config>>,
-    recorders: Arc<Mutex<HashMap<u64, BiliRecorder>>>,
+    client: Arc<Mutex<BiliClient>>,
+    config: Arc<RwLock<Config>>,
+    recorders: Arc<Mutex<HashMap<u64, Arc<RwLock<BiliRecorder>>>>>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone)]
@@ -199,42 +234,52 @@ struct RoomInfo {
 }
 
 impl State {
-    pub fn get_summary(&self) -> Summary {
-        let recorders = self.recorders.lock().unwrap();
-        recorders.iter().fold(
-            Summary {
-                count: recorders.len(),
-                rooms: Vec::new(),
-            },
-            |mut summary, (_, recorder)| {
-                let room_info = RoomInfo {
-                    room_id: recorder.room_id,
-                    room_title: recorder.room_title.clone(),
-                    room_cover: recorder.room_cover.clone(),
-                    room_keyframe: recorder.room_keyframe.clone(),
-                    user_id: recorder.user_id,
-                    user_name: recorder.user_name.clone(),
-                    user_sign: recorder.user_sign.clone(),
-                    user_avatar: recorder.user_avatar.clone(),
-                    total_length: *recorder.ts_length.read().unwrap(),
-                    max_len: self.config.lock().unwrap().max_len,
-                    live_status: *recorder.live_status.read().unwrap(),
-                };
-                summary.rooms.push(room_info);
-                summary.rooms.sort_by(|a, b| a.room_id.cmp(&b.room_id));
-                summary
-            },
-        )
+    pub async fn get_summary(&self) -> Summary {
+        let recorders = self.recorders.lock().await;
+        let mut summary = Summary {
+            count: recorders.len(),
+            rooms: Vec::new(),
+        };
+
+        for (_, recorder) in recorders.iter() {
+            let recorder = recorder.read().await;
+            let room_info = RoomInfo {
+                room_id: recorder.room_id,
+                room_title: recorder.room_title.clone(),
+                room_cover: recorder.room_cover.clone(),
+                room_keyframe: recorder.room_keyframe.clone(),
+                user_id: recorder.user_id,
+                user_name: recorder.user_name.clone(),
+                user_sign: recorder.user_sign.clone(),
+                user_avatar: recorder.user_avatar.clone(),
+                total_length: *recorder.ts_length.read().await,
+                max_len: self.config.read().await.max_len,
+                live_status: *recorder.live_status.read().await,
+            };
+            summary.rooms.push(room_info);
+        }
+
+        summary.rooms.sort_by(|a, b| a.room_id.cmp(&b.room_id));
+        summary
     }
 
-    pub fn add_recorder(&self, room_id: u64) -> Result<(), StateError> {
-        let mut recorders = self.recorders.lock().unwrap();
+    pub async fn get_qr(client: Arc<Mutex<BiliClient>>) -> Result<QrInfo, BiliClientError> {
+        client.lock().await.get_qr().await
+    }
+
+    pub async fn get_qr_status(&self, key: &str) -> Result<QrStatus, BiliClientError> {
+        self.client.lock().await.get_qr_status(key).await
+    }
+
+    pub async fn add_recorder(&self, room_id: u64) -> Result<(), StateError> {
+        let mut recorders = self.recorders.lock().await;
         if recorders.get(&room_id).is_some() {
             return Err(StateError::RecorderAlreadyExists);
         }
-        match BiliRecorder::new(room_id, self.config.clone()) {
+        match BiliRecorder::new(room_id, self.config.clone()).await {
             Ok(recorder) => {
-                recorder.run();
+                recorder.run().await;
+                let recorder = Arc::new(RwLock::new(recorder));
                 recorders.insert(room_id, recorder);
                 Ok(())
             }
@@ -245,17 +290,17 @@ impl State {
         }
     }
 
-    pub fn remove_recorder(&self, room_id: u64) {
-        let mut recorders = self.recorders.lock().unwrap();
+    pub async fn remove_recorder(&self, room_id: u64) {
+        let mut recorders = self.recorders.lock().await;
         let recorder = recorders.get_mut(&room_id).unwrap();
-        recorder.stop();
+        recorder.read().await.stop().await;
         recorders.remove(&room_id);
     }
 
-    pub fn clip(&self, room_id: u64, len: f64) -> Result<String, String> {
-        let recorders = self.recorders.lock().unwrap();
-        let recorder = recorders.get(&room_id).unwrap();
-        if let Ok(file) = recorder.clip(room_id, len) {
+    pub async fn clip(&self, room_id: u64, len: f64) -> Result<String, String> {;
+        let recorders = self.recorders.lock().await;
+        let recorder = recorders.get(&room_id).unwrap().clone();
+        if let Ok(file) = recorder.clone().read().await.clip(room_id, len).await {
             Ok(file)
         } else {
             Err("Clip error".to_string())
@@ -265,17 +310,34 @@ impl State {
 
 #[tauri::command]
 async fn get_summary(state: tauri::State<'_, State>) -> Result<Summary, ()> {
-    Ok(state.get_summary())
+    Ok(state.get_summary().await)
 }
 
 #[tauri::command]
-fn add_recorder(state: tauri::State<State>, room_id: u64) -> Result<(), String> {
+async fn get_qr(state: tauri::State<'_, State>) -> Result<QrInfo, ()> {
+    println!("[invoke]get qr");
+    match State::get_qr(state.client.clone()).await {
+        Ok(qr_info) => Ok(qr_info),
+        Err(_e) => Err(()),
+    }
+}
+
+#[tauri::command]
+async fn get_qr_status(state: tauri::State<'_, State>, qrcode_key: &str) -> Result<QrStatus, ()> {
+    match state.get_qr_status(qrcode_key).await {
+        Ok(qr_status) => Ok(qr_status),
+        Err(_e) => Err(()),
+    }
+}
+
+#[tauri::command]
+async fn add_recorder(state: tauri::State<'_, State>, room_id: u64) -> Result<(), String> {
     // Config update
-    let mut config = state.config.lock().unwrap();
+    let mut config = state.config.write().await;
     if config.rooms.contains(&room_id) {
         return Err("直播间已存在".to_string());
     }
-    if let Err(e) = state.add_recorder(room_id) {
+    if let Err(e) = state.add_recorder(room_id).await {
         Err(e.to_string())
     } else {
         config.add(room_id);
@@ -284,27 +346,29 @@ fn add_recorder(state: tauri::State<State>, room_id: u64) -> Result<(), String> 
 }
 
 #[tauri::command]
-fn remove_recorder(state: tauri::State<State>, room_id: u64) {
+async fn remove_recorder(state: tauri::State<'_, State>, room_id: u64) -> Result<(), ()> {
     // Config update
-    let mut config = state.config.lock().unwrap();
+    let mut config = state.config.write().await;
     config.remove(room_id);
-    state.remove_recorder(room_id)
+    state.remove_recorder(room_id).await;
+    Ok(())
 }
 
 #[tauri::command]
-fn get_config(state: tauri::State<State>) -> Config {
-    state.config.lock().unwrap().clone()
+async fn get_config(state: tauri::State<'_, State>) -> Result<Config, ()> {
+    Ok(state.config.read().await.clone())
 }
 
 #[tauri::command]
-fn set_max_len(state: tauri::State<State>, len: u64) {
-    let mut config = state.config.lock().unwrap();
+async fn set_max_len(state: tauri::State<'_, State>, len: u64) -> Result<(), ()> {
+    let mut config = state.config.write().await;
     config.set_max_len(len);
+    Ok(())
 }
 
 #[tauri::command]
-fn set_cache_path(state: tauri::State<State>, cache_path: String) {
-    let mut config = state.config.lock().unwrap();
+async fn set_cache_path(state: tauri::State<'_, State>, cache_path: String) -> Result<(), ()> {
+    let mut config = state.config.write().await;
     let old_cache_path = config.cache.clone();
     config.set_cache_path(&cache_path);
     drop(config);
@@ -314,23 +378,63 @@ fn set_cache_path(state: tauri::State<State>, cache_path: String) {
             println!("Remove old cache error: {}", e);
         }
     }
+    Ok(())
 }
 
 #[tauri::command]
-fn set_output_path(state: tauri::State<State>, output_path: String) {
-    let mut config = state.config.lock().unwrap();
+async fn set_output_path(state: tauri::State<'_, State>, output_path: String) -> Result<(), ()> {
+    let mut config = state.config.write().await;
     config.set_output_path(output_path);
+    Ok(())
 }
 
 #[tauri::command]
-fn set_admins(state: tauri::State<State>, admins: Vec<u64>) {
-    let mut config = state.config.lock().unwrap();
+async fn set_admins(state: tauri::State<'_, State>, admins: Vec<u64>) -> Result<(), ()> {
+    let mut config = state.config.write().await;
     config.set_admins(admins);
+    Ok(())
 }
 
 #[tauri::command]
-fn clip(state: tauri::State<State>, room_id: u64, len: f64) -> Result<String, String> {
-    state.clip(room_id, len)
+async fn clip(state: tauri::State<'_, State>, room_id: u64, len: f64) -> Result<String, String> {
+    println!("[invoke]clip room_id: {}, len: {}", room_id, len);
+    state.clip(room_id, len).await
+}
+
+#[tauri::command]
+async fn init_recorders(state: tauri::State<'_, State>) -> Result<(), ()> {
+    println!("[invoke]init recorders");
+    let config = state.config.read().await;
+    let mut client = state.client.lock().await;
+    client.set_cookies(&config.cookies);
+    for room_id in config.rooms.iter() {
+        if let Err(e) = state.add_recorder(*room_id).await {
+            println!("init recorder failed: {:?}", e);
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_cookies(state: tauri::State<'_, State>, cookies: String) -> Result<(), String> {
+    let mut client = state.client.lock().await;
+    let mut config = state.config.write().await;
+    config.set_cookies(&cookies);
+    client.set_cookies(&cookies);
+    let recorders = state.recorders.lock().await;
+    for (_, recorder) in recorders.iter() {
+        recorder.write().await.update_cookies(&cookies).await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn logout(state: tauri::State<'_, State>) -> Result<(), String> {
+    let mut client = state.client.lock().await;
+    let mut config = state.config.write().await;
+    config.logout();
+    client.logout();
+    Ok(())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -340,35 +444,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let quit = CustomMenuItem::new("quit".to_string(), "Quit");
     let hide = CustomMenuItem::new("hide".to_string(), "Hide");
     let tray_menu = SystemTrayMenu::new()
-        .add_item(quit)
+        .add_item(hide)
         .add_native_item(SystemTrayMenuItem::Separator)
-        .add_item(hide);
+        .add_item(quit);
+
     let tray = SystemTray::new().with_menu(tray_menu);
     // Setup initial state
     let state = State {
-        config: Arc::new(Mutex::new(Config::load())),
+        client: Arc::new(Mutex::new(BiliClient::new()?)),
+        config: Arc::new(RwLock::new(Config::load())),
         recorders: Arc::new(Mutex::new(HashMap::new())),
     };
-    let conf = Config::load();
-    for room_id in conf.rooms {
-        std::fs::remove_dir_all(format!("{}/{}", conf.cache, room_id)).unwrap_or(());
-        if state.add_recorder(room_id).is_err() {
-            println!("Failed to add recorder for room {}", room_id);
-            continue;
-        }
-    }
+
     // Tauri part
     tauri::Builder::default()
         .manage(state)
         .system_tray(tray)
-        .on_window_event(|event| match event.event() {
-            WindowEvent::CloseRequested { api, .. } => {
+        .on_window_event(|event| {
+            if let WindowEvent::CloseRequested { api, .. } = event.event() {
                 event.window().hide().unwrap();
                 api.prevent_close();
             }
-            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
+            init_recorders,
             get_summary,
             add_recorder,
             remove_recorder,
@@ -378,7 +477,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             set_output_path,
             set_admins,
             clip,
-            show_in_folder
+            show_in_folder,
+            get_qr,
+            get_qr_status,
+            set_cookies,
+            logout,
         ])
         .on_system_tray_event(|app, event| match event {
             SystemTrayEvent::LeftClick {
@@ -390,12 +493,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 window.show().unwrap();
             }
             SystemTrayEvent::MenuItemClick { id, .. } => match id.as_str() {
-                "quit" => {
-                    std::process::exit(0);
-                }
                 "hide" => {
                     let window = app.get_window("main").unwrap();
                     window.hide().unwrap();
+                }
+                "quit" => {
+                    std::process::exit(0);
                 }
                 _ => {}
             },

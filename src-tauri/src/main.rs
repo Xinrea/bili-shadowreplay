@@ -125,6 +125,9 @@ impl Config {
     }
 
     pub fn add(&mut self, room: u64) {
+        if self.rooms.contains(&room) {
+            return;
+        }
         self.rooms.push(room);
         self.save();
     }
@@ -272,15 +275,15 @@ impl State {
     }
 
     pub async fn add_recorder(&self, room_id: u64) -> Result<(), StateError> {
-        let mut recorders = self.recorders.lock().await;
-        if recorders.get(&room_id).is_some() {
+        if self.recorders.lock().await.get(&room_id).is_some() {
             return Err(StateError::RecorderAlreadyExists);
         }
         match BiliRecorder::new(room_id, self.config.clone()).await {
             Ok(recorder) => {
                 recorder.run().await;
                 let recorder = Arc::new(RwLock::new(recorder));
-                recorders.insert(room_id, recorder);
+                self.recorders.lock().await.insert(room_id, recorder);
+                self.config.write().await.add(room_id);
                 Ok(())
             }
             Err(e) => {
@@ -295,9 +298,10 @@ impl State {
         let recorder = recorders.get_mut(&room_id).unwrap();
         recorder.read().await.stop().await;
         recorders.remove(&room_id);
+        self.config.write().await.remove(room_id);
     }
 
-    pub async fn clip(&self, room_id: u64, len: f64) -> Result<String, String> {;
+    pub async fn clip(&self, room_id: u64, len: f64) -> Result<String, String> {
         let recorders = self.recorders.lock().await;
         let recorder = recorders.get(&room_id).unwrap().clone();
         if let Ok(file) = recorder.clone().read().await.clip(room_id, len).await {
@@ -333,14 +337,11 @@ async fn get_qr_status(state: tauri::State<'_, State>, qrcode_key: &str) -> Resu
 #[tauri::command]
 async fn add_recorder(state: tauri::State<'_, State>, room_id: u64) -> Result<(), String> {
     // Config update
-    let mut config = state.config.write().await;
-    if config.rooms.contains(&room_id) {
-        return Err("直播间已存在".to_string());
-    }
     if let Err(e) = state.add_recorder(room_id).await {
+        println!("add recorder failed: {:?}", e);
         Err(e.to_string())
     } else {
-        config.add(room_id);
+        println!("add recorder success: {}", room_id);
         Ok(())
     }
 }
@@ -348,8 +349,6 @@ async fn add_recorder(state: tauri::State<'_, State>, room_id: u64) -> Result<()
 #[tauri::command]
 async fn remove_recorder(state: tauri::State<'_, State>, room_id: u64) -> Result<(), ()> {
     // Config update
-    let mut config = state.config.write().await;
-    config.remove(room_id);
     state.remove_recorder(room_id).await;
     Ok(())
 }
@@ -404,10 +403,11 @@ async fn clip(state: tauri::State<'_, State>, room_id: u64, len: f64) -> Result<
 #[tauri::command]
 async fn init_recorders(state: tauri::State<'_, State>) -> Result<(), ()> {
     println!("[invoke]init recorders");
-    let config = state.config.read().await;
+    let cookies = state.config.read().await.cookies.clone();
+    let rooms = state.config.read().await.rooms.clone();
     let mut client = state.client.lock().await;
-    client.set_cookies(&config.cookies);
-    for room_id in config.rooms.iter() {
+    client.set_cookies(&cookies);
+    for room_id in rooms.iter() {
         if let Err(e) = state.add_recorder(*room_id).await {
             println!("init recorder failed: {:?}", e);
         }

@@ -352,6 +352,7 @@
         </label>
       </div>
       <div class="tooltip tooltip-left" data-tip="设置">
+        <!-- svelte-ignore a11y-click-events-have-key-events -->
         <label
           class="btn btn-circle mt-2"
           for="setting-modal"

@@ -1,10 +1,10 @@
 <script lang="ts">
   import { invoke, convertFileSrc } from "@tauri-apps/api/tauri";
   import { fetch, ResponseType } from "@tauri-apps/api/http";
-  import { message, save } from "@tauri-apps/api/dialog";
-  import { open } from "@tauri-apps/api/shell";
+  import { message, open } from "@tauri-apps/api/dialog";
+  import { open as shell_open } from "@tauri-apps/api/shell";
   import { copyFile, exists, removeFile } from "@tauri-apps/api/fs";
-  import QRCode from 'qrcode';
+  import QRCode from "qrcode";
   interface Summary {
     count: number;
     rooms: {
@@ -40,7 +40,7 @@
         room.room_cover = await getImage(room.room_cover);
         room.room_keyframe = await getImage(room.room_keyframe);
         return room;
-      })
+      }),
     );
     summary = _summary;
   }
@@ -127,7 +127,6 @@
     setting_model.admins = config.admin_uid.join(",");
     setting_model.login = config.login;
     setting_model.uid = config.uid;
-    console.log(config);
   }
 
   async function apply_config() {
@@ -145,22 +144,25 @@
     if (check_interval) {
       clearInterval(check_interval);
     }
-    let qr_info: { url: string, oauthKey: string } = await invoke("get_qr");
+    let qr_info: { url: string; oauthKey: string } = await invoke("get_qr");
     oauth_key = qr_info.oauthKey;
-    const canvas = document.getElementById('qr');
+    const canvas = document.getElementById("qr");
     QRCode.toCanvas(canvas, qr_info.url, function (error) {
       if (error) {
         console.log(error);
         return;
       }
-      canvas.style.display = 'block';
+      canvas.style.display = "block";
       check_interval = setInterval(check_qr, 2000);
-    })
+    });
     console.log(qr_info);
   }
 
   async function check_qr() {
-    let qr_status: {code: number, cookies: string} = await invoke("get_qr_status", { qrcodeKey: oauth_key });
+    let qr_status: { code: number; cookies: string } = await invoke(
+      "get_qr_status",
+      { qrcodeKey: oauth_key },
+    );
     if (qr_status.code == 0) {
       clearInterval(check_interval);
       setting_model.login = true;
@@ -172,14 +174,14 @@
 
 <div>
   <div>
-    <table class="table table-zebra x-full w-full">
+    <table class="table w-full">
       <!-- head -->
       <thead>
         <tr>
           <th>直播间</th>
-          <th>缓存时长</th>
-          <th>状态</th>
-          <th>操作</th>
+          <th class="text-center">缓存时长</th>
+          <th class="text-center">状态</th>
+          <th class="text-center">操作</th>
         </tr>
       </thead>
       <tbody>
@@ -193,7 +195,7 @@
                     <div
                       class="flex w-48 h-27 cursor-pointer"
                       on:click={(e) => {
-                        open("https://live.bilibili.com/" + room.room_id);
+                        shell_open("https://live.bilibili.com/" + room.room_id);
                       }}
                     >
                       <img
@@ -211,11 +213,11 @@
                   <div>
                     <span class="bold">{room.room_title}</span>
                     <br />
-                    <span class="badge">房间号：{room.room_id}</span>
+                    <span class="badge badge-neutral">房间号：{room.room_id}</span>
                   </div>
                 </div>
               </td>
-              <td
+              <td class="text-center"
                 ><div
                   class="radial-progress bg-primary text-primary-content border-4 border-primary"
                   style="--value:{(room.total_length * 100) / room.max_len};"
@@ -223,96 +225,68 @@
                   {Number(room.total_length).toFixed(1)}s
                 </div></td
               >
-              <td>
-                <span class="badge" class:badge-success={room.live_status}
+              <td class="text-center">
+                <span class="badge badge-neutral" class:badge-success={room.live_status}
                   >{room.live_status ? "直播中" : "未开播"}</span
                 >
               </td>
-              <td>
-                <!-- svelte-ignore a11y-click-events-have-key-events -->
-                <label
-                  for="save-modal"
-                  class="btn btn-sm btn-success btn-square"
-                  on:click={(_) => {
-                    clip_model.max_len = room.max_len;
-                    clip_model.room = room.room_id;
-                    clip_model.title = room.room_title;
-                    clip_model.video = false;
-                  }}
-                >
-                  <svg
-                    width="24px"
-                    height="24px"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    xmlns="http://www.w3.org/2000/svg"
-                    ><g id="SVGRepo_bgCarrier" stroke-width="0" /><g
-                      id="SVGRepo_tracerCarrier"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    /><g id="SVGRepo_iconCarrier">
-                      <g id="System / Save">
-                        <path
-                          id="Vector"
-                          d="M17 21.0002L7 21M17 21.0002L17.8031 21C18.921 21 19.48 21 19.9074 20.7822C20.2837 20.5905 20.5905 20.2843 20.7822 19.908C21 19.4806 21 18.921 21 17.8031V9.21955C21 8.77072 21 8.54521 20.9521 8.33105C20.9095 8.14 20.8393 7.95652 20.7432 7.78595C20.6366 7.59674 20.487 7.43055 20.1929 7.10378L17.4377 4.04241C17.0969 3.66374 16.9242 3.47181 16.7168 3.33398C16.5303 3.21 16.3242 3.11858 16.1073 3.06287C15.8625 3 15.5998 3 15.075 3H6.2002C5.08009 3 4.51962 3 4.0918 3.21799C3.71547 3.40973 3.40973 3.71547 3.21799 4.0918C3 4.51962 3 5.08009 3 6.2002V17.8002C3 18.9203 3 19.4796 3.21799 19.9074C3.40973 20.2837 3.71547 20.5905 4.0918 20.7822C4.5192 21 5.07899 21 6.19691 21H7M17 21.0002V17.1969C17 16.079 17 15.5192 16.7822 15.0918C16.5905 14.7155 16.2837 14.4097 15.9074 14.218C15.4796 14 14.9203 14 13.8002 14H10.2002C9.08009 14 8.51962 14 8.0918 14.218C7.71547 14.4097 7.40973 14.7155 7.21799 15.0918C7 15.5196 7 16.0801 7 17.2002V21M15 7H9"
-                          stroke="#d4fad8"
-                          stroke-width="2"
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                        />
-                      </g>
-                    </g></svg
-                  >
-                </label>
-                <button
-                  class="btn btn-sm btn-error btn-square"
-                  on:click={() => {
-                    remove_room(room.room_id).then(() => {
-                      update_summary();
-                    });
-                  }}
-                >
-                  <svg
-                    width="24px"
-                    height="24px"
-                    viewBox="0 -0.5 21 21"
-                    version="1.1"
-                    xmlns="http://www.w3.org/2000/svg"
-                    xmlns:xlink="http://www.w3.org/1999/xlink"
-                    fill="#f1cdc9"
-                    ><g id="SVGRepo_bgCarrier" stroke-width="0" /><g
-                      id="SVGRepo_tracerCarrier"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    /><g id="SVGRepo_iconCarrier">
-                      <title>delete [#1487]</title>
-                      <desc>Created with Sketch.</desc> <defs />
-                      <g
-                        id="Page-1"
-                        stroke="none"
-                        stroke-width="1"
-                        fill="none"
+              <td class="text-center">
+                <div class="dropdown dropdown-end">
+                  <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+                  <div tabindex="0" class="btn m-1 btn-square btn-sm">
+                    <svg
+                      class="stroke-info"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      xmlns="http://www.w3.org/2000/svg"
+                    >
+                      <path
                         fill-rule="evenodd"
-                      >
-                        <g
-                          id="Dribbble-Light-Preview"
-                          transform="translate(-179.000000, -360.000000)"
-                          fill="#f1cdc9"
-                        >
-                          <g
-                            id="icons"
-                            transform="translate(56.000000, 160.000000)"
-                          >
-                            <path
-                              d="M130.35,216 L132.45,216 L132.45,208 L130.35,208 L130.35,216 Z M134.55,216 L136.65,216 L136.65,208 L134.55,208 L134.55,216 Z M128.25,218 L138.75,218 L138.75,206 L128.25,206 L128.25,218 Z M130.35,204 L136.65,204 L136.65,202 L130.35,202 L130.35,204 Z M138.75,204 L138.75,200 L128.25,200 L128.25,204 L123,204 L123,206 L126.15,206 L126.15,220 L140.85,220 L140.85,206 L144,206 L144,204 L138.75,204 Z"
-                              id="delete-[#1487]"
-                            />
-                          </g>
-                        </g>
-                      </g>
-                    </g></svg
+                        clip-rule="evenodd"
+                        d="M14.1395 12.0002C14.1395 13.1048 13.2664 14.0002 12.1895 14.0002C11.1125 14.0002 10.2395 13.1048 10.2395 12.0002C10.2395 10.8957 11.1125 10.0002 12.1895 10.0002C13.2664 10.0002 14.1395 10.8957 14.1395 12.0002Z"
+                        stroke-width="1.5"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      />
+                      <path
+                        fill-rule="evenodd"
+                        clip-rule="evenodd"
+                        d="M7.57381 18.1003L5.12169 12.8133C4.79277 12.2907 4.79277 11.6189 5.12169 11.0963L7.55821 5.89229C7.93118 5.32445 8.55898 4.98876 9.22644 5.00029H12.1895H15.1525C15.8199 4.98876 16.4477 5.32445 16.8207 5.89229L19.2524 11.0923C19.5813 11.6149 19.5813 12.2867 19.2524 12.8093L16.8051 18.1003C16.4324 18.674 15.8002 19.0133 15.1281 19.0003H9.24984C8.5781 19.013 7.94636 18.6737 7.57381 18.1003Z"
+                        stroke-width="1.5"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      />
+                    </svg>
+                  </div>
+                  <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+                  <ul
+                    tabindex="0"
+                    class="menu dropdown-content bg-base-100 rounded-box z-[1] w-52 p-2 shadow"
                   >
-                </button>
+                    <li>
+                      <a
+                        href={"#"}
+                        on:click={(_) => {
+                          clip_model.max_len = room.max_len;
+                          clip_model.room = room.room_id;
+                          clip_model.title = room.room_title;
+                          clip_model.video = false;
+                          save_modal.showModal();
+                        }}>生成切片</a
+                      >
+                    </li>
+                    <li>
+                      <a
+                        href={"#"}
+                        on:click={() => {
+                          remove_room(room.room_id).then(() => {
+                            update_summary();
+                          });
+                        }}>移除</a
+                      >
+                    </li>
+                  </ul>
+                </div>
               </td>
             </tr>
           {/each}
@@ -448,10 +422,9 @@
       </div>
     </label>
   </label>
-  <input type="checkbox" id="save-modal" class="modal-toggle" />
   <!-- svelte-ignore a11y-click-events-have-key-events -->
-  <label for="save-modal" class="modal cursor-pointer border-2">
-    <label class="modal-box relative" for="">
+  <dialog id="save_modal" class="modal cursor-pointer">
+    <div class="modal-box relative">
       <h3 class="text-lg font-bold mb-4">生成切片 - {clip_model.title}</h3>
       {#if clip_model.video}
         <div class="mb-6">
@@ -501,7 +474,7 @@
           <label
             class="btn btn-secondary"
             for=""
-            on:click={(e) => {
+            on:click={(_) => {
               show_in_folder(setting_model.clip_path);
             }}>打开切片文件夹</label
           >
@@ -526,8 +499,11 @@
           </div>
         {/if}
       </div>
-    </label>
-  </label>
+    </div>
+    <form method="dialog" class="modal-backdrop">
+      <button>close</button>
+    </form>
+  </dialog>
 
   <!-- Setting modal Part -->
   <input
@@ -536,15 +512,17 @@
     class="modal-toggle"
     bind:checked={setting_model.open}
   />
-  <label for="setting-modal" class="modal cursor-pointer">
+  <label for="setting-modal" class="modal cursor-pointer backdrop-blur-sm">
     <label class="modal-box relative" for="">
       <h3 class="text-lg font-bold">设置</h3>
       <div class="flex flex-col">
         {#if setting_model.login}
           <div class="flex items-center flex-col">
-            <div class="badge badge-success">已登录（UID：{setting_model.uid}）</div>
+            <div class="badge badge-secondary">
+              已登录（UID：{setting_model.uid}）
+            </div>
             <button
-              class="btn btn-sm btn-error my-4"
+              class="btn btn-sm btn-warning my-4"
               on:click={() => {
                 setting_model.login = false;
                 invoke("logout");
@@ -558,56 +536,80 @@
               class="btn btn-sm btn-primary my-4"
               on:click={() => {
                 handle_qr();
-              }}>获取/刷新登录二维码</button>
+              }}>获取/刷新登录二维码</button
+            >
           </div>
         {/if}
-        <hr />
-        <label class="flex items-center my-2"
+        <div class="divider"></div>
+        <label class="flex items-center my-2" for=""
           >缓存时长：<input
             type="number"
-            class="input input-sm input-bordered input-primary"
+            class="input input-sm input-bordered"
             bind:value={setting_model.cach_len}
             on:change={() => {
               setting_model.changed = true;
             }}
           /></label
         >
-        <label class="flex items-center my-2"
-          >缓存目录：<input
+        <label class="flex items-center my-2" for=""
+          >缓存目录：
+          <button
+            class="btn btn-outline rounded-e-none h-[32px] min-h-[32px]"
+            on:click={async () => {
+              const output_path = await open({
+                title: "选择缓存目录",
+                directory: true,
+              });
+              setting_model.cache_path = output_path;
+              setting_model.changed = true;
+            }}>选择目录</button>
+            <input
             type="text"
-            class="input input-sm input-bordered input-primary"
+            class="input input-sm input-bordered rounded-s-none"
             bind:value={setting_model.cache_path}
             on:change={() => {
               setting_model.changed = true;
             }}
           /></label
         >
-        <label class="flex items-center my-2"
-          >切片目录：<input
+        <label class="flex items-center my-2" for=""
+          >切片目录：
+          <button
+            class="btn btn-outline rounded-e-none h-[32px] min-h-[32px]"
+            on:click={async () => {
+              const output_path = await open({
+                title: "选择切片保存目录",
+                directory: true,
+              });
+              setting_model.clip_path = output_path;
+              setting_model.changed = true;
+            }}>选择目录</button>
+            <input
             type="text"
-            class="input input-sm input-bordered input-primary"
+            class="input input-sm input-bordered rounded-s-none"
             bind:value={setting_model.clip_path}
             on:change={() => {
               setting_model.changed = true;
             }}
-          /></label
+          />
+        </label
         >
-        <label class="flex items-center my-2"
+        <label class="flex items-center my-2" for=""
           >管理员UID：<input
             type="text"
-            class="input input-sm input-bordered input-primary"
+            class="input input-sm input-bordered"
             bind:value={setting_model.admins}
             on:change={() => {
               setting_model.changed = true;
             }}
           /></label
         >
-        <div class="text-sm">
-          相关说明：管理员UID可添加多个，使用“,”分隔。设定为管理员的用户可以在直播间发送
+        <div class="text-sm text-slate-500">
+          相关说明：管理员 UID 可添加多个，使用 “,” 分隔。设定为管理员的用户可以在直播间发送
           <div class="badge badge-outline">/clip + 时长</div>
           弹幕来触发切片， 例如：
           <div class="badge badge-outline">/clip 30</div>
-          将会保存最近的30s录播
+          将会保存最近的 30s 录播
         </div>
         <button
           class="btn btn-sm btn-primary my-4"

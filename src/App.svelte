@@ -2,7 +2,7 @@
   import RoomList from "./lib/RoomList.svelte";
 </script>
 
-<main class="px-24 py-12">
+<main>
   <div class="row">
     <RoomList />
   </div>

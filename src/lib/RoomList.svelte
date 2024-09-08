@@ -281,7 +281,7 @@
                           clip_model.title = room.room_title;
                           clip_model.video = false;
                           save_modal.showModal();
-                        }}>生成切片</a
+                        }}>简易生成切片</a
                       >
                     </li>
                     <li>

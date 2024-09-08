@@ -235,6 +235,14 @@ impl State {
             Err("Clip error".to_string())
         }
     }
+
+    pub async fn clip_range(&self, room_id: u64, x: f64, y: f64) -> Result<String, String> {
+        if let Ok(file) = self.recorder_manager.clip_range(room_id, x, y).await {
+            Ok(file)
+        } else {
+            Err("Clip error".to_string())
+        }
+    }
 }
 
 #[tauri::command]
@@ -316,6 +324,12 @@ async fn set_admins(state: tauri::State<'_, State>, admins: Vec<u64>) -> Result<
 async fn clip(state: tauri::State<'_, State>, room_id: u64, len: f64) -> Result<String, String> {
     println!("[invoke]clip room_id: {}, len: {}", room_id, len);
     state.clip(room_id, len).await
+}
+
+#[tauri::command]
+async fn clip_range(state: tauri::State<'_, State>, room_id: u64, x: f64, y: f64, upload: bool) -> Result<String, String> {
+    println!("[invoke]clip room_id: {}, start: {}, end: {}, upload: {}", room_id, x, y, upload);
+    state.clip_range(room_id, x, y).await
 }
 
 #[tauri::command]
@@ -412,6 +426,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             set_output_path,
             set_admins,
             clip,
+            clip_range,
             show_in_folder,
             get_qr,
             get_qr_status,

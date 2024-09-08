@@ -106,6 +106,18 @@ impl RecorderManager {
         }
     }
 
+    pub async fn clip_range(&self, room_id: u64, start: f64, end: f64) -> Result<String, String> {
+        let recorder = self.recorders.get(&room_id);
+        if recorder.is_none() {
+            return Err(format!("Recorder {} not found", room_id));
+        }
+        let recorder = recorder.unwrap();
+        match recorder.value().clip_range(start, end).await {
+            Ok(f) => Ok(f),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
     pub async fn get_summary(&self) -> Summary {
         let mut summary = Summary {
             count: self.recorders.len(),

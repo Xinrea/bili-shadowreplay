@@ -415,6 +415,68 @@ impl BiliRecorder {
         Ok(file_name)
     }
 
+    pub async fn clip_range(&self, x: f64, y: f64) -> Result<String, BiliClientError> {
+        let mut to_combine = Vec::new();
+        let header_copy = self.header.read().await.clone();
+        let entry_copy = self.ts_entries.lock().await.clone();
+        if entry_copy.is_empty() {
+            return Err(BiliClientError::EmptyCache);
+        }
+        let mut start = x;
+        let mut end = y;
+        if start > end {
+            std::mem::swap(&mut start, &mut end);
+        }
+        let mut total_length = 0.0;
+        for e in entry_copy.iter() {
+            let length = e.length;
+            total_length += length;
+            if total_length < start {
+                continue;
+            }
+            to_combine.push(e);
+            if total_length >= end {
+                break;
+            }
+        }
+        if *self.stream_type.read().await == StreamType::FMP4 {
+            // add header to vec
+            let header = header_copy.as_ref().unwrap();
+            to_combine.insert(0, header);
+        }
+        let mut file_list = String::new();
+        for e in to_combine {
+            file_list +=
+                &BiliClient::url_to_file_name(&self.config.read().await.cache, self.room_id, &e.url).1;
+            file_list += "|";
+        }
+        let output_path = self.config.read().await.output.clone();
+        std::fs::create_dir_all(&output_path).expect("create clips folder failed");
+        let file_name = format!(
+            "{}/[{}]{}_({})_{:.2}.mp4",
+            output_path,
+            self.room_id,
+            self.room_title,
+            Utc::now().format("%Y-%m-%d-%H-%M-%S"),
+            end - start
+        );
+        println!("{}", file_name);
+        let args = format!("-i concat:{} -c copy", file_list);
+        FfmpegCommand::new()
+            .args(args.split(' '))
+            .output(file_name.clone())
+            .spawn()
+            .unwrap()
+            .iter()
+            .unwrap()
+            .for_each(|e| match e {
+                FfmpegEvent::Log(LogLevel::Error, e) => println!("Error: {}", e),
+                FfmpegEvent::Progress(p) => println!("Progress: {}", p.time),
+                _ => {}
+            });
+        Ok(file_name)
+    }
+
     pub async fn generate_m3u8(&self) -> String {
         let mut m3u8_content = "#EXTM3U\n".to_string();
         m3u8_content += "#EXT-X-VERSION:6\n";

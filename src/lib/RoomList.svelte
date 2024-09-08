@@ -18,13 +18,11 @@
       user_avatar: string;
       live_status: boolean;
       total_length: number;
-      max_len: number;
     }[];
   }
   let summary: Summary;
   async function setup() {
     console.log("setup");
-    await invoke("init_recorders");
     await update_summary();
     await get_config();
     setInterval(async () => {
@@ -46,6 +44,9 @@
   }
 
   async function getImage(url) {
+    if (!url) {
+      return "";
+    }
     const response = await fetch<Uint8Array>(url, {
       method: "GET",
       timeout: 30,
@@ -220,7 +221,7 @@
               <td class="text-center"
                 ><div
                   class="radial-progress bg-primary text-primary-content border-4 border-primary"
-                  style="--value:{(room.total_length * 100) / room.max_len};"
+                  style="--value:{100};"
                 >
                   {Number(room.total_length).toFixed(1)}s
                 </div></td
@@ -235,7 +236,7 @@
                   <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
                   <div tabindex="0" class="btn m-1 btn-square btn-sm">
                     <svg
-                      class="stroke-info"
+                      class="stroke-info w-full h-full"
                       viewBox="0 0 24 24"
                       fill="none"
                       xmlns="http://www.w3.org/2000/svg"
@@ -266,8 +267,16 @@
                     <li>
                       <a
                         href={"#"}
+                        on:click={async (_) => {
+                          await invoke("open_live", { roomId: room.room_id });
+                        }}>查看直播流</a
+                      >
+                    </li>
+                    <li>
+                      <a
+                        href={"#"}
                         on:click={(_) => {
-                          clip_model.max_len = room.max_len;
+                          clip_model.max_len = room.total_length;
                           clip_model.room = room.room_id;
                           clip_model.title = room.room_title;
                           clip_model.video = false;
@@ -541,16 +550,6 @@
           </div>
         {/if}
         <div class="divider"></div>
-        <label class="flex items-center my-2" for=""
-          >缓存时长：<input
-            type="number"
-            class="input input-sm input-bordered"
-            bind:value={setting_model.cach_len}
-            on:change={() => {
-              setting_model.changed = true;
-            }}
-          /></label
-        >
         <label class="flex items-center my-2" for=""
           >缓存目录：
           <button

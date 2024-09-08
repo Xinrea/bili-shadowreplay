@@ -57,7 +57,7 @@
         "icons/icon.icns",
         "icons/icon.ico"
       ],
-      "identifier": "cn.vjoi.bilishadowplay",
+      "identifier": "cn.vjoi.bilishadowreplay",
       "targets": "all"
     },
     "security": {
@@ -68,12 +68,13 @@
     },
     "windows": [
       {
+        "label": "main",
         "fullscreen": false,
         "resizable": true,
         "title": "BiliBili ShadowReplay",
         "width": 800,
         "height": 600,
-        "theme": "Light"
+        "theme": "Dark"
       }
     ]
   }

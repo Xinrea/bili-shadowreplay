@@ -1,7 +1,7 @@
 module.exports = {
     daisyui: {
         themes: [
-            "night"
+            "night",
         ],
     },
     content: ['./src/**/*.{svelte,js,ts}'],

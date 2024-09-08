@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh-cn">
+
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.10.0/controls.css"/>
+  <link rel="stylesheet" href="src/youtube-theme.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.10.0/shaka-player.compiled.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.10.0/shaka-player.ui.js"></script>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+    }
+    video {
+      width: 100%;
+      height: 100%;
+    }
+  </style>
+</head>
+<body>
+  <section id="wrap">
+    <div class="youtube-theme" data-shaka-player-container style="width: 100vw; height: 100vh;">
+      <video autoplay data-shaka-player id="video"></video>
+    </div>
+  </section>
+  <script type="module" src="src/live_main.ts"></script>
+</body>
+
+</html>

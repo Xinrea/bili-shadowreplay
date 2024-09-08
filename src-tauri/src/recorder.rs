@@ -12,7 +12,6 @@ use notify_rust::Notification;
 use regex::Regex;
 use std::sync::Arc;
 use std::thread;
-
 use felgens::{ws_socket_object, FelgensError, WsStreamMessageType};
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::sync::{Mutex, RwLock};
@@ -70,7 +69,8 @@ impl BiliRecorder {
                 stream_type = stream_type_now;
             }
         }
-        Ok(Self {
+
+        let recorder = Self {
             client: Arc::new(RwLock::new(client)),
             config,
             room_id,
@@ -89,10 +89,12 @@ impl BiliRecorder {
             quit: Arc::new(Mutex::new(false)),
             header: Arc::new(RwLock::new(None)),
             stream_type: Arc::new(RwLock::new(stream_type)),
-        })
+        };
+        println!("Recorder for room {} created.", room_id);
+        Ok(recorder)
     }
 
-    pub async fn update_cookies(&mut self, cookies: &str) {
+    pub async fn update_cookies(&self, cookies: &str) {
         self.client.write().await.set_cookies(cookies);
     }
 
@@ -139,6 +141,7 @@ impl BiliRecorder {
                                 println!("update entries error: {}", e);
                                 break;
                             }
+                            thread::sleep(std::time::Duration::from_secs(1));
                         }
                     }
                     // Every 10s check live status.
@@ -245,63 +248,6 @@ impl BiliRecorder {
         Ok(header_url)
     }
 
-    // {
-    //   "format_name": "ts",
-    //   "codec": [
-    //     {
-    //       "codec_name": "avc",
-    //       "current_qn": 10000,
-    //       "accept_qn": [
-    //         10000,
-    //         400,
-    //         250,
-    //         150
-    //       ],
-    //       "base_url": "/live-bvc/738905/live_51628309_47731828_bluray.m3u8?",
-    //       "url_info": [
-    //         {
-    //           "host": "https://cn-jsyz-ct-03-51.bilivideo.com",
-    //           "extra": "expires=1680532720&len=0&oi=3664564898&pt=h5&qn=10000&trid=100352dbcd4ec5494d6083d4a9a3d9f91aa7&sigparams=cdn,expires,len,oi,pt,qn,trid&cdn=cn-gotcha01&sign=829e59d93ef9ffff8e2aa3bb090f1280&sk=4207df3de646838b084f14f252be3aff94df00e145e0110c92421700c186a851&p2p_type=0&sl=6&free_type=0&mid=475210&sid=cn-jsyz-ct-03-51&chash=1&sche=ban&score=13&pp=rtmp&source=onetier&trace=a0c&site=c66c7195b197c2cf30e5715dbf2922b8&order=1",
-    //           "stream_ttl": 3600
-    //         }
-    //       ],
-    //       "hdr_qn": null,
-    //       "dolby_type": 0,
-    //       "attr_name": ""
-    //     }
-    //   ]
-    // }
-    // {
-    //     "format_name": "fmp4",
-    //     "codec": [
-    //       {
-    //         "codec_name": "avc",
-    //         "current_qn": 10000,
-    //         "accept_qn": [
-    //           10000,
-    //           400,
-    //           250,
-    //           150
-    //         ],
-    //         "base_url": "/live-bvc/738905/live_51628309_47731828_bluray/index.m3u8?",
-    //         "url_info": [
-    //           {
-    //             "host": "https://cn-jsyz-ct-03-51.bilivideo.com",
-    //             "extra": "expires=1680532720&len=0&oi=3664564898&pt=h5&qn=10000&trid=100752dbcd4ec5494d6083d4a9a3d9f91aa7&sigparams=cdn,expires,len,oi,pt,qn,trid&cdn=cn-gotcha01&sign=3d0930160c5870021ebbb457e4630fcf&sk=5bf07b9bbe6df2e0a6bc476fe3d9a642c8e387f5b7e5df7fa9e1b9d0abc8bd13&flvsk=4207df3de646838b084f14f252be3aff94df00e145e0110c92421700c186a851&p2p_type=0&sl=6&free_type=0&mid=475210&sid=cn-jsyz-ct-03-51&chash=1&sche=ban&bvchls=1&score=13&pp=rtmp&source=onetier&trace=a0c&site=c66c7195b197c2cf30e5715dbf2922b8&order=1",
-    //             "stream_ttl": 3600
-    //           },
-    //           {
-    //             "host": "https://d1--cn-gotcha208.bilivideo.com",
-    //             "extra": "expires=1680532720&len=0&oi=3664564898&pt=h5&qn=10000&trid=100752dbcd4ec5494d6083d4a9a3d9f91aa7&sigparams=cdn,expires,len,oi,pt,qn,trid&cdn=cn-gotcha208&sign=b63815ac70b18420c64a661465f92962&sk=5bf07b9bbe6df2e0a6bc476fe3d9a642c8e387f5b7e5df7fa9e1b9d0abc8bd13&p2p_type=0&sl=6&free_type=0&mid=475210&pp=rtmp&source=onetier&trace=4&site=c66c7195b197c2cf30e5715dbf2922b8&order=2",
-    //             "stream_ttl": 3600
-    //           }
-    //         ],
-    //         "hdr_qn": null,
-    //         "dolby_type": 0,
-    //         "attr_name": ""
-    //       }
-    //     ]
-    //   }
     async fn ts_url(&self, ts_url: &String) -> Result<String, BiliClientError> {
         // Construct url for ts and fmp4 stream.
         match *self.stream_type.read().await {
@@ -399,20 +345,6 @@ impl BiliRecorder {
                     *self.latest_sequence.lock().await = sequence;
                     let mut total_length = self.ts_length.write().await;
                     *total_length += ts.duration as f64;
-                    while *total_length > self.config.read().await.max_len as f64 {
-                        *total_length -= entries[0].length;
-                        if let Err(e) = std::fs::remove_file(
-                            BiliClient::url_to_file_name(
-                                &self.config.read().await.cache,
-                                room_id,
-                                &entries[0].url,
-                            )
-                            .1,
-                        ) {
-                            println!("remove file failed: {}", e);
-                        }
-                        entries.remove(0);
-                    }
                     sequence += 1;
                 }
                 join_all(handles).await.into_iter().for_each(|e| {
@@ -481,5 +413,31 @@ impl BiliRecorder {
                 _ => {}
             });
         Ok(file_name)
+    }
+
+    pub async fn generate_m3u8(&self) -> String {
+        let mut m3u8_content = "#EXTM3U\n".to_string();
+        m3u8_content += "#EXT-X-VERSION:6\n";
+        m3u8_content += "#EXT-X-TARGETDURATION:1\n";
+        m3u8_content += "#EXT-X-PLAYLIST-TYPE:EVENT\n"; // 修改为 EVENT 模式以支持 DVR
+    
+        // initial segment for fmp4, info from self.header
+        if let Some(header) = self.header.read().await.as_ref() {
+            let file_name = header.url.split('/').last().unwrap();
+            let local_url = format!("/{}/{}", self.room_id, file_name);
+            m3u8_content += &format!("#EXT-X-MAP:URI=\"{}\"\n", local_url);
+        }
+        let entries = self.ts_entries.lock().await.clone();
+        for entry in entries.iter() {
+            m3u8_content += &format!("#EXTINF:{:.3},\n", entry.length);
+            let file_name = entry.url.split('/').last().unwrap();
+            let local_url = format!("/{}/{}", self.room_id, file_name);
+            m3u8_content += &format!("{}\n", local_url);
+        }
+        m3u8_content
+    }
+
+    pub async fn get_ts_file_path(&self, ts_file: &str) -> String {
+        format!("{}/{}/{}", self.config.read().await.cache, self.room_id, ts_file)
     }
 }

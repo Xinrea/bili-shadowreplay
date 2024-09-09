@@ -2,6 +2,7 @@ pub mod bilibili;
 use bilibili::errors::BiliClientError;
 use bilibili::BiliClient;
 use chrono::prelude::*;
+use felgens::{ws_socket_object, FelgensError, WsStreamMessageType};
 use ffmpeg_sidecar::{
     command::FfmpegCommand,
     event::{FfmpegEvent, LogLevel},
@@ -12,7 +13,6 @@ use notify_rust::Notification;
 use regex::Regex;
 use std::sync::Arc;
 use std::thread;
-use felgens::{ws_socket_object, FelgensError, WsStreamMessageType};
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::sync::{Mutex, RwLock};
 
@@ -25,6 +25,11 @@ pub struct TsEntry {
     pub length: f64,
 }
 
+/// A recorder for BiliBili live streams
+///
+/// This recorder fetches, caches and serves TS entries, currently supporting only StreamType::FMP4.
+/// As high-quality streams are accessible only to logged-in users, the use of a BiliClient, which manages cookies, is required.
+// TODO implement StreamType::TS
 #[derive(Clone)]
 pub struct BiliRecorder {
     client: Arc<RwLock<BiliClient>>,
@@ -446,8 +451,12 @@ impl BiliRecorder {
         }
         let mut file_list = String::new();
         for e in to_combine {
-            file_list +=
-                &BiliClient::url_to_file_name(&self.config.read().await.cache, self.room_id, &e.url).1;
+            file_list += &BiliClient::url_to_file_name(
+                &self.config.read().await.cache,
+                self.room_id,
+                &e.url,
+            )
+            .1;
             file_list += "|";
         }
         let output_path = self.config.read().await.output.clone();
@@ -482,7 +491,7 @@ impl BiliRecorder {
         m3u8_content += "#EXT-X-VERSION:6\n";
         m3u8_content += "#EXT-X-TARGETDURATION:1\n";
         m3u8_content += "#EXT-X-PLAYLIST-TYPE:EVENT\n"; // 修改为 EVENT 模式以支持 DVR
-    
+
         // initial segment for fmp4, info from self.header
         if let Some(header) = self.header.read().await.as_ref() {
             let file_name = header.url.split('/').last().unwrap();
@@ -500,6 +509,11 @@ impl BiliRecorder {
     }
 
     pub async fn get_ts_file_path(&self, ts_file: &str) -> String {
-        format!("{}/{}/{}", self.config.read().await.cache, self.room_id, ts_file)
+        format!(
+            "{}/{}/{}",
+            self.config.read().await.cache,
+            self.room_id,
+            ts_file
+        )
     }
 }

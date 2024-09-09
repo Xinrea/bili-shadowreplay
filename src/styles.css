@@ -4,17 +4,8 @@
 
 html,
 body {
-  background-color: #131c39;
   height: 100%;
   width: 100%;
   user-select: none;
-}
-
-.modal {
-  background-color: #0000008f;
-}
-
-.modal-box {
-  @apply rounded-md;
 }
 

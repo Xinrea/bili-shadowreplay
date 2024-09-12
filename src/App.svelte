@@ -2,11 +2,14 @@
   import Room from "./lib/Room.svelte";
   import BSidebar from "./lib/BSidebar.svelte";
   import Summary from "./lib/Summary.svelte";
+  import Setting from "./lib/Setting.svelte";
+  import Account from "./lib/Account.svelte";
+  const urlParams = new URLSearchParams(window.location.search);
   let active = "#总览";
   let room_count = 0;
 </script>
 
-<main class="bg-primary">
+<main>
   <div class="wrap">
     <div class="sidebar">
       <BSidebar bind:activeUrl={active} {room_count} />
@@ -16,14 +19,17 @@
       <div class:hide={active !== "#总览"}>
         <Summary />
       </div>
-      <div class:hide={active !== "#直播间"}>
-        <Room bind:room_count={room_count} />
+      <div class="h-full" class:hide={active !== "#直播间"}>
+        <Room bind:room_count />
       </div>
-      <div class:hide={active !== "#用户"}>
-        <div>用户</div>
+      <div class:hide={active !== "#账号"}>
+        <Account />
+      </div>
+      <div class:hide={active !== "#自动化"}>
+        <div>自动化[开发中]</div>
       </div>
       <div class:hide={active !== "#设置"}>
-        <div>设置</div>
+        <Setting />
       </div>
       <div class:hide={active !== "#关于"}>
         <div>关于</div>
@@ -48,5 +54,10 @@
 
   .hide {
     display: none;
+  }
+
+  .content {
+    height: 100vh;
+    width: 100vw;
   }
 </style>

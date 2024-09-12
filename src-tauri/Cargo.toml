@@ -13,7 +13,7 @@ edition = "2021"
 tauri-build = { version = "1.5.4", features = [] }
 
 [dependencies]
-tauri = { version = "1.7.0", features = [ "window-close", "dialog-all", "fs-all", "http-all", "protocol-asset", "shell-open", "system-tray"] }
+tauri = { version = "1.7.0", features = [ "window-set-title", "window-close", "dialog-all", "fs-all", "http-all", "protocol-asset", "shell-open", "system-tray"] }
 serde_json = "1.0"
 reqwest = { version = "0.11", features = ["blocking", "json"] }
 serde_derive = "1.0.158"
@@ -26,7 +26,7 @@ sqlite = "0.30.4"
 chrono = "0.4.24"
 toml = "0.7.3"
 custom_error = "1.9.2"
-felgens = { git = "https://github.com/Xinrea/felgens.git", branch = "master" }
+felgens = { git = "https://github.com/Xinrea/felgens.git", tag = "v0.4.0" }
 regex = "1.7.3"
 tokio = "1.27.0"
 platform-dirs = "0.3.0"
@@ -35,6 +35,9 @@ md5 = "0.7.0"
 notify-rust = "4.8.0"
 hyper = { version = "0.14", features = ["full"] }
 dashmap = "6.1.0"
+urlencoding = "2.1.3"
+log = "0.4.22"
+simplelog = "0.12.2"
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem

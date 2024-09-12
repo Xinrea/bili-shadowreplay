@@ -11,10 +11,17 @@ custom_error! {pub BiliClientError
     InvalidFormat = "Invalid stream format",
     EmptyCache = "Empty cache",
     ClientError{err: reqwest::Error} = "Client error",
+    IOError{err: std::io::Error} = "IO error",
 }
 
 impl From<reqwest::Error> for BiliClientError {
     fn from(e: reqwest::Error) -> Self {
         BiliClientError::ClientError { err: e }
+    }
+}
+
+impl From<std::io::Error> for BiliClientError {
+    fn from(e: std::io::Error) -> Self {
+        BiliClientError::IOError { err: e }
     }
 }

@@ -5,16 +5,21 @@ mod recorder;
 mod recorder_manager;
 
 use custom_error::custom_error;
-use futures::executor::block_on;
 use recorder::bilibili::errors::BiliClientError;
+use recorder::bilibili::profile::Profile;
 use recorder::bilibili::{BiliClient, QrInfo, QrStatus};
-use recorder_manager::{ RecorderManager, Summary };
+use recorder_manager::{RecorderManager, RoomInfo, Summary};
 
+use std::collections::HashMap;
+use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
-use tauri::{CustomMenuItem, SystemTray, SystemTrayEvent, SystemTrayMenu, SystemTrayMenuItem, Theme};
+use tauri::{
+    CustomMenuItem, LogicalSize, SystemTray, SystemTrayEvent, SystemTrayMenu, SystemTrayMenuItem,
+    Theme, Window,
+};
 use tauri::{Manager, WindowEvent};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 
 use platform_dirs::AppDirs;
 
@@ -80,6 +85,7 @@ pub struct Config {
     login: bool,
     uid: String,
     cookies: String,
+    profile_preset: HashMap<String, Profile>,
 }
 
 impl Config {
@@ -109,6 +115,7 @@ impl Config {
             login: false,
             uid: "".to_string(),
             cookies: "".to_string(),
+            profile_preset: HashMap::new(),
         };
         config.save();
         config
@@ -174,6 +181,16 @@ impl Config {
         self.save();
     }
 
+    pub fn get_profile(&self, room_id: u64) -> Option<Profile> {
+        self.profile_preset.get(&room_id.to_string()).cloned()
+    }
+
+    pub fn update_profile(&mut self, room_id: u64, profile: &Profile) {
+        self.profile_preset
+            .insert(room_id.to_string(), profile.clone());
+        self.save();
+    }
+
     pub fn logout(&mut self) {
         self.cookies = "".to_string();
         self.uid = "".to_string();
@@ -201,7 +218,8 @@ fn copy_dir_all(
 
 #[derive(Clone)]
 struct State {
-    client: Arc<Mutex<BiliClient>>,
+    client: Arc<BiliClient>,
+    post_window: Window,
     config: Arc<RwLock<Config>>,
     recorder_manager: Arc<RecorderManager>,
     app_handle: tauri::AppHandle,
@@ -212,12 +230,12 @@ impl State {
         self.recorder_manager.get_summary().await
     }
 
-    pub async fn get_qr(client: Arc<Mutex<BiliClient>>) -> Result<QrInfo, BiliClientError> {
-        client.lock().await.get_qr().await
+    pub async fn get_qr(&self) -> Result<QrInfo, BiliClientError> {
+        self.client.get_qr().await
     }
 
     pub async fn get_qr_status(&self, key: &str) -> Result<QrStatus, BiliClientError> {
-        self.client.lock().await.get_qr_status(key).await
+        self.client.get_qr_status(key).await
     }
 
     pub async fn add_recorder(&self, room_id: u64) -> Result<(), String> {
@@ -236,8 +254,14 @@ impl State {
         }
     }
 
-    pub async fn clip_range(&self, room_id: u64, x: f64, y: f64) -> Result<String, String> {
-        if let Ok(file) = self.recorder_manager.clip_range(room_id, x, y).await {
+    pub async fn clip_range(
+        &self,
+        room_id: u64,
+        ts: u64,
+        x: f64,
+        y: f64,
+    ) -> Result<String, String> {
+        if let Ok(file) = self.recorder_manager.clip_range(room_id, ts, x, y).await {
             Ok(file)
         } else {
             Err("Clip error".to_string())
@@ -253,7 +277,7 @@ async fn get_summary(state: tauri::State<'_, State>) -> Result<Summary, ()> {
 #[tauri::command]
 async fn get_qr(state: tauri::State<'_, State>) -> Result<QrInfo, ()> {
     println!("[invoke]get qr");
-    match State::get_qr(state.client.clone()).await {
+    match state.get_qr().await {
         Ok(qr_info) => Ok(qr_info),
         Err(_e) => Err(()),
     }
@@ -327,38 +351,186 @@ async fn clip(state: tauri::State<'_, State>, room_id: u64, len: f64) -> Result<
 }
 
 #[tauri::command]
-async fn clip_range(state: tauri::State<'_, State>, room_id: u64, x: f64, y: f64, upload: bool) -> Result<String, String> {
-    println!("[invoke]clip room_id: {}, start: {}, end: {}, upload: {}", room_id, x, y, upload);
-    state.clip_range(room_id, x, y).await
+async fn clip_range(
+    state: tauri::State<'_, State>,
+    room_id: u64,
+    ts: u64,
+    x: f64,
+    y: f64,
+) -> Result<String, String> {
+    println!(
+        "[invoke]clip room_id: {}, ts: {}, start: {}, end: {}",
+        room_id, ts, x, y
+    );
+    state.clip_range(room_id, ts, x, y).await
+}
+
+#[derive(serde::Serialize, Clone)]
+struct UploadInfo {
+    room_id: u64,
+    file: String,
+    cover: String,
+    profile: Profile,
+}
+
+#[tauri::command]
+async fn prepare_upload(
+    state: tauri::State<'_, State>,
+    room_id: u64,
+    file: String,
+    cover: String,
+) -> Result<(), String> {
+    state
+        .post_window
+        .emit(
+            "init",
+            UploadInfo {
+                room_id,
+                file,
+                cover,
+                profile: state
+                    .config
+                    .read()
+                    .await
+                    .get_profile(room_id)
+                    .unwrap_or(Profile::new("视频标题", "描述", 27)),
+            },
+        )
+        .unwrap();
+    state.post_window.show().unwrap();
+    Ok(())
+}
+
+#[tauri::command]
+async fn upload_procedure(
+    state: tauri::State<'_, State>,
+    room_id: u64,
+    file: String,
+    cover: String,
+    mut profile: Profile,
+) -> Result<String, String> {
+    // update profile
+    state
+        .config
+        .write()
+        .await
+        .update_profile(room_id, &profile.clone());
+    let path = Path::new(&file);
+    let cover_url = state.client.upload_cover(&cover);
+    if let Ok(video) = state.client.prepare_video(path).await {
+        profile.cover = cover_url.await.unwrap_or("".to_string());
+        if let Ok(ret) = state.client.submit_video(&profile, &video).await {
+            Ok(ret.bvid)
+        } else {
+            Err("Submit video failed".to_string())
+        }
+    } else {
+        Err("Preload video failed".to_string())
+    }
 }
 
 #[tauri::command]
 async fn set_cookies(state: tauri::State<'_, State>, cookies: String) -> Result<(), String> {
-    let mut client = state.client.lock().await;
     let mut config = state.config.write().await;
     config.set_cookies(&cookies);
-    client.set_cookies(&cookies);
+    state.client.set_cookies(&cookies).await;
     state.recorder_manager.update_cookies(&cookies).await;
     Ok(())
 }
 
 #[tauri::command]
 async fn logout(state: tauri::State<'_, State>) -> Result<(), String> {
-    let mut client = state.client.lock().await;
     let mut config = state.config.write().await;
     config.logout();
-    client.logout();
+    state.client.logout().await;
     Ok(())
 }
 
 #[tauri::command]
-async fn open_live(state: tauri::State<'_, State>, room_id: u64) -> Result<(), String> {
+async fn get_room_info(state: tauri::State<'_, State>, room_id: u64) -> Result<RoomInfo, String> {
+    if let Some(info) = state.recorder_manager.get_room_info(room_id).await {
+        Ok(info)
+    } else {
+        Err("Not found".to_string())
+    }
+}
+
+#[tauri::command]
+async fn get_archives(
+    state: tauri::State<'_, State>,
+    room_id: u64,
+) -> Result<Option<Vec<u64>>, String> {
+    log::debug!("Get archives for {}", room_id);
+    Ok(state.recorder_manager.get_archives(room_id).await)
+}
+
+#[tauri::command]
+async fn delete_archive(
+    state: tauri::State<'_, State>,
+    room_id: u64,
+    ts: u64,
+) -> Result<(), String> {
+    state.recorder_manager.delete_archive(room_id, ts).await;
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct AccountInfo {
+    pub login: bool,
+    pub uid: String,
+    pub name: String,
+    pub sign: String,
+    pub face: String,
+}
+
+#[tauri::command]
+async fn get_accounts(state: tauri::State<'_, State>) -> Result<AccountInfo, String> {
+    let config = state.config.read().await.clone();
+    let mut account_info = AccountInfo {
+        login: false,
+        uid: "".to_string(),
+        name: "".to_string(),
+        sign: "".to_string(),
+        face: "".to_string(),
+    };
+    // get user info
+    if config.login {
+        account_info.login = true;
+        account_info.uid = config.uid.clone();
+        match state.client.get_user_info(config.uid.as_str()).await {
+            Ok(info) => {
+                account_info.name = info.user_name;
+                account_info.sign = info.user_sign;
+                account_info.face = info.user_avatar_url;
+            }
+            Err(e) => {
+                println!("{}", e);
+            }
+        }
+    }
+    Ok(account_info)
+}
+
+#[tauri::command]
+async fn open_live(state: tauri::State<'_, State>, room_id: u64, ts: u64) -> Result<(), String> {
     let addr = state.recorder_manager.get_hls_server_addr().await.unwrap();
-    let window = tauri::WindowBuilder::new(&state.app_handle.clone(), room_id.to_string(), tauri::WindowUrl::App(format!("live_index.html?port={}&room_id={}", addr.port(), room_id).into()))
-        .title(format!("Live {}", room_id))
-        .theme(Some(Theme::Dark))
-        .build()
-        .unwrap();
+    let window = tauri::WindowBuilder::new(
+        &state.app_handle.clone(),
+        room_id.to_string(),
+        tauri::WindowUrl::App(
+            format!(
+                "live_index.html?port={}&room_id={}&ts={}",
+                addr.port(),
+                room_id,
+                ts
+            )
+            .into(),
+        ),
+    )
+    .title(format!("Live {}", room_id))
+    .theme(Some(Theme::Dark))
+    .build()
+    .unwrap();
     let window_clone = window.clone();
     window_clone.on_window_event(move |event| {
         if let tauri::WindowEvent::CloseRequested { .. } = event {
@@ -370,6 +542,14 @@ async fn open_live(state: tauri::State<'_, State>, room_id: u64) -> Result<(), S
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Setup log
+    simplelog::CombinedLogger::init(vec![simplelog::TermLogger::new(
+        simplelog::LevelFilter::Info,
+        simplelog::Config::default(),
+        simplelog::TerminalMode::Mixed,
+        simplelog::ColorChoice::Auto,
+    )])
+    .unwrap();
     // Setup ffmpeg
     ffmpeg_sidecar::download::auto_download().unwrap();
     // Setup tray icon
@@ -381,6 +561,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .add_item(quit);
 
     let tray = SystemTray::new().with_menu(tray_menu);
+    let client = Arc::new(BiliClient::new().unwrap());
     let config = Arc::new(RwLock::new(Config::load()));
     let recorder_manager = Arc::new(RecorderManager::new(config.clone()));
 
@@ -392,7 +573,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()
         .unwrap();
     let recorder_manager_clone = recorder_manager.clone();
+    let client_clone = client.clone();
+    let config_clone = config.clone();
     rt.block_on(async move {
+        client_clone
+            .set_cookies(&config_clone.read().await.cookies)
+            .await;
         recorder_manager_clone.init().await;
         recorder_manager_clone.run().await;
     });
@@ -400,9 +586,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Tauri part
     tauri::Builder::default()
         .setup(move |app| {
-            let client = Arc::new(Mutex::new(BiliClient::new().unwrap()));
+            let window = tauri::WindowBuilder::new(
+                &app.app_handle(),
+                "video-submit",
+                tauri::WindowUrl::App("upload.html".into()),
+            )
+            .title("投稿配置")
+            .visible(false)
+            .inner_size(400.0, 800.0)
+            .theme(Some(Theme::Light))
+            .build()
+            .unwrap();
+            window
+                .set_min_size(Some(LogicalSize {
+                    width: 400,
+                    height: 800,
+                }))
+                .unwrap();
             let state = State {
                 client,
+                post_window: window,
                 config: config.clone(),
                 recorder_manager: recorder_manager.clone(),
                 app_handle: app.handle().clone(),
@@ -427,12 +630,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             set_admins,
             clip,
             clip_range,
+            prepare_upload,
+            upload_procedure,
             show_in_folder,
             get_qr,
             get_qr_status,
             set_cookies,
             logout,
             open_live,
+            get_accounts,
+            get_room_info,
+            get_archives,
+            delete_archive,
         ])
         .on_system_tray_event(|app, event| match event {
             SystemTrayEvent::LeftClick {

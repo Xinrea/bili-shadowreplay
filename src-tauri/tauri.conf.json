@@ -30,6 +30,7 @@
         ]
       },
       "window": {
+        "setTitle": true,
         "close": true
       },
       "dialog": {
@@ -75,9 +76,9 @@
         "fullscreen": false,
         "resizable": true,
         "title": "BiliBili ShadowReplay",
-        "width": 800,
+        "width": 1000,
         "height": 600,
-        "theme": "Dark"
+        "theme": "Light"
       }
     ]
   }

@@ -3,7 +3,8 @@ import { appWindow } from "@tauri-apps/api/window";
 const urlParams = new URLSearchParams(window.location.search);
 const port = urlParams.get("port");
 const room_id = urlParams.get("room_id");
-console.log(port, room_id);
+const ts = parseInt(urlParams.get("ts"));
+
 let x_offset = 0;
 let y_offset = 0;
 async function init() {
@@ -24,7 +25,7 @@ async function init() {
   (window as any).player = player;
   (window as any).ui = ui;
   try {
-    await player.load(`http://127.0.0.1:${port}/${room_id}/playlist.m3u8`);
+    await player.load(`http://127.0.0.1:${port}/${room_id}/${ts}/playlist.m3u8`);
     // This runs if the asynchronous load is successful.
     console.log("The video has now been loaded!");
   } catch (error) {
@@ -34,6 +35,21 @@ async function init() {
       location.reload();
     }
   }
+  player.addEventListener('ended', async () => {
+    location.reload();
+  })
+
+  function generateCover() {
+    var w = video.videoWidth;
+    var h = video.videoHeight;
+    var canvas = document.createElement('canvas');
+    canvas.width = 1280;
+    canvas.height = 720;
+    var context = canvas.getContext('2d');
+    context.drawImage(video, 0, 0, w, h, 0, 0, 1280, 720);
+    return canvas.toDataURL();
+  }
+
   document.getElementsByClassName("shaka-overflow-menu-button")[0].remove();
   document.querySelector(
     ".shaka-back-to-overflow-button .material-icons-round"
@@ -56,25 +72,43 @@ async function init() {
         </div>
       `;
   shakaBottomControls.appendChild(selfSeekbar);
+
+  function get_total() {
+    let total = video.duration;
+    if (total == Infinity || total >= 4294967296) {
+      total = (Date.now() - player.getPresentationStartTimeAsDate()) / 1000;
+    }
+    return total;
+  }
   // add keydown event listener for '[' and ']' to control range
-  document.addEventListener("keydown", (e) => {
-    const start = player.getPresentationStartTimeAsDate();
+  document.addEventListener("keydown", async (e) => {
     switch (e.key) {
       case "[":
-        x_offset = (player.getPlayheadTimeAsDate() - start) / 1000;
+        x_offset = video.currentTime;
         if (y_offset < x_offset) {
-          y_offset = (Date.now() - start) / 1000;
+          y_offset = get_total();
         }
+        console.log(x_offset, y_offset);
         break;
       case "]":
-        y_offset = (player.getPlayheadTimeAsDate() - start) / 1000;
+        y_offset = video.currentTime;
         if (x_offset > y_offset) {
           x_offset = 0;
         }
+        console.log(x_offset, y_offset);
         break;
       case "Enter":
         if (y_offset > 0) {
-          invoke("clip_range", { roomId: parseInt(room_id), x: x_offset, y: y_offset, upload: e.altKey });
+          appWindow.setTitle(`[${room_id}]${ts} 切片中···`);
+          const video_file = await invoke("clip_range", { roomId: parseInt(room_id), ts: ts, x: x_offset, y: y_offset });
+          appWindow.setTitle(`[${room_id}]${ts} 切片完成`);
+          console.log("video file generatd:", video_file);
+          if (e.altKey) {
+            const cover = generateCover();
+            invoke("prepare_upload", { roomId: parseInt(room_id), file: video_file, cover: cover }).catch(e => {
+              console.error(e);
+            })
+          }
         }
         break;
       case " ":
@@ -98,7 +132,7 @@ async function init() {
         break;
       case "e":
         if (y_offset == 0) {
-          video.currentTime = (Date.now() - start) / 1000;
+          video.currentTime = get_total();
         } else {
           video.currentTime = y_offset;
         }
@@ -113,9 +147,9 @@ async function init() {
         break;
     }
   });
+  
   setInterval(() => {
-    const start = player.getPresentationStartTimeAsDate();
-    const total = (Date.now() - start) / 1000;
+    const total = get_total();
     const first_point = x_offset / total;
     const second_point = y_offset / total;
     // set background color for self-defined seekbar between first_point and second_point using linear-gradient
@@ -123,15 +157,11 @@ async function init() {
     const seekbarContainer = selfSeekbar.querySelector(
       ".shaka-seek-bar-container.self-defined"
     ) as HTMLElement;
-    seekbarContainer.style.background = `linear-gradient(to right, rgba(255, 255, 255, 0.4) ${
-      first_point * 100
-    }%, rgb(0, 255, 0) ${first_point * 100}%, rgb(0, 255, 0) ${
-      second_point * 100
-    }%, rgba(255, 255, 255, 0.4) ${
-      second_point * 100
-    }%, rgba(255, 255, 255, 0.4) ${
-      first_point * 100
-    }%, rgba(255, 255, 255, 0.2) ${first_point * 100}%)`;
+    seekbarContainer.style.background = `linear-gradient(to right, rgba(255, 255, 255, 0.4) ${first_point * 100
+      }%, rgb(0, 255, 0) ${first_point * 100}%, rgb(0, 255, 0) ${second_point * 100
+      }%, rgba(255, 255, 255, 0.4) ${second_point * 100
+      }%, rgba(255, 255, 255, 0.4) ${first_point * 100
+      }%, rgba(255, 255, 255, 0.2) ${first_point * 100}%)`;
   }, 100);
 }
 // receive tauri emit

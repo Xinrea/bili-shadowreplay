@@ -1,17 +1,27 @@
 pub mod errors;
+pub mod profile;
+pub mod response;
+use super::StreamType;
 use errors::BiliClientError;
 use pct_str::PctString;
 use pct_str::URIReserved;
+use profile::Profile;
 use regex::Regex;
 use reqwest::Client;
+use response::GeneralResponse;
+use response::PostVideoMetaResponse;
+use response::PreuploadResponse;
+use response::VideoSubmitData;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::json;
 use serde_json::Value;
-use std::sync::Mutex;
+use std::path::Path;
 use std::time::SystemTime;
-
-use super::StreamType;
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
+use tokio::sync::RwLock;
+use tokio::time::Instant;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -145,10 +155,12 @@ pub struct P2pData {
     pub m_servers: Value,
 }
 
+/// BiliClient is thread safe
 pub struct BiliClient {
     client: Client,
-    headers: reqwest::header::HeaderMap,
-    extra: Mutex<String>,
+    csrf: RwLock<Option<String>>,
+    headers: RwLock<reqwest::header::HeaderMap>,
+    extra: RwLock<String>,
 }
 
 #[derive(Debug)]
@@ -157,13 +169,13 @@ pub struct RoomInfo {
     pub room_title: String,
     pub room_cover_url: String,
     pub room_keyframe_url: String,
-    pub user_id: u64,
+    pub user_id: String,
     pub live_status: u8,
 }
 
 #[derive(Debug)]
 pub struct UserInfo {
-    pub user_id: u64,
+    pub user_id: String,
     pub user_name: String,
     pub user_sign: String,
     pub user_avatar_url: String,
@@ -214,30 +226,46 @@ impl BiliClient {
         {
             Ok(BiliClient {
                 client,
-                headers,
-                extra: Mutex::new("".into()),
+                csrf: RwLock::new(None),
+                headers: RwLock::new(headers),
+                extra: RwLock::new("".into()),
             })
         } else {
             Err(BiliClientError::InitClientError)
         }
     }
 
-    pub fn set_cookies(&mut self, cookies: &str) {
-        self.headers.insert(
-            "cookie",
-            cookies.parse().expect("parse cookie failed"),
-        );
+    pub async fn set_cookies(&self, cookies: &str) {
+        // parse csrf from cookies
+        let mut csrf = self.csrf.write().await;
+        *csrf =
+            cookies
+                .split(';')
+                .map(|cookie| cookie.trim())
+                .find_map(|cookie| -> Option<String> {
+                    match cookie.starts_with("bili_jct=") {
+                        true => {
+                            let var_name = &"bili_jct=";
+                            Some(cookie[var_name.len()..].to_string())
+                        }
+                        false => None,
+                    }
+                });
+        self.headers
+            .write()
+            .await
+            .insert("cookie", cookies.parse().expect("parse cookie failed"));
     }
 
-    pub fn logout(&mut self) {
-        self.headers.remove("cookie");
+    pub async fn logout(&self) {
+        self.headers.write().await.remove("cookie");
     }
 
     pub async fn get_qr(&self) -> Result<QrInfo, BiliClientError> {
         let res: serde_json::Value = self
             .client
             .get("https://passport.bilibili.com/x/passport-login/web/qrcode/generate")
-            .headers(self.headers.clone())
+            .headers(self.headers.read().await.clone())
             .send()
             .await?
             .json()
@@ -261,9 +289,11 @@ impl BiliClient {
                 "https://passport.bilibili.com/x/passport-login/web/qrcode/poll?qrcode_key={}",
                 qrcode_key
             ))
-            .headers(self.headers.clone())
-            .send().await?
-            .json().await?;
+            .headers(self.headers.read().await.clone())
+            .send()
+            .await?
+            .json()
+            .await?;
         let code: u8 = res["data"]["code"].as_u64().unwrap_or(400) as u8;
         let mut cookies: String = "".to_string();
         if code == 0 {
@@ -277,7 +307,7 @@ impl BiliClient {
         Ok(QrStatus { code, cookies })
     }
 
-    pub async fn get_user_info(&self, user_id: u64) -> Result<UserInfo, BiliClientError> {
+    pub async fn get_user_info(&self, user_id: &str) -> Result<UserInfo, BiliClientError> {
         let params: Value = json!({
             "mid": user_id.to_string(),
             "platform": "web",
@@ -291,23 +321,16 @@ impl BiliClient {
                 "https://api.bilibili.com/x/space/wbi/acc/info?{}",
                 params
             ))
-            .headers(self.headers.clone())
-            .send().await?
-            .json().await?;
+            .headers(self.headers.read().await.clone())
+            .send()
+            .await?
+            .json()
+            .await?;
         Ok(UserInfo {
-            user_id,
-            user_name: res["data"]["name"]
-                .as_str()
-                .ok_or(BiliClientError::InvalidValue)?
-                .to_string(),
-            user_sign: res["data"]["sign"]
-                .as_str()
-                .ok_or(BiliClientError::InvalidValue)?
-                .to_string(),
-            user_avatar_url: res["data"]["face"]
-                .as_str()
-                .ok_or(BiliClientError::InvalidValue)?
-                .to_string(),
+            user_id: user_id.to_string(),
+            user_name: res["data"]["name"].as_str().unwrap_or("").to_string(),
+            user_sign: res["data"]["sign"].as_str().unwrap_or("").to_string(),
+            user_avatar_url: res["data"]["face"].as_str().unwrap_or("").to_string(),
         })
     }
 
@@ -318,9 +341,11 @@ impl BiliClient {
                 "https://api.live.bilibili.com/room/v1/Room/get_info?room_id={}",
                 room_id
             ))
-            .headers(self.headers.clone())
-            .send().await?
-            .json().await?;
+            .headers(self.headers.read().await.clone())
+            .send()
+            .await?
+            .json()
+            .await?;
         let code = res["code"].as_u64().ok_or(BiliClientError::InvalidValue)?;
         if code != 0 {
             return Err(BiliClientError::InvalidCode);
@@ -343,7 +368,8 @@ impl BiliClient {
             .to_string();
         let user_id = res["data"]["uid"]
             .as_u64()
-            .ok_or(BiliClientError::InvalidValue)?;
+            .ok_or(BiliClientError::InvalidValue)?
+            .to_string();
         let live_status = res["data"]["live_status"]
             .as_u64()
             .ok_or(BiliClientError::InvalidValue)? as u8;
@@ -357,14 +383,17 @@ impl BiliClient {
         })
     }
 
-    pub async fn get_play_url(&self, room_id: u64) -> Result<(String, StreamType), BiliClientError> {
+    pub async fn get_play_url(
+        &self,
+        room_id: u64,
+    ) -> Result<(String, StreamType), BiliClientError> {
         let res: PlayUrlResponse = self
             .client
             .get(format!(
                 "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?room_id={}&protocol=1&format=0,1,2&codec=0&qn=10000&platform=h5",
                 room_id
             ))
-            .headers(self.headers.clone())
+            .headers(self.headers.read().await.clone())
             .send().await?
             .json().await?;
         if res.code == 0 {
@@ -372,10 +401,12 @@ impl BiliClient {
                 // Get fmp4 format
                 if let Some(format) = stream.format.get(1) {
                     self.get_url_from_format(format)
+                        .await
                         .ok_or(BiliClientError::InvalidFormat)
                         .map(|url| (url, StreamType::FMP4))
                 } else if let Some(format) = stream.format.first() {
                     self.get_url_from_format(format)
+                        .await
                         .ok_or(BiliClientError::InvalidFormat)
                         .map(|url| (url, StreamType::TS))
                 } else {
@@ -389,14 +420,14 @@ impl BiliClient {
         }
     }
 
-    fn get_url_from_format(&self, format: &Format) -> Option<String> {
+    async fn get_url_from_format(&self, format: &Format) -> Option<String> {
         if let Some(codec) = format.codec.first() {
             if let Some(url_info) = codec.url_info.first() {
                 let base_url = codec.base_url.strip_suffix('?').unwrap();
                 let extra = "?".to_owned() + &url_info.extra.clone();
                 let host = url_info.host.clone();
                 let url = format!("{}{}", host, base_url);
-                *self.extra.lock().unwrap() = extra;
+                *self.extra.write().await = extra;
                 Some(url)
             } else {
                 None
@@ -409,34 +440,26 @@ impl BiliClient {
     pub async fn get_index_content(&self, url: &String) -> Result<String, BiliClientError> {
         Ok(self
             .client
-            .get(url.to_owned() + self.extra.lock().unwrap().as_str())
-            .headers(self.headers.clone())
-            .send().await?
-            .text().await?)
+            .get(url.to_owned() + self.extra.read().await.as_str())
+            .headers(self.headers.read().await.clone())
+            .send()
+            .await?
+            .text()
+            .await?)
     }
 
-    pub async fn download_ts(
-        &self,
-        cache_path: &str,
-        room_id: u64,
-        url: &str,
-    ) -> Result<(), BiliClientError> {
-        let (tmp_path, file_name) = Self::url_to_file_name(cache_path, room_id, url);
-        std::fs::create_dir_all(tmp_path).expect("create tmp_path failed");
-        let url = url.to_owned() + self.extra.lock().unwrap().as_str();
-        let res = self.client.get(url).headers(self.headers.clone()).send().await?;
-        let mut file = std::fs::File::create(file_name).unwrap();
+    pub async fn download_ts(&self, url: &str, file_path: &str) -> Result<(), BiliClientError> {
+        let url = url.to_owned() + self.extra.read().await.as_str();
+        let res = self
+            .client
+            .get(url)
+            .headers(self.headers.read().await.clone())
+            .send()
+            .await?;
+        let mut file = std::fs::File::create(file_path).unwrap();
         let mut content = std::io::Cursor::new(res.bytes().await?);
         std::io::copy(&mut content, &mut file).unwrap();
         Ok(())
-    }
-
-    pub fn url_to_file_name(cache_path: &str, room_id: u64, url: &str) -> (String, String) {
-        let tmp_path = format!("{}/{}/", cache_path, room_id);
-        let url = reqwest::Url::parse(url).unwrap();
-        let file_name = url.path_segments().and_then(|x| x.last()).unwrap();
-        let full_file = tmp_path.clone() + file_name.split('?').collect::<Vec<&str>>()[0];
-        (tmp_path, full_file)
     }
 
     // Method from js code
@@ -449,9 +472,11 @@ impl BiliClient {
         let nav_info: Value = self
             .client
             .get("https://api.bilibili.com/x/web-interface/nav")
-            .headers(self.headers.clone())
-            .send().await?
-            .json().await?;
+            .headers(self.headers.read().await.clone())
+            .send()
+            .await?
+            .json()
+            .await?;
         let re = Regex::new(r"wbi/(.*).png").unwrap();
         let img = re
             .captures(nav_info["data"]["wbi_img"]["img_url"].as_str().unwrap())
@@ -515,5 +540,240 @@ impl BiliClient {
         let w_rid = md5::compute(params.to_string() + encoded.as_str());
         let params = params + format!("&w_rid={:x}", w_rid).as_str();
         Ok(params)
+    }
+
+    async fn preupload_video(
+        &self,
+        video_file: &Path,
+    ) -> Result<PreuploadResponse, BiliClientError> {
+        let url = format!(
+            "https://member.bilibili.com/preupload?name={}&r=upos&profile=ugcfx/bup",
+            video_file.file_name().unwrap().to_str().unwrap()
+        );
+        let response = self
+            .client
+            .get(&url)
+            .headers(self.headers.read().await.clone())
+            .send()
+            .await?
+            .json::<PreuploadResponse>()
+            .await?;
+        Ok(response)
+    }
+
+    async fn post_video_meta(
+        &self,
+        preupload_response: &PreuploadResponse,
+        video_file: &Path,
+    ) -> Result<PostVideoMetaResponse, BiliClientError> {
+        let url = format!(
+            "https:{}{}?uploads=&output=json&profile=ugcfx/bup&filesize={}&partsize={}&biz_id={}",
+            preupload_response.endpoint,
+            preupload_response.upos_uri.replace("upos:/", ""),
+            video_file.metadata().unwrap().len(),
+            preupload_response.chunk_size,
+            preupload_response.biz_id
+        );
+        let response = self
+            .client
+            .post(&url)
+            .header("X-Upos-Auth", &preupload_response.auth)
+            .send()
+            .await?
+            .json::<PostVideoMetaResponse>()
+            .await?;
+        Ok(response)
+    }
+
+    async fn upload_video(
+        &self,
+        preupload_response: &PreuploadResponse,
+        post_video_meta_response: &PostVideoMetaResponse,
+        video_file: &Path,
+    ) -> Result<usize, BiliClientError> {
+        let mut file = File::open(video_file).await?;
+        let mut buffer = vec![0; preupload_response.chunk_size];
+        let file_size = video_file.metadata()?.len();
+        let chunk_size = preupload_response.chunk_size as u64; // 确保使用 u64 类型
+        let total_chunks = (file_size as f64 / chunk_size as f64).ceil() as usize; // 计算总分块数
+
+        let start = Instant::now();
+        let mut chunk = 0;
+        let mut read_total = 0;
+        while let Ok(size) = file.read(&mut buffer[read_total..]).await {
+            read_total += size;
+            log::debug!("size: {}, total: {}", size, read_total);
+            if size > 0 && (read_total as u64) < chunk_size {
+                continue;
+            }
+            if size == 0 && read_total == 0 {
+                break;
+            }
+            let url = format!(
+                "https:{}{}?partNumber={}&uploadId={}&chunk={}&chunks={}&size={}&start={}&end={}&total={}",
+                preupload_response.endpoint,
+                preupload_response.upos_uri.replace("upos:/", ""),
+                chunk + 1,
+                post_video_meta_response.upload_id,
+                chunk,
+                total_chunks,
+                read_total,
+                chunk * preupload_response.chunk_size,
+                chunk * preupload_response.chunk_size + read_total,
+                video_file.metadata().unwrap().len()
+            );
+            self.client
+                .put(&url)
+                .header("X-Upos-Auth", &preupload_response.auth)
+                .header("Content-Type", "application/octet-stream")
+                .header("Content-Length", read_total.to_string())
+                .body(buffer[..read_total].to_vec())
+                .send()
+                .await?
+                .text()
+                .await?;
+            chunk += 1;
+            read_total = 0;
+            log::debug!(
+                "[bili]speed: {:.1} KiB/s",
+                (chunk * preupload_response.chunk_size) as f64
+                    / start.elapsed().as_secs_f64()
+                    / 1024.0
+            );
+        }
+        Ok(total_chunks)
+    }
+
+    async fn end_upload(
+        &self,
+        preupload_response: &PreuploadResponse,
+        post_video_meta_response: &PostVideoMetaResponse,
+        chunks: usize,
+    ) -> Result<(), BiliClientError> {
+        let url = format!(
+            "https:{}{}?output=json&name={}&profile=ugcfx/bup&uploadId={}&biz_id={}",
+            preupload_response.endpoint,
+            preupload_response.upos_uri.replace("upos:/", ""),
+            preupload_response.upos_uri,
+            post_video_meta_response.upload_id,
+            preupload_response.biz_id
+        );
+        let parts: Vec<Value> = (1..=chunks)
+            .map(|i| json!({ "partNumber": i, "eTag": "etag" }))
+            .collect();
+        let body = json!({ "parts": parts });
+        self.client
+            .post(&url)
+            .header("X-Upos-Auth", &preupload_response.auth)
+            .header("Content-Type", "application/json; charset=UTF-8")
+            .body(body.to_string())
+            .send()
+            .await?
+            .text()
+            .await?;
+        Ok(())
+    }
+
+    pub async fn prepare_video(
+        &self,
+        video_file: &Path,
+    ) -> Result<profile::Video, BiliClientError> {
+        let preupload = self.preupload_video(video_file).await?;
+        let metaposted = self.post_video_meta(&preupload, video_file).await?;
+        let uploaded = self
+            .upload_video(&preupload, &metaposted, video_file)
+            .await?;
+        self.end_upload(&preupload, &metaposted, uploaded).await?;
+        let filename = Path::new(&metaposted.key)
+            .file_stem()
+            .unwrap()
+            .to_str()
+            .unwrap();
+        Ok(profile::Video {
+            title: "".to_string(),
+            filename: filename.to_string(),
+            desc: "".to_string(),
+            cid: preupload.biz_id,
+        })
+    }
+
+    pub async fn submit_video(
+        &self,
+        profile_template: &Profile,
+        video: &profile::Video,
+    ) -> Result<VideoSubmitData, BiliClientError> {
+        let url = format!(
+            "https://member.bilibili.com/x/vu/web/add/v3?ts={}&csrf={}",
+            chrono::Local::now().timestamp(),
+            self.csrf.read().await.clone().unwrap_or("".to_string()),
+        );
+        let mut preprofile = profile_template.clone();
+        preprofile.videos.push(video.clone());
+        match self
+            .client
+            .post(&url)
+            .headers(self.headers.read().await.clone())
+            .header("Content-Type", "application/json; charset=UTF-8")
+            .body(serde_json::ser::to_string(&preprofile).unwrap_or("".to_string()))
+            .send()
+            .await
+        {
+            Ok(raw_resp) => {
+                let json = raw_resp.json().await?;
+                if let Ok(resp) = serde_json::from_value::<GeneralResponse>(json) {
+                    match resp.data {
+                        response::Data::VideoSubmit(data) => Ok(data),
+                        _ => Err(BiliClientError::InvalidResponse),
+                    }
+                } else {
+                    println!("Parse response failed");
+                    Err(BiliClientError::InvalidResponse)
+                }
+            }
+            Err(e) => {
+                println!("Send failed {}", e);
+                Err(BiliClientError::InvalidResponse)
+            }
+        }
+    }
+
+    pub async fn upload_cover(&self, cover: &str) -> Result<String, BiliClientError> {
+        let url = format!(
+            "https://member.bilibili.com/x/vu/web/cover/up?ts={}",
+            chrono::Local::now().timestamp(),
+        );
+        let params = [
+            (
+                "csrf",
+                self.csrf.read().await.clone().unwrap_or("".to_string()),
+            ),
+            ("cover", cover.to_string()),
+        ];
+        match self
+            .client
+            .post(&url)
+            .headers(self.headers.read().await.clone())
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .form(&params)
+            .send()
+            .await
+        {
+            Ok(raw_resp) => {
+                let json = raw_resp.json().await?;
+                if let Ok(resp) = serde_json::from_value::<GeneralResponse>(json) {
+                    match resp.data {
+                        response::Data::Cover(data) => Ok(data.url),
+                        _ => Err(BiliClientError::InvalidResponse),
+                    }
+                } else {
+                    println!("Parse response failed");
+                    Err(BiliClientError::InvalidResponse)
+                }
+            }
+            Err(e) => {
+                println!("Send failed {}", e);
+                Err(BiliClientError::InvalidResponse)
+            }
+        }
     }
 }

@@ -64,81 +64,6 @@
     room_id: "",
   };
 
-  async function add_room() {
-    let room_id = parseInt(add_model.room_id);
-    if (Number.isNaN(room_id) || room_id < 0) {
-      await message("请输入正确的房间号", "无效的房间号");
-      return;
-    }
-    invoke("add_recorder", { roomId: room_id }).catch(async (e) => {
-      await message("请输入正确的房间号：" + e, "无效的房间号");
-    });
-  }
-
-  async function remove_room(room_id: number) {
-    await invoke("remove_recorder", { roomId: room_id });
-  }
-
-  let clip_model = {
-    room: 0,
-    title: "",
-    max_len: 100,
-    value: 30,
-    loading: false,
-    error: false,
-    error_content: "",
-    video: false,
-    video_src: "",
-  };
-
-  async function clip(room: number, len: number) {
-    return invoke("clip", { roomId: room, len: len });
-  }
-
-  async function show_in_folder(path: string) {
-    await invoke("show_in_folder", { path });
-  }
-
-  let setting_model = {
-    open: false,
-    changed: false,
-    cach_len: 300,
-    cache_path: "",
-    clip_path: "",
-    admins: "",
-    login: false,
-    uid: "",
-  };
-
-  interface Config {
-    admin_uid: number[];
-    cache: string;
-    max_len: number;
-    output: string;
-    login: boolean;
-    uid: string;
-  }
-
-  async function get_config() {
-    let config: Config = await invoke("get_config");
-    setting_model.changed = false;
-    setting_model.cach_len = config.max_len;
-    setting_model.cache_path = config.cache;
-    setting_model.clip_path = config.output;
-    setting_model.admins = config.admin_uid.join(",");
-    setting_model.login = config.login;
-    setting_model.uid = config.uid;
-  }
-
-  async function apply_config() {
-    await invoke("set_cache_path", { cachePath: setting_model.cache_path });
-    await invoke("set_output_path", { outputPath: setting_model.clip_path });
-    await invoke("set_max_len", { len: setting_model.cach_len });
-    await invoke("set_admins", {
-      admins: setting_model.admins.split(",").map((x) => parseInt(x)),
-    });
-  }
-
   let oauth_key = "";
   let check_interval = null;
   async function handle_qr() {
@@ -214,7 +139,9 @@
                   <div>
                     <span class="bold">{room.room_title}</span>
                     <br />
-                    <span class="badge badge-neutral">房间号：{room.room_id}</span>
+                    <span class="badge badge-neutral"
+                      >房间号：{room.room_id}</span
+                    >
                   </div>
                 </div>
               </td>
@@ -227,7 +154,9 @@
                 </div></td
               >
               <td class="text-center">
-                <span class="badge badge-neutral" class:badge-success={room.live_status}
+                <span
+                  class="badge badge-neutral"
+                  class:badge-success={room.live_status}
                   >{room.live_status ? "直播中" : "未开播"}</span
                 >
               </td>
@@ -268,7 +197,9 @@
                       <a
                         href={"#"}
                         on:click={async (_) => {
-                          await invoke("open_live", { roomId: room.room_id });
+                          await invoke("open_live", {
+                            roomId: room.room_id,
+                          });
                         }}>查看直播流</a
                       >
                     </li>
@@ -435,7 +366,9 @@
   <!-- svelte-ignore a11y-click-events-have-key-events -->
   <dialog id="save_modal" class="modal cursor-pointer">
     <div class="modal-box relative">
-      <h3 class="text-lg font-bold mb-4">生成切片 - {clip_model.title}</h3>
+      <h3 class="text-lg font-bold mb-4">
+        生成切片 - {clip_model.title}
+      </h3>
       {#if clip_model.video}
         <div class="mb-6">
           <!-- svelte-ignore a11y-media-has-caption -->
@@ -560,10 +493,13 @@
                 title: "选择缓存目录",
                 directory: true,
               });
-              setting_model.cache_path = Array.isArray(output_path) ? output_path[0] : output_path;
+              setting_model.cache_path = Array.isArray(output_path)
+                ? output_path[0]
+                : output_path;
               setting_model.changed = true;
-            }}>选择目录</button>
-            <input
+            }}>选择目录</button
+          >
+          <input
             type="text"
             class="input input-sm input-bordered rounded-s-none"
             bind:value={setting_model.cache_path}
@@ -581,10 +517,13 @@
                 title: "选择切片保存目录",
                 directory: true,
               });
-              setting_model.clip_path = Array.isArray(output_path) ? output_path[0] : output_path;
+              setting_model.clip_path = Array.isArray(output_path)
+                ? output_path[0]
+                : output_path;
               setting_model.changed = true;
-            }}>选择目录</button>
-            <input
+            }}>选择目录</button
+          >
+          <input
             type="text"
             class="input input-sm input-bordered rounded-s-none"
             bind:value={setting_model.clip_path}
@@ -592,8 +531,7 @@
               setting_model.changed = true;
             }}
           />
-        </label
-        >
+        </label>
         <label class="flex items-center my-2" for=""
           >管理员UID：<input
             type="text"
@@ -605,7 +543,8 @@
           /></label
         >
         <div class="text-sm text-slate-500">
-          相关说明：管理员 UID 可添加多个，使用 “,” 分隔。设定为管理员的用户可以在直播间发送
+          相关说明：管理员 UID 可添加多个，使用 “,”
+          分隔。设定为管理员的用户可以在直播间发送
           <div class="badge badge-outline">/clip + 时长</div>
           弹幕来触发切片， 例如：
           <div class="badge badge-outline">/clip 30</div>

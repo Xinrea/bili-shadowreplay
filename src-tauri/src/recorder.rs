@@ -1,4 +1,5 @@
 pub mod bilibili;
+use async_std::{fs, stream::StreamExt};
 use bilibili::errors::BiliClientError;
 use bilibili::BiliClient;
 use chrono::prelude::*;
@@ -38,14 +39,15 @@ pub struct BiliRecorder {
     pub room_title: String,
     pub room_cover: String,
     pub room_keyframe: String,
-    pub user_id: u64,
+    pub user_id: String,
     pub user_name: String,
     pub user_sign: String,
     pub user_avatar: String,
     pub m3u8_url: Arc<RwLock<String>>,
     pub live_status: Arc<RwLock<bool>>,
-    pub latest_sequence: Arc<Mutex<u64>>,
+    pub last_sequence: Arc<RwLock<u64>>,
     pub ts_length: Arc<RwLock<f64>>,
+    pub timestamp: Arc<RwLock<u64>>,
     ts_entries: Arc<Mutex<Vec<TsEntry>>>,
     quit: Arc<Mutex<bool>>,
     header: Arc<RwLock<Option<TsEntry>>>,
@@ -60,10 +62,10 @@ pub enum StreamType {
 
 impl BiliRecorder {
     pub async fn new(room_id: u64, config: Arc<RwLock<Config>>) -> Result<Self, BiliClientError> {
-        let mut client = BiliClient::new()?;
-        client.set_cookies(&config.read().await.cookies);
+        let client = BiliClient::new()?;
+        client.set_cookies(&config.read().await.cookies).await;
         let room_info = client.get_room_info(room_id).await?;
-        let user_info = client.get_user_info(room_info.user_id).await?;
+        let user_info = client.get_user_info(room_info.user_id.as_str()).await?;
         let mut m3u8_url = String::from("");
         let mut live_status = false;
         let mut stream_type = StreamType::FMP4;
@@ -88,48 +90,106 @@ impl BiliRecorder {
             user_avatar: user_info.user_avatar_url,
             m3u8_url: Arc::new(RwLock::new(m3u8_url)),
             live_status: Arc::new(RwLock::new(live_status)),
-            latest_sequence: Arc::new(Mutex::new(0)),
+            last_sequence: Arc::new(RwLock::new(0)),
             ts_length: Arc::new(RwLock::new(0.0)),
             ts_entries: Arc::new(Mutex::new(Vec::new())),
+            timestamp: Arc::new(RwLock::new(0)),
             quit: Arc::new(Mutex::new(false)),
             header: Arc::new(RwLock::new(None)),
             stream_type: Arc::new(RwLock::new(stream_type)),
         };
-        println!("Recorder for room {} created.", room_id);
+        log::info!("Recorder for room {} created.", room_id);
         Ok(recorder)
     }
 
     pub async fn update_cookies(&self, cookies: &str) {
-        self.client.write().await.set_cookies(cookies);
+        self.client.write().await.set_cookies(cookies).await;
     }
 
     pub async fn reset(&self) {
-        *self.latest_sequence.lock().await = 0;
         *self.ts_length.write().await = 0.0;
+        *self.last_sequence.write().await = 0;
         self.ts_entries.lock().await.clear();
         *self.header.write().await = None;
+        *self.timestamp.write().await = 0;
     }
 
     async fn check_status(&self) -> bool {
         if let Ok(room_info) = self.client.read().await.get_room_info(self.room_id).await {
             let live_status = room_info.live_status == 1;
-            // Live status changed from offline to online, reset recorder and then update m3u8 url and stream type.
-            self.reset().await;
-            if let Ok((index_url, stream_type)) = self
-                .client
-                .read()
-                .await
-                .get_play_url(room_info.room_id)
-                .await
-            {
-                self.m3u8_url.write().await.replace_range(.., &index_url);
-                *self.stream_type.write().await = stream_type;
+            // if stream is confirmed to be closed, live stream cache is cleaned.
+            // all request will go through fs
+            if live_status {
+                if let Ok((index_url, stream_type)) = self
+                    .client
+                    .read()
+                    .await
+                    .get_play_url(room_info.room_id)
+                    .await
+                {
+                    self.m3u8_url.write().await.replace_range(.., &index_url);
+                    *self.stream_type.write().await = stream_type;
+                }
+            } else {
+                self.reset().await;
             }
             *self.live_status.write().await = live_status;
             live_status
         } else {
-            *self.live_status.write().await = false;
-            false
+            *self.live_status.write().await = true;
+            // may encouter internet issues, not sure whether the stream is closed
+            true
+        }
+    }
+
+    pub async fn get_archives(&self) -> Vec<u64> {
+        let work_dir = format!("{}/{}", self.config.read().await.cache, self.room_id);
+        log::debug!(
+            "[recorder:{}]Finding archives under {}",
+            self.room_id,
+            work_dir
+        );
+        let mut ret = Vec::new();
+        if let Ok(mut entries) = fs::read_dir(work_dir).await {
+            while let Some(e) = entries.next().await {
+                if e.is_err() {
+                    continue;
+                }
+                let e = e.unwrap();
+                // get file type
+                let ftype = e.file_type().await;
+                if ftype.is_err() {
+                    continue;
+                }
+                let ftype = ftype.unwrap();
+                // check dir
+                if ftype.is_dir() {
+                    if let Ok(name) = e.file_name().into_string() {
+                        // folder name should be timestamp
+                        log::debug!(
+                            "[recorder:{}]find a folder with name: {}",
+                            self.room_id,
+                            name
+                        );
+                        if let Ok(ts) = name.parse::<u64>() {
+                            // current stream is not archived yet
+                            if *self.timestamp.read().await != ts {
+                                ret.push(ts);
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            log::error!("[recorder:{}]fs::read_dir failed", self.room_id);
+        }
+        ret
+    }
+
+    pub async fn delete_archive(&self, ts: u64) {
+        let target_dir = format!("{}/{}/{}", self.config.read().await.cache, self.room_id, ts);
+        if fs::remove_dir_all(target_dir).await.is_err() {
+            log::error!("remove archive failed [{}]{}", self.room_id, ts);
         }
     }
 
@@ -143,16 +203,18 @@ impl BiliRecorder {
                         // Live status is ok, start recording.
                         while !*self_clone.quit.lock().await {
                             if let Err(e) = self_clone.update_entries().await {
-                                println!("update entries error: {}", e);
+                                log::error!("update entries error: {}", e);
                                 break;
                             }
                             thread::sleep(std::time::Duration::from_secs(1));
                         }
+                        // go check status again
+                        continue;
                     }
                     // Every 10s check live status.
                     thread::sleep(std::time::Duration::from_secs(10));
                 }
-                println!("recording thread {} quit.", self_clone.room_id);
+                log::info!("recording thread {} quit.", self_clone.room_id);
             });
         });
         // Thread for danmaku
@@ -168,10 +230,10 @@ impl BiliRecorder {
     async fn danmu(&self) {
         let (tx, rx) = mpsc::unbounded_channel();
         let cookies = self.config.read().await.cookies.clone();
-        let uid = self.config.read().await.uid.parse().unwrap();
+        let uid: u64 = self.config.read().await.uid.parse().unwrap();
         let ws = ws_socket_object(tx, uid, self.room_id, cookies.as_str());
         if let Err(e) = tokio::select! {v = ws => v, v = self.recv(self.room_id,rx) => v} {
-            println!("{}", e);
+            log::error!("{}", e);
         }
     }
 
@@ -197,16 +259,16 @@ impl BiliRecorder {
                                 .icon("bili-shadowreplay")
                                 .show()
                             {
-                                println!("notification error: {}", e);
+                                log::error!("notification error: {}", e);
                             }
-                            println!("clip error: {}", e);
+                            log::error!("clip error: {}", e);
                         } else if let Err(e) = Notification::new()
                             .summary("BiliBili ShadowReplay")
                             .body(format!("生成切片成功: {} - {}s", room, duration).as_str())
                             .icon("bili-shadowreplay")
                             .show()
                         {
-                            println!("notification error: {}", e);
+                            log::error!("notification error: {}", e);
                         }
                     }
                 }
@@ -280,8 +342,23 @@ impl BiliRecorder {
         }
     }
 
+    async fn extract_timestamp(&self, header_url: &str) -> u64 {
+        let re = Regex::new(r"h(\d+).m4s").unwrap();
+        if let Some(cap) = re.captures(header_url) {
+            let ts = cap.get(1).unwrap().as_str().parse().unwrap();
+            *self.timestamp.write().await = ts;
+            ts
+        } else {
+            log::error!("extract timestamp failed: {}", header_url);
+            0
+        }
+    }
+
     async fn update_entries(&self) -> Result<(), BiliClientError> {
         let parsed = self.get_playlist().await;
+        let cache_path = self.config.read().await.cache.clone();
+        let mut timestamp = *self.timestamp.read().await;
+        let mut work_dir = format!("{}/{}/{}/", cache_path, self.room_id, timestamp);
         // Check header if None
         if self.header.read().await.is_none() && *self.stream_type.read().await == StreamType::FMP4
         {
@@ -290,35 +367,38 @@ impl BiliRecorder {
             if header_url.is_empty() {
                 return Err(BiliClientError::InvalidPlaylist);
             }
+            timestamp = self.extract_timestamp(&header_url).await;
+            // now work dir is confirmed
+            work_dir = format!("{}/{}/{}/", cache_path, self.room_id, timestamp);
+            // make sure work_dir is created
+            fs::create_dir_all(&work_dir).await.unwrap();
             let full_header_url = self.ts_url(&header_url).await?;
             let header = TsEntry {
                 url: full_header_url.clone(),
                 sequence: 0,
                 length: 0.0,
             };
+            let file_name = header_url.split('/').last().unwrap();
             // Download header
             if let Err(e) = self
                 .client
                 .read()
                 .await
-                .download_ts(
-                    &self.config.read().await.cache,
-                    self.room_id,
-                    &full_header_url,
-                )
+                .download_ts(&full_header_url, &format!("{}/{}", work_dir, file_name))
                 .await
             {
-                println!("Error downloading header: {:?}", e);
+                log::error!("Error downloading header: {:?}", e);
+            } else {
+                *self.header.write().await = Some(header);
             }
-            *self.header.write().await = Some(header);
         }
         match parsed {
-            Ok(Playlist::MasterPlaylist(pl)) => println!("Master playlist:\n{:?}", pl),
+            Ok(Playlist::MasterPlaylist(pl)) => log::debug!("Master playlist:\n{:?}", pl),
             Ok(Playlist::MediaPlaylist(pl)) => {
                 let mut sequence = pl.media_sequence;
                 let mut handles = Vec::new();
                 for ts in pl.segments {
-                    if sequence <= *self.latest_sequence.lock().await {
+                    if sequence <= *self.last_sequence.read().await {
                         sequence += 1;
                         continue;
                     }
@@ -333,28 +413,29 @@ impl BiliRecorder {
                     if ts_url.is_empty() {
                         continue;
                     }
-                    let room_id = self.room_id;
-                    let config = self.config.clone();
+                    let work_dir = work_dir.clone();
                     handles.push(tokio::task::spawn(async move {
+                        let ts_url_clone = ts_url.clone();
+                        let file_name = ts_url_clone.split('/').last().unwrap();
                         if let Err(e) = client
                             .read()
                             .await
-                            .download_ts(&config.read().await.cache, room_id, &ts_url)
+                            .download_ts(&ts_url, &format!("{}/{}", work_dir, file_name))
                             .await
                         {
-                            println!("download ts failed: {}", e);
+                            log::error!("download ts failed: {}", e);
                         }
                     }));
                     let mut entries = self.ts_entries.lock().await;
                     entries.push(ts_entry);
-                    *self.latest_sequence.lock().await = sequence;
+                    *self.last_sequence.write().await = sequence;
                     let mut total_length = self.ts_length.write().await;
                     *total_length += ts.duration as f64;
                     sequence += 1;
                 }
                 join_all(handles).await.into_iter().for_each(|e| {
                     if let Err(e) = e {
-                        println!("download ts failed: {:?}", e);
+                        log::error!("download ts failed: {:?}", e);
                     }
                 });
             }
@@ -365,46 +446,65 @@ impl BiliRecorder {
         Ok(())
     }
 
-    pub async fn clip(&self, room_id: u64, d: f64) -> Result<String, BiliClientError> {
-        let mut duration = d;
-        let mut to_combine = Vec::new();
-        let header_copy = self.header.read().await.clone();
-        let entry_copy = self.ts_entries.lock().await.clone();
-        if entry_copy.is_empty() {
+    pub async fn clip(&self, ts: u64, d: f64) -> Result<String, BiliClientError> {
+        let total_length = *self.ts_length.read().await;
+        self.clip_range(ts, total_length - d, total_length).await
+    }
+
+    /// x and y are relative to first sequence
+    pub async fn clip_range(&self, ts: u64, x: f64, y: f64) -> Result<String, BiliClientError> {
+        if *self.timestamp.read().await == ts {
+            self.clip_live_range(x, y).await
+        } else {
+            self.clip_archive_range(ts, x, y).await
+        }
+    }
+
+    pub async fn clip_archive_range(
+        &self,
+        ts: u64,
+        x: f64,
+        y: f64,
+    ) -> Result<String, BiliClientError> {
+        let cache_path = self.config.read().await.cache.clone();
+        let work_dir = format!("{}/{}/{}", cache_path, self.room_id, ts);
+        let mut entries = self.get_fs_entries(&work_dir).await;
+        if entries.is_empty() {
             return Err(BiliClientError::EmptyCache);
         }
-        for e in entry_copy.iter().rev() {
-            let length = e.length;
-            to_combine.push(e);
-            if duration <= length {
-                break;
-            }
-            duration -= length;
-        }
-        to_combine.reverse();
-        if *self.stream_type.read().await == StreamType::FMP4 {
-            // add header to vec
-            let header = header_copy.as_ref().unwrap();
-            to_combine.insert(0, header);
-        }
+        entries.sort_by(|a, b| a.sequence.cmp(&b.sequence));
         let mut file_list = String::new();
-        for e in to_combine {
-            file_list +=
-                &BiliClient::url_to_file_name(&self.config.read().await.cache, room_id, &e.url).1;
-            file_list += "|";
+        // header fist
+        file_list += &format!("{}/h{}.m4s", work_dir, ts);
+        file_list += "|";
+        // add body entries
+        if !entries.is_empty() {
+            let first_sequence = entries.first().unwrap().sequence;
+            for e in entries {
+                let offset = (e.sequence - first_sequence) as f64;
+                if offset < x {
+                    continue;
+                }
+                file_list += &format!("{}/{}", work_dir, e.url);
+                file_list += "|";
+                if offset > y {
+                    break;
+                }
+            }
         }
+
         let output_path = self.config.read().await.output.clone();
         std::fs::create_dir_all(&output_path).expect("create clips folder failed");
         let file_name = format!(
-            "{}/[{}]{}_({})_{}.mp4",
+            "{}/[{}]{}_{}_{:.1}.mp4",
             output_path,
             self.room_id,
-            self.room_title,
-            Utc::now().format("%Y-%m-%d-%H-%M-%S"),
-            d
+            ts,
+            Utc::now().format("%m%d%H%M%S"),
+            y - x
         );
-        println!("{}", file_name);
-        let args = format!("-i concat:{} -c copy", file_list);
+        log::info!("{}", file_name);
+        let args = format!("-i concat:{} -c:v libx264 -c:a aac", file_list);
         FfmpegCommand::new()
             .args(args.split(' '))
             .output(file_name.clone())
@@ -413,14 +513,14 @@ impl BiliRecorder {
             .iter()
             .unwrap()
             .for_each(|e| match e {
-                FfmpegEvent::Log(LogLevel::Error, e) => println!("Error: {}", e),
-                FfmpegEvent::Progress(p) => println!("Progress: {}", p.time),
+                FfmpegEvent::Log(LogLevel::Error, e) => log::error!("Error: {}", e),
+                FfmpegEvent::Progress(p) => log::info!("Progress: {}", p.time),
                 _ => {}
             });
         Ok(file_name)
     }
 
-    pub async fn clip_range(&self, x: f64, y: f64) -> Result<String, BiliClientError> {
+    pub async fn clip_live_range(&self, x: f64, y: f64) -> Result<String, BiliClientError> {
         let mut to_combine = Vec::new();
         let header_copy = self.header.read().await.clone();
         let entry_copy = self.ts_entries.lock().await.clone();
@@ -450,27 +550,31 @@ impl BiliRecorder {
             to_combine.insert(0, header);
         }
         let mut file_list = String::new();
+        let timestamp = *self.timestamp.read().await;
+        let cache_path = self.config.read().await.cache.clone();
         for e in to_combine {
-            file_list += &BiliClient::url_to_file_name(
-                &self.config.read().await.cache,
-                self.room_id,
-                &e.url,
-            )
-            .1;
+            let file_name = e.url.split('/').last().unwrap();
+            let file_path = format!(
+                "{}/{}/{}/{}",
+                cache_path, self.room_id, timestamp, file_name
+            );
+            file_list += &file_path;
             file_list += "|";
         }
         let output_path = self.config.read().await.output.clone();
+        let title = self.room_title.clone();
+        let title: String = title.chars().take(5).collect();
         std::fs::create_dir_all(&output_path).expect("create clips folder failed");
         let file_name = format!(
-            "{}/[{}]{}_({})_{:.2}.mp4",
+            "{}/[{}]{}_{}_{:.1}.mp4",
             output_path,
             self.room_id,
-            self.room_title,
-            Utc::now().format("%Y-%m-%d-%H-%M-%S"),
+            title,
+            Utc::now().format("%m%d%H%M%S"),
             end - start
         );
-        println!("{}", file_name);
-        let args = format!("-i concat:{} -c copy", file_list);
+        log::info!("{}", file_name);
+        let args = format!("-i concat:{} -c:v libx264 -c:a aac", file_list);
         FfmpegCommand::new()
             .args(args.split(' '))
             .output(file_name.clone())
@@ -479,41 +583,129 @@ impl BiliRecorder {
             .iter()
             .unwrap()
             .for_each(|e| match e {
-                FfmpegEvent::Log(LogLevel::Error, e) => println!("Error: {}", e),
-                FfmpegEvent::Progress(p) => println!("Progress: {}", p.time),
+                FfmpegEvent::Log(LogLevel::Error, e) => log::error!("Error: {}", e),
+                FfmpegEvent::Progress(p) => log::info!("Progress: {}", p.time),
                 _ => {}
             });
         Ok(file_name)
     }
 
-    pub async fn generate_m3u8(&self) -> String {
+    /// timestamp is the id of live stream
+    pub async fn generate_m3u8(&self, timestamp: u64) -> String {
+        if *self.timestamp.read().await == timestamp {
+            self.generate_live_m3u8().await
+        } else {
+            self.generate_archive_m3u8(timestamp).await
+        }
+    }
+
+    async fn generate_archive_m3u8(&self, timestamp: u64) -> String {
         let mut m3u8_content = "#EXTM3U\n".to_string();
         m3u8_content += "#EXT-X-VERSION:6\n";
         m3u8_content += "#EXT-X-TARGETDURATION:1\n";
-        m3u8_content += "#EXT-X-PLAYLIST-TYPE:EVENT\n"; // 修改为 EVENT 模式以支持 DVR
-
-        // initial segment for fmp4, info from self.header
-        if let Some(header) = self.header.read().await.as_ref() {
-            let file_name = header.url.split('/').last().unwrap();
-            let local_url = format!("/{}/{}", self.room_id, file_name);
-            m3u8_content += &format!("#EXT-X-MAP:URI=\"{}\"\n", local_url);
-        }
-        let entries = self.ts_entries.lock().await.clone();
-        for entry in entries.iter() {
-            m3u8_content += &format!("#EXTINF:{:.3},\n", entry.length);
-            let file_name = entry.url.split('/').last().unwrap();
-            let local_url = format!("/{}/{}", self.room_id, file_name);
-            m3u8_content += &format!("{}\n", local_url);
-        }
-        m3u8_content
-    }
-
-    pub async fn get_ts_file_path(&self, ts_file: &str) -> String {
-        format!(
+        m3u8_content += "#EXT-X-PLAYLIST-TYPE:VOD\n";
+        // add header, FMP4 need this
+        // TODO handle StreamType::TS
+        let header_url = format!("/{}/{}/h{}.m4s", self.room_id, timestamp, timestamp);
+        m3u8_content += &format!("#EXT-X-MAP:URI=\"{}\"\n", header_url);
+        // add entries from read_dir
+        let work_dir = format!(
             "{}/{}/{}",
             self.config.read().await.cache,
             self.room_id,
-            ts_file
-        )
+            timestamp
+        );
+        let entries = self.get_fs_entries(&work_dir).await;
+        if entries.is_empty() {
+            return m3u8_content;
+        }
+        let mut last_sequence = entries.first().unwrap().sequence;
+        for e in entries {
+            let current_seq = e.sequence;
+            if current_seq - last_sequence > 1 {
+                m3u8_content += "#EXT-X-DISCONTINUITY\n"
+            }
+            last_sequence = current_seq;
+            m3u8_content += "#EXTINF:1,\n";
+            m3u8_content += &format!("/{}/{}/{}\n", self.room_id, timestamp, e.url);
+        }
+        m3u8_content += "#EXT-X-ENDLIST";
+        m3u8_content
+    }
+
+    /// Fetch HLS segments from local cached file, header is excluded
+    async fn get_fs_entries(&self, path: &str) -> Vec<TsEntry> {
+        let mut ret = Vec::new();
+        let direntry = fs::read_dir(path).await;
+        if direntry.is_err() {
+            return ret;
+        }
+        let mut direntry = direntry.unwrap();
+        while let Some(e) = direntry.next().await {
+            if e.is_err() {
+                continue;
+            }
+            let e = e.unwrap();
+            let etype = e.file_type().await;
+            if etype.is_err() {
+                continue;
+            }
+            let etype = etype.unwrap();
+            if !etype.is_file() {
+                continue;
+            }
+            let file_name = e.file_name().to_str().unwrap().to_string();
+            if file_name.starts_with("h") {
+                continue;
+            }
+            ret.push(TsEntry {
+                url: file_name.clone(),
+                sequence: file_name.split('.').next().unwrap().parse().unwrap(),
+                length: 1.0,
+            });
+        }
+        ret
+    }
+
+    /// if fetching live/last stream m3u8, all entries are cached in memory, so it will be much faster than read_dir
+    async fn generate_live_m3u8(&self) -> String {
+        let live_status = *self.live_status.read().await;
+        let mut m3u8_content = "#EXTM3U\n".to_string();
+        m3u8_content += "#EXT-X-VERSION:6\n";
+        m3u8_content += "#EXT-X-TARGETDURATION:1\n";
+        // if stream is closed, switch to VOD
+        if live_status {
+            m3u8_content += "#EXT-X-PLAYLIST-TYPE:EVENT\n";
+        } else {
+            m3u8_content += "#EXT-X-PLAYLIST-TYPE:VOD\n";
+        }
+        let timestamp = *self.timestamp.read().await;
+        // initial segment for fmp4, info from self.header
+        if let Some(header) = self.header.read().await.as_ref() {
+            let file_name = header.url.split('/').last().unwrap();
+            let local_url = format!("/{}/{}/{}", self.room_id, timestamp, file_name);
+            m3u8_content += &format!("#EXT-X-MAP:URI=\"{}\"\n", local_url);
+        }
+        let entries = self.ts_entries.lock().await.clone();
+        if entries.is_empty() {
+            return m3u8_content;
+        }
+        let mut last_sequence = entries.first().unwrap().sequence;
+        for entry in entries.iter() {
+            if entry.sequence - last_sequence > 1 {
+                // discontinuity happens
+                m3u8_content += "#EXT-X-DISCONTINUITY\n"
+            }
+            last_sequence = entry.sequence;
+            m3u8_content += "#EXTINF:1,\n";
+            let file_name = entry.url.split('/').last().unwrap();
+            let local_url = format!("/{}/{}/{}", self.room_id, timestamp, file_name);
+            m3u8_content += &format!("{}\n", local_url);
+        }
+        // let player know stream is closed
+        if !live_status {
+            m3u8_content += "#EXT-X-ENDLIST";
+        }
+        m3u8_content
     }
 }

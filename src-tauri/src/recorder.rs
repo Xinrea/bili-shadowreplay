@@ -12,8 +12,8 @@ use futures::future::join_all;
 use m3u8_rs::Playlist;
 use notify_rust::Notification;
 use regex::Regex;
-use std::sync::Arc;
 use std::thread;
+use std::{ops::Deref, sync::Arc};
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::sync::{Mutex, RwLock};
 
@@ -349,7 +349,7 @@ impl BiliRecorder {
             *self.timestamp.write().await = ts;
             ts
         } else {
-            log::error!("extract timestamp failed: {}", header_url);
+            log::error!("Extract timestamp failed: {}", header_url);
             0
         }
     }
@@ -370,8 +370,19 @@ impl BiliRecorder {
             timestamp = self.extract_timestamp(&header_url).await;
             // now work dir is confirmed
             work_dir = format!("{}/{}/{}/", cache_path, self.room_id, timestamp);
-            // make sure work_dir is created
-            fs::create_dir_all(&work_dir).await.unwrap();
+            // if folder is exisited, need to load previous data into cache
+            if let Ok(meta) = fs::metadata(&work_dir).await {
+                if meta.is_dir() {
+                    log::warn!("Live {} is already cached. Try to restore", timestamp);
+                    self.restore(&work_dir).await;
+                } else {
+                    // make sure work_dir is created
+                    fs::create_dir_all(&work_dir).await.unwrap();
+                }
+            } else {
+                // make sure work_dir is created
+                fs::create_dir_all(&work_dir).await.unwrap();
+            }
             let full_header_url = self.ts_url(&header_url).await?;
             let header = TsEntry {
                 url: full_header_url.clone(),
@@ -446,6 +457,18 @@ impl BiliRecorder {
         Ok(())
     }
 
+    async fn restore(&self, work_dir: &str) {
+        // by the way, header will be set after restore, so we don't need to restore it.
+        let entries = self.get_fs_entries(work_dir).await;
+        if entries.is_empty() {
+            return;
+        }
+        self.ts_entries.lock().await.extend_from_slice(&entries);
+        *self.ts_length.write().await = entries.len() as f64;
+        *self.last_sequence.write().await = entries.last().unwrap().sequence;
+        log::info!("Restore {} entries from local file", entries.len());
+    }
+
     pub async fn clip(&self, ts: u64, d: f64) -> Result<String, BiliClientError> {
         let total_length = *self.ts_length.read().await;
         self.clip_range(ts, total_length - d, total_length).await
@@ -468,11 +491,10 @@ impl BiliRecorder {
     ) -> Result<String, BiliClientError> {
         let cache_path = self.config.read().await.cache.clone();
         let work_dir = format!("{}/{}/{}", cache_path, self.room_id, ts);
-        let mut entries = self.get_fs_entries(&work_dir).await;
+        let entries = self.get_fs_entries(&work_dir).await;
         if entries.is_empty() {
             return Err(BiliClientError::EmptyCache);
         }
-        entries.sort_by(|a, b| a.sequence.cmp(&b.sequence));
         let mut file_list = String::new();
         // header fist
         file_list += &format!("{}/h{}.m4s", work_dir, ts);
@@ -664,6 +686,7 @@ impl BiliRecorder {
                 length: 1.0,
             });
         }
+        ret.sort_by(|a, b| a.sequence.cmp(&b.sequence));
         ret
     }
 

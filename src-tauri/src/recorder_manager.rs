@@ -1,4 +1,5 @@
-use crate::recorder::BiliRecorder;
+use crate::recorder::bilibili::UserInfo;
+use crate::recorder::{bilibili::RoomInfo, BiliRecorder};
 use crate::Config;
 use dashmap::DashMap;
 use hyper::{
@@ -10,21 +11,16 @@ use std::{convert::Infallible, sync::Arc};
 use tokio::{net::TcpListener, sync::RwLock};
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
-pub struct Summary {
+pub struct RecorderList {
     pub count: usize,
-    pub rooms: Vec<RoomInfo>,
+    pub recorders: Vec<RecorderInfo>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
-pub struct RoomInfo {
+pub struct RecorderInfo {
     pub room_id: u64,
-    pub room_title: String,
-    pub room_cover: String,
-    pub room_keyframe: String,
-    pub user_id: String,
-    pub user_name: String,
-    pub user_sign: String,
-    pub user_avatar: String,
+    pub room_info: RoomInfo,
+    pub user_info: UserInfo,
     pub total_length: f64,
     pub current_ts: u64,
     pub live_status: bool,
@@ -134,46 +130,36 @@ impl RecorderManager {
         }
     }
 
-    pub async fn get_summary(&self) -> Summary {
-        let mut summary = Summary {
+    pub async fn get_recorder_list(&self) -> RecorderList {
+        let mut summary = RecorderList {
             count: self.recorders.len(),
-            rooms: Vec::new(),
+            recorders: Vec::new(),
         };
 
         for recorder in self.recorders.iter() {
             let recorder = recorder.value();
-            let room_info = RoomInfo {
+            let room_info = RecorderInfo {
                 room_id: recorder.room_id,
-                room_title: recorder.room_title.clone(),
-                room_cover: recorder.room_cover.clone(),
-                room_keyframe: recorder.room_keyframe.clone(),
-                user_id: recorder.user_id.clone(),
-                user_name: recorder.user_name.clone(),
-                user_sign: recorder.user_sign.clone(),
-                user_avatar: recorder.user_avatar.clone(),
+                room_info: recorder.room_info.read().await.clone(),
+                user_info: recorder.user_info.read().await.clone(),
                 total_length: *recorder.ts_length.read().await,
                 current_ts: *recorder.timestamp.read().await,
                 live_status: *recorder.live_status.read().await,
             };
-            summary.rooms.push(room_info);
+            summary.recorders.push(room_info);
         }
 
-        summary.rooms.sort_by(|a, b| a.room_id.cmp(&b.room_id));
+        summary.recorders.sort_by(|a, b| a.room_id.cmp(&b.room_id));
 
         summary
     }
 
-    pub async fn get_room_info(&self, room_id: u64) -> Option<RoomInfo> {
+    pub async fn get_recorder_info(&self, room_id: u64) -> Option<RecorderInfo> {
         if let Some(recorder) = self.recorders.get(&room_id) {
-            let room_info = RoomInfo {
+            let room_info = RecorderInfo {
                 room_id: recorder.room_id,
-                room_title: recorder.room_title.clone(),
-                room_cover: recorder.room_cover.clone(),
-                room_keyframe: recorder.room_keyframe.clone(),
-                user_id: recorder.user_id.clone(),
-                user_name: recorder.user_name.clone(),
-                user_sign: recorder.user_sign.clone(),
-                user_avatar: recorder.user_avatar.clone(),
+                room_info: recorder.room_info.read().await.clone(),
+                user_info: recorder.user_info.read().await.clone(),
                 total_length: *recorder.ts_length.read().await,
                 current_ts: *recorder.timestamp.read().await,
                 live_status: *recorder.live_status.read().await,

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { fetch, ResponseType } from "@tauri-apps/api/http";
+  import { fetch } from "@tauri-apps/plugin-http";
   export let src = "";
   export let iclass = "";
   let b = "";
@@ -7,19 +7,19 @@
     if (!url) {
       return "";
     }
-    const response = await fetch<Uint8Array>(url, {
+    const response = await fetch(url, {
       method: "GET",
-      timeout: 3,
-      responseType: ResponseType.Binary,
     });
-    const binaryArray = new Uint8Array(response.data);
-    var blob = new Blob([binaryArray], {
-      type: response.headers["content-type"],
-    });
-    return URL.createObjectURL(blob);
+    console.log(response.status); // e.g. 200
+    console.log(response.statusText); // e.g. "OK"
+    return URL.createObjectURL(await response.blob());
   }
   async function init() {
-    b = await getImage(src);
+    try {
+      b = await getImage(src);
+    } catch (e) {
+      console.error(e);
+    }
   }
   init();
 </script>

@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { invoke, convertFileSrc } from "@tauri-apps/api/tauri";
-  import { fetch, ResponseType } from "@tauri-apps/api/http";
-  import { message, open } from "@tauri-apps/api/dialog";
-  import { open as shell_open } from "@tauri-apps/api/shell";
-  import { exists } from "@tauri-apps/api/fs";
+  import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+  import { fetch, ResponseType } from "@tauri-apps/plugin-http";
+  import { message, open } from "@tauri-apps/plugin-dialog";
+  import { open as shell_open } from "@tauri-apps/plugin-shell";
+  import { exists } from "@tauri-apps/plugin-fs";
   import QRCode from "qrcode";
   interface Summary {
     count: number;

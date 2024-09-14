@@ -21,10 +21,8 @@
   export let room_count = 0;
 </script>
 
-<Sidebar {activeUrl} asideClass="w-72 h-full">
-  <SidebarWrapper
-    divClass="overflow-y-auto py-4 px-3 bg-gray-50 dark:bg-gray-800 h-full"
-  >
+<Sidebar {activeUrl} asideClass="w-72 h-full z-[40]">
+  <SidebarWrapper divClass="overflow-y-auto py-4 px-3 bg-gray-50 h-full">
     <SidebarGroup>
       <SidebarItem
         label="总览"

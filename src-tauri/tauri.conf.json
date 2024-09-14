@@ -2,74 +2,25 @@
   "build": {
     "beforeDevCommand": "yarn dev",
     "beforeBuildCommand": "yarn build",
-    "devPath": "http://localhost:8054",
-    "distDir": "../dist",
-    "withGlobalTauri": false
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:8054"
   },
-  "package": {
-    "productName": "bili-shadowreplay",
-    "version": "0.1.0"
+  "bundle": {
+    "active": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "targets": "all"
   },
-  "tauri": {
-    "systemTray": {
-      "iconPath": "icons/icon.png",
-      "iconAsTemplate": true
-    },
-    "allowlist": {
-      "all": false,
-      "shell": {
-        "all": false,
-        "open": true
-      },
-      "http": {
-        "all": true,
-        "request": true,
-        "scope": [
-          "https://**",
-          "http://**"
-        ]
-      },
-      "window": {
-        "setTitle": true,
-        "close": true
-      },
-      "dialog": {
-        "all": true,
-        "open": true,
-        "save": true
-      },
-      "protocol": {
-        "all": false,
-        "asset": true,
-        "assetScope": [
-          "**"
-        ]
-      },
-      "fs": {
-        "all": true,
-        "scope": [
-          "**"
-        ]
-      }
-    },
-    "bundle": {
-      "active": true,
-      "icon": [
-        "icons/32x32.png",
-        "icons/128x128.png",
-        "icons/128x128@2x.png",
-        "icons/icon.icns",
-        "icons/icon.ico"
-      ],
-      "identifier": "cn.vjoi.bilishadowreplay",
-      "targets": "all"
-    },
-    "security": {
-      "csp": null
-    },
-    "updater": {
-      "active": false
-    },
+  "productName": "bili-shadowreplay",
+  "version": "0.1.0",
+  "identifier": "cn.vjoi.bilishadowreplay",
+  "plugins": {},
+  "app": {
     "windows": [
       {
         "label": "main",
@@ -78,8 +29,23 @@
         "title": "BiliBili ShadowReplay",
         "width": 1200,
         "height": 600,
-        "theme": "Light"
+        "transparent": true,
+        "decorations": false,
+        "theme": "Light",
+        "windowEffects": {
+          "effects": ["tabbed", "mica"]
+        }
       }
-    ]
+    ],
+    "withGlobalTauri": false,
+    "security": {
+      "assetProtocol": {
+        "scope": [
+          "**"
+        ],
+        "enable": true
+      },
+      "csp": null
+    }
   }
 }

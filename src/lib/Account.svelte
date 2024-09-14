@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api";
-  import { Button } from "flowbite-svelte";
+  import { invoke } from "@tauri-apps/api/core";
+  import { Button, Card } from "flowbite-svelte";
   import Image from "./Image.svelte";
   import QRCode from "qrcode";
   interface AccountInfo {
@@ -54,21 +54,32 @@
   }
 </script>
 
-<div class="flex flex-row items-center">
-  {#if account_info.login}
-    <Image iclass="w-32 h-32 rounded-full p-4" src={account_info.face} />
-    <div class="flex flex-col">
-      {account_info.name}
-      {account_info.uid}
-      <Button
-        on:click={async () => {
-          await invoke("logout");
-          account_info.login = false;
-        }}>注销</Button
-      >
+<div class="flex flex-row p-8 pt-12">
+  <Card class="w-1/3 !max-w-none">
+    <div class="flex flex-row items-center">
+      {#if account_info.login}
+        <Image iclass="w-32 h-32 rounded-full p-4" src={account_info.face} />
+        <div class="flex flex-col">
+          <p class="text-lg">
+            {account_info.name}
+          </p>
+          <p class="text-sm text-slate-400">
+            {account_info.uid}
+          </p>
+          <Button
+            class="mt-2"
+            color="red"
+            on:click={async () => {
+              await invoke("logout");
+              account_info.login = false;
+            }}>注销</Button
+          >
+        </div>
+      {:else}
+        <canvas id="qr" style="display: none;" />
+        <Button on:click={handle_qr}>获取登录二维码</Button>
+      {/if}
     </div>
-  {:else}
-    <canvas id="qr" style="display: none;" />
-    <Button on:click={handle_qr}>获取登录二维码</Button>
-  {/if}
+  </Card>
+  <Card class="w-2/3 !max-w-none ml-4"></Card>
 </div>

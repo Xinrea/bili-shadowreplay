@@ -1,7 +1,7 @@
 pub mod bilibili;
 use async_std::{fs, stream::StreamExt};
-use bilibili::errors::BiliClientError;
-use bilibili::BiliClient;
+use bilibili::{errors::BiliClientError, RoomInfo};
+use bilibili::{BiliClient, UserInfo};
 use chrono::prelude::*;
 use felgens::{ws_socket_object, FelgensError, WsStreamMessageType};
 use ffmpeg_sidecar::{
@@ -12,8 +12,8 @@ use futures::future::join_all;
 use m3u8_rs::Playlist;
 use notify_rust::Notification;
 use regex::Regex;
+use std::sync::Arc;
 use std::thread;
-use std::{ops::Deref, sync::Arc};
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::sync::{Mutex, RwLock};
 
@@ -36,13 +36,8 @@ pub struct BiliRecorder {
     client: Arc<RwLock<BiliClient>>,
     config: Arc<RwLock<Config>>,
     pub room_id: u64,
-    pub room_title: String,
-    pub room_cover: String,
-    pub room_keyframe: String,
-    pub user_id: String,
-    pub user_name: String,
-    pub user_sign: String,
-    pub user_avatar: String,
+    pub room_info: Arc<RwLock<RoomInfo>>,
+    pub user_info: Arc<RwLock<UserInfo>>,
     pub m3u8_url: Arc<RwLock<String>>,
     pub live_status: Arc<RwLock<bool>>,
     pub last_sequence: Arc<RwLock<u64>>,
@@ -81,13 +76,8 @@ impl BiliRecorder {
             client: Arc::new(RwLock::new(client)),
             config,
             room_id,
-            room_title: room_info.room_title,
-            room_cover: room_info.room_cover_url,
-            room_keyframe: room_info.room_keyframe_url,
-            user_id: room_info.user_id,
-            user_name: user_info.user_name,
-            user_sign: user_info.user_sign,
-            user_avatar: user_info.user_avatar_url,
+            room_info: Arc::new(RwLock::new(room_info)),
+            user_info: Arc::new(RwLock::new(user_info)),
             m3u8_url: Arc::new(RwLock::new(m3u8_url)),
             live_status: Arc::new(RwLock::new(live_status)),
             last_sequence: Arc::new(RwLock::new(0)),
@@ -116,16 +106,13 @@ impl BiliRecorder {
 
     async fn check_status(&self) -> bool {
         if let Ok(room_info) = self.client.read().await.get_room_info(self.room_id).await {
+            *self.room_info.write().await = room_info.clone();
             let live_status = room_info.live_status == 1;
             // if stream is confirmed to be closed, live stream cache is cleaned.
             // all request will go through fs
             if live_status {
-                if let Ok((index_url, stream_type)) = self
-                    .client
-                    .read()
-                    .await
-                    .get_play_url(room_info.room_id)
-                    .await
+                if let Ok((index_url, stream_type)) =
+                    self.client.read().await.get_play_url(self.room_id).await
                 {
                     self.m3u8_url.write().await.replace_range(.., &index_url);
                     *self.stream_type.write().await = stream_type;
@@ -584,7 +571,7 @@ impl BiliRecorder {
             file_list += "|";
         }
         let output_path = self.config.read().await.output.clone();
-        let title = self.room_title.clone();
+        let title = self.room_info.read().await.room_title.clone();
         let title: String = title.chars().take(5).collect();
         std::fs::create_dir_all(&output_path).expect("create clips folder failed");
         let file_name = format!(

@@ -3,22 +3,20 @@
 
 mod recorder;
 mod recorder_manager;
+mod tray;
 
 use custom_error::custom_error;
 use recorder::bilibili::errors::BiliClientError;
 use recorder::bilibili::profile::Profile;
 use recorder::bilibili::{BiliClient, QrInfo, QrStatus};
-use recorder_manager::{RecorderManager, RoomInfo, Summary};
+use recorder_manager::{RecorderInfo, RecorderList, RecorderManager};
+use tauri::utils::config::WindowEffectsConfig;
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
-use tauri::{
-    CustomMenuItem, LogicalSize, SystemTray, SystemTrayEvent, SystemTrayMenu, SystemTrayMenuItem,
-    Theme, Window,
-};
-use tauri::{Manager, WindowEvent};
+use tauri::{Manager, Theme, WindowEvent};
 use tokio::sync::RwLock;
 
 use platform_dirs::AppDirs;
@@ -219,31 +217,18 @@ fn copy_dir_all(
 #[derive(Clone)]
 struct State {
     client: Arc<BiliClient>,
-    post_window: Window,
     config: Arc<RwLock<Config>>,
     recorder_manager: Arc<RecorderManager>,
     app_handle: tauri::AppHandle,
 }
 
 impl State {
-    pub async fn get_summary(&self) -> Summary {
-        self.recorder_manager.get_summary().await
-    }
-
     pub async fn get_qr(&self) -> Result<QrInfo, BiliClientError> {
         self.client.get_qr().await
     }
 
     pub async fn get_qr_status(&self, key: &str) -> Result<QrStatus, BiliClientError> {
         self.client.get_qr_status(key).await
-    }
-
-    pub async fn add_recorder(&self, room_id: u64) -> Result<(), String> {
-        self.recorder_manager.add_recorder(room_id).await
-    }
-
-    pub async fn remove_recorder(&self, room_id: u64) {
-        let _ = self.recorder_manager.remove_recorder(room_id).await;
     }
 
     pub async fn clip(&self, room_id: u64, len: f64) -> Result<String, String> {
@@ -270,8 +255,8 @@ impl State {
 }
 
 #[tauri::command]
-async fn get_summary(state: tauri::State<'_, State>) -> Result<Summary, ()> {
-    Ok(state.get_summary().await)
+async fn get_recorder_list(state: tauri::State<'_, State>) -> Result<RecorderList, ()> {
+    Ok(state.recorder_manager.get_recorder_list().await)
 }
 
 #[tauri::command]
@@ -294,7 +279,7 @@ async fn get_qr_status(state: tauri::State<'_, State>, qrcode_key: &str) -> Resu
 #[tauri::command]
 async fn add_recorder(state: tauri::State<'_, State>, room_id: u64) -> Result<(), String> {
     // Config update
-    if let Err(e) = state.add_recorder(room_id).await {
+    if let Err(e) = state.recorder_manager.add_recorder(room_id).await {
         println!("add recorder failed: {:?}", e);
         Err(e.to_string())
     } else {
@@ -306,7 +291,7 @@ async fn add_recorder(state: tauri::State<'_, State>, room_id: u64) -> Result<()
 #[tauri::command]
 async fn remove_recorder(state: tauri::State<'_, State>, room_id: u64) -> Result<(), ()> {
     // Config update
-    state.remove_recorder(room_id).await;
+    state.recorder_manager.remove_recorder(room_id).await;
     Ok(())
 }
 
@@ -374,34 +359,6 @@ struct UploadInfo {
 }
 
 #[tauri::command]
-async fn prepare_upload(
-    state: tauri::State<'_, State>,
-    room_id: u64,
-    file: String,
-    cover: String,
-) -> Result<(), String> {
-    state
-        .post_window
-        .emit(
-            "init",
-            UploadInfo {
-                room_id,
-                file,
-                cover,
-                profile: state
-                    .config
-                    .read()
-                    .await
-                    .get_profile(room_id)
-                    .unwrap_or(Profile::new("视频标题", "描述", 27)),
-            },
-        )
-        .unwrap();
-    state.post_window.show().unwrap();
-    Ok(())
-}
-
-#[tauri::command]
 async fn upload_procedure(
     state: tauri::State<'_, State>,
     room_id: u64,
@@ -447,8 +404,11 @@ async fn logout(state: tauri::State<'_, State>) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn get_room_info(state: tauri::State<'_, State>, room_id: u64) -> Result<RoomInfo, String> {
-    if let Some(info) = state.recorder_manager.get_room_info(room_id).await {
+async fn get_room_info(
+    state: tauri::State<'_, State>,
+    room_id: u64,
+) -> Result<RecorderInfo, String> {
+    if let Some(info) = state.recorder_manager.get_recorder_info(room_id).await {
         Ok(info)
     } else {
         Err("Not found".to_string())
@@ -514,10 +474,15 @@ async fn get_accounts(state: tauri::State<'_, State>) -> Result<AccountInfo, Str
 #[tauri::command]
 async fn open_live(state: tauri::State<'_, State>, room_id: u64, ts: u64) -> Result<(), String> {
     let addr = state.recorder_manager.get_hls_server_addr().await.unwrap();
-    let window = tauri::WindowBuilder::new(
+    let recorder_info = state
+        .recorder_manager
+        .get_recorder_info(room_id)
+        .await
+        .unwrap();
+    if let Err(e) = tauri::WebviewWindowBuilder::new(
         &state.app_handle.clone(),
-        room_id.to_string(),
-        tauri::WindowUrl::App(
+        format!("Live:{}:{}", room_id, ts),
+        tauri::WebviewUrl::App(
             format!(
                 "live_index.html?port={}&room_id={}&ts={}",
                 addr.port(),
@@ -527,18 +492,40 @@ async fn open_live(state: tauri::State<'_, State>, room_id: u64, ts: u64) -> Res
             .into(),
         ),
     )
-    .title(format!("Live {}", room_id))
-    .theme(Some(Theme::Dark))
+    .title(format!(
+        "Live[{}] {}",
+        room_id, recorder_info.room_info.room_title
+    ))
+    .theme(Some(Theme::Light))
+    .decorations(false)
+    .transparent(true)
+    .inner_size(1200.0, 600.0)
+    .effects(WindowEffectsConfig {
+        effects: vec![
+            tauri_utils::WindowEffect::Tabbed,
+            tauri_utils::WindowEffect::Mica,
+        ],
+        state: None,
+        radius: None,
+        color: None,
+    })
     .build()
-    .unwrap();
-    let window_clone = window.clone();
-    window_clone.on_window_event(move |event| {
-        if let tauri::WindowEvent::CloseRequested { .. } = event {
-            // close window
-            window.close().unwrap();
-        }
-    });
+    {
+        log::error!("Create live-window failed: {}", e.to_string());
+    }
     Ok(())
+}
+
+#[tauri::command]
+async fn get_profile(state: tauri::State<'_, State>, room_id: u64) -> Result<Profile, String> {
+    Ok(state
+        .config
+        .read()
+        .await
+        .profile_preset
+        .get(&room_id.to_string())
+        .cloned()
+        .unwrap_or(Profile::new("", "", 27)))
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -552,15 +539,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .unwrap();
     // Setup ffmpeg
     ffmpeg_sidecar::download::auto_download().unwrap();
-    // Setup tray icon
-    let quit = CustomMenuItem::new("quit".to_string(), "Quit");
-    let hide = CustomMenuItem::new("hide".to_string(), "Hide");
-    let tray_menu = SystemTrayMenu::new()
-        .add_item(hide)
-        .add_native_item(SystemTrayMenuItem::Separator)
-        .add_item(quit);
 
-    let tray = SystemTray::new().with_menu(tray_menu);
     let client = Arc::new(BiliClient::new().unwrap());
     let config = Arc::new(RwLock::new(Config::load()));
     let recorder_manager = Arc::new(RecorderManager::new(config.clone()));
@@ -585,43 +564,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Tauri part
     tauri::Builder::default()
+        .plugin(tauri_plugin_http::init())
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
-            let window = tauri::WindowBuilder::new(
-                &app.app_handle(),
-                "video-submit",
-                tauri::WindowUrl::App("upload.html".into()),
-            )
-            .title("投稿配置")
-            .visible(false)
-            .inner_size(400.0, 800.0)
-            .theme(Some(Theme::Light))
-            .build()
-            .unwrap();
-            window
-                .set_min_size(Some(LogicalSize {
-                    width: 400,
-                    height: 800,
-                }))
-                .unwrap();
             let state = State {
                 client,
-                post_window: window,
                 config: config.clone(),
                 recorder_manager: recorder_manager.clone(),
                 app_handle: app.handle().clone(),
             };
+            let _ = tray::create_tray(app.handle());
             app.manage(state);
             Ok(())
         })
-        .system_tray(tray)
-        .on_window_event(|event| {
-            if let WindowEvent::CloseRequested { api, .. } = event.event() {
-                event.window().hide().unwrap();
-                api.prevent_close();
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                if !window.label().starts_with("Live") {
+                    window.hide().unwrap();
+                    api.prevent_close();
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
-            get_summary,
+            get_recorder_list,
             add_recorder,
             remove_recorder,
             get_config,
@@ -630,7 +597,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             set_admins,
             clip,
             clip_range,
-            prepare_upload,
             upload_procedure,
             show_in_folder,
             get_qr,
@@ -641,29 +607,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             get_accounts,
             get_room_info,
             get_archives,
+            get_profile,
             delete_archive,
         ])
-        .on_system_tray_event(|app, event| match event {
-            SystemTrayEvent::LeftClick {
-                position: _,
-                size: _,
-                ..
-            } => {
-                let window = app.get_window("main").unwrap();
-                window.show().unwrap();
-            }
-            SystemTrayEvent::MenuItemClick { id, .. } => match id.as_str() {
-                "hide" => {
-                    let window = app.get_window("main").unwrap();
-                    window.hide().unwrap();
-                }
-                "quit" => {
-                    std::process::exit(0);
-                }
-                _ => {}
-            },
-            _ => {}
-        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
     Ok(())

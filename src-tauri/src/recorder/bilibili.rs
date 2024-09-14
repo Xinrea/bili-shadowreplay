@@ -163,17 +163,17 @@ pub struct BiliClient {
     extra: RwLock<String>,
 }
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct RoomInfo {
-    pub room_id: u64,
-    pub room_title: String,
-    pub room_cover_url: String,
-    pub room_keyframe_url: String,
-    pub user_id: String,
     pub live_status: u8,
+    pub room_cover_url: String,
+    pub room_id: u64,
+    pub room_keyframe_url: String,
+    pub room_title: String,
+    pub user_id: String,
 }
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct UserInfo {
     pub user_id: String,
     pub user_name: String,
@@ -456,9 +456,12 @@ impl BiliClient {
             .headers(self.headers.read().await.clone())
             .send()
             .await?;
-        let mut file = std::fs::File::create(file_path).unwrap();
-        let mut content = std::io::Cursor::new(res.bytes().await?);
-        std::io::copy(&mut content, &mut file).unwrap();
+        if let Ok(mut file) = std::fs::File::create(file_path) {
+            let mut content = std::io::Cursor::new(res.bytes().await?);
+            std::io::copy(&mut content, &mut file).unwrap();
+        } else {
+            log::error!("Failed to create file {}", file_path);
+        }
         Ok(())
     }
 

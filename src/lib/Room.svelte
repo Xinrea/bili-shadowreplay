@@ -28,14 +28,17 @@
     PlusOutline,
     ExclamationCircleOutline,
   } from "flowbite-svelte-icons";
-  import { RecorderList } from "./interface";
+  import type { RecorderList } from "./interface";
   import Image from "./Image.svelte";
 
   export let room_count = 0;
-  let summary: RecorderList;
+  let summary: RecorderList = {
+    count: 0,
+    recorders: [],
+  };
 
   async function update_summary() {
-    let summary = (await invoke("get_recorder_list")) as RecorderList;
+    summary = (await invoke("get_recorder_list")) as RecorderList;
     room_count = summary.count;
   }
   update_summary();
@@ -87,12 +90,12 @@
   }
 </script>
 
-<div class="p-8 pt-12">
-  <Table hoverable={true} divClass="relative overflow-x-auto" shadow>
+<div class="p-8 pt-12 h-full">
+  <Table hoverable={true} divClass="relative overflow-auto max-h-full" shadow>
     <TableHead>
       <TableHeadCell>房间号</TableHeadCell>
       <TableHeadCell>标题</TableHeadCell>
-      <TableHeadCell>账号</TableHeadCell>
+      <TableHeadCell>用户</TableHeadCell>
       <TableHeadCell>状态</TableHeadCell>
       <TableHeadCell>缓存时长</TableHeadCell>
       <TableHeadCell>
@@ -105,8 +108,15 @@
           <TableBodyCell>{room.room_id}</TableBodyCell>
           <TableBodyCell>{room.room_info.room_title}</TableBodyCell>
           <TableBodyCell>
-            <Image src={room.user_info.user_avatar_url} />
-            {room.user_info.user_name}
+            <div class="pr-4">
+              <Image
+                iclass="rounded-full w-12 inline"
+                src={room.user_info.user_avatar_url}
+              />
+              <span>
+                {room.user_info.user_name}
+              </span>
+            </div>
           </TableBodyCell>
           <TableBodyCell>
             {#if room.live_status}

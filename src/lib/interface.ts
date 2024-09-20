@@ -22,6 +22,7 @@ export interface RecorderInfo {
   current_ts: number,
   live_status: boolean
 }
+
 export interface RecorderList {
   count: number;
   recorders: RecorderInfo[];

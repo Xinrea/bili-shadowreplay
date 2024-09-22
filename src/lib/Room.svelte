@@ -30,6 +30,7 @@
   } from "flowbite-svelte-icons";
   import type { RecorderList } from "./interface";
   import Image from "./Image.svelte";
+  import { db, Recorders } from "./db";
 
   export let room_count = 0;
   let summary: RecorderList = {
@@ -90,8 +91,8 @@
   }
 </script>
 
-<div class="p-8 pt-12 h-full">
-  <Table hoverable={true} divClass="relative overflow-auto max-h-full" shadow>
+<div class="p-8 pt-12 h-full overflow-auto">
+  <Table hoverable={true} divClass="relative max-h-full" shadow>
     <TableHead>
       <TableHeadCell>房间号</TableHeadCell>
       <TableHeadCell>标题</TableHeadCell>
@@ -192,7 +193,11 @@
         color="red"
         class="me-2"
         on:click={async () => {
-          await invoke("remove_recorder", { roomId: deleteRoom });
+          if (await Recorders.remove(deleteRoom)) {
+            await invoke("remove_recorder", { roomId: deleteRoom });
+          } else {
+            console.warn("remove room failed");
+          }
         }}>确定</Button
       >
       <Button color="alternative">取消</Button>
@@ -250,12 +255,14 @@
         color="red"
         class="me-2"
         disabled={!addValid}
-        on:click={() => {
-          invoke("add_recorder", { roomId: Number(addRoom) }).catch(
-            async (e) => {
-              await message("请检查房间号是否有效：" + e, "添加失败");
-            },
-          );
+        on:click={async () => {
+          if (await Recorders.add(parseInt(addRoom))) {
+            invoke("add_recorder", { roomId: Number(addRoom) }).catch(
+              async (e) => {
+                await message("请检查房间号是否有效：" + e, "添加失败");
+              },
+            );
+          }
         }}>确定</Button
       >
       <Button color="alternative">取消</Button>

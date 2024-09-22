@@ -1,6 +1,9 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
-  import { Card } from "flowbite-svelte";
+  import { fetch } from "@tauri-apps/plugin-http";
+  import { Card, List, Li, Tooltip } from "flowbite-svelte";
+  import { GithubSolid, GlobeSolid } from "flowbite-svelte-icons";
+  import Image from "./Image.svelte";
+  import { db, Recorders } from "./db";
   const INTERVAL = 1000;
   interface SummaryInfo {
     room: {
@@ -18,11 +21,32 @@
   };
   refresh();
   setInterval(refresh, INTERVAL);
-  function refresh() {
+  async function refresh() {
     // invoke("get_summary_info").then((res) => {
     //     summary_info = res as SummaryInfo;
     // });
   }
+
+  Recorders.query().then((d) => {
+    console.log("recorders:", d);
+  });
+
+  interface Sponser {
+    name: string;
+    avatar: string;
+  }
+  let sponsers: Sponser[] = [];
+  async function get_sponsers() {
+    const response = await fetch(
+      "https://afdian.com/api/creator/get-sponsors?user_id=bbb3f596df9c11ea922752540025c377&type=new&page=1",
+    );
+    const data = await response.json();
+    console.log(data);
+    if (data.ec == 200) {
+      sponsers = data.data.list.slice(0, 10);
+    }
+  }
+  get_sponsers();
 </script>
 
 <div class="grid grid-cols-2 gap-4 p-8 pt-12">
@@ -30,14 +54,29 @@
     <h5
       class="mb-2 text-2xl font-bold tracking-tight text-gray-900 dark:text-white"
     >
-      该项目需要你的支持
+      支持该项目的开发
     </h5>
-    <p class="font-normal text-gray-700 dark:text-gray-400 leading-tight">
-      如果你喜欢这个项目，可以通过以下方式来支持我：
-    </p>
-    <p>- 反馈 BUG 以及提出建议</p>
-    <p>- 分享给你的朋友</p>
-    <p>- 赞助</p>
+    <List tag="ul" class="space-y-1 text-gray-500">
+      <Li
+        >反馈 BUG 或提供建议：<a
+          href="https://github.com/Xinrea/bili-shadowreplay"
+          target="_blank"><GithubSolid class="inline" />GitHub</a
+        ></Li
+      >
+      <Li
+        >赞助：<a href="https://afdian.com/a/Xinrea" target="_blank"
+          ><GlobeSolid class="inline" />爱发电</a
+        ></Li
+      >
+    </List>
+    <div class="mt-4 flex flex-row items-center">
+      <span>感谢</span>
+      {#each sponsers as sp}
+        <Image iclass="rounded-full w-8" src={sp.avatar} />
+        <Tooltip>{sp.name}</Tooltip>
+      {/each}
+      <span>等的赞助</span>
+    </div>
   </Card>
 
   <Card class="!max-w-none">
@@ -51,6 +90,4 @@
         .online} 个正在直播，{summary_info.room.offline} 个未直播。
     </p>
   </Card>
-  <Card class="!max-w-none">444</Card>
-  <Card class="!max-w-none">444</Card>
 </div>

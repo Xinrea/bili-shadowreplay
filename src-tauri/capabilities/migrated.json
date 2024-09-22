@@ -3,7 +3,8 @@
   "description": "permissions that were migrated from v1",
   "local": true,
   "windows": [
-    "main", "Live*"
+    "main",
+    "Live*"
   ],
   "permissions": [
     "core:default",
@@ -29,6 +30,7 @@
     "core:window:allow-maximize",
     "core:window:allow-unmaximize",
     "core:window:allow-set-title",
+    "sql:allow-execute",
     "shell:allow-open",
     "dialog:allow-open",
     "dialog:allow-save",
@@ -40,12 +42,19 @@
       "allow": [
         {
           "url": "https://*.hdslb.com/"
+        },
+        {
+          "url": "https://afdian.com/"
+        },
+        {
+          "url": "https://*.afdiancdn.com/"
         }
       ]
     },
     "dialog:default",
     "shell:default",
     "fs:default",
-    "http:default"
+    "http:default",
+    "sql:default"
   ]
 }

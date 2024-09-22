@@ -372,6 +372,13 @@
   dependencies:
     "@tauri-apps/api" "^2.0.0-rc.4"
 
+"@tauri-apps/plugin-sql@^2.0.0-rc.1":
+  version "2.0.0-rc.1"
+  resolved "https://registry.yarnpkg.com/@tauri-apps/plugin-sql/-/plugin-sql-2.0.0-rc.1.tgz#aa21b4744cab72d082297844500c4b53837df964"
+  integrity sha512-F8Wq+L8SdVt76WCU161WCeM5CLkh3gzKblXhXyFFJ8m+BY1P83zVyCxriems3mYULvPPtFwlg8NEgLJycS1HYQ==
+  dependencies:
+    "@tauri-apps/api" "^2.0.0-rc.4"
+
 "@tsconfig/node10@^1.0.7":
   version "1.0.11"
   resolved "https://registry.npmjs.org/@tsconfig/node10/-/node10-1.0.11.tgz"

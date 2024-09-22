@@ -16,6 +16,7 @@
     "@tauri-apps/plugin-fs": "^2.0.0-rc.2",
     "@tauri-apps/plugin-http": "^2.0.0-rc.2",
     "@tauri-apps/plugin-shell": "^2.0.0-rc.1",
+    "@tauri-apps/plugin-sql": "^2.0.0-rc.1",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {

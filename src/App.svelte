@@ -5,9 +5,19 @@
   import Setting from "./lib/Setting.svelte";
   import Account from "./lib/Account.svelte";
   import TitleBar from "./lib/TitleBar.svelte";
-  const urlParams = new URLSearchParams(window.location.search);
+  import { invoke } from "@tauri-apps/api/core";
+  import { Recorders } from "./lib/db";
   let active = "#总览";
   let room_count = 0;
+  async function init() {
+    const recorders = await Recorders.query();
+    recorders.forEach((r) => {
+      invoke("add_recorder", { roomId: r.room_id }).catch((e) => {
+        console.warn("add recorder failed:", e);
+      });
+    });
+  }
+  init();
 </script>
 
 <main>
@@ -71,6 +81,5 @@
 
   .content {
     height: 100vh;
-    width: 100vw;
   }
 </style>

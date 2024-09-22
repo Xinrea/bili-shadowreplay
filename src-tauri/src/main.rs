@@ -1,16 +1,19 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod db;
 mod recorder;
 mod recorder_manager;
 mod tray;
 
 use custom_error::custom_error;
+use db::Database;
 use recorder::bilibili::errors::BiliClientError;
 use recorder::bilibili::profile::Profile;
 use recorder::bilibili::{BiliClient, QrInfo, QrStatus};
 use recorder_manager::{RecorderInfo, RecorderList, RecorderManager};
 use tauri::utils::config::WindowEffectsConfig;
+use tauri_plugin_sql::{Migration, MigrationKind};
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -76,7 +79,6 @@ fn show_in_folder(path: String) {
 
 #[derive(serde::Deserialize, serde::Serialize, Clone)]
 pub struct Config {
-    rooms: Vec<u64>,
     admin_uid: Vec<u64>,
     cache: String,
     output: String,
@@ -96,7 +98,6 @@ impl Config {
             }
         }
         let config = Config {
-            rooms: Vec::new(),
             admin_uid: Vec::new(),
             cache: app_dirs
                 .cache_dir
@@ -126,19 +127,6 @@ impl Config {
         std::fs::create_dir_all(&app_dirs.config_dir).unwrap();
         let config_path = app_dirs.config_dir.join("Conf.toml");
         std::fs::write(config_path, content).unwrap();
-    }
-
-    pub fn add(&mut self, room: u64) {
-        if self.rooms.contains(&room) {
-            return;
-        }
-        self.rooms.push(room);
-        self.save();
-    }
-
-    pub fn remove(&mut self, room: u64) {
-        self.rooms.retain(|&x| x != room);
-        self.save();
     }
 
     pub fn set_admins(&mut self, admins: Vec<u64>) {
@@ -291,7 +279,7 @@ async fn add_recorder(state: tauri::State<'_, State>, room_id: u64) -> Result<()
 #[tauri::command]
 async fn remove_recorder(state: tauri::State<'_, State>, room_id: u64) -> Result<(), ()> {
     // Config update
-    state.recorder_manager.remove_recorder(room_id).await;
+    let _ = state.recorder_manager.remove_recorder(room_id).await;
     Ok(())
 }
 
@@ -537,42 +525,61 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         simplelog::ColorChoice::Auto,
     )])
     .unwrap();
+
     // Setup ffmpeg
     ffmpeg_sidecar::download::auto_download().unwrap();
 
-    let client = Arc::new(BiliClient::new().unwrap());
-    let config = Arc::new(RwLock::new(Config::load()));
-    let recorder_manager = Arc::new(RecorderManager::new(config.clone()));
-
-    // Start recorder manager in tokio runtime
-    // create a new tokio runtime
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(4)
-        .enable_all()
-        .build()
-        .unwrap();
-    let recorder_manager_clone = recorder_manager.clone();
-    let client_clone = client.clone();
-    let config_clone = config.clone();
-    rt.block_on(async move {
-        client_clone
-            .set_cookies(&config_clone.read().await.cookies)
-            .await;
-        recorder_manager_clone.init().await;
-        recorder_manager_clone.run().await;
-    });
+    //Setup database
+    let migrations = vec![Migration {
+        version: 1,
+        description: "create_initial_tables",
+        sql: r#"
+            CREATE TABLE accounts (uid INTEGER PRIMARY KEY, name TEXT, avatar TEXT, csrf TEXT, cookies TEXT, created_at TEXT);
+            CREATE TABLE recorders (room_id INTEGER PRIMARY KEY, created_at TEXT);
+            CREATE TABLE records (live_id INTEGER PRIMARY KEY, room_id INTEGER, length INTEGER, size INTEGER, created_at TEXT);
+            CREATE TABLE danmu_statistics (live_id INTEGER PRIMARY KEY, room_id INTEGER, value INTEGER, time_point TEXT);
+            CREATE TABLE messages (id INTEGER PRIMARY KEY, title TEXT, content TEXT, read INTEGER, created_at TEXT);
+            CREATE TABLE videos (id INTEGER PRIMARY KEY, file TEXT, length INTEGER, size INTEGER, status INTEGER, title TEXT, desc TEXT, tags TEXT, area INTEGER);
+            "#,
+        kind: MigrationKind::Up,
+    }];
 
     // Tauri part
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|_, _, _| {}))
+        .plugin(
+            tauri_plugin_sql::Builder::default()
+                .add_migrations("sqlite:data.db", migrations)
+                .build(),
+        )
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
-        .setup(move |app| {
+        .setup(|app| {
+            // init
+            let client = Arc::new(BiliClient::new().unwrap());
+            let config = Arc::new(RwLock::new(Config::load()));
+            let recorder_manager = Arc::new(RecorderManager::new(config.clone()));
+            let client_clone = client.clone();
+            let config_clone = config.clone();
+            let recorder_manager_clone = recorder_manager.clone();
+            let dbs = app.state::<tauri_plugin_sql::DbInstances>().inner();
+            let db = Database::new();
+            tauri::async_runtime::block_on(async move {
+                client_clone
+                    .set_cookies(&config_clone.read().await.cookies)
+                    .await;
+                recorder_manager_clone.run().await;
+                db.set(dbs.0.lock().await.get("sqlite:data.db").unwrap().clone())
+                    .await;
+                let recorders = db.get_recorders().await;
+                log::info!("test: {:#?}", recorders);
+            });
             let state = State {
                 client,
-                config: config.clone(),
-                recorder_manager: recorder_manager.clone(),
+                config,
+                recorder_manager,
                 app_handle: app.handle().clone(),
             };
             let _ = tray::create_tray(app.handle());

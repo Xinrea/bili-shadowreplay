@@ -330,6 +330,7 @@ impl BiliRecorder {
     }
 
     async fn extract_timestamp(&self, header_url: &str) -> u64 {
+        log::debug!("[{}]Extract timestamp from {}", self.room_id, header_url);
         let re = Regex::new(r"h(\d+).m4s").unwrap();
         if let Some(cap) = re.captures(header_url) {
             let ts = cap.get(1).unwrap().as_str().parse().unwrap();
@@ -355,6 +356,10 @@ impl BiliRecorder {
                 return Err(BiliClientError::InvalidPlaylist);
             }
             timestamp = self.extract_timestamp(&header_url).await;
+            if timestamp == 0 {
+                log::error!("[{}]Parse timestamp failed: {}", self.room_id, header_url);
+                return Err(BiliClientError::InvalidPlaylist);
+            }
             // now work dir is confirmed
             work_dir = format!("{}/{}/{}/", cache_path, self.room_id, timestamp);
             // if folder is exisited, need to load previous data into cache

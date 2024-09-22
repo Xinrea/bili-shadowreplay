@@ -41,19 +41,6 @@ impl RecorderManager {
         }
     }
 
-    pub async fn init(&self) {
-        let config = self.config.read().await.clone();
-        for room_id in config.rooms.iter() {
-            let recorder = BiliRecorder::new(*room_id, self.config.clone())
-                .await
-                .unwrap();
-            // run recorder
-            recorder.run().await;
-            self.recorders.insert(*room_id, recorder);
-        }
-        log::info!("RecorderManager initialized");
-    }
-
     pub async fn run(&self) {
         let addr = SocketAddr::from(([127, 0, 0, 1], 0));
         let listener = TcpListener::bind(&addr).await.unwrap();
@@ -71,12 +58,6 @@ impl RecorderManager {
         match BiliRecorder::new(room_id, self.config.clone()).await {
             Ok(recorder) => {
                 self.recorders.insert(room_id, recorder);
-                // update config
-                {
-                    let mut config = self.config.write().await;
-                    config.rooms.push(room_id);
-                    config.save();
-                }
                 // run recorder
                 let recorder = self.recorders.get(&room_id).unwrap();
                 recorder.value().run().await;
@@ -90,12 +71,6 @@ impl RecorderManager {
         let recorder = self.recorders.remove(&room_id);
         if recorder.is_none() {
             return Err(format!("Recorder {} not found", room_id));
-        }
-        // update config
-        {
-            let mut config = self.config.write().await;
-            config.rooms.retain(|&x| x != room_id);
-            config.save();
         }
         Ok(())
     }

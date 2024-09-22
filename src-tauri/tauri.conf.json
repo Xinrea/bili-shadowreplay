@@ -19,7 +19,11 @@
   "productName": "bili-shadowreplay",
   "version": "0.1.0",
   "identifier": "cn.vjoi.bilishadowreplay",
-  "plugins": {},
+  "plugins": {
+    "sql": {
+      "preload": ["sqlite:data.db"]
+    }
+  },
   "app": {
     "windows": [
       {
@@ -27,7 +31,7 @@
         "fullscreen": false,
         "resizable": true,
         "title": "BiliBili ShadowReplay",
-        "width": 1200,
+        "width": 1300,
         "height": 600,
         "transparent": true,
         "decorations": false,

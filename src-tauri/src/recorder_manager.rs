@@ -1,6 +1,8 @@
-use crate::recorder::bilibili::UserInfo;
+use crate::recorder::bilibili::{self, UserInfo};
+use crate::recorder::RecorderError;
 use crate::recorder::{bilibili::RoomInfo, BiliRecorder};
 use crate::Config;
+use custom_error::custom_error;
 use dashmap::DashMap;
 use hyper::{
     service::{make_service_fn, service_fn},
@@ -32,6 +34,38 @@ pub struct RecorderManager {
     hls_server_addr: Arc<RwLock<Option<SocketAddr>>>,
 }
 
+custom_error! {pub RecorderManagerError
+    AlreadyExisted { room_id: u64 } = "Recorder {room_id} already existed",
+    NotFound {room_id: u64 } = "Recorder {room_id} not found",
+    RecorderError { err: RecorderError } = "Recorder error",
+    IOError {err: std::io::Error } = "IO error",
+    HLSError { err: hyper::Error } = "HLS server error",
+}
+
+impl From<hyper::Error> for RecorderManagerError {
+    fn from(value: hyper::Error) -> Self {
+        RecorderManagerError::HLSError { err: value }
+    }
+}
+
+impl From<std::io::Error> for RecorderManagerError {
+    fn from(value: std::io::Error) -> Self {
+        RecorderManagerError::IOError { err: value }
+    }
+}
+
+impl From<RecorderError> for RecorderManagerError {
+    fn from(value: RecorderError) -> Self {
+        RecorderManagerError::RecorderError { err: value }
+    }
+}
+
+impl From<RecorderManagerError> for String {
+    fn from(value: RecorderManagerError) -> Self {
+        value.to_string()
+    }
+}
+
 impl RecorderManager {
     pub fn new(config: Arc<RwLock<Config>>) -> RecorderManager {
         RecorderManager {
@@ -41,50 +75,44 @@ impl RecorderManager {
         }
     }
 
-    pub async fn run(&self) {
+    /// starting HLS server
+    pub async fn run_hls(&self) -> Result<(), RecorderManagerError> {
         let addr = SocketAddr::from(([127, 0, 0, 1], 0));
-        let listener = TcpListener::bind(&addr).await.unwrap();
-
-        let server_addr = self.start_hls_server(listener).await.unwrap();
-        log::info!("HLS server started on http://{}", server_addr);
+        let listener = TcpListener::bind(&addr).await?;
+        let server_addr = self.start_hls_server(listener).await?;
+        log::info!("HLS server started on {}", server_addr);
         self.hls_server_addr.write().await.replace(server_addr);
+        Ok(())
     }
 
-    pub async fn add_recorder(&self, room_id: u64) -> Result<(), String> {
+    pub async fn add_recorder(&self, room_id: u64) -> Result<(), RecorderManagerError> {
         // check existing recorder
         if self.recorders.contains_key(&room_id) {
-            return Err(format!("Recorder {} already exists", room_id));
+            return Err(RecorderManagerError::AlreadyExisted { room_id });
         }
-        match BiliRecorder::new(room_id, self.config.clone()).await {
-            Ok(recorder) => {
-                self.recorders.insert(room_id, recorder);
-                // run recorder
-                let recorder = self.recorders.get(&room_id).unwrap();
-                recorder.value().run().await;
-                Ok(())
-            }
-            Err(e) => Err(e.to_string()),
-        }
+        let recorder = BiliRecorder::new(room_id, self.config.clone()).await?;
+        self.recorders.insert(room_id, recorder);
+        // run recorder
+        let recorder = self.recorders.get(&room_id).unwrap();
+        recorder.value().run().await;
+        Ok(())
     }
 
-    pub async fn remove_recorder(&self, room_id: u64) -> Result<(), String> {
+    pub async fn remove_recorder(&self, room_id: u64) -> Result<(), RecorderManagerError> {
         let recorder = self.recorders.remove(&room_id);
         if recorder.is_none() {
-            return Err(format!("Recorder {} not found", room_id));
+            return Err(RecorderManagerError::NotFound { room_id });
         }
         Ok(())
     }
 
-    pub async fn clip(&self, room_id: u64, d: f64) -> Result<String, String> {
+    pub async fn clip(&self, room_id: u64, d: f64) -> Result<String, RecorderManagerError> {
         let recorder = self.recorders.get(&room_id);
         if recorder.is_none() {
-            return Err(format!("Recorder {} not found", room_id));
+            return Err(RecorderManagerError::NotFound { room_id });
         }
         let recorder = recorder.unwrap();
-        match recorder.value().clip(room_id, d).await {
-            Ok(f) => Ok(f),
-            Err(e) => Err(e.to_string()),
-        }
+        Ok(recorder.value().clip(room_id, d).await?)
     }
 
     pub async fn clip_range(
@@ -93,16 +121,13 @@ impl RecorderManager {
         ts: u64,
         start: f64,
         end: f64,
-    ) -> Result<String, String> {
+    ) -> Result<String, RecorderManagerError> {
         let recorder = self.recorders.get(&room_id);
         if recorder.is_none() {
-            return Err(format!("Recorder {} not found", room_id));
+            return Err(RecorderManagerError::NotFound { room_id });
         }
         let recorder = recorder.unwrap();
-        match recorder.value().clip_range(ts, start, end).await {
-            Ok(f) => Ok(f),
-            Err(e) => Err(e.to_string()),
-        }
+        Ok(recorder.value().clip_range(ts, start, end).await?)
     }
 
     pub async fn get_recorder_list(&self) -> RecorderList {
@@ -167,7 +192,10 @@ impl RecorderManager {
         }
     }
 
-    async fn start_hls_server(&self, listener: TcpListener) -> Result<SocketAddr, hyper::Error> {
+    async fn start_hls_server(
+        &self,
+        listener: TcpListener,
+    ) -> Result<SocketAddr, RecorderManagerError> {
         let recorders = self.recorders.clone();
         let cache_path = self.config.read().await.cache.clone();
         let make_svc = make_service_fn(move |_conn| {

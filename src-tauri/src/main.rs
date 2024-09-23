@@ -204,6 +204,7 @@ fn copy_dir_all(
 
 #[derive(Clone)]
 struct State {
+    db: Arc<Database>,
     client: Arc<BiliClient>,
     config: Arc<RwLock<Config>>,
     recorder_manager: Arc<RecorderManager>,
@@ -220,11 +221,7 @@ impl State {
     }
 
     pub async fn clip(&self, room_id: u64, len: f64) -> Result<String, String> {
-        if let Ok(file) = self.recorder_manager.clip(room_id, len).await {
-            Ok(file)
-        } else {
-            Err("Clip error".to_string())
-        }
+        Ok(self.recorder_manager.clip(room_id, len).await?)
     }
 
     pub async fn clip_range(
@@ -234,11 +231,7 @@ impl State {
         x: f64,
         y: f64,
     ) -> Result<String, String> {
-        if let Ok(file) = self.recorder_manager.clip_range(room_id, ts, x, y).await {
-            Ok(file)
-        } else {
-            Err("Clip error".to_string())
-        }
+        Ok(self.recorder_manager.clip_range(room_id, ts, x, y).await?)
     }
 }
 
@@ -265,22 +258,22 @@ async fn get_qr_status(state: tauri::State<'_, State>, qrcode_key: &str) -> Resu
 }
 
 #[tauri::command]
-async fn add_recorder(state: tauri::State<'_, State>, room_id: u64) -> Result<(), String> {
-    // Config update
-    if let Err(e) = state.recorder_manager.add_recorder(room_id).await {
-        println!("add recorder failed: {:?}", e);
-        Err(e.to_string())
-    } else {
-        println!("add recorder success: {}", room_id);
-        Ok(())
+async fn add_recorder(
+    state: tauri::State<'_, State>,
+    room_id: u64,
+) -> Result<db::RecorderRow, String> {
+    match state.recorder_manager.add_recorder(room_id).await {
+        Ok(()) => Ok(state.db.add_recorder(room_id).await?),
+        Err(e) => Err(e.to_string()),
     }
 }
 
 #[tauri::command]
-async fn remove_recorder(state: tauri::State<'_, State>, room_id: u64) -> Result<(), ()> {
-    // Config update
-    let _ = state.recorder_manager.remove_recorder(room_id).await;
-    Ok(())
+async fn remove_recorder(state: tauri::State<'_, State>, room_id: u64) -> Result<(), String> {
+    match state.recorder_manager.remove_recorder(room_id).await {
+        Ok(()) => Ok(state.db.remove_recorder(room_id).await?),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 #[tauri::command]
@@ -565,18 +558,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let config_clone = config.clone();
             let recorder_manager_clone = recorder_manager.clone();
             let dbs = app.state::<tauri_plugin_sql::DbInstances>().inner();
-            let db = Database::new();
+            let db = Arc::new(Database::new());
+            let db_clone = db.clone();
             tauri::async_runtime::block_on(async move {
+                db_clone
+                    .set(dbs.0.lock().await.get("sqlite:data.db").unwrap().clone())
+                    .await;
+                let initial_rooms = db_clone.get_recorders().await;
+                for room in initial_rooms {
+                    if let Err(e) = recorder_manager_clone.add_recorder(room.room_id).await {
+                        log::error!("error when adding initial rooms: {}", e);
+                    }
+                }
                 client_clone
                     .set_cookies(&config_clone.read().await.cookies)
                     .await;
-                recorder_manager_clone.run().await;
-                db.set(dbs.0.lock().await.get("sqlite:data.db").unwrap().clone())
-                    .await;
-                let recorders = db.get_recorders().await;
-                log::info!("test: {:#?}", recorders);
+                let _ = recorder_manager_clone.run_hls().await;
             });
             let state = State {
+                db,
                 client,
                 config,
                 recorder_manager,

@@ -5,8 +5,6 @@ custom_error! {pub BiliClientError
     InitClientError = "Client init error",
     InvalidCode = "Invalid Code",
     InvalidValue = "Invalid value",
-    InvalidIndex = "Invalid index",
-    InvalidPlaylist = "Invalid playlist",
     InvalidUrl = "Invalid url",
     InvalidFormat = "Invalid stream format",
     EmptyCache = "Empty cache",

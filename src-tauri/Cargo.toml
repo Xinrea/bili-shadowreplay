@@ -22,7 +22,7 @@ m3u8-rs = "5.0.3"
 async-std = "1.12.0"
 futures = "0.3.28"
 ffmpeg-sidecar = "1.1"
-chrono = "0.4.24"
+chrono = { version = "0.4.24", features = ["serde"] }
 toml = "0.7.3"
 custom_error = "1.9.2"
 felgens = { git = "https://github.com/Xinrea/felgens.git", tag = "v0.4.1" }

@@ -3,6 +3,7 @@ use async_std::{fs, stream::StreamExt};
 use bilibili::{errors::BiliClientError, RoomInfo};
 use bilibili::{BiliClient, UserInfo};
 use chrono::prelude::*;
+use custom_error::custom_error;
 use felgens::{ws_socket_object, FelgensError, WsStreamMessageType};
 use ffmpeg_sidecar::{
     command::FfmpegCommand,
@@ -55,8 +56,23 @@ pub enum StreamType {
     FMP4,
 }
 
+custom_error! {pub RecorderError
+    NotStarted = "Room is offline",
+    EmptyCache = "Cache is empty",
+    M3u8ParseFailed = "Parse m3u8 content failed",
+    InvalidM3u8Url {url: String} = "Invalid m3u8 url: {url}",
+    InvalidPlaylist = "Invalid m3u8 playlist",
+    ClientError {err: BiliClientError} = "BiliClient fetch failed",
+}
+
+impl From<BiliClientError> for RecorderError {
+    fn from(value: BiliClientError) -> Self {
+        RecorderError::ClientError { err: value }
+    }
+}
+
 impl BiliRecorder {
-    pub async fn new(room_id: u64, config: Arc<RwLock<Config>>) -> Result<Self, BiliClientError> {
+    pub async fn new(room_id: u64, config: Arc<RwLock<Config>>) -> Result<Self, RecorderError> {
         let client = BiliClient::new()?;
         client.set_cookies(&config.read().await.cookies).await;
         let room_info = client.get_room_info(room_id).await?;
@@ -268,7 +284,7 @@ impl BiliRecorder {
         *self.quit.lock().await = false;
     }
 
-    async fn get_playlist(&self) -> Result<Playlist, BiliClientError> {
+    async fn get_playlist(&self) -> Result<Playlist, RecorderError> {
         let url = self.m3u8_url.read().await.clone();
         let mut index_content = self.client.read().await.get_index_content(&url).await?;
         if index_content.contains("Not Found") {
@@ -276,14 +292,14 @@ impl BiliRecorder {
             if self.check_status().await {
                 index_content = self.client.read().await.get_index_content(&url).await?;
             } else {
-                return Err(BiliClientError::InvalidResponse);
+                return Err(RecorderError::NotStarted);
             }
         }
         m3u8_rs::parse_playlist_res(index_content.as_bytes())
-            .map_err(|_| BiliClientError::InvalidPlaylist)
+            .map_err(|_| RecorderError::M3u8ParseFailed)
     }
 
-    async fn get_header_url(&self) -> Result<String, BiliClientError> {
+    async fn get_header_url(&self) -> Result<String, RecorderError> {
         let url = self.m3u8_url.read().await.clone();
         let mut index_content = self.client.read().await.get_index_content(&url).await?;
         if index_content.contains("Not Found") {
@@ -291,7 +307,7 @@ impl BiliRecorder {
             if self.check_status().await {
                 index_content = self.client.read().await.get_index_content(&url).await?;
             } else {
-                return Err(BiliClientError::InvalidResponse);
+                return Err(RecorderError::NotStarted);
             }
         }
         let mut header_url = String::from("");
@@ -302,7 +318,7 @@ impl BiliRecorder {
         Ok(header_url)
     }
 
-    async fn ts_url(&self, ts_url: &String) -> Result<String, BiliClientError> {
+    async fn ts_url(&self, ts_url: &String) -> Result<String, RecorderError> {
         // Construct url for ts and fmp4 stream.
         match *self.stream_type.read().await {
             StreamType::TS => {
@@ -312,10 +328,10 @@ impl BiliRecorder {
                     if let Some(host) = host_part.split('/').next() {
                         Ok(format!("https://{}/{}", host, ts_url))
                     } else {
-                        Err(BiliClientError::InvalidUrl)
+                        Err(RecorderError::InvalidM3u8Url { url })
                     }
                 } else {
-                    Err(BiliClientError::InvalidUrl)
+                    Err(RecorderError::InvalidM3u8Url { url })
                 }
             }
             StreamType::FMP4 => {
@@ -323,7 +339,7 @@ impl BiliRecorder {
                 if let Some(prefix_part) = url.strip_suffix("index.m3u8") {
                     Ok(format!("{}{}", prefix_part, ts_url))
                 } else {
-                    Err(BiliClientError::InvalidUrl)
+                    Err(RecorderError::InvalidM3u8Url { url })
                 }
             }
         }
@@ -342,7 +358,7 @@ impl BiliRecorder {
         }
     }
 
-    async fn update_entries(&self) -> Result<(), BiliClientError> {
+    async fn update_entries(&self) -> Result<(), RecorderError> {
         let parsed = self.get_playlist().await;
         let cache_path = self.config.read().await.cache.clone();
         let mut timestamp = *self.timestamp.read().await;
@@ -353,12 +369,12 @@ impl BiliRecorder {
             // Get url from EXT-X-MAP
             let header_url = self.get_header_url().await?;
             if header_url.is_empty() {
-                return Err(BiliClientError::InvalidPlaylist);
+                return Err(RecorderError::InvalidPlaylist);
             }
             timestamp = self.extract_timestamp(&header_url).await;
             if timestamp == 0 {
                 log::error!("[{}]Parse timestamp failed: {}", self.room_id, header_url);
-                return Err(BiliClientError::InvalidPlaylist);
+                return Err(RecorderError::InvalidPlaylist);
             }
             // now work dir is confirmed
             work_dir = format!("{}/{}/{}/", cache_path, self.room_id, timestamp);
@@ -443,7 +459,7 @@ impl BiliRecorder {
                 });
             }
             Err(_) => {
-                return Err(BiliClientError::InvalidIndex);
+                return Err(RecorderError::InvalidPlaylist);
             }
         }
         Ok(())
@@ -461,13 +477,13 @@ impl BiliRecorder {
         log::info!("Restore {} entries from local file", entries.len());
     }
 
-    pub async fn clip(&self, ts: u64, d: f64) -> Result<String, BiliClientError> {
+    pub async fn clip(&self, ts: u64, d: f64) -> Result<String, RecorderError> {
         let total_length = *self.ts_length.read().await;
         self.clip_range(ts, total_length - d, total_length).await
     }
 
     /// x and y are relative to first sequence
-    pub async fn clip_range(&self, ts: u64, x: f64, y: f64) -> Result<String, BiliClientError> {
+    pub async fn clip_range(&self, ts: u64, x: f64, y: f64) -> Result<String, RecorderError> {
         if *self.timestamp.read().await == ts {
             self.clip_live_range(x, y).await
         } else {
@@ -480,12 +496,12 @@ impl BiliRecorder {
         ts: u64,
         x: f64,
         y: f64,
-    ) -> Result<String, BiliClientError> {
+    ) -> Result<String, RecorderError> {
         let cache_path = self.config.read().await.cache.clone();
         let work_dir = format!("{}/{}/{}", cache_path, self.room_id, ts);
         let entries = self.get_fs_entries(&work_dir).await;
         if entries.is_empty() {
-            return Err(BiliClientError::EmptyCache);
+            return Err(RecorderError::EmptyCache);
         }
         let mut file_list = String::new();
         // header fist
@@ -534,12 +550,12 @@ impl BiliRecorder {
         Ok(file_name)
     }
 
-    pub async fn clip_live_range(&self, x: f64, y: f64) -> Result<String, BiliClientError> {
+    pub async fn clip_live_range(&self, x: f64, y: f64) -> Result<String, RecorderError> {
         let mut to_combine = Vec::new();
         let header_copy = self.header.read().await.clone();
         let entry_copy = self.ts_entries.lock().await.clone();
         if entry_copy.is_empty() {
-            return Err(BiliClientError::EmptyCache);
+            return Err(RecorderError::EmptyCache);
         }
         let mut start = x;
         let mut end = y;

@@ -49,24 +49,28 @@
     return canvas.toDataURL();
   }
 
+  let video_file = null;
   async function do_post() {
-    if (end == 0) {
-      alert("请检查选区范围");
+    if (!video_file) {
+      if (end == 0) {
+        alert("请检查选区范围");
+        return;
+      }
+      if (end - start < 5.0) {
+        alert("选区过短:," + (end - start).toFixed(2));
+        return;
+      }
+      appWindow.setTitle(`[${room_id}]${room_info.room_title} 切片中···`);
+      video_file = await invoke("clip_range", {
+        roomId: parseInt(room_id),
+        ts: ts,
+        x: start,
+        y: end,
+      });
+      appWindow.setTitle(`[${room_id}]${room_info.room_title} 完成`);
+      console.log("video file generatd:", video_file);
       return;
     }
-    if (end - start < 5.0) {
-      alert("选区过短:," + (end - start).toFixed(2));
-      return;
-    }
-    appWindow.setTitle(`[${room_id}]${room_info.room_title} 切片中···`);
-    const video_file = await invoke("clip_range", {
-      roomId: parseInt(room_id),
-      ts: ts,
-      x: start,
-      y: end,
-    });
-    appWindow.setTitle(`[${room_id}]${room_info.room_title} 完成`);
-    console.log("video file generatd:", video_file);
     const cover = generateCover();
     appWindow.setTitle(`[${room_id}]${room_info.room_title} 上传中···`);
     loading = true;
@@ -79,6 +83,7 @@
       .then(() => {
         loading = false;
         appWindow.setTitle(`[${room_id}]${room_info.room_title} 投稿完成`);
+        video_file = null;
       })
       .catch((e) => {
         loading = false;
@@ -114,8 +119,8 @@
           {#if loading}
             <Spinner class="me-3" size="4" />
           {/if}
-          投稿</Button
-        >
+          {video_file ? "投稿" : "切片"}
+        </Button>
       </div>
     </div>
   </div>

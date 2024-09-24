@@ -65,6 +65,14 @@
         `;
     shakaBottomControls.appendChild(selfSeekbar);
 
+    function isLive() {
+      let total = video.duration;
+      if (total == Infinity || total >= 4294967296) {
+        return true;
+      }
+      return false;
+    }
+
     function get_total() {
       let total = video.duration;
       if (total == Infinity || total >= 4294967296) {
@@ -74,16 +82,37 @@
     }
     // add keydown event listener for '[' and ']' to control range
     document.addEventListener("keydown", async (e) => {
+      const target = e.target as HTMLInputElement;
+      if (
+        (target.tagName.toLowerCase() === "input" && target.type === "text") ||
+        target.tagName.toLowerCase() === "textarea"
+      ) {
+        return;
+      }
       switch (e.key) {
         case "[":
-          start = video.currentTime;
+          if (isLive()) {
+            start =
+              (player.getPlayheadTimeAsDate() -
+                player.getPresentationStartTimeAsDate()) /
+              1000;
+          } else {
+            start = video.currentTime;
+          }
           if (end < start) {
             end = get_total();
           }
           console.log(start, end);
           break;
         case "]":
-          end = video.currentTime;
+          if (isLive()) {
+            end =
+              (player.getPlayheadTimeAsDate() -
+                player.getPresentationStartTimeAsDate()) /
+              1000;
+          } else {
+            end = video.currentTime;
+          }
           if (start > end) {
             start = 0;
           }

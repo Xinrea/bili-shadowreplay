@@ -1,12 +1,7 @@
-use chrono::DateTime;
 use chrono::Utc;
 use custom_error::custom_error;
 use sqlx::Pool;
-use sqlx::Row;
 use sqlx::Sqlite;
-use sqlx::Value;
-use sqlx::ValueRef;
-use std::str::FromStr;
 use tokio::sync::RwLock;
 
 pub struct Database {
@@ -15,15 +10,26 @@ pub struct Database {
 
 /// Recorder in database is pretty simple
 /// because many room infos are collected in realtime
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
 pub struct RecorderRow {
     pub room_id: u64,
-    pub created_at: DateTime<Utc>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+pub struct AccountRow {
+    pub uid: u64,
+    pub name: String,
+    pub avatar: String,
+    pub csrf: String,
+    pub cookies: String,
+    pub created_at: String,
 }
 
 custom_error! { pub DatabaseError
     InsertError = "Entry insert failed",
     NotFoundError = "Entry not found",
+    InvalidCookiesError = "Cookies are invalid",
     DBError {err: sqlx::Error } = "DB error",
     SQLError { sql: String } = "SQL is incorret: {sql}"
 }
@@ -57,16 +63,13 @@ impl Database {
         let lock = self.db.read().await.clone().unwrap();
         let recorder = RecorderRow {
             room_id,
-            created_at: Utc::now(),
+            created_at: Utc::now().to_rfc3339(),
         };
-        let sql = sqlx::query("INSERT INTO recorders (room_id, created_at) VALUES ($1, $2)")
+        let _ = sqlx::query("INSERT INTO recorders (room_id, created_at) VALUES ($1, $2)")
             .bind(room_id as i64)
-            .bind(recorder.created_at.to_rfc3339())
+            .bind(&recorder.created_at)
             .execute(&lock)
             .await?;
-        if sql.rows_affected() != 1 {
-            return Err(DatabaseError::InsertError);
-        }
         Ok(recorder)
     }
 
@@ -82,30 +85,27 @@ impl Database {
         Ok(())
     }
 
-    pub async fn get_recorders(&self) -> Vec<RecorderRow> {
+    pub async fn get_recorders(&self) -> Result<Vec<RecorderRow>, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
-        let query = sqlx::query("SELECT * FROM recorders");
-        let mut ret = Vec::new();
-        if let Ok(rows) = query.fetch_all(&lock).await {
-            for r in rows {
-                let room_id = r
-                    .try_get_raw(0)
-                    .unwrap()
-                    .to_owned()
-                    .try_decode::<u64>()
-                    .unwrap();
-                let time = r
-                    .try_get_raw(1)
-                    .unwrap()
-                    .to_owned()
-                    .try_decode::<String>()
-                    .unwrap();
-                ret.push(RecorderRow {
-                    room_id,
-                    created_at: DateTime::from_str(&time).unwrap(),
-                })
-            }
-        }
-        ret
+        Ok(sqlx::query_as::<_, RecorderRow>("SELECT * FROM recorders")
+            .fetch_all(&lock)
+            .await?)
+    }
+
+    // accounts
+    pub async fn add_account(&self, cookies: &str) -> Result<AccountRow, DatabaseError> {
+        todo!("add new account")
+    }
+
+    pub async fn remove_account(&self, uid: u64) -> Result<(), DatabaseError> {
+        todo!("remove target account")
+    }
+
+    // CREATE TABLE accounts (uid INTEGER PRIMARY KEY, name TEXT, avatar TEXT, csrf TEXT, cookies TEXT, created_at TEXT);
+    pub async fn get_accounts(&self) -> Result<Vec<AccountRow>, DatabaseError> {
+        let lock = self.db.read().await.clone().unwrap();
+        Ok(sqlx::query_as::<_, AccountRow>("SELECT * FROM accounts")
+            .fetch_all(&lock)
+            .await?)
     }
 }

@@ -13,6 +13,7 @@ use futures::future::join_all;
 use m3u8_rs::Playlist;
 use notify_rust::Notification;
 use regex::Regex;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::thread;
 use tokio::sync::mpsc::{self, UnboundedReceiver};
@@ -50,7 +51,7 @@ pub struct BiliRecorder {
     stream_type: Arc<RwLock<StreamType>>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum StreamType {
     TS,
     FMP4,
@@ -61,6 +62,8 @@ custom_error! {pub RecorderError
     EmptyCache = "Cache is empty",
     M3u8ParseFailed = "Parse m3u8 content failed",
     InvalidM3u8Url {url: String} = "Invalid m3u8 url: {url}",
+    EmptyHeader = "Header url is empty",
+    InvalidTimestamp = "Header timestamp is invalid",
     InvalidPlaylist = "Invalid m3u8 playlist",
     ClientError {err: BiliClientError} = "BiliClient fetch failed",
 }
@@ -304,16 +307,26 @@ impl BiliRecorder {
         let mut index_content = self.client.read().await.get_index_content(&url).await?;
         if index_content.contains("Not Found") {
             // 404 try another time after update
+            log::warn!("Index content not found: {}", index_content);
             if self.check_status().await {
                 index_content = self.client.read().await.get_index_content(&url).await?;
             } else {
                 return Err(RecorderError::NotStarted);
             }
         }
+        if index_content.contains("BANDWIDTH") {
+            // this index content provides another m3u8 url
+            let new_url = index_content.lines().last().unwrap();
+            *self.m3u8_url.write().await = String::from(new_url);
+            return Box::pin(self.get_header_url()).await;
+        }
         let mut header_url = String::from("");
         let re = Regex::new(r"h.*\.m4s").unwrap();
         if let Some(captures) = re.captures(&index_content) {
             header_url = captures.get(0).unwrap().as_str().to_string();
+        }
+        if header_url.is_empty() {
+            log::warn!("Parse header url failed: {}", index_content);
         }
         Ok(header_url)
     }
@@ -322,22 +335,17 @@ impl BiliRecorder {
         // Construct url for ts and fmp4 stream.
         match *self.stream_type.read().await {
             StreamType::TS => {
-                // Get host from m3u8 url
                 let url = self.m3u8_url.read().await.clone();
-                if let Some(host_part) = url.strip_prefix("https://") {
-                    if let Some(host) = host_part.split('/').next() {
-                        Ok(format!("https://{}/{}", host, ts_url))
-                    } else {
-                        Err(RecorderError::InvalidM3u8Url { url })
-                    }
+                if let Some(pos) = url.rfind("index.m3u8") {
+                    Ok(format!("{}{}", &url[..pos], ts_url))
                 } else {
                     Err(RecorderError::InvalidM3u8Url { url })
                 }
             }
             StreamType::FMP4 => {
                 let url = self.m3u8_url.read().await.clone();
-                if let Some(prefix_part) = url.strip_suffix("index.m3u8") {
-                    Ok(format!("{}{}", prefix_part, ts_url))
+                if let Some(pos) = url.rfind("index.m3u8") {
+                    Ok(format!("{}{}", &url[..pos], ts_url))
                 } else {
                     Err(RecorderError::InvalidM3u8Url { url })
                 }
@@ -369,12 +377,12 @@ impl BiliRecorder {
             // Get url from EXT-X-MAP
             let header_url = self.get_header_url().await?;
             if header_url.is_empty() {
-                return Err(RecorderError::InvalidPlaylist);
+                return Err(RecorderError::EmptyHeader);
             }
             timestamp = self.extract_timestamp(&header_url).await;
             if timestamp == 0 {
                 log::error!("[{}]Parse timestamp failed: {}", self.room_id, header_url);
-                return Err(RecorderError::InvalidPlaylist);
+                return Err(RecorderError::InvalidTimestamp);
             }
             // now work dir is confirmed
             work_dir = format!("{}/{}/{}/", cache_path, self.room_id, timestamp);
@@ -497,6 +505,7 @@ impl BiliRecorder {
         x: f64,
         y: f64,
     ) -> Result<String, RecorderError> {
+        log::info!("create archive clip for range [{}, {}]", x, y);
         let cache_path = self.config.read().await.cache.clone();
         let work_dir = format!("{}/{}/{}", cache_path, self.room_id, ts);
         let entries = self.get_fs_entries(&work_dir).await;
@@ -508,11 +517,11 @@ impl BiliRecorder {
         file_list += &format!("{}/h{}.m4s", work_dir, ts);
         file_list += "|";
         // add body entries
+        let mut offset = 0.0;
         if !entries.is_empty() {
-            let first_sequence = entries.first().unwrap().sequence;
             for e in entries {
-                let offset = (e.sequence - first_sequence) as f64;
                 if offset < x {
+                    offset += 1.0;
                     continue;
                 }
                 file_list += &format!("{}/{}", work_dir, e.url);
@@ -520,6 +529,7 @@ impl BiliRecorder {
                 if offset > y {
                     break;
                 }
+                offset += 1.0;
             }
         }
 
@@ -551,6 +561,7 @@ impl BiliRecorder {
     }
 
     pub async fn clip_live_range(&self, x: f64, y: f64) -> Result<String, RecorderError> {
+        log::info!("create live clip for range [{}, {}]", x, y);
         let mut to_combine = Vec::new();
         let header_copy = self.header.read().await.clone();
         let entry_copy = self.ts_entries.lock().await.clone();
@@ -562,15 +573,14 @@ impl BiliRecorder {
         if start > end {
             std::mem::swap(&mut start, &mut end);
         }
-        let mut total_length = 0.0;
+        let first_sequence = entry_copy.first().unwrap().sequence;
         for e in entry_copy.iter() {
-            let length = e.length;
-            total_length += length;
-            if total_length < start {
+            let offset = e.sequence - first_sequence;
+            if (offset as f64) < start {
                 continue;
             }
             to_combine.push(e);
-            if total_length >= end {
+            if (offset as f64) >= end {
                 break;
             }
         }

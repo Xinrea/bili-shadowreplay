@@ -564,7 +564,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 db_clone
                     .set(dbs.0.lock().await.get("sqlite:data.db").unwrap().clone())
                     .await;
-                let initial_rooms = db_clone.get_recorders().await;
+                let initial_rooms = db_clone.get_recorders().await.unwrap();
                 for room in initial_rooms {
                     if let Err(e) = recorder_manager_clone.add_recorder(room.room_id).await {
                         log::error!("error when adding initial rooms: {}", e);

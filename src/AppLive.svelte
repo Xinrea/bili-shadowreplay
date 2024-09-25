@@ -1,10 +1,18 @@
 <script lang="ts">
   import { listen } from "@tauri-apps/api/event";
-  import { invoke } from "@tauri-apps/api/core";
-  import { Button, Input, Label, Spinner, Textarea } from "flowbite-svelte";
+  import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+  import {
+    Button,
+    Input,
+    Label,
+    Spinner,
+    Textarea,
+    Modal,
+  } from "flowbite-svelte";
   import Player from "./lib/Player.svelte";
   import TitleBar from "./lib/TitleBar.svelte";
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+  import html2canvas from "html2canvas";
 
   const appWindow = getCurrentWebviewWindow();
   const urlParams = new URLSearchParams(window.location.search);
@@ -50,6 +58,10 @@
   }
 
   let video_file = null;
+  let cover = null;
+  let cover_text = "";
+  let preview = false;
+
   async function do_post() {
     if (!video_file) {
       if (end == 0) {
@@ -60,7 +72,9 @@
         alert("选区过短:," + (end - start).toFixed(2));
         return;
       }
+      loading = true;
       appWindow.setTitle(`[${room_id}]${room_info.room_title} 切片中···`);
+      cover = generateCover();
       video_file = await invoke("clip_range", {
         roomId: parseInt(room_id),
         ts: ts,
@@ -69,21 +83,28 @@
       });
       appWindow.setTitle(`[${room_id}]${room_info.room_title} 完成`);
       console.log("video file generatd:", video_file);
+      loading = false;
       return;
     }
-    const cover = generateCover();
     appWindow.setTitle(`[${room_id}]${room_info.room_title} 上传中···`);
     loading = true;
+    // render cover with text
+    const ecapture = document.getElementById("capture");
+    const render_canvas = await html2canvas(ecapture, {
+      scale: 720 / ecapture.clientHeight,
+    });
+    const rendered_cover = render_canvas.toDataURL();
     invoke("upload_procedure", {
       roomId: parseInt(room_id),
       file: video_file,
-      cover: cover,
+      cover: rendered_cover,
       profile: profile,
     })
       .then(() => {
         loading = false;
         appWindow.setTitle(`[${room_id}]${room_info.room_title} 投稿完成`);
         video_file = null;
+        cover = null;
       })
       .catch((e) => {
         loading = false;
@@ -98,13 +119,62 @@
   <div class="flex flex-row">
     <div class="w-3/4">
       <Player bind:start bind:end {port} {room_id} {ts} />
+      <Modal title="切片预览" bind:open={preview} autoclose>
+        <!-- svelte-ignore a11y-media-has-caption -->
+        <video src={convertFileSrc(video_file)} controls />
+      </Modal>
     </div>
     <div
       class="w-1/4 h-screen border-solid bg-gray-50 border-l-2 border-slate-200"
     >
-      <div class="p-6">
-        <Label class="mt-6">标题</Label>
+      <div class="p-6 pt-12">
+        <!-- svelte-ignore a11y-click-events-have-key-events -->
+        <div
+          class="w-full"
+          hidden={!video_file}
+          on:click={() => {
+            preview = true;
+          }}
+        >
+          <div id="capture" class="cover-wrap relative cursor-pointer">
+            <img src={cover} alt="cover" />
+            <div
+              class="absolute top-0 left-0 w-full h-full border-none bg-transparent resize-none text-amber-500 text-3xl font-bold px-8 py-2 drop-shadow cover-text"
+            >
+              {cover_text}
+            </div>
+          </div>
+        </div>
+        {#if !video_file}
+          <div class="flex flex-cols items-center">
+            <span class="min-w-8 mr-2 text-sm">开始</span>
+            <Input
+              type="number"
+              bind:value={start}
+              defaultClass="max-w-20"
+              size="sm"
+              on:change={(v) => {
+                //@ts-ignore
+                start = parseFloat(v.target.value);
+              }}
+            />
+            <span class="min-w-8 ml-6 mr-2 text-sm">结束</span>
+            <Input
+              type="number"
+              bind:value={end}
+              defaultClass="max-w-20"
+              size="sm"
+              on:change={(v) => {
+                //@ts-ignore
+                end = parseFloat(v.target.value);
+              }}
+            />
+          </div>
+        {/if}
+        <Label class="mt-4">标题</Label>
         <Input bind:value={profile.title} />
+        <Label class="mt-2">封面文本</Label>
+        <Textarea bind:value={cover_text} />
         <Label class="mt-2">描述</Label>
         <Textarea bind:value={profile.desc} />
         <Label class="mt-2">标签</Label>
@@ -119,7 +189,7 @@
           {#if loading}
             <Spinner class="me-3" size="4" />
           {/if}
-          {video_file ? "投稿" : "切片"}
+          {video_file ? "投稿" : "生成切片"}
         </Button>
       </div>
     </div>
@@ -130,5 +200,20 @@
   main {
     width: 100vw;
     height: 100vh;
+  }
+  .cover-wrap:hover {
+    opacity: 0.8;
+  }
+  .cover-text {
+    white-space: pre-wrap;
+    text-shadow:
+      -1px -1px 0 rgba(255, 255, 255, 1),
+      1px -1px 0 rgba(255, 255, 255, 1),
+      -1px 1px 0 rgba(255, 255, 255, 1),
+      1px 1px 0 rgba(255, 255, 255, 1),
+      -2px -2px 0 rgba(255, 255, 255, 0.5),
+      2px -2px 0 rgba(255, 255, 255, 0.5),
+      -2px 2px 0 rgba(255, 255, 255, 0.5),
+      2px 2px 0 rgba(255, 255, 255, 0.5); /* 创建细腻的白色描边效果 */
   }
 </style>

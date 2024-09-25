@@ -92,12 +92,15 @@
       switch (e.key) {
         case "[":
           if (isLive()) {
-            start =
-              (player.getPlayheadTimeAsDate() -
-                player.getPresentationStartTimeAsDate()) /
-              1000;
+            start = parseFloat(
+              (
+                (player.getPlayheadTimeAsDate() -
+                  player.getPresentationStartTimeAsDate()) /
+                1000
+              ).toFixed(2),
+            );
           } else {
-            start = video.currentTime;
+            start = parseFloat(video.currentTime.toFixed(2));
           }
           if (end < start) {
             end = get_total();
@@ -106,12 +109,15 @@
           break;
         case "]":
           if (isLive()) {
-            end =
-              (player.getPlayheadTimeAsDate() -
-                player.getPresentationStartTimeAsDate()) /
-              1000;
+            end = parseFloat(
+              (
+                (player.getPlayheadTimeAsDate() -
+                  player.getPresentationStartTimeAsDate()) /
+                1000
+              ).toFixed(2),
+            );
           } else {
-            end = video.currentTime;
+            end = parseFloat(video.currentTime.toFixed(2));
           }
           if (start > end) {
             start = 0;

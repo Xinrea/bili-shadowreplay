@@ -23,6 +23,14 @@ export interface AccountItem {
   created_at: string;
 }
 
+export interface MessageItem {
+  id: number,
+  title: string;
+  content: string;
+  read: number;
+  created_at: string;
+}
+
 export interface AccountInfo {
   primary_uid: number;
   accounts: AccountItem[];

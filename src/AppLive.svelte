@@ -198,7 +198,7 @@
         <Textarea bind:value={profile.dynamic} />
         <Label class="mt-2">视频分区</Label>
         <Input value="动画 - 综合" disabled />
-        <Label class="mt-2">使用账号</Label>
+        <Label class="mt-2">投稿账号</Label>
         <Select items={accounts} bind:value={uid_selected} />
       </div>
       <div class="flex justify-center w-full">

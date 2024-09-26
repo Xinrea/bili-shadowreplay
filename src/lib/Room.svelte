@@ -193,11 +193,7 @@
         color="red"
         class="me-2"
         on:click={async () => {
-          if (await Recorders.remove(deleteRoom)) {
-            await invoke("remove_recorder", { roomId: deleteRoom });
-          } else {
-            console.warn("remove room failed");
-          }
+          await invoke("remove_recorder", { roomId: deleteRoom });
         }}>确定</Button
       >
       <Button color="alternative">取消</Button>
@@ -255,14 +251,12 @@
         color="red"
         class="me-2"
         disabled={!addValid}
-        on:click={async () => {
-          if (await Recorders.add(parseInt(addRoom))) {
-            invoke("add_recorder", { roomId: Number(addRoom) }).catch(
-              async (e) => {
-                await message("请检查房间号是否有效：" + e, "添加失败");
-              },
-            );
-          }
+        on:click={() => {
+          invoke("add_recorder", { roomId: Number(addRoom) }).catch(
+            async (e) => {
+              await message("请检查房间号是否有效：" + e, "添加失败");
+            },
+          );
         }}>确定</Button
       >
       <Button color="alternative">取消</Button>

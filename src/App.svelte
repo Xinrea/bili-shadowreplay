@@ -5,15 +5,17 @@
   import Setting from "./lib/Setting.svelte";
   import Account from "./lib/Account.svelte";
   import TitleBar from "./lib/TitleBar.svelte";
+  import Messages from "./lib/Messages.svelte";
   let active = "#总览";
   let room_count = 0;
+  let message_cnt = 0;
 </script>
 
 <main>
   <TitleBar />
   <div class="wrap">
     <div class="sidebar">
-      <BSidebar bind:activeUrl={active} {room_count} />
+      <BSidebar bind:activeUrl={active} {room_count} {message_cnt} />
     </div>
     <div class="content">
       <!-- switch component by active -->
@@ -22,6 +24,9 @@
       </div>
       <div class="h-full page" class:visible={active == "#直播间"}>
         <Room bind:room_count />
+      </div>
+      <div class="h-full page" class:visible={active == "#消息"}>
+        <Messages bind:message_cnt />
       </div>
       <div class="h-full page" class:visible={active == "#账号"}>
         <Account />

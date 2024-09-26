@@ -7,7 +7,7 @@ mod recorder_manager;
 mod tray;
 
 use custom_error::custom_error;
-use db::{AccountRow, Database};
+use db::{AccountRow, Database, MessageRow};
 use recorder::bilibili::errors::BiliClientError;
 use recorder::bilibili::profile::Profile;
 use recorder::bilibili::{BiliClient, QrInfo, QrStatus};
@@ -285,7 +285,14 @@ async fn add_recorder(
         .add_recorder(&account, room_id, &state.config.read().await.cache)
         .await
     {
-        Ok(()) => Ok(state.db.add_recorder(room_id).await?),
+        Ok(()) => {
+            let room = state.db.add_recorder(room_id).await?;
+            state
+                .db
+                .new_message("添加直播间", &format!("添加了新直播间 {}", room_id))
+                .await?;
+            Ok(room)
+        }
         Err(e) => Err(e.to_string()),
     }
 }
@@ -343,7 +350,20 @@ async fn clip_range(
         "[invoke]clip room_id: {}, ts: {}, start: {}, end: {}",
         room_id, ts, x, y
     );
-    state.clip_range(room_id, ts, x, y).await
+    let file = state.clip_range(room_id, ts, x, y).await?;
+    state
+        .db
+        .new_message(
+            "生成新切片",
+            &format!(
+                "生成了房间 {} 的切片，长度 {:.1}s：{}",
+                room_id,
+                y - x,
+                file
+            ),
+        )
+        .await?;
+    Ok(file)
 }
 
 #[tauri::command]
@@ -367,6 +387,13 @@ async fn upload_procedure(
     if let Ok(video) = state.client.prepare_video(&account, path).await {
         profile.cover = cover_url.await.unwrap_or("".to_string());
         if let Ok(ret) = state.client.submit_video(&account, &profile, &video).await {
+            state
+                .db
+                .new_message(
+                    "投稿成功",
+                    &format!("投稿了房间 {} 的切片：{}", room_id, ret.bvid),
+                )
+                .await?;
             Ok(ret.bvid)
         } else {
             Err("Submit video failed".to_string())
@@ -404,6 +431,13 @@ async fn delete_archive(
     ts: u64,
 ) -> Result<(), String> {
     state.recorder_manager.delete_archive(room_id, ts).await;
+    state
+        .db
+        .new_message(
+            "删除历史缓存",
+            &format!("删除了房间 {} 的历史缓存 {}", room_id, ts),
+        )
+        .await?;
     Ok(())
 }
 
@@ -480,10 +514,25 @@ async fn get_profile(state: tauri::State<'_, State>, room_id: u64) -> Result<Pro
         .unwrap_or(Profile::new("", "", 27)))
 }
 
+#[tauri::command]
+async fn get_messages(state: tauri::State<'_, State>) -> Result<Vec<MessageRow>, String> {
+    Ok(state.db.get_messages().await?)
+}
+
+#[tauri::command]
+async fn read_message(state: tauri::State<'_, State>, id: i64) -> Result<(), String> {
+    Ok(state.db.read_message(id).await?)
+}
+
+#[tauri::command]
+async fn delete_message(state: tauri::State<'_, State>, id: i64) -> Result<(), String> {
+    Ok(state.db.delete_message(id).await?)
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Setup log
     simplelog::CombinedLogger::init(vec![simplelog::TermLogger::new(
-        simplelog::LevelFilter::Debug,
+        simplelog::LevelFilter::Info,
         simplelog::Config::default(),
         simplelog::TerminalMode::Mixed,
         simplelog::ColorChoice::Auto,
@@ -506,7 +555,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             CREATE TABLE videos (id INTEGER PRIMARY KEY, file TEXT, length INTEGER, size INTEGER, status INTEGER, title TEXT, desc TEXT, tags TEXT, area INTEGER);
             "#,
         kind: MigrationKind::Up,
-    }];
+    }, Migration {
+            version: 2,
+            description: "update_message_table",
+            sql: "DROP TABLE messages; CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, read INTEGER, created_at TEXT);",
+            kind: MigrationKind::Up,
+        }];
 
     // Tauri part
     tauri::Builder::default()
@@ -600,6 +654,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             get_archives,
             get_profile,
             delete_archive,
+            get_messages,
+            read_message,
+            delete_message,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

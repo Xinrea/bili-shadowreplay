@@ -19,6 +19,7 @@
   // acitveUrl is shared between project
   export let activeUrl = "#总览";
   export let room_count = 0;
+  export let message_cnt = 0;
 </script>
 
 <Sidebar {activeUrl} asideClass="w-72 h-full z-[40]">
@@ -75,7 +76,7 @@
           <span
             class="inline-flex justify-center items-center p-3 ms-3 w-3 h-3 text-sm font-medium text-primary-600 bg-primary-200 rounded-full dark:bg-primary-900 dark:text-primary-200"
           >
-            3
+            {message_cnt}
           </span>
         </svelte:fragment>
       </SidebarItem>

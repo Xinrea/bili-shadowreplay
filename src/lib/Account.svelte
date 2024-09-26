@@ -70,6 +70,7 @@
       <TableHeadCell>头像</TableHeadCell>
       <TableHeadCell>用户名</TableHeadCell>
       <TableHeadCell>状态</TableHeadCell>
+      <TableHeadCell>添加时间</TableHeadCell>
       <TableHeadCell>操作</TableHeadCell>
     </TableHead>
     <TableBody tableBodyClass="divide-y">
@@ -87,6 +88,9 @@
             >{account.uid == account_info.primary_uid
               ? "主账号"
               : "普通账号"}</TableBodyCell
+          >
+          <TableBodyCell
+            >{new Date(account.created_at).toLocaleString()}</TableBodyCell
           >
           <TableBodyCell>
             <ButtonGroup>

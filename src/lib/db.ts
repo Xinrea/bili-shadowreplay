@@ -23,6 +23,11 @@ export interface AccountItem {
   created_at: string;
 }
 
+export interface AccountInfo {
+  primary_uid: number;
+  accounts: AccountItem[];
+}
+
 //     CREATE TABLE recorders (room_id INTEGER PRIMARY KEY, created_at TEXT);
 export class Recorders {
   static async add(room_id: number): Promise<boolean> {

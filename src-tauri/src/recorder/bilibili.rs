@@ -1,6 +1,8 @@
 pub mod errors;
 pub mod profile;
 pub mod response;
+use crate::db::AccountRow;
+
 use super::StreamType;
 use errors::BiliClientError;
 use pct_str::PctString;
@@ -158,8 +160,7 @@ pub struct P2pData {
 /// BiliClient is thread safe
 pub struct BiliClient {
     client: Client,
-    csrf: RwLock<Option<String>>,
-    headers: RwLock<reqwest::header::HeaderMap>,
+    headers: reqwest::header::HeaderMap,
     extra: RwLock<String>,
 }
 
@@ -170,12 +171,12 @@ pub struct RoomInfo {
     pub room_id: u64,
     pub room_keyframe_url: String,
     pub room_title: String,
-    pub user_id: String,
+    pub user_id: u64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct UserInfo {
-    pub user_id: String,
+    pub user_id: u64,
     pub user_name: String,
     pub user_sign: String,
     pub user_avatar_url: String,
@@ -226,8 +227,7 @@ impl BiliClient {
         {
             Ok(BiliClient {
                 client,
-                csrf: RwLock::new(None),
-                headers: RwLock::new(headers),
+                headers,
                 extra: RwLock::new("".into()),
             })
         } else {
@@ -235,37 +235,11 @@ impl BiliClient {
         }
     }
 
-    pub async fn set_cookies(&self, cookies: &str) {
-        // parse csrf from cookies
-        let mut csrf = self.csrf.write().await;
-        *csrf =
-            cookies
-                .split(';')
-                .map(|cookie| cookie.trim())
-                .find_map(|cookie| -> Option<String> {
-                    match cookie.starts_with("bili_jct=") {
-                        true => {
-                            let var_name = &"bili_jct=";
-                            Some(cookie[var_name.len()..].to_string())
-                        }
-                        false => None,
-                    }
-                });
-        self.headers
-            .write()
-            .await
-            .insert("cookie", cookies.parse().expect("parse cookie failed"));
-    }
-
-    pub async fn logout(&self) {
-        self.headers.write().await.remove("cookie");
-    }
-
     pub async fn get_qr(&self) -> Result<QrInfo, BiliClientError> {
         let res: serde_json::Value = self
             .client
             .get("https://passport.bilibili.com/x/passport-login/web/qrcode/generate")
-            .headers(self.headers.read().await.clone())
+            .headers(self.headers.clone())
             .send()
             .await?
             .json()
@@ -289,7 +263,7 @@ impl BiliClient {
                 "https://passport.bilibili.com/x/passport-login/web/qrcode/poll?qrcode_key={}",
                 qrcode_key
             ))
-            .headers(self.headers.read().await.clone())
+            .headers(self.headers.clone())
             .send()
             .await?
             .json()
@@ -307,7 +281,27 @@ impl BiliClient {
         Ok(QrStatus { code, cookies })
     }
 
-    pub async fn get_user_info(&self, user_id: &str) -> Result<UserInfo, BiliClientError> {
+    pub async fn logout(&self, account: &AccountRow) -> Result<(), BiliClientError> {
+        let url = "https://passport.bilibili.com/login/exit/v2";
+        let mut headers = self.headers.clone();
+        headers.insert("cookie", account.cookies.parse().unwrap());
+        let params = [("csrf", account.csrf.clone())];
+        let _ = self
+            .client
+            .post(url)
+            .headers(headers)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .form(&params)
+            .send()
+            .await?;
+        Ok(())
+    }
+
+    pub async fn get_user_info(
+        &self,
+        account: &AccountRow,
+        user_id: u64,
+    ) -> Result<UserInfo, BiliClientError> {
         let params: Value = json!({
             "mid": user_id.to_string(),
             "platform": "web",
@@ -315,33 +309,41 @@ impl BiliClient {
             "token": ""
         });
         let params = self.get_sign(params).await?;
+        let mut headers = self.headers.clone();
+        headers.insert("cookie", account.cookies.parse().unwrap());
         let res: serde_json::Value = self
             .client
             .get(format!(
                 "https://api.bilibili.com/x/space/wbi/acc/info?{}",
                 params
             ))
-            .headers(self.headers.read().await.clone())
+            .headers(headers)
             .send()
             .await?
             .json()
             .await?;
         Ok(UserInfo {
-            user_id: user_id.to_string(),
+            user_id: user_id,
             user_name: res["data"]["name"].as_str().unwrap_or("").to_string(),
             user_sign: res["data"]["sign"].as_str().unwrap_or("").to_string(),
             user_avatar_url: res["data"]["face"].as_str().unwrap_or("").to_string(),
         })
     }
 
-    pub async fn get_room_info(&self, room_id: u64) -> Result<RoomInfo, BiliClientError> {
+    pub async fn get_room_info(
+        &self,
+        account: &AccountRow,
+        room_id: u64,
+    ) -> Result<RoomInfo, BiliClientError> {
+        let mut headers = self.headers.clone();
+        headers.insert("cookie", account.cookies.parse().unwrap());
         let res: serde_json::Value = self
             .client
             .get(format!(
                 "https://api.live.bilibili.com/room/v1/Room/get_info?room_id={}",
                 room_id
             ))
-            .headers(self.headers.read().await.clone())
+            .headers(headers)
             .send()
             .await?
             .json()
@@ -368,8 +370,7 @@ impl BiliClient {
             .to_string();
         let user_id = res["data"]["uid"]
             .as_u64()
-            .ok_or(BiliClientError::InvalidValue)?
-            .to_string();
+            .ok_or(BiliClientError::InvalidValue)?;
         let live_status = res["data"]["live_status"]
             .as_u64()
             .ok_or(BiliClientError::InvalidValue)? as u8;
@@ -385,15 +386,18 @@ impl BiliClient {
 
     pub async fn get_play_url(
         &self,
+        account: &AccountRow,
         room_id: u64,
     ) -> Result<(String, StreamType), BiliClientError> {
+        let mut headers = self.headers.clone();
+        headers.insert("cookie", account.cookies.parse().unwrap());
         let res: PlayUrlResponse = self
             .client
             .get(format!(
                 "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?room_id={}&protocol=1&format=0,1,2&codec=0&qn=10000&platform=h5",
                 room_id
             ))
-            .headers(self.headers.read().await.clone())
+            .headers(headers)
             .send().await?
             .json().await?;
         if res.code == 0 {
@@ -441,7 +445,7 @@ impl BiliClient {
         Ok(self
             .client
             .get(url.to_owned() + self.extra.read().await.as_str())
-            .headers(self.headers.read().await.clone())
+            .headers(self.headers.clone())
             .send()
             .await?
             .text()
@@ -453,7 +457,7 @@ impl BiliClient {
         let res = self
             .client
             .get(url)
-            .headers(self.headers.read().await.clone())
+            .headers(self.headers.clone())
             .send()
             .await?;
         if let Ok(mut file) = std::fs::File::create(file_path) {
@@ -475,7 +479,7 @@ impl BiliClient {
         let nav_info: Value = self
             .client
             .get("https://api.bilibili.com/x/web-interface/nav")
-            .headers(self.headers.read().await.clone())
+            .headers(self.headers.clone())
             .send()
             .await?
             .json()
@@ -547,8 +551,11 @@ impl BiliClient {
 
     async fn preupload_video(
         &self,
+        account: &AccountRow,
         video_file: &Path,
     ) -> Result<PreuploadResponse, BiliClientError> {
+        let mut headers = self.headers.clone();
+        headers.insert("cookie", account.cookies.parse().unwrap());
         let url = format!(
             "https://member.bilibili.com/preupload?name={}&r=upos&profile=ugcfx/bup",
             video_file.file_name().unwrap().to_str().unwrap()
@@ -556,7 +563,7 @@ impl BiliClient {
         let response = self
             .client
             .get(&url)
-            .headers(self.headers.read().await.clone())
+            .headers(headers)
             .send()
             .await?
             .json::<PreuploadResponse>()
@@ -679,9 +686,10 @@ impl BiliClient {
 
     pub async fn prepare_video(
         &self,
+        account: &AccountRow,
         video_file: &Path,
     ) -> Result<profile::Video, BiliClientError> {
-        let preupload = self.preupload_video(video_file).await?;
+        let preupload = self.preupload_video(account, video_file).await?;
         let metaposted = self.post_video_meta(&preupload, video_file).await?;
         let uploaded = self
             .upload_video(&preupload, &metaposted, video_file)
@@ -702,20 +710,23 @@ impl BiliClient {
 
     pub async fn submit_video(
         &self,
+        account: &AccountRow,
         profile_template: &Profile,
         video: &profile::Video,
     ) -> Result<VideoSubmitData, BiliClientError> {
+        let mut headers = self.headers.clone();
+        headers.insert("cookie", account.cookies.parse().unwrap());
         let url = format!(
             "https://member.bilibili.com/x/vu/web/add/v3?ts={}&csrf={}",
             chrono::Local::now().timestamp(),
-            self.csrf.read().await.clone().unwrap_or("".to_string()),
+            account.csrf
         );
         let mut preprofile = profile_template.clone();
         preprofile.videos.push(video.clone());
         match self
             .client
             .post(&url)
-            .headers(self.headers.read().await.clone())
+            .headers(headers)
             .header("Content-Type", "application/json; charset=UTF-8")
             .body(serde_json::ser::to_string(&preprofile).unwrap_or("".to_string()))
             .send()
@@ -740,22 +751,22 @@ impl BiliClient {
         }
     }
 
-    pub async fn upload_cover(&self, cover: &str) -> Result<String, BiliClientError> {
+    pub async fn upload_cover(
+        &self,
+        account: &AccountRow,
+        cover: &str,
+    ) -> Result<String, BiliClientError> {
         let url = format!(
             "https://member.bilibili.com/x/vu/web/cover/up?ts={}",
             chrono::Local::now().timestamp(),
         );
-        let params = [
-            (
-                "csrf",
-                self.csrf.read().await.clone().unwrap_or("".to_string()),
-            ),
-            ("cover", cover.to_string()),
-        ];
+        let mut headers = self.headers.clone();
+        headers.insert("cookie", account.cookies.parse().unwrap());
+        let params = [("csrf", account.csrf.clone()), ("cover", cover.to_string())];
         match self
             .client
             .post(&url)
-            .headers(self.headers.read().await.clone())
+            .headers(headers)
             .header("Content-Type", "application/x-www-form-urlencoded")
             .form(&params)
             .send()

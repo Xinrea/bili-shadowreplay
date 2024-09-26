@@ -11,15 +11,13 @@ use ffmpeg_sidecar::{
 };
 use futures::future::join_all;
 use m3u8_rs::Playlist;
-use notify_rust::Notification;
 use regex::Regex;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::thread;
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::sync::{Mutex, RwLock};
 
-use crate::Config;
+use crate::db::AccountRow;
 
 #[derive(Clone)]
 pub struct TsEntry {
@@ -36,7 +34,8 @@ pub struct TsEntry {
 #[derive(Clone)]
 pub struct BiliRecorder {
     client: Arc<RwLock<BiliClient>>,
-    config: Arc<RwLock<Config>>,
+    account: AccountRow,
+    cache_path: String,
     pub room_id: u64,
     pub room_info: Arc<RwLock<RoomInfo>>,
     pub user_info: Arc<RwLock<UserInfo>>,
@@ -75,17 +74,22 @@ impl From<BiliClientError> for RecorderError {
 }
 
 impl BiliRecorder {
-    pub async fn new(room_id: u64, config: Arc<RwLock<Config>>) -> Result<Self, RecorderError> {
+    pub async fn new(
+        room_id: u64,
+        account: &AccountRow,
+        cache_path: &str,
+    ) -> Result<Self, RecorderError> {
         let client = BiliClient::new()?;
-        client.set_cookies(&config.read().await.cookies).await;
-        let room_info = client.get_room_info(room_id).await?;
-        let user_info = client.get_user_info(room_info.user_id.as_str()).await?;
+        let room_info = client.get_room_info(account, room_id).await?;
+        let user_info = client.get_user_info(account, room_info.user_id).await?;
         let mut m3u8_url = String::from("");
         let mut live_status = false;
         let mut stream_type = StreamType::FMP4;
         if room_info.live_status == 1 {
             live_status = true;
-            if let Ok((index_url, stream_type_now)) = client.get_play_url(room_info.room_id).await {
+            if let Ok((index_url, stream_type_now)) =
+                client.get_play_url(account, room_info.room_id).await
+            {
                 m3u8_url = index_url;
                 stream_type = stream_type_now;
             }
@@ -93,7 +97,8 @@ impl BiliRecorder {
 
         let recorder = Self {
             client: Arc::new(RwLock::new(client)),
-            config,
+            account: account.clone(),
+            cache_path: cache_path.into(),
             room_id,
             room_info: Arc::new(RwLock::new(room_info)),
             user_info: Arc::new(RwLock::new(user_info)),
@@ -111,10 +116,6 @@ impl BiliRecorder {
         Ok(recorder)
     }
 
-    pub async fn update_cookies(&self, cookies: &str) {
-        self.client.write().await.set_cookies(cookies).await;
-    }
-
     pub async fn reset(&self) {
         *self.ts_length.write().await = 0.0;
         *self.last_sequence.write().await = 0;
@@ -124,14 +125,24 @@ impl BiliRecorder {
     }
 
     async fn check_status(&self) -> bool {
-        if let Ok(room_info) = self.client.read().await.get_room_info(self.room_id).await {
+        if let Ok(room_info) = self
+            .client
+            .read()
+            .await
+            .get_room_info(&self.account, self.room_id)
+            .await
+        {
             *self.room_info.write().await = room_info.clone();
             let live_status = room_info.live_status == 1;
             // if stream is confirmed to be closed, live stream cache is cleaned.
             // all request will go through fs
             if live_status {
-                if let Ok((index_url, stream_type)) =
-                    self.client.read().await.get_play_url(self.room_id).await
+                if let Ok((index_url, stream_type)) = self
+                    .client
+                    .read()
+                    .await
+                    .get_play_url(&self.account, self.room_id)
+                    .await
                 {
                     self.m3u8_url.write().await.replace_range(.., &index_url);
                     *self.stream_type.write().await = stream_type;
@@ -149,7 +160,7 @@ impl BiliRecorder {
     }
 
     pub async fn get_archives(&self) -> Vec<u64> {
-        let work_dir = format!("{}/{}", self.config.read().await.cache, self.room_id);
+        let work_dir = format!("{}/{}", self.cache_path, self.room_id);
         log::debug!(
             "[recorder:{}]Finding archives under {}",
             self.room_id,
@@ -193,7 +204,7 @@ impl BiliRecorder {
     }
 
     pub async fn delete_archive(&self, ts: u64) {
-        let target_dir = format!("{}/{}/{}", self.config.read().await.cache, self.room_id, ts);
+        let target_dir = format!("{}/{}/{}", self.cache_path, self.room_id, ts);
         if fs::remove_dir_all(target_dir).await.is_err() {
             log::error!("remove archive failed [{}]{}", self.room_id, ts);
         }
@@ -235,8 +246,8 @@ impl BiliRecorder {
 
     async fn danmu(&self) {
         let (tx, rx) = mpsc::unbounded_channel();
-        let cookies = self.config.read().await.cookies.clone();
-        let uid: u64 = self.config.read().await.uid.parse().unwrap();
+        let cookies = self.account.cookies.clone();
+        let uid: u64 = self.account.uid;
         let ws = ws_socket_object(tx, uid, self.room_id, cookies.as_str());
         if let Err(e) = tokio::select! {v = ws => v, v = self.recv(self.room_id,rx) => v} {
             log::error!("{}", e);
@@ -250,34 +261,34 @@ impl BiliRecorder {
     ) -> Result<(), FelgensError> {
         while let Some(msg) = rx.recv().await {
             if let WsStreamMessageType::DanmuMsg(msg) = msg {
-                if self.config.read().await.admin_uid.contains(&msg.uid) {
-                    let content: String = msg.msg;
-                    if content.starts_with("/clip") {
-                        let mut duration = 60.0;
-                        if content.len() > 5 {
-                            let num_part = content.strip_prefix("/clip ").unwrap_or("60");
-                            duration = num_part.parse::<u64>().unwrap_or(60) as f64;
-                        }
-                        if let Err(e) = self.clip(room, duration).await {
-                            if let Err(e) = Notification::new()
-                                .summary("BiliBili ShadowReplay")
-                                .body(format!("生成切片失败: {} - {}s", room, duration).as_str())
-                                .icon("bili-shadowreplay")
-                                .show()
-                            {
-                                log::error!("notification error: {}", e);
-                            }
-                            log::error!("clip error: {}", e);
-                        } else if let Err(e) = Notification::new()
-                            .summary("BiliBili ShadowReplay")
-                            .body(format!("生成切片成功: {} - {}s", room, duration).as_str())
-                            .icon("bili-shadowreplay")
-                            .show()
-                        {
-                            log::error!("notification error: {}", e);
-                        }
-                    }
-                }
+                // if self.config.read().await.admin_uid.contains(&msg.uid) {
+                //     let content: String = msg.msg;
+                //     if content.starts_with("/clip") {
+                //         let mut duration = 60.0;
+                //         if content.len() > 5 {
+                //             let num_part = content.strip_prefix("/clip ").unwrap_or("60");
+                //             duration = num_part.parse::<u64>().unwrap_or(60) as f64;
+                //         }
+                //         if let Err(e) = self.clip(room, duration).await {
+                //             if let Err(e) = Notification::new()
+                //                 .summary("BiliBili ShadowReplay")
+                //                 .body(format!("生成切片失败: {} - {}s", room, duration).as_str())
+                //                 .icon("bili-shadowreplay")
+                //                 .show()
+                //             {
+                //                 log::error!("notification error: {}", e);
+                //             }
+                //             log::error!("clip error: {}", e);
+                //         } else if let Err(e) = Notification::new()
+                //             .summary("BiliBili ShadowReplay")
+                //             .body(format!("生成切片成功: {} - {}s", room, duration).as_str())
+                //             .icon("bili-shadowreplay")
+                //             .show()
+                //         {
+                //             log::error!("notification error: {}", e);
+                //         }
+                //     }
+                // }
             }
         }
         Ok(())
@@ -368,9 +379,8 @@ impl BiliRecorder {
 
     async fn update_entries(&self) -> Result<(), RecorderError> {
         let parsed = self.get_playlist().await;
-        let cache_path = self.config.read().await.cache.clone();
         let mut timestamp = *self.timestamp.read().await;
-        let mut work_dir = format!("{}/{}/{}/", cache_path, self.room_id, timestamp);
+        let mut work_dir = format!("{}/{}/{}/", self.cache_path, self.room_id, timestamp);
         // Check header if None
         if self.header.read().await.is_none() && *self.stream_type.read().await == StreamType::FMP4
         {
@@ -385,7 +395,7 @@ impl BiliRecorder {
                 return Err(RecorderError::InvalidTimestamp);
             }
             // now work dir is confirmed
-            work_dir = format!("{}/{}/{}/", cache_path, self.room_id, timestamp);
+            work_dir = format!("{}/{}/{}/", self.cache_path, self.room_id, timestamp);
             // if folder is exisited, need to load previous data into cache
             if let Ok(meta) = fs::metadata(&work_dir).await {
                 if meta.is_dir() {
@@ -485,17 +495,24 @@ impl BiliRecorder {
         log::info!("Restore {} entries from local file", entries.len());
     }
 
-    pub async fn clip(&self, ts: u64, d: f64) -> Result<String, RecorderError> {
+    pub async fn clip(&self, ts: u64, d: f64, output_path: &str) -> Result<String, RecorderError> {
         let total_length = *self.ts_length.read().await;
-        self.clip_range(ts, total_length - d, total_length).await
+        self.clip_range(ts, total_length - d, total_length, output_path)
+            .await
     }
 
     /// x and y are relative to first sequence
-    pub async fn clip_range(&self, ts: u64, x: f64, y: f64) -> Result<String, RecorderError> {
+    pub async fn clip_range(
+        &self,
+        ts: u64,
+        x: f64,
+        y: f64,
+        output_path: &str,
+    ) -> Result<String, RecorderError> {
         if *self.timestamp.read().await == ts {
-            self.clip_live_range(x, y).await
+            self.clip_live_range(x, y, output_path).await
         } else {
-            self.clip_archive_range(ts, x, y).await
+            self.clip_archive_range(ts, x, y, output_path).await
         }
     }
 
@@ -504,10 +521,10 @@ impl BiliRecorder {
         ts: u64,
         x: f64,
         y: f64,
+        output_path: &str,
     ) -> Result<String, RecorderError> {
         log::info!("create archive clip for range [{}, {}]", x, y);
-        let cache_path = self.config.read().await.cache.clone();
-        let work_dir = format!("{}/{}/{}", cache_path, self.room_id, ts);
+        let work_dir = format!("{}/{}/{}", self.cache_path, self.room_id, ts);
         let entries = self.get_fs_entries(&work_dir).await;
         if entries.is_empty() {
             return Err(RecorderError::EmptyCache);
@@ -533,7 +550,6 @@ impl BiliRecorder {
             }
         }
 
-        let output_path = self.config.read().await.output.clone();
         std::fs::create_dir_all(&output_path).expect("create clips folder failed");
         let file_name = format!(
             "{}/[{}]{}_{}_{:.1}.mp4",
@@ -560,7 +576,12 @@ impl BiliRecorder {
         Ok(file_name)
     }
 
-    pub async fn clip_live_range(&self, x: f64, y: f64) -> Result<String, RecorderError> {
+    pub async fn clip_live_range(
+        &self,
+        x: f64,
+        y: f64,
+        output_path: &str,
+    ) -> Result<String, RecorderError> {
         log::info!("create live clip for range [{}, {}]", x, y);
         let mut to_combine = Vec::new();
         let header_copy = self.header.read().await.clone();
@@ -591,17 +612,15 @@ impl BiliRecorder {
         }
         let mut file_list = String::new();
         let timestamp = *self.timestamp.read().await;
-        let cache_path = self.config.read().await.cache.clone();
         for e in to_combine {
             let file_name = e.url.split('/').last().unwrap();
             let file_path = format!(
                 "{}/{}/{}/{}",
-                cache_path, self.room_id, timestamp, file_name
+                self.cache_path, self.room_id, timestamp, file_name
             );
             file_list += &file_path;
             file_list += "|";
         }
-        let output_path = self.config.read().await.output.clone();
         let title = self.room_info.read().await.room_title.clone();
         let title: String = title.chars().take(5).collect();
         std::fs::create_dir_all(&output_path).expect("create clips folder failed");
@@ -649,12 +668,7 @@ impl BiliRecorder {
         let header_url = format!("/{}/{}/h{}.m4s", self.room_id, timestamp, timestamp);
         m3u8_content += &format!("#EXT-X-MAP:URI=\"{}\"\n", header_url);
         // add entries from read_dir
-        let work_dir = format!(
-            "{}/{}/{}",
-            self.config.read().await.cache,
-            self.room_id,
-            timestamp
-        );
+        let work_dir = format!("{}/{}/{}", self.cache_path, self.room_id, timestamp);
         let entries = self.get_fs_entries(&work_dir).await;
         if entries.is_empty() {
             return m3u8_content;

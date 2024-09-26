@@ -23,7 +23,7 @@
       <div class="h-full page" class:visible={active == "#直播间"}>
         <Room bind:room_count />
       </div>
-      <div class="page" class:visible={active == "#账号"}>
+      <div class="h-full page" class:visible={active == "#账号"}>
         <Account />
       </div>
       <div class="page" class:visible={active == "#自动化"}>

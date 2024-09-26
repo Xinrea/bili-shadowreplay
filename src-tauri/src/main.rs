@@ -7,7 +7,7 @@ mod recorder_manager;
 mod tray;
 
 use custom_error::custom_error;
-use db::Database;
+use db::{AccountRow, Database};
 use recorder::bilibili::errors::BiliClientError;
 use recorder::bilibili::profile::Profile;
 use recorder::bilibili::{BiliClient, QrInfo, QrStatus};
@@ -79,12 +79,9 @@ fn show_in_folder(path: String) {
 
 #[derive(serde::Deserialize, serde::Serialize, Clone)]
 pub struct Config {
-    admin_uid: Vec<u64>,
     cache: String,
     output: String,
-    login: bool,
-    uid: String,
-    cookies: String,
+    primary_uid: u64,
     profile_preset: HashMap<String, Profile>,
 }
 
@@ -98,7 +95,6 @@ impl Config {
             }
         }
         let config = Config {
-            admin_uid: Vec::new(),
             cache: app_dirs
                 .cache_dir
                 .join("cache")
@@ -111,9 +107,7 @@ impl Config {
                 .to_str()
                 .unwrap()
                 .to_string(),
-            login: false,
-            uid: "".to_string(),
-            cookies: "".to_string(),
+            primary_uid: 0,
             profile_preset: HashMap::new(),
         };
         config.save();
@@ -127,11 +121,6 @@ impl Config {
         std::fs::create_dir_all(&app_dirs.config_dir).unwrap();
         let config_path = app_dirs.config_dir.join("Conf.toml");
         std::fs::write(config_path, content).unwrap();
-    }
-
-    pub fn set_admins(&mut self, admins: Vec<u64>) {
-        self.admin_uid = admins;
-        self.save();
     }
 
     pub fn set_cache_path(&mut self, path: &str) {
@@ -150,23 +139,6 @@ impl Config {
         self.save();
     }
 
-    pub fn set_cookies(&mut self, cookies: &str) {
-        self.cookies = cookies.to_string();
-        // match(/DedeUserID=(\d+)/)[1
-        self.uid = cookies
-            .split("DedeUserID=")
-            .collect::<Vec<&str>>()
-            .get(1)
-            .unwrap()
-            .split(";")
-            .collect::<Vec<&str>>()
-            .first()
-            .unwrap()
-            .to_string();
-        self.login = true;
-        self.save();
-    }
-
     pub fn get_profile(&self, room_id: u64) -> Option<Profile> {
         self.profile_preset.get(&room_id.to_string()).cloned()
     }
@@ -174,13 +146,6 @@ impl Config {
     pub fn update_profile(&mut self, room_id: u64, profile: &Profile) {
         self.profile_preset
             .insert(room_id.to_string(), profile.clone());
-        self.save();
-    }
-
-    pub fn logout(&mut self) {
-        self.cookies = "".to_string();
-        self.uid = "".to_string();
-        self.login = false;
         self.save();
     }
 }
@@ -221,7 +186,10 @@ impl State {
     }
 
     pub async fn clip(&self, room_id: u64, len: f64) -> Result<String, String> {
-        Ok(self.recorder_manager.clip(room_id, len).await?)
+        Ok(self
+            .recorder_manager
+            .clip(&self.config.read().await.output, room_id, len)
+            .await?)
     }
 
     pub async fn clip_range(
@@ -231,7 +199,10 @@ impl State {
         x: f64,
         y: f64,
     ) -> Result<String, String> {
-        Ok(self.recorder_manager.clip_range(room_id, ts, x, y).await?)
+        Ok(self
+            .recorder_manager
+            .clip_range(&self.config.read().await.output, room_id, ts, x, y)
+            .await?)
     }
 }
 
@@ -258,11 +229,62 @@ async fn get_qr_status(state: tauri::State<'_, State>, qrcode_key: &str) -> Resu
 }
 
 #[tauri::command]
+async fn add_account(state: tauri::State<'_, State>, cookies: &str) -> Result<AccountRow, String> {
+    let mut is_primary = false;
+    if state.config.read().await.primary_uid == 0 || state.db.get_accounts().await?.len() == 0 {
+        is_primary = true;
+    }
+    let account = state.db.add_account(cookies).await?;
+    let account_info = state.client.get_user_info(&account, account.uid).await?;
+    state
+        .db
+        .update_account(
+            account_info.user_id,
+            &account_info.user_name,
+            &account_info.user_avatar_url,
+        )
+        .await?;
+    if is_primary {
+        state.config.write().await.primary_uid = account.uid;
+    }
+    Ok(account)
+}
+
+#[tauri::command]
+async fn remove_account(state: tauri::State<'_, State>, uid: u64) -> Result<(), String> {
+    if state.db.get_accounts().await?.len() == 1 {
+        return Err("At least one account is required".into());
+    }
+    // logout
+    let account = state.db.get_account(uid).await?;
+    state.client.logout(&account).await?;
+    Ok(state.db.remove_account(uid).await?)
+}
+
+#[tauri::command]
+async fn set_primary(state: tauri::State<'_, State>, uid: u64) -> Result<(), String> {
+    if let Ok(_) = state.db.get_account(uid).await {
+        state.config.write().await.primary_uid = uid;
+        Ok(())
+    } else {
+        Err("Account not exist".into())
+    }
+}
+
+#[tauri::command]
 async fn add_recorder(
     state: tauri::State<'_, State>,
     room_id: u64,
 ) -> Result<db::RecorderRow, String> {
-    match state.recorder_manager.add_recorder(room_id).await {
+    let account = state
+        .db
+        .get_account(state.config.read().await.primary_uid)
+        .await?;
+    match state
+        .recorder_manager
+        .add_recorder(&account, room_id, &state.config.read().await.cache)
+        .await
+    {
         Ok(()) => Ok(state.db.add_recorder(room_id).await?),
         Err(e) => Err(e.to_string()),
     }
@@ -304,13 +326,6 @@ async fn set_output_path(state: tauri::State<'_, State>, output_path: String) ->
 }
 
 #[tauri::command]
-async fn set_admins(state: tauri::State<'_, State>, admins: Vec<u64>) -> Result<(), ()> {
-    let mut config = state.config.write().await;
-    config.set_admins(admins);
-    Ok(())
-}
-
-#[tauri::command]
 async fn clip(state: tauri::State<'_, State>, room_id: u64, len: f64) -> Result<String, String> {
     println!("[invoke]clip room_id: {}, len: {}", room_id, len);
     state.clip(room_id, len).await
@@ -331,17 +346,10 @@ async fn clip_range(
     state.clip_range(room_id, ts, x, y).await
 }
 
-#[derive(serde::Serialize, Clone)]
-struct UploadInfo {
-    room_id: u64,
-    file: String,
-    cover: String,
-    profile: Profile,
-}
-
 #[tauri::command]
 async fn upload_procedure(
     state: tauri::State<'_, State>,
+    uid: u64,
     room_id: u64,
     file: String,
     cover: String,
@@ -353,11 +361,12 @@ async fn upload_procedure(
         .write()
         .await
         .update_profile(room_id, &profile.clone());
+    let account = state.db.get_account(uid).await?;
     let path = Path::new(&file);
-    let cover_url = state.client.upload_cover(&cover);
-    if let Ok(video) = state.client.prepare_video(path).await {
+    let cover_url = state.client.upload_cover(&account, &cover);
+    if let Ok(video) = state.client.prepare_video(&account, path).await {
         profile.cover = cover_url.await.unwrap_or("".to_string());
-        if let Ok(ret) = state.client.submit_video(&profile, &video).await {
+        if let Ok(ret) = state.client.submit_video(&account, &profile, &video).await {
             Ok(ret.bvid)
         } else {
             Err("Submit video failed".to_string())
@@ -365,23 +374,6 @@ async fn upload_procedure(
     } else {
         Err("Preload video failed".to_string())
     }
-}
-
-#[tauri::command]
-async fn set_cookies(state: tauri::State<'_, State>, cookies: String) -> Result<(), String> {
-    let mut config = state.config.write().await;
-    config.set_cookies(&cookies);
-    state.client.set_cookies(&cookies).await;
-    state.recorder_manager.update_cookies(&cookies).await;
-    Ok(())
-}
-
-#[tauri::command]
-async fn logout(state: tauri::State<'_, State>) -> Result<(), String> {
-    let mut config = state.config.write().await;
-    config.logout();
-    state.client.logout().await;
-    Ok(())
 }
 
 #[tauri::command]
@@ -417,38 +409,17 @@ async fn delete_archive(
 
 #[derive(serde::Serialize)]
 struct AccountInfo {
-    pub login: bool,
-    pub uid: String,
-    pub name: String,
-    pub sign: String,
-    pub face: String,
+    pub primary_uid: u64,
+    pub accounts: Vec<AccountRow>,
 }
 
 #[tauri::command]
 async fn get_accounts(state: tauri::State<'_, State>) -> Result<AccountInfo, String> {
     let config = state.config.read().await.clone();
-    let mut account_info = AccountInfo {
-        login: false,
-        uid: "".to_string(),
-        name: "".to_string(),
-        sign: "".to_string(),
-        face: "".to_string(),
+    let account_info = AccountInfo {
+        primary_uid: config.primary_uid,
+        accounts: state.db.get_accounts().await?,
     };
-    // get user info
-    if config.login {
-        account_info.login = true;
-        account_info.uid = config.uid.clone();
-        match state.client.get_user_info(config.uid.as_str()).await {
-            Ok(info) => {
-                account_info.name = info.user_name;
-                account_info.sign = info.user_sign;
-                account_info.face = info.user_avatar_url;
-            }
-            Err(e) => {
-                println!("{}", e);
-            }
-        }
-    }
     Ok(account_info)
 }
 
@@ -480,7 +451,7 @@ async fn open_live(state: tauri::State<'_, State>, room_id: u64, ts: u64) -> Res
     .theme(Some(Theme::Light))
     .decorations(false)
     .transparent(true)
-    .inner_size(1200.0, 600.0)
+    .inner_size(1200.0, 800.0)
     .effects(WindowEffectsConfig {
         effects: vec![
             tauri_utils::WindowEffect::Tabbed,
@@ -512,7 +483,7 @@ async fn get_profile(state: tauri::State<'_, State>, room_id: u64) -> Result<Pro
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Setup log
     simplelog::CombinedLogger::init(vec![simplelog::TermLogger::new(
-        simplelog::LevelFilter::Info,
+        simplelog::LevelFilter::Debug,
         simplelog::Config::default(),
         simplelog::TerminalMode::Mixed,
         simplelog::ColorChoice::Auto,
@@ -553,9 +524,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // init
             let client = Arc::new(BiliClient::new().unwrap());
             let config = Arc::new(RwLock::new(Config::load()));
-            let recorder_manager = Arc::new(RecorderManager::new(config.clone()));
-            let client_clone = client.clone();
             let config_clone = config.clone();
+            let recorder_manager = Arc::new(RecorderManager::new(config.clone()));
             let recorder_manager_clone = recorder_manager.clone();
             let dbs = app.state::<tauri_plugin_sql::DbInstances>().inner();
             let db = Arc::new(Database::new());
@@ -565,14 +535,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .set(dbs.0.lock().await.get("sqlite:data.db").unwrap().clone())
                     .await;
                 let initial_rooms = db_clone.get_recorders().await.unwrap();
-                for room in initial_rooms {
-                    if let Err(e) = recorder_manager_clone.add_recorder(room.room_id).await {
-                        log::error!("error when adding initial rooms: {}", e);
+                let mut primary_uid = config_clone.read().await.primary_uid;
+                if primary_uid == 0 {
+                    let accounts = db_clone.get_accounts().await.unwrap();
+                    if !accounts.is_empty() {
+                        primary_uid = accounts.first().unwrap().uid;
+                        config_clone.write().await.primary_uid = primary_uid;
+                        config_clone.write().await.save();
                     }
                 }
-                client_clone
-                    .set_cookies(&config_clone.read().await.cookies)
-                    .await;
+                let account = db_clone.get_account(primary_uid).await;
+                if let Ok(account) = account {
+                    for room in initial_rooms {
+                        if let Err(e) = recorder_manager_clone
+                            .add_recorder(&account, room.room_id, &config_clone.read().await.cache)
+                            .await
+                        {
+                            log::error!("error when adding initial rooms: {}", e);
+                        }
+                    }
+                } else {
+                    log::warn!("No available account found");
+                }
                 let _ = recorder_manager_clone.run_hls().await;
             });
             let state = State {
@@ -601,17 +585,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             get_config,
             set_cache_path,
             set_output_path,
-            set_admins,
             clip,
             clip_range,
             upload_procedure,
             show_in_folder,
             get_qr,
             get_qr_status,
-            set_cookies,
-            logout,
             open_live,
             get_accounts,
+            add_account,
+            remove_account,
+            set_primary,
             get_room_info,
             get_archives,
             get_profile,

@@ -1,4 +1,5 @@
-use crate::recorder::bilibili::{self, UserInfo};
+use crate::db::AccountRow;
+use crate::recorder::bilibili::UserInfo;
 use crate::recorder::RecorderError;
 use crate::recorder::{bilibili::RoomInfo, BiliRecorder};
 use crate::Config;
@@ -85,12 +86,17 @@ impl RecorderManager {
         Ok(())
     }
 
-    pub async fn add_recorder(&self, room_id: u64) -> Result<(), RecorderManagerError> {
+    pub async fn add_recorder(
+        &self,
+        account: &AccountRow,
+        room_id: u64,
+        cache_path: &str,
+    ) -> Result<(), RecorderManagerError> {
         // check existing recorder
         if self.recorders.contains_key(&room_id) {
             return Err(RecorderManagerError::AlreadyExisted { room_id });
         }
-        let recorder = BiliRecorder::new(room_id, self.config.clone()).await?;
+        let recorder = BiliRecorder::new(room_id, account, cache_path).await?;
         self.recorders.insert(room_id, recorder);
         // run recorder
         let recorder = self.recorders.get(&room_id).unwrap();
@@ -106,17 +112,23 @@ impl RecorderManager {
         Ok(())
     }
 
-    pub async fn clip(&self, room_id: u64, d: f64) -> Result<String, RecorderManagerError> {
+    pub async fn clip(
+        &self,
+        output_path: &str,
+        room_id: u64,
+        d: f64,
+    ) -> Result<String, RecorderManagerError> {
         let recorder = self.recorders.get(&room_id);
         if recorder.is_none() {
             return Err(RecorderManagerError::NotFound { room_id });
         }
         let recorder = recorder.unwrap();
-        Ok(recorder.value().clip(room_id, d).await?)
+        Ok(recorder.value().clip(room_id, d, output_path).await?)
     }
 
     pub async fn clip_range(
         &self,
+        output_path: &str,
         room_id: u64,
         ts: u64,
         start: f64,
@@ -127,7 +139,10 @@ impl RecorderManager {
             return Err(RecorderManagerError::NotFound { room_id });
         }
         let recorder = recorder.unwrap();
-        Ok(recorder.value().clip_range(ts, start, end).await?)
+        Ok(recorder
+            .value()
+            .clip_range(ts, start, end, output_path)
+            .await?)
     }
 
     pub async fn get_recorder_list(&self) -> RecorderList {
@@ -182,13 +197,6 @@ impl RecorderManager {
     pub async fn delete_archive(&self, room_id: u64, ts: u64) {
         if let Some(recorder) = self.recorders.get(&room_id) {
             recorder.delete_archive(ts).await;
-        }
-    }
-
-    pub async fn update_cookies(&self, cookies: &str) {
-        // update cookies for all recorders
-        for recorder in self.recorders.iter() {
-            recorder.value().update_cookies(cookies).await;
         }
     }
 

@@ -8,11 +8,13 @@
     Spinner,
     Textarea,
     Modal,
+    Select,
   } from "flowbite-svelte";
   import Player from "./lib/Player.svelte";
   import TitleBar from "./lib/TitleBar.svelte";
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import html2canvas from "html2canvas";
+  import type { AccountInfo } from "./lib/db";
 
   const appWindow = getCurrentWebviewWindow();
   const urlParams = new URLSearchParams(window.location.search);
@@ -61,6 +63,18 @@
   let cover = null;
   let cover_text = "";
   let preview = false;
+  let uid_selected = 0;
+
+  let accounts = [];
+
+  invoke("get_accounts").then((account_info: AccountInfo) => {
+    accounts = account_info.accounts.map((a) => {
+      return {
+        value: a.uid,
+        name: a.name,
+      };
+    });
+  });
 
   async function do_post() {
     if (!video_file) {
@@ -95,6 +109,7 @@
     });
     const rendered_cover = render_canvas.toDataURL();
     invoke("upload_procedure", {
+      uid: uid_selected,
       roomId: parseInt(room_id),
       file: video_file,
       cover: rendered_cover,
@@ -183,6 +198,8 @@
         <Textarea bind:value={profile.dynamic} />
         <Label class="mt-2">视频分区</Label>
         <Input value="动画 - 综合" disabled />
+        <Label class="mt-2">使用账号</Label>
+        <Select items={accounts} bind:value={uid_selected} />
       </div>
       <div class="flex justify-center w-full">
         <Button on:click={do_post} disabled={loading}>

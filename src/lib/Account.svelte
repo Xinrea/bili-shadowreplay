@@ -1,29 +1,37 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import { Button, Card } from "flowbite-svelte";
+  import {
+    Button,
+    Card,
+    Table,
+    TableHead,
+    TableHeadCell,
+    TableBody,
+    TableBodyRow,
+    TableBodyCell,
+    Modal,
+    ButtonGroup,
+  } from "flowbite-svelte";
   import Image from "./Image.svelte";
   import QRCode from "qrcode";
-  interface AccountInfo {
-    login: boolean;
-    uid: string;
-    name: string;
-    sign: string;
-    face: string;
-  }
-  let account_info: AccountInfo = {
-    login: false,
-    uid: "",
-    name: "",
-    sign: "",
-    face: "",
-  };
-  invoke("get_accounts").then((data: AccountInfo) => {
-    account_info = data;
-    console.log(account_info);
-  });
+  import type { AccountItem, AccountInfo } from "./db";
+  import { PlusOutline } from "flowbite-svelte-icons";
 
+  let account_info: AccountInfo = {
+    primary_uid: 0,
+    accounts: [],
+  };
+
+  async function update_accounts() {
+    account_info = await invoke("get_accounts");
+  }
+
+  update_accounts();
+
+  let addModal = false;
   let oauth_key = "";
   let check_interval = null;
+
   async function handle_qr() {
     if (check_interval) {
       clearInterval(check_interval);
@@ -48,38 +56,73 @@
     );
     if (qr_status.code == 0) {
       clearInterval(check_interval);
-      await invoke("set_cookies", { cookies: qr_status.cookies });
-      account_info = await invoke("get_accounts");
+      await invoke("add_account", { cookies: qr_status.cookies });
+      await update_accounts();
+      addModal = false;
     }
   }
 </script>
 
-<div class="flex flex-row p-8 pt-12">
-  <Card class="w-1/3 !max-w-none">
-    <div class="flex flex-row items-center">
-      {#if account_info.login}
-        <Image iclass="w-32 h-32 rounded-full p-4" src={account_info.face} />
-        <div class="flex flex-col">
-          <p class="text-lg">
-            {account_info.name}
-          </p>
-          <p class="text-sm text-slate-400">
-            {account_info.uid}
-          </p>
-          <Button
-            class="mt-2"
-            color="red"
-            on:click={async () => {
-              await invoke("logout");
-              account_info.login = false;
-            }}>注销</Button
+<div class="p-8 pt-12 h-full overflow-auto">
+  <Table hoverable={true} divClass="relative max-h-full" shadow>
+    <TableHead>
+      <TableHeadCell>UID</TableHeadCell>
+      <TableHeadCell>头像</TableHeadCell>
+      <TableHeadCell>用户名</TableHeadCell>
+      <TableHeadCell>状态</TableHeadCell>
+      <TableHeadCell>操作</TableHeadCell>
+    </TableHead>
+    <TableBody tableBodyClass="divide-y">
+      {#each account_info.accounts as account}
+        <TableBodyRow>
+          <TableBodyCell>{account.uid}</TableBodyCell>
+          <TableBodyCell
+            ><Image
+              iclass="rounded-full w-12"
+              src={account.avatar}
+            /></TableBodyCell
           >
-        </div>
-      {:else}
-        <canvas id="qr" style="display: none;" />
-        <Button on:click={handle_qr}>获取登录二维码</Button>
-      {/if}
-    </div>
-  </Card>
-  <Card class="w-2/3 !max-w-none ml-4"></Card>
+          <TableBodyCell>{account.name}</TableBodyCell>
+          <TableBodyCell
+            >{account.uid == account_info.primary_uid
+              ? "主账号"
+              : "普通账号"}</TableBodyCell
+          >
+          <TableBodyCell>
+            <ButtonGroup>
+              <Button
+                on:click={async () => {
+                  await invoke("remove_account", { uid: account.uid });
+                  await update_accounts();
+                }}>注销</Button
+              >
+              {#if account.uid != account_info.primary_uid}
+                <Button
+                  on:click={async () => {
+                    await invoke("set_primary", { uid: account.uid });
+                    await update_accounts();
+                  }}>设置为主账号</Button
+                >
+              {/if}
+            </ButtonGroup></TableBodyCell
+          >
+        </TableBodyRow>
+      {/each}
+    </TableBody>
+  </Table>
 </div>
+
+<div class="fixed end-4 bottom-4">
+  <Button
+    pill={true}
+    class="!p-2"
+    on:click={() => {
+      addModal = true;
+      requestAnimationFrame(handle_qr);
+    }}><PlusOutline class="w-8 h-8" /></Button
+  >
+</div>
+
+<Modal bind:open={addModal} autoclose>
+  <canvas id="qr" />
+</Modal>

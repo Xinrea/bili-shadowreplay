@@ -23,3 +23,9 @@ impl From<std::io::Error> for BiliClientError {
         BiliClientError::IOError { err: e }
     }
 }
+
+impl From<BiliClientError> for String {
+    fn from(value: BiliClientError) -> Self {
+        value.to_string()
+    }
+}

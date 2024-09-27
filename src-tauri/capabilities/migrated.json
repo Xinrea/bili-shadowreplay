@@ -55,6 +55,7 @@
     "shell:default",
     "fs:default",
     "http:default",
-    "sql:default"
+    "sql:default",
+    "os:default"
   ]
 }

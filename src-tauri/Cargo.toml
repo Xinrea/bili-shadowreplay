@@ -44,6 +44,7 @@ tauri-plugin-fs = "2.0.0-rc"
 tauri-plugin-http = "2.0.0-rc"
 tauri-utils = "2.0.0-rc"
 tauri-plugin-sql = { version = "2.0.0-rc", features = ["sqlite"] }
+tauri-plugin-os = "2.0.0-rc"
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem

@@ -15,6 +15,9 @@
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import html2canvas from "html2canvas";
   import type { AccountInfo } from "./lib/db";
+  import { platform } from "@tauri-apps/plugin-os";
+
+  let use_titlebar = platform() == "windows";
 
   const appWindow = getCurrentWebviewWindow();
   const urlParams = new URLSearchParams(window.location.search);
@@ -130,7 +133,9 @@
 </script>
 
 <main>
-  <TitleBar dark />
+  {#if use_titlebar}
+    <TitleBar dark />
+  {/if}
   <div class="flex flex-row">
     <div class="w-3/4">
       <Player bind:start bind:end {port} {room_id} {ts} />

@@ -1,0 +1,20 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "fullscreen": false,
+        "resizable": true,
+        "title": "BiliBili ShadowReplay",
+        "width": 1300,
+        "height": 600,
+        "transparent": true,
+        "decorations": false,
+        "theme": "Light",
+        "windowEffects": {
+          "effects": ["tabbed", "mica"]
+        }
+      }
+    ]
+  }
+}

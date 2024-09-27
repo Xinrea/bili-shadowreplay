@@ -6,13 +6,17 @@
   import Account from "./lib/Account.svelte";
   import TitleBar from "./lib/TitleBar.svelte";
   import Messages from "./lib/Messages.svelte";
+  import { platform } from "@tauri-apps/plugin-os";
   let active = "#总览";
   let room_count = 0;
   let message_cnt = 0;
+  let use_titlebar = platform() == "windows";
 </script>
 
 <main>
-  <TitleBar />
+  {#if use_titlebar}
+    <TitleBar />
+  {/if}
   <div class="wrap">
     <div class="sidebar">
       <BSidebar bind:activeUrl={active} {room_count} {message_cnt} />

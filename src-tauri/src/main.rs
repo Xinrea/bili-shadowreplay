@@ -465,8 +465,9 @@ async fn open_live(state: tauri::State<'_, State>, room_id: u64, ts: u64) -> Res
         .get_recorder_info(room_id)
         .await
         .unwrap();
-    if let Err(e) = tauri::WebviewWindowBuilder::new(
-        &state.app_handle.clone(),
+    let handle = state.app_handle.clone();
+    let builder = tauri::WebviewWindowBuilder::new(
+        &handle,
         format!("Live:{}:{}", room_id, ts),
         tauri::WebviewUrl::App(
             format!(
@@ -484,7 +485,6 @@ async fn open_live(state: tauri::State<'_, State>, room_id: u64, ts: u64) -> Res
     ))
     .theme(Some(Theme::Light))
     .decorations(false)
-    .transparent(true)
     .inner_size(1200.0, 800.0)
     .effects(WindowEffectsConfig {
         effects: vec![
@@ -494,10 +494,13 @@ async fn open_live(state: tauri::State<'_, State>, room_id: u64, ts: u64) -> Res
         state: None,
         radius: None,
         color: None,
-    })
-    .build()
+    });
+    #[cfg(target_os = "windows")]
     {
-        log::error!("Create live-window failed: {}", e.to_string());
+        builder.transparent(true);
+    }
+    if let Err(e) = builder.build() {
+        log::error!("live window build failed: {}", e);
     }
     Ok(())
 }
@@ -564,6 +567,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Tauri part
     tauri::Builder::default()
+        .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_single_instance::init(|_, _, _| {}))
         .plugin(
             tauri_plugin_sql::Builder::default()

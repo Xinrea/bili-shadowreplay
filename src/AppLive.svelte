@@ -9,6 +9,7 @@
     Textarea,
     Modal,
     Select,
+    Hr,
   } from "flowbite-svelte";
   import Player from "./lib/Player.svelte";
   import TitleBar from "./lib/TitleBar.svelte";
@@ -16,6 +17,7 @@
   import html2canvas from "html2canvas";
   import type { AccountInfo } from "./lib/db";
   import { platform } from "@tauri-apps/plugin-os";
+  import { ClapperboardPlaySolid } from "flowbite-svelte-icons";
 
   let use_titlebar = platform() == "windows";
 
@@ -79,28 +81,29 @@
     });
   });
 
+  async function generate_clip() {
+    if (end == 0) {
+      alert("请检查选区范围");
+      return;
+    }
+    if (end - start < 5.0) {
+      alert("选区过短:," + (end - start).toFixed(2));
+      return;
+    }
+    loading = true;
+    cover = generateCover();
+    video_file = await invoke("clip_range", {
+      roomId: parseInt(room_id),
+      ts: ts,
+      x: start,
+      y: end,
+    });
+    console.log("video file generatd:", video_file);
+    loading = false;
+  }
+
   async function do_post() {
     if (!video_file) {
-      if (end == 0) {
-        alert("请检查选区范围");
-        return;
-      }
-      if (end - start < 5.0) {
-        alert("选区过短:," + (end - start).toFixed(2));
-        return;
-      }
-      loading = true;
-      appWindow.setTitle(`[${room_id}]${room_info.room_title} 切片中···`);
-      cover = generateCover();
-      video_file = await invoke("clip_range", {
-        roomId: parseInt(room_id),
-        ts: ts,
-        x: start,
-        y: end,
-      });
-      appWindow.setTitle(`[${room_id}]${room_info.room_title} 完成`);
-      console.log("video file generatd:", video_file);
-      loading = false;
       return;
     }
     appWindow.setTitle(`[${room_id}]${room_info.room_title} 上传中···`);
@@ -145,9 +148,9 @@
       </Modal>
     </div>
     <div
-      class="w-1/4 h-screen border-solid bg-gray-50 border-l-2 border-slate-200"
+      class="w-1/4 h-screen p-6 pt-12 overflow-auto border-solid bg-gray-50 border-l-2 border-slate-200"
     >
-      <div class="p-6 pt-12">
+      <div>
         <!-- svelte-ignore a11y-click-events-have-key-events -->
         <div
           class="w-full"
@@ -164,33 +167,21 @@
               {cover_text}
             </div>
           </div>
+          {video_file}
         </div>
         {#if !video_file}
-          <div class="flex flex-cols items-center">
-            <span class="min-w-8 mr-2 text-sm">开始</span>
-            <Input
-              type="number"
-              bind:value={start}
-              defaultClass="max-w-20"
-              size="sm"
-              on:change={(v) => {
-                //@ts-ignore
-                start = parseFloat(v.target.value);
-              }}
-            />
-            <span class="min-w-8 ml-6 mr-2 text-sm">结束</span>
-            <Input
-              type="number"
-              bind:value={end}
-              defaultClass="max-w-20"
-              size="sm"
-              on:change={(v) => {
-                //@ts-ignore
-                end = parseFloat(v.target.value);
-              }}
-            />
+          <div class="w-full flex justify-center">
+            <Button size="sm" on:click={generate_clip} disabled={loading}>
+              {#if loading}
+                <Spinner class="me-3" size="4" />
+              {:else}
+                <ClapperboardPlaySolid />
+              {/if}
+              从选区生成切片</Button
+            >
           </div>
         {/if}
+        <Hr />
         <Label class="mt-4">标题</Label>
         <Input bind:value={profile.title} />
         <Label class="mt-2">封面文本</Label>
@@ -206,14 +197,16 @@
         <Label class="mt-2">投稿账号</Label>
         <Select items={accounts} bind:value={uid_selected} />
       </div>
-      <div class="flex justify-center w-full">
-        <Button on:click={do_post} disabled={loading}>
-          {#if loading}
-            <Spinner class="me-3" size="4" />
-          {/if}
-          {video_file ? "投稿" : "生成切片"}
-        </Button>
-      </div>
+      {#if video_file}
+        <div class="flex mt-4 justify-center w-full">
+          <Button on:click={do_post} disabled={loading}>
+            {#if loading}
+              <Spinner class="me-3" size="4" />
+            {/if}
+            投稿
+          </Button>
+        </div>
+      {/if}
     </div>
   </div>
 </main>

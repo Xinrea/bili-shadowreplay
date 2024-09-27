@@ -46,10 +46,9 @@
           >
           <TableBodyCell tdClass="px-6 py-4 text-end">
             <Button
-              pill
-              outline
               class="!p-2"
               size="sm"
+              color="red"
               on:click={async () => {
                 await delete_message(message.id);
               }}

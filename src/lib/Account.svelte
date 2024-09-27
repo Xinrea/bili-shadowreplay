@@ -15,7 +15,7 @@
   import Image from "./Image.svelte";
   import QRCode from "qrcode";
   import type { AccountItem, AccountInfo } from "./db";
-  import { PlusOutline } from "flowbite-svelte-icons";
+  import { PlusOutline, UserAddSolid } from "flowbite-svelte-icons";
 
   let account_info: AccountInfo = {
     primary_uid: 0,
@@ -123,7 +123,7 @@
     on:click={() => {
       addModal = true;
       requestAnimationFrame(handle_qr);
-    }}><PlusOutline class="w-8 h-8" /></Button
+    }}><UserAddSolid class="w-8 h-8" /></Button
   >
 </div>
 

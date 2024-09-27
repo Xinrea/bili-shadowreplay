@@ -466,7 +466,7 @@ async fn open_live(state: tauri::State<'_, State>, room_id: u64, ts: u64) -> Res
         .await
         .unwrap();
     let handle = state.app_handle.clone();
-    let builder = tauri::WebviewWindowBuilder::new(
+    let mut builder = tauri::WebviewWindowBuilder::new(
         &handle,
         format!("Live:{}:{}", room_id, ts),
         tauri::WebviewUrl::App(
@@ -484,7 +484,6 @@ async fn open_live(state: tauri::State<'_, State>, room_id: u64, ts: u64) -> Res
         room_id, recorder_info.room_info.room_title
     ))
     .theme(Some(Theme::Light))
-    .decorations(false)
     .inner_size(1200.0, 800.0)
     .effects(WindowEffectsConfig {
         effects: vec![
@@ -495,9 +494,13 @@ async fn open_live(state: tauri::State<'_, State>, room_id: u64, ts: u64) -> Res
         radius: None,
         color: None,
     });
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.decorations(true);
+    }
     #[cfg(target_os = "windows")]
     {
-        builder.transparent(true);
+        builder.decorations(false).transparent(true);
     }
     if let Err(e) = builder.build() {
         log::error!("live window build failed: {}", e);

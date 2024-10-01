@@ -1,6 +1,6 @@
-import Database from '@tauri-apps/plugin-sql';
+import Database from "@tauri-apps/plugin-sql";
 
-export const db = await Database.load('sqlite:data.db');
+export const db = await Database.load("sqlite:data.db");
 
 // sql: r#"
 //     CREATE TABLE records (live_id INTEGER PRIMARY KEY, room_id INTEGER, length INTEGER, size INTEGER, created_at TEXT);
@@ -24,10 +24,19 @@ export interface AccountItem {
 }
 
 export interface MessageItem {
-  id: number,
+  id: number;
   title: string;
   content: string;
   read: number;
+  created_at: string;
+}
+
+// from RecordRow
+export interface RecordItem {
+  live_id: number;
+  room_id: number;
+  length: number;
+  size: number;
   created_at: string;
 }
 
@@ -44,11 +53,12 @@ export class Recorders {
       [room_id, new Date().toISOString()],
     );
     return result.rowsAffected == 1;
-
   }
 
   static async remove(room_id: number): Promise<boolean> {
-    const result = await db.execute("DELETE FROM recirders WHERE room_id=$1", [room_id]);
+    const result = await db.execute("DELETE FROM recirders WHERE room_id=$1", [
+      room_id,
+    ]);
     return result.rowsAffected == 1;
   }
 
@@ -58,11 +68,11 @@ export class Recorders {
 }
 
 function parseCookies(cookies_str: string) {
-  const cookies = cookies_str.split('; ');
+  const cookies = cookies_str.split("; ");
   const cookieObject = {};
 
-  cookies.forEach(cookie => {
-    const [name, value] = cookie.split('=');
+  cookies.forEach((cookie) => {
+    const [name, value] = cookie.split("=");
     cookieObject[decodeURIComponent(name)] = decodeURIComponent(value);
   });
 
@@ -72,21 +82,26 @@ function parseCookies(cookies_str: string) {
 //     CREATE TABLE accounts (uid INTEGER PRIMARY KEY, name TEXT, avatar TEXT, csrf TEXT, cookies TEXT, created_at TEXT);
 export class Accounts {
   static async login(): Promise<boolean> {
-    const result = await db.select("SELECT * FROM accounts") as AccountItem[];
-    return result.length > 0
+    const result = (await db.select("SELECT * FROM accounts")) as AccountItem[];
+    return result.length > 0;
   }
 
   static async add(cookies: string): Promise<boolean> {
     const obj = parseCookies(cookies);
     const uid = parseInt(obj["DedeUserID"]);
     const csrf = obj["bili_jct"];
-    const result = await db.execute("INSERT OR REPLACE INTO accounts (uid, name, avatar, csrf, cookies, created_at) VALUES ($1, $2, $3, $4, $5, $6)", [uid, name, avatar, csrf, cookies, new Date().toISOString]);
+    const result = await db.execute(
+      "INSERT OR REPLACE INTO accounts (uid, name, avatar, csrf, cookies, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
+      [uid, name, avatar, csrf, cookies, new Date().toISOString],
+    );
     return result.rowsAffected == 1;
   }
 
   static async remove(uid: number): Promise<boolean> {
-    const result = await db.execute("DELETE FROM accounts WHERE uid = $1", [uid])
-    return result.rowsAffected == 1
+    const result = await db.execute("DELETE FROM accounts WHERE uid = $1", [
+      uid,
+    ]);
+    return result.rowsAffected == 1;
   }
 
   static async query(): Promise<AccountItem[]> {

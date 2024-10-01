@@ -18,6 +18,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::json;
 use serde_json::Value;
+use std::io::Read;
 use std::path::Path;
 use std::time::SystemTime;
 use tokio::fs::File;
@@ -452,7 +453,7 @@ impl BiliClient {
             .await?)
     }
 
-    pub async fn download_ts(&self, url: &str, file_path: &str) -> Result<(), BiliClientError> {
+    pub async fn download_ts(&self, url: &str, file_path: &str) -> Result<u64, BiliClientError> {
         let url = url.to_owned() + self.extra.read().await.as_str();
         let res = self
             .client
@@ -460,13 +461,12 @@ impl BiliClient {
             .headers(self.headers.clone())
             .send()
             .await?;
-        if let Ok(mut file) = std::fs::File::create(file_path) {
-            let mut content = std::io::Cursor::new(res.bytes().await?);
-            std::io::copy(&mut content, &mut file).unwrap();
-        } else {
-            log::error!("Failed to create file {}", file_path);
-        }
-        Ok(())
+        let mut file = std::fs::File::create(file_path)?;
+        let bytes = res.bytes().await?;
+        let size = bytes.len() as u64;
+        let mut content = std::io::Cursor::new(bytes);
+        std::io::copy(&mut content, &mut file)?;
+        Ok(size)
     }
 
     // Method from js code

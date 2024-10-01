@@ -1,4 +1,4 @@
-use crate::db::AccountRow;
+use crate::db::{AccountRow, Database, RecordRow};
 use crate::recorder::bilibili::UserInfo;
 use crate::recorder::RecorderError;
 use crate::recorder::{bilibili::RoomInfo, BiliRecorder};
@@ -88,6 +88,7 @@ impl RecorderManager {
 
     pub async fn add_recorder(
         &self,
+        db: &Arc<Database>,
         account: &AccountRow,
         room_id: u64,
         cache_path: &str,
@@ -96,7 +97,7 @@ impl RecorderManager {
         if self.recorders.contains_key(&room_id) {
             return Err(RecorderManagerError::AlreadyExisted { room_id });
         }
-        let recorder = BiliRecorder::new(room_id, account, cache_path).await?;
+        let recorder = BiliRecorder::new(db, room_id, account, cache_path).await?;
         self.recorders.insert(room_id, recorder);
         // run recorder
         let recorder = self.recorders.get(&room_id).unwrap();
@@ -185,12 +186,11 @@ impl RecorderManager {
         }
     }
 
-    pub async fn get_archives(&self, room_id: u64) -> Option<Vec<u64>> {
+    pub async fn get_archives(&self, room_id: u64) -> Result<Vec<RecordRow>, RecorderManagerError> {
         if let Some(recorder) = self.recorders.get(&room_id) {
-            Some(recorder.get_archives().await)
+            Ok(recorder.get_archives().await?)
         } else {
-            log::error!("[recorder_manager]No recorder found");
-            None
+            Err(RecorderManagerError::NotFound { room_id })
         }
     }
 

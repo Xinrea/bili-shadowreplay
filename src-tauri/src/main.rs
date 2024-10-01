@@ -7,7 +7,7 @@ mod recorder_manager;
 mod tray;
 
 use custom_error::custom_error;
-use db::{AccountRow, Database, MessageRow};
+use db::{AccountRow, Database, MessageRow, RecordRow};
 use recorder::bilibili::errors::BiliClientError;
 use recorder::bilibili::profile::Profile;
 use recorder::bilibili::{BiliClient, QrInfo, QrStatus};
@@ -282,7 +282,12 @@ async fn add_recorder(
         .await?;
     match state
         .recorder_manager
-        .add_recorder(&account, room_id, &state.config.read().await.cache)
+        .add_recorder(
+            &state.db,
+            &account,
+            room_id,
+            &state.config.read().await.cache,
+        )
         .await
     {
         Ok(()) => {
@@ -419,9 +424,9 @@ async fn get_room_info(
 async fn get_archives(
     state: tauri::State<'_, State>,
     room_id: u64,
-) -> Result<Option<Vec<u64>>, String> {
+) -> Result<Vec<RecordRow>, String> {
     log::debug!("Get archives for {}", room_id);
-    Ok(state.recorder_manager.get_archives(room_id).await)
+    Ok(state.recorder_manager.get_archives(room_id).await?)
 }
 
 #[tauri::command]
@@ -555,18 +560,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sql: r#"
             CREATE TABLE accounts (uid INTEGER PRIMARY KEY, name TEXT, avatar TEXT, csrf TEXT, cookies TEXT, created_at TEXT);
             CREATE TABLE recorders (room_id INTEGER PRIMARY KEY, created_at TEXT);
-            CREATE TABLE records (live_id INTEGER PRIMARY KEY, room_id INTEGER, length INTEGER, size INTEGER, created_at TEXT);
+            CREATE TABLE records (live_id INTEGER PRIMARY KEY, room_id INTEGER, title TEXT, length INTEGER, size INTEGER, created_at TEXT);
             CREATE TABLE danmu_statistics (live_id INTEGER PRIMARY KEY, room_id INTEGER, value INTEGER, time_point TEXT);
-            CREATE TABLE messages (id INTEGER PRIMARY KEY, title TEXT, content TEXT, read INTEGER, created_at TEXT);
+            CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, read INTEGER, created_at TEXT);
             CREATE TABLE videos (id INTEGER PRIMARY KEY, file TEXT, length INTEGER, size INTEGER, status INTEGER, title TEXT, desc TEXT, tags TEXT, area INTEGER);
             "#,
         kind: MigrationKind::Up,
-    }, Migration {
-            version: 2,
-            description: "update_message_table",
-            sql: "DROP TABLE messages; CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, read INTEGER, created_at TEXT);",
-            kind: MigrationKind::Up,
-        }];
+    }];
 
     // Tauri part
     tauri::Builder::default()
@@ -609,7 +609,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Ok(account) = account {
                     for room in initial_rooms {
                         if let Err(e) = recorder_manager_clone
-                            .add_recorder(&account, room.room_id, &config_clone.read().await.cache)
+                            .add_recorder(
+                                &db_clone,
+                                &account,
+                                room.room_id,
+                                &config_clone.read().await.cache,
+                            )
                             .await
                         {
                             log::error!("error when adding initial rooms: {}", e);

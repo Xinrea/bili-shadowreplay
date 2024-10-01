@@ -17,13 +17,14 @@ use std::thread;
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::sync::{Mutex, RwLock};
 
-use crate::db::AccountRow;
+use crate::db::{AccountRow, Database, DatabaseError, RecordRow};
 
 #[derive(Clone)]
 pub struct TsEntry {
     pub url: String,
     pub sequence: u64,
     pub length: f64,
+    pub size: u64,
 }
 
 /// A recorder for BiliBili live streams
@@ -34,6 +35,7 @@ pub struct TsEntry {
 #[derive(Clone)]
 pub struct BiliRecorder {
     client: Arc<RwLock<BiliClient>>,
+    db: Arc<Database>,
     account: AccountRow,
     cache_path: String,
     pub room_id: u64,
@@ -48,6 +50,7 @@ pub struct BiliRecorder {
     quit: Arc<Mutex<bool>>,
     header: Arc<RwLock<Option<TsEntry>>>,
     stream_type: Arc<RwLock<StreamType>>,
+    cache_size: Arc<RwLock<u64>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -64,7 +67,14 @@ custom_error! {pub RecorderError
     EmptyHeader = "Header url is empty",
     InvalidTimestamp = "Header timestamp is invalid",
     InvalidPlaylist = "Invalid m3u8 playlist",
-    ClientError {err: BiliClientError} = "BiliClient fetch failed",
+    InvalidDBOP {err: DatabaseError } = "Database error {err}",
+    ClientError {err: BiliClientError} = "BiliClient fetch failed {err}",
+}
+
+impl From<DatabaseError> for RecorderError {
+    fn from(value: DatabaseError) -> Self {
+        RecorderError::InvalidDBOP { err: value }
+    }
 }
 
 impl From<BiliClientError> for RecorderError {
@@ -75,6 +85,7 @@ impl From<BiliClientError> for RecorderError {
 
 impl BiliRecorder {
     pub async fn new(
+        db: &Arc<Database>,
         room_id: u64,
         account: &AccountRow,
         cache_path: &str,
@@ -97,6 +108,7 @@ impl BiliRecorder {
 
         let recorder = Self {
             client: Arc::new(RwLock::new(client)),
+            db: db.clone(),
             account: account.clone(),
             cache_path: cache_path.into(),
             room_id,
@@ -111,6 +123,7 @@ impl BiliRecorder {
             quit: Arc::new(Mutex::new(false)),
             header: Arc::new(RwLock::new(None)),
             stream_type: Arc::new(RwLock::new(stream_type)),
+            cache_size: Arc::new(RwLock::new(0)),
         };
         log::info!("Recorder for room {} created.", room_id);
         Ok(recorder)
@@ -159,54 +172,18 @@ impl BiliRecorder {
         }
     }
 
-    pub async fn get_archives(&self) -> Vec<u64> {
-        let work_dir = format!("{}/{}", self.cache_path, self.room_id);
-        log::debug!(
-            "[recorder:{}]Finding archives under {}",
-            self.room_id,
-            work_dir
-        );
-        let mut ret = Vec::new();
-        if let Ok(mut entries) = fs::read_dir(work_dir).await {
-            while let Some(e) = entries.next().await {
-                if e.is_err() {
-                    continue;
-                }
-                let e = e.unwrap();
-                // get file type
-                let ftype = e.file_type().await;
-                if ftype.is_err() {
-                    continue;
-                }
-                let ftype = ftype.unwrap();
-                // check dir
-                if ftype.is_dir() {
-                    if let Ok(name) = e.file_name().into_string() {
-                        // folder name should be timestamp
-                        log::debug!(
-                            "[recorder:{}]find a folder with name: {}",
-                            self.room_id,
-                            name
-                        );
-                        if let Ok(ts) = name.parse::<u64>() {
-                            // current stream is not archived yet
-                            if *self.timestamp.read().await != ts {
-                                ret.push(ts);
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            log::error!("[recorder:{}]fs::read_dir failed", self.room_id);
-        }
-        ret
+    pub async fn get_archives(&self) -> Result<Vec<RecordRow>, RecorderError> {
+        Ok(self.db.get_records(self.room_id).await?)
     }
 
     pub async fn delete_archive(&self, ts: u64) {
-        let target_dir = format!("{}/{}/{}", self.cache_path, self.room_id, ts);
-        if fs::remove_dir_all(target_dir).await.is_err() {
-            log::error!("remove archive failed [{}]{}", self.room_id, ts);
+        if let Err(e) = self.db.remove_record(ts).await {
+            log::error!("remove archive failed: {}", e);
+        } else {
+            let target_dir = format!("{}/{}/{}", self.cache_path, self.room_id, ts);
+            if fs::remove_dir_all(target_dir).await.is_err() {
+                log::error!("remove archive failed [{}]{}", self.room_id, ts);
+            }
         }
     }
 
@@ -394,6 +371,13 @@ impl BiliRecorder {
                 log::error!("[{}]Parse timestamp failed: {}", self.room_id, header_url);
                 return Err(RecorderError::InvalidTimestamp);
             }
+            self.db
+                .add_record(
+                    timestamp,
+                    self.room_id,
+                    &self.room_info.read().await.room_title,
+                )
+                .await?;
             // now work dir is confirmed
             work_dir = format!("{}/{}/{}/", self.cache_path, self.room_id, timestamp);
             // if folder is exisited, need to load previous data into cache
@@ -410,23 +394,30 @@ impl BiliRecorder {
                 fs::create_dir_all(&work_dir).await.unwrap();
             }
             let full_header_url = self.ts_url(&header_url).await?;
-            let header = TsEntry {
+            let mut header = TsEntry {
                 url: full_header_url.clone(),
                 sequence: 0,
                 length: 0.0,
+                size: 0,
             };
             let file_name = header_url.split('/').last().unwrap();
             // Download header
-            if let Err(e) = self
+            match self
                 .client
                 .read()
                 .await
                 .download_ts(&full_header_url, &format!("{}/{}", work_dir, file_name))
                 .await
             {
-                log::error!("Error downloading header: {:?}", e);
-            } else {
-                *self.header.write().await = Some(header);
+                Ok(size) => {
+                    header.size = size;
+                    *self.header.write().await = Some(header);
+                    // add size into cache_size
+                    *self.cache_size.write().await += size;
+                }
+                Err(e) => {
+                    log::error!("Download header failed: {}", e);
+                }
             }
         }
         match parsed {
@@ -443,6 +434,7 @@ impl BiliRecorder {
                         url: ts.uri,
                         sequence,
                         length: ts.duration as f64,
+                        size: 0,
                     };
                     let client = self.client.clone();
                     let ts_url = self.ts_url(&ts_entry.url).await?;
@@ -451,16 +443,22 @@ impl BiliRecorder {
                         continue;
                     }
                     let work_dir = work_dir.clone();
+                    let cache_size_clone = self.cache_size.clone();
                     handles.push(tokio::task::spawn(async move {
                         let ts_url_clone = ts_url.clone();
                         let file_name = ts_url_clone.split('/').last().unwrap();
-                        if let Err(e) = client
+                        match client
                             .read()
                             .await
                             .download_ts(&ts_url, &format!("{}/{}", work_dir, file_name))
                             .await
                         {
-                            log::error!("download ts failed: {}", e);
+                            Ok(size) => {
+                                *cache_size_clone.write().await += size;
+                            }
+                            Err(e) => {
+                                log::error!("Download ts failed: {}", e);
+                            }
                         }
                     }));
                     let mut entries = self.ts_entries.lock().await;
@@ -475,6 +473,14 @@ impl BiliRecorder {
                         log::error!("download ts failed: {:?}", e);
                     }
                 });
+                // currently we take every segement's length as 1.0s.
+                self.db
+                    .update_record(
+                        timestamp,
+                        self.ts_entries.lock().await.len() as i64,
+                        *self.cache_size.read().await,
+                    )
+                    .await?;
             }
             Err(_) => {
                 return Err(RecorderError::InvalidPlaylist);
@@ -491,6 +497,7 @@ impl BiliRecorder {
         }
         self.ts_entries.lock().await.extend_from_slice(&entries);
         *self.ts_length.write().await = entries.len() as f64;
+        *self.cache_size.write().await = entries.iter().map(|e| e.size).sum();
         *self.last_sequence.write().await = entries.last().unwrap().sequence;
         log::info!("Restore {} entries from local file", entries.len());
     }
@@ -716,6 +723,7 @@ impl BiliRecorder {
                 url: file_name.clone(),
                 sequence: file_name.split('.').next().unwrap().parse().unwrap(),
                 length: 1.0,
+                size: e.metadata().await.unwrap().len(),
             });
         }
         ret.sort_by(|a, b| a.sequence.cmp(&b.sequence));

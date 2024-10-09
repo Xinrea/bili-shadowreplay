@@ -22,6 +22,7 @@
         total = summary.count;
         online = summary.recorders.filter((r) => r.live_status).length;
         // each recorder get archive size
+        console.log(summary.recorders);
         disk_usage = 0;
         for (const recorder of summary.recorders) {
             disk_usage += await get_disk_usage(recorder.room_id);
@@ -31,13 +32,14 @@
     setInterval(update_summary, INTERVAL);
 
     async function get_disk_usage(room_id: number) {
+        let ds = 0;
         const archives = (await invoke("get_archives", {
             roomId: room_id,
         })) as RecordItem[];
         for (const archive of archives) {
-            disk_usage += archive.size;
+            ds += archive.size;
         }
-        return disk_usage;
+        return ds;
     }
 
     function format_size(size: number) {

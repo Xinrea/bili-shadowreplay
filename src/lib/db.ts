@@ -33,6 +33,7 @@ export interface MessageItem {
 
 // from RecordRow
 export interface RecordItem {
+  title: string;
   live_id: number;
   room_id: number;
   length: number;

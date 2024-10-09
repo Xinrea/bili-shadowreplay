@@ -176,6 +176,10 @@ impl BiliRecorder {
         Ok(self.db.get_records(self.room_id).await?)
     }
 
+    pub async fn get_archive(&self, live_id: u64) -> Result<RecordRow, RecorderError> {
+        Ok(self.db.get_record(self.room_id, live_id).await?)
+    }
+
     pub async fn delete_archive(&self, ts: u64) {
         if let Err(e) = self.db.remove_record(ts).await {
             log::error!("remove archive failed: {}", e);

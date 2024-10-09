@@ -430,6 +430,15 @@ async fn get_archives(
 }
 
 #[tauri::command]
+async fn get_archive(
+    state: tauri::State<'_, State>,
+    room_id: u64,
+    live_id: u64,
+) -> Result<RecordRow, String> {
+    Ok(state.recorder_manager.get_archive(room_id, live_id).await?)
+}
+
+#[tauri::command]
 async fn delete_archive(
     state: tauri::State<'_, State>,
     room_id: u64,
@@ -668,6 +677,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             remove_account,
             set_primary,
             get_room_info,
+            get_archive,
             get_archives,
             get_profile,
             delete_archive,

@@ -22,6 +22,7 @@
         Checkbox,
         Input,
         Helper,
+        Tooltip,
     } from "flowbite-svelte";
     import {
         ChevronDownOutline,
@@ -83,15 +84,15 @@
         return date.toLocaleString();
     }
     function format_duration(duration: number) {
-        const hours = Math.floor(duration / 3600);
-        const minutes = Math.floor((duration % 3600) / 60);
-        const seconds = duration % 60;
+        const hours = Math.floor(duration / 3600)
+            .toString()
+            .padStart(2, "0");
+        const minutes = Math.floor((duration % 3600) / 60)
+            .toString()
+            .padStart(2, "0");
+        const seconds = (duration % 60).toString().padStart(2, "0");
 
-        const hoursStr = hours > 0 ? `${hours} 小时 ` : "";
-        const minutesStr = minutes > 0 ? `${minutes} 分钟 ` : "";
-        const secondsStr = seconds > 0 ? `${seconds} 秒` : "";
-
-        return `${hoursStr}${minutesStr}${secondsStr}`.trim();
+        return `${hours}:${minutes}:${seconds}`;
     }
     function format_size(size: number) {
         if (size < 1024) {
@@ -292,9 +293,9 @@
         <Table>
             <TableHead>
                 <TableHeadCell>直播时间</TableHeadCell>
+                <TableHeadCell>标题</TableHeadCell>
                 <TableHeadCell>时长</TableHeadCell>
                 <TableHeadCell>缓存</TableHeadCell>
-                <TableHeadCell>比特率</TableHeadCell>
                 <TableHeadCell>操作</TableHeadCell>
             </TableHead>
             <TableBody tableBodyClass="divide-y">
@@ -303,15 +304,13 @@
                         <TableBodyCell
                             >{format_ts(archive.created_at)}</TableBodyCell
                         >
+                        <TableBodyCell>{archive.title}</TableBodyCell>
                         <TableBodyCell
                             >{format_duration(archive.length)}</TableBodyCell
                         >
-                        <TableBodyCell
-                            >{format_size(archive.size)}</TableBodyCell
-                        >
-                        <TableBodyCell
-                            >{calc_bitrate(archive.size, archive.length)} Kbps</TableBodyCell
-                        >
+                        <TableBodyCell>
+                            <span>{format_size(archive.size)}</span>
+                        </TableBodyCell>
                         <TableBodyCell>
                             <ButtonGroup>
                                 <Button

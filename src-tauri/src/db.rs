@@ -267,14 +267,15 @@ impl Database {
         )
     }
 
-    pub async fn get_record(&self, live_id: u64) -> Result<RecordRow, DatabaseError> {
+    pub async fn get_record(&self, room_id: u64, live_id: u64) -> Result<RecordRow, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
-        Ok(
-            sqlx::query_as::<_, RecordRow>("SELECT * FROM records WHERE live_id = $1")
-                .bind(live_id as i64)
-                .fetch_one(&lock)
-                .await?,
+        Ok(sqlx::query_as::<_, RecordRow>(
+            "SELECT * FROM records WHERE live_id = $1 and room_id = $2",
         )
+        .bind(live_id as i64)
+        .bind(room_id as i64)
+        .fetch_one(&lock)
+        .await?)
     }
 
     pub async fn add_record(
@@ -296,7 +297,7 @@ impl Database {
             .bind(record.room_id as i64).bind(&record.title).bind(0).bind(0).bind(&record.created_at).execute(&lock).await {
                 // if the record already exists, return the existing record
                 if e.to_string().contains("UNIQUE constraint failed") {
-                    return self.get_record(live_id).await;
+                    return self.get_record(room_id, live_id).await;
                 }
             }
         Ok(record)

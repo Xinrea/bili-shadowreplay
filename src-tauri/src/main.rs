@@ -464,6 +464,7 @@ async fn get_accounts(state: tauri::State<'_, State>) -> Result<AccountInfo, Str
 
 #[tauri::command]
 async fn open_live(state: tauri::State<'_, State>, room_id: u64, ts: u64) -> Result<(), String> {
+    log::info!("Open player window: {} {}", room_id, ts);
     let addr = state.recorder_manager.get_hls_server_addr().await.unwrap();
     let recorder_info = state
         .recorder_manager

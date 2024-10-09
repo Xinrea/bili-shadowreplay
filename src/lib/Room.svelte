@@ -318,7 +318,7 @@
                                     on:click={() => {
                                         invoke("open_live", {
                                             roomId: archiveRoom.room_id,
-                                            ts: archive,
+                                            ts: archive.live_id,
                                         });
                                     }}>编辑切片</Button
                                 >

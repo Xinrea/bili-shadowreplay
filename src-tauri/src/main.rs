@@ -592,9 +592,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let db = Arc::new(Database::new());
             let db_clone = db.clone();
             tauri::async_runtime::block_on(async move {
-                db_clone
-                    .set(dbs.0.lock().await.get("sqlite:data.db").unwrap().clone())
-                    .await;
+                let binding = dbs.0.lock().await;
+                let dbpool = binding.get("sqlite:data.db").unwrap();
+                let sqlite_pool = match dbpool {
+                    tauri_plugin_sql::DbPool::Sqlite(pool) => Some(pool),
+                    _ => None,
+                };
+                db_clone.set(sqlite_pool.unwrap().clone()).await;
                 let initial_rooms = db_clone.get_recorders().await.unwrap();
                 let mut primary_uid = config_clone.read().await.primary_uid;
                 if primary_uid == 0 {

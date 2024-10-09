@@ -23,7 +23,7 @@
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^2.0.0",
-    "@tauri-apps/cli": "^2.0.0-rc.13",
+    "@tauri-apps/cli": "^2.0.2",
     "@tsconfig/svelte": "^3.0.0",
     "@types/node": "^18.7.10",
     "@types/qrcode": "^1.5.5",

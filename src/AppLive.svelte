@@ -18,6 +18,7 @@
     import type { AccountInfo, RecordItem } from "./lib/db";
     import { platform } from "@tauri-apps/plugin-os";
     import { ClapperboardPlaySolid } from "flowbite-svelte-icons";
+    import type { Profile } from "./lib/interface";
 
     let use_titlebar = platform() == "windows";
 
@@ -27,24 +28,52 @@
     const room_id = parseInt(urlParams.get("room_id"));
     const ts = parseInt(urlParams.get("ts"));
 
-    let profile = {
-        title: "",
-        desc: "",
-        tag: "",
-        dynamic: "",
-    };
+    // get profile in local storage with a default value
+    let profile: Profile = get_profile();
+
+    function get_profile(): Profile {
+        const profile_str = window.localStorage.getItem("profile-" + room_id);
+        if (profile_str && profile_str.includes("videos")) {
+            return JSON.parse(profile_str);
+        }
+        return default_profile();
+    }
+
+    function default_profile(): Profile {
+        return {
+            videos: [],
+            cover: "",
+            cover43: null,
+            title: "",
+            copyright: 1,
+            tid: 27,
+            tag: "",
+            desc_format_id: 9999,
+            desc: "",
+            recreate: -1,
+            dynamic: "",
+            interactive: 0,
+            act_reserve_create: 0,
+            no_disturbance: 0,
+            no_reprint: 0,
+            subtitle: {
+                open: 0,
+                lan: "",
+            },
+            dolby: 0,
+            lossless_music: 0,
+            up_selection_reply: false,
+            up_close_danmu: false,
+            up_close_reply: false,
+            web_os: 0,
+        };
+    }
 
     let archive: RecordItem = null;
 
     let loading = false;
     let start = 0.0;
     let end = 0.0;
-
-    invoke("get_profile", { roomId: room_id }).then((p) => {
-        //@ts-ignore
-        profile = p;
-        console.log(profile);
-    });
 
     function generateCover() {
         const video = document.getElementById("video") as HTMLVideoElement;
@@ -120,6 +149,11 @@
             scale: 720 / ecapture.clientHeight,
         });
         const rendered_cover = render_canvas.toDataURL();
+        // update profile in local storage
+        window.localStorage.setItem(
+            "profile-" + room_id,
+            JSON.stringify(profile),
+        );
         invoke("upload_procedure", {
             uid: uid_selected,
             roomId: room_id,
@@ -200,19 +234,19 @@
                 {/if}
                 <Hr />
                 <Label class="mt-4">标题</Label>
-                <Input bind:value={profile.title} />
+                <Input size="sm" bind:value={profile.title} />
                 <Label class="mt-2">封面文本</Label>
                 <Textarea bind:value={cover_text} />
                 <Label class="mt-2">描述</Label>
                 <Textarea bind:value={profile.desc} />
                 <Label class="mt-2">标签</Label>
-                <Input bind:value={profile.tag} />
+                <Input size="sm" bind:value={profile.tag} />
                 <Label class="mt-2">动态</Label>
                 <Textarea bind:value={profile.dynamic} />
                 <Label class="mt-2">视频分区</Label>
-                <Input value="动画 - 综合" disabled />
+                <Input size="sm" value="动画 - 综合" disabled />
                 <Label class="mt-2">投稿账号</Label>
-                <Select items={accounts} bind:value={uid_selected} />
+                <Select size="sm" items={accounts} bind:value={uid_selected} />
             </div>
             {#if video_file}
                 <div class="flex mt-4 justify-center w-full">

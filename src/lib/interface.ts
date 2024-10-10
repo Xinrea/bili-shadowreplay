@@ -15,15 +15,52 @@ export interface UserInfo {
 }
 
 export interface RecorderInfo {
-  room_id: number,
-  room_info: RoomInfo,
-  user_info: UserInfo,
-  total_length: number,
-  current_ts: number,
-  live_status: boolean
+  room_id: number;
+  room_info: RoomInfo;
+  user_info: UserInfo;
+  total_length: number;
+  current_ts: number;
+  live_status: boolean;
 }
 
 export interface RecorderList {
   count: number;
   recorders: RecorderInfo[];
+}
+
+export interface Subtitle {
+  open: 0 | 1;
+  lan: string;
+}
+
+export interface Video {
+  title: string;
+  filename: string;
+  desc: string;
+  cid: number;
+}
+
+export interface Profile {
+  videos: Video[];
+  cover: string;
+  cover43: string | null;
+  title: string;
+  copyright: 1 | 2;
+  tid: number;
+  tag: string;
+  desc_format_id: number;
+  desc: string;
+  recreate: number;
+  dynamic: string;
+  interactive: 0 | 1;
+  act_reserve_create: 0 | 1;
+  no_disturbance: 0 | 1;
+  no_reprint: 0 | 1;
+  subtitle: Subtitle;
+  dolby: 0 | 1;
+  lossless_music: 0 | 1;
+  up_selection_reply: boolean;
+  up_close_reply: boolean;
+  up_close_danmu: boolean;
+  web_os: 0 | 1;
 }

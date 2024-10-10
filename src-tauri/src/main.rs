@@ -15,7 +15,6 @@ use recorder_manager::{RecorderInfo, RecorderList, RecorderManager};
 use tauri::utils::config::WindowEffectsConfig;
 use tauri_plugin_sql::{Migration, MigrationKind};
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
@@ -82,7 +81,6 @@ pub struct Config {
     cache: String,
     output: String,
     primary_uid: u64,
-    profile_preset: HashMap<String, Profile>,
 }
 
 impl Config {
@@ -108,7 +106,6 @@ impl Config {
                 .unwrap()
                 .to_string(),
             primary_uid: 0,
-            profile_preset: HashMap::new(),
         };
         config.save();
         config
@@ -136,16 +133,6 @@ impl Config {
 
     pub fn set_output_path(&mut self, path: String) {
         self.output = path;
-        self.save();
-    }
-
-    pub fn get_profile(&self, room_id: u64) -> Option<Profile> {
-        self.profile_preset.get(&room_id.to_string()).cloned()
-    }
-
-    pub fn update_profile(&mut self, room_id: u64, profile: &Profile) {
-        self.profile_preset
-            .insert(room_id.to_string(), profile.clone());
         self.save();
     }
 }
@@ -380,12 +367,6 @@ async fn upload_procedure(
     cover: String,
     mut profile: Profile,
 ) -> Result<String, String> {
-    // update profile
-    state
-        .config
-        .write()
-        .await
-        .update_profile(room_id, &profile.clone());
     let account = state.db.get_account(uid).await?;
     let path = Path::new(&file);
     let cover_url = state.client.upload_cover(&account, &cover);
@@ -521,18 +502,6 @@ async fn open_live(state: tauri::State<'_, State>, room_id: u64, ts: u64) -> Res
         log::error!("live window build failed: {}", e);
     }
     Ok(())
-}
-
-#[tauri::command]
-async fn get_profile(state: tauri::State<'_, State>, room_id: u64) -> Result<Profile, String> {
-    Ok(state
-        .config
-        .read()
-        .await
-        .profile_preset
-        .get(&room_id.to_string())
-        .cloned()
-        .unwrap_or(Profile::new("", "", 27)))
 }
 
 #[tauri::command]
@@ -679,7 +648,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             get_room_info,
             get_archive,
             get_archives,
-            get_profile,
             delete_archive,
             get_messages,
             read_message,

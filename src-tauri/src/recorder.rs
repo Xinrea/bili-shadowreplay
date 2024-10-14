@@ -93,7 +93,9 @@ impl BiliRecorder {
     ) -> Result<Self, RecorderError> {
         let client = BiliClient::new()?;
         let room_info = client.get_room_info(account, room_id).await?;
-        let user_info = client.get_user_info(webid, account, room_info.user_id).await?;
+        let user_info = client
+            .get_user_info(webid, account, room_info.user_id)
+            .await?;
         let mut m3u8_url = String::from("");
         let mut live_status = false;
         let mut stream_type = StreamType::FMP4;
@@ -562,7 +564,7 @@ impl BiliRecorder {
             }
         }
 
-        std::fs::create_dir_all(&output_path).expect("create clips folder failed");
+        std::fs::create_dir_all(output_path).expect("create clips folder failed");
         let file_name = format!(
             "{}/[{}]{}_{}_{:.1}.mp4",
             output_path,
@@ -606,16 +608,17 @@ impl BiliRecorder {
         if start > end {
             std::mem::swap(&mut start, &mut end);
         }
-        let first_sequence = entry_copy.first().unwrap().sequence;
+        let mut offset = 0.0;
         for e in entry_copy.iter() {
-            let offset = e.sequence - first_sequence;
             if (offset as f64) < start {
+                offset += 1.0;
                 continue;
             }
             to_combine.push(e);
             if (offset as f64) >= end {
                 break;
             }
+            offset += 1.0;
         }
         if *self.stream_type.read().await == StreamType::FMP4 {
             // add header to vec
@@ -635,7 +638,7 @@ impl BiliRecorder {
         }
         let title = self.room_info.read().await.room_title.clone();
         let title: String = title.chars().take(5).collect();
-        std::fs::create_dir_all(&output_path).expect("create clips folder failed");
+        std::fs::create_dir_all(output_path).expect("create clips folder failed");
         let file_name = format!(
             "{}/[{}]{}_{}_{:.1}.mp4",
             output_path,

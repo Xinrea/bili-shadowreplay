@@ -2,6 +2,7 @@
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import {
     Button,
+    ButtonGroup,
     Input,
     Label,
     Spinner,
@@ -16,7 +17,7 @@
   import html2canvas from "html2canvas";
   import type { AccountInfo, RecordItem } from "./lib/db";
   import { platform } from "@tauri-apps/plugin-os";
-  import { ClapperboardPlaySolid } from "flowbite-svelte-icons";
+  import { ClapperboardPlaySolid, PlayOutline } from "flowbite-svelte-icons";
   import type { Profile, VideoItem, Config } from "./lib/interface";
   import { onMount } from "svelte";
 
@@ -103,6 +104,7 @@
   let videos = [];
 
   let video = null;
+  let cover = "";
 
   invoke("get_accounts").then((account_info: AccountInfo) => {
     accounts = account_info.accounts.map((a) => {
@@ -142,6 +144,7 @@
     video = videos.find((v) => {
       return v.value == id;
     });
+    cover = video.cover;
     console.log("video selected", videos, video, e, id);
   }
 
@@ -155,11 +158,11 @@
       return;
     }
     loading = true;
-    let cover = generateCover();
+    let new_cover = generateCover();
     appWindow.setTitle(`[${room_id}][${ts}]${archive.title} - 切片生成中`);
-    let video = (await invoke("clip_range", {
+    let new_video = (await invoke("clip_range", {
       roomId: room_id,
-      cover,
+      cover: new_cover,
       ts: ts,
       x: start,
       y: end,
@@ -167,7 +170,11 @@
     appWindow.setTitle(`[${room_id}][${ts}]${archive.title} - 切片生成成功`);
     console.log("video file generatd:", video);
     await get_video_list();
-    video_selected = video.id;
+    video_selected = new_video.id;
+    video = videos.find((v) => {
+      return v.value == new_video.id;
+    });
+    cover = new_video.cover;
     loading = false;
   }
 
@@ -240,20 +247,27 @@
         class:titlebar={use_titlebar}
       >
         <!-- svelte-ignore a11y-click-events-have-key-events -->
-        <div
-          class="w-full"
-          hidden={!video}
-          on:click={() => {
-            preview = true;
-          }}
-        >
-          <div id="capture" class="cover-wrap relative cursor-pointer">
-            <div class="cover-text absolute py-2 px-8">
-              {cover_text}
+        {#if video}
+          <div
+            class="w-full mb-2"
+            on:click={() => {
+              preview = true;
+            }}
+          >
+            <div id="capture" class="cover-wrap relative cursor-pointer">
+              <div
+                class="cover-text absolute py-2 px-8"
+                class:play-icon={false}
+              >
+                {cover_text}
+              </div>
+              <div class="play-icon opacity-0">
+                <PlayOutline class="w-full h-full absolute" color="white" />
+              </div>
+              <img src={cover} alt="cover" />
             </div>
-            <img src={video ? video.cover : ""} alt="cover" />
           </div>
-        </div>
+        {/if}
         <div class="w-full flex flex-col justify-center">
           <Label>切片列表</Label>
           <Select
@@ -262,14 +276,17 @@
             on:change={find_video}
             class="mb-2"
           />
-          <Button size="sm" on:click={generate_clip} disabled={loading}>
-            {#if loading}
-              <Spinner class="me-3" size="4" />
-            {:else}
-              <ClapperboardPlaySolid />
-            {/if}
-            从选区生成新切片</Button
-          >
+          <ButtonGroup>
+            <Button on:click={generate_clip} disabled={loading} color="primary">
+              {#if loading}
+                <Spinner class="me-3" size="4" />
+              {:else}
+                <ClapperboardPlaySolid />
+              {/if}
+              从选区生成新切片</Button
+            >
+            <Button color="red" disabled={!loading && !video}>删除</Button>
+          </ButtonGroup>
         </div>
         <Hr />
         <Label class="mt-4">标题</Label>
@@ -308,6 +325,9 @@
   }
   .cover-wrap:hover {
     opacity: 0.8;
+  }
+  .cover-wrap:hover .play-icon {
+    opacity: 0.5;
   }
   .cover-text {
     white-space: pre-wrap;

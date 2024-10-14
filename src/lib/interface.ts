@@ -80,3 +80,9 @@ export interface Profile {
   up_close_danmu: boolean;
   web_os: 0 | 1;
 }
+
+export interface Config {
+  cache: string;
+  output: string;
+  primary_uid: number;
+}

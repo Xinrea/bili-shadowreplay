@@ -140,14 +140,10 @@
                     video.muted = !video.muted;
                     break;
                 case "ArrowLeft":
-                    if (e.altKey) {
-                        video.currentTime -= 1;
-                    }
+                    video.currentTime -= 3;
                     break;
                 case "ArrowRight":
-                    if (e.altKey) {
-                        video.currentTime += 1;
-                    }
+                    video.currentTime += 3;
                     break;
                 case "q":
                     video.currentTime = start;

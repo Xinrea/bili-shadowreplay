@@ -52,7 +52,7 @@
   async function check_qr() {
     let qr_status: { code: number; cookies: string } = await invoke(
       "get_qr_status",
-      { qrcodeKey: oauth_key },
+      { qrcodeKey: oauth_key }
     );
     if (qr_status.code == 0) {
       clearInterval(check_interval);
@@ -127,6 +127,13 @@
   >
 </div>
 
-<Modal bind:open={addModal} autoclose>
-  <canvas id="qr" />
+<Modal
+  title="请使用 BiliBili App 扫码登录"
+  bind:open={addModal}
+  size="sm"
+  autoclose
+>
+  <div class="flex justify-center items-center h-full">
+    <canvas id="qr" />
+  </div>
 </Modal>

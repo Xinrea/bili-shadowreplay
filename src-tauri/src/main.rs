@@ -81,6 +81,7 @@ pub struct Config {
     output: String,
     primary_uid: u64,
     webid: String,
+    webid_ts: i64,
 }
 
 impl Config {
@@ -94,6 +95,7 @@ impl Config {
         }
         let config = Config {
             webid: "".to_string(),
+            webid_ts: 0,
             cache: app_dirs
                 .cache_dir
                 .join("cache")
@@ -135,6 +137,12 @@ impl Config {
     pub fn set_output_path(&mut self, path: String) {
         self.output = path;
         self.save();
+    }
+
+    pub fn webid_expired(&self) -> bool {
+        let now = chrono::Utc::now().timestamp();
+        // expire in 20 hours
+        now - self.webid_ts > 72000
     }
 }
 
@@ -240,6 +248,11 @@ async fn add_account(state: tauri::State<'_, State>, cookies: &str) -> Result<Ac
         is_primary = true;
     }
     let account = state.db.add_account(cookies).await?;
+    if is_primary {
+        state.config.write().await.webid = state.client.fetch_webid(&account).await?;
+        state.config.write().await.webid_ts = chrono::Utc::now().timestamp();
+        state.config.write().await.primary_uid = account.uid;
+    }
     let account_info = state
         .client
         .get_user_info(&state.config.read().await.webid, &account, account.uid)
@@ -252,10 +265,6 @@ async fn add_account(state: tauri::State<'_, State>, cookies: &str) -> Result<Ac
             &account_info.user_avatar_url,
         )
         .await?;
-    if is_primary {
-        state.config.write().await.webid = state.client.fetch_webid(&account).await?;
-        state.config.write().await.primary_uid = account.uid;
-    }
     Ok(account)
 }
 
@@ -289,6 +298,11 @@ async fn add_recorder(
         .db
         .get_account(state.config.read().await.primary_uid)
         .await?;
+    if state.config.read().await.webid_expired() {
+        state.config.write().await.webid = state.client.fetch_webid(&account).await?;
+        state.config.write().await.webid_ts = chrono::Utc::now().timestamp();
+        log::info!("Webid expired, refetching");
+    }
     match state
         .recorder_manager
         .add_recorder(
@@ -696,6 +710,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .clone();
                 let webid = client_clone.fetch_webid(&primary_account).await.unwrap();
                 config_clone.write().await.webid = webid.clone();
+                config_clone.write().await.webid_ts = chrono::Utc::now().timestamp();
                 // update account infos
                 for account in accounts {
                     match client_clone

@@ -14,7 +14,7 @@
   let messages: MessageItem[] = [];
   async function update() {
     messages = ((await invoke("get_messages")) as MessageItem[]).sort(
-      (a, b) => b.id - a.id,
+      (a, b) => b.id - a.id
     );
     message_cnt = messages.length;
   }
@@ -27,8 +27,8 @@
   }
 </script>
 
-<div class="p-8 pt-12 h-full overflow-auto">
-  <Table hoverable={true} divClass="relative max-h-full overflow-hidden" shadow>
+<div class="p-8 pt-12 h-full overflow-hidden">
+  <Table hoverable={true} divClass="relative max-h-full overflow-auto" shadow>
     <TableBody tableBodyClass="divide-y">
       {#each messages as message}
         <TableBodyRow>

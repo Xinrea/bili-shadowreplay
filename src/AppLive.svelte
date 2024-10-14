@@ -212,6 +212,21 @@
       });
   }
 
+  async function delete_video() {
+    if (!video) {
+      return;
+    }
+    loading = true;
+    appWindow.setTitle(`[${room_id}][${ts}]${archive.title} - 删除中`);
+    await invoke("delete_video", { id: video_selected });
+    appWindow.setTitle(`[${room_id}][${ts}]${archive.title} - 删除成功`);
+    loading = false;
+    video_selected = 0;
+    video = null;
+    cover = "";
+    await get_video_list();
+  }
+
   // when window resize, update post panel height
   onMount(() => {
     let post_panel = document.getElementById("post-panel");
@@ -285,7 +300,11 @@
               {/if}
               从选区生成新切片</Button
             >
-            <Button color="red" disabled={!loading && !video}>删除</Button>
+            <Button
+              color="red"
+              disabled={!loading && !video}
+              on:click={delete_video}>删除</Button
+            >
           </ButtonGroup>
         </div>
         <Hr />

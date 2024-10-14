@@ -624,7 +624,8 @@ async fn delete_video(state: tauri::State<'_, State>, id: i64) -> Result<(), Str
     // get video info from dbus
     let video = state.db.get_video(id).await?;
     // delete video files
-    let file = Path::new(&video.file);
+    let filepath = format!("{}/{}", state.config.read().await.output, video.file);
+    let file = Path::new(&filepath);
     if let Err(e) = std::fs::remove_file(file) {
         log::error!("Delete video file error: {}", e);
     }

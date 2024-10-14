@@ -40,6 +40,22 @@ export interface Video {
   cid: number;
 }
 
+export interface VideoItem {
+  id: number;
+  room_id: number;
+  cover: string;
+  file: string;
+  length: number;
+  size: number;
+  status: number;
+  bvid: string;
+  title: string;
+  desc: string;
+  tags: string;
+  area: number;
+  created_at: string;
+}
+
 export interface Profile {
   videos: Video[];
   cover: string;

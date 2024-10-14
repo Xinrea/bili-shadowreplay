@@ -58,6 +58,13 @@
           </TableBodyCell>
         </TableBodyRow>
       {/each}
+      {#if messages.length == 0}
+        <TableBodyRow>
+          <TableBodyCell tdClass="pl-6 py-4 text-center" colspan="4">
+            <p class="text-slate-400 text-lg">暂无消息</p>
+          </TableBodyCell>
+        </TableBodyRow>
+      {/if}
     </TableBody>
   </Table>
 </div>

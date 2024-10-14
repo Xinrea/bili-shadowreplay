@@ -224,7 +224,16 @@ async fn get_disk_info(state: tauri::State<'_, State>) -> Result<DiskInfo, ()> {
     for disk in disks.list() {
         // if output is under disk mount point
         if cache.starts_with(disk.mount_point().to_str().unwrap()) {
-            disk_info.disk = disk.name().to_str().unwrap().into();
+            // if MacOS, using disk name
+            #[cfg(target_os = "macos")]
+            {
+                disk_info.disk = disk.name().to_str().unwrap().into();
+            }
+            // if Windows, using disk mount point
+            #[cfg(target_os = "windows")]
+            {
+                disk_info.disk = disk.mount_point().to_str().unwrap().into();
+            }
             disk_info.total = disk.total_space();
             disk_info.free = disk.available_space();
             break;

@@ -18,7 +18,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::json;
 use serde_json::Value;
-use std::io::Read;
 use std::path::Path;
 use std::time::SystemTime;
 use tokio::fs::File;
@@ -200,26 +199,6 @@ pub struct QrStatus {
 impl BiliClient {
     pub fn new() -> Result<BiliClient, BiliClientError> {
         let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert("authority", "api.live.bilibili.com".parse().unwrap());
-        headers.insert("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7".parse().unwrap());
-        headers.insert(
-            "accept-language",
-            "zh-CN,zh;q=0.9,en;q=0.8".parse().unwrap(),
-        );
-        headers.insert("cache-control", "max-age=0".parse().unwrap());
-        headers.insert(
-            "sec-ch-ua",
-            "\"Google Chrome\";v=\"111\", \"Not(A:Brand\";v=\"8\", \"Chromium\";v=\"111\""
-                .parse()
-                .unwrap(),
-        );
-        headers.insert("sec-ch-ua-mobile", "?0".parse().unwrap());
-        headers.insert("sec-ch-ua-platform", "\"macOS\"".parse().unwrap());
-        headers.insert("sec-fetch-dest", "document".parse().unwrap());
-        headers.insert("sec-fetch-mode", "navigate".parse().unwrap());
-        headers.insert("sec-fetch-site", "none".parse().unwrap());
-        headers.insert("sec-fetch-user", "?1".parse().unwrap());
-        headers.insert("upgrade-insecure-requests", "1".parse().unwrap());
         headers.insert("user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36".parse().unwrap());
 
         if let Ok(client) = Client::builder()
@@ -234,6 +213,24 @@ impl BiliClient {
         } else {
             Err(BiliClientError::InitClientError)
         }
+    }
+
+    pub async fn fetch_webid(&self, account: &AccountRow) -> Result<String, BiliClientError> {
+        // get webid from html content
+        // webid is in script tag <script id="__RENDER_DATA__" type="application/json">
+        // https://space.bilibili.com/{user_id}
+        let url = format!("https://space.bilibili.com/{}", account.uid);
+        let res = self.client.get(&url).send().await?;
+        let content = res.text().await?;
+        let re = Regex::new(r#"<script id="__RENDER_DATA__" type="application/json">(.+?)</script>"#).unwrap();
+        let cap = re.captures(&content).ok_or(BiliClientError::InvalidValue)?;
+        let str = cap.get(1).ok_or(BiliClientError::InvalidValue)?.as_str();
+        // str need url decode
+        let json_str = urlencoding::decode(str).map_err(|_| BiliClientError::InvalidValue)?; // url decode
+        let json: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        let webid = json["access_id"].as_str().ok_or(BiliClientError::InvalidValue)?;
+        log::info!("webid: {}", webid);
+        Ok(webid.into())
     }
 
     pub async fn get_qr(&self) -> Result<QrInfo, BiliClientError> {
@@ -300,6 +297,7 @@ impl BiliClient {
 
     pub async fn get_user_info(
         &self,
+        webid: &str,
         account: &AccountRow,
         user_id: u64,
     ) -> Result<UserInfo, BiliClientError> {
@@ -307,7 +305,8 @@ impl BiliClient {
             "mid": user_id.to_string(),
             "platform": "web",
             "web_location": "1550101",
-            "token": ""
+            "token": "",
+            "w_webid": webid,
         });
         let params = self.get_sign(params).await?;
         let mut headers = self.headers.clone();
@@ -323,8 +322,12 @@ impl BiliClient {
             .await?
             .json()
             .await?;
+        if res["code"].as_i64().unwrap_or(-1) != 0 {
+            log::error!("Get user info failed {}", res["code"].as_i64().unwrap_or(-1));
+            return Err(BiliClientError::InvalidCode);
+        }
         Ok(UserInfo {
-            user_id: user_id,
+            user_id,
             user_name: res["data"]["name"].as_str().unwrap_or("").to_string(),
             user_sign: res["data"]["sign"].as_str().unwrap_or("").to_string(),
             user_avatar_url: res["data"]["face"].as_str().unwrap_or("").to_string(),

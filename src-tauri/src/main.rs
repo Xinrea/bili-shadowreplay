@@ -7,14 +7,13 @@ mod recorder_manager;
 mod tray;
 
 use custom_error::custom_error;
-use db::{AccountRow, Database, MessageRow, RecordRow};
+use db::{AccountRow, Database, MessageRow, RecordRow, VideoRow};
 use recorder::bilibili::errors::BiliClientError;
 use recorder::bilibili::profile::Profile;
 use recorder::bilibili::{BiliClient, QrInfo, QrStatus};
 use recorder_manager::{RecorderInfo, RecorderList, RecorderManager};
 use tauri::utils::config::WindowEffectsConfig;
 use tauri_plugin_sql::{Migration, MigrationKind};
-
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
@@ -81,6 +80,7 @@ pub struct Config {
     cache: String,
     output: String,
     primary_uid: u64,
+    webid: String,
 }
 
 impl Config {
@@ -93,6 +93,7 @@ impl Config {
             }
         }
         let config = Config {
+            webid: "".to_string(),
             cache: app_dirs
                 .cache_dir
                 .join("cache")
@@ -178,19 +179,6 @@ impl State {
             .clip(&self.config.read().await.output, room_id, len)
             .await?)
     }
-
-    pub async fn clip_range(
-        &self,
-        room_id: u64,
-        ts: u64,
-        x: f64,
-        y: f64,
-    ) -> Result<String, String> {
-        Ok(self
-            .recorder_manager
-            .clip_range(&self.config.read().await.output, room_id, ts, x, y)
-            .await?)
-    }
 }
 
 #[tauri::command]
@@ -222,7 +210,7 @@ async fn add_account(state: tauri::State<'_, State>, cookies: &str) -> Result<Ac
         is_primary = true;
     }
     let account = state.db.add_account(cookies).await?;
-    let account_info = state.client.get_user_info(&account, account.uid).await?;
+    let account_info = state.client.get_user_info(&state.config.read().await.webid, &account, account.uid).await?;
     state
         .db
         .update_account(
@@ -270,6 +258,7 @@ async fn add_recorder(
     match state
         .recorder_manager
         .add_recorder(
+            &state.config.read().await.webid,
             &state.db,
             &account,
             room_id,
@@ -333,16 +322,48 @@ async fn clip(state: tauri::State<'_, State>, room_id: u64, len: f64) -> Result<
 #[tauri::command]
 async fn clip_range(
     state: tauri::State<'_, State>,
+    cover: String,
     room_id: u64,
     ts: u64,
     x: f64,
     y: f64,
-) -> Result<String, String> {
-    println!(
-        "[invoke]clip room_id: {}, ts: {}, start: {}, end: {}",
-        room_id, ts, x, y
+) -> Result<VideoRow, String> {
+    log::info!(
+        "Clip room_id: {}, ts: {}, start: {}, end: {}",
+        room_id,
+        ts,
+        x,
+        y
     );
-    let file = state.clip_range(room_id, ts, x, y).await?;
+    let file = state
+        .recorder_manager
+        .clip_range(&state.config.read().await.output, room_id, ts, x, y)
+        .await?;
+    // get file metadata from fs
+    let metadata = std::fs::metadata(&file).map_err(|e| e.to_string())?;
+    // get filename from path
+    let filename = Path::new(&file)
+        .file_name()
+        .ok_or("Invalid file path")?
+        .to_str()
+        .ok_or("Invalid file path")?;
+    // add video to db
+    let video = state
+        .db
+        .add_video(
+            room_id,
+            &cover,
+            &filename,
+            (y - x) as i64,
+            metadata.len() as i64,
+            0,
+            "",
+            "",
+            "",
+            "",
+            0,
+        )
+        .await?;
     state
         .db
         .new_message(
@@ -351,11 +372,11 @@ async fn clip_range(
                 "生成了房间 {} 的切片，长度 {:.1}s：{}",
                 room_id,
                 y - x,
-                file
+                filename
             ),
         )
         .await?;
-    Ok(file)
+    Ok(video)
 }
 
 #[tauri::command]
@@ -363,16 +384,34 @@ async fn upload_procedure(
     state: tauri::State<'_, State>,
     uid: u64,
     room_id: u64,
-    file: String,
+    video_id: i64,
     cover: String,
     mut profile: Profile,
 ) -> Result<String, String> {
     let account = state.db.get_account(uid).await?;
+    // get video info from dbs
+    let video = state.db.get_video(video_id).await?;
+    // construct file path
+    let output = state.config.read().await.output.clone();
+    let file = format!("{}/{}", output, video.file);
     let path = Path::new(&file);
     let cover_url = state.client.upload_cover(&account, &cover);
     if let Ok(video) = state.client.prepare_video(&account, path).await {
         profile.cover = cover_url.await.unwrap_or("".to_string());
         if let Ok(ret) = state.client.submit_video(&account, &profile, &video).await {
+            // update video status and details
+            // 1 means uploaded
+            state
+                .db
+                .update_video(
+                    video_id,
+                    1,
+                    &ret.bvid,
+                    &profile.title,
+                    &profile.desc,
+                    &profile.tag,
+                    profile.tid,
+                ).await?;
             state
                 .db
                 .new_message(
@@ -594,6 +633,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let dbs = app.state::<tauri_plugin_sql::DbInstances>().inner();
             let db = Arc::new(Database::new());
             let db_clone = db.clone();
+            let client_clone = client.clone();
             tauri::async_runtime::block_on(async move {
                 let binding = dbs.0.lock().await;
                 let dbpool = binding.get("sqlite:data.db").unwrap();
@@ -604,12 +644,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 db_clone.set(sqlite_pool.unwrap().clone()).await;
                 let initial_rooms = db_clone.get_recorders().await.unwrap();
                 let mut primary_uid = config_clone.read().await.primary_uid;
+                let accounts = db_clone.get_accounts().await.unwrap();
                 if primary_uid == 0 {
-                    let accounts = db_clone.get_accounts().await.unwrap();
                     if !accounts.is_empty() {
                         primary_uid = accounts.first().unwrap().uid;
                         config_clone.write().await.primary_uid = primary_uid;
                         config_clone.write().await.save();
+                    }
+                }
+                let primary_account = accounts.iter().find(|x| x.uid == primary_uid).unwrap().clone();
+                let webid = client_clone.fetch_webid(&primary_account).await.unwrap();
+                config_clone.write().await.webid = webid.clone();
+                // update account infos
+                for account in accounts {
+                    match client_clone.get_user_info(&webid, &primary_account, account.uid).await {
+                        Ok(account_info) => {
+                            if let Err(e) = db_clone
+                                .update_account(
+                                    account_info.user_id,
+                                    &account_info.user_name,
+                                    &account_info.user_avatar_url,
+                                )
+                                .await {
+                                log::error!("Error when updating account info {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("Get user info failed {}", e);
+                        }
                     }
                 }
                 let account = db_clone.get_account(primary_uid).await;
@@ -617,6 +679,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     for room in initial_rooms {
                         if let Err(e) = recorder_manager_clone
                             .add_recorder(
+                                &webid,
                                 &db_clone,
                                 &account,
                                 room.room_id,

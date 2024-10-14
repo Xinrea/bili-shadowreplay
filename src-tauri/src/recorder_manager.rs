@@ -88,6 +88,7 @@ impl RecorderManager {
 
     pub async fn add_recorder(
         &self,
+        webid: &str,
         db: &Arc<Database>,
         account: &AccountRow,
         room_id: u64,
@@ -97,7 +98,7 @@ impl RecorderManager {
         if self.recorders.contains_key(&room_id) {
             return Err(RecorderManagerError::AlreadyExisted { room_id });
         }
-        let recorder = BiliRecorder::new(db, room_id, account, cache_path).await?;
+        let recorder = BiliRecorder::new(webid, db, room_id, account, cache_path).await?;
         self.recorders.insert(room_id, recorder);
         // run recorder
         let recorder = self.recorders.get(&room_id).unwrap();

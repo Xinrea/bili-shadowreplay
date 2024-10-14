@@ -85,6 +85,7 @@ impl From<BiliClientError> for RecorderError {
 
 impl BiliRecorder {
     pub async fn new(
+        webid: &str,
         db: &Arc<Database>,
         room_id: u64,
         account: &AccountRow,
@@ -92,7 +93,7 @@ impl BiliRecorder {
     ) -> Result<Self, RecorderError> {
         let client = BiliClient::new()?;
         let room_info = client.get_room_info(account, room_id).await?;
-        let user_info = client.get_user_info(account, room_info.user_id).await?;
+        let user_info = client.get_user_info(webid, account, room_info.user_id).await?;
         let mut m3u8_url = String::from("");
         let mut live_status = false;
         let mut stream_type = StreamType::FMP4;

@@ -12,12 +12,12 @@ use recorder::bilibili::errors::BiliClientError;
 use recorder::bilibili::profile::Profile;
 use recorder::bilibili::{BiliClient, QrInfo, QrStatus};
 use recorder_manager::{RecorderInfo, RecorderList, RecorderManager};
-use tauri::utils::config::WindowEffectsConfig;
-use tauri_plugin_sql::{Migration, MigrationKind};
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
+use tauri::utils::config::WindowEffectsConfig;
 use tauri::{Manager, Theme, WindowEvent};
+use tauri_plugin_sql::{Migration, MigrationKind};
 use tokio::sync::RwLock;
 
 use platform_dirs::AppDirs;
@@ -85,7 +85,7 @@ pub struct Config {
 
 impl Config {
     pub fn load() -> Self {
-        let app_dirs = AppDirs::new(Some("bili-shadowreplay"), false).unwrap();
+        let app_dirs = AppDirs::new(Some("cn.vjoi.bili-shadowreplay"), false).unwrap();
         let config_path = app_dirs.config_dir.join("Conf.toml");
         if let Ok(content) = std::fs::read_to_string(config_path) {
             if let Ok(config) = toml::from_str(&content) {
@@ -236,11 +236,14 @@ async fn get_qr_status(state: tauri::State<'_, State>, qrcode_key: &str) -> Resu
 #[tauri::command]
 async fn add_account(state: tauri::State<'_, State>, cookies: &str) -> Result<AccountRow, String> {
     let mut is_primary = false;
-    if state.config.read().await.primary_uid == 0 || state.db.get_accounts().await?.len() == 0 {
+    if state.config.read().await.primary_uid == 0 || state.db.get_accounts().await?.is_empty() {
         is_primary = true;
     }
     let account = state.db.add_account(cookies).await?;
-    let account_info = state.client.get_user_info(&state.config.read().await.webid, &account, account.uid).await?;
+    let account_info = state
+        .client
+        .get_user_info(&state.config.read().await.webid, &account, account.uid)
+        .await?;
     state
         .db
         .update_account(
@@ -250,6 +253,7 @@ async fn add_account(state: tauri::State<'_, State>, cookies: &str) -> Result<Ac
         )
         .await?;
     if is_primary {
+        state.config.write().await.webid = state.client.fetch_webid(&account).await?;
         state.config.write().await.primary_uid = account.uid;
     }
     Ok(account)
@@ -268,7 +272,7 @@ async fn remove_account(state: tauri::State<'_, State>, uid: u64) -> Result<(), 
 
 #[tauri::command]
 async fn set_primary(state: tauri::State<'_, State>, uid: u64) -> Result<(), String> {
-    if let Ok(_) = state.db.get_account(uid).await {
+    if (state.db.get_account(uid).await).is_ok() {
         state.config.write().await.primary_uid = uid;
         Ok(())
     } else {
@@ -383,7 +387,7 @@ async fn clip_range(
         .add_video(
             room_id,
             &cover,
-            &filename,
+            filename,
             (y - x) as i64,
             metadata.len() as i64,
             0,
@@ -441,7 +445,8 @@ async fn upload_procedure(
                     &profile.desc,
                     &profile.tag,
                     profile.tid,
-                ).await?;
+                )
+                .await?;
             state
                 .db
                 .new_message(
@@ -531,7 +536,7 @@ async fn open_live(state: tauri::State<'_, State>, room_id: u64, ts: u64) -> Res
         .await
         .unwrap();
     let handle = state.app_handle.clone();
-    let mut builder = tauri::WebviewWindowBuilder::new(
+    let builder = tauri::WebviewWindowBuilder::new(
         &handle,
         format!("Live:{}:{}", room_id, ts),
         tauri::WebviewUrl::App(
@@ -561,15 +566,17 @@ async fn open_live(state: tauri::State<'_, State>, room_id: u64, ts: u64) -> Res
     });
     #[cfg(target_os = "macos")]
     {
-        builder = builder.decorations(true);
+        if let Err(e) = builder.decorations(true).build() {
+            log::error!("live window build failed: {}", e);
+        }
     }
     #[cfg(target_os = "windows")]
     {
-        builder.decorations(false).transparent(true);
+        if let Err(e) = builder.decorations(false).transparent(true).build() {
+            log::error!("live window build failed: {}", e);
+        }
     }
-    if let Err(e) = builder.build() {
-        log::error!("live window build failed: {}", e);
-    }
+
     Ok(())
 }
 
@@ -624,11 +631,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ffmpeg_sidecar::download::auto_download().unwrap();
 
     //Setup database
-    let migrations = vec![
-        Migration {
-            version: 1,
-            description: "create_initial_tables",
-            sql: r#"
+    let migrations = vec![Migration {
+        version: 1,
+        description: "create_initial_tables",
+        sql: r#"
             CREATE TABLE accounts (uid INTEGER PRIMARY KEY, name TEXT, avatar TEXT, csrf TEXT, cookies TEXT, created_at TEXT);
             CREATE TABLE recorders (room_id INTEGER PRIMARY KEY, created_at TEXT);
             CREATE TABLE records (live_id INTEGER PRIMARY KEY, room_id INTEGER, title TEXT, length INTEGER, size INTEGER, created_at TEXT);
@@ -636,9 +642,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, read INTEGER, created_at TEXT);
             CREATE TABLE videos (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER, cover TEXT, file TEXT, length INTEGER, size INTEGER, status INTEGER, bvid TEXT, title TEXT, desc TEXT, tags TEXT, area INTEGER, created_at TEXT);
             "#,
-            kind: MigrationKind::Up,
-        }
-    ];
+        kind: MigrationKind::Up,
+    }];
 
     // Tauri part
     tauri::Builder::default()
@@ -665,29 +670,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let db_clone = db.clone();
             let client_clone = client.clone();
             tauri::async_runtime::block_on(async move {
+                let _ = recorder_manager_clone.run_hls().await;
                 let binding = dbs.0.lock().await;
                 let dbpool = binding.get("sqlite:data.db").unwrap();
                 let sqlite_pool = match dbpool {
                     tauri_plugin_sql::DbPool::Sqlite(pool) => Some(pool),
-                    _ => None,
                 };
                 db_clone.set(sqlite_pool.unwrap().clone()).await;
                 let initial_rooms = db_clone.get_recorders().await.unwrap();
                 let mut primary_uid = config_clone.read().await.primary_uid;
                 let accounts = db_clone.get_accounts().await.unwrap();
-                if primary_uid == 0 {
-                    if !accounts.is_empty() {
-                        primary_uid = accounts.first().unwrap().uid;
-                        config_clone.write().await.primary_uid = primary_uid;
-                        config_clone.write().await.save();
-                    }
+                if accounts.is_empty() {
+                    log::warn!("No account found");
+                    return;
                 }
-                let primary_account = accounts.iter().find(|x| x.uid == primary_uid).unwrap().clone();
+                if primary_uid == 0 {
+                    primary_uid = accounts.first().unwrap().uid;
+                    config_clone.write().await.primary_uid = primary_uid;
+                    config_clone.write().await.save();
+                }
+                let primary_account = accounts
+                    .iter()
+                    .find(|x| x.uid == primary_uid)
+                    .unwrap()
+                    .clone();
                 let webid = client_clone.fetch_webid(&primary_account).await.unwrap();
                 config_clone.write().await.webid = webid.clone();
                 // update account infos
                 for account in accounts {
-                    match client_clone.get_user_info(&webid, &primary_account, account.uid).await {
+                    match client_clone
+                        .get_user_info(&webid, &primary_account, account.uid)
+                        .await
+                    {
                         Ok(account_info) => {
                             if let Err(e) = db_clone
                                 .update_account(
@@ -695,7 +709,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     &account_info.user_name,
                                     &account_info.user_avatar_url,
                                 )
-                                .await {
+                                .await
+                            {
                                 log::error!("Error when updating account info {}", e);
                             }
                         }
@@ -723,7 +738,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     log::warn!("No available account found");
                 }
-                let _ = recorder_manager_clone.run_hls().await;
             });
             let state = State {
                 db,

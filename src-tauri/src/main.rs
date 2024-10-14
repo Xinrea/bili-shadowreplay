@@ -195,6 +195,36 @@ async fn get_qr(state: tauri::State<'_, State>) -> Result<QrInfo, ()> {
     }
 }
 
+#[derive(serde::Serialize)]
+struct DiskInfo {
+    disk: String,
+    total: u64,
+    free: u64,
+}
+
+#[tauri::command]
+async fn get_disk_info(state: tauri::State<'_, State>) -> Result<DiskInfo, ()> {
+    let cache = state.config.read().await.cache.clone();
+    // check system disk info
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    // get cache disk info
+    let mut disk_info = DiskInfo {
+        disk: "".into(),
+        total: 0,
+        free: 0,
+    };
+    for disk in disks.list() {
+        // if output is under disk mount point
+        if cache.starts_with(disk.mount_point().to_str().unwrap()) {
+            disk_info.disk = disk.name().to_str().unwrap().into();
+            disk_info.total = disk.total_space();
+            disk_info.free = disk.available_space();
+            break;
+        }
+    }
+    Ok(disk_info)
+}
+
 #[tauri::command]
 async fn get_qr_status(state: tauri::State<'_, State>, qrcode_key: &str) -> Result<QrStatus, ()> {
     match state.get_qr_status(qrcode_key).await {
@@ -742,6 +772,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             get_video,
             get_videos,
             delete_video,
+            get_disk_info,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

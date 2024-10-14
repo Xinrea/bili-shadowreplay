@@ -4,13 +4,19 @@
     import { Card, List, Li, Tooltip } from "flowbite-svelte";
     import { GithubSolid, GlobeSolid } from "flowbite-svelte-icons";
     import Image from "./Image.svelte";
-    import type { RecorderList } from "./interface";
+    import type { RecorderList, DiskInfo } from "./interface";
     import type { RecordItem } from "./db";
     const INTERVAL = 5000;
 
     let summary: RecorderList = {
         count: 0,
         recorders: [],
+    };
+
+    let disk_info: DiskInfo = {
+        disk: "",
+        total: 0,
+        free: 0,
     };
 
     let total = 0;
@@ -23,10 +29,14 @@
         online = summary.recorders.filter((r) => r.live_status).length;
         // each recorder get archive size
         console.log(summary.recorders);
-        disk_usage = 0;
+        let new_disk_usage = 0;
         for (const recorder of summary.recorders) {
-            disk_usage += await get_disk_usage(recorder.room_id);
+            new_disk_usage += await get_disk_usage(recorder.room_id);
         }
+        disk_usage = new_disk_usage;
+
+        // get disk info
+        disk_info = await invoke("get_disk_info");
     }
     update_summary();
     setInterval(update_summary, INTERVAL);
@@ -111,6 +121,11 @@
         <p class="font-normal text-gray-700 dark:text-gray-400 leading-tight">
             目前共有 {total} 个直播间，其中 {online} 个正在直播，{total -
                 online} 个未直播；共占用磁盘空间 {format_size(disk_usage)}。
+        </p>
+        <p class="font-normal text-gray-700 dark:text-gray-400 leading-tight">
+            直播缓存所在磁盘：{disk_info.disk}，总容量 {format_size(
+                disk_info.total,
+            )}，剩余容量 {format_size(disk_info.free)}。
         </p>
     </Card>
 </div>

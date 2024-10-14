@@ -86,3 +86,9 @@ export interface Config {
   output: string;
   primary_uid: number;
 }
+
+export interface DiskInfo {
+  disk: string;
+  total: number;
+  free: number;
+}

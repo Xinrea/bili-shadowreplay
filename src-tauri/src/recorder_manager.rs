@@ -11,6 +11,7 @@ use hyper::{
 };
 use std::net::SocketAddr;
 use std::{convert::Infallible, sync::Arc};
+use tauri::{App, AppHandle};
 use tokio::{net::TcpListener, sync::RwLock};
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
@@ -30,6 +31,7 @@ pub struct RecorderInfo {
 }
 
 pub struct RecorderManager {
+    app_handle: AppHandle,
     config: Arc<RwLock<Config>>,
     recorders: Arc<DashMap<u64, BiliRecorder>>,
     hls_server_addr: Arc<RwLock<Option<SocketAddr>>>,
@@ -68,8 +70,9 @@ impl From<RecorderManagerError> for String {
 }
 
 impl RecorderManager {
-    pub fn new(config: Arc<RwLock<Config>>) -> RecorderManager {
+    pub fn new(app_handle: AppHandle, config: Arc<RwLock<Config>>) -> RecorderManager {
         RecorderManager {
+            app_handle,
             config,
             recorders: Arc::new(DashMap::new()),
             hls_server_addr: Arc::new(RwLock::new(None)),
@@ -98,7 +101,15 @@ impl RecorderManager {
         if self.recorders.contains_key(&room_id) {
             return Err(RecorderManagerError::AlreadyExisted { room_id });
         }
-        let recorder = BiliRecorder::new(webid, db, room_id, account, cache_path).await?;
+        let recorder = BiliRecorder::new(
+            self.app_handle.clone(),
+            webid,
+            db,
+            room_id,
+            account,
+            cache_path,
+        )
+        .await?;
         self.recorders.insert(room_id, recorder);
         // run recorder
         let recorder = self.recorders.get(&room_id).unwrap();

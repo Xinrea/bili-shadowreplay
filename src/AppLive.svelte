@@ -254,7 +254,7 @@
       </Modal>
     </div>
     <div
-      class="w-1/4 h-screen overflow-hidden border-solid bg-gray-50 border-l-2 border-slate-200"
+      class="w-1/4 h-screen overflow-hidden border-solid bg-gray-50 border-l-2 border-slate-200 z-[600]"
     >
       <div
         id="post-panel"

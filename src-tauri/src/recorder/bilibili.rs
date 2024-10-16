@@ -222,13 +222,17 @@ impl BiliClient {
         let url = format!("https://space.bilibili.com/{}", account.uid);
         let res = self.client.get(&url).send().await?;
         let content = res.text().await?;
-        let re = Regex::new(r#"<script id="__RENDER_DATA__" type="application/json">(.+?)</script>"#).unwrap();
+        let re =
+            Regex::new(r#"<script id="__RENDER_DATA__" type="application/json">(.+?)</script>"#)
+                .unwrap();
         let cap = re.captures(&content).ok_or(BiliClientError::InvalidValue)?;
         let str = cap.get(1).ok_or(BiliClientError::InvalidValue)?.as_str();
         // str need url decode
         let json_str = urlencoding::decode(str).map_err(|_| BiliClientError::InvalidValue)?; // url decode
         let json: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-        let webid = json["access_id"].as_str().ok_or(BiliClientError::InvalidValue)?;
+        let webid = json["access_id"]
+            .as_str()
+            .ok_or(BiliClientError::InvalidValue)?;
         log::info!("webid: {}", webid);
         Ok(webid.into())
     }
@@ -323,7 +327,10 @@ impl BiliClient {
             .json()
             .await?;
         if res["code"].as_i64().unwrap_or(-1) != 0 {
-            log::error!("Get user info failed {}", res["code"].as_i64().unwrap_or(-1));
+            log::error!(
+                "Get user info failed {}",
+                res["code"].as_i64().unwrap_or(-1)
+            );
             return Err(BiliClientError::InvalidCode);
         }
         Ok(UserInfo {
@@ -792,5 +799,37 @@ impl BiliClient {
                 Err(BiliClientError::InvalidResponse)
             }
         }
+    }
+
+    pub async fn send_danmaku(
+        &self,
+        account: &AccountRow,
+        room_id: u64,
+        message: &str,
+    ) -> Result<(), BiliClientError> {
+        let url = "https://api.live.bilibili.com/msg/send".to_string();
+        let mut headers = self.headers.clone();
+        headers.insert("cookie", account.cookies.parse().unwrap());
+        let params = [
+            ("bubble", "0"),
+            ("msg", message),
+            ("color", "16777215"),
+            ("mode", "1"),
+            ("fontsize", "25"),
+            ("room_type", "0"),
+            ("rnd", &format!("{}", chrono::Local::now().timestamp())),
+            ("roomid", &format!("{}", room_id)),
+            ("csrf", &account.csrf),
+            ("csrf_token", &account.csrf),
+        ];
+        let _ = self
+            .client
+            .post(&url)
+            .headers(headers)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .form(&params)
+            .send()
+            .await?;
+        Ok(())
     }
 }

@@ -14,6 +14,7 @@ use m3u8_rs::Playlist;
 use regex::Regex;
 use std::sync::Arc;
 use std::thread;
+use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::sync::{Mutex, RwLock};
 
@@ -34,6 +35,7 @@ pub struct TsEntry {
 // TODO implement StreamType::TS
 #[derive(Clone)]
 pub struct BiliRecorder {
+    app_handle: AppHandle,
     client: Arc<RwLock<BiliClient>>,
     db: Arc<Database>,
     account: AccountRow,
@@ -85,6 +87,7 @@ impl From<BiliClientError> for RecorderError {
 
 impl BiliRecorder {
     pub async fn new(
+        app_handle: AppHandle,
         webid: &str,
         db: &Arc<Database>,
         room_id: u64,
@@ -110,6 +113,7 @@ impl BiliRecorder {
         }
 
         let recorder = Self {
+            app_handle,
             client: Arc::new(RwLock::new(client)),
             db: db.clone(),
             account: account.clone(),
@@ -234,7 +238,7 @@ impl BiliRecorder {
         let uid: u64 = self.account.uid;
         let ws = ws_socket_object(tx, uid, self.room_id, cookies.as_str());
         if let Err(e) = tokio::select! {v = ws => v, v = self.recv(self.room_id,rx) => v} {
-            log::error!("{}", e);
+            log::debug!("{}", e);
         }
     }
 
@@ -245,34 +249,9 @@ impl BiliRecorder {
     ) -> Result<(), FelgensError> {
         while let Some(msg) = rx.recv().await {
             if let WsStreamMessageType::DanmuMsg(msg) = msg {
-                // if self.config.read().await.admin_uid.contains(&msg.uid) {
-                //     let content: String = msg.msg;
-                //     if content.starts_with("/clip") {
-                //         let mut duration = 60.0;
-                //         if content.len() > 5 {
-                //             let num_part = content.strip_prefix("/clip ").unwrap_or("60");
-                //             duration = num_part.parse::<u64>().unwrap_or(60) as f64;
-                //         }
-                //         if let Err(e) = self.clip(room, duration).await {
-                //             if let Err(e) = Notification::new()
-                //                 .summary("BiliBili ShadowReplay")
-                //                 .body(format!("生成切片失败: {} - {}s", room, duration).as_str())
-                //                 .icon("bili-shadowreplay")
-                //                 .show()
-                //             {
-                //                 log::error!("notification error: {}", e);
-                //             }
-                //             log::error!("clip error: {}", e);
-                //         } else if let Err(e) = Notification::new()
-                //             .summary("BiliBili ShadowReplay")
-                //             .body(format!("生成切片成功: {} - {}s", room, duration).as_str())
-                //             .icon("bili-shadowreplay")
-                //             .show()
-                //         {
-                //             log::error!("notification error: {}", e);
-                //         }
-                //     }
-                // }
+                self.app_handle
+                    .emit(&format!("danmu:{}", room), msg.msg.clone())
+                    .unwrap();
             }
         }
         Ok(())

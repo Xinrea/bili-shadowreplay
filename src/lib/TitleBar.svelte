@@ -4,7 +4,7 @@
   export let dark = false;
 </script>
 
-<div data-tauri-drag-region class="titlebar" class:dark>
+<div data-tauri-drag-region class="titlebar z-[1000]" class:dark>
   <!-- svelte-ignore a11y-click-events-have-key-events -->
   <div
     class="titlebar-button"
@@ -54,7 +54,6 @@
     top: 0;
     left: 0;
     right: 0;
-    z-index: 20;
     background: linear-gradient(
       to bottom,
       rgba(255, 255, 255, 0.2),

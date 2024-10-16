@@ -533,6 +533,21 @@ async fn delete_archive(
     Ok(())
 }
 
+#[tauri::command]
+async fn send_danmaku(
+    state: tauri::State<'_, State>,
+    uid: u64,
+    room_id: u64,
+    message: String,
+) -> Result<(), String> {
+    let account = state.db.get_account(uid).await?;
+    state
+        .client
+        .send_danmaku(&account, room_id, &message)
+        .await?;
+    Ok(())
+}
+
 #[derive(serde::Serialize)]
 struct AccountInfo {
     pub primary_uid: u64,
@@ -687,7 +702,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let client = Arc::new(BiliClient::new().unwrap());
             let config = Arc::new(RwLock::new(Config::load()));
             let config_clone = config.clone();
-            let recorder_manager = Arc::new(RecorderManager::new(config.clone()));
+            let recorder_manager =
+                Arc::new(RecorderManager::new(app.handle().clone(), config.clone()));
             let recorder_manager_clone = recorder_manager.clone();
             let dbs = app.state::<tauri_plugin_sql::DbInstances>().inner();
             let db = Arc::new(Database::new());
@@ -812,6 +828,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             get_videos,
             delete_video,
             get_disk_info,
+            send_danmaku,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -24,7 +24,7 @@ use crate::db::{AccountRow, Database, DatabaseError, RecordRow};
 pub struct TsEntry {
     pub url: String,
     pub sequence: u64,
-    pub length: f64,
+    pub _length: f64,
     pub size: u64,
 }
 
@@ -257,10 +257,6 @@ impl BiliRecorder {
         Ok(())
     }
 
-    pub async fn stop(&self) {
-        *self.quit.lock().await = false;
-    }
-
     async fn get_playlist(&self) -> Result<Playlist, RecorderError> {
         let url = self.m3u8_url.read().await.clone();
         let mut index_content = self.client.read().await.get_index_content(&url).await?;
@@ -383,7 +379,7 @@ impl BiliRecorder {
             let mut header = TsEntry {
                 url: full_header_url.clone(),
                 sequence: 0,
-                length: 0.0,
+                _length: 0.0,
                 size: 0,
             };
             let file_name = header_url.split('/').last().unwrap();
@@ -419,7 +415,7 @@ impl BiliRecorder {
                     let mut ts_entry = TsEntry {
                         url: ts.uri,
                         sequence,
-                        length: ts.duration as f64,
+                        _length: ts.duration as f64,
                         size: 0,
                     };
                     let client = self.client.clone();
@@ -709,7 +705,7 @@ impl BiliRecorder {
             ret.push(TsEntry {
                 url: file_name.clone(),
                 sequence: file_name.split('.').next().unwrap().parse().unwrap(),
-                length: 1.0,
+                _length: 1.0,
                 size: e.metadata().await.unwrap().len(),
             });
         }

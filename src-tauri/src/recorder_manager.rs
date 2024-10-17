@@ -11,7 +11,7 @@ use hyper::{
 };
 use std::net::SocketAddr;
 use std::{convert::Infallible, sync::Arc};
-use tauri::{App, AppHandle};
+use tauri::AppHandle;
 use tokio::{net::TcpListener, sync::RwLock};
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]

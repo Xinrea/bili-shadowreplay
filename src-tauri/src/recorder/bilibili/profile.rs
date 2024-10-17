@@ -40,35 +40,3 @@ pub struct Video {
     pub desc: String,
     pub cid: u64,
 }
-
-impl Profile {
-    pub fn new(title: &str, desc: &str, tid: u64) -> Self {
-        Profile {
-            videos: Vec::new(),
-            cover: "".to_string(),
-            cover43: None,
-            title: title.to_string(),
-            copyright: 1,
-            tid,
-            tag: "测试".to_string(),
-            desc_format_id: 9999,
-            desc: desc.to_string(),
-            recreate: -1,
-            dynamic: "测试".to_string(),
-            interactive: 0,
-            act_reserve_create: 0,
-            no_disturbance: 0,
-            no_reprint: 0,
-            subtitle: Subtitle {
-                open: 0,
-                lan: "".to_string(),
-            },
-            dolby: 0,
-            lossless_music: 0,
-            up_selection_reply: false,
-            up_close_reply: false,
-            up_close_danmu: false,
-            web_os: 3,
-        }
-    }
-}

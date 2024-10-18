@@ -236,15 +236,16 @@ impl RecorderManager {
         listener: TcpListener,
     ) -> Result<SocketAddr, RecorderManagerError> {
         let recorders = self.recorders.clone();
-        let cache_path = self.config.read().await.cache.clone();
+        let config = self.config.clone();
         let make_svc = make_service_fn(move |_conn| {
             let recorders = recorders.clone();
-            let cache_path = cache_path.clone();
+            let config = config.clone();
             async move {
                 Ok::<_, Infallible>(service_fn(move |req: Request<Body>| {
                     let recorders = recorders.clone();
-                    let cache_path = cache_path.clone();
+                    let config = config.clone();
                     async move {
+                        let cache_path = config.read().await.cache.clone();
                         let path = req.uri().path();
                         let path_segs: Vec<&str> = path.split('/').collect();
                         // path_segs should be size 4: /21484828/{timestamp}/playlist.m3u8

@@ -614,7 +614,12 @@ async fn open_live(state: tauri::State<'_, State>, room_id: u64, ts: u64) -> Res
             log::error!("live window build failed: {}", e);
         }
     }
-
+    #[cfg(target_os = "linux")]
+    {
+        if let Err(e) = builder.decorations(true).build() {
+            log::error!("live window build failed: {}", e);
+        }
+    }
     Ok(())
 }
 

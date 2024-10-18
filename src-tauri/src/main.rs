@@ -354,11 +354,15 @@ async fn set_cache_path(state: tauri::State<'_, State>, cache_path: String) -> R
     let old_cache_path = config.cache.clone();
     // first switch to new cache
     config.set_cache_path(&cache_path);
-    state.recorder_manager.update_cache_path(&cache_path).await;
+    log::info!("Cache path changed: {}", cache_path);
     // wait 2 seconds for cache switch
     std::thread::sleep(std::time::Duration::from_secs(2));
     // Copy old cache to new cache
-    copy_dir_all(&old_cache_path, &cache_path).unwrap();
+    log::info!("Start copy old cache to new cache");
+    if let Err(e) = copy_dir_all(&old_cache_path, &cache_path) {
+        log::error!("Copy old cache to new cache error: {}", e);
+    }
+    log::info!("Copy old cache to new cache done");
     // Remove old cache
     if old_cache_path != cache_path {
         if let Err(e) = std::fs::remove_dir_all(old_cache_path) {
@@ -372,7 +376,9 @@ async fn set_cache_path(state: tauri::State<'_, State>, cache_path: String) -> R
 async fn set_output_path(state: tauri::State<'_, State>, output_path: String) -> Result<(), ()> {
     let mut config = state.config.write().await;
     let old_output_path = config.output.clone();
-    copy_dir_all(&old_output_path, &output_path).unwrap();
+    if let Err(e) = copy_dir_all(&old_output_path, &output_path) {
+        log::error!("Copy old output to new output error: {}", e);
+    }
     config.set_output_path(&output_path);
     // remove old output
     if old_output_path != output_path {

@@ -1,6 +1,6 @@
 [package]
 name = "bili-shadowreplay"
-version = "0.0.3"
+version = "1.0.0"
 description = "BiliBili ShadowReplay"
 authors = ["Xinrea"]
 license = ""

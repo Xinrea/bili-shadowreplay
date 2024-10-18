@@ -17,7 +17,7 @@
     "targets": "all"
   },
   "productName": "bili-shadowreplay",
-  "version": "0.1.0",
+  "version": "../package.json",
   "identifier": "cn.vjoi.bilishadowreplay",
   "plugins": {
     "sql": {
@@ -28,9 +28,7 @@
     "withGlobalTauri": false,
     "security": {
       "assetProtocol": {
-        "scope": [
-          "**"
-        ],
+        "scope": ["**"],
         "enable": true
       },
       "csp": null

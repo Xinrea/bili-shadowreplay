@@ -116,7 +116,7 @@ impl Config {
 
     pub fn save(&self) {
         let content = toml::to_string(&self).unwrap();
-        let app_dirs = AppDirs::new(Some("bili-shadowreplay"), false).unwrap();
+        let app_dirs = AppDirs::new(Some("cn.vjoi.bili-shadowreplay"), false).unwrap();
         // Create app dirs if not exists
         std::fs::create_dir_all(&app_dirs.config_dir).unwrap();
         let config_path = app_dirs.config_dir.join("Conf.toml");

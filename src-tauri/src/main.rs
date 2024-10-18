@@ -12,6 +12,7 @@ use recorder::bilibili::errors::BiliClientError;
 use recorder::bilibili::profile::Profile;
 use recorder::bilibili::{BiliClient, QrInfo, QrStatus};
 use recorder_manager::{RecorderInfo, RecorderList, RecorderManager};
+use tauri_plugin_notification::NotificationExt;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
@@ -82,6 +83,10 @@ pub struct Config {
     primary_uid: u64,
     webid: String,
     webid_ts: i64,
+    live_start_notify: bool,
+    live_end_notify: bool,
+    clip_notify: bool,
+    post_notify: bool,
 }
 
 impl Config {
@@ -109,6 +114,10 @@ impl Config {
                 .unwrap()
                 .to_string(),
             primary_uid: 0,
+            live_start_notify: true,
+            live_end_notify: true,
+            clip_notify: true,
+            post_notify: true,
         };
         config.save();
         config
@@ -319,7 +328,6 @@ async fn add_recorder(
             &state.db,
             &account,
             room_id,
-            &state.config.read().await.cache,
         )
         .await
     {
@@ -370,6 +378,16 @@ async fn set_cache_path(state: tauri::State<'_, State>, cache_path: String) -> R
             println!("Remove old cache error: {}", e);
         }
     }
+    Ok(())
+}
+
+#[tauri::command]
+async fn update_notify(state: tauri::State<'_, State>, live_start_notify: bool, live_end_notify: bool, clip_notify: bool, post_notify: bool) -> Result<(), ()> {
+    state.config.write().await.live_start_notify = live_start_notify;
+    state.config.write().await.live_end_notify = live_end_notify;
+    state.config.write().await.clip_notify = clip_notify;
+    state.config.write().await.post_notify = post_notify;
+    state.config.write().await.save();
     Ok(())
 }
 
@@ -453,6 +471,9 @@ async fn clip_range(
             ),
         )
         .await?;
+    if state.config.read().await.clip_notify {
+        state.app_handle.notification().builder().title("BiliShadowReplay - 切片完成").body(format!("生成了房间 {} 的切片: {}", room_id, filename)).show().unwrap();
+    }
     Ok(video)
 }
 
@@ -497,6 +518,9 @@ async fn upload_procedure(
                     &format!("投稿了房间 {} 的切片：{}", room_id, ret.bvid),
                 )
                 .await?;
+            if state.config.read().await.post_notify {
+                state.app_handle.notification().builder().title("BiliShadowReplay - 投稿成功").body(format!("投稿了房间 {} 的切片: {}", room_id, ret.bvid)).show().unwrap();
+            }
             Ok(ret.bvid)
         } else {
             Err("Submit video failed".to_string())
@@ -711,6 +735,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Tauri part
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_single_instance::init(|_, _, _| {}))
         .plugin(
@@ -794,7 +819,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 &db_clone,
                                 &account,
                                 room.room_id,
-                                &config_clone.read().await.cache,
                             )
                             .await
                         {
@@ -854,6 +878,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             delete_video,
             get_disk_info,
             send_danmaku,
+            update_notify,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

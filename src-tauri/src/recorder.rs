@@ -12,6 +12,7 @@ use ffmpeg_sidecar::{
 use futures::future::join_all;
 use m3u8_rs::Playlist;
 use regex::Regex;
+use tauri_plugin_notification::NotificationExt;
 use std::sync::Arc;
 use std::thread;
 use tauri::{AppHandle, Emitter};
@@ -19,6 +20,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::db::{AccountRow, Database, DatabaseError, RecordRow};
+use crate::Config;
 
 #[derive(Clone)]
 pub struct TsEntry {
@@ -39,7 +41,7 @@ pub struct BiliRecorder {
     client: Arc<RwLock<BiliClient>>,
     db: Arc<Database>,
     account: AccountRow,
-    cache_path: Arc<RwLock<String>>,
+    config: Arc<RwLock<Config>>,
     pub room_id: u64,
     pub room_info: Arc<RwLock<RoomInfo>>,
     pub user_info: Arc<RwLock<UserInfo>>,
@@ -86,18 +88,13 @@ impl From<BiliClientError> for RecorderError {
 }
 
 impl BiliRecorder {
-
-    pub async fn set_cache_path(&self, new_cache_path: &str) {
-        *self.cache_path.write().await = new_cache_path.into();
-    }
-
     pub async fn new(
         app_handle: AppHandle,
         webid: &str,
         db: &Arc<Database>,
         room_id: u64,
         account: &AccountRow,
-        cache_path: &str,
+        config: Arc<RwLock<Config>>,
     ) -> Result<Self, RecorderError> {
         let client = BiliClient::new()?;
         let room_info = client.get_room_info(account, room_id).await?;
@@ -122,7 +119,7 @@ impl BiliRecorder {
             client: Arc::new(RwLock::new(client)),
             db: db.clone(),
             account: account.clone(),
-            cache_path: Arc::new(RwLock::new(cache_path.into())),
+            config,
             room_id,
             room_info: Arc::new(RwLock::new(room_info)),
             user_info: Arc::new(RwLock::new(user_info)),
@@ -159,6 +156,27 @@ impl BiliRecorder {
         {
             *self.room_info.write().await = room_info.clone();
             let live_status = room_info.live_status == 1;
+
+            // handle live notification
+            if *self.live_status.read().await != live_status {
+                if live_status {
+                    if self.config.read().await.live_start_notify {
+                        self.app_handle
+                            .notification()
+                            .builder()
+                            .title("BiliShadowReplay - 直播开始")
+                            .body(format!("{} 开启了直播：{}",self.user_info.read().await.user_name, room_info.room_title)).show().unwrap();
+                    }
+                } else {
+                    if self.config.read().await.live_end_notify {
+                        self.app_handle
+                            .notification()
+                            .builder()
+                            .title("BiliShadowReplay - 直播结束")
+                            .body(format!("{} 的直播结束了",self.user_info.read().await.user_name)).show().unwrap();
+                    }
+                }
+            }
             // if stream is confirmed to be closed, live stream cache is cleaned.
             // all request will go through fs
             if live_status {
@@ -196,7 +214,7 @@ impl BiliRecorder {
         if let Err(e) = self.db.remove_record(ts).await {
             log::error!("remove archive failed: {}", e);
         } else {
-            let target_dir = format!("{}/{}/{}", self.cache_path.read().await, self.room_id, ts);
+            let target_dir = format!("{}/{}/{}", self.config.read().await.cache, self.room_id, ts);
             if fs::remove_dir_all(target_dir).await.is_err() {
                 log::error!("remove archive failed [{}]{}", self.room_id, ts);
             }
@@ -344,7 +362,7 @@ impl BiliRecorder {
     async fn update_entries(&self) -> Result<(), RecorderError> {
         let parsed = self.get_playlist().await;
         let mut timestamp = *self.timestamp.read().await;
-        let mut work_dir = format!("{}/{}/{}/", self.cache_path.read().await, self.room_id, timestamp);
+        let mut work_dir = format!("{}/{}/{}/", self.config.read().await.cache, self.room_id, timestamp);
         // Check header if None
         if self.header.read().await.is_none() && *self.stream_type.read().await == StreamType::FMP4
         {
@@ -366,7 +384,7 @@ impl BiliRecorder {
                 )
                 .await?;
             // now work dir is confirmed
-            work_dir = format!("{}/{}/{}/", self.cache_path.read().await, self.room_id, timestamp);
+            work_dir = format!("{}/{}/{}/", self.config.read().await.cache, self.room_id, timestamp);
             // if folder is exisited, need to load previous data into cache
             if let Ok(meta) = fs::metadata(&work_dir).await {
                 if meta.is_dir() {
@@ -518,7 +536,7 @@ impl BiliRecorder {
         output_path: &str,
     ) -> Result<String, RecorderError> {
         log::info!("create archive clip for range [{}, {}]", x, y);
-        let work_dir = format!("{}/{}/{}", self.cache_path.read().await, self.room_id, ts);
+        let work_dir = format!("{}/{}/{}", self.config.read().await.cache, self.room_id, ts);
         let entries = self.get_fs_entries(&work_dir).await;
         if entries.is_empty() {
             return Err(RecorderError::EmptyCache);
@@ -611,7 +629,7 @@ impl BiliRecorder {
             let file_name = e.url.split('/').last().unwrap();
             let file_path = format!(
                 "{}/{}/{}/{}",
-                self.cache_path.read().await, self.room_id, timestamp, file_name
+                self.config.read().await.cache, self.room_id, timestamp, file_name
             );
             file_list += &file_path;
             file_list += "|";
@@ -663,7 +681,7 @@ impl BiliRecorder {
         let header_url = format!("/{}/{}/h{}.m4s", self.room_id, timestamp, timestamp);
         m3u8_content += &format!("#EXT-X-MAP:URI=\"{}\"\n", header_url);
         // add entries from read_dir
-        let work_dir = format!("{}/{}/{}", self.cache_path.read().await, self.room_id, timestamp);
+        let work_dir = format!("{}/{}/{}", self.config.read().await.cache, self.room_id, timestamp);
         let entries = self.get_fs_entries(&work_dir).await;
         if entries.is_empty() {
             return m3u8_content;

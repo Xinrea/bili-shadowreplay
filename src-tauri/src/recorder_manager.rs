@@ -80,12 +80,6 @@ impl RecorderManager {
         }
     }
 
-    pub async fn update_cache_path(&self, new_cache_path: &str) {
-        for recorder in self.recorders.iter() {
-            recorder.value().set_cache_path(new_cache_path).await;
-        }
-    }
-
     /// starting HLS server
     pub async fn run_hls(&self) -> Result<(), RecorderManagerError> {
         let addr = SocketAddr::from(([127, 0, 0, 1], 0));
@@ -102,7 +96,6 @@ impl RecorderManager {
         db: &Arc<Database>,
         account: &AccountRow,
         room_id: u64,
-        cache_path: &str,
     ) -> Result<(), RecorderManagerError> {
         // check existing recorder
         if self.recorders.contains_key(&room_id) {
@@ -114,7 +107,7 @@ impl RecorderManager {
             db,
             room_id,
             account,
-            cache_path,
+            self.config.clone(),
         )
         .await?;
         self.recorders.insert(room_id, recorder);

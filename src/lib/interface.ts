@@ -85,6 +85,10 @@ export interface Config {
   cache: string;
   output: string;
   primary_uid: number;
+  live_start_notify: boolean;
+  live_end_notify: boolean;
+  clip_notify: boolean;
+  post_notify: boolean;
 }
 
 export interface DiskInfo {

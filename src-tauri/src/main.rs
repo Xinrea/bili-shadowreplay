@@ -349,7 +349,7 @@ async fn get_config(state: tauri::State<'_, State>) -> Result<Config, ()> {
 }
 
 #[tauri::command]
-async fn set_cache_path(state: tauri::State<'_, State>, cache_path: String) -> Result<(), ()> {
+async fn set_cache_path(state: tauri::State<'_, State>, cache_path: String) -> Result<(), String> {
     let mut config = state.config.write().await;
     let old_cache_path = config.cache.clone();
     // first switch to new cache
@@ -359,10 +359,12 @@ async fn set_cache_path(state: tauri::State<'_, State>, cache_path: String) -> R
     std::thread::sleep(std::time::Duration::from_secs(2));
     // Copy old cache to new cache
     log::info!("Start copy old cache to new cache");
+    state.db.new_message("缓存目录切换", "缓存正在迁移中，根据数据量情况可能花费较长时间，在此期间流预览功能不可用").await?;
     if let Err(e) = copy_dir_all(&old_cache_path, &cache_path) {
         log::error!("Copy old cache to new cache error: {}", e);
     }
     log::info!("Copy old cache to new cache done");
+    state.db.new_message("缓存目录切换", "缓存切换完成").await?;
     // Remove old cache
     if old_cache_path != cache_path {
         if let Err(e) = std::fs::remove_dir_all(old_cache_path) {

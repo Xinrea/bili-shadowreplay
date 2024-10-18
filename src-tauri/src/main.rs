@@ -350,10 +350,9 @@ async fn get_config(state: tauri::State<'_, State>) -> Result<Config, ()> {
 
 #[tauri::command]
 async fn set_cache_path(state: tauri::State<'_, State>, cache_path: String) -> Result<(), String> {
-    let mut config = state.config.write().await;
-    let old_cache_path = config.cache.clone();
+    let old_cache_path = state.config.read().await.cache.clone();
     // first switch to new cache
-    config.set_cache_path(&cache_path);
+    state.config.write().await.set_cache_path(&cache_path);
     log::info!("Cache path changed: {}", cache_path);
     // wait 2 seconds for cache switch
     std::thread::sleep(std::time::Duration::from_secs(2));

@@ -29,7 +29,7 @@
 </script>
 
 <div class="p-8 pt-12">
-  <Card>
+  <Card size="lg">
     <h5
       class="mb-2 text-2xl font-bold tracking-tight text-gray-900 dark:text-white"
     >
@@ -39,6 +39,7 @@
     <ButtonGroup>
       <Input value={setting_model.cache_path} readonly />
       <Button
+        color="primary"
         on:click={async () => {
           const new_folder = await browse_folder();
           if (new_folder) {
@@ -49,12 +50,21 @@
           }
         }}>Browse</Button
       >
+      <Button
+        color="alternative"
+        on:click={async () => {
+          await invoke("show_in_folder", {
+            path: setting_model.cache_path,
+          });
+        }}>Open</Button
+      >
     </ButtonGroup>
 
     <Label class="mt-4">输出目录</Label>
     <ButtonGroup>
       <Input value={setting_model.clip_path} readonly />
       <Button
+        color="primary"
         on:click={async () => {
           const new_folder = await browse_folder();
           if (new_folder) {
@@ -64,6 +74,14 @@
             });
           }
         }}>Browse</Button
+      >
+      <Button
+        color="alternative"
+        on:click={async () => {
+          await invoke("show_in_folder", {
+            path: setting_model.clip_path,
+          });
+        }}>Open</Button
       >
     </ButtonGroup>
   </Card>

@@ -39,7 +39,7 @@ pub struct BiliRecorder {
     client: Arc<RwLock<BiliClient>>,
     db: Arc<Database>,
     account: AccountRow,
-    cache_path: String,
+    cache_path: Arc<RwLock<String>>,
     pub room_id: u64,
     pub room_info: Arc<RwLock<RoomInfo>>,
     pub user_info: Arc<RwLock<UserInfo>>,
@@ -86,6 +86,11 @@ impl From<BiliClientError> for RecorderError {
 }
 
 impl BiliRecorder {
+
+    pub async fn set_cache_path(&self, new_cache_path: &str) {
+        *self.cache_path.write().await = new_cache_path.into();
+    }
+
     pub async fn new(
         app_handle: AppHandle,
         webid: &str,
@@ -117,7 +122,7 @@ impl BiliRecorder {
             client: Arc::new(RwLock::new(client)),
             db: db.clone(),
             account: account.clone(),
-            cache_path: cache_path.into(),
+            cache_path: Arc::new(RwLock::new(cache_path.into())),
             room_id,
             room_info: Arc::new(RwLock::new(room_info)),
             user_info: Arc::new(RwLock::new(user_info)),
@@ -191,7 +196,7 @@ impl BiliRecorder {
         if let Err(e) = self.db.remove_record(ts).await {
             log::error!("remove archive failed: {}", e);
         } else {
-            let target_dir = format!("{}/{}/{}", self.cache_path, self.room_id, ts);
+            let target_dir = format!("{}/{}/{}", self.cache_path.read().await, self.room_id, ts);
             if fs::remove_dir_all(target_dir).await.is_err() {
                 log::error!("remove archive failed [{}]{}", self.room_id, ts);
             }
@@ -339,7 +344,7 @@ impl BiliRecorder {
     async fn update_entries(&self) -> Result<(), RecorderError> {
         let parsed = self.get_playlist().await;
         let mut timestamp = *self.timestamp.read().await;
-        let mut work_dir = format!("{}/{}/{}/", self.cache_path, self.room_id, timestamp);
+        let mut work_dir = format!("{}/{}/{}/", self.cache_path.read().await, self.room_id, timestamp);
         // Check header if None
         if self.header.read().await.is_none() && *self.stream_type.read().await == StreamType::FMP4
         {
@@ -361,7 +366,7 @@ impl BiliRecorder {
                 )
                 .await?;
             // now work dir is confirmed
-            work_dir = format!("{}/{}/{}/", self.cache_path, self.room_id, timestamp);
+            work_dir = format!("{}/{}/{}/", self.cache_path.read().await, self.room_id, timestamp);
             // if folder is exisited, need to load previous data into cache
             if let Ok(meta) = fs::metadata(&work_dir).await {
                 if meta.is_dir() {
@@ -513,7 +518,7 @@ impl BiliRecorder {
         output_path: &str,
     ) -> Result<String, RecorderError> {
         log::info!("create archive clip for range [{}, {}]", x, y);
-        let work_dir = format!("{}/{}/{}", self.cache_path, self.room_id, ts);
+        let work_dir = format!("{}/{}/{}", self.cache_path.read().await, self.room_id, ts);
         let entries = self.get_fs_entries(&work_dir).await;
         if entries.is_empty() {
             return Err(RecorderError::EmptyCache);
@@ -606,7 +611,7 @@ impl BiliRecorder {
             let file_name = e.url.split('/').last().unwrap();
             let file_path = format!(
                 "{}/{}/{}/{}",
-                self.cache_path, self.room_id, timestamp, file_name
+                self.cache_path.read().await, self.room_id, timestamp, file_name
             );
             file_list += &file_path;
             file_list += "|";
@@ -658,7 +663,7 @@ impl BiliRecorder {
         let header_url = format!("/{}/{}/h{}.m4s", self.room_id, timestamp, timestamp);
         m3u8_content += &format!("#EXT-X-MAP:URI=\"{}\"\n", header_url);
         // add entries from read_dir
-        let work_dir = format!("{}/{}/{}", self.cache_path, self.room_id, timestamp);
+        let work_dir = format!("{}/{}/{}", self.cache_path.read().await, self.room_id, timestamp);
         let entries = self.get_fs_entries(&work_dir).await;
         if entries.is_empty() {
             return m3u8_content;

@@ -70,12 +70,19 @@ impl From<RecorderManagerError> for String {
 }
 
 impl RecorderManager {
+
     pub fn new(app_handle: AppHandle, config: Arc<RwLock<Config>>) -> RecorderManager {
         RecorderManager {
             app_handle,
             config,
             recorders: Arc::new(DashMap::new()),
             hls_server_addr: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    pub async fn update_cache_path(&self, new_cache_path: &str) {
+        for recorder in self.recorders.iter() {
+            recorder.value().set_cache_path(new_cache_path).await;
         }
     }
 

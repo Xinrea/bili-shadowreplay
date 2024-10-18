@@ -134,8 +134,8 @@ impl Config {
         self.save();
     }
 
-    pub fn set_output_path(&mut self, path: String) {
-        self.output = path;
+    pub fn set_output_path(&mut self, path: &str) {
+        self.output = path.into();
         self.save();
     }
 
@@ -352,8 +352,13 @@ async fn get_config(state: tauri::State<'_, State>) -> Result<Config, ()> {
 async fn set_cache_path(state: tauri::State<'_, State>, cache_path: String) -> Result<(), ()> {
     let mut config = state.config.write().await;
     let old_cache_path = config.cache.clone();
+    // first switch to new cache
     config.set_cache_path(&cache_path);
-    drop(config);
+    state.recorder_manager.update_cache_path(&cache_path).await;
+    // wait 2 seconds for cache switch
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    // Copy old cache to new cache
+    copy_dir_all(&old_cache_path, &cache_path).unwrap();
     // Remove old cache
     if old_cache_path != cache_path {
         if let Err(e) = std::fs::remove_dir_all(old_cache_path) {
@@ -366,7 +371,15 @@ async fn set_cache_path(state: tauri::State<'_, State>, cache_path: String) -> R
 #[tauri::command]
 async fn set_output_path(state: tauri::State<'_, State>, output_path: String) -> Result<(), ()> {
     let mut config = state.config.write().await;
-    config.set_output_path(output_path);
+    let old_output_path = config.output.clone();
+    copy_dir_all(&old_output_path, &output_path).unwrap();
+    config.set_output_path(&output_path);
+    // remove old output
+    if old_output_path != output_path {
+        if let Err(e) = std::fs::remove_dir_all(old_output_path) {
+            log::error!("Remove old output error: {}", e);
+        }
+    }
     Ok(())
 }
 

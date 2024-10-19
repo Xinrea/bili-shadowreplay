@@ -5,8 +5,8 @@ use tauri::{
 };
 
 pub fn create_tray<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
-    let hide_i = MenuItem::with_id(app, "hide", "Hide", true, None::<&str>)?;
-    let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let hide_i = MenuItem::with_id(app, "hide", "隐藏窗口", true, None::<&str>)?;
+    let quit_i = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&hide_i, &quit_i])?;
 
     let _ = TrayIconBuilder::with_id("tray")

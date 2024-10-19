@@ -123,7 +123,7 @@
       console.log(a);
       archive = a;
       appWindow.setTitle(`[${room_id}][${ts}]${archive.title}`);
-    }
+    },
   );
 
   async function get_video_list() {
@@ -254,7 +254,7 @@
       </Modal>
     </div>
     <div
-      class="w-1/4 h-screen overflow-hidden border-solid bg-gray-50 border-l-2 border-slate-200 z-[600]"
+      class="w-1/4 h-screen overflow-hidden border-solid bg-gray-50 border-l-2 border-slate-200 z-[49]"
     >
       <div
         id="post-panel"

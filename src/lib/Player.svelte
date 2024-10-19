@@ -28,7 +28,7 @@
     (window as any).ui = ui;
     try {
       await player.load(
-        `http://127.0.0.1:${port}/${room_id}/${ts}/playlist.m3u8`
+        `http://127.0.0.1:${port}/${room_id}/${ts}/playlist.m3u8`,
       );
       // This runs if the asynchronous load is successful.
       console.log("The video has now been loaded!");
@@ -45,12 +45,12 @@
 
     document.getElementsByClassName("shaka-overflow-menu-button")[0].remove();
     document.querySelector(
-      ".shaka-back-to-overflow-button .material-icons-round"
+      ".shaka-back-to-overflow-button .material-icons-round",
     ).innerHTML = "arrow_back_ios_new";
 
     // add self-defined element in shaka-bottom-controls.shaka-no-propagation (second seekbar)
     const shakaBottomControls = document.querySelector(
-      ".shaka-bottom-controls.shaka-no-propagation"
+      ".shaka-bottom-controls.shaka-no-propagation",
     );
     const selfSeekbar = document.createElement("div");
     selfSeekbar.className = "shaka-seek-bar shaka-no-propagation";
@@ -151,7 +151,7 @@
     overlay.style.top = "0";
     overlay.style.left = "0";
     overlay.style.pointerEvents = "none";
-    overlay.style.zIndex = "500";
+    overlay.style.zIndex = "40";
     overlay.style.display = "flex";
     overlay.style.alignItems = "center";
     overlay.style.flexDirection = "column";
@@ -241,7 +241,7 @@
                 (player.getPlayheadTimeAsDate() -
                   player.getPresentationStartTimeAsDate()) /
                 1000
-              ).toFixed(2)
+              ).toFixed(2),
             );
           } else {
             start = parseFloat(video.currentTime.toFixed(2));
@@ -258,7 +258,7 @@
                 (player.getPlayheadTimeAsDate() -
                   player.getPresentationStartTimeAsDate()) /
                 1000
-              ).toFixed(2)
+              ).toFixed(2),
             );
           } else {
             end = parseFloat(video.currentTime.toFixed(2));
@@ -316,7 +316,7 @@
       const second_point = end / total;
       // set background color for self-defined seekbar between first_point and second_point using linear-gradient
       const seekbarContainer = selfSeekbar.querySelector(
-        ".shaka-seek-bar-container.self-defined"
+        ".shaka-seek-bar-container.self-defined",
       ) as HTMLElement;
       seekbarContainer.style.background = `linear-gradient(to right, rgba(255, 255, 255, 0.4) ${
         first_point * 100

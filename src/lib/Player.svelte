@@ -134,11 +134,38 @@
         : "rgba(255, 0, 0, 0.5)";
     });
 
+    // create a playback rate select to of shaka-spacer
+    const playbackRateSelect = document.createElement("select");
+    playbackRateSelect.style.height = "30px";
+    playbackRateSelect.style.minWidth = "60px";
+    playbackRateSelect.style.backgroundColor = "rgba(0, 0, 0, 0)";
+    playbackRateSelect.style.color = "white";
+    playbackRateSelect.style.border = "1px solid gray";
+    playbackRateSelect.style.padding = "0 10px";
+    playbackRateSelect.style.boxSizing = "border-box";
+    playbackRateSelect.style.fontSize = "1em";
+    playbackRateSelect.style.right = "10px";
+    playbackRateSelect.style.position = "absolute";
+    playbackRateSelect.innerHTML = `
+      <option value="0.5">0.5x</option>
+      <option value="1">1x</option>
+      <option value="1.5">1.5x</option>
+      <option value="2">2x</option>
+      <option value="5">5x</option>
+    `;
+    // default playback rate is 1
+    playbackRateSelect.value = "1";
+    playbackRateSelect.addEventListener("change", () => {
+      const rate = parseFloat(playbackRateSelect.value);
+      video.playbackRate = rate;
+    });
+
     // add to shaka-spacer
     const shakaSpacer = document.querySelector(".shaka-spacer") as HTMLElement;
     shakaSpacer.appendChild(accountSelect);
     shakaSpacer.appendChild(danmakuInput);
     shakaSpacer.appendChild(danmakuToggle);
+    shakaSpacer.appendChild(playbackRateSelect);
 
     // shaka-spacer should be flex-direction: column
     shakaSpacer.style.flexDirection = "column";

@@ -210,19 +210,11 @@
     });
 
     function isLive() {
-      let total = video.duration;
-      if (total == Infinity || total >= 4294967296) {
-        return true;
-      }
-      return false;
+      return player.isLive();
     }
 
     function get_total() {
-      let total = video.duration;
-      if (total == Infinity || total >= 4294967296) {
-        total = (Date.now() - player.getPresentationStartTimeAsDate()) / 1000;
-      }
-      return total;
+      return player.seekRange().end;
     }
     // add keydown event listener for '[' and ']' to control range
     document.addEventListener("keydown", async (e) => {
@@ -235,34 +227,14 @@
       }
       switch (e.key) {
         case "[":
-          if (isLive()) {
-            start = parseFloat(
-              (
-                (player.getPlayheadTimeAsDate() -
-                  player.getPresentationStartTimeAsDate()) /
-                1000
-              ).toFixed(2),
-            );
-          } else {
-            start = parseFloat(video.currentTime.toFixed(2));
-          }
+          start = parseFloat(video.currentTime.toFixed(2));
           if (end < start) {
             end = get_total();
           }
           console.log(start, end);
           break;
         case "]":
-          if (isLive()) {
-            end = parseFloat(
-              (
-                (player.getPlayheadTimeAsDate() -
-                  player.getPresentationStartTimeAsDate()) /
-                1000
-              ).toFixed(2),
-            );
-          } else {
-            end = parseFloat(video.currentTime.toFixed(2));
-          }
+          end = parseFloat(video.currentTime.toFixed(2));
           if (start > end) {
             start = 0;
           }

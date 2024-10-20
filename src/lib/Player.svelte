@@ -151,7 +151,7 @@
     overlay.style.top = "0";
     overlay.style.left = "0";
     overlay.style.pointerEvents = "none";
-    overlay.style.zIndex = "40";
+    overlay.style.zIndex = "30";
     overlay.style.display = "flex";
     overlay.style.alignItems = "center";
     overlay.style.flexDirection = "column";

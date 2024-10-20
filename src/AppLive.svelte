@@ -309,15 +309,49 @@
         </div>
         <Hr />
         <Label class="mt-4">标题</Label>
-        <Input size="sm" bind:value={profile.title} />
+        <Input
+          size="sm"
+          bind:value={profile.title}
+          on:change={() => {
+            window.localStorage.setItem(
+              "profile-" + room_id,
+              JSON.stringify(profile),
+            );
+          }}
+        />
         <Label class="mt-2">封面文本</Label>
         <Textarea bind:value={cover_text} />
         <Label class="mt-2">描述</Label>
-        <Textarea bind:value={profile.desc} />
+        <Textarea
+          bind:value={profile.desc}
+          on:change={() => {
+            window.localStorage.setItem(
+              "profile-" + room_id,
+              JSON.stringify(profile),
+            );
+          }}
+        />
         <Label class="mt-2">标签</Label>
-        <Input size="sm" bind:value={profile.tag} />
+        <Input
+          size="sm"
+          bind:value={profile.tag}
+          on:change={() => {
+            window.localStorage.setItem(
+              "profile-" + room_id,
+              JSON.stringify(profile),
+            );
+          }}
+        />
         <Label class="mt-2">动态</Label>
-        <Textarea bind:value={profile.dynamic} />
+        <Textarea
+          bind:value={profile.dynamic}
+          on:change={() => {
+            window.localStorage.setItem(
+              "profile-" + room_id,
+              JSON.stringify(profile),
+            );
+          }}
+        />
         <Label class="mt-2">视频分区</Label>
         <Input size="sm" value="动画 - 综合" disabled />
         <Label class="mt-2">投稿账号</Label>

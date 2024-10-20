@@ -246,7 +246,7 @@
     <TitleBar dark />
   {/if}
   <div class="flex flex-row">
-    <div class="w-3/4">
+    <div class="w-3/4 overflow-hidden">
       <Player bind:start bind:end {port} {room_id} {ts} />
       <Modal title="预览" bind:open={preview} autoclose>
         <!-- svelte-ignore a11y-media-has-caption -->

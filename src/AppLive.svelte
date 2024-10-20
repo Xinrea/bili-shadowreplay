@@ -258,7 +258,7 @@
     >
       <div
         id="post-panel"
-        class="mt-6 overflow-auto p-6"
+        class="mt-6 overflow-y-auto overflow-x-hidden p-6"
         class:titlebar={use_titlebar}
       >
         <!-- svelte-ignore a11y-click-events-have-key-events -->
@@ -322,17 +322,17 @@
         <Input size="sm" value="动画 - 综合" disabled />
         <Label class="mt-2">投稿账号</Label>
         <Select size="sm" items={accounts} bind:value={uid_selected} />
+        {#if video}
+          <div class="flex mt-4 justify-center w-full">
+            <Button on:click={do_post} disabled={loading}>
+              {#if loading}
+                <Spinner class="me-3" size="4" />
+              {/if}
+              投稿
+            </Button>
+          </div>
+        {/if}
       </div>
-      {#if video}
-        <div class="flex mt-4 justify-center w-full">
-          <Button on:click={do_post} disabled={loading}>
-            {#if loading}
-              <Spinner class="me-3" size="4" />
-            {/if}
-            投稿
-          </Button>
-        </div>
-      {/if}
     </div>
   </div>
 </main>

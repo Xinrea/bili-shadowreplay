@@ -122,9 +122,20 @@
     (a: RecordItem) => {
       console.log(a);
       archive = a;
-      appWindow.setTitle(`[${room_id}][${ts}]${archive.title}`);
+      appWindow.setTitle(`[${room_id}][${format_ts(ts)}]${archive.title}`);
     },
   );
+
+  function update_title(str: string) {
+    appWindow.setTitle(
+      `[${room_id}][${format_ts(ts)}]${archive.title} - ${str}`,
+    );
+  }
+
+  function format_ts(ts: number) {
+    const date = new Date(ts * 1000);
+    return date.toLocaleString();
+  }
 
   async function get_video_list() {
     videos = (
@@ -159,7 +170,7 @@
     }
     loading = true;
     let new_cover = generateCover();
-    appWindow.setTitle(`[${room_id}][${ts}]${archive.title} - 切片生成中`);
+    update_title(`切片生成中`);
     let new_video = (await invoke("clip_range", {
       roomId: room_id,
       cover: new_cover,
@@ -167,7 +178,7 @@
       x: start,
       y: end,
     })) as VideoItem;
-    appWindow.setTitle(`[${room_id}][${ts}]${archive.title} - 切片生成成功`);
+    update_title(`切片生成成功`);
     console.log("video file generatd:", video);
     await get_video_list();
     video_selected = new_video.id;
@@ -182,7 +193,7 @@
     if (!video) {
       return;
     }
-    appWindow.setTitle(`[${room_id}][${ts}]${archive.title} - 投稿上传中`);
+    update_title(`投稿上传中`);
     loading = true;
     // render cover with text
     const ecapture = document.getElementById("capture");
@@ -201,13 +212,13 @@
     })
       .then(async () => {
         loading = false;
-        appWindow.setTitle(`[${room_id}][${ts}]${archive.title} - 投稿成功`);
+        update_title(`投稿成功`);
         video_selected = 0;
         await get_video_list();
       })
       .catch((e) => {
         loading = false;
-        appWindow.setTitle(`[${room_id}][${ts}]${archive.title} - 投稿失败`);
+        update_title(`投稿失败`);
         alert(e);
       });
   }
@@ -217,9 +228,9 @@
       return;
     }
     loading = true;
-    appWindow.setTitle(`[${room_id}][${ts}]${archive.title} - 删除中`);
+    update_title(`删除中`);
     await invoke("delete_video", { id: video_selected });
-    appWindow.setTitle(`[${room_id}][${ts}]${archive.title} - 删除成功`);
+    update_title(`删除成功`);
     loading = false;
     video_selected = 0;
     video = null;

@@ -155,7 +155,8 @@
 
       // listen to danmaku event
       listen("danmu:" + room_id, (event: { payload: string }) => {
-        if (!danmu_enabled) {
+        // if not enabled or playback is not keep up with live, ignore the danmaku
+        if (!danmu_enabled || get_total() - video.currentTime > 5) {
           return;
         }
         const danmaku = document.createElement("p");

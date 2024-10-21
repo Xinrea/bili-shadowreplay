@@ -44,10 +44,6 @@
     });
 
     document.getElementsByClassName("shaka-overflow-menu-button")[0].remove();
-    document.querySelector(
-      ".shaka-back-to-overflow-button .material-icons-round",
-    ).innerHTML = "arrow_back_ios_new";
-
     // add self-defined element in shaka-bottom-controls.shaka-no-propagation (second seekbar)
     const shakaBottomControls = document.querySelector(
       ".shaka-bottom-controls.shaka-no-propagation",

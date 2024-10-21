@@ -66,73 +66,147 @@
         `;
     shakaBottomControls.appendChild(selfSeekbar);
 
-    // add a account select
-    const accountSelect = document.createElement("select");
-    accountSelect.style.height = "30px";
-    accountSelect.style.minWidth = "100px";
-    accountSelect.style.backgroundColor = "rgba(0, 0, 0, 0)";
-    accountSelect.style.color = "white";
-    accountSelect.style.border = "1px solid gray";
-    accountSelect.style.padding = "0 10px";
-    accountSelect.style.boxSizing = "border-box";
-    accountSelect.style.fontSize = "1em";
+    // add to shaka-spacer
+    const shakaSpacer = document.querySelector(".shaka-spacer") as HTMLElement;
 
-    // get accounts from tauri
-    const account_info = (await invoke("get_accounts")) as AccountInfo;
-    account_info.accounts.forEach((account) => {
-      const option = document.createElement("option");
-      option.value = account.uid.toString();
-      option.text = account.name;
-      accountSelect.appendChild(option);
-    });
-    // add a danmaku send input
-    const danmakuInput = document.createElement("input");
-    danmakuInput.type = "text";
-    danmakuInput.placeholder = "回车发送弹幕";
-    danmakuInput.style.width = "50%";
-    danmakuInput.style.height = "30px";
-    danmakuInput.style.backgroundColor = "rgba(0, 0, 0, 0)";
-    danmakuInput.style.color = "white";
-    danmakuInput.style.border = "1px solid gray";
-    danmakuInput.style.padding = "0 10px";
-    danmakuInput.style.boxSizing = "border-box";
-    danmakuInput.style.fontSize = "1em";
-    danmakuInput.addEventListener("keydown", async (e) => {
-      if (e.key === "Enter") {
-        const value = danmakuInput.value;
-        if (value) {
-          // get account uid from select
-          const uid = parseInt(accountSelect.value);
-          await invoke("send_danmaku", {
-            uid,
-            roomId: room_id,
-            ts,
-            message: value,
-          });
-          danmakuInput.value = "";
+    if (isLive()) {
+      // add a account select
+      const accountSelect = document.createElement("select");
+      accountSelect.style.height = "30px";
+      accountSelect.style.minWidth = "100px";
+      accountSelect.style.backgroundColor = "rgba(0, 0, 0, 0)";
+      accountSelect.style.color = "white";
+      accountSelect.style.border = "1px solid gray";
+      accountSelect.style.padding = "0 10px";
+      accountSelect.style.boxSizing = "border-box";
+      accountSelect.style.fontSize = "1em";
+
+      // get accounts from tauri
+      const account_info = (await invoke("get_accounts")) as AccountInfo;
+      account_info.accounts.forEach((account) => {
+        const option = document.createElement("option");
+        option.value = account.uid.toString();
+        option.text = account.name;
+        accountSelect.appendChild(option);
+      });
+      // add a danmaku send input
+      const danmakuInput = document.createElement("input");
+      danmakuInput.type = "text";
+      danmakuInput.placeholder = "回车发送弹幕";
+      danmakuInput.style.width = "50%";
+      danmakuInput.style.height = "30px";
+      danmakuInput.style.backgroundColor = "rgba(0, 0, 0, 0)";
+      danmakuInput.style.color = "white";
+      danmakuInput.style.border = "1px solid gray";
+      danmakuInput.style.padding = "0 10px";
+      danmakuInput.style.boxSizing = "border-box";
+      danmakuInput.style.fontSize = "1em";
+      danmakuInput.addEventListener("keydown", async (e) => {
+        if (e.key === "Enter") {
+          const value = danmakuInput.value;
+          if (value) {
+            // get account uid from select
+            const uid = parseInt(accountSelect.value);
+            await invoke("send_danmaku", {
+              uid,
+              roomId: room_id,
+              ts,
+              message: value,
+            });
+            danmakuInput.value = "";
+          }
         }
-      }
-    });
+      });
 
-    let danmu_enabled = true;
-    // create a danmaku toggle button
-    const danmakuToggle = document.createElement("button");
-    danmakuToggle.innerText = "弹幕已开启";
-    danmakuToggle.style.height = "30px";
-    danmakuToggle.style.backgroundColor = "rgba(0, 128, 255, 0.5)";
-    danmakuToggle.style.color = "white";
-    danmakuToggle.style.border = "1px solid gray";
-    danmakuToggle.style.padding = "0 10px";
-    danmakuToggle.style.boxSizing = "border-box";
-    danmakuToggle.style.fontSize = "1em";
-    danmakuToggle.addEventListener("click", async () => {
-      danmu_enabled = !danmu_enabled;
-      danmakuToggle.innerText = danmu_enabled ? "弹幕已开启" : "弹幕已关闭";
-      // clear background color
-      danmakuToggle.style.backgroundColor = danmu_enabled
-        ? "rgba(0, 128, 255, 0.5)"
-        : "rgba(255, 0, 0, 0.5)";
-    });
+      let danmu_enabled = true;
+      // create a danmaku toggle button
+      const danmakuToggle = document.createElement("button");
+      danmakuToggle.innerText = "弹幕已开启";
+      danmakuToggle.style.height = "30px";
+      danmakuToggle.style.backgroundColor = "rgba(0, 128, 255, 0.5)";
+      danmakuToggle.style.color = "white";
+      danmakuToggle.style.border = "1px solid gray";
+      danmakuToggle.style.padding = "0 10px";
+      danmakuToggle.style.boxSizing = "border-box";
+      danmakuToggle.style.fontSize = "1em";
+      danmakuToggle.addEventListener("click", async () => {
+        danmu_enabled = !danmu_enabled;
+        danmakuToggle.innerText = danmu_enabled ? "弹幕已开启" : "弹幕已关闭";
+        // clear background color
+        danmakuToggle.style.backgroundColor = danmu_enabled
+          ? "rgba(0, 128, 255, 0.5)"
+          : "rgba(255, 0, 0, 0.5)";
+      });
+
+      // create a area that overlay half top of the video, which shows danmakus floating from right to left
+      const overlay = document.createElement("div");
+      overlay.style.width = "100%";
+      overlay.style.height = "100%";
+      overlay.style.position = "absolute";
+      overlay.style.top = "0";
+      overlay.style.left = "0";
+      overlay.style.pointerEvents = "none";
+      overlay.style.zIndex = "30";
+      overlay.style.display = "flex";
+      overlay.style.alignItems = "center";
+      overlay.style.flexDirection = "column";
+      overlay.style.paddingTop = "10%";
+      // place overlay to the top of the video
+      video.parentElement.appendChild(overlay);
+
+      // Store the positions of the last few danmakus to avoid overlap
+      const danmakuPositions = [];
+
+      // listen to danmaku event
+      listen("danmu:" + room_id, (event: { payload: string }) => {
+        if (!danmu_enabled) {
+          return;
+        }
+        const danmaku = document.createElement("p");
+        danmaku.style.position = "absolute";
+
+        // Calculate a random position for the danmaku
+        let topPosition;
+        let attempts = 0;
+        do {
+          topPosition = Math.random() * 30;
+          attempts++;
+        } while (
+          danmakuPositions.some((pos) => Math.abs(pos - topPosition) < 5) &&
+          attempts < 10
+        );
+
+        // Record the position
+        danmakuPositions.push(topPosition);
+        if (danmakuPositions.length > 10) {
+          danmakuPositions.shift(); // Keep the last 10 positions
+        }
+
+        danmaku.style.top = `${topPosition}%`;
+        danmaku.style.right = "0";
+        danmaku.style.color = "white";
+        danmaku.style.fontSize = "1.2em";
+        danmaku.style.whiteSpace = "nowrap";
+        danmaku.style.transform = "translateX(100%)";
+        danmaku.style.transition = "transform 10s linear";
+        danmaku.style.pointerEvents = "none";
+        danmaku.style.margin = "0";
+        danmaku.style.padding = "0";
+        danmaku.style.zIndex = "500";
+        danmaku.innerText = event.payload;
+        overlay.appendChild(danmaku);
+        requestAnimationFrame(() => {
+          danmaku.style.transform = `translateX(-${overlay.clientWidth + danmaku.clientWidth}px)`;
+        });
+        danmaku.addEventListener("transitionend", () => {
+          overlay.removeChild(danmaku);
+        });
+      });
+
+      shakaSpacer.appendChild(accountSelect);
+      shakaSpacer.appendChild(danmakuInput);
+      shakaSpacer.appendChild(danmakuToggle);
+    }
 
     // create a playback rate select to of shaka-spacer
     const playbackRateSelect = document.createElement("select");
@@ -160,81 +234,10 @@
       video.playbackRate = rate;
     });
 
-    // add to shaka-spacer
-    const shakaSpacer = document.querySelector(".shaka-spacer") as HTMLElement;
-    shakaSpacer.appendChild(accountSelect);
-    shakaSpacer.appendChild(danmakuInput);
-    shakaSpacer.appendChild(danmakuToggle);
     shakaSpacer.appendChild(playbackRateSelect);
 
     // shaka-spacer should be flex-direction: column
     shakaSpacer.style.flexDirection = "column";
-
-    // create a area that overlay half top of the video, which shows danmakus floating from right to left
-    const overlay = document.createElement("div");
-    overlay.style.width = "100%";
-    overlay.style.height = "100%";
-    overlay.style.position = "absolute";
-    overlay.style.top = "0";
-    overlay.style.left = "0";
-    overlay.style.pointerEvents = "none";
-    overlay.style.zIndex = "30";
-    overlay.style.display = "flex";
-    overlay.style.alignItems = "center";
-    overlay.style.flexDirection = "column";
-    overlay.style.paddingTop = "10%";
-    // place overlay to the top of the video
-    video.parentElement.appendChild(overlay);
-
-    // Store the positions of the last few danmakus to avoid overlap
-    const danmakuPositions = [];
-
-    // listen to danmaku event
-    listen("danmu:" + room_id, (event: { payload: string }) => {
-      console.log("danmu", event.payload);
-      if (!danmu_enabled) {
-        return;
-      }
-      const danmaku = document.createElement("p");
-      danmaku.style.position = "absolute";
-
-      // Calculate a random position for the danmaku
-      let topPosition;
-      let attempts = 0;
-      do {
-        topPosition = Math.random() * 30;
-        attempts++;
-      } while (
-        danmakuPositions.some((pos) => Math.abs(pos - topPosition) < 5) &&
-        attempts < 10
-      );
-
-      // Record the position
-      danmakuPositions.push(topPosition);
-      if (danmakuPositions.length > 10) {
-        danmakuPositions.shift(); // Keep the last 10 positions
-      }
-
-      danmaku.style.top = `${topPosition}%`;
-      danmaku.style.right = "0";
-      danmaku.style.color = "white";
-      danmaku.style.fontSize = "1.2em";
-      danmaku.style.whiteSpace = "nowrap";
-      danmaku.style.transform = "translateX(100%)";
-      danmaku.style.transition = "transform 10s linear";
-      danmaku.style.pointerEvents = "none";
-      danmaku.style.margin = "0";
-      danmaku.style.padding = "0";
-      danmaku.style.zIndex = "500";
-      danmaku.innerText = event.payload;
-      overlay.appendChild(danmaku);
-      requestAnimationFrame(() => {
-        danmaku.style.transform = `translateX(-${overlay.clientWidth + danmaku.clientWidth}px)`;
-      });
-      danmaku.addEventListener("transitionend", () => {
-        overlay.removeChild(danmaku);
-      });
-    });
 
     function isLive() {
       return player.isLive();

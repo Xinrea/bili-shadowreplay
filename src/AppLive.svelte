@@ -282,7 +282,7 @@
           >
             <div id="capture" class="cover-wrap relative cursor-pointer">
               <div
-                class="cover-text absolute py-2 px-8"
+                class="cover-text absolute py-1 px-8"
                 class:play-icon={false}
               >
                 {cover_text}
@@ -396,6 +396,7 @@
   .cover-text {
     white-space: pre-wrap;
     font-size: 24px;
+    line-height: 1.3;
     font-weight: bold;
     color: rgb(255, 127, 0);
     text-shadow:

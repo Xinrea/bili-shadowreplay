@@ -28,7 +28,7 @@
     (window as any).ui = ui;
     try {
       await player.load(
-        `http://127.0.0.1:${port}/${room_id}/${ts}/playlist.m3u8`,
+        `http://127.0.0.1:${port}/${room_id}/${ts}/playlist.m3u8`
       );
       // This runs if the asynchronous load is successful.
       console.log("The video has now been loaded!");
@@ -44,9 +44,10 @@
     });
 
     document.getElementsByClassName("shaka-overflow-menu-button")[0].remove();
+    document.getElementsByClassName("shaka-fullscreen-button")[0].remove();
     // add self-defined element in shaka-bottom-controls.shaka-no-propagation (second seekbar)
     const shakaBottomControls = document.querySelector(
-      ".shaka-bottom-controls.shaka-no-propagation",
+      ".shaka-bottom-controls.shaka-no-propagation"
     );
     const selfSeekbar = document.createElement("div");
     selfSeekbar.className = "shaka-seek-bar shaka-no-propagation";
@@ -209,7 +210,7 @@
     const playbackRateSelect = document.createElement("select");
     playbackRateSelect.style.height = "30px";
     playbackRateSelect.style.minWidth = "60px";
-    playbackRateSelect.style.backgroundColor = "rgba(0, 0, 0, 0)";
+    playbackRateSelect.style.backgroundColor = "rgba(0, 0, 0, 0.5)";
     playbackRateSelect.style.color = "white";
     playbackRateSelect.style.border = "1px solid gray";
     playbackRateSelect.style.padding = "0 10px";
@@ -315,7 +316,7 @@
       const second_point = end / total;
       // set background color for self-defined seekbar between first_point and second_point using linear-gradient
       const seekbarContainer = selfSeekbar.querySelector(
-        ".shaka-seek-bar-container.self-defined",
+        ".shaka-seek-bar-container.self-defined"
       ) as HTMLElement;
       seekbarContainer.style.background = `linear-gradient(to right, rgba(255, 255, 255, 0.4) ${
         first_point * 100

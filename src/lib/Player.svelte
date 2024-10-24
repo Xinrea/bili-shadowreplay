@@ -191,6 +191,7 @@
         danmaku.style.margin = "0";
         danmaku.style.padding = "0";
         danmaku.style.zIndex = "500";
+        danmaku.style.textShadow = "1px 1px 2px rgba(0, 0, 0, 0.6)";
         danmaku.innerText = event.payload;
         overlay.appendChild(danmaku);
         requestAnimationFrame(() => {

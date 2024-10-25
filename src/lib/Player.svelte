@@ -362,8 +362,8 @@
       <p><kbd>]</kbd>设定选区结束</p>
       <p><kbd>q</kbd>跳转到选区开始</p>
       <p><kbd>e</kbd>跳转到选区结束</p>
-      <p><kbd>Alt</kbd><kbd>←</kbd>前进</p>
-      <p><kbd>Alt</kbd><kbd>→</kbd>后退</p>
+      <p><kbd>←</kbd>前进</p>
+      <p><kbd>→</kbd>后退</p>
       <p><kbd>c</kbd>清除选区</p>
       <p><kbd>m</kbd>静音</p>
     </span>

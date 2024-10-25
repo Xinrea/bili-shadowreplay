@@ -167,14 +167,12 @@ impl BiliRecorder {
                             .title("BiliShadowReplay - 直播开始")
                             .body(format!("{} 开启了直播：{}",self.user_info.read().await.user_name, room_info.room_title)).show().unwrap();
                     }
-                } else {
-                    if self.config.read().await.live_end_notify {
-                        self.app_handle
-                            .notification()
-                            .builder()
-                            .title("BiliShadowReplay - 直播结束")
-                            .body(format!("{} 的直播结束了",self.user_info.read().await.user_name)).show().unwrap();
-                    }
+                } else if self.config.read().await.live_end_notify {
+                    self.app_handle
+                        .notification()
+                        .builder()
+                        .title("BiliShadowReplay - 直播结束")
+                        .body(format!("{} 的直播结束了",self.user_info.read().await.user_name)).show().unwrap();
                 }
             }
             // if stream is confirmed to be closed, live stream cache is cleaned.
@@ -608,12 +606,12 @@ impl BiliRecorder {
         }
         let mut offset = 0.0;
         for e in entry_copy.iter() {
-            if (offset as f64) < start {
+            if offset < start {
                 offset += 1.0;
                 continue;
             }
             to_combine.push(e);
-            if (offset as f64) >= end {
+            if offset >= end {
                 break;
             }
             offset += 1.0;

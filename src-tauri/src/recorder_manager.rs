@@ -126,7 +126,7 @@ impl RecorderManager {
         let cache_folder = format!(
             "{}/{}",
             self.config.read().await.cache,
-            room_id.to_string()
+            room_id
         );
         tokio::fs::remove_dir_all(cache_folder).await?;
         Ok(())

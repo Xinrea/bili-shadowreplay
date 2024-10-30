@@ -11,6 +11,11 @@
     TableBodyCell,
     Modal,
     ButtonGroup,
+    SpeedDial,
+    Listgroup,
+    ListgroupItem,
+    Textarea,
+    Hr,
   } from "flowbite-svelte";
   import Image from "./Image.svelte";
   import QRCode from "qrcode";
@@ -32,6 +37,9 @@
   let oauth_key = "";
   let check_interval = null;
 
+  let manualModal = false;
+  let cookie_str = "";
+
   async function handle_qr() {
     if (check_interval) {
       clearInterval(check_interval);
@@ -52,13 +60,27 @@
   async function check_qr() {
     let qr_status: { code: number; cookies: string } = await invoke(
       "get_qr_status",
-      { qrcodeKey: oauth_key }
+      { qrcodeKey: oauth_key },
     );
     if (qr_status.code == 0) {
       clearInterval(check_interval);
       await invoke("add_account", { cookies: qr_status.cookies });
       await update_accounts();
       addModal = false;
+    }
+  }
+
+  async function add_cookie() {
+    if (cookie_str == "") {
+      return;
+    }
+    try {
+      await invoke("add_account", { cookies: cookie_str });
+      await update_accounts();
+      cookie_str = "";
+      manualModal = false;
+    } catch (e) {
+      alert("Err adding cookie:" + e);
     }
   }
 </script>
@@ -116,16 +138,23 @@
   </Table>
 </div>
 
-<div class="fixed end-4 bottom-4">
-  <Button
-    pill={true}
-    class="!p-2"
-    on:click={() => {
-      addModal = true;
-      requestAnimationFrame(handle_qr);
-    }}><UserAddSolid class="w-8 h-8" /></Button
-  >
-</div>
+<SpeedDial defaultClass="absolute end-6 bottom-6" placement="top-end">
+  <Listgroup active>
+    <ListgroupItem
+      class="flex gap-2 md:px-5"
+      on:click={() => {
+        addModal = true;
+        requestAnimationFrame(handle_qr);
+      }}>扫码添加</ListgroupItem
+    >
+    <ListgroupItem
+      class="flex gap-2 md:px-5"
+      on:click={() => {
+        manualModal = true;
+      }}>手动添加</ListgroupItem
+    >
+  </Listgroup>
+</SpeedDial>
 
 <Modal
   title="请使用 BiliBili App 扫码登录"
@@ -135,5 +164,22 @@
 >
   <div class="flex justify-center items-center h-full">
     <canvas id="qr" />
+  </div>
+</Modal>
+
+<Modal
+  title="请粘贴 BiliBili 账号 Cookie"
+  bind:open={manualModal}
+  size="sm"
+  autoclose
+>
+  <div class="flex flex-col justify-center items-center h-full">
+    <Textarea bind:value={cookie_str} />
+    <Button
+      class="mt-4"
+      on:click={() => {
+        add_cookie();
+      }}>添加</Button
+    >
   </div>
 </Modal>

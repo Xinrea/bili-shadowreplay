@@ -570,7 +570,7 @@ impl BiliRecorder {
             y - x
         );
         log::info!("{}", file_name);
-        let args = format!("-i concat:{} -c:v libx264 -c:a aac", file_list);
+        let args = format!("-i concat:{} -c copy", file_list);
         FfmpegCommand::new()
             .args(args.split(' '))
             .output(file_name.clone())
@@ -644,7 +644,7 @@ impl BiliRecorder {
             end - start
         );
         log::info!("{}", file_name);
-        let args = format!("-i concat:{} -c:v libx264 -c:a aac", file_list);
+        let args = format!("-i concat:{} -c copy", file_list);
         FfmpegCommand::new()
             .args(args.split(' '))
             .output(file_name.clone())

@@ -26,7 +26,9 @@
       站直播流，并生成视频投稿的工具。
     </p>
     <p class="mt-4">
-      项目地址: <a href="https://github.com/Xinrea/bili-shadowreplay"
+      项目地址: <a
+        target="_blank"
+        href="https://github.com/Xinrea/bili-shadowreplay"
         >https://github.com/Xinrea/bili-shadowreplay</a
       >
     </p>

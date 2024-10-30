@@ -70,7 +70,6 @@ impl From<RecorderManagerError> for String {
 }
 
 impl RecorderManager {
-
     pub fn new(app_handle: AppHandle, config: Arc<RwLock<Config>>) -> RecorderManager {
         RecorderManager {
             app_handle,
@@ -123,11 +122,7 @@ impl RecorderManager {
             return Err(RecorderManagerError::NotFound { room_id });
         }
         // remove related cache folder
-        let cache_folder = format!(
-            "{}/{}",
-            self.config.read().await.cache,
-            room_id
-        );
+        let cache_folder = format!("{}/{}", self.config.read().await.cache, room_id);
         tokio::fs::remove_dir_all(cache_folder).await?;
         Ok(())
     }

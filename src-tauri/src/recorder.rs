@@ -12,10 +12,10 @@ use ffmpeg_sidecar::{
 use futures::future::join_all;
 use m3u8_rs::Playlist;
 use regex::Regex;
-use tauri_plugin_notification::NotificationExt;
 use std::sync::Arc;
 use std::thread;
 use tauri::{AppHandle, Emitter};
+use tauri_plugin_notification::NotificationExt;
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::sync::{Mutex, RwLock};
 
@@ -165,14 +165,25 @@ impl BiliRecorder {
                             .notification()
                             .builder()
                             .title("BiliShadowReplay - 直播开始")
-                            .body(format!("{} 开启了直播：{}",self.user_info.read().await.user_name, room_info.room_title)).show().unwrap();
+                            .body(format!(
+                                "{} 开启了直播：{}",
+                                self.user_info.read().await.user_name,
+                                room_info.room_title
+                            ))
+                            .show()
+                            .unwrap();
                     }
                 } else if self.config.read().await.live_end_notify {
                     self.app_handle
                         .notification()
                         .builder()
                         .title("BiliShadowReplay - 直播结束")
-                        .body(format!("{} 的直播结束了",self.user_info.read().await.user_name)).show().unwrap();
+                        .body(format!(
+                            "{} 的直播结束了",
+                            self.user_info.read().await.user_name
+                        ))
+                        .show()
+                        .unwrap();
                 }
             }
             // if stream is confirmed to be closed, live stream cache is cleaned.
@@ -360,7 +371,12 @@ impl BiliRecorder {
     async fn update_entries(&self) -> Result<(), RecorderError> {
         let parsed = self.get_playlist().await;
         let mut timestamp = *self.timestamp.read().await;
-        let mut work_dir = format!("{}/{}/{}/", self.config.read().await.cache, self.room_id, timestamp);
+        let mut work_dir = format!(
+            "{}/{}/{}/",
+            self.config.read().await.cache,
+            self.room_id,
+            timestamp
+        );
         // Check header if None
         if self.header.read().await.is_none() && *self.stream_type.read().await == StreamType::FMP4
         {
@@ -382,7 +398,12 @@ impl BiliRecorder {
                 )
                 .await?;
             // now work dir is confirmed
-            work_dir = format!("{}/{}/{}/", self.config.read().await.cache, self.room_id, timestamp);
+            work_dir = format!(
+                "{}/{}/{}/",
+                self.config.read().await.cache,
+                self.room_id,
+                timestamp
+            );
             // if folder is exisited, need to load previous data into cache
             if let Ok(meta) = fs::metadata(&work_dir).await {
                 if meta.is_dir() {
@@ -627,7 +648,10 @@ impl BiliRecorder {
             let file_name = e.url.split('/').last().unwrap();
             let file_path = format!(
                 "{}/{}/{}/{}",
-                self.config.read().await.cache, self.room_id, timestamp, file_name
+                self.config.read().await.cache,
+                self.room_id,
+                timestamp,
+                file_name
             );
             file_list += &file_path;
             file_list += "|";
@@ -679,7 +703,12 @@ impl BiliRecorder {
         let header_url = format!("/{}/{}/h{}.m4s", self.room_id, timestamp, timestamp);
         m3u8_content += &format!("#EXT-X-MAP:URI=\"{}\"\n", header_url);
         // add entries from read_dir
-        let work_dir = format!("{}/{}/{}", self.config.read().await.cache, self.room_id, timestamp);
+        let work_dir = format!(
+            "{}/{}/{}",
+            self.config.read().await.cache,
+            self.room_id,
+            timestamp
+        );
         let entries = self.get_fs_entries(&work_dir).await;
         if entries.is_empty() {
             return m3u8_content;

@@ -12,12 +12,13 @@ use recorder::bilibili::errors::BiliClientError;
 use recorder::bilibili::profile::Profile;
 use recorder::bilibili::{BiliClient, QrInfo, QrStatus};
 use recorder_manager::{RecorderInfo, RecorderList, RecorderManager};
-use tauri_plugin_notification::NotificationExt;
+use std::fs::File;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 use tauri::utils::config::WindowEffectsConfig;
 use tauri::{Manager, Theme, WindowEvent};
+use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_sql::{Migration, MigrationKind};
 use tokio::sync::RwLock;
 
@@ -366,7 +367,13 @@ async fn set_cache_path(state: tauri::State<'_, State>, cache_path: String) -> R
     std::thread::sleep(std::time::Duration::from_secs(2));
     // Copy old cache to new cache
     log::info!("Start copy old cache to new cache");
-    state.db.new_message("缓存目录切换", "缓存正在迁移中，根据数据量情况可能花费较长时间，在此期间流预览功能不可用").await?;
+    state
+        .db
+        .new_message(
+            "缓存目录切换",
+            "缓存正在迁移中，根据数据量情况可能花费较长时间，在此期间流预览功能不可用",
+        )
+        .await?;
     if let Err(e) = copy_dir_all(&old_cache_path, &cache_path) {
         log::error!("Copy old cache to new cache error: {}", e);
     }
@@ -382,7 +389,13 @@ async fn set_cache_path(state: tauri::State<'_, State>, cache_path: String) -> R
 }
 
 #[tauri::command]
-async fn update_notify(state: tauri::State<'_, State>, live_start_notify: bool, live_end_notify: bool, clip_notify: bool, post_notify: bool) -> Result<(), ()> {
+async fn update_notify(
+    state: tauri::State<'_, State>,
+    live_start_notify: bool,
+    live_end_notify: bool,
+    clip_notify: bool,
+    post_notify: bool,
+) -> Result<(), ()> {
     state.config.write().await.live_start_notify = live_start_notify;
     state.config.write().await.live_end_notify = live_end_notify;
     state.config.write().await.clip_notify = clip_notify;
@@ -472,7 +485,14 @@ async fn clip_range(
         )
         .await?;
     if state.config.read().await.clip_notify {
-        state.app_handle.notification().builder().title("BiliShadowReplay - 切片完成").body(format!("生成了房间 {} 的切片: {}", room_id, filename)).show().unwrap();
+        state
+            .app_handle
+            .notification()
+            .builder()
+            .title("BiliShadowReplay - 切片完成")
+            .body(format!("生成了房间 {} 的切片: {}", room_id, filename))
+            .show()
+            .unwrap();
     }
     Ok(video)
 }
@@ -519,7 +539,14 @@ async fn upload_procedure(
                 )
                 .await?;
             if state.config.read().await.post_notify {
-                state.app_handle.notification().builder().title("BiliShadowReplay - 投稿成功").body(format!("投稿了房间 {} 的切片: {}", room_id, ret.bvid)).show().unwrap();
+                state
+                    .app_handle
+                    .notification()
+                    .builder()
+                    .title("BiliShadowReplay - 投稿成功")
+                    .body(format!("投稿了房间 {} 的切片: {}", room_id, ret.bvid))
+                    .show()
+                    .unwrap();
             }
             Ok(ret.bvid)
         } else {
@@ -707,12 +734,19 @@ async fn delete_video(state: tauri::State<'_, State>, id: i64) -> Result<(), Str
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Setup log
-    simplelog::CombinedLogger::init(vec![simplelog::TermLogger::new(
-        simplelog::LevelFilter::Info,
-        simplelog::Config::default(),
-        simplelog::TerminalMode::Mixed,
-        simplelog::ColorChoice::Auto,
-    )])
+    simplelog::CombinedLogger::init(vec![
+        simplelog::TermLogger::new(
+            simplelog::LevelFilter::Info,
+            simplelog::Config::default(),
+            simplelog::TerminalMode::Mixed,
+            simplelog::ColorChoice::Auto,
+        ),
+        simplelog::WriteLogger::new(
+            simplelog::LevelFilter::Info,
+            simplelog::Config::default(),
+            File::create("bsr.log").unwrap(),
+        ),
+    ])
     .unwrap();
 
     // Setup ffmpeg
@@ -814,12 +848,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Ok(account) = account {
                     for room in initial_rooms {
                         if let Err(e) = recorder_manager_clone
-                            .add_recorder(
-                                &webid,
-                                &db_clone,
-                                &account,
-                                room.room_id,
-                            )
+                            .add_recorder(&webid, &db_clone, &account, room.room_id)
                             .await
                         {
                             log::error!("error when adding initial rooms: {}", e);

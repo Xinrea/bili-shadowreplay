@@ -171,22 +171,26 @@
     loading = true;
     let new_cover = generateCover();
     update_title(`切片生成中`);
-    let new_video = (await invoke("clip_range", {
-      roomId: room_id,
-      cover: new_cover,
-      ts: ts,
-      x: start,
-      y: end,
-    })) as VideoItem;
-    update_title(`切片生成成功`);
-    console.log("video file generatd:", video);
-    await get_video_list();
-    video_selected = new_video.id;
-    video = videos.find((v) => {
-      return v.value == new_video.id;
-    });
-    cover = new_video.cover;
-    loading = false;
+    try {
+      let new_video = (await invoke("clip_range", {
+        roomId: room_id,
+        cover: new_cover,
+        ts: ts,
+        x: start,
+        y: end,
+      })) as VideoItem;
+      update_title(`切片生成成功`);
+      console.log("video file generatd:", video);
+      await get_video_list();
+      video_selected = new_video.id;
+      video = videos.find((v) => {
+        return v.value == new_video.id;
+      });
+      cover = new_video.cover;
+      loading = false;
+    } catch (e) {
+      alert("Err generating clip: " + e);
+    }
   }
 
   async function do_post() {

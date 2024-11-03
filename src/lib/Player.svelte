@@ -3,12 +3,38 @@
   import { listen } from "@tauri-apps/api/event";
   import type { AccountInfo, AccountItem } from "./db";
 
+  interface DanmuEntry {
+    ts: number;
+    content: string;
+  }
+
   export let port;
   export let room_id;
   export let ts;
   export let start = 0;
   export let end = 0;
   let show_detail = false;
+  let global_offset = 0;
+
+  // TODO get custom tag from shaka player instead of manual parsing
+  async function meta_parse() {
+    fetch(`http://127.0.0.1:${port}/${room_id}/${ts}/playlist.m3u8`)
+      .then((response) => response.text())
+      .then((m3u8Content) => {
+        const offsetRegex = /#EXT-X-OFFSET:(\d+)/;
+        const match = m3u8Content.match(offsetRegex);
+
+        if (match && match[1]) {
+          global_offset = parseInt(match[1], 10);
+        } else {
+          console.warn("No #EXT-X-OFFSET found");
+        }
+      })
+      .catch((error) => {
+        console.error("Error fetching M3U8 file:", error);
+      });
+  }
+
   async function init() {
     const video = document.getElementById("video") as HTMLVideoElement;
     const ui = video["ui"];
@@ -26,9 +52,17 @@
     // Attach player and UI to the window to make it easy to access in the JS console.
     (window as any).player = player;
     (window as any).ui = ui;
+
+    player.addEventListener("ended", async () => {
+      location.reload();
+    });
+    player.addEventListener("manifestloaded", (event) => {
+      console.log("Manifest loaded:", event);
+    });
+
     try {
       await player.load(
-        `http://127.0.0.1:${port}/${room_id}/${ts}/playlist.m3u8`
+        `http://127.0.0.1:${port}/${room_id}/${ts}/playlist.m3u8`,
       );
       // This runs if the asynchronous load is successful.
       console.log("The video has now been loaded!");
@@ -39,15 +73,12 @@
         location.reload();
       }
     }
-    player.addEventListener("ended", async () => {
-      location.reload();
-    });
 
     document.getElementsByClassName("shaka-overflow-menu-button")[0].remove();
     document.getElementsByClassName("shaka-fullscreen-button")[0].remove();
     // add self-defined element in shaka-bottom-controls.shaka-no-propagation (second seekbar)
     const shakaBottomControls = document.querySelector(
-      ".shaka-bottom-controls.shaka-no-propagation"
+      ".shaka-bottom-controls.shaka-no-propagation",
     );
     const selfSeekbar = document.createElement("div");
     selfSeekbar.className = "shaka-seek-bar shaka-no-propagation";
@@ -65,6 +96,45 @@
 
     // add to shaka-spacer
     const shakaSpacer = document.querySelector(".shaka-spacer") as HTMLElement;
+
+    let danmu_enabled = true;
+    // get danmaku record
+    let danmu_records: DanmuEntry[] = (await invoke("get_danmu_record", {
+      roomId: room_id,
+      ts: ts,
+    })) as DanmuEntry[];
+
+    console.log("danmu loaded:", danmu_records.length);
+
+    // history danmaku sender
+    setInterval(() => {
+      const cur = player.getPlayheadTimeAsDate();
+      console.log(cur.toString());
+      if (video.paused) {
+        return;
+      }
+      if (danmu_records.length == 0) {
+        return;
+      }
+      // using live source
+      if (isLive() && get_total() - video.currentTime <= 5) {
+        return;
+      }
+      if (!isLive()) {
+        const cur = (video.currentTime + global_offset / 1000 + ts) * 1000;
+        console.log(new Date(ts * 1000 + global_offset).toString());
+        console.log(video.currentTime, new Date(cur).toString());
+        let danmus = danmu_records.filter(
+          (v) => v.ts >= cur - 1000 && v.ts < cur,
+        );
+        danmus.forEach((v) => danmu_handler(v.content));
+      } else {
+        let danmus = danmu_records.filter(
+          (v) => v.ts >= cur - 1000 && v.ts < cur,
+        );
+        danmus.forEach((v) => danmu_handler(v.content));
+      }
+    }, 1000);
 
     if (isLive()) {
       // add a account select
@@ -115,97 +185,103 @@
         }
       });
 
-      let danmu_enabled = true;
-      // create a danmaku toggle button
-      const danmakuToggle = document.createElement("button");
-      danmakuToggle.innerText = "弹幕已开启";
-      danmakuToggle.style.height = "30px";
-      danmakuToggle.style.backgroundColor = "rgba(0, 128, 255, 0.5)";
-      danmakuToggle.style.color = "white";
-      danmakuToggle.style.border = "1px solid gray";
-      danmakuToggle.style.padding = "0 10px";
-      danmakuToggle.style.boxSizing = "border-box";
-      danmakuToggle.style.fontSize = "1em";
-      danmakuToggle.addEventListener("click", async () => {
-        danmu_enabled = !danmu_enabled;
-        danmakuToggle.innerText = danmu_enabled ? "弹幕已开启" : "弹幕已关闭";
-        // clear background color
-        danmakuToggle.style.backgroundColor = danmu_enabled
-          ? "rgba(0, 128, 255, 0.5)"
-          : "rgba(255, 0, 0, 0.5)";
-      });
-
-      // create a area that overlay half top of the video, which shows danmakus floating from right to left
-      const overlay = document.createElement("div");
-      overlay.style.width = "100%";
-      overlay.style.height = "100%";
-      overlay.style.position = "absolute";
-      overlay.style.top = "0";
-      overlay.style.left = "0";
-      overlay.style.pointerEvents = "none";
-      overlay.style.zIndex = "30";
-      overlay.style.display = "flex";
-      overlay.style.alignItems = "center";
-      overlay.style.flexDirection = "column";
-      overlay.style.paddingTop = "10%";
-      // place overlay to the top of the video
-      video.parentElement.appendChild(overlay);
-
-      // Store the positions of the last few danmakus to avoid overlap
-      const danmakuPositions = [];
+      shakaSpacer.appendChild(accountSelect);
+      shakaSpacer.appendChild(danmakuInput);
 
       // listen to danmaku event
-      listen("danmu:" + room_id, (event: { payload: string }) => {
+      listen("danmu:" + room_id, (event: { payload: DanmuEntry }) => {
+        // add into records
+        danmu_records.push(event.payload);
         // if not enabled or playback is not keep up with live, ignore the danmaku
         if (!danmu_enabled || get_total() - video.currentTime > 5) {
           return;
         }
-        const danmaku = document.createElement("p");
-        danmaku.style.position = "absolute";
-
-        // Calculate a random position for the danmaku
-        let topPosition;
-        let attempts = 0;
-        do {
-          topPosition = Math.random() * 30;
-          attempts++;
-        } while (
-          danmakuPositions.some((pos) => Math.abs(pos - topPosition) < 5) &&
-          attempts < 10
-        );
-
-        // Record the position
-        danmakuPositions.push(topPosition);
-        if (danmakuPositions.length > 10) {
-          danmakuPositions.shift(); // Keep the last 10 positions
-        }
-
-        danmaku.style.top = `${topPosition}%`;
-        danmaku.style.right = "0";
-        danmaku.style.color = "white";
-        danmaku.style.fontSize = "1.2em";
-        danmaku.style.whiteSpace = "nowrap";
-        danmaku.style.transform = "translateX(100%)";
-        danmaku.style.transition = "transform 10s linear";
-        danmaku.style.pointerEvents = "none";
-        danmaku.style.margin = "0";
-        danmaku.style.padding = "0";
-        danmaku.style.zIndex = "500";
-        danmaku.style.textShadow = "1px 1px 2px rgba(0, 0, 0, 0.6)";
-        danmaku.innerText = event.payload;
-        overlay.appendChild(danmaku);
-        requestAnimationFrame(() => {
-          danmaku.style.transform = `translateX(-${overlay.clientWidth + danmaku.clientWidth}px)`;
-        });
-        danmaku.addEventListener("transitionend", () => {
-          overlay.removeChild(danmaku);
-        });
+        danmu_handler(event.payload.content);
       });
-
-      shakaSpacer.appendChild(accountSelect);
-      shakaSpacer.appendChild(danmakuInput);
-      shakaSpacer.appendChild(danmakuToggle);
     }
+
+    // create a danmaku toggle button
+    const danmakuToggle = document.createElement("button");
+    danmakuToggle.innerText = "弹幕已开启";
+    danmakuToggle.style.height = "30px";
+    danmakuToggle.style.backgroundColor = "rgba(0, 128, 255, 0.5)";
+    danmakuToggle.style.color = "white";
+    danmakuToggle.style.border = "1px solid gray";
+    danmakuToggle.style.padding = "0 10px";
+    danmakuToggle.style.boxSizing = "border-box";
+    danmakuToggle.style.fontSize = "1em";
+    danmakuToggle.addEventListener("click", async () => {
+      danmu_enabled = !danmu_enabled;
+      danmakuToggle.innerText = danmu_enabled ? "弹幕已开启" : "弹幕已关闭";
+      // clear background color
+      danmakuToggle.style.backgroundColor = danmu_enabled
+        ? "rgba(0, 128, 255, 0.5)"
+        : "rgba(255, 0, 0, 0.5)";
+    });
+
+    // create a area that overlay half top of the video, which shows danmakus floating from right to left
+    const overlay = document.createElement("div");
+    overlay.style.width = "100%";
+    overlay.style.height = "100%";
+    overlay.style.position = "absolute";
+    overlay.style.top = "0";
+    overlay.style.left = "0";
+    overlay.style.pointerEvents = "none";
+    overlay.style.zIndex = "30";
+    overlay.style.display = "flex";
+    overlay.style.alignItems = "center";
+    overlay.style.flexDirection = "column";
+    overlay.style.paddingTop = "10%";
+    // place overlay to the top of the video
+    video.parentElement.appendChild(overlay);
+
+    // Store the positions of the last few danmakus to avoid overlap
+    const danmakuPositions = [];
+
+    function danmu_handler(content: string) {
+      const danmaku = document.createElement("p");
+      danmaku.style.position = "absolute";
+
+      // Calculate a random position for the danmaku
+      let topPosition;
+      let attempts = 0;
+      do {
+        topPosition = Math.random() * 30;
+        attempts++;
+      } while (
+        danmakuPositions.some((pos) => Math.abs(pos - topPosition) < 5) &&
+        attempts < 10
+      );
+
+      // Record the position
+      danmakuPositions.push(topPosition);
+      if (danmakuPositions.length > 10) {
+        danmakuPositions.shift(); // Keep the last 10 positions
+      }
+
+      danmaku.style.top = `${topPosition}%`;
+      danmaku.style.right = "0";
+      danmaku.style.color = "white";
+      danmaku.style.fontSize = "1.2em";
+      danmaku.style.whiteSpace = "nowrap";
+      danmaku.style.transform = "translateX(100%)";
+      danmaku.style.transition = "transform 10s linear";
+      danmaku.style.pointerEvents = "none";
+      danmaku.style.margin = "0";
+      danmaku.style.padding = "0";
+      danmaku.style.zIndex = "500";
+      danmaku.style.textShadow = "1px 1px 2px rgba(0, 0, 0, 0.6)";
+      danmaku.innerText = content;
+      overlay.appendChild(danmaku);
+      requestAnimationFrame(() => {
+        danmaku.style.transform = `translateX(-${overlay.clientWidth + danmaku.clientWidth}px)`;
+      });
+      danmaku.addEventListener("transitionend", () => {
+        overlay.removeChild(danmaku);
+      });
+    }
+
+    shakaSpacer.appendChild(danmakuToggle);
 
     // create a playback rate select to of shaka-spacer
     const playbackRateSelect = document.createElement("select");
@@ -317,7 +393,7 @@
       const second_point = end / total;
       // set background color for self-defined seekbar between first_point and second_point using linear-gradient
       const seekbarContainer = selfSeekbar.querySelector(
-        ".shaka-seek-bar-container.self-defined"
+        ".shaka-seek-bar-container.self-defined",
       ) as HTMLElement;
       seekbarContainer.style.background = `linear-gradient(to right, rgba(255, 255, 255, 0.4) ${
         first_point * 100
@@ -332,6 +408,9 @@
     }
     requestAnimationFrame(updateSeekbar);
   }
+
+  meta_parse();
+
   // receive tauri emit
   document.addEventListener("shaka-ui-loaded", init);
 

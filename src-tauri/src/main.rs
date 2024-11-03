@@ -11,6 +11,7 @@ use db::{AccountRow, Database, MessageRow, RecordRow, VideoRow};
 use recorder::bilibili::errors::BiliClientError;
 use recorder::bilibili::profile::Profile;
 use recorder::bilibili::{BiliClient, QrInfo, QrStatus};
+use recorder::danmu::DanmuEntry;
 use recorder_manager::{RecorderInfo, RecorderList, RecorderManager};
 use std::fs::File;
 use std::path::Path;
@@ -619,6 +620,15 @@ async fn send_danmaku(
     Ok(())
 }
 
+#[tauri::command]
+async fn get_danmu_record(
+    state: tauri::State<'_, State>,
+    room_id: u64,
+    ts: u64,
+) -> Result<Vec<DanmuEntry>, String> {
+    Ok(state.recorder_manager.get_danmu(room_id, ts).await?)
+}
+
 #[derive(serde::Serialize)]
 struct AccountInfo {
     pub primary_uid: u64,
@@ -908,6 +918,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             get_disk_info,
             send_danmaku,
             update_notify,
+            get_danmu_record,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

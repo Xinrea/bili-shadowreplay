@@ -1,9 +1,12 @@
 pub mod bilibili;
+pub mod danmu;
 use async_std::{fs, stream::StreamExt};
 use bilibili::{errors::BiliClientError, RoomInfo};
 use bilibili::{BiliClient, UserInfo};
 use chrono::prelude::*;
 use custom_error::custom_error;
+use danmu::{DanmuEntry, DanmuStorage};
+use dashmap::DashMap;
 use felgens::{ws_socket_object, FelgensError, WsStreamMessageType};
 use ffmpeg_sidecar::{
     command::FfmpegCommand,
@@ -25,6 +28,7 @@ use crate::Config;
 #[derive(Clone)]
 pub struct TsEntry {
     pub url: String,
+    pub offset: u64,
     pub sequence: u64,
     pub _length: f64,
     pub size: u64,
@@ -55,6 +59,8 @@ pub struct BiliRecorder {
     header: Arc<RwLock<Option<TsEntry>>>,
     stream_type: Arc<RwLock<StreamType>>,
     cache_size: Arc<RwLock<u64>>,
+    danmu_storage: Arc<RwLock<Option<DanmuStorage>>>,
+    m3u8_cache: DashMap<u64, String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -133,6 +139,8 @@ impl BiliRecorder {
             header: Arc::new(RwLock::new(None)),
             stream_type: Arc::new(RwLock::new(stream_type)),
             cache_size: Arc::new(RwLock::new(0)),
+            danmu_storage: Arc::new(RwLock::new(None)),
+            m3u8_cache: DashMap::new(),
         };
         log::info!("Recorder for room {} created.", room_id);
         Ok(recorder)
@@ -144,6 +152,7 @@ impl BiliRecorder {
         self.ts_entries.lock().await.clear();
         *self.header.write().await = None;
         *self.timestamp.write().await = 0;
+        *self.danmu_storage.write().await = None;
     }
 
     async fn check_status(&self) -> bool {
@@ -282,8 +291,20 @@ impl BiliRecorder {
         while let Some(msg) = rx.recv().await {
             if let WsStreamMessageType::DanmuMsg(msg) = msg {
                 self.app_handle
-                    .emit(&format!("danmu:{}", room), msg.msg.clone())
+                    .emit(
+                        &format!("danmu:{}", room),
+                        DanmuEntry {
+                            ts: msg.timestamp,
+                            content: msg.msg.clone(),
+                        },
+                    )
                     .unwrap();
+                if *self.live_status.read().await {
+                    // save danmu
+                    if let Some(storage) = self.danmu_storage.write().await.as_ref() {
+                        storage.add_line(msg.timestamp, &msg.msg).await;
+                    }
+                }
             }
         }
         Ok(())
@@ -417,9 +438,16 @@ impl BiliRecorder {
                 // make sure work_dir is created
                 fs::create_dir_all(&work_dir).await.unwrap();
             }
+            // danmau file
+            let danmu_file_path = format!("{}{}", work_dir, "danmu.txt");
+            self.danmu_storage
+                .write()
+                .await
+                .replace(DanmuStorage::new(&danmu_file_path).await);
             let full_header_url = self.ts_url(&header_url).await?;
             let mut header = TsEntry {
                 url: full_header_url.clone(),
+                offset: 0,
                 sequence: 0,
                 _length: 0.0,
                 size: 0,
@@ -454,27 +482,42 @@ impl BiliRecorder {
                         sequence += 1;
                         continue;
                     }
-                    let mut ts_entry = TsEntry {
-                        url: ts.uri,
+                    let mut seg_offset: u64 = 0;
+                    for tag in ts.unknown_tags {
+                        if tag.tag == "BILI-AUX" {
+                            if let Some(rest) = tag.rest {
+                                let parts: Vec<&str> = rest.split('|').collect();
+                                if parts.len() == 0 {
+                                    continue;
+                                }
+                                let offset_hex = parts.get(0).unwrap();
+                                seg_offset = u64::from_str_radix(offset_hex, 16).unwrap();
+                            }
+                            break;
+                        }
+                    }
+                    let ts_url = self.ts_url(&ts.uri).await?;
+                    if ts_url.is_empty() {
+                        continue;
+                    }
+                    // encode segment offset into filename
+                    let file_name = format!("{}|{}", seg_offset, ts_url.split('/').last().unwrap());
+                    let ts_entry = TsEntry {
+                        url: file_name.clone(),
+                        offset: seg_offset,
                         sequence,
                         _length: ts.duration as f64,
                         size: 0,
                     };
                     let client = self.client.clone();
-                    let ts_url = self.ts_url(&ts_entry.url).await?;
-                    ts_entry.url = ts_url.clone();
-                    if ts_url.is_empty() {
-                        continue;
-                    }
                     let work_dir = work_dir.clone();
                     let cache_size_clone = self.cache_size.clone();
                     handles.push(tokio::task::spawn(async move {
-                        let ts_url_clone = ts_url.clone();
-                        let file_name = ts_url_clone.split('/').last().unwrap();
+                        let file_name_clone = file_name.clone();
                         match client
                             .read()
                             .await
-                            .download_ts(&ts_url, &format!("{}/{}", work_dir, file_name))
+                            .download_ts(&ts_url, &format!("{}/{}", work_dir, file_name_clone))
                             .await
                         {
                             Ok(size) => {
@@ -694,6 +737,9 @@ impl BiliRecorder {
     }
 
     async fn generate_archive_m3u8(&self, timestamp: u64) -> String {
+        if self.m3u8_cache.contains_key(&timestamp) {
+            return self.m3u8_cache.get(&timestamp).unwrap().clone();
+        }
         let mut m3u8_content = "#EXTM3U\n".to_string();
         m3u8_content += "#EXT-X-VERSION:6\n";
         m3u8_content += "#EXT-X-TARGETDURATION:1\n";
@@ -714,6 +760,8 @@ impl BiliRecorder {
             return m3u8_content;
         }
         let mut last_sequence = entries.first().unwrap().sequence;
+        let first_offset = entries.first().unwrap().offset;
+        m3u8_content += &format!("#EXT-X-OFFSET:{}\n", first_offset);
         for e in entries {
             let current_seq = e.sequence;
             if current_seq - last_sequence > 1 {
@@ -724,6 +772,8 @@ impl BiliRecorder {
             m3u8_content += &format!("/{}/{}/{}\n", self.room_id, timestamp, e.url);
         }
         m3u8_content += "#EXT-X-ENDLIST";
+        // cache this
+        self.m3u8_cache.insert(timestamp, m3u8_content.clone());
         m3u8_content
     }
 
@@ -748,13 +798,34 @@ impl BiliRecorder {
             if !etype.is_file() {
                 continue;
             }
+            if let Some(file_ext) = e.path().extension() {
+                let file_ext = file_ext.to_str().unwrap().to_string();
+                // need to exclude other files, such as danmu file
+                if file_ext != "m4s" {
+                    continue;
+                }
+            } else {
+                continue;
+            }
             let file_name = e.file_name().to_str().unwrap().to_string();
             if file_name.starts_with("h") {
                 continue;
             }
+            let meta_info = file_name.split('.').next().unwrap();
+            let infos: Vec<&str> = meta_info.split('|').collect();
+            let mut offset: u64 = 0;
+            let sequence: u64;
+            // for previous verison created legacy file
+            if infos.len() == 1 {
+                sequence = infos.get(0).unwrap().parse().unwrap();
+            } else {
+                offset = infos.get(0).unwrap().parse().unwrap();
+                sequence = infos.get(1).unwrap().parse().unwrap();
+            }
             ret.push(TsEntry {
                 url: file_name.clone(),
-                sequence: file_name.split('.').next().unwrap().parse().unwrap(),
+                offset,
+                sequence,
                 _length: 1.0,
                 size: e.metadata().await.unwrap().len(),
             });
@@ -784,9 +855,12 @@ impl BiliRecorder {
         }
         let entries = self.ts_entries.lock().await.clone();
         if entries.is_empty() {
+            m3u8_content += "#EXT-X-OFFSET:0\n";
             return m3u8_content;
         }
         let mut last_sequence = entries.first().unwrap().sequence;
+        let first_offset = entries.first().unwrap().offset;
+        m3u8_content += &format!("#EXT-X-OFFSET:{}\n", first_offset);
         for entry in entries.iter() {
             if entry.sequence - last_sequence > 1 {
                 // discontinuity happens
@@ -803,5 +877,30 @@ impl BiliRecorder {
             m3u8_content += "#EXT-X-ENDLIST";
         }
         m3u8_content
+    }
+
+    pub async fn get_danmu_record(&self, ts: u64) -> Vec<DanmuEntry> {
+        if ts == *self.timestamp.read().await {
+            // just return current cache content
+            match self.danmu_storage.read().await.as_ref() {
+                Some(storage) => {
+                    return storage.get_entries().await;
+                }
+                None => {
+                    return Vec::new();
+                }
+            }
+        } else {
+            // load disk cache
+            let cache_file_path = format!(
+                "{}/{}/{}/{}",
+                self.config.read().await.cache,
+                self.room_id,
+                ts,
+                "danmu.txt"
+            );
+            let storage = DanmuStorage::new(&cache_file_path).await;
+            return storage.get_entries().await;
+        }
     }
 }

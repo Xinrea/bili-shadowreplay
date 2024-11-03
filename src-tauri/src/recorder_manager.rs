@@ -1,5 +1,6 @@
 use crate::db::{AccountRow, Database, RecordRow};
 use crate::recorder::bilibili::UserInfo;
+use crate::recorder::danmu::DanmuEntry;
 use crate::recorder::RecorderError;
 use crate::recorder::{bilibili::RoomInfo, BiliRecorder};
 use crate::Config;
@@ -226,6 +227,18 @@ impl RecorderManager {
         }
     }
 
+    pub async fn get_danmu(
+        &self,
+        room_id: u64,
+        live_id: u64,
+    ) -> Result<Vec<DanmuEntry>, RecorderManagerError> {
+        if let Some(recorder) = self.recorders.get(&room_id) {
+            Ok(recorder.get_danmu_record(live_id).await)
+        } else {
+            Err(RecorderManagerError::NotFound { room_id })
+        }
+    }
+
     async fn start_hls_server(
         &self,
         listener: TcpListener,
@@ -282,7 +295,7 @@ impl RecorderManager {
                         } else {
                             // try to find requested ts file in recorder's cache
                             // cache files are stored in {cache_dir}/{room_id}/{timestamp}/{ts_file}
-                            let ts_file = format!("{}/{}", cache_path, path);
+                            let ts_file = format!("{}/{}", cache_path, path.replace("%7C", "|"));
                             let recorder = recorders.get(&room_id);
                             if recorder.is_none() {
                                 return Ok::<_, Infallible>(

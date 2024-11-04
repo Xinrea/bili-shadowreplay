@@ -20,7 +20,8 @@ pub struct DanmuStorage {
 impl DanmuStorage {
     pub async fn new(file_path: &str) -> DanmuStorage {
         let file = OpenOptions::new()
-            .append(true)
+            .read(true)
+            .write(true)
             .create(true)
             .open(file_path)
             .await

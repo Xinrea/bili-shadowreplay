@@ -30,7 +30,7 @@ pub struct TsEntry {
     pub url: String,
     pub offset: u64,
     pub sequence: u64,
-    pub _length: f64,
+    pub length: f64,
     pub size: u64,
 }
 
@@ -449,7 +449,7 @@ impl BiliRecorder {
                 url: full_header_url.clone(),
                 offset: 0,
                 sequence: 0,
-                _length: 0.0,
+                length: 0.0,
                 size: 0,
             };
             let file_name = header_url.split('/').last().unwrap();
@@ -506,7 +506,7 @@ impl BiliRecorder {
                         url: file_name.clone(),
                         offset: seg_offset,
                         sequence,
-                        _length: ts.duration as f64,
+                        length: ts.duration as f64,
                         size: 0,
                     };
                     let client = self.client.clone();
@@ -759,17 +759,26 @@ impl BiliRecorder {
         if entries.is_empty() {
             return m3u8_content;
         }
+        let first_sequence = entries.first().unwrap().sequence;
         let mut last_sequence = entries.first().unwrap().sequence;
-        let first_offset = entries.first().unwrap().offset;
-        m3u8_content += &format!("#EXT-X-OFFSET:{}\n", first_offset);
+        let mut last_offset = entries.first().unwrap().offset;
+        m3u8_content += &format!("#EXT-X-OFFSET:{}\n", last_offset);
         for e in entries {
             let current_seq = e.sequence;
             if current_seq - last_sequence > 1 {
                 m3u8_content += "#EXT-X-DISCONTINUITY\n"
             }
-            last_sequence = current_seq;
-            m3u8_content += "#EXTINF:1,\n";
+            // calculate duration by offset
+            if current_seq == first_sequence {
+                m3u8_content += "#EXTINF:1,\n";
+            } else {
+                m3u8_content +=
+                    &format!("#EXTINF:{:.2},\n", (e.offset - last_offset) as f64 / 1000.0);
+            }
             m3u8_content += &format!("/{}/{}/{}\n", self.room_id, timestamp, e.url);
+
+            last_sequence = current_seq;
+            last_offset = e.offset;
         }
         m3u8_content += "#EXT-X-ENDLIST";
         // cache this
@@ -826,7 +835,7 @@ impl BiliRecorder {
                 url: file_name.clone(),
                 offset,
                 sequence,
-                _length: 1.0,
+                length: 1.0,
                 size: e.metadata().await.unwrap().len(),
             });
         }
@@ -859,15 +868,23 @@ impl BiliRecorder {
             return m3u8_content;
         }
         let mut last_sequence = entries.first().unwrap().sequence;
-        let first_offset = entries.first().unwrap().offset;
-        m3u8_content += &format!("#EXT-X-OFFSET:{}\n", first_offset);
+        let mut last_offset = entries.first().unwrap().offset;
+        m3u8_content += &format!("#EXT-X-OFFSET:{}\n", last_offset);
         for entry in entries.iter() {
             if entry.sequence - last_sequence > 1 {
                 // discontinuity happens
                 m3u8_content += "#EXT-X-DISCONTINUITY\n"
             }
+            if entry.sequence == last_sequence {
+                m3u8_content += "#EXTINF:1,\n";
+            } else {
+                m3u8_content += &format!(
+                    "#EXTINF:{:.2},\n",
+                    (entry.offset - last_offset) as f64 / 1000.0
+                );
+            }
             last_sequence = entry.sequence;
-            m3u8_content += "#EXTINF:1,\n";
+            last_offset = entry.offset;
             let file_name = entry.url.split('/').last().unwrap();
             let local_url = format!("/{}/{}/{}", self.room_id, timestamp, file_name);
             m3u8_content += &format!("{}\n", local_url);
@@ -899,6 +916,7 @@ impl BiliRecorder {
                 ts,
                 "danmu.txt"
             );
+            log::info!("loading danmu cache from {}", cache_file_path);
             let storage = DanmuStorage::new(&cache_file_path).await;
             return storage.get_entries().await;
         }

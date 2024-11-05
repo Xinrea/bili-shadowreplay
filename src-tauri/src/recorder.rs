@@ -501,12 +501,19 @@ impl BiliRecorder {
                         continue;
                     }
                     // encode segment offset into filename
+                    let mut entries = self.ts_entries.lock().await;
                     let file_name = format!("{}|{}", seg_offset, ts_url.split('/').last().unwrap());
+                    let mut ts_length = 1.0;
+                    // calculate entry length using offset
+                    // the default #EXTINF is 1.0, which is not accurate
+                    if !entries.is_empty() {
+                        ts_length = (seg_offset - entries.last().unwrap().offset) as f64 / 1000.0;
+                    }
                     let ts_entry = TsEntry {
                         url: file_name.clone(),
                         offset: seg_offset,
                         sequence,
-                        length: ts.duration as f64,
+                        length: ts_length,
                         size: 0,
                     };
                     let client = self.client.clone();
@@ -528,7 +535,6 @@ impl BiliRecorder {
                             }
                         }
                     }));
-                    let mut entries = self.ts_entries.lock().await;
                     entries.push(ts_entry);
                     *self.last_sequence.write().await = sequence;
                     let mut total_length = self.ts_length.write().await;
@@ -759,26 +765,17 @@ impl BiliRecorder {
         if entries.is_empty() {
             return m3u8_content;
         }
-        let first_sequence = entries.first().unwrap().sequence;
         let mut last_sequence = entries.first().unwrap().sequence;
-        let mut last_offset = entries.first().unwrap().offset;
-        m3u8_content += &format!("#EXT-X-OFFSET:{}\n", last_offset);
+        m3u8_content += &format!("#EXT-X-OFFSET:{}\n", entries.first().unwrap().offset);
         for e in entries {
             let current_seq = e.sequence;
             if current_seq - last_sequence > 1 {
                 m3u8_content += "#EXT-X-DISCONTINUITY\n"
             }
-            // calculate duration by offset
-            if current_seq == first_sequence {
-                m3u8_content += "#EXTINF:1,\n";
-            } else {
-                m3u8_content +=
-                    &format!("#EXTINF:{:.2},\n", (e.offset - last_offset) as f64 / 1000.0);
-            }
+            m3u8_content += &format!("#EXTINF:{:.2},\n", e.length);
             m3u8_content += &format!("/{}/{}/{}\n", self.room_id, timestamp, e.url);
 
             last_sequence = current_seq;
-            last_offset = e.offset;
         }
         m3u8_content += "#EXT-X-ENDLIST";
         // cache this
@@ -840,6 +837,17 @@ impl BiliRecorder {
             });
         }
         ret.sort_by(|a, b| a.sequence.cmp(&b.sequence));
+        if ret.is_empty() {
+            return ret;
+        }
+        let mut last_offset = ret.first().unwrap().offset;
+        for (i, entry) in ret.iter_mut().enumerate() {
+            if i == 0 {
+                continue;
+            }
+            entry.length = (entry.offset - last_offset) as f64 / 1000.0;
+            last_offset = entry.offset;
+        }
         ret
     }
 
@@ -868,23 +876,14 @@ impl BiliRecorder {
             return m3u8_content;
         }
         let mut last_sequence = entries.first().unwrap().sequence;
-        let mut last_offset = entries.first().unwrap().offset;
-        m3u8_content += &format!("#EXT-X-OFFSET:{}\n", last_offset);
+        m3u8_content += &format!("#EXT-X-OFFSET:{}\n", entries.first().unwrap().offset);
         for entry in entries.iter() {
             if entry.sequence - last_sequence > 1 {
                 // discontinuity happens
                 m3u8_content += "#EXT-X-DISCONTINUITY\n"
             }
-            if entry.sequence == last_sequence {
-                m3u8_content += "#EXTINF:1,\n";
-            } else {
-                m3u8_content += &format!(
-                    "#EXTINF:{:.2},\n",
-                    (entry.offset - last_offset) as f64 / 1000.0
-                );
-            }
+            m3u8_content += &format!("#EXTINF:{:.2},\n", entry.length,);
             last_sequence = entry.sequence;
-            last_offset = entry.offset;
             let file_name = entry.url.split('/').last().unwrap();
             let local_url = format!("/{}/{}/{}", self.room_id, timestamp, file_name);
             m3u8_content += &format!("{}\n", local_url);

@@ -543,7 +543,7 @@ impl BiliRecorder {
                 }
                 join_all(handles).await.into_iter().for_each(|e| {
                     if let Err(e) = e {
-                        log::error!("download ts failed: {:?}", e);
+                        log::error!("Download ts failed: {:?}", e);
                     }
                 });
                 // currently we take every segement's length as 1.0s.
@@ -603,7 +603,7 @@ impl BiliRecorder {
         y: f64,
         output_path: &str,
     ) -> Result<String, RecorderError> {
-        log::info!("create archive clip for range [{}, {}]", x, y);
+        log::info!("Create archive clip for range [{}, {}]", x, y);
         let work_dir = format!("{}/{}/{}", self.config.read().await.cache, self.room_id, ts);
         let entries = self.get_fs_entries(&work_dir).await;
         if entries.is_empty() {
@@ -614,19 +614,20 @@ impl BiliRecorder {
         file_list += &format!("{}/h{}.m4s", work_dir, ts);
         file_list += "|";
         // add body entries
-        let mut offset = 0.0;
+        // seconds to ms
+        let begin = (x * 1000.0) as u64;
+        let end = (y * 1000.0) as u64;
+        let offset = entries.first().unwrap().offset;
         if !entries.is_empty() {
             for e in entries {
-                if offset < x {
-                    offset += e.length;
+                if e.offset - offset < begin {
                     continue;
                 }
                 file_list += &format!("{}/{}", work_dir, e.url);
                 file_list += "|";
-                if offset > y {
+                if e.offset - offset > end {
                     break;
                 }
-                offset += e.length;
             }
         }
 
@@ -662,29 +663,25 @@ impl BiliRecorder {
         y: f64,
         output_path: &str,
     ) -> Result<String, RecorderError> {
-        log::info!("create live clip for range [{}, {}]", x, y);
+        log::info!("Create live clip for range [{}, {}]", x, y);
         let mut to_combine = Vec::new();
         let header_copy = self.header.read().await.clone();
         let entry_copy = self.ts_entries.lock().await.clone();
         if entry_copy.is_empty() {
             return Err(RecorderError::EmptyCache);
         }
-        let mut start = x;
-        let mut end = y;
-        if start > end {
-            std::mem::swap(&mut start, &mut end);
-        }
-        let mut offset = 0.0;
+        let begin = (x * 1000.0) as u64;
+        let end = (y * 1000.0) as u64;
+        let offset = entry_copy.first().unwrap().offset;
+        // TODO using binary search
         for e in entry_copy.iter() {
-            if offset < start {
-                offset += e.length;
+            if e.offset - offset < begin {
                 continue;
             }
             to_combine.push(e);
-            if offset >= end {
+            if e.offset - offset > end {
                 break;
             }
-            offset += e.length;
         }
         if *self.stream_type.read().await == StreamType::FMP4 {
             // add header to vec
@@ -714,7 +711,7 @@ impl BiliRecorder {
             self.room_id,
             title,
             Utc::now().format("%m%d%H%M%S"),
-            end - start
+            y - x
         );
         log::info!("{}", file_name);
         let args = format!("-i concat:{} -c copy", file_list);

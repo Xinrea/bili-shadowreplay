@@ -6,6 +6,7 @@ use crate::recorder::{bilibili::RoomInfo, BiliRecorder};
 use crate::Config;
 use custom_error::custom_error;
 use dashmap::DashMap;
+use hyper::Method;
 use hyper::{
     service::{make_service_fn, service_fn},
     Body, Request, Response, Server,
@@ -253,6 +254,18 @@ impl RecorderManager {
                     let recorders = recorders.clone();
                     let config = config.clone();
                     async move {
+                        // handle cors preflight request
+                        if req.method() == Method::OPTIONS {
+                            return Ok::<_, Infallible>(
+                                Response::builder()
+                                    .status(200)
+                                    .header("Access-Control-Allow-Origin", "*")
+                                    .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                                    .header("Access-Control-Allow-Headers", "Content-Type")
+                                    .body(Body::empty())
+                                    .unwrap(),
+                            );
+                        }
                         let cache_path = config.read().await.cache.clone();
                         let path = req.uri().path();
                         let path_segs: Vec<&str> = path.split('/').collect();

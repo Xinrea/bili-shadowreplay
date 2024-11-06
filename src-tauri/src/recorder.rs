@@ -772,6 +772,10 @@ impl BiliRecorder {
             if current_seq - last_sequence > 1 {
                 m3u8_content += "#EXT-X-DISCONTINUITY\n"
             }
+            // add #EXT-X-PROGRAM-DATE-TIME with ISO 8601 date
+            let ts = timestamp + e.offset / 1000;
+            let date_str = Utc.timestamp_opt(ts as i64, 0).unwrap().to_rfc3339();
+            m3u8_content += &format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", date_str);
             m3u8_content += &format!("#EXTINF:{:.2},\n", e.length);
             m3u8_content += &format!("/{}/{}/{}\n", self.room_id, timestamp, e.url);
 
@@ -817,7 +821,7 @@ impl BiliRecorder {
             if file_name.starts_with("h") {
                 continue;
             }
-            let meta_info = file_name.split('.').next().unwrap();
+            let meta_info: &str = file_name.split('.').next().unwrap();
             let infos: Vec<&str> = meta_info.split('|').collect();
             let mut offset: u64 = 0;
             let sequence: u64;
@@ -875,6 +879,7 @@ impl BiliRecorder {
             m3u8_content += "#EXT-X-OFFSET:0\n";
             return m3u8_content;
         }
+        let timestamp = *self.timestamp.read().await;
         let mut last_sequence = entries.first().unwrap().sequence;
         m3u8_content += &format!("#EXT-X-OFFSET:{}\n", entries.first().unwrap().offset);
         for entry in entries.iter() {
@@ -882,6 +887,10 @@ impl BiliRecorder {
                 // discontinuity happens
                 m3u8_content += "#EXT-X-DISCONTINUITY\n"
             }
+            // add #EXT-X-PROGRAM-DATE-TIME with ISO 8601 date
+            let ts = timestamp + entry.offset / 1000;
+            let date_str = Utc.timestamp_opt(ts as i64, 0).unwrap().to_rfc3339();
+            m3u8_content += &format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", date_str);
             m3u8_content += &format!("#EXTINF:{:.2},\n", entry.length,);
             last_sequence = entry.sequence;
             let file_name = entry.url.split('/').last().unwrap();

@@ -482,6 +482,7 @@ impl BiliRecorder {
                         sequence += 1;
                         continue;
                     }
+                    let mut offset_hex: String = "".into();
                     let mut seg_offset: u64 = 0;
                     for tag in ts.unknown_tags {
                         if tag.tag == "BILI-AUX" {
@@ -490,8 +491,8 @@ impl BiliRecorder {
                                 if parts.len() == 0 {
                                     continue;
                                 }
-                                let offset_hex = parts.get(0).unwrap();
-                                seg_offset = u64::from_str_radix(offset_hex, 16).unwrap();
+                                offset_hex = parts.get(0).unwrap().to_string();
+                                seg_offset = u64::from_str_radix(&offset_hex, 16).unwrap();
                             }
                             break;
                         }
@@ -502,7 +503,8 @@ impl BiliRecorder {
                     }
                     // encode segment offset into filename
                     let mut entries = self.ts_entries.lock().await;
-                    let file_name = format!("{}|{}", seg_offset, ts_url.split('/').last().unwrap());
+                    let file_name =
+                        format!("{}-{}", &offset_hex, ts_url.split('/').last().unwrap());
                     let mut ts_length = 1.0;
                     // calculate entry length using offset
                     // the default #EXTINF is 1.0, which is not accurate
@@ -819,14 +821,18 @@ impl BiliRecorder {
                 continue;
             }
             let meta_info: &str = file_name.split('.').next().unwrap();
-            let infos: Vec<&str> = meta_info.split('|').collect();
-            let mut offset: u64 = 0;
+            let infos: Vec<&str> = meta_info.split('-').collect();
+            let offset: u64;
             let sequence: u64;
-            // for previous verison created legacy file
+            // BREAKCHANGE do not support legacy files that not named with offset
             if infos.len() == 1 {
-                sequence = infos.get(0).unwrap().parse().unwrap();
+                continue;
             } else {
-                offset = infos.get(0).unwrap().parse().unwrap();
+                if let Ok(parsed_offset) = u64::from_str_radix(infos.get(0).unwrap(), 16) {
+                    offset = parsed_offset;
+                } else {
+                    continue;
+                }
                 sequence = infos.get(1).unwrap().parse().unwrap();
             }
             ret.push(TsEntry {

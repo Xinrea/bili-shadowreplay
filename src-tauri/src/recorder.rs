@@ -618,7 +618,7 @@ impl BiliRecorder {
         if !entries.is_empty() {
             for e in entries {
                 if offset < x {
-                    offset += 1.0;
+                    offset += e.length;
                     continue;
                 }
                 file_list += &format!("{}/{}", work_dir, e.url);
@@ -626,7 +626,7 @@ impl BiliRecorder {
                 if offset > y {
                     break;
                 }
-                offset += 1.0;
+                offset += e.length;
             }
         }
 
@@ -677,14 +677,14 @@ impl BiliRecorder {
         let mut offset = 0.0;
         for e in entry_copy.iter() {
             if offset < start {
-                offset += 1.0;
+                offset += e.length;
                 continue;
             }
             to_combine.push(e);
             if offset >= end {
                 break;
             }
-            offset += 1.0;
+            offset += e.length;
         }
         if *self.stream_type.read().await == StreamType::FMP4 {
             // add header to vec

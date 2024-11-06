@@ -118,20 +118,14 @@
       if (isLive() && get_total() - video.currentTime <= 5) {
         return;
       }
-      if (!isLive()) {
-        const cur = (video.currentTime + global_offset / 1000 + ts) * 1000;
-        console.log(video.currentTime, new Date(cur).toString());
-        let danmus = danmu_records.filter(
-          (v) => v.ts >= cur - 1000 && v.ts < cur,
-        );
-        danmus.forEach((v) => danmu_handler(v.content));
-      } else {
-        const cur = player.getPlayheadTimeAsDate();
-        let danmus = danmu_records.filter(
-          (v) => v.ts >= cur - 1000 && v.ts < cur,
-        );
-        danmus.forEach((v) => danmu_handler(v.content));
-      }
+      const cur = Math.floor(
+        (video.currentTime + global_offset / 1000 + ts) * 1000,
+      );
+      console.log(new Date(cur).toString());
+      let danmus = danmu_records.filter((v) => {
+        return v.ts >= cur - 1000 && v.ts < cur;
+      });
+      danmus.forEach((v) => danmu_handler(v.content));
     }, 1000);
 
     if (isLive()) {

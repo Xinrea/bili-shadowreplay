@@ -509,6 +509,10 @@ impl BiliRecorder {
                     // calculate entry length using offset
                     // the default #EXTINF is 1.0, which is not accurate
                     if !entries.is_empty() {
+                        // skip this entry as it is already in cache or stream changed
+                        if seg_offset <= entries.last().unwrap().offset {
+                            continue;
+                        }
                         ts_length = (seg_offset - entries.last().unwrap().offset) as f64 / 1000.0;
                     }
                     let ts_entry = TsEntry {

@@ -74,6 +74,18 @@
       }
     }
 
+    // init video volume from localStorage
+    let localVolume = localStorage.getItem(`volume:${room_id}`);
+    if (localVolume != undefined) {
+      console.log("Load local volume", localVolume);
+      video.volume = parseFloat(localVolume);
+    }
+
+    video.addEventListener("volumechange", (event) => {
+      localStorage.setItem(`volume:${room_id}`, video.volume.toString());
+      console.log("Update volume to", video.volume);
+    });
+
     document.getElementsByClassName("shaka-overflow-menu-button")[0].remove();
     document.getElementsByClassName("shaka-fullscreen-button")[0].remove();
     // add self-defined element in shaka-bottom-controls.shaka-no-propagation (second seekbar)

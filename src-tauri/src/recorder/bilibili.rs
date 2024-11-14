@@ -412,16 +412,11 @@ impl BiliClient {
         if res.code == 0 {
             if let Some(stream) = res.data.playurl_info.playurl.stream.first() {
                 // Get fmp4 format
-                if let Some(format) = stream.format.get(1) {
-                    self.get_url_from_format(format)
+                if let Some(f) = stream.format.iter().find(|f| f.format_name == "fmp4") {
+                    self.get_url_from_format(f)
                         .await
                         .ok_or(BiliClientError::InvalidFormat)
                         .map(|url| (url, StreamType::FMP4))
-                } else if let Some(format) = stream.format.first() {
-                    self.get_url_from_format(format)
-                        .await
-                        .ok_or(BiliClientError::InvalidFormat)
-                        .map(|url| (url, StreamType::TS))
                 } else {
                     Err(BiliClientError::InvalidResponse)
                 }

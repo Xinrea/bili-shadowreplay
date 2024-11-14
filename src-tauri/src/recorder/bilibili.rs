@@ -19,6 +19,7 @@ use serde::Serialize;
 use serde_json::json;
 use serde_json::Value;
 use std::path::Path;
+use std::time::Duration;
 use std::time::SystemTime;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
@@ -201,10 +202,7 @@ impl BiliClient {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert("user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36".parse().unwrap());
 
-        if let Ok(client) = Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-        {
+        if let Ok(client) = Client::builder().timeout(Duration::from_secs(3)).build() {
             Ok(BiliClient {
                 client,
                 headers,

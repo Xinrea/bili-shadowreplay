@@ -8,8 +8,8 @@ custom_error! {pub BiliClientError
     InvalidUrl = "Invalid url",
     InvalidFormat = "Invalid stream format",
     EmptyCache = "Empty cache",
-    ClientError{err: reqwest::Error} = "Client error",
-    IOError{err: std::io::Error} = "IO error",
+    ClientError{err: reqwest::Error} = "Client error: {err}",
+    IOError{err: std::io::Error} = "IO error: {err}",
 }
 
 impl From<reqwest::Error> for BiliClientError {

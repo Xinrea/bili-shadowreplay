@@ -72,13 +72,12 @@ pub enum StreamType {
 custom_error! {pub RecorderError
     NotStarted = "Room is offline",
     EmptyCache = "Cache is empty",
-    M3u8ParseFailed = "Parse m3u8 content failed",
+    M3u8ParseFailed {content: String } = "Parse m3u8 content failed: {content}",
     InvalidM3u8Url {url: String} = "Invalid m3u8 url: {url}",
     EmptyHeader = "Header url is empty",
     InvalidTimestamp = "Header timestamp is invalid",
-    InvalidPlaylist = "Invalid m3u8 playlist",
-    InvalidDBOP {err: DatabaseError } = "Database error {err}",
-    ClientError {err: BiliClientError} = "BiliClient fetch failed {err}",
+    InvalidDBOP {err: DatabaseError } = "Database error: {err}",
+    ClientError {err: BiliClientError} = "BiliClient error: {err}",
 }
 
 impl From<DatabaseError> for RecorderError {
@@ -312,17 +311,27 @@ impl BiliRecorder {
 
     async fn get_playlist(&self) -> Result<Playlist, RecorderError> {
         let url = self.m3u8_url.read().await.clone();
-        let mut index_content = self.client.read().await.get_index_content(&url).await?;
-        if index_content.contains("Not Found") {
-            // 404 try another time after update
-            if self.check_status().await {
-                index_content = self.client.read().await.get_index_content(&url).await?;
-            } else {
-                return Err(RecorderError::NotStarted);
+        match self.client.read().await.get_index_content(&url).await {
+            Ok(mut index_content) => {
+                if index_content.contains("Not Found") {
+                    // 404 try another time after update
+                    if self.check_status().await {
+                        index_content = self.client.read().await.get_index_content(&url).await?;
+                    } else {
+                        return Err(RecorderError::NotStarted);
+                    }
+                }
+                m3u8_rs::parse_playlist_res(index_content.as_bytes()).map_err(|_| {
+                    RecorderError::M3u8ParseFailed {
+                        content: index_content.clone(),
+                    }
+                })
+            }
+            Err(e) => {
+                log::error!("Failed fetching index content from {}", url);
+                return Err(RecorderError::ClientError { err: e });
             }
         }
-        m3u8_rs::parse_playlist_res(index_content.as_bytes())
-            .map_err(|_| RecorderError::M3u8ParseFailed)
     }
 
     async fn get_header_url(&self) -> Result<String, RecorderError> {
@@ -561,8 +570,8 @@ impl BiliRecorder {
                     )
                     .await?;
             }
-            Err(_) => {
-                return Err(RecorderError::InvalidPlaylist);
+            Err(e) => {
+                return Err(e);
             }
         }
         Ok(())

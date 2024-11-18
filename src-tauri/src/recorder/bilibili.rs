@@ -3,7 +3,6 @@ pub mod profile;
 pub mod response;
 use crate::db::AccountRow;
 
-use super::StreamType;
 use errors::BiliClientError;
 use pct_str::PctString;
 use pct_str::URIReserved;
@@ -23,7 +22,6 @@ use std::time::Duration;
 use std::time::SystemTime;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
-use tokio::sync::RwLock;
 use tokio::time::Instant;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -162,7 +160,6 @@ pub struct P2pData {
 pub struct BiliClient {
     client: Client,
     headers: reqwest::header::HeaderMap,
-    extra: RwLock<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -197,17 +194,74 @@ pub struct QrStatus {
     pub cookies: String,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StreamType {
+    TS,
+    FMP4,
+}
+
+#[derive(Clone, Debug)]
+pub struct BiliStream {
+    pub format: StreamType,
+    pub host: String,
+    pub path: String,
+    pub extra: String,
+    pub expire: i64,
+}
+
+impl ToString for BiliStream {
+    fn to_string(&self) -> String {
+        format!(
+            "type: {:?}, host: {}, path: {}, extra: {}, expire: {}",
+            self.format, self.host, self.path, self.extra, self.expire
+        )
+    }
+}
+
+impl BiliStream {
+    pub fn new(format: StreamType, base_url: &str, host: &str, extra: &str) -> BiliStream {
+        return BiliStream {
+            format,
+            host: host.into(),
+            path: BiliStream::get_path(base_url),
+            extra: extra.into(),
+            expire: BiliStream::get_expire(extra).unwrap(),
+        };
+    }
+
+    pub fn index(&self) -> String {
+        return format!("{}{}{}", self.host, self.path, "index.m3u8");
+    }
+
+    pub fn ts_url(&self, seg_name: &str) -> String {
+        return format!("{}{}{}?{}", self.host, self.path, seg_name, self.extra);
+    }
+
+    pub fn get_path(base_url: &str) -> String {
+        match base_url.rfind('/') {
+            Some(pos) => base_url[..pos + 1].to_string(),
+            None => base_url.to_string(),
+        }
+    }
+
+    pub fn get_expire(extra: &str) -> Option<i64> {
+        extra.split('&').find_map(|param| {
+            if param.starts_with("expires=") {
+                param.split('=').nth(1)?.parse().ok()
+            } else {
+                None
+            }
+        })
+    }
+}
+
 impl BiliClient {
     pub fn new() -> Result<BiliClient, BiliClientError> {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert("user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36".parse().unwrap());
 
         if let Ok(client) = Client::builder().timeout(Duration::from_secs(3)).build() {
-            Ok(BiliClient {
-                client,
-                headers,
-                extra: RwLock::new("".into()),
-            })
+            Ok(BiliClient { client, headers })
         } else {
             Err(BiliClientError::InitClientError)
         }
@@ -397,7 +451,7 @@ impl BiliClient {
         &self,
         account: &AccountRow,
         room_id: u64,
-    ) -> Result<(String, StreamType), BiliClientError> {
+    ) -> Result<BiliStream, BiliClientError> {
         let mut headers = self.headers.clone();
         headers.insert("cookie", account.cookies.parse().unwrap());
         let res: PlayUrlResponse = self
@@ -413,10 +467,7 @@ impl BiliClient {
             if let Some(stream) = res.data.playurl_info.playurl.stream.first() {
                 // Get fmp4 format
                 if let Some(f) = stream.format.iter().find(|f| f.format_name == "fmp4") {
-                    self.get_url_from_format(f)
-                        .await
-                        .ok_or(BiliClientError::InvalidFormat)
-                        .map(|url| (url, StreamType::FMP4))
+                    self.get_stream(f).await
                 } else {
                     Err(BiliClientError::InvalidResponse)
                 }
@@ -428,27 +479,27 @@ impl BiliClient {
         }
     }
 
-    async fn get_url_from_format(&self, format: &Format) -> Option<String> {
+    async fn get_stream(&self, format: &Format) -> Result<BiliStream, BiliClientError> {
         if let Some(codec) = format.codec.first() {
             if let Some(url_info) = codec.url_info.first() {
-                let base_url = codec.base_url.strip_suffix('?').unwrap();
-                let extra = "?".to_owned() + &url_info.extra.clone();
-                let host = url_info.host.clone();
-                let url = format!("{}{}", host, base_url);
-                *self.extra.write().await = extra;
-                Some(url)
+                Ok(BiliStream::new(
+                    StreamType::FMP4,
+                    &codec.base_url,
+                    &url_info.host,
+                    &url_info.extra,
+                ))
             } else {
-                None
+                Err(BiliClientError::InvalidFormat)
             }
         } else {
-            None
+            Err(BiliClientError::InvalidFormat)
         }
     }
 
     pub async fn get_index_content(&self, url: &String) -> Result<String, BiliClientError> {
         Ok(self
             .client
-            .get(url.to_owned() + self.extra.read().await.as_str())
+            .get(url.to_owned())
             .headers(self.headers.clone())
             .send()
             .await?
@@ -457,7 +508,6 @@ impl BiliClient {
     }
 
     pub async fn download_ts(&self, url: &str, file_path: &str) -> Result<u64, BiliClientError> {
-        let url = url.to_owned() + self.extra.read().await.as_str();
         let res = self
             .client
             .get(url)

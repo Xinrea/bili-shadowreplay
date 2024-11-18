@@ -2,7 +2,7 @@ pub mod bilibili;
 pub mod danmu;
 use async_std::{fs, stream::StreamExt};
 use bilibili::{errors::BiliClientError, RoomInfo};
-use bilibili::{BiliClient, UserInfo};
+use bilibili::{BiliClient, BiliStream, StreamType, UserInfo};
 use chrono::prelude::*;
 use custom_error::custom_error;
 use danmu::{DanmuEntry, DanmuStorage};
@@ -17,7 +17,7 @@ use m3u8_rs::Playlist;
 use regex::Regex;
 use std::sync::Arc;
 use std::thread;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Url};
 use tauri_plugin_notification::NotificationExt;
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::sync::{Mutex, RwLock};
@@ -49,7 +49,6 @@ pub struct BiliRecorder {
     pub room_id: u64,
     pub room_info: Arc<RwLock<RoomInfo>>,
     pub user_info: Arc<RwLock<UserInfo>>,
-    pub m3u8_url: Arc<RwLock<String>>,
     pub live_status: Arc<RwLock<bool>>,
     pub last_sequence: Arc<RwLock<u64>>,
     pub ts_length: Arc<RwLock<f64>>,
@@ -57,23 +56,18 @@ pub struct BiliRecorder {
     ts_entries: Arc<Mutex<Vec<TsEntry>>>,
     quit: Arc<Mutex<bool>>,
     header: Arc<RwLock<Option<TsEntry>>>,
-    stream_type: Arc<RwLock<StreamType>>,
+    pub live_stream: Arc<RwLock<Option<BiliStream>>>,
     cache_size: Arc<RwLock<u64>>,
     danmu_storage: Arc<RwLock<Option<DanmuStorage>>>,
     m3u8_cache: DashMap<u64, String>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum StreamType {
-    TS,
-    FMP4,
-}
-
 custom_error! {pub RecorderError
-    NotStarted = "Room is offline",
+    IndexNotFound {url: String} = "Index not found: {url}",
     EmptyCache = "Cache is empty",
     M3u8ParseFailed {content: String } = "Parse m3u8 content failed: {content}",
-    InvalidM3u8Url {url: String} = "Invalid m3u8 url: {url}",
+    NoStreamAvailable = "No available stream provided",
+    InvalidStream {stream: BiliStream} = "Invalid stream: {stream}",
     EmptyHeader = "Header url is empty",
     InvalidTimestamp = "Header timestamp is invalid",
     InvalidDBOP {err: DatabaseError } = "Database error: {err}",
@@ -106,16 +100,14 @@ impl BiliRecorder {
         let user_info = client
             .get_user_info(webid, account, room_info.user_id)
             .await?;
-        let mut m3u8_url = String::from("");
         let mut live_status = false;
-        let mut stream_type = StreamType::FMP4;
+        let mut live_stream = None;
         if room_info.live_status == 1 {
             live_status = true;
-            if let Ok((index_url, stream_type_now)) =
-                client.get_play_url(account, room_info.room_id).await
-            {
-                m3u8_url = index_url;
-                stream_type = stream_type_now;
+            if let Ok(stream) = client.get_play_url(account, room_info.room_id).await {
+                live_stream = Some(stream);
+            } else {
+                log::error!("[{}]Room is online but fetching stream failed", room_id);
             }
         }
 
@@ -128,7 +120,6 @@ impl BiliRecorder {
             room_id,
             room_info: Arc::new(RwLock::new(room_info)),
             user_info: Arc::new(RwLock::new(user_info)),
-            m3u8_url: Arc::new(RwLock::new(m3u8_url)),
             live_status: Arc::new(RwLock::new(live_status)),
             last_sequence: Arc::new(RwLock::new(0)),
             ts_length: Arc::new(RwLock::new(0.0)),
@@ -136,7 +127,7 @@ impl BiliRecorder {
             timestamp: Arc::new(RwLock::new(0)),
             quit: Arc::new(Mutex::new(false)),
             header: Arc::new(RwLock::new(None)),
-            stream_type: Arc::new(RwLock::new(stream_type)),
+            live_stream: Arc::new(RwLock::new(live_stream)),
             cache_size: Arc::new(RwLock::new(0)),
             danmu_storage: Arc::new(RwLock::new(None)),
             m3u8_cache: DashMap::new(),
@@ -194,18 +185,29 @@ impl BiliRecorder {
                         .unwrap();
                 }
             }
+
             // if stream is confirmed to be closed, live stream cache is cleaned.
             // all request will go through fs
             if live_status {
-                if let Ok((index_url, stream_type)) = self
+                // no need to update stream as it's not expired yet
+                if self
+                    .live_stream
+                    .read()
+                    .await
+                    .as_ref()
+                    .is_some_and(|s| s.expire > Utc::now().timestamp())
+                {
+                    return live_status;
+                }
+                log::info!("[{}]Stream is empty or expired, updating", self.room_id);
+                if let Ok(stream) = self
                     .client
                     .read()
                     .await
                     .get_play_url(&self.account, self.room_id)
                     .await
                 {
-                    self.m3u8_url.write().await.replace_range(.., &index_url);
-                    *self.stream_type.write().await = stream_type;
+                    *self.live_stream.write().await = Some(stream);
                 }
             } else {
                 self.reset().await;
@@ -213,6 +215,7 @@ impl BiliRecorder {
             *self.live_status.write().await = live_status;
             live_status
         } else {
+            log::error!("[{}]Update room status failed", self.room_id);
             *self.live_status.write().await = true;
             // may encouter internet issues, not sure whether the stream is closed
             true
@@ -248,7 +251,7 @@ impl BiliRecorder {
                         // Live status is ok, start recording.
                         while !*self_clone.quit.lock().await {
                             if let Err(e) = self_clone.update_entries().await {
-                                log::error!("update entries error: {}", e);
+                                log::error!("[{}]Update entries error: {}", self_clone.room_id, e);
                                 break;
                             }
                             thread::sleep(std::time::Duration::from_secs(1));
@@ -310,16 +313,26 @@ impl BiliRecorder {
     }
 
     async fn get_playlist(&self) -> Result<Playlist, RecorderError> {
-        let url = self.m3u8_url.read().await.clone();
-        match self.client.read().await.get_index_content(&url).await {
-            Ok(mut index_content) => {
+        let stream = self.live_stream.read().await.clone();
+        if stream.is_none() {
+            return Err(RecorderError::NoStreamAvailable);
+        }
+        let stream = stream.unwrap();
+        match self
+            .client
+            .read()
+            .await
+            .get_index_content(&stream.index())
+            .await
+        {
+            Ok(index_content) => {
+                if index_content.is_empty() {
+                    return Err(RecorderError::InvalidStream { stream });
+                }
                 if index_content.contains("Not Found") {
-                    // 404 try another time after update
-                    if self.check_status().await {
-                        index_content = self.client.read().await.get_index_content(&url).await?;
-                    } else {
-                        return Err(RecorderError::NotStarted);
-                    }
+                    return Err(RecorderError::IndexNotFound {
+                        url: stream.index(),
+                    });
                 }
                 m3u8_rs::parse_playlist_res(index_content.as_bytes()).map_err(|_| {
                     RecorderError::M3u8ParseFailed {
@@ -328,29 +341,39 @@ impl BiliRecorder {
                 })
             }
             Err(e) => {
-                log::error!("Failed fetching index content from {}", url);
+                log::error!("Failed fetching index content from {}", stream.index());
                 return Err(RecorderError::ClientError { err: e });
             }
         }
     }
 
     async fn get_header_url(&self) -> Result<String, RecorderError> {
-        let url = self.m3u8_url.read().await.clone();
-        let mut index_content = self.client.read().await.get_index_content(&url).await?;
+        let stream = self.live_stream.read().await.clone();
+        if stream.is_none() {
+            return Err(RecorderError::NoStreamAvailable);
+        }
+        let stream = stream.unwrap();
+        let index_content = self
+            .client
+            .read()
+            .await
+            .get_index_content(&stream.index())
+            .await?;
+        if index_content.is_empty() {
+            return Err(RecorderError::InvalidStream { stream });
+        }
         if index_content.contains("Not Found") {
-            // 404 try another time after update
-            log::warn!("Index content not found: {}", index_content);
-            if self.check_status().await {
-                index_content = self.client.read().await.get_index_content(&url).await?;
-            } else {
-                return Err(RecorderError::NotStarted);
-            }
+            return Err(RecorderError::IndexNotFound {
+                url: stream.index(),
+            });
         }
         if index_content.contains("BANDWIDTH") {
-            // this index content provides another m3u8 url
-            let new_url = index_content.lines().last().unwrap();
-            *self.m3u8_url.write().await = String::from(new_url);
-            return Box::pin(self.get_header_url()).await;
+            // // this index content provides another m3u8 url
+            // let new_url = index_content.lines().last().unwrap();
+            // *self.m3u8_url.write().await = String::from(new_url);
+            // return Box::pin(self.get_header_url()).await;
+            log::error!("BANDWIDTH index content: {}", index_content);
+            return Err(RecorderError::InvalidStream { stream });
         }
         let mut header_url = String::from("");
         let re = Regex::new(r"h.*\.m4s").unwrap();
@@ -361,28 +384,6 @@ impl BiliRecorder {
             log::warn!("Parse header url failed: {}", index_content);
         }
         Ok(header_url)
-    }
-
-    async fn ts_url(&self, ts_url: &String) -> Result<String, RecorderError> {
-        // Construct url for ts and fmp4 stream.
-        match *self.stream_type.read().await {
-            StreamType::TS => {
-                let url = self.m3u8_url.read().await.clone();
-                if let Some(pos) = url.rfind("index.m3u8") {
-                    Ok(format!("{}{}", &url[..pos], ts_url))
-                } else {
-                    Err(RecorderError::InvalidM3u8Url { url })
-                }
-            }
-            StreamType::FMP4 => {
-                let url = self.m3u8_url.read().await.clone();
-                if let Some(pos) = url.rfind("index.m3u8") {
-                    Ok(format!("{}{}", &url[..pos], ts_url))
-                } else {
-                    Err(RecorderError::InvalidM3u8Url { url })
-                }
-            }
-        }
     }
 
     async fn extract_timestamp(&self, header_url: &str) -> u64 {
@@ -399,6 +400,11 @@ impl BiliRecorder {
     }
 
     async fn update_entries(&self) -> Result<(), RecorderError> {
+        let current_stream = self.live_stream.read().await.clone();
+        if current_stream.is_none() {
+            return Err(RecorderError::NoStreamAvailable);
+        }
+        let current_stream = current_stream.unwrap();
         let parsed = self.get_playlist().await;
         let mut timestamp = *self.timestamp.read().await;
         let mut work_dir = format!(
@@ -408,8 +414,7 @@ impl BiliRecorder {
             timestamp
         );
         // Check header if None
-        if self.header.read().await.is_none() && *self.stream_type.read().await == StreamType::FMP4
-        {
+        if self.header.read().await.is_none() && current_stream.format == StreamType::FMP4 {
             // Get url from EXT-X-MAP
             let header_url = self.get_header_url().await?;
             if header_url.is_empty() {
@@ -449,19 +454,16 @@ impl BiliRecorder {
             }
             // danmau file
             let danmu_file_path = format!("{}{}", work_dir, "danmu.txt");
-            self.danmu_storage
-                .write()
-                .await
-                .replace(DanmuStorage::new(&danmu_file_path).await);
-            let full_header_url = self.ts_url(&header_url).await?;
+            *self.danmu_storage.write().await = DanmuStorage::new(&danmu_file_path).await;
+            let full_header_url = current_stream.ts_url(&header_url);
+            let file_name = header_url.split('/').last().unwrap();
             let mut header = TsEntry {
-                url: full_header_url.clone(),
+                url: file_name.to_string(),
                 offset: 0,
                 sequence: 0,
                 length: 0.0,
                 size: 0,
             };
-            let file_name = header_url.split('/').last().unwrap();
             // Download header
             match self
                 .client
@@ -506,14 +508,15 @@ impl BiliRecorder {
                             break;
                         }
                     }
-                    let ts_url = self.ts_url(&ts.uri).await?;
-                    if ts_url.is_empty() {
+                    let ts_url = current_stream.ts_url(&ts.uri);
+                    if !Url::parse(&ts_url).is_ok() {
+                        log::error!("Ts url is invalid. ts_url={} original={}", ts_url, ts.uri);
                         continue;
                     }
                     // encode segment offset into filename
                     let mut entries = self.ts_entries.lock().await;
                     let file_name =
-                        format!("{}-{}", &offset_hex, ts_url.split('/').last().unwrap());
+                        format!("{}-{}", &offset_hex, ts.uri.split('/').last().unwrap());
                     let mut ts_length = 1.0;
                     // calculate entry length using offset
                     // the default #EXTINF is 1.0, which is not accurate
@@ -698,7 +701,13 @@ impl BiliRecorder {
                 break;
             }
         }
-        if *self.stream_type.read().await == StreamType::FMP4 {
+        if self
+            .live_stream
+            .read()
+            .await
+            .as_ref()
+            .is_some_and(|s| s.format == StreamType::FMP4)
+        {
             // add header to vec
             let header = header_copy.as_ref().unwrap();
             to_combine.insert(0, header);

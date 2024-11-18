@@ -18,14 +18,18 @@ pub struct DanmuStorage {
 }
 
 impl DanmuStorage {
-    pub async fn new(file_path: &str) -> DanmuStorage {
+    pub async fn new(file_path: &str) -> Option<DanmuStorage> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .open(file_path)
-            .await
-            .expect("create danmu.txt failed");
+            .await;
+        if file.is_err() {
+            log::error!("Open danmu file failed: {}", file.err().unwrap());
+            return None;
+        }
+        let file = file.unwrap();
         let reader = BufReader::new(file);
         let mut lines = reader.lines();
         let mut preload_cache: Vec<DanmuEntry> = Vec::new();
@@ -41,10 +45,10 @@ impl DanmuStorage {
             .open(file_path)
             .await
             .expect("create danmu.txt failed");
-        return DanmuStorage {
+        return Some(DanmuStorage {
             cache: RwLock::new(preload_cache),
             file: RwLock::new(file),
-        };
+        });
     }
 
     pub async fn add_line(&self, ts: u64, content: &str) {

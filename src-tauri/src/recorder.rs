@@ -942,6 +942,10 @@ impl BiliRecorder {
             );
             log::info!("loading danmu cache from {}", cache_file_path);
             let storage = DanmuStorage::new(&cache_file_path).await;
+            if storage.is_none() {
+                return Vec::new();
+            }
+            let storage = storage.unwrap();
             return storage.get_entries().await;
         }
     }

@@ -348,7 +348,13 @@ async fn add_recorder(
 #[tauri::command]
 async fn remove_recorder(state: tauri::State<'_, State>, room_id: u64) -> Result<(), String> {
     match state.recorder_manager.remove_recorder(room_id).await {
-        Ok(()) => Ok(state.db.remove_recorder(room_id).await?),
+        Ok(()) => {
+            state
+                .db
+                .new_message("移除直播间", &format!("移除了直播间 {}", room_id))
+                .await?;
+            Ok(state.db.remove_recorder(room_id).await?)
+        }
         Err(e) => Err(e.to_string()),
     }
 }

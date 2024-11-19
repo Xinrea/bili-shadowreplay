@@ -233,11 +233,11 @@ impl BiliRecorder {
     pub async fn delete_archive(&self, ts: u64) {
         if let Err(e) = self.db.remove_record(ts).await {
             log::error!("remove archive failed: {}", e);
-        } else {
-            let target_dir = format!("{}/{}/{}", self.config.read().await.cache, self.room_id, ts);
-            if fs::remove_dir_all(target_dir).await.is_err() {
-                log::error!("remove archive failed [{}]{}", self.room_id, ts);
-            }
+            return;
+        }
+        let target_dir = format!("{}/{}/{}", self.config.read().await.cache, self.room_id, ts);
+        if let Err(e) = fs::remove_dir_all(target_dir).await {
+            log::error!("remove archive failed [{}]{}: {}", self.room_id, ts, e);
         }
     }
 

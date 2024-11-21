@@ -14,6 +14,7 @@ use ffmpeg_sidecar::{
 };
 use futures::future::join_all;
 use m3u8_rs::Playlist;
+use rand::Rng;
 use regex::Regex;
 use std::sync::Arc;
 use std::thread;
@@ -256,7 +257,10 @@ impl BiliRecorder {
                             }
                             thread::sleep(std::time::Duration::from_secs(1));
                         }
-                        // go check status again
+                        // go check status again after random 2-5 secs
+                        let mut rng = rand::thread_rng();
+                        let secs = rng.gen_range(2..=5);
+                        thread::sleep(std::time::Duration::from_secs(secs));
                         continue;
                     }
                     // Every 10s check live status.

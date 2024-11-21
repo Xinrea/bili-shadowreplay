@@ -420,6 +420,7 @@ dependencies = [
  "notify-rust",
  "pct-str",
  "platform-dirs",
+ "rand 0.8.5",
  "regex",
  "reqwest 0.11.15",
  "serde",

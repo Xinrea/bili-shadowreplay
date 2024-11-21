@@ -469,12 +469,15 @@ impl BiliClient {
                 if let Some(f) = stream.format.iter().find(|f| f.format_name == "fmp4") {
                     self.get_stream(f).await
                 } else {
+                    log::error!("Invalid response: {:#?}", res);
                     Err(BiliClientError::InvalidResponse)
                 }
             } else {
+                log::error!("Invalid response: {:#?}", res);
                 Err(BiliClientError::InvalidResponse)
             }
         } else {
+            log::error!("Invalid response: {:#?}", res);
             Err(BiliClientError::InvalidResponse)
         }
     }

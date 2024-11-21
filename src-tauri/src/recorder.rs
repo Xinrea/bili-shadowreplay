@@ -147,79 +147,95 @@ impl BiliRecorder {
     }
 
     async fn check_status(&self) -> bool {
-        if let Ok(room_info) = self
+        match self
             .client
             .read()
             .await
             .get_room_info(&self.account, self.room_id)
             .await
         {
-            *self.room_info.write().await = room_info.clone();
-            let live_status = room_info.live_status == 1;
+            Ok(room_info) => {
+                *self.room_info.write().await = room_info.clone();
+                let live_status = room_info.live_status == 1;
 
-            // handle live notification
-            if *self.live_status.read().await != live_status {
-                if live_status {
-                    if self.config.read().await.live_start_notify {
+                // handle live notification
+                if *self.live_status.read().await != live_status {
+                    if live_status {
+                        if self.config.read().await.live_start_notify {
+                            self.app_handle
+                                .notification()
+                                .builder()
+                                .title("BiliShadowReplay - 直播开始")
+                                .body(format!(
+                                    "{} 开启了直播：{}",
+                                    self.user_info.read().await.user_name,
+                                    room_info.room_title
+                                ))
+                                .show()
+                                .unwrap();
+                        }
+                    } else if self.config.read().await.live_end_notify {
                         self.app_handle
                             .notification()
                             .builder()
-                            .title("BiliShadowReplay - 直播开始")
+                            .title("BiliShadowReplay - 直播结束")
                             .body(format!(
-                                "{} 开启了直播：{}",
-                                self.user_info.read().await.user_name,
-                                room_info.room_title
+                                "{} 的直播结束了",
+                                self.user_info.read().await.user_name
                             ))
                             .show()
                             .unwrap();
                     }
-                } else if self.config.read().await.live_end_notify {
-                    self.app_handle
-                        .notification()
-                        .builder()
-                        .title("BiliShadowReplay - 直播结束")
-                        .body(format!(
-                            "{} 的直播结束了",
-                            self.user_info.read().await.user_name
-                        ))
-                        .show()
-                        .unwrap();
                 }
-            }
 
-            // if stream is confirmed to be closed, live stream cache is cleaned.
-            // all request will go through fs
-            if live_status {
-                // no need to update stream as it's not expired yet
-                if self
-                    .live_stream
-                    .read()
-                    .await
-                    .as_ref()
-                    .is_some_and(|s| s.expire > Utc::now().timestamp())
-                {
-                    return live_status;
+                // if stream is confirmed to be closed, live stream cache is cleaned.
+                // all request will go through fs
+                if live_status {
+                    let mut rng = rand::thread_rng();
+                    // WHY: when program started, all stream is fetched nearly at the same time, so they will expire toggether,
+                    // this might meet server rate limit. So we add a random offset to make request spread over time.
+                    let offset = rng.gen_range(5..=120);
+                    // no need to update stream as it's not expired yet
+                    if self
+                        .live_stream
+                        .read()
+                        .await
+                        .as_ref()
+                        .is_some_and(|s| s.expire - offset > Utc::now().timestamp())
+                    {
+                        return live_status;
+                    }
+                    log::info!(
+                        "[{}]Stream is empty or nearly expired, updating",
+                        self.room_id
+                    );
+                    match self
+                        .client
+                        .read()
+                        .await
+                        .get_play_url(&self.account, self.room_id)
+                        .await
+                    {
+                        Ok(stream) => {
+                            log::info!("[{}]Update stream: {:?}", self.room_id, stream);
+                            *self.live_stream.write().await = Some(stream);
+                        }
+                        Err(e) => {
+                            log::error!("[{}]Update stream failed: {}", self.room_id, e);
+                        }
+                    }
+                } else {
+                    self.reset().await;
                 }
-                log::info!("[{}]Stream is empty or expired, updating", self.room_id);
-                if let Ok(stream) = self
-                    .client
-                    .read()
-                    .await
-                    .get_play_url(&self.account, self.room_id)
-                    .await
-                {
-                    *self.live_stream.write().await = Some(stream);
-                }
-            } else {
-                self.reset().await;
+                *self.live_status.write().await = live_status;
+                live_status
             }
-            *self.live_status.write().await = live_status;
-            live_status
-        } else {
-            log::error!("[{}]Update room status failed", self.room_id);
-            *self.live_status.write().await = true;
-            // may encouter internet issues, not sure whether the stream is closed
-            true
+            Err(e) => {
+                log::error!("[{}]Update room status failed: {}", self.room_id, e);
+                *self.live_status.write().await = true;
+                // may encouter internet issues, not sure whether the stream is closed
+                true
+            }
         }
     }
 

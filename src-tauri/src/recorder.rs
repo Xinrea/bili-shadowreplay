@@ -587,11 +587,14 @@ impl BiliRecorder {
                         log::error!("Download ts failed: {:?}", e);
                     }
                 });
-                // currently we take every segement's length as 1.0s.
                 self.db
                     .update_record(
                         timestamp,
-                        self.ts_entries.lock().await.len() as i64,
+                        self.ts_entries
+                            .lock()
+                            .await
+                            .iter()
+                            .fold(0.0, |t, e| t + e.length) as i64,
                         *self.cache_size.read().await,
                     )
                     .await?;

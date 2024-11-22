@@ -57,6 +57,7 @@ pub struct BiliRecorder {
     pub ts_length: Arc<RwLock<f64>>,
     pub timestamp: Arc<RwLock<u64>>,
     ts_entries: Arc<Mutex<Vec<TsEntry>>>,
+    last_update: Arc<RwLock<i64>>,
     quit: Arc<Mutex<bool>>,
     header: Arc<RwLock<Option<TsEntry>>>,
     pub live_stream: Arc<RwLock<Option<BiliStream>>>,
@@ -129,6 +130,7 @@ impl BiliRecorder {
             ts_length: Arc::new(RwLock::new(0.0)),
             ts_entries: Arc::new(Mutex::new(Vec::new())),
             timestamp: Arc::new(RwLock::new(0)),
+            last_update: Arc::new(RwLock::new(Utc::now().timestamp())),
             quit: Arc::new(Mutex::new(false)),
             header: Arc::new(RwLock::new(None)),
             live_stream: Arc::new(RwLock::new(live_stream)),
@@ -146,6 +148,7 @@ impl BiliRecorder {
         self.ts_entries.lock().await.clear();
         *self.header.write().await = None;
         *self.timestamp.write().await = 0;
+        *self.last_update.write().await = Utc::now().timestamp();
         *self.danmu_storage.write().await = None;
     }
 
@@ -509,6 +512,7 @@ impl BiliRecorder {
         match parsed {
             Ok(Playlist::MasterPlaylist(pl)) => log::debug!("Master playlist:\n{:?}", pl),
             Ok(Playlist::MediaPlaylist(pl)) => {
+                let mut new_segment_fetched = false;
                 let mut sequence = pl.media_sequence;
                 let mut handles = Vec::new();
                 for ts in pl.segments {
@@ -516,6 +520,7 @@ impl BiliRecorder {
                         sequence += 1;
                         continue;
                     }
+                    new_segment_fetched = true;
                     let mut offset_hex: String = "".into();
                     let mut seg_offset: u64 = 0;
                     for tag in ts.unknown_tags {
@@ -587,17 +592,28 @@ impl BiliRecorder {
                         log::error!("Download ts failed: {:?}", e);
                     }
                 });
-                self.db
-                    .update_record(
-                        timestamp,
-                        self.ts_entries
-                            .lock()
-                            .await
-                            .iter()
-                            .fold(0.0, |t, e| t + e.length) as i64,
-                        *self.cache_size.read().await,
-                    )
-                    .await?;
+                if new_segment_fetched {
+                    *self.last_update.write().await = Utc::now().timestamp();
+                    self.db
+                        .update_record(
+                            timestamp,
+                            self.ts_entries
+                                .lock()
+                                .await
+                                .iter()
+                                .fold(0.0, |t, e| t + e.length) as i64,
+                            *self.cache_size.read().await,
+                        )
+                        .await?;
+                } else {
+                    // if index content is not changed for a long time, we should return a error to fetch a new stream
+                    if *self.last_update.read().await < Utc::now().timestamp() - 10 {
+                        log::error!("Stream content is not updating for 10s");
+                        return Err(RecorderError::InvalidStream {
+                            stream: current_stream,
+                        });
+                    }
+                }
             }
             Err(e) => {
                 return Err(e);

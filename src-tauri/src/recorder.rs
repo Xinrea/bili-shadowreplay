@@ -20,6 +20,8 @@ use std::sync::Arc;
 use std::thread;
 use tauri::{AppHandle, Emitter, Url};
 use tauri_plugin_notification::NotificationExt;
+use tokio::fs::OpenOptions;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::sync::{Mutex, RwLock};
 
@@ -73,6 +75,7 @@ custom_error! {pub RecorderError
     InvalidTimestamp = "Header timestamp is invalid",
     InvalidDBOP {err: DatabaseError } = "Database error: {err}",
     ClientError {err: BiliClientError} = "BiliClient error: {err}",
+    ClipError {err: String} = "FFMPEG error: {err}"
 }
 
 impl From<DatabaseError> for RecorderError {
@@ -647,10 +650,9 @@ impl BiliRecorder {
         if entries.is_empty() {
             return Err(RecorderError::EmptyCache);
         }
-        let mut file_list = String::new();
+        let mut file_list = Vec::new();
         // header fist
-        file_list += &format!("{}/h{}.m4s", work_dir, ts);
-        file_list += "|";
+        file_list.push(format!("{}/h{}.m4s", work_dir, ts));
         // add body entries
         // seconds to ms
         let begin = (x * 1000.0) as u64;
@@ -661,38 +663,21 @@ impl BiliRecorder {
                 if e.offset - offset < begin {
                     continue;
                 }
-                file_list += &format!("{}/{}", work_dir, e.url);
-                file_list += "|";
+                file_list.push(format!("{}/{}", work_dir, e.url));
                 if e.offset - offset > end {
                     break;
                 }
             }
         }
 
-        std::fs::create_dir_all(output_path).expect("create clips folder failed");
         let file_name = format!(
-            "{}/[{}]{}_{}_{:.1}.mp4",
-            output_path,
+            "[{}]{}_{}_{:.1}.mp4",
             self.room_id,
             ts,
             Utc::now().format("%m%d%H%M%S"),
             y - x
         );
-        log::info!("{}", file_name);
-        let args = format!("-i concat:{} -c copy", file_list);
-        FfmpegCommand::new()
-            .args(args.split(' '))
-            .output(file_name.clone())
-            .spawn()
-            .unwrap()
-            .iter()
-            .unwrap()
-            .for_each(|e| match e {
-                FfmpegEvent::Log(LogLevel::Error, e) => log::error!("Error: {}", e),
-                FfmpegEvent::Progress(p) => log::info!("Progress: {}", p.time),
-                _ => {}
-            });
-        Ok(file_name)
+        Self::generate_clip(&file_list, output_path, &file_name).await
     }
 
     pub async fn clip_live_range(
@@ -732,7 +717,7 @@ impl BiliRecorder {
             let header = header_copy.as_ref().unwrap();
             to_combine.insert(0, header);
         }
-        let mut file_list = String::new();
+        let mut file_list = Vec::new();
         let timestamp = *self.timestamp.read().await;
         for e in to_combine {
             let file_name = e.url.split('/').last().unwrap();
@@ -743,34 +728,50 @@ impl BiliRecorder {
                 timestamp,
                 file_name
             );
-            file_list += &file_path;
-            file_list += "|";
+            file_list.push(file_path);
         }
-        let title = self.room_info.read().await.room_title.clone();
-        let title: String = title.chars().take(5).collect();
-        std::fs::create_dir_all(output_path).expect("create clips folder failed");
         let file_name = format!(
-            "{}/[{}]{}_{}_{:.1}.mp4",
-            output_path,
+            "[{}]{}_{}_{:.1}.mp4",
             self.room_id,
-            title,
+            self.timestamp.read().await,
             Utc::now().format("%m%d%H%M%S"),
             y - x
         );
-        log::info!("{}", file_name);
-        let args = format!("-i concat:{} -c copy", file_list);
-        FfmpegCommand::new()
-            .args(args.split(' '))
-            .output(file_name.clone())
-            .spawn()
-            .unwrap()
-            .iter()
-            .unwrap()
-            .for_each(|e| match e {
-                FfmpegEvent::Log(LogLevel::Error, e) => log::error!("Error: {}", e),
-                FfmpegEvent::Progress(p) => log::info!("Progress: {}", p.time),
-                _ => {}
+        Self::generate_clip(&file_list, output_path, &file_name).await
+    }
+
+    async fn generate_clip(
+        file_list: &Vec<String>,
+        output_path: &str,
+        file_name: &str,
+    ) -> Result<String, RecorderError> {
+        std::fs::create_dir_all(output_path).expect("create clips folder failed");
+        let file_name = format!("{}/{}", output_path, file_name,);
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&file_name)
+            .await;
+        if file.is_err() {
+            return Err(RecorderError::ClipError {
+                err: file.err().unwrap().to_string(),
             });
+        }
+        let mut file = file.unwrap();
+        // write file content in file_list into file
+        for f in file_list {
+            let seg_file = OpenOptions::new().read(true).open(f).await;
+            if seg_file.is_err() {
+                log::error!("Reading {} failed, skip", f);
+                continue;
+            }
+            let mut seg_file = seg_file.unwrap();
+            let mut buffer = Vec::new();
+            seg_file.read_to_end(&mut buffer).await.unwrap();
+            file.write_all(&buffer).await.unwrap();
+        }
+        file.flush().await.unwrap();
         Ok(file_name)
     }
 

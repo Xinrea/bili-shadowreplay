@@ -8,6 +8,7 @@ const mobile =
   process.env.TAURI_PLATFORM === "ios";
 
 // https://vitejs.dev/config/
+// @ts-ignore
 export default defineConfig(async () => ({
   plugins: [
     svelte({

@@ -71,7 +71,9 @@ custom_error! {pub RecorderError
     EmptyCache = "Cache is empty",
     M3u8ParseFailed {content: String } = "Parse m3u8 content failed: {content}",
     NoStreamAvailable = "No available stream provided",
+    FreezedStream {stream: BiliStream} = "Stream is freezed: {stream}",
     InvalidStream {stream: BiliStream} = "Invalid stream: {stream}",
+    SlowStream {stream: BiliStream} = "Stream is too slow: {stream}",
     EmptyHeader = "Header url is empty",
     InvalidTimestamp = "Header timestamp is invalid",
     InvalidDBOP {err: DatabaseError } = "Database error: {err}",
@@ -608,8 +610,23 @@ impl BiliRecorder {
                 } else {
                     // if index content is not changed for a long time, we should return a error to fetch a new stream
                     if *self.last_update.read().await < Utc::now().timestamp() - 10 {
-                        log::error!("Stream content is not updating for 10s");
-                        return Err(RecorderError::InvalidStream {
+                        log::error!("Stream content is not updating for 10s, maybe not started yet or not closed properly.");
+                        return Err(RecorderError::FreezedStream {
+                            stream: current_stream,
+                        });
+                    }
+                }
+                // check the current stream is too slow or not
+                let entries = self.ts_entries.lock().await;
+                if !entries.is_empty() {
+                    let last_entry = entries.last().unwrap();
+                    let last_entry_time = (last_entry.offset + *self.timestamp.read().await) as i64;
+                    if last_entry_time < Utc::now().timestamp() - 10 {
+                        log::error!(
+                            "Stream is too slow, last entry ts is at {}",
+                            last_entry_time
+                        );
+                        return Err(RecorderError::SlowStream {
                             stream: current_stream,
                         });
                     }

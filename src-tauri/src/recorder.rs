@@ -240,9 +240,8 @@ impl BiliRecorder {
             }
             Err(e) => {
                 log::error!("[{}]Update room status failed: {}", self.room_id, e);
-                *self.live_status.write().await = true;
-                // may encouter internet issues, not sure whether the stream is closed
-                true
+                // may encouter internet issues, not sure whether the stream is closed or started, just remain
+                *self.live_status.read().await
             }
         }
     }

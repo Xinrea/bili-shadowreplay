@@ -96,3 +96,38 @@ export interface DiskInfo {
   total: number;
   free: number;
 }
+
+export interface VideoType {
+  id: number;
+  parent: number;
+  parent_name: string;
+  name: string;
+  description: string;
+  desc: string;
+  intro_original: string;
+  intro_copy: string;
+  notice: string;
+  copy_right: number;
+  show: boolean;
+  rank: number;
+  children: Children[];
+  max_video_count: number;
+  request_id: string;
+}
+
+export interface Children {
+  id: number;
+  parent: number;
+  parent_name: string;
+  name: string;
+  description: string;
+  desc: string;
+  intro_original: string;
+  intro_copy: string;
+  notice: string;
+  copy_right: number;
+  show: boolean;
+  rank: number;
+  max_video_count: number;
+  request_id: string;
+}

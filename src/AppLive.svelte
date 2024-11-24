@@ -18,8 +18,15 @@
   import type { AccountInfo, RecordItem } from "./lib/db";
   import { platform } from "@tauri-apps/plugin-os";
   import { ClapperboardPlaySolid, PlayOutline } from "flowbite-svelte-icons";
-  import type { Profile, VideoItem, Config } from "./lib/interface";
+  import type {
+    Profile,
+    VideoItem,
+    Config,
+    VideoType,
+    Children,
+  } from "./lib/interface";
   import { onMount } from "svelte";
+  import TypeSelect from "./lib/TypeSelect.svelte";
 
   let use_titlebar = platform() == "windows";
 
@@ -44,6 +51,10 @@
       return JSON.parse(profile_str);
     }
     return default_profile();
+  }
+
+  $: {
+    window.localStorage.setItem("profile-" + room_id, JSON.stringify(profile));
   }
 
   function default_profile(): Profile {
@@ -324,51 +335,17 @@
         </div>
         <Hr />
         <Label class="mt-4">标题</Label>
-        <Input
-          size="sm"
-          bind:value={profile.title}
-          on:change={() => {
-            window.localStorage.setItem(
-              "profile-" + room_id,
-              JSON.stringify(profile),
-            );
-          }}
-        />
+        <Input size="sm" bind:value={profile.title} />
         <Label class="mt-2">封面文本</Label>
         <Textarea bind:value={cover_text} />
         <Label class="mt-2">描述</Label>
-        <Textarea
-          bind:value={profile.desc}
-          on:change={() => {
-            window.localStorage.setItem(
-              "profile-" + room_id,
-              JSON.stringify(profile),
-            );
-          }}
-        />
+        <Textarea bind:value={profile.desc} />
         <Label class="mt-2">标签</Label>
-        <Input
-          size="sm"
-          bind:value={profile.tag}
-          on:change={() => {
-            window.localStorage.setItem(
-              "profile-" + room_id,
-              JSON.stringify(profile),
-            );
-          }}
-        />
+        <Input size="sm" bind:value={profile.tag} />
         <Label class="mt-2">动态</Label>
-        <Textarea
-          bind:value={profile.dynamic}
-          on:change={() => {
-            window.localStorage.setItem(
-              "profile-" + room_id,
-              JSON.stringify(profile),
-            );
-          }}
-        />
+        <Textarea bind:value={profile.dynamic} />
         <Label class="mt-2">视频分区</Label>
-        <Input size="sm" value="动画 - 综合" disabled />
+        <TypeSelect bind:value={profile.tid} />
         <Label class="mt-2">投稿账号</Label>
         <Select size="sm" items={accounts} bind:value={uid_selected} />
         {#if video}

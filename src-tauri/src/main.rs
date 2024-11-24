@@ -748,6 +748,17 @@ async fn delete_video(state: tauri::State<'_, State>, id: i64) -> Result<(), Str
     Ok(state.db.delete_video(id).await?)
 }
 
+#[tauri::command]
+async fn get_video_typelist(
+    state: tauri::State<'_, State>,
+) -> Result<Vec<recorder::bilibili::response::Typelist>, String> {
+    let account = state
+        .db
+        .get_account(state.config.read().await.primary_uid)
+        .await?;
+    Ok(state.client.get_video_typelist(&account).await?)
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Setup log
     simplelog::CombinedLogger::init(vec![
@@ -925,6 +936,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             send_danmaku,
             update_notify,
             get_danmu_record,
+            get_video_typelist,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

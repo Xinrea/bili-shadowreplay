@@ -16,6 +16,7 @@ pub enum Data {
     VideoSubmit(VideoSubmitData),
     Cover(CoverData),
     RoomPlayInfo(RoomPlayInfoData),
+    VideoTypeList(VideoTypeListData),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -166,4 +167,61 @@ pub struct P2pData {
     pub m_p2p: bool,
     #[serde(rename = "m_servers")]
     pub m_servers: Value,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoTypeListData {
+    pub typelist: Vec<Typelist>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Typelist {
+    pub id: i64,
+    pub parent: i64,
+    #[serde(rename = "parent_name")]
+    pub parent_name: String,
+    pub name: String,
+    pub description: String,
+    pub desc: String,
+    #[serde(rename = "intro_original")]
+    pub intro_original: String,
+    #[serde(rename = "intro_copy")]
+    pub intro_copy: String,
+    pub notice: String,
+    #[serde(rename = "copy_right")]
+    pub copy_right: i64,
+    pub show: bool,
+    pub rank: i64,
+    pub children: Vec<Children>,
+    #[serde(rename = "max_video_count")]
+    pub max_video_count: i64,
+    #[serde(rename = "request_id")]
+    pub request_id: String,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Children {
+    pub id: i64,
+    pub parent: i64,
+    #[serde(rename = "parent_name")]
+    pub parent_name: String,
+    pub name: String,
+    pub description: String,
+    pub desc: String,
+    #[serde(rename = "intro_original")]
+    pub intro_original: String,
+    #[serde(rename = "intro_copy")]
+    pub intro_copy: String,
+    pub notice: String,
+    #[serde(rename = "copy_right")]
+    pub copy_right: i64,
+    pub show: bool,
+    pub rank: i64,
+    #[serde(rename = "max_video_count")]
+    pub max_video_count: i64,
+    #[serde(rename = "request_id")]
+    pub request_id: String,
 }

@@ -752,4 +752,31 @@ impl BiliClient {
             .await?;
         Ok(())
     }
+
+    pub async fn get_video_typelist(
+        &self,
+        account: &AccountRow,
+    ) -> Result<Vec<response::Typelist>, BiliClientError> {
+        let url = "https://member.bilibili.com/x/vupre/web/archive/pre?lang=cn";
+        let mut headers = self.headers.clone();
+        headers.insert("cookie", account.cookies.parse().unwrap());
+        let resp: GeneralResponse = self
+            .client
+            .get(url)
+            .headers(headers)
+            .send()
+            .await?
+            .json()
+            .await?;
+        if resp.code == 0 {
+            if let response::Data::VideoTypeList(data) = resp.data {
+                Ok(data.typelist)
+            } else {
+                Err(BiliClientError::InvalidResponse)
+            }
+        } else {
+            log::error!("Get video typelist failed with code {}", resp.code);
+            Err(BiliClientError::InvalidResponse)
+        }
+    }
 }

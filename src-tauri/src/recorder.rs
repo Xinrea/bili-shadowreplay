@@ -68,6 +68,7 @@ pub struct BiliRecorder {
 
 custom_error! {pub RecorderError
     IndexNotFound {url: String} = "Index not found: {url}",
+    ArchiveInUse {ts: u64} = "Can not delete current stream: {ts}",
     EmptyCache = "Cache is empty",
     M3u8ParseFailed {content: String } = "Parse m3u8 content failed: {content}",
     NoStreamAvailable = "No available stream provided",
@@ -78,7 +79,8 @@ custom_error! {pub RecorderError
     InvalidTimestamp = "Header timestamp is invalid",
     InvalidDBOP {err: DatabaseError } = "Database error: {err}",
     ClientError {err: BiliClientError} = "BiliClient error: {err}",
-    ClipError {err: String} = "FFMPEG error: {err}"
+    ClipError {err: String} = "FFMPEG error: {err}",
+    IoError {err: std::io::Error} = "IO error: {err}",
 }
 
 impl From<DatabaseError> for RecorderError {
@@ -254,15 +256,20 @@ impl BiliRecorder {
         Ok(self.db.get_record(self.room_id, live_id).await?)
     }
 
-    pub async fn delete_archive(&self, ts: u64) {
+    pub async fn delete_archive(&self, ts: u64) -> Result<(), RecorderError> {
+        if ts == *self.timestamp.read().await {
+            return Err(RecorderError::ArchiveInUse { ts });
+        }
         if let Err(e) = self.db.remove_record(ts).await {
             log::error!("remove archive failed: {}", e);
-            return;
+            return Err(e.into());
         }
         let target_dir = format!("{}/{}/{}", self.config.read().await.cache, self.room_id, ts);
         if let Err(e) = fs::remove_dir_all(target_dir).await {
             log::error!("remove archive failed [{}]{}: {}", self.room_id, ts, e);
+            return Err(RecorderError::IoError { err: e });
         }
+        Ok(())
     }
 
     pub async fn run(&self) {

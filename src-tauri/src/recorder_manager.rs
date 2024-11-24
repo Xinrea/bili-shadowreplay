@@ -223,10 +223,11 @@ impl RecorderManager {
         }
     }
 
-    pub async fn delete_archive(&self, room_id: u64, ts: u64) {
+    pub async fn delete_archive(&self, room_id: u64, ts: u64) -> Result<(), RecorderManagerError> {
         if let Some(recorder) = self.recorders.get(&room_id) {
-            recorder.delete_archive(ts).await;
+            recorder.delete_archive(ts).await?
         }
+        Err(RecorderManagerError::NotFound { room_id })
     }
 
     pub async fn get_danmu(

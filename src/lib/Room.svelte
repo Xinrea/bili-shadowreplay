@@ -274,7 +274,7 @@
           invoke("add_recorder", { roomId: Number(addRoom) }).catch(
             async (e) => {
               await message("请检查房间号是否有效：" + e, "添加失败");
-            }
+            },
           );
         }}>确定</Button
       >
@@ -316,11 +316,15 @@
                     invoke("delete_archive", {
                       roomId: archiveRoom.room_id,
                       ts: archive.live_id,
-                    }).then(async () => {
-                      archives = await invoke("get_archives", {
-                        roomId: archiveRoom.room_id,
+                    })
+                      .then(async () => {
+                        archives = await invoke("get_archives", {
+                          roomId: archiveRoom.room_id,
+                        });
+                      })
+                      .catch((e) => {
+                        alert(e);
                       });
-                    });
                   }}>移除</Button
                 >
               </ButtonGroup>

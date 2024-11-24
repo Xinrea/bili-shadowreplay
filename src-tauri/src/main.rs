@@ -600,7 +600,7 @@ async fn delete_archive(
     room_id: u64,
     ts: u64,
 ) -> Result<(), String> {
-    state.recorder_manager.delete_archive(room_id, ts).await;
+    state.recorder_manager.delete_archive(room_id, ts).await?;
     state
         .db
         .new_message(

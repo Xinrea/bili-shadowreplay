@@ -123,6 +123,7 @@ impl RecorderManager {
         if recorder.is_none() {
             return Err(RecorderManagerError::NotFound { room_id });
         }
+        recorder.unwrap().1.stop().await;
         // remove related cache folder
         let cache_folder = format!("{}/{}", self.config.read().await.cache, room_id);
         tokio::fs::remove_dir_all(cache_folder).await?;

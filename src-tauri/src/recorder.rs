@@ -302,6 +302,10 @@ impl BiliRecorder {
         });
     }
 
+    pub async fn stop(&self) {
+        *self.quit.lock().await = true;
+    }
+
     async fn danmu(&self) {
         let (tx, rx) = mpsc::unbounded_channel();
         let cookies = self.account.cookies.clone();
@@ -318,6 +322,9 @@ impl BiliRecorder {
         mut rx: UnboundedReceiver<WsStreamMessageType>,
     ) -> Result<(), FelgensError> {
         while let Some(msg) = rx.recv().await {
+            if *self.quit.lock().await {
+                break;
+            }
             if let WsStreamMessageType::DanmuMsg(msg) = msg {
                 self.app_handle
                     .emit(

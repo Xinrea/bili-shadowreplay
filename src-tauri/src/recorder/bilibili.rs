@@ -9,6 +9,7 @@ use pct_str::URIReserved;
 use profile::Profile;
 use regex::Regex;
 use reqwest::Client;
+use response::Format;
 use response::GeneralResponse;
 use response::PostVideoMetaResponse;
 use response::PreuploadResponse;
@@ -23,144 +24,6 @@ use std::time::SystemTime;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::time::Instant;
-
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PlayUrlResponse {
-    pub code: i64,
-    pub message: String,
-    pub ttl: i64,
-    pub data: Data,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Data {
-    #[serde(rename = "room_id")]
-    pub room_id: i64,
-    #[serde(rename = "short_id")]
-    pub short_id: i64,
-    pub uid: i64,
-    #[serde(rename = "is_hidden")]
-    pub is_hidden: bool,
-    #[serde(rename = "is_locked")]
-    pub is_locked: bool,
-    #[serde(rename = "is_portrait")]
-    pub is_portrait: bool,
-    #[serde(rename = "live_status")]
-    pub live_status: i64,
-    #[serde(rename = "hidden_till")]
-    pub hidden_till: i64,
-    #[serde(rename = "lock_till")]
-    pub lock_till: i64,
-    pub encrypted: bool,
-    #[serde(rename = "pwd_verified")]
-    pub pwd_verified: bool,
-    #[serde(rename = "live_time")]
-    pub live_time: i64,
-    #[serde(rename = "room_shield")]
-    pub room_shield: i64,
-    #[serde(rename = "all_special_types")]
-    pub all_special_types: Vec<i64>,
-    #[serde(rename = "playurl_info")]
-    pub playurl_info: PlayurlInfo,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PlayurlInfo {
-    #[serde(rename = "conf_json")]
-    pub conf_json: String,
-    pub playurl: Playurl,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Playurl {
-    pub cid: i64,
-    #[serde(rename = "g_qn_desc")]
-    pub g_qn_desc: Vec<GQnDesc>,
-    pub stream: Vec<Stream>,
-    #[serde(rename = "p2p_data")]
-    pub p2p_data: P2pData,
-    #[serde(rename = "dolby_qn")]
-    pub dolby_qn: Value,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GQnDesc {
-    pub qn: i64,
-    pub desc: String,
-    #[serde(rename = "hdr_desc")]
-    pub hdr_desc: String,
-    #[serde(rename = "attr_desc")]
-    pub attr_desc: Value,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Stream {
-    #[serde(rename = "protocol_name")]
-    pub protocol_name: String,
-    pub format: Vec<Format>,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Format {
-    #[serde(rename = "format_name")]
-    pub format_name: String,
-    pub codec: Vec<Codec>,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Codec {
-    #[serde(rename = "codec_name")]
-    pub codec_name: String,
-    #[serde(rename = "current_qn")]
-    pub current_qn: i64,
-    #[serde(rename = "accept_qn")]
-    pub accept_qn: Vec<i64>,
-    #[serde(rename = "base_url")]
-    pub base_url: String,
-    #[serde(rename = "url_info")]
-    pub url_info: Vec<UrlInfo>,
-    #[serde(rename = "hdr_qn")]
-    pub hdr_qn: Value,
-    #[serde(rename = "dolby_type")]
-    pub dolby_type: i64,
-    #[serde(rename = "attr_name")]
-    pub attr_name: String,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UrlInfo {
-    pub host: String,
-    pub extra: String,
-    #[serde(rename = "stream_ttl")]
-    pub stream_ttl: i64,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct P2pData {
-    pub p2p: bool,
-    #[serde(rename = "p2p_type")]
-    pub p2p_type: i64,
-    #[serde(rename = "m_p2p")]
-    pub m_p2p: bool,
-    #[serde(rename = "m_servers")]
-    pub m_servers: Value,
-}
-
-/// BiliClient is thread safe
-pub struct BiliClient {
-    client: Client,
-    headers: reqwest::header::HeaderMap,
-}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct RoomInfo {
@@ -192,6 +55,12 @@ pub struct QrInfo {
 pub struct QrStatus {
     pub code: u8,
     pub cookies: String,
+}
+
+/// BiliClient is thread safe
+pub struct BiliClient {
+    client: Client,
+    headers: reqwest::header::HeaderMap,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -454,7 +323,7 @@ impl BiliClient {
     ) -> Result<BiliStream, BiliClientError> {
         let mut headers = self.headers.clone();
         headers.insert("cookie", account.cookies.parse().unwrap());
-        let res: PlayUrlResponse = self
+        let res: GeneralResponse = self
             .client
             .get(format!(
                 "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?room_id={}&protocol=1&format=0,1,2&codec=0&qn=10000&platform=h5",
@@ -464,12 +333,17 @@ impl BiliClient {
             .send().await?
             .json().await?;
         if res.code == 0 {
-            if let Some(stream) = res.data.playurl_info.playurl.stream.first() {
-                // Get fmp4 format
-                if let Some(f) = stream.format.iter().find(|f| f.format_name == "fmp4") {
-                    self.get_stream(f).await
+            if let response::Data::RoomPlayInfo(data) = res.data {
+                if let Some(stream) = data.playurl_info.playurl.stream.first() {
+                    // Get fmp4 format
+                    if let Some(f) = stream.format.iter().find(|f| f.format_name == "fmp4") {
+                        self.get_stream(f).await
+                    } else {
+                        log::error!("No fmp4 stream found: {:#?}", data);
+                        Err(BiliClientError::InvalidResponse)
+                    }
                 } else {
-                    log::error!("Invalid response: {:#?}", res);
+                    log::error!("No stream provided: {:#?}", data);
                     Err(BiliClientError::InvalidResponse)
                 }
             } else {

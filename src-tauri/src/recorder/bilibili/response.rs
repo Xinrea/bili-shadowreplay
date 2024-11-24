@@ -1,4 +1,6 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
+use serde_json::Value;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct GeneralResponse {
@@ -13,6 +15,7 @@ pub struct GeneralResponse {
 pub enum Data {
     VideoSubmit(VideoSubmitData),
     Cover(CoverData),
+    RoomPlayInfo(RoomPlayInfoData),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -40,4 +43,127 @@ pub struct PostVideoMetaResponse {
     pub bucket: String,
     pub key: String,
     pub upload_id: String,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoomPlayInfoData {
+    #[serde(rename = "room_id")]
+    pub room_id: i64,
+    #[serde(rename = "short_id")]
+    pub short_id: i64,
+    pub uid: i64,
+    #[serde(rename = "is_hidden")]
+    pub is_hidden: bool,
+    #[serde(rename = "is_locked")]
+    pub is_locked: bool,
+    #[serde(rename = "is_portrait")]
+    pub is_portrait: bool,
+    #[serde(rename = "live_status")]
+    pub live_status: i64,
+    #[serde(rename = "hidden_till")]
+    pub hidden_till: i64,
+    #[serde(rename = "lock_till")]
+    pub lock_till: i64,
+    pub encrypted: bool,
+    #[serde(rename = "pwd_verified")]
+    pub pwd_verified: bool,
+    #[serde(rename = "live_time")]
+    pub live_time: i64,
+    #[serde(rename = "room_shield")]
+    pub room_shield: i64,
+    #[serde(rename = "all_special_types")]
+    pub all_special_types: Vec<i64>,
+    #[serde(rename = "playurl_info")]
+    pub playurl_info: PlayurlInfo,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayurlInfo {
+    #[serde(rename = "conf_json")]
+    pub conf_json: String,
+    pub playurl: Playurl,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Playurl {
+    pub cid: i64,
+    #[serde(rename = "g_qn_desc")]
+    pub g_qn_desc: Vec<GQnDesc>,
+    pub stream: Vec<Stream>,
+    #[serde(rename = "p2p_data")]
+    pub p2p_data: P2pData,
+    #[serde(rename = "dolby_qn")]
+    pub dolby_qn: Value,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GQnDesc {
+    pub qn: i64,
+    pub desc: String,
+    #[serde(rename = "hdr_desc")]
+    pub hdr_desc: String,
+    #[serde(rename = "attr_desc")]
+    pub attr_desc: Value,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Stream {
+    #[serde(rename = "protocol_name")]
+    pub protocol_name: String,
+    pub format: Vec<Format>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Format {
+    #[serde(rename = "format_name")]
+    pub format_name: String,
+    pub codec: Vec<Codec>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Codec {
+    #[serde(rename = "codec_name")]
+    pub codec_name: String,
+    #[serde(rename = "current_qn")]
+    pub current_qn: i64,
+    #[serde(rename = "accept_qn")]
+    pub accept_qn: Vec<i64>,
+    #[serde(rename = "base_url")]
+    pub base_url: String,
+    #[serde(rename = "url_info")]
+    pub url_info: Vec<UrlInfo>,
+    #[serde(rename = "hdr_qn")]
+    pub hdr_qn: Value,
+    #[serde(rename = "dolby_type")]
+    pub dolby_type: i64,
+    #[serde(rename = "attr_name")]
+    pub attr_name: String,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UrlInfo {
+    pub host: String,
+    pub extra: String,
+    #[serde(rename = "stream_ttl")]
+    pub stream_ttl: i64,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct P2pData {
+    pub p2p: bool,
+    #[serde(rename = "p2p_type")]
+    pub p2p_type: i64,
+    #[serde(rename = "m_p2p")]
+    pub m_p2p: bool,
+    #[serde(rename = "m_servers")]
+    pub m_servers: Value,
 }

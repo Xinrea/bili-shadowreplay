@@ -23,15 +23,10 @@
     ClapperboardPlaySolid,
     PlayOutline,
   } from "flowbite-svelte-icons";
-  import type {
-    Profile,
-    VideoItem,
-    Config,
-    VideoType,
-    Children,
-  } from "./lib/interface";
+  import type { Profile, VideoItem, Config, Marker } from "./lib/interface";
   import { onMount } from "svelte";
   import TypeSelect from "./lib/TypeSelect.svelte";
+  import MarkerPanel from "./lib/MarkerPanel.svelte";
 
   let use_titlebar = platform() == "windows";
 
@@ -257,60 +252,112 @@
     cover = "";
     await get_video_list();
   }
+  let player;
+  let lpanel_collapsed = true;
+  let rpanel_collapsed = false;
+  let markers: Marker[] = [];
+  // load markers from local storage
+  markers = JSON.parse(
+    window.localStorage.getItem(`markers:${room_id}:${ts}`) || "[]",
+  );
+  $: {
+    // makers changed, save to local storage
+    window.localStorage.setItem(
+      `markers:${room_id}:${ts}`,
+      JSON.stringify(markers),
+    );
+  }
 
   // when window resize, update post panel height
   onMount(() => {
     let post_panel = document.getElementById("post-panel");
-    if (post_panel) {
+    if (post_panel && !rpanel_collapsed) {
       post_panel.style.height = `calc(100vh - 35px)`;
     }
     window.addEventListener("resize", () => {
-      if (post_panel) {
+      if (post_panel && !rpanel_collapsed) {
         post_panel.style.height = `calc(100vh - 35px)`;
       }
     });
   });
-
-  let collapsed = false;
 </script>
 
 <main>
   {#if use_titlebar}
     <TitleBar dark />
   {/if}
-  <div class="flex flex-row">
+  <div class="flex flex-row overflow-hidden">
     <div
-      class="overflow-hidden"
-      class:w34={!collapsed}
-      class:w-full={collapsed}
+      class="flex relative h-screen border-solid bg-gray-950 border-r-2 border-gray-800 z-[39]"
+      class:w14={!lpanel_collapsed}
     >
-      <Player bind:start bind:end {port} {room_id} {ts} />
+      <div class="w-full" hidden={lpanel_collapsed}>
+        <MarkerPanel
+          {archive}
+          bind:markers
+          on:markerClick={(e) => {
+            player.seek(e.detail.offset);
+          }}
+        />
+      </div>
+      <button
+        class="collapse-btn lp"
+        on:click={() => {
+          lpanel_collapsed = !lpanel_collapsed;
+        }}
+      >
+        {#if lpanel_collapsed}
+          <AngleRightOutline color="white" />
+        {:else}
+          <AngleLeftOutline color="white" />
+        {/if}
+      </button>
+    </div>
+    <div class="overflow-hidden h-screen w-full relative">
+      <Player
+        bind:start
+        bind:end
+        bind:this={player}
+        {port}
+        {room_id}
+        {ts}
+        {markers}
+        on:markerAdd={(e) => {
+          markers.push({
+            offset: e.detail.offset,
+            realtime: e.detail.realtime,
+            content: "[空标记点]",
+          });
+          markers = markers.sort((a, b) => a.offset - b.offset);
+        }}
+      />
+      }} />
       <Modal title="预览" bind:open={preview} autoclose>
         <!-- svelte-ignore a11y-media-has-caption -->
         <video src={video_src} controls />
       </Modal>
     </div>
     <div
-      class="flex h-screen overflow-hidden border-solid bg-gray-50 border-l-2 border-slate-200 z-[39]"
-      class:w14={!collapsed}
+      class="flex relative h-screen border-solid bg-gray-950 border-l-2 border-gray-800 text-white"
+      class:w14={!rpanel_collapsed}
     >
       <button
-        class="collapse-btn"
+        class="collapse-btn rp"
         on:click={() => {
-          collapsed = !collapsed;
+          rpanel_collapsed = !rpanel_collapsed;
         }}
       >
-        {#if collapsed}
-          <AngleLeftOutline />
+        {#if rpanel_collapsed}
+          <AngleLeftOutline color="white" />
         {:else}
-          <AngleRightOutline />
+          <AngleRightOutline color="white" />
         {/if}
       </button>
       <div
         id="post-panel"
-        class="mt-6 overflow-y-auto overflow-x-hidden py-6 pl-2 pr-2 w-full"
+        class="mt-6 overflow-y-auto overflow-x-hidden p-4 py-6 w-full text-white"
         class:titlebar={use_titlebar}
-        hidden={collapsed}
+        hidden={rpanel_collapsed}
       >
         <!-- svelte-ignore a11y-click-events-have-key-events -->
         {#if video}
@@ -343,7 +390,12 @@
             class="mb-2"
           />
           <ButtonGroup>
-            <Button on:click={generate_clip} disabled={loading} color="primary">
+            <Button
+              on:click={generate_clip}
+              disabled={loading}
+              color="primary"
+              class="w-3/4"
+            >
               {#if loading}
                 <Spinner class="me-3" size="4" />
               {:else}
@@ -353,6 +405,7 @@
             >
             <Button
               color="red"
+              class="w-1/4"
               disabled={!loading && !video}
               on:click={delete_video}>删除</Button
             >
@@ -418,13 +471,25 @@
   .w14 {
     @apply w-1/4;
   }
-  .w34 {
-    @apply w-3/4;
-  }
   .collapse-btn {
+    position: absolute;
+    z-index: 50;
+    top: 50%;
     width: 20px;
+    height: 40px;
   }
-  .collapse-btn:hover {
-    background-color: rgba(0, 0, 0, 0.1);
+  .collapse-btn.rp {
+    left: -20px;
+    border-radius: 4px 0 0 4px;
+    border: 2px solid rgb(31 41 55 / var(--tw-border-opacity));
+    border-right: none;
+    background-color: rgb(3 7 18 / var(--tw-bg-opacity));
+  }
+  .collapse-btn.lp {
+    right: -20px;
+    border-radius: 0 4px 4px 0;
+    border: 2px solid rgb(31 41 55 / var(--tw-border-opacity));
+    border-left: none;
+    background-color: rgb(3 7 18 / var(--tw-bg-opacity));
   }
 </style>

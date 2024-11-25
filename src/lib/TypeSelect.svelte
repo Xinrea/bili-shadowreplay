@@ -34,7 +34,7 @@
 
 <div class="flex">
   <button
-    class="z-10 w-2/5 inline-flex justify-between items-center py-2.5 px-4 text-sm font-medium text-center text-gray-500 bg-gray-100 border border-gray-300 rounded-s-lg hover:bg-gray-200 focus:ring-4 focus:outline-none focus:ring-gray-100 dark:bg-gray-700 dark:hover:bg-gray-600 dark:focus:ring-gray-700 dark:text-white dark:border-gray-600"
+    class="z-10 w-2/5 inline-flex justify-between items-center py-2.5 px-4 text-sm font-medium text-center rounded-s-lg focus:border-primary-500 focus:ring-primary-500 bg-gray-700 text-white placeholder-gray-400 border border-gray-600"
     type="button"
   >
     {parentSelected ? parentSelected.name : ""}
@@ -58,7 +58,7 @@
     {/each}
   </Dropdown>
   <button
-    class="z-10 w-3/5 inline-flex justify-between items-center py-2.5 px-4 text-sm font-medium text-center text-gray-500 bg-gray-100 border border-gray-300 border-l-0 rounded-e-lg hover:bg-gray-200 focus:ring-4 focus:outline-none focus:ring-gray-100 dark:bg-gray-700 dark:hover:bg-gray-600 dark:focus:ring-gray-700 dark:text-white dark:border-gray-600"
+    class="z-10 w-3/5 inline-flex justify-between items-center py-2.5 px-4 text-sm font-medium text-center rounded-e-lg focus:border-primary-500 focus:ring-primary-500 bg-gray-700 text-white placeholder-gray-400 border border-gray-600"
     type="button"
   >
     {areaSelected ? areaSelected.name : ""}
@@ -66,7 +66,7 @@
   </button>
   <Dropdown
     bind:open={areaOpen}
-    containerClass="divide-y z-50 h-48 overflow-y-auto min-w-32"
+    containerClass="divide-y z-50 h-48 overflow-y-auto min-w-32 bg-gray-700 text-gray-200 rounded-lg border-gray-100 border-gray-600 divide-gray-100 divide-gray-600 shadow-md"
   >
     {#each parentSelected.children as child}
       <DropdownItem

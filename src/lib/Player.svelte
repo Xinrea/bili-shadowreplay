@@ -1,7 +1,11 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
-  import type { AccountInfo, AccountItem } from "./db";
+  import type { AccountInfo } from "./db";
+  import type { Marker } from "./interface";
+
+  import { createEventDispatcher } from "svelte";
+  const dispatch = createEventDispatcher();
 
   interface DanmuEntry {
     ts: number;
@@ -13,6 +17,11 @@
   export let ts;
   export let start = 0;
   export let end = 0;
+  export let markers: Marker[] = [];
+  export function seek(offset: number) {
+    video.currentTime = offset;
+  }
+  let video: HTMLVideoElement;
   let show_detail = false;
   let global_offset = 0;
 
@@ -36,7 +45,7 @@
   }
 
   async function init() {
-    const video = document.getElementById("video") as HTMLVideoElement;
+    video = document.getElementById("video") as HTMLVideoElement;
     const ui = video["ui"];
     const controls = ui.getControls();
     const player = controls.getPlayer();
@@ -363,7 +372,11 @@
           if (e.repeat) {
             break;
           }
-          video.muted = !video.muted;
+          // dispatch event
+          dispatch("markerAdd", {
+            offset: video.currentTime,
+            realtime: ts + video.currentTime,
+          });
           break;
         case "ArrowLeft":
           video.currentTime -= 3;
@@ -408,6 +421,35 @@
       }%, rgba(255, 255, 255, 0.4) ${
         first_point * 100
       }%, rgba(255, 255, 255, 0.2) ${first_point * 100}%)`;
+      // render markers in shaka-ad-markers
+      const adMarkers = document.querySelector(
+        ".shaka-ad-markers",
+      ) as HTMLElement;
+      if (adMarkers) {
+        // clean previous markers
+        adMarkers.innerHTML = "";
+        for (const marker of markers) {
+          const markerElement = document.createElement("div");
+          markerElement.style.position = "absolute";
+          markerElement.style.width = "6px";
+          markerElement.style.height = "7px";
+          markerElement.style.backgroundColor = "rgba(0, 128, 255, 0.5)";
+          markerElement.style.left = `calc(${(marker.offset / total) * 100}% - 3px)`;
+          markerElement.style.top = "-12px";
+          // little triangle on the bottom
+          const triangle = document.createElement("div");
+          triangle.style.width = "0";
+          triangle.style.height = "0";
+          triangle.style.borderLeft = "3px solid transparent";
+          triangle.style.borderRight = "3px solid transparent";
+          triangle.style.borderTop = "4px solid rgba(0, 128, 255, 0.5)";
+          triangle.style.position = "absolute";
+          triangle.style.top = "7px";
+          triangle.style.left = "0";
+          markerElement.appendChild(triangle);
+          adMarkers.appendChild(markerElement);
+        }
+      }
       requestAnimationFrame(updateSeekbar);
     }
     requestAnimationFrame(updateSeekbar);
@@ -448,7 +490,7 @@
       <p><kbd>←</kbd>前进</p>
       <p><kbd>→</kbd>后退</p>
       <p><kbd>c</kbd>清除选区</p>
-      <p><kbd>m</kbd>静音</p>
+      <p><kbd>m</kbd>创建标记</p>
     </span>
   {/if}
 </div>
@@ -471,7 +513,7 @@
   }
 
   #overlay {
-    position: fixed;
+    position: absolute;
     top: 8px;
     left: 8px;
     border-radius: 6px;

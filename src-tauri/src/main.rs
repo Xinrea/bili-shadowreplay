@@ -21,6 +21,8 @@ use tauri::utils::config::WindowEffectsConfig;
 use tauri::{Manager, Theme, WindowEvent};
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_sql::{Migration, MigrationKind};
+use tokio::fs::OpenOptions;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 
 use platform_dirs::AppDirs;
@@ -759,6 +761,31 @@ async fn get_video_typelist(
     Ok(state.client.get_video_typelist(&account).await?)
 }
 
+#[tauri::command]
+async fn export_to_file(
+    _state: tauri::State<'_, State>,
+    file_name: &str,
+    content: &str,
+) -> Result<(), String> {
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(file_name)
+        .await;
+    if file.is_err() {
+        return Err(format!("Open file failed: {}", file.err().unwrap()));
+    }
+    let mut file = file.unwrap();
+    if let Err(e) = file.write_all(content.as_bytes()).await {
+        return Err(format!("Write file failed: {}", e));
+    }
+    if let Err(e) = file.flush().await {
+        return Err(format!("Flush file failed: {}", e));
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Setup log
     simplelog::CombinedLogger::init(vec![
@@ -937,6 +964,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             update_notify,
             get_danmu_record,
             get_video_typelist,
+            export_to_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -131,3 +131,9 @@ export interface Children {
   max_video_count: number;
   request_id: string;
 }
+
+export interface Marker {
+  offset: number;
+  realtime: number;
+  content: string;
+}

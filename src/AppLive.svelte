@@ -17,7 +17,12 @@
   import html2canvas from "html2canvas";
   import type { AccountInfo, RecordItem } from "./lib/db";
   import { platform } from "@tauri-apps/plugin-os";
-  import { ClapperboardPlaySolid, PlayOutline } from "flowbite-svelte-icons";
+  import {
+    AngleRightOutline,
+    AngleLeftOutline,
+    ClapperboardPlaySolid,
+    PlayOutline,
+  } from "flowbite-svelte-icons";
   import type {
     Profile,
     VideoItem,
@@ -265,6 +270,8 @@
       }
     });
   });
+
+  let collapsed = false;
 </script>
 
 <main>
@@ -272,7 +279,11 @@
     <TitleBar dark />
   {/if}
   <div class="flex flex-row">
-    <div class="w-3/4 overflow-hidden">
+    <div
+      class="overflow-hidden"
+      class:w34={!collapsed}
+      class:w-full={collapsed}
+    >
       <Player bind:start bind:end {port} {room_id} {ts} />
       <Modal title="预览" bind:open={preview} autoclose>
         <!-- svelte-ignore a11y-media-has-caption -->
@@ -280,12 +291,26 @@
       </Modal>
     </div>
     <div
-      class="w-1/4 h-screen overflow-hidden border-solid bg-gray-50 border-l-2 border-slate-200 z-[39]"
+      class="flex h-screen overflow-hidden border-solid bg-gray-50 border-l-2 border-slate-200 z-[39]"
+      class:w14={!collapsed}
     >
+      <button
+        class="collapse-btn"
+        on:click={() => {
+          collapsed = !collapsed;
+        }}
+      >
+        {#if collapsed}
+          <AngleLeftOutline />
+        {:else}
+          <AngleRightOutline />
+        {/if}
+      </button>
       <div
         id="post-panel"
-        class="mt-6 overflow-y-auto overflow-x-hidden p-6"
+        class="mt-6 overflow-y-auto overflow-x-hidden py-6 pl-2 pr-2 w-full"
         class:titlebar={use_titlebar}
+        hidden={collapsed}
       >
         <!-- svelte-ignore a11y-click-events-have-key-events -->
         {#if video}
@@ -389,5 +414,17 @@
       2px -2px 0 rgba(255, 255, 255, 0.5),
       -2px 2px 0 rgba(255, 255, 255, 0.5),
       2px 2px 0 rgba(255, 255, 255, 0.5); /* 创建细腻的白色描边效果 */
+  }
+  .w14 {
+    @apply w-1/4;
+  }
+  .w34 {
+    @apply w-3/4;
+  }
+  .collapse-btn {
+    width: 20px;
+  }
+  .collapse-btn:hover {
+    background-color: rgba(0, 0, 0, 0.1);
   }
 </style>

@@ -368,7 +368,7 @@
             video.pause();
           }
           break;
-        case "m":
+        case "p":
           if (e.repeat) {
             break;
           }
@@ -490,7 +490,7 @@
       <p><kbd>←</kbd>前进</p>
       <p><kbd>→</kbd>后退</p>
       <p><kbd>c</kbd>清除选区</p>
-      <p><kbd>m</kbd>创建标记</p>
+      <p><kbd>p</kbd>创建标记</p>
     </span>
   {/if}
 </div>

@@ -6,6 +6,7 @@ mod recorder;
 mod recorder_manager;
 mod tray;
 
+use chrono::Utc;
 use custom_error::custom_error;
 use database::account::AccountRow;
 use database::message::MessageRow;
@@ -469,19 +470,21 @@ async fn clip_range(
     // add video to db
     let video = state
         .db
-        .add_video(
+        .add_video(&VideoRow {
+            id: 0,
+            status: 0,
             room_id,
-            &cover,
-            filename,
-            (y - x) as i64,
-            metadata.len() as i64,
-            0,
-            "",
-            "",
-            "",
-            "",
-            0,
-        )
+            created_at: Utc::now().to_rfc3339(),
+            cover: cover.clone(),
+            file: filename.into(),
+            length: (y - x) as i64,
+            size: metadata.len() as i64,
+            bvid: "".into(),
+            title: "".into(),
+            desc: "".into(),
+            tags: "".into(),
+            area: 0,
+        })
         .await?;
     state
         .db
@@ -519,10 +522,10 @@ async fn upload_procedure(
 ) -> Result<String, String> {
     let account = state.db.get_account(uid).await?;
     // get video info from dbs
-    let video = state.db.get_video(video_id).await?;
+    let mut video_row = state.db.get_video(video_id).await?;
     // construct file path
     let output = state.config.read().await.output.clone();
-    let file = format!("{}/{}", output, video.file);
+    let file = format!("{}/{}", output, video_row.file);
     let path = Path::new(&file);
     let cover_url = state.client.upload_cover(&account, &cover);
     if let Ok(video) = state.client.prepare_video(&account, path).await {
@@ -530,18 +533,13 @@ async fn upload_procedure(
         if let Ok(ret) = state.client.submit_video(&account, &profile, &video).await {
             // update video status and details
             // 1 means uploaded
-            state
-                .db
-                .update_video(
-                    video_id,
-                    1,
-                    &ret.bvid,
-                    &profile.title,
-                    &profile.desc,
-                    &profile.tag,
-                    profile.tid,
-                )
-                .await?;
+            video_row.status = 1;
+            video_row.bvid = ret.bvid.clone();
+            video_row.title = profile.title;
+            video_row.desc = profile.desc;
+            video_row.tags = profile.tag;
+            video_row.area = profile.tid as i64;
+            state.db.update_video(&video_row).await?;
             state
                 .db
                 .new_message(

@@ -1,6 +1,5 @@
 use super::Database;
 use super::DatabaseError;
-use chrono::Utc;
 
 // CREATE TABLE videos (id INTEGER PRIMARY KEY, room_id INTEGER, cover TEXT, file TEXT, length INTEGER, size INTEGER, status INTEGER, bvid TEXT, title TEXT, desc TEXT, tags TEXT, area INTEGER, created_at TEXT);
 #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
@@ -41,25 +40,16 @@ impl Database {
         )
     }
 
-    pub async fn update_video(
-        &self,
-        video_id: i64,
-        status: i64,
-        bvid: &str,
-        title: &str,
-        desc: &str,
-        tags: &str,
-        area: u64,
-    ) -> Result<(), DatabaseError> {
+    pub async fn update_video(&self, video_row: &VideoRow) -> Result<(), DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         sqlx::query("UPDATE videos SET status = $1, bvid = $2, title = $3, desc = $4, tags = $5, area = $6 WHERE id = $7")
-            .bind(status)
-            .bind(bvid)
-            .bind(title)
-            .bind(desc)
-            .bind(tags)
-            .bind(area as i64)
-            .bind(video_id)
+            .bind(video_row.status)
+            .bind(&video_row.bvid)
+            .bind(&video_row.title)
+            .bind(&video_row.desc)
+            .bind(&video_row.tags)
+            .bind(video_row.area)
+            .bind(video_row.id)
             .execute(&lock)
             .await?;
         Ok(())
@@ -74,36 +64,8 @@ impl Database {
         Ok(())
     }
 
-    pub async fn add_video(
-        &self,
-        room_id: u64,
-        cover: &str,
-        file: &str,
-        length: i64,
-        size: i64,
-        status: i64,
-        bvid: &str,
-        title: &str,
-        desc: &str,
-        tags: &str,
-        area: i64,
-    ) -> Result<VideoRow, DatabaseError> {
+    pub async fn add_video(&self, video: &VideoRow) -> Result<VideoRow, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
-        let mut video = VideoRow {
-            id: 0,
-            room_id,
-            cover: cover.into(),
-            file: file.into(),
-            length,
-            size,
-            status,
-            bvid: bvid.into(),
-            title: title.into(),
-            desc: desc.into(),
-            tags: tags.into(),
-            area,
-            created_at: Utc::now().to_rfc3339(),
-        };
         let sql = sqlx::query("INSERT INTO videos (room_id, cover, file, length, size, status, bvid, title, desc, tags, area, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)")
             .bind(video.room_id as i64)
             .bind(&video.cover)
@@ -119,7 +81,10 @@ impl Database {
             .bind(&video.created_at)
             .execute(&lock)
             .await?;
-        video.id = sql.last_insert_rowid();
+        let video = VideoRow {
+            id: sql.last_insert_rowid(),
+            ..video.clone()
+        };
         Ok(video)
     }
 }

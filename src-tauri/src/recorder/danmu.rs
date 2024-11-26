@@ -23,6 +23,7 @@ impl DanmuStorage {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(file_path)
             .await;
         if file.is_err() {
@@ -45,10 +46,10 @@ impl DanmuStorage {
             .open(file_path)
             .await
             .expect("create danmu.txt failed");
-        return Some(DanmuStorage {
+        Some(DanmuStorage {
             cache: RwLock::new(preload_cache),
             file: RwLock::new(file),
-        });
+        })
     }
 
     pub async fn add_line(&self, ts: u64, content: &str) {

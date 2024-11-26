@@ -383,7 +383,7 @@ impl BiliRecorder {
             }
             Err(e) => {
                 log::error!("Failed fetching index content from {}", stream.index());
-                return Err(RecorderError::ClientError { err: e });
+                Err(RecorderError::ClientError { err: e })
             }
         }
     }
@@ -542,17 +542,17 @@ impl BiliRecorder {
                         if tag.tag == "BILI-AUX" {
                             if let Some(rest) = tag.rest {
                                 let parts: Vec<&str> = rest.split('|').collect();
-                                if parts.len() == 0 {
+                                if parts.is_empty() {
                                     continue;
                                 }
-                                offset_hex = parts.get(0).unwrap().to_string();
+                                offset_hex = parts.first().unwrap().to_string();
                                 seg_offset = u64::from_str_radix(&offset_hex, 16).unwrap();
                             }
                             break;
                         }
                     }
                     let ts_url = current_stream.ts_url(&ts.uri);
-                    if !Url::parse(&ts_url).is_ok() {
+                    if Url::parse(&ts_url).is_err() {
                         log::error!("Ts url is invalid. ts_url={} original={}", ts_url, ts.uri);
                         continue;
                     }
@@ -800,6 +800,7 @@ impl BiliRecorder {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(true)
             .open(&file_name)
             .await;
         if file.is_err() {
@@ -920,7 +921,7 @@ impl BiliRecorder {
             if infos.len() == 1 {
                 continue;
             } else {
-                if let Ok(parsed_offset) = u64::from_str_radix(infos.get(0).unwrap(), 16) {
+                if let Ok(parsed_offset) = u64::from_str_radix(infos.first().unwrap(), 16) {
                     offset = parsed_offset;
                 } else {
                     continue;
@@ -1003,12 +1004,8 @@ impl BiliRecorder {
         if ts == *self.timestamp.read().await {
             // just return current cache content
             match self.danmu_storage.read().await.as_ref() {
-                Some(storage) => {
-                    return storage.get_entries().await;
-                }
-                None => {
-                    return Vec::new();
-                }
+                Some(storage) => storage.get_entries().await,
+                None => Vec::new(),
             }
         } else {
             // load disk cache
@@ -1025,7 +1022,7 @@ impl BiliRecorder {
                 return Vec::new();
             }
             let storage = storage.unwrap();
-            return storage.get_entries().await;
+            storage.get_entries().await
         }
     }
 }

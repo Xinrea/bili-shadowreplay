@@ -18,6 +18,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::json;
 use serde_json::Value;
+use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 use std::time::SystemTime;
@@ -78,9 +79,10 @@ pub struct BiliStream {
     pub expire: i64,
 }
 
-impl ToString for BiliStream {
-    fn to_string(&self) -> String {
-        format!(
+impl fmt::Display for BiliStream {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
             "type: {:?}, host: {}, path: {}, extra: {}, expire: {}",
             self.format, self.host, self.path, self.extra, self.expire
         )
@@ -89,21 +91,21 @@ impl ToString for BiliStream {
 
 impl BiliStream {
     pub fn new(format: StreamType, base_url: &str, host: &str, extra: &str) -> BiliStream {
-        return BiliStream {
+        BiliStream {
             format,
             host: host.into(),
             path: BiliStream::get_path(base_url),
             extra: extra.into(),
             expire: BiliStream::get_expire(extra).unwrap(),
-        };
+        }
     }
 
     pub fn index(&self) -> String {
-        return format!("{}{}{}", self.host, self.path, "index.m3u8");
+        format!("{}{}{}", self.host, self.path, "index.m3u8")
     }
 
     pub fn ts_url(&self, seg_name: &str) -> String {
-        return format!("{}{}{}?{}", self.host, self.path, seg_name, self.extra);
+        format!("{}{}{}?{}", self.host, self.path, seg_name, self.extra)
     }
 
     pub fn get_path(base_url: &str) -> String {

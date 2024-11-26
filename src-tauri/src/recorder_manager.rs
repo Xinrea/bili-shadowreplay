@@ -1,4 +1,4 @@
-use crate::db::{AccountRow, Database, RecordRow};
+use crate::database::{account::AccountRow, record::RecordRow, Database};
 use crate::recorder::bilibili::UserInfo;
 use crate::recorder::danmu::DanmuEntry;
 use crate::recorder::RecorderError;

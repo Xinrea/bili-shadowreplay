@@ -25,7 +25,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::sync::{Mutex, RwLock};
 
-use crate::db::{AccountRow, Database, DatabaseError, RecordRow};
+use crate::database::{account::AccountRow, record::RecordRow, Database, DatabaseError};
 use crate::Config;
 
 #[derive(Clone)]

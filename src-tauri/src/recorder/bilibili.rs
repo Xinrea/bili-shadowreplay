@@ -1,7 +1,7 @@
 pub mod errors;
 pub mod profile;
 pub mod response;
-use crate::db::AccountRow;
+use crate::database::account::AccountRow;
 
 use errors::BiliClientError;
 use pct_str::PctString;

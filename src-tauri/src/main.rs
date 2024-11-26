@@ -1,13 +1,18 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod db;
+mod database;
 mod recorder;
 mod recorder_manager;
 mod tray;
 
 use custom_error::custom_error;
-use db::{AccountRow, Database, MessageRow, RecordRow, VideoRow};
+use database::account::AccountRow;
+use database::message::MessageRow;
+use database::record::RecordRow;
+use database::recorder::RecorderRow;
+use database::video::VideoRow;
+use database::Database;
 use recorder::bilibili::errors::BiliClientError;
 use recorder::bilibili::profile::Profile;
 use recorder::bilibili::{BiliClient, QrInfo, QrStatus};
@@ -312,10 +317,7 @@ async fn set_primary(state: tauri::State<'_, State>, uid: u64) -> Result<(), Str
 }
 
 #[tauri::command]
-async fn add_recorder(
-    state: tauri::State<'_, State>,
-    room_id: u64,
-) -> Result<db::RecorderRow, String> {
+async fn add_recorder(state: tauri::State<'_, State>, room_id: u64) -> Result<RecorderRow, String> {
     let account = state
         .db
         .get_account(state.config.read().await.primary_uid)

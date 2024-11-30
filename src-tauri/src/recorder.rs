@@ -333,15 +333,13 @@ impl BiliRecorder {
                 break;
             }
             if let WsStreamMessageType::DanmuMsg(msg) = msg {
-                self.app_handle
-                    .emit(
-                        &format!("danmu:{}", room),
-                        DanmuEntry {
-                            ts: msg.timestamp,
-                            content: msg.msg.clone(),
-                        },
-                    )
-                    .unwrap();
+                let _ = self.app_handle.emit(
+                    &format!("danmu:{}", room),
+                    DanmuEntry {
+                        ts: msg.timestamp,
+                        content: msg.msg.clone(),
+                    },
+                );
                 if *self.live_status.read().await {
                     // save danmu
                     if let Some(storage) = self.danmu_storage.write().await.as_ref() {

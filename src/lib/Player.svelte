@@ -142,7 +142,7 @@
       const cur = Math.floor(
         (video.currentTime + global_offset / 1000 + ts) * 1000,
       );
-      console.log(new Date(cur).toString());
+      console.log("Now playing:", new Date(cur).toString());
       let danmus = danmu_records.filter((v) => {
         return v.ts >= cur - 1000 && v.ts < cur;
       });
@@ -173,7 +173,7 @@
       const danmakuInput = document.createElement("input");
       danmakuInput.type = "text";
       danmakuInput.placeholder = "回车发送弹幕";
-      danmakuInput.style.width = "50%";
+      danmakuInput.style.width = "30%";
       danmakuInput.style.height = "30px";
       danmakuInput.style.backgroundColor = "rgba(0, 0, 0, 0)";
       danmakuInput.style.color = "white";
@@ -202,15 +202,21 @@
       shakaSpacer.appendChild(danmakuInput);
 
       // listen to danmaku event
-      listen("danmu:" + room_id, (event: { payload: DanmuEntry }) => {
-        // add into records
-        danmu_records.push(event.payload);
-        // if not enabled or playback is not keep up with live, ignore the danmaku
-        if (!danmu_enabled || get_total() - video.currentTime > 5) {
-          return;
-        }
-        danmu_handler(event.payload.content);
-      });
+      const unlisten = await listen(
+        "danmu:" + room_id,
+        (event: { payload: DanmuEntry }) => {
+          // add into records
+          danmu_records.push(event.payload);
+          // if not enabled or playback is not keep up with live, ignore the danmaku
+          if (!danmu_enabled || get_total() - video.currentTime > 5) {
+            return;
+          }
+          danmu_handler(event.payload.content);
+        },
+      );
+      window.onbeforeunload = () => {
+        unlisten();
+      };
     }
 
     // create a danmaku toggle button
@@ -322,7 +328,54 @@
       video.playbackRate = rate;
     });
 
+    // create a danmu statistics select into shaka-spacer
+    let statisticKey = "";
+    const statisticKeyInput = document.createElement("input");
+    statisticKeyInput.style.height = "30px";
+    statisticKeyInput.style.width = "100px";
+    statisticKeyInput.style.backgroundColor = "rgba(0, 0, 0, 0.5)";
+    statisticKeyInput.style.color = "white";
+    statisticKeyInput.style.border = "1px solid gray";
+    statisticKeyInput.style.padding = "0 10px";
+    statisticKeyInput.style.boxSizing = "border-box";
+    statisticKeyInput.style.fontSize = "1em";
+    statisticKeyInput.style.right = "75px";
+    statisticKeyInput.placeholder = "弹幕统计过滤";
+    statisticKeyInput.style.position = "absolute";
+
+    let danmu_statistics: { ts: number; count: number }[] = [];
+
+    function update_statistics() {
+      let counts = {};
+      danmu_records.forEach((e) => {
+        if (statisticKey != "" && !e.content.includes(statisticKey)) {
+          return;
+        }
+        const timeSlot = Math.floor(e.ts / 10000) * 10000; // 将时间戳向下取整到10秒
+        counts[timeSlot] = (counts[timeSlot] || 0) + 1;
+      });
+      danmu_statistics = [];
+      for (let ts in counts) {
+        danmu_statistics.push({ ts: parseInt(ts), count: counts[ts] });
+      }
+      console.log(danmu_statistics);
+    }
+
+    update_statistics();
+
+    if (isLive()) {
+      setInterval(async () => {
+        update_statistics();
+      }, 10 * 1000);
+    }
+
+    statisticKeyInput.addEventListener("change", () => {
+      statisticKey = statisticKeyInput.value;
+      update_statistics();
+    });
+
     shakaSpacer.appendChild(playbackRateSelect);
+    shakaSpacer.appendChild(statisticKeyInput);
 
     // shaka-spacer should be flex-direction: column
     shakaSpacer.style.flexDirection = "column";
@@ -404,14 +457,90 @@
       }
     });
 
+    const seekbarContainer = selfSeekbar.querySelector(
+      ".shaka-seek-bar-container.self-defined",
+    ) as HTMLElement;
+
+    const statisticGraph = document.createElement(
+      "canvas",
+    ) as HTMLCanvasElement;
+    statisticGraph.style.pointerEvents = "none";
+    statisticGraph.style.position = "absolute";
+    statisticGraph.style.bottom = "11px";
+    statisticGraph.style.zIndex = "20";
+    const canvas = statisticGraph.getContext("2d");
+    seekbarContainer.appendChild(statisticGraph);
+
+    // draw statistics
+    function drawStatistics(points: { ts: number; count: number }[]) {
+      if (points == undefined) {
+        points = [];
+      }
+      // preprocess points
+      let preprocessed = [];
+      for (let i = 1; i < points.length; i++) {
+        preprocessed.push(points[i - 1]);
+        let gap = (points[i].ts - points[i - 1].ts) / 1000;
+        if (gap > 10) {
+          // add zero point to fill gap
+          let cnt = 1;
+          while (gap > 10) {
+            preprocessed.push({
+              ts: points[i - 1].ts + cnt * 10 * 1000,
+              count: 0,
+            });
+            cnt += 1;
+            gap -= 10;
+          }
+        }
+      }
+      if (points.length > 0) {
+        preprocessed.push(points[points.length - 1]);
+      }
+      const scale = window.devicePixelRatio || 1;
+      statisticGraph.width = seekbarContainer.clientWidth * scale;
+      statisticGraph.height = 30 * scale;
+      statisticGraph.style.width = `${seekbarContainer.clientWidth}px`;
+      statisticGraph.style.height = "30px";
+      const canvasHeight = statisticGraph.height;
+      const canvasWidth = statisticGraph.width;
+      // find value range
+      const minValue = 0;
+      const maxValue = Math.max(...preprocessed.map((v) => v.count));
+      const beginTime = player.getPresentationStartTimeAsDate().getTime();
+      const duration = get_total() * 1000;
+      canvas.clearRect(0, 0, canvasWidth, canvasHeight);
+      if (preprocessed.length > 0) {
+        canvas.beginPath();
+        const x = ((preprocessed[0].ts - beginTime) / duration) * canvasWidth;
+        const y =
+          (1 - (preprocessed[0].count - minValue) / (maxValue - minValue)) *
+          canvasHeight;
+        canvas.moveTo(x, y);
+        for (let i = 0; i < preprocessed.length; i++) {
+          const x = ((preprocessed[i].ts - beginTime) / duration) * canvasWidth;
+          const y =
+            (1 - (preprocessed[i].count - minValue) / (maxValue - minValue)) *
+            canvasHeight;
+          canvas.lineTo(x, y);
+          if (i == preprocessed.length - 1) {
+            canvas.lineTo(x, canvasHeight);
+          }
+        }
+        canvas.strokeStyle = "rgba(245, 166, 39, 0.5)";
+        canvas.stroke();
+        canvas.lineTo(x, canvasHeight);
+        canvas.closePath();
+        canvas.fillStyle = "rgba(245, 166, 39, 0.5)";
+        canvas.fill();
+      }
+    }
+
     function updateSeekbar() {
       const total = get_total();
       const first_point = start / total;
       const second_point = end / total;
       // set background color for self-defined seekbar between first_point and second_point using linear-gradient
-      const seekbarContainer = selfSeekbar.querySelector(
-        ".shaka-seek-bar-container.self-defined",
-      ) as HTMLElement;
       seekbarContainer.style.background = `linear-gradient(to right, rgba(255, 255, 255, 0.4) ${
         first_point * 100
       }%, rgb(0, 255, 0) ${first_point * 100}%, rgb(0, 255, 0) ${
@@ -433,22 +562,24 @@
           markerElement.style.position = "absolute";
           markerElement.style.width = "6px";
           markerElement.style.height = "7px";
-          markerElement.style.backgroundColor = "rgba(0, 128, 255, 0.5)";
+          markerElement.style.backgroundColor = "#93A8AC";
           markerElement.style.left = `calc(${(marker.offset / total) * 100}% - 3px)`;
           markerElement.style.top = "-12px";
+          markerElement.style.zIndex = "30";
           // little triangle on the bottom
           const triangle = document.createElement("div");
           triangle.style.width = "0";
           triangle.style.height = "0";
           triangle.style.borderLeft = "3px solid transparent";
           triangle.style.borderRight = "3px solid transparent";
-          triangle.style.borderTop = "4px solid rgba(0, 128, 255, 0.5)";
+          triangle.style.borderTop = "4px solid #93A8AC";
           triangle.style.position = "absolute";
           triangle.style.top = "7px";
           triangle.style.left = "0";
           markerElement.appendChild(triangle);
           adMarkers.appendChild(markerElement);
         }
+        drawStatistics(danmu_statistics);
       }
       requestAnimationFrame(updateSeekbar);
     }

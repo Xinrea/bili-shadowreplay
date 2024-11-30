@@ -101,7 +101,7 @@ impl BiliStream {
     }
 
     pub fn index(&self) -> String {
-        format!("{}{}{}", self.host, self.path, "index.m3u8")
+        format!("{}{}{}?{}", self.host, self.path, "index.m3u8", self.extra)
     }
 
     pub fn ts_url(&self, seg_name: &str) -> String {

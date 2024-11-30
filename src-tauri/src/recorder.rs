@@ -3,7 +3,7 @@ pub mod danmu;
 use async_std::{fs, stream::StreamExt};
 use bilibili::{errors::BiliClientError, RoomInfo};
 use bilibili::{BiliClient, BiliStream, StreamType, UserInfo};
-use chrono::prelude::*;
+use chrono::{TimeZone, Utc};
 use custom_error::custom_error;
 use danmu::{DanmuEntry, DanmuStorage};
 use dashmap::DashMap;
@@ -18,6 +18,7 @@ use rand::Rng;
 use regex::Regex;
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Url};
 use tauri_plugin_notification::NotificationExt;
 use tokio::fs::OpenOptions;
@@ -580,17 +581,27 @@ impl BiliRecorder {
                     let cache_size_clone = self.cache_size.clone();
                     handles.push(tokio::task::spawn(async move {
                         let file_name_clone = file_name.clone();
-                        match client
-                            .read()
-                            .await
-                            .download_ts(&ts_url, &format!("{}/{}", work_dir, file_name_clone))
-                            .await
-                        {
-                            Ok(size) => {
-                                *cache_size_clone.write().await += size;
+                        let mut retry = 0;
+                        loop {
+                            if retry > 3 {
+                                log::error!("Download ts failed after retry");
+                                break;
                             }
-                            Err(e) => {
-                                log::error!("Download ts failed: {}", e);
+                            match client
+                                .read()
+                                .await
+                                .download_ts(&ts_url, &format!("{}/{}", work_dir, file_name_clone))
+                                .await
+                            {
+                                Ok(size) => {
+                                    *cache_size_clone.write().await += size;
+                                    break;
+                                }
+                                Err(e) => {
+                                    retry += 1;
+                                    log::warn!("Download ts failed, retry {}: {}", retry, e);
+                                    tokio::time::sleep(Duration::from_secs(3)).await;
+                                }
                             }
                         }
                     }));

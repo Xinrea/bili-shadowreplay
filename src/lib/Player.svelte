@@ -62,6 +62,12 @@
     (window as any).player = player;
     (window as any).ui = ui;
 
+    player.configure({
+      streaming: {
+        lowLatencyMode: true,
+      },
+    });
+
     player.addEventListener("ended", async () => {
       location.reload();
     });
@@ -262,7 +268,7 @@
       danmaku.style.position = "absolute";
 
       // Calculate a random position for the danmaku
-      let topPosition;
+      let topPosition = 0;
       let attempts = 0;
       do {
         topPosition = Math.random() * 30;

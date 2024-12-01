@@ -11,20 +11,20 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@tauri-apps/api": "2.0.0-rc.0",
-    "@tauri-apps/plugin-dialog": "^2.0.0-rc.1",
-    "@tauri-apps/plugin-fs": "^2.0.0-rc.2",
-    "@tauri-apps/plugin-http": "^2.0.0-rc.2",
+    "@tauri-apps/api": "^2.1.1",
+    "@tauri-apps/plugin-dialog": "~2",
+    "@tauri-apps/plugin-fs": "~2",
+    "@tauri-apps/plugin-http": "~2",
     "@tauri-apps/plugin-notification": "~2",
-    "@tauri-apps/plugin-os": "^2.0.0-rc",
-    "@tauri-apps/plugin-shell": "^2.0.0-rc.1",
-    "@tauri-apps/plugin-sql": "^2.0.0-rc.1",
+    "@tauri-apps/plugin-os": "~2",
+    "@tauri-apps/plugin-shell": "~2",
+    "@tauri-apps/plugin-sql": "~2",
     "html2canvas": "^1.4.1",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^2.0.0",
-    "@tauri-apps/cli": "^2.0.2",
+    "@tauri-apps/cli": "^2.1.0",
     "@tsconfig/svelte": "^3.0.0",
     "@types/node": "^18.7.10",
     "@types/qrcode": "^1.5.5",

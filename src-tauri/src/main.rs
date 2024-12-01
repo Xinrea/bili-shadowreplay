@@ -823,6 +823,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Tauri part
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let _ = app
+                .get_webview_window("main")
+                .expect("no main window")
+                .set_focus();
+        }))
+        .plugin(tauri_plugin_sql::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_single_instance::init(|_, _, _| {}))
@@ -849,7 +856,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let client_clone = client.clone();
             tauri::async_runtime::block_on(async move {
                 let _ = recorder_manager_clone.run_hls().await;
-                let binding = dbs.0.lock().await;
+                let binding = dbs.0.read().await;
                 let dbpool = binding.get("sqlite:data.db").unwrap();
                 let sqlite_pool = match dbpool {
                     tauri_plugin_sql::DbPool::Sqlite(pool) => Some(pool),

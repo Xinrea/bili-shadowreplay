@@ -358,7 +358,6 @@
       for (let ts in counts) {
         danmu_statistics.push({ ts: parseInt(ts), count: counts[ts] });
       }
-      console.log(danmu_statistics);
     }
 
     update_statistics();

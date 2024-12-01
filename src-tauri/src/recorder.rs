@@ -12,7 +12,6 @@ use ffmpeg_sidecar::{
     command::FfmpegCommand,
     event::{FfmpegEvent, LogLevel},
 };
-use futures::future::join_all;
 use m3u8_rs::Playlist;
 use rand::Rng;
 use regex::Regex;
@@ -57,7 +56,7 @@ pub struct BiliRecorder {
     pub last_sequence: Arc<RwLock<u64>>,
     pub ts_length: Arc<RwLock<f64>>,
     pub timestamp: Arc<RwLock<u64>>,
-    ts_entries: Arc<Mutex<Vec<TsEntry>>>,
+    ts_entries: Arc<RwLock<Vec<TsEntry>>>,
     last_update: Arc<RwLock<i64>>,
     quit: Arc<Mutex<bool>>,
     header: Arc<RwLock<Option<TsEntry>>>,
@@ -133,7 +132,7 @@ impl BiliRecorder {
             live_status: Arc::new(RwLock::new(live_status)),
             last_sequence: Arc::new(RwLock::new(0)),
             ts_length: Arc::new(RwLock::new(0.0)),
-            ts_entries: Arc::new(Mutex::new(Vec::new())),
+            ts_entries: Arc::new(RwLock::new(Vec::new())),
             timestamp: Arc::new(RwLock::new(0)),
             last_update: Arc::new(RwLock::new(Utc::now().timestamp())),
             quit: Arc::new(Mutex::new(false)),
@@ -150,7 +149,7 @@ impl BiliRecorder {
     pub async fn reset(&self) {
         *self.ts_length.write().await = 0.0;
         *self.last_sequence.write().await = 0;
-        self.ts_entries.lock().await.clear();
+        self.ts_entries.write().await.clear();
         *self.header.write().await = None;
         *self.timestamp.write().await = 0;
         *self.last_update.write().await = Utc::now().timestamp();
@@ -528,7 +527,6 @@ impl BiliRecorder {
             Ok(Playlist::MediaPlaylist(pl)) => {
                 let mut new_segment_fetched = false;
                 let mut sequence = pl.media_sequence;
-                let mut handles = Vec::new();
                 for ts in pl.segments {
                     if sequence <= *self.last_sequence.read().await {
                         sequence += 1;
@@ -556,18 +554,17 @@ impl BiliRecorder {
                         continue;
                     }
                     // encode segment offset into filename
-                    let mut entries = self.ts_entries.lock().await;
                     let file_name =
                         format!("{}-{}", &offset_hex, ts.uri.split('/').last().unwrap());
                     let mut ts_length = 1.0;
                     // calculate entry length using offset
                     // the default #EXTINF is 1.0, which is not accurate
-                    if !entries.is_empty() {
+                    if let Some(last) = self.ts_entries.read().await.last() {
                         // skip this entry as it is already in cache or stream changed
-                        if seg_offset <= entries.last().unwrap().offset {
+                        if seg_offset <= last.offset {
                             continue;
                         }
-                        ts_length = (seg_offset - entries.last().unwrap().offset) as f64 / 1000.0;
+                        ts_length = (seg_offset - last.offset) as f64 / 1000.0;
                     }
                     let ts_entry = TsEntry {
                         url: file_name.clone(),
@@ -577,52 +574,43 @@ impl BiliRecorder {
                         size: 0,
                     };
                     let client = self.client.clone();
-                    let work_dir = work_dir.clone();
-                    let cache_size_clone = self.cache_size.clone();
-                    handles.push(tokio::task::spawn(async move {
-                        let file_name_clone = file_name.clone();
-                        let mut retry = 0;
-                        loop {
-                            if retry > 3 {
-                                log::error!("Download ts failed after retry");
+                    let mut retry = 0;
+                    loop {
+                        if retry > 3 {
+                            log::error!("Download ts failed after retry");
+                            break;
+                        }
+                        match client
+                            .read()
+                            .await
+                            .download_ts(&ts_url, &format!("{}/{}", work_dir, file_name))
+                            .await
+                        {
+                            Ok(size) => {
+                                self.ts_entries.write().await.push(ts_entry);
+                                *self.cache_size.write().await += size;
                                 break;
                             }
-                            match client
-                                .read()
-                                .await
-                                .download_ts(&ts_url, &format!("{}/{}", work_dir, file_name_clone))
-                                .await
-                            {
-                                Ok(size) => {
-                                    *cache_size_clone.write().await += size;
-                                    break;
-                                }
-                                Err(e) => {
-                                    retry += 1;
-                                    log::warn!("Download ts failed, retry {}: {}", retry, e);
-                                    tokio::time::sleep(Duration::from_secs(3)).await;
-                                }
+                            Err(e) => {
+                                retry += 1;
+                                log::warn!("Download ts failed, retry {}: {}", retry, e);
+                                tokio::time::sleep(Duration::from_secs(3)).await;
                             }
                         }
-                    }));
-                    entries.push(ts_entry);
+                    }
                     *self.last_sequence.write().await = sequence;
                     let mut total_length = self.ts_length.write().await;
                     *total_length += ts.duration as f64;
                     sequence += 1;
                 }
-                join_all(handles).await.into_iter().for_each(|e| {
-                    if let Err(e) = e {
-                        log::error!("Download ts failed: {:?}", e);
-                    }
-                });
+
                 if new_segment_fetched {
                     *self.last_update.write().await = Utc::now().timestamp();
                     self.db
                         .update_record(
                             timestamp,
                             self.ts_entries
-                                .lock()
+                                .read()
                                 .await
                                 .iter()
                                 .fold(0.0, |t, e| t + e.length) as i64,
@@ -639,9 +627,7 @@ impl BiliRecorder {
                     }
                 }
                 // check the current stream is too slow or not
-                let entries = self.ts_entries.lock().await;
-                if !entries.is_empty() {
-                    let last_entry = entries.last().unwrap();
+                if let Some(last_entry) = self.ts_entries.read().await.last() {
                     let last_entry_time = (last_entry.offset + *self.timestamp.read().await) as i64;
                     if last_entry_time < Utc::now().timestamp() - 10 {
                         log::error!(
@@ -667,7 +653,7 @@ impl BiliRecorder {
         if entries.is_empty() {
             return;
         }
-        self.ts_entries.lock().await.extend_from_slice(&entries);
+        self.ts_entries.write().await.extend_from_slice(&entries);
         *self.ts_length.write().await = entries.len() as f64;
         *self.cache_size.write().await = entries.iter().map(|e| e.size).sum();
         *self.last_sequence.write().await = entries.last().unwrap().sequence;
@@ -747,7 +733,7 @@ impl BiliRecorder {
         log::info!("Create live clip for range [{}, {}]", x, y);
         let mut to_combine = Vec::new();
         let header_copy = self.header.read().await.clone();
-        let entry_copy = self.ts_entries.lock().await.clone();
+        let entry_copy = self.ts_entries.read().await.clone();
         if entry_copy.is_empty() {
             return Err(RecorderError::EmptyCache);
         }
@@ -966,6 +952,7 @@ impl BiliRecorder {
         let mut m3u8_content = "#EXTM3U\n".to_string();
         m3u8_content += "#EXT-X-VERSION:6\n";
         m3u8_content += "#EXT-X-TARGETDURATION:1\n";
+        m3u8_content += "#EXT-X-SERVER-CONTROL:HOLD-BACK:3\n";
         // if stream is closed, switch to VOD
         if live_status {
             m3u8_content += "#EXT-X-PLAYLIST-TYPE:EVENT\n";
@@ -979,7 +966,7 @@ impl BiliRecorder {
             let local_url = format!("/{}/{}/{}", self.room_id, timestamp, file_name);
             m3u8_content += &format!("#EXT-X-MAP:URI=\"{}\"\n", local_url);
         }
-        let entries = self.ts_entries.lock().await.clone();
+        let entries = self.ts_entries.read().await.clone();
         if entries.is_empty() {
             m3u8_content += "#EXT-X-OFFSET:0\n";
             return m3u8_content;

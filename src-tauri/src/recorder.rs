@@ -281,11 +281,29 @@ impl BiliRecorder {
                     if self_clone.check_status().await {
                         // Live status is ok, start recording.
                         while !*self_clone.quit.lock().await {
-                            if let Err(e) = self_clone.update_entries().await {
-                                log::error!("[{}]Update entries error: {}", self_clone.room_id, e);
-                                break;
+                            match self_clone.update_entries().await {
+                                Ok(ms) => {
+                                    if ms < 1000 {
+                                        thread::sleep(std::time::Duration::from_millis(
+                                            (1000 - ms) as u64,
+                                        ));
+                                    } else {
+                                        log::warn!(
+                                            "[{}]Update entries cost too long: {}ms",
+                                            self_clone.room_id,
+                                            ms
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    log::error!(
+                                        "[{}]Update entries error: {}",
+                                        self_clone.room_id,
+                                        e
+                                    );
+                                    break;
+                                }
                             }
-                            thread::sleep(std::time::Duration::from_secs(1));
                         }
                         // go check status again after random 2-5 secs
                         let mut rng = rand::thread_rng();
@@ -438,7 +456,8 @@ impl BiliRecorder {
         }
     }
 
-    async fn update_entries(&self) -> Result<(), RecorderError> {
+    async fn update_entries(&self) -> Result<u128, RecorderError> {
+        let task_begin_time = std::time::Instant::now();
         let current_stream = self.live_stream.read().await.clone();
         if current_stream.is_none() {
             return Err(RecorderError::NoStreamAvailable);
@@ -594,7 +613,6 @@ impl BiliRecorder {
                             Err(e) => {
                                 retry += 1;
                                 log::warn!("Download ts failed, retry {}: {}", retry, e);
-                                tokio::time::sleep(Duration::from_secs(3)).await;
                             }
                         }
                     }
@@ -644,7 +662,7 @@ impl BiliRecorder {
                 return Err(e);
             }
         }
-        Ok(())
+        Ok(task_begin_time.elapsed().as_millis())
     }
 
     async fn restore(&self, work_dir: &str) {

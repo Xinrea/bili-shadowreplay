@@ -2,9 +2,10 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import type { AccountInfo } from "./db";
-  import type { Marker } from "./interface";
+  import type { Marker, RecorderList, RecorderInfo } from "./interface";
 
   import { createEventDispatcher } from "svelte";
+  import { GridOutline, SortHorizontalOutline } from "flowbite-svelte-icons";
   const dispatch = createEventDispatcher();
 
   interface DanmuEntry {
@@ -23,7 +24,15 @@
   }
   let video: HTMLVideoElement;
   let show_detail = false;
+  let show_list = false;
   let global_offset = 0;
+  let recorders: RecorderInfo[] = [];
+
+  update_stream_list();
+
+  setInterval(async () => {
+    await update_stream_list();
+  }, 5 * 1000);
 
   // TODO get custom tag from shaka player instead of manual parsing
   async function meta_parse() {
@@ -42,6 +51,18 @@
       .catch((error) => {
         console.error("Error fetching M3U8 file:", error);
       });
+  }
+
+  async function update_stream_list() {
+    recorders = (
+      (await invoke("get_recorder_list")) as RecorderList
+    ).recorders.filter((r) => r.live_status && r.room_id != room_id);
+    console.log("live recorders", recorders);
+  }
+
+  function go_to(room_id: number, ts: number) {
+    const url = `${window.location.origin}${window.location.pathname}?port=${port}&room_id=${room_id}&ts=${ts}`;
+    window.location.href = url;
   }
 
   async function init() {
@@ -69,7 +90,8 @@
     });
 
     player.addEventListener("ended", async () => {
-      location.reload();
+      // prevent endless reload
+      setTimeout(location.reload, 3 * 1000);
     });
     player.addEventListener("manifestloaded", (event) => {
       console.log("Manifest loaded:", event);
@@ -630,6 +652,35 @@
     </span>
   {/if}
 </div>
+<div id="shortcuts">
+  <button
+    id="shortcut-btn"
+    on:click={() => {
+      show_list = !show_list;
+    }}
+  >
+    <GridOutline />
+  </button>
+  {#if show_list}
+    <ul class="shortcut-list">
+      {#each recorders as recorder}
+        <!-- svelte-ignore a11y-click-events-have-key-events -->
+        <li
+          class="shortcut"
+          on:click={() => {
+            go_to(recorder.room_id, recorder.current_ts);
+          }}
+        >
+          <SortHorizontalOutline />[{recorder.user_info.user_name}]{recorder
+            .room_info.room_title}
+        </li>
+      {/each}
+      {#if recorders.length == 0}
+        <p>没有其它正在直播的房间</p>
+      {/if}
+    </ul>
+  {/if}
+</div>
 
 <style>
   video {
@@ -660,5 +711,46 @@
     color: white;
     font-size: 0.8em;
     pointer-events: none;
+  }
+
+  #shortcuts {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    flex-direction: column;
+    display: flex;
+    align-items: end;
+    color: white;
+    font-size: 0.8em;
+    z-index: 80;
+  }
+
+  #shortcut-btn {
+    width: 36px;
+    padding: 8px;
+    margin-bottom: 4px;
+    border-radius: 4px;
+    cursor: pointer;
+    background-color: rgba(0, 0, 0, 0.5);
+  }
+
+  #shortcut-btn:hover {
+    background-color: rgba(255, 255, 255, 0.3);
+  }
+
+  .shortcut-list {
+    border-radius: 4px;
+    padding: 8px;
+    background-color: rgba(0, 0, 0, 0.5);
+  }
+
+  .shortcut {
+    display: flex;
+    flex-direction: row;
+    cursor: pointer;
+  }
+
+  .shortcut:hover {
+    text-decoration: underline;
   }
 </style>

@@ -123,7 +123,7 @@
       </TableHeadCell>
     </TableHead>
     <TableBody tableBodyClass="divide-y">
-      {#each summary.recorders as room}
+      {#each summary.recorders as room (room.room_id)}
         <TableBodyRow>
           <TableBodyCell>{room.room_id}</TableBodyCell>
           <TableBodyCell>{room.room_info.room_title}</TableBodyCell>

@@ -96,7 +96,7 @@
       <TableHeadCell>操作</TableHeadCell>
     </TableHead>
     <TableBody tableBodyClass="divide-y">
-      {#each account_info.accounts as account}
+      {#each account_info.accounts as account (account.uid)}
         <TableBodyRow>
           <TableBodyCell>{account.uid}</TableBodyCell>
           <TableBodyCell

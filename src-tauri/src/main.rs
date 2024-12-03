@@ -1,11 +1,15 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod api;
 mod database;
 mod recorder;
 mod recorder_manager;
 mod tray;
 
+use api::bilibili::profile::Profile;
+use api::bilibili::{BiliClient, QrInfo, QrStatus};
+use api::errors::ApiError;
 use chrono::Utc;
 use custom_error::custom_error;
 use database::account::AccountRow;
@@ -14,10 +18,7 @@ use database::record::RecordRow;
 use database::recorder::RecorderRow;
 use database::video::VideoRow;
 use database::Database;
-use recorder::bilibili::errors::BiliClientError;
-use recorder::bilibili::profile::Profile;
-use recorder::bilibili::{BiliClient, QrInfo, QrStatus};
-use recorder::danmu::DanmuEntry;
+use recorder::bilibili::danmu::DanmuEntry;
 use recorder_manager::{RecorderInfo, RecorderList, RecorderManager};
 use std::fs::File;
 use std::path::Path;
@@ -192,11 +193,11 @@ struct State {
 }
 
 impl State {
-    pub async fn get_qr(&self) -> Result<QrInfo, BiliClientError> {
+    pub async fn get_qr(&self) -> Result<QrInfo, ApiError> {
         self.client.get_qr().await
     }
 
-    pub async fn get_qr_status(&self, key: &str) -> Result<QrStatus, BiliClientError> {
+    pub async fn get_qr_status(&self, key: &str) -> Result<QrStatus, ApiError> {
         self.client.get_qr_status(key).await
     }
 
@@ -753,7 +754,7 @@ async fn delete_video(state: tauri::State<'_, State>, id: i64) -> Result<(), Str
 #[tauri::command]
 async fn get_video_typelist(
     state: tauri::State<'_, State>,
-) -> Result<Vec<recorder::bilibili::response::Typelist>, String> {
+) -> Result<Vec<api::bilibili::response::Typelist>, String> {
     let account = state
         .db
         .get_account(state.config.read().await.primary_uid)

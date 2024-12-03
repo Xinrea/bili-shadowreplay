@@ -1,8 +1,9 @@
+use crate::api::bilibili::RoomInfo;
+use crate::api::bilibili::UserInfo;
 use crate::database::{account::AccountRow, record::RecordRow, Database};
-use crate::recorder::bilibili::UserInfo;
-use crate::recorder::danmu::DanmuEntry;
-use crate::recorder::RecorderError;
-use crate::recorder::{bilibili::RoomInfo, BiliRecorder};
+use crate::recorder::bilibili::danmu::DanmuEntry;
+use crate::recorder::bilibili::BiliRecorder;
+use crate::recorder::errors::RecorderError;
 use crate::Config;
 use custom_error::custom_error;
 use dashmap::DashMap;

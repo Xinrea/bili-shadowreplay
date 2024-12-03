@@ -1,6 +1,6 @@
 use custom_error::custom_error;
 
-custom_error! {pub BiliClientError
+custom_error! {pub ApiError
     InvalidResponse = "Invalid response",
     InitClientError = "Client init error",
     InvalidCode = "Invalid Code",
@@ -12,20 +12,20 @@ custom_error! {pub BiliClientError
     IOError{err: std::io::Error} = "IO error: {err}",
 }
 
-impl From<reqwest::Error> for BiliClientError {
+impl From<reqwest::Error> for ApiError {
     fn from(e: reqwest::Error) -> Self {
-        BiliClientError::ClientError { err: e }
+        ApiError::ClientError { err: e }
     }
 }
 
-impl From<std::io::Error> for BiliClientError {
+impl From<std::io::Error> for ApiError {
     fn from(e: std::io::Error) -> Self {
-        BiliClientError::IOError { err: e }
+        ApiError::IOError { err: e }
     }
 }
 
-impl From<BiliClientError> for String {
-    fn from(value: BiliClientError) -> Self {
+impl From<ApiError> for String {
+    fn from(value: ApiError) -> Self {
         value.to_string()
     }
 }

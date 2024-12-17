@@ -126,7 +126,8 @@ impl RecorderManager {
         recorder.unwrap().1.stop().await;
         // remove related cache folder
         let cache_folder = format!("{}/{}", self.config.read().await.cache, room_id);
-        tokio::fs::remove_dir_all(cache_folder).await?;
+        let _ = tokio::fs::remove_dir_all(cache_folder).await;
+        log::info!("Recorder {} cache folder removed", room_id);
         Ok(())
     }
 

@@ -288,7 +288,7 @@
   {/if}
   <div class="flex flex-row overflow-hidden">
     <div
-      class="flex relative h-screen border-solid bg-gray-950 border-r-2 border-gray-800 z-[39]"
+      class="flex relative h-screen border-solid bg-gray-950 border-r-2 border-gray-800 z-[501]"
       class:w14={!lpanel_collapsed}
     >
       <div class="w-full" hidden={lpanel_collapsed}>

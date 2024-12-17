@@ -4,7 +4,7 @@
   export let dark = false;
 </script>
 
-<div data-tauri-drag-region class="titlebar z-[1000]" class:dark>
+<div data-tauri-drag-region class="titlebar z-[500]" class:dark>
   <!-- svelte-ignore a11y-click-events-have-key-events -->
   <div
     class="titlebar-button"

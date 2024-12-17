@@ -722,7 +722,7 @@
     align-items: end;
     color: white;
     font-size: 0.8em;
-    z-index: 80;
+    z-index: 501;
   }
 
   #shortcut-btn {

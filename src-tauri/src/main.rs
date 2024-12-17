@@ -804,7 +804,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .unwrap();
 
     // Setup ffmpeg
-    ffmpeg_sidecar::download::auto_download().unwrap();
+    // ffmpeg_sidecar::download::auto_download().unwrap();
 
     //Setup database
     let migrations = vec![Migration {

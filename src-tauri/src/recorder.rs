@@ -8,10 +8,6 @@ use custom_error::custom_error;
 use danmu::{DanmuEntry, DanmuStorage};
 use dashmap::DashMap;
 use felgens::{ws_socket_object, FelgensError, WsStreamMessageType};
-use ffmpeg_sidecar::{
-    command::FfmpegCommand,
-    event::{FfmpegEvent, LogLevel},
-};
 use m3u8_rs::Playlist;
 use rand::Rng;
 use regex::Regex;

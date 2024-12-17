@@ -12,5 +12,7 @@ pub enum RecorderType {
 }
 
 pub trait Recorder {
-    fn get_type(&self) -> RecorderType;
+    fn recorder_type(&self) -> RecorderType;
+    fn check_status(&self) -> Result<bool, errors::RecorderError>;
+    fn update_entries(&self) -> Result<(), errors::RecorderError>;
 }

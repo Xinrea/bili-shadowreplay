@@ -21,6 +21,9 @@ impl fmt::Display for BiliStream {
 }
 
 impl Stream for BiliStream {
+    fn stream_type(&self) -> StreamType {
+        self.format
+    }
     fn index(&self) -> String {
         format!("{}{}{}?{}", self.host, self.path, "index.m3u8", self.extra)
     }

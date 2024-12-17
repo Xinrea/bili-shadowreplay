@@ -332,13 +332,20 @@ impl BiliRecorder {
     }
 
     async fn danmu(&self) {
-        let (tx, rx) = mpsc::unbounded_channel();
         let cookies = self.account.cookies.clone();
         let uid: u64 = self.account.uid;
-        let ws = ws_socket_object(tx, uid, self.room_id, cookies.as_str());
-        if let Err(e) = tokio::select! {v = ws => v, v = self.recv(self.room_id,rx) => v} {
-            log::debug!("{}", e);
+        while !*self.quit.lock().await {
+            let (tx, rx) = mpsc::unbounded_channel();
+            let ws = ws_socket_object(tx, uid, self.room_id, cookies.as_str());
+            if let Err(e) = tokio::select! {v = ws => v, v = self.recv(self.room_id,rx) => v} {
+                log::error!("danmu error: {}", e);
+            }
+            // reconnect after 3s
+            log::warn!("danmu will reconnect after 3s");
+            tokio::time::sleep(Duration::from_secs(3)).await;
         }
+
+        log::info!("danmu thread {} quit.", self.room_id);
     }
 
     async fn recv(

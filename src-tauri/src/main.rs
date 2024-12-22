@@ -856,7 +856,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let client_clone = client.clone();
             tauri::async_runtime::block_on(async move {
                 let _ = recorder_manager_clone.run_hls().await;
-                let binding = dbs.0.read().await;
+                let binding = dbs.0.lock().await;
                 let dbpool = binding.get("sqlite:data.db").unwrap();
                 let sqlite_pool = match dbpool {
                     tauri_plugin_sql::DbPool::Sqlite(pool) => Some(pool),
@@ -869,16 +869,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     log::warn!("No account found");
                     return;
                 }
+                let mut primary_account = accounts.first().unwrap().clone();
                 if primary_uid == 0 {
-                    primary_uid = accounts.first().unwrap().uid;
+                    primary_uid = primary_account.uid;
                     config_clone.write().await.primary_uid = primary_uid;
                     config_clone.write().await.save();
                 }
-                let primary_account = accounts
-                    .iter()
-                    .find(|x| x.uid == primary_uid)
-                    .unwrap()
-                    .clone();
+                match accounts.iter().find(|x| x.uid == primary_uid) {
+                    Some(account) => {
+                        primary_account = account.clone();
+                    }
+                    None => {
+                        log::warn!("Primary account not found, using first account");
+                        primary_uid = primary_account.uid;
+                        config_clone.write().await.primary_uid = primary_uid;
+                        config_clone.write().await.save();
+                    }
+                }
                 let webid = client_clone.fetch_webid(&primary_account).await.unwrap();
                 config_clone.write().await.webid = webid.clone();
                 config_clone.write().await.webid_ts = chrono::Utc::now().timestamp();

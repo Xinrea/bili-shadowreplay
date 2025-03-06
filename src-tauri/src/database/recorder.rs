@@ -35,6 +35,9 @@ impl Database {
         if sql.rows_affected() != 1 {
             return Err(DatabaseError::NotFoundError);
         }
+
+        // remove related archive
+        let _ = self.remove_archive(room_id).await;
         Ok(())
     }
 
@@ -43,5 +46,14 @@ impl Database {
         Ok(sqlx::query_as::<_, RecorderRow>("SELECT * FROM recorders")
             .fetch_all(&lock)
             .await?)
+    }
+
+    pub async fn remove_archive(&self, room_id: u64) -> Result<(), DatabaseError> {
+        let lock = self.db.read().await.clone().unwrap();
+        let _ = sqlx::query("DELETE FROM records WHERE room_id = $1")
+            .bind(room_id as i64)
+            .execute(&lock)
+            .await?;
+        Ok(())
     }
 }

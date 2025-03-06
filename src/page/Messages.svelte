@@ -7,7 +7,7 @@
     TableBodyCell,
     Button,
   } from "flowbite-svelte";
-  import type { MessageItem } from "./db";
+  import type { MessageItem } from "../lib/db";
   import { CloseCircleSolid, InfoCircleSolid } from "flowbite-svelte-icons";
 
   export let message_cnt = 0;

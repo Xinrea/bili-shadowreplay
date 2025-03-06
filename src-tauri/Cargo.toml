@@ -48,6 +48,8 @@ tauri-plugin-sql = { version = "2", features = ["sqlite"] }
 tauri-plugin-os = "2"
 tauri-plugin-notification = "2"
 rand = "0.8.5"
+base64 = "0.21"
+mime_guess = "2.0"
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem

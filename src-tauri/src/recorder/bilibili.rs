@@ -4,6 +4,7 @@ pub mod response;
 use crate::database::account::AccountRow;
 
 use errors::BiliClientError;
+use base64::Engine;
 use pct_str::PctString;
 use pct_str::URIReserved;
 use profile::Profile;
@@ -96,7 +97,7 @@ impl BiliStream {
             host: host.into(),
             path: BiliStream::get_path(base_url),
             extra: extra.into(),
-            expire: BiliStream::get_expire(extra).unwrap(),
+            expire: BiliStream::get_expire(extra).unwrap_or(600000),
         }
     }
 
@@ -316,6 +317,15 @@ impl BiliClient {
             user_id,
             live_status,
         })
+    }
+
+    pub async fn get_cover_base64(&self, url: &str) -> Result<String, BiliClientError> {
+        log::info!("get_cover_base64: {}", url);
+        let response = self.client.get(url).send().await?;
+        let bytes = response.bytes().await?;
+        let base64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+        let mime_type = mime_guess::from_path(url).first_or_octet_stream().to_string();
+        Ok(format!("data:{};base64,{}", mime_type, base64))
     }
 
     pub async fn get_play_url(

@@ -39,6 +39,7 @@ export interface RecordItem {
   length: number;
   size: number;
   created_at: string;
+  cover: string;
 }
 
 export interface AccountInfo {
@@ -78,34 +79,4 @@ function parseCookies(cookies_str: string) {
   });
 
   return cookieObject;
-}
-
-//     CREATE TABLE accounts (uid INTEGER PRIMARY KEY, name TEXT, avatar TEXT, csrf TEXT, cookies TEXT, created_at TEXT);
-export class Accounts {
-  static async login(): Promise<boolean> {
-    const result = (await db.select("SELECT * FROM accounts")) as AccountItem[];
-    return result.length > 0;
-  }
-
-  static async add(cookies: string): Promise<boolean> {
-    const obj = parseCookies(cookies);
-    const uid = parseInt(obj["DedeUserID"]);
-    const csrf = obj["bili_jct"];
-    const result = await db.execute(
-      "INSERT OR REPLACE INTO accounts (uid, name, avatar, csrf, cookies, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
-      [uid, name, avatar, csrf, cookies, new Date().toISOString],
-    );
-    return result.rowsAffected == 1;
-  }
-
-  static async remove(uid: number): Promise<boolean> {
-    const result = await db.execute("DELETE FROM accounts WHERE uid = $1", [
-      uid,
-    ]);
-    return result.rowsAffected == 1;
-  }
-
-  static async query(): Promise<AccountItem[]> {
-    return await db.select("SELECT * FROM accounts");
-  }
 }

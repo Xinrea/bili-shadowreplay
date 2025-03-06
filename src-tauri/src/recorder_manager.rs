@@ -3,7 +3,7 @@ use crate::recorder::bilibili::UserInfo;
 use crate::recorder::danmu::DanmuEntry;
 use crate::recorder::RecorderError;
 use crate::recorder::{bilibili::RoomInfo, BiliRecorder};
-use crate::Config;
+use crate::config::Config;
 use custom_error::custom_error;
 use dashmap::DashMap;
 use hyper::Method;
@@ -224,12 +224,13 @@ impl RecorderManager {
         }
     }
 
-    pub async fn delete_archive(&self, room_id: u64, ts: u64) -> Result<(), RecorderManagerError> {
+    pub async fn delete_archive(&self, db: &Arc<Database>, room_id: u64, ts: u64) -> Result<(), RecorderManagerError> {
         log::info!("Deleting {}:{}", room_id, ts);
         if let Some(recorder) = self.recorders.get(&room_id) {
             Ok(recorder.delete_archive(ts).await?)
         } else {
             log::error!("Room not found: {}", room_id);
+            let _ = db.remove_record(ts).await;
             Err(RecorderManagerError::NotFound { room_id })
         }
     }

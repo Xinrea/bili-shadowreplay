@@ -89,6 +89,7 @@ export interface Config {
   live_end_notify: boolean;
   clip_notify: boolean;
   post_notify: boolean;
+  auto_cleanup: boolean;
 }
 
 export interface DiskInfo {

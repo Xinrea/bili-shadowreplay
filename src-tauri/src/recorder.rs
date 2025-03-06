@@ -22,7 +22,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::database::{account::AccountRow, record::RecordRow, Database, DatabaseError};
-use crate::Config;
+use crate::config::Config;
 
 #[derive(Clone)]
 pub struct TsEntry {
@@ -52,6 +52,7 @@ pub struct BiliRecorder {
     pub last_sequence: Arc<RwLock<u64>>,
     pub ts_length: Arc<RwLock<f64>>,
     pub timestamp: Arc<RwLock<u64>>,
+    pub cover: Arc<RwLock<Option<String>>>,
     ts_entries: Arc<RwLock<Vec<TsEntry>>>,
     last_update: Arc<RwLock<i64>>,
     quit: Arc<Mutex<bool>>,
@@ -107,12 +108,18 @@ impl BiliRecorder {
             .await?;
         let mut live_status = false;
         let mut live_stream = None;
+        let mut cover = None;
         if room_info.live_status == 1 {
             live_status = true;
             if let Ok(stream) = client.get_play_url(account, room_info.room_id).await {
                 live_stream = Some(stream);
             } else {
                 log::error!("[{}]Room is online but fetching stream failed", room_id);
+            }
+
+            // Get cover image
+            if let Ok(cover_base64) = client.get_cover_base64(&room_info.room_cover_url).await {
+                cover = Some(cover_base64);
             }
         }
 
@@ -130,6 +137,7 @@ impl BiliRecorder {
             ts_length: Arc::new(RwLock::new(0.0)),
             ts_entries: Arc::new(RwLock::new(Vec::new())),
             timestamp: Arc::new(RwLock::new(0)),
+            cover: Arc::new(RwLock::new(cover)),
             last_update: Arc::new(RwLock::new(Utc::now().timestamp())),
             quit: Arc::new(Mutex::new(false)),
             header: Arc::new(RwLock::new(None)),
@@ -166,6 +174,7 @@ impl BiliRecorder {
 
                 // handle live notification
                 if *self.live_status.read().await != live_status {
+                    log::info!("[{}]Live status changed: {}", self.room_id, live_status);
                     if live_status {
                         if self.config.read().await.live_start_notify {
                             self.app_handle
@@ -180,6 +189,17 @@ impl BiliRecorder {
                                 .show()
                                 .unwrap();
                         }
+
+                        // Get stream URL
+                        if let Ok(stream) = self.client.read().await.get_play_url(&self.account, self.room_id).await {
+                            *self.live_stream.write().await = Some(stream);
+                        }
+
+                        // Get cover image
+                        if let Ok(cover_base64) = self.client.read().await.get_cover_base64(&room_info.room_cover_url).await {
+                            *self.cover.write().await = Some(cover_base64);
+                        }
+
                     } else if self.config.read().await.live_end_notify {
                         self.app_handle
                             .notification()
@@ -428,12 +448,17 @@ impl BiliRecorder {
             });
         }
         if index_content.contains("BANDWIDTH") {
-            // // this index content provides another m3u8 url
-            // let new_url = index_content.lines().last().unwrap();
-            // *self.m3u8_url.write().await = String::from(new_url);
-            // return Box::pin(self.get_header_url()).await;
-            log::error!("BANDWIDTH index content: {}", index_content);
-            return Err(RecorderError::InvalidStream { stream });
+            // this index content provides another m3u8 url
+            // example: https://765b047cec3b099771d4b1851136046f.v.smtcdns.net/d1--cn-gotcha204-3.bilivideo.com/live-bvc/246284/live_1323355750_55526594/index.m3u8?expires=1741318366&len=0&oi=1961017843&pt=h5&qn=10000&trid=1007049a5300422eeffd2d6995d67b67ca5a&sigparams=cdn,expires,len,oi,pt,qn,trid&cdn=cn-gotcha204&sign=7ef1241439467ef27d3c804c1eda8d4d&site=1c89ef99adec13fab3a3592ee4db26d3&free_type=0&mid=475210&sche=ban&bvchls=1&trace=16&isp=ct&rg=East&pv=Shanghai&source=puv3_onetier&p2p_type=-1&score=1&suffix=origin&deploy_env=prod&flvsk=e5c4d6fb512ed7832b706f0a92f7a8c8&sk=246b3930727a89629f17520b1b551a2f&pp=rtmp&hot_cdn=57345&origin_bitrate=657300&sl=1&info_source=cache&vd=bc&src=puv3&order=1&TxLiveCode=cold_stream&TxDispType=3&svr_type=live_oc&tencent_test_client_ip=116.226.193.243&dispatch_from=OC_MGR61.170.74.11&utime=1741314857497
+            let new_url = index_content.lines().last().unwrap();
+            let base_url = new_url.split('/').next().unwrap();
+            let host = base_url.split('/').next().unwrap();
+            // extra is params after index.m3u8
+            let extra = new_url.split(base_url).last().unwrap();
+            let stream = BiliStream::new(StreamType::FMP4, base_url, host, extra);
+            log::info!("Update stream: {}", stream);
+            *self.live_stream.write().await = Some(stream);
+            return Box::pin(self.get_header_url()).await;
         }
         let mut header_url = String::from("");
         let re = Regex::new(r"h.*\.m4s").unwrap();
@@ -491,6 +516,7 @@ impl BiliRecorder {
                     timestamp,
                     self.room_id,
                     &self.room_info.read().await.room_title,
+                    self.cover.read().await.clone(),
                 )
                 .await?;
             // now work dir is confirmed

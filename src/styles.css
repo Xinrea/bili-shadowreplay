@@ -7,5 +7,9 @@ body {
   height: 100%;
   width: 100%;
   user-select: none;
+  cursor: default;
 }
 
+.icon-white {
+    filter: invert(100%) sepia(0%) saturate(0%) hue-rotate(0deg) brightness(100%) contrast(100%);
+}

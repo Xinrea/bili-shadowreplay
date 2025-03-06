@@ -1,152 +1,103 @@
 <script>
-    import {
-        Sidebar,
-        SidebarGroup,
-        SidebarItem,
-        SidebarWrapper,
-    } from "flowbite-svelte";
-    import {
-        ChartPieSolid,
-        GridSolid,
-        MailBoxSolid,
-        UserSolid,
-        EditOutline,
-        BookSolid,
-        InfoCircleSolid,
-        CogSolid,
-    } from "flowbite-svelte-icons";
-    let spanClass = "flex-1 ms-3 whitespace-nowrap";
-    // acitveUrl is shared between project
-    export let activeUrl = "#总览";
-    export let room_count = 0;
-    export let message_cnt = 0;
+  import {
+    Sidebar,
+    SidebarGroup,
+    SidebarItem,
+    SidebarWrapper,
+  } from "flowbite-svelte";
+  import {
+    ChartPieSolid,
+    GridSolid,
+    MailBoxSolid,
+    UserSolid,
+    EditOutline,
+    BookSolid,
+    InfoCircleSolid,
+    CogSolid,
+  } from "flowbite-svelte-icons";
+  let spanClass = "ms-2 whitespace-nowrap";
+  // acitveUrl is shared between project
+  export let activeUrl = "#总览";
+  export let room_count = 0;
+  export let message_cnt = 0;
+
+  function navigate(route) {
+    activeUrl = route;
+  }
 </script>
 
-<Sidebar {activeUrl} asideClass="w-72 h-full z-[40]">
-    <SidebarWrapper divClass="overflow-y-auto py-4 px-3 bg-gray-50 h-full">
-        <SidebarGroup>
-            <SidebarItem
-                label="总览"
-                href="#"
-                on:click={() => {
-                    activeUrl = "#总览";
-                }}
-            >
-                <svelte:fragment slot="icon">
-                    <ChartPieSolid
-                        class="w-6 h-6 text-gray-500 transition duration-75 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-white"
-                    />
-                </svelte:fragment>
-            </SidebarItem>
-            <SidebarItem
-                label="直播间"
-                href="#"
-                on:click={() => {
-                    activeUrl = "#直播间";
-                }}
-                {spanClass}
-            >
-                <svelte:fragment slot="icon">
-                    <GridSolid
-                        class="w-6 h-6 text-gray-500 transition duration-75 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-white"
-                    />
-                </svelte:fragment>
-                <svelte:fragment slot="subtext">
-                    <span
-                        class="inline-flex justify-center items-center px-2 ms-3 text-sm font-medium text-gray-800 bg-gray-200 rounded-full dark:bg-gray-700 dark:text-gray-300"
-                    >
-                        {room_count}
-                    </span>
-                </svelte:fragment>
-            </SidebarItem>
-            <SidebarItem
-                label="消息"
-                href="#"
-                on:click={() => {
-                    activeUrl = "#消息";
-                }}
-                {spanClass}
-            >
-                <svelte:fragment slot="icon">
-                    <MailBoxSolid
-                        class="w-6 h-6 text-gray-500 transition duration-75 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-white"
-                    />
-                </svelte:fragment>
-                <svelte:fragment slot="subtext">
-                    <span
-                        class="inline-flex justify-center items-center p-3 ms-3 w-3 h-3 text-sm font-medium text-primary-600 bg-primary-200 rounded-full dark:bg-primary-900 dark:text-primary-200"
-                    >
-                        {message_cnt}
-                    </span>
-                </svelte:fragment>
-            </SidebarItem>
-            <SidebarItem
-                label="账号"
-                href="#"
-                on:click={() => {
-                    activeUrl = "#账号";
-                }}
-            >
-                <svelte:fragment slot="icon">
-                    <UserSolid
-                        class="w-6 h-6 text-gray-500 transition duration-75 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-white"
-                    />
-                </svelte:fragment>
-            </SidebarItem>
-            <!-- <SidebarItem
-        label="自动化"
-        href="#"
-        on:click={() => {
-          activeUrl = "#自动化";
-        }}
-      >
-        <svelte:fragment slot="icon">
-          <EditOutline
-            class="w-6 h-6 text-gray-500 transition duration-75 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-white"
-          />
-        </svelte:fragment>
-      </SidebarItem> -->
-            <SidebarItem
-                label="设置"
-                href="#"
-                on:click={() => {
-                    activeUrl = "#设置";
-                }}
-            >
-                <svelte:fragment slot="icon">
-                    <CogSolid
-                        class="w-6 h-6 text-gray-500 transition duration-75 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-white"
-                    />
-                </svelte:fragment>
-            </SidebarItem>
-        </SidebarGroup>
-        <SidebarGroup border>
-            <SidebarItem
-                label="文档"
-                href="#"
-                on:click={() => {
-                    activeUrl = "#文档";
-                }}
-            >
-                <svelte:fragment slot="icon">
-                    <BookSolid
-                        class="w-6 h-6 text-gray-500 transition duration-75 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-white"
-                    />
-                </svelte:fragment>
-            </SidebarItem>
-            <SidebarItem
-                label="关于"
-                href="#"
-                on:click={() => {
-                    activeUrl = "#关于";
-                }}
-            >
-                <svelte:fragment slot="icon">
-                    <InfoCircleSolid
-                        class="w-6 h-6 text-gray-500 transition duration-75 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-white"
-                    />
-                </svelte:fragment>
-            </SidebarItem>
-        </SidebarGroup>
-    </SidebarWrapper>
-</Sidebar>
+<style>
+  :global(img.text-\[\#0A84FF\]) {
+    filter: invert(48%) sepia(85%) saturate(2229%) hue-rotate(198deg) brightness(100%) contrast(101%);
+  }
+  
+  :global(img.text-gray-700) {
+    filter: invert(23%) sepia(10%) saturate(532%) hue-rotate(182deg) brightness(94%) contrast(90%);
+  }
+  
+  :global(.dark img.text-\[\#0A84FF\]) {
+    filter: invert(48%) sepia(85%) saturate(2229%) hue-rotate(198deg) brightness(100%) contrast(101%);
+  }
+</style>
+
+<div
+  class="w-48 bg-[#f0f0f3]/50 dark:bg-[#2c2c2e]/50 backdrop-blur-xl border-r border-gray-200 dark:border-gray-700"
+>
+  <nav class="p-3 space-y-1">
+    <button
+      on:click={() => navigate("#总览")}
+      class="flex w-full items-center space-x-2 px-3 py-2 rounded-lg {activeUrl === '#总览' ? 'bg-blue-500/10 text-[#0A84FF]' : 'text-gray-700'} dark:text-[#0A84FF] hover:bg-[#e5e5e5] dark:hover:bg-[#3a3a3c]"
+    >
+      <img
+        src="https://unpkg.com/lucide-static@latest/icons/layout-dashboard.svg"
+        class="w-5 h-5 {activeUrl === '#总览' ? 'text-[#0A84FF]' : 'text-gray-700 dark:text-[#0A84FF]'}"
+        alt="总览"
+      />
+      <span>总览</span>
+    </button>
+    <button
+      on:click={() => navigate("#直播间")}
+      class="flex w-full items-center space-x-2 px-3 py-2 rounded-lg {activeUrl === '#直播间' ? 'bg-blue-500/10 text-[#0A84FF]' : 'text-gray-700'} dark:text-[#0A84FF] hover:bg-[#e5e5e5] dark:hover:bg-[#3a3a3c]"
+    >
+      <img
+        src="https://unpkg.com/lucide-static@latest/icons/video.svg"
+        class="w-5 h-5 {activeUrl === '#直播间' ? 'text-[#0A84FF]' : 'text-gray-700 dark:text-[#0A84FF]'}"
+        alt="直播间"
+      />
+      <span>直播间</span>
+    </button>
+    <button
+      on:click={() => navigate("#账号")}
+      class="flex w-full items-center space-x-2 px-3 py-2 rounded-lg {activeUrl === '#账号' ? 'bg-blue-500/10 text-[#0A84FF]' : 'text-gray-700'} dark:text-[#0A84FF] hover:bg-[#e5e5e5] dark:hover:bg-[#3a3a3c]"
+    >
+      <img
+        src="https://unpkg.com/lucide-static@latest/icons/users.svg"
+        class="w-5 h-5 {activeUrl === '#账号' ? 'text-[#0A84FF]' : 'text-gray-700 dark:text-[#0A84FF]'}"
+        alt="账号"
+      />
+      <span>账号</span>
+    </button>
+    <button
+      on:click={() => navigate("#设置")}
+      class="flex w-full items-center space-x-2 px-3 py-2 rounded-lg {activeUrl === '#设置' ? 'bg-blue-500/10 text-[#0A84FF]' : 'text-gray-700'} dark:text-[#0A84FF] hover:bg-[#e5e5e5] dark:hover:bg-[#3a3a3c]"
+    >
+      <img
+        src="https://unpkg.com/lucide-static@latest/icons/settings.svg"
+        class="w-5 h-5 {activeUrl === '#设置' ? 'text-[#0A84FF]' : 'text-gray-700 dark:text-[#0A84FF]'}"
+        alt="设置"
+      />
+      <span>设置</span>
+    </button>
+    <button
+      on:click={() => navigate("#关于")}
+      class="flex w-full items-center space-x-2 px-3 py-2 rounded-lg {activeUrl === '#关于' ? 'bg-blue-500/10 text-[#0A84FF]' : 'text-gray-700'} dark:text-[#0A84FF] hover:bg-[#e5e5e5] dark:hover:bg-[#3a3a3c]"
+    >
+      <img
+        src="https://unpkg.com/lucide-static@latest/icons/info.svg"
+        class="w-5 h-5 {activeUrl === '#关于' ? 'text-[#0A84FF]' : 'text-gray-700 dark:text-[#0A84FF]'}"
+        alt="关于"
+      />
+      <span>关于</span>
+    </button>
+  </nav>
+</div>

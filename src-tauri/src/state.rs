@@ -4,7 +4,7 @@ use custom_error::custom_error;
 
 use crate::config::Config;
 use crate::database::Database;
-use crate::recorder::bilibili::BiliClient;
+use crate::recorder::bilibili::client::BiliClient;
 use crate::recorder_manager::RecorderManager;
 
 custom_error! {
@@ -21,12 +21,3 @@ pub struct State {
     pub recorder_manager: Arc<RecorderManager>,
     pub app_handle: tauri::AppHandle,
 }
-
-impl State {
-    pub async fn clip(&self, room_id: u64, len: f64) -> Result<String, String> {
-        Ok(self
-            .recorder_manager
-            .clip(&self.config.read().await.output, room_id, len)
-            .await?)
-    }
-} 

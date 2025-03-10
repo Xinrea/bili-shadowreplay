@@ -1,7 +1,7 @@
 use crate::database::record::RecordRow;
 use crate::database::recorder::RecorderRow;
 use crate::recorder::danmu::DanmuEntry;
-use crate::recorder_manager::RecorderInfo;
+use crate::recorder::RecorderInfo;
 use crate::recorder_manager::RecorderList;
 use crate::state::State;
 use tauri::State as TauriState;
@@ -26,7 +26,6 @@ pub async fn add_recorder(state: TauriState<'_, State>, room_id: u64) -> Result<
         .recorder_manager
         .add_recorder(
             &state.config.read().await.webid,
-            &state.db,
             &account,
             room_id,
         )
@@ -94,7 +93,7 @@ pub async fn delete_archive(
     room_id: u64,
     ts: u64,
 ) -> Result<(), String> {
-    state.recorder_manager.delete_archive(&state.db, room_id, ts).await?;
+    state.recorder_manager.delete_archive(room_id, ts).await?;
     state
         .db
         .new_message(

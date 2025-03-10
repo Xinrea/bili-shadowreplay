@@ -1,5 +1,5 @@
 use crate::database::account::AccountRow;
-use crate::recorder::bilibili::{QrInfo, QrStatus};
+use crate::recorder::bilibili::client::{QrInfo, QrStatus};
 use crate::state::State;
 use tauri::State as TauriState;
 

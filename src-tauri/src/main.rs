@@ -11,7 +11,7 @@ mod tray;
 
 use config::Config;
 use database::Database;
-use recorder::bilibili::BiliClient;
+use recorder::bilibili::client::BiliClient;
 use recorder_manager::RecorderManager;
 use state::State;
 use std::fs::File;
@@ -65,12 +65,13 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     let client = Arc::new(BiliClient::new()?);
     let config = Arc::new(RwLock::new(Config::load()));
     let config_clone = config.clone();
-    let recorder_manager = Arc::new(RecorderManager::new(app.handle().clone(), config.clone()));
-    let recorder_manager_clone = recorder_manager.clone();
     let dbs = app.state::<tauri_plugin_sql::DbInstances>().inner();
     let db = Arc::new(Database::new());
     let db_clone = db.clone();
     let client_clone = client.clone();
+
+    let recorder_manager = Arc::new(RecorderManager::new(app.handle().clone(), db.clone(), config.clone()));
+    let recorder_manager_clone = recorder_manager.clone();
 
     let _ = recorder_manager_clone.run_hls().await;
     let binding = dbs.0.lock().await;
@@ -143,7 +144,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     if let Ok(account) = db_clone.get_account(primary_uid).await {
         for room in initial_rooms {
             if let Err(e) = recorder_manager_clone
-                .add_recorder(&webid, &db_clone, &account, room.room_id)
+                .add_recorder(&webid, &account, room.room_id)
                 .await
             {
                 log::error!("error when adding initial rooms: {}", e);
@@ -225,7 +226,6 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::recorder::get_total_length,
         crate::handlers::recorder::get_today_record_count,
         crate::handlers::recorder::get_recent_record,
-        crate::handlers::video::clip,
         crate::handlers::video::clip_range,
         crate::handlers::video::upload_procedure,
         crate::handlers::video::get_video,

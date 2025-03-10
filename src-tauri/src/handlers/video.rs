@@ -7,12 +7,6 @@ use tauri::State as TauriState;
 use tauri_plugin_notification::NotificationExt;
 
 #[tauri::command]
-pub async fn clip(state: TauriState<'_, State>, room_id: u64, len: f64) -> Result<String, String> {
-    println!("[invoke]clip room_id: {}, len: {}", room_id, len);
-    state.clip(room_id, len).await
-}
-
-#[tauri::command]
 pub async fn clip_range(
     state: TauriState<'_, State>,
     cover: String,

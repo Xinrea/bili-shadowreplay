@@ -67,7 +67,7 @@ pub fn show_in_folder(path: String) {
 
     #[cfg(target_os = "macos")]
     {
-        Command::new("open").args(["-R", &path]).spawn().unwrap();
+        Command::new("open").args(["-R", &path]).spawn().unwrap().wait().unwrap();
     }
 }
 

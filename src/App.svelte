@@ -1,44 +1,29 @@
 <script lang="ts">
-  import Room from "./lib/Room.svelte";
+  import Room from "./page/Room.svelte";
   import BSidebar from "./lib/BSidebar.svelte";
-  import Summary from "./lib/Summary.svelte";
-  import Setting from "./lib/Setting.svelte";
-  import Account from "./lib/Account.svelte";
-  import TitleBar from "./lib/TitleBar.svelte";
-  import Messages from "./lib/Messages.svelte";
-  import About from "./lib/About.svelte";
-  import { platform } from "@tauri-apps/plugin-os";
+  import Summary from "./page/Summary.svelte";
+  import Setting from "./page/Setting.svelte";
+  import Account from "./page/Account.svelte";
+  import About from "./page/About.svelte";
   let active = "#总览";
-  let room_count = 0;
-  let message_cnt = 0;
-  let use_titlebar = platform() == "windows";
 </script>
 
 <main>
-  {#if use_titlebar}
-    <TitleBar />
-  {/if}
   <div class="wrap">
     <div class="sidebar">
-      <BSidebar bind:activeUrl={active} {room_count} {message_cnt} />
+      <BSidebar bind:activeUrl={active} />
     </div>
-    <div class="content">
+    <div class="content bg-white dark:bg-[#2c2c2e]">
       <!-- switch component by active -->
       <div class="page" class:visible={active == "#总览"}>
         <Summary />
       </div>
-      <div class="h-full page" class:visible={active == "#直播间"}>
-        <Room bind:room_count />
+      <div class="page" class:visible={active == "#直播间"}>
+        <Room />
       </div>
-      <div class="h-full page" class:visible={active == "#消息"}>
-        <Messages bind:message_cnt />
-      </div>
-      <div class="h-full page" class:visible={active == "#账号"}>
+      <div class="page" class:visible={active == "#账号"}>
         <Account />
       </div>
-      <!-- <div class="page" class:visible={active == "#自动化"}>
-        <div>自动化[开发中]</div>
-      </div> -->
       <div class="page" class:visible={active == "#设置"}>
         <Setting />
       </div>
@@ -64,22 +49,25 @@
 
   .visible {
     opacity: 1 !important;
-    max-height: fit-content !important;
+    height: 100% !important;
     transform: translateX(0) !important;
   }
 
   .page {
     opacity: 0;
-    max-height: 0;
+    height: 0;
     transform: translateX(100%);
     overflow: hidden;
     transition:
       opacity 0.5s ease-in-out,
       transform 0.3s ease-in-out;
+    display: flex;
+    flex-direction: column;
   }
 
   .content {
+    width: 100%;
     height: 100vh;
-    background-color: #e5e7eb;
+    overflow: hidden;
   }
 </style>

@@ -1,784 +1,990 @@
+pub mod client;
 pub mod errors;
 pub mod profile;
 pub mod response;
+use super::entry::EntryStore;
+use super::PlatformType;
 use crate::database::account::AccountRow;
 
+use super::danmu::{DanmuEntry, DanmuStorage};
+use super::entry::TsEntry;
+use chrono::{TimeZone, Utc};
+use client::{BiliClient, BiliStream, RoomInfo, StreamType, UserInfo};
+use dashmap::DashMap;
 use errors::BiliClientError;
-use pct_str::PctString;
-use pct_str::URIReserved;
-use profile::Profile;
+use felgens::{ws_socket_object, FelgensError, WsStreamMessageType};
+use m3u8_rs::Playlist;
+use rand::Rng;
 use regex::Regex;
-use reqwest::Client;
-use response::Format;
-use response::GeneralResponse;
-use response::PostVideoMetaResponse;
-use response::PreuploadResponse;
-use response::VideoSubmitData;
-use serde::Deserialize;
-use serde::Serialize;
-use serde_json::json;
-use serde_json::Value;
-use std::fmt;
-use std::path::Path;
+use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
-use std::time::SystemTime;
-use tokio::fs::File;
-use tokio::io::AsyncReadExt;
-use tokio::time::Instant;
+use tauri::{AppHandle, Emitter, Url};
+use tauri_plugin_notification::NotificationExt;
+use tokio::fs::OpenOptions;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::mpsc::{self, UnboundedReceiver};
+use tokio::sync::{Mutex, RwLock};
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct RoomInfo {
-    pub live_status: u8,
-    pub room_cover_url: String,
+use crate::config::Config;
+use crate::database::{Database, DatabaseError};
+
+use async_trait::async_trait;
+
+/// A recorder for BiliBili live streams
+///
+/// This recorder fetches, caches and serves TS entries, currently supporting only StreamType::FMP4.
+/// As high-quality streams are accessible only to logged-in users, the use of a BiliClient, which manages cookies, is required.
+// TODO implement StreamType::TS
+#[derive(Clone)]
+pub struct BiliRecorder {
+    app_handle: AppHandle,
+    client: Arc<RwLock<BiliClient>>,
+    db: Arc<Database>,
+    account: AccountRow,
+    config: Arc<RwLock<Config>>,
     pub room_id: u64,
-    pub room_keyframe_url: String,
-    pub room_title: String,
-    pub user_id: u64,
+    pub room_info: Arc<RwLock<RoomInfo>>,
+    pub user_info: Arc<RwLock<UserInfo>>,
+    pub live_status: Arc<RwLock<bool>>,
+    pub live_id: Arc<RwLock<String>>,
+    pub cover: Arc<RwLock<Option<String>>>,
+    pub entry_store: Arc<RwLock<Option<EntryStore>>>,
+    last_update: Arc<RwLock<i64>>,
+    quit: Arc<Mutex<bool>>,
+    pub live_stream: Arc<RwLock<Option<BiliStream>>>,
+    danmu_storage: Arc<RwLock<Option<DanmuStorage>>>,
+    m3u8_cache: DashMap<String, String>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct UserInfo {
-    pub user_id: u64,
-    pub user_name: String,
-    pub user_sign: String,
-    pub user_avatar_url: String,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct QrInfo {
-    pub oauth_key: String,
-    pub url: String,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct QrStatus {
-    pub code: u8,
-    pub cookies: String,
-}
-
-/// BiliClient is thread safe
-pub struct BiliClient {
-    client: Client,
-    headers: reqwest::header::HeaderMap,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum StreamType {
-    TS,
-    FMP4,
-}
-
-#[derive(Clone, Debug)]
-pub struct BiliStream {
-    pub format: StreamType,
-    pub host: String,
-    pub path: String,
-    pub extra: String,
-    pub expire: i64,
-}
-
-impl fmt::Display for BiliStream {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "type: {:?}, host: {}, path: {}, extra: {}, expire: {}",
-            self.format, self.host, self.path, self.extra, self.expire
-        )
+impl From<DatabaseError> for super::errors::RecorderError {
+    fn from(value: DatabaseError) -> Self {
+        super::errors::RecorderError::InvalidDBOP { err: value }
     }
 }
 
-impl BiliStream {
-    pub fn new(format: StreamType, base_url: &str, host: &str, extra: &str) -> BiliStream {
-        BiliStream {
-            format,
-            host: host.into(),
-            path: BiliStream::get_path(base_url),
-            extra: extra.into(),
-            expire: BiliStream::get_expire(extra).unwrap(),
-        }
-    }
-
-    pub fn index(&self) -> String {
-        format!("{}{}{}?{}", self.host, self.path, "index.m3u8", self.extra)
-    }
-
-    pub fn ts_url(&self, seg_name: &str) -> String {
-        format!("{}{}{}?{}", self.host, self.path, seg_name, self.extra)
-    }
-
-    pub fn get_path(base_url: &str) -> String {
-        match base_url.rfind('/') {
-            Some(pos) => base_url[..pos + 1].to_string(),
-            None => base_url.to_string(),
-        }
-    }
-
-    pub fn get_expire(extra: &str) -> Option<i64> {
-        extra.split('&').find_map(|param| {
-            if param.starts_with("expires=") {
-                param.split('=').nth(1)?.parse().ok()
-            } else {
-                None
-            }
-        })
+impl From<BiliClientError> for super::errors::RecorderError {
+    fn from(value: BiliClientError) -> Self {
+        super::errors::RecorderError::BiliClientError { err: value }
     }
 }
 
-impl BiliClient {
-    pub fn new() -> Result<BiliClient, BiliClientError> {
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert("user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36".parse().unwrap());
-
-        if let Ok(client) = Client::builder().timeout(Duration::from_secs(10)).build() {
-            Ok(BiliClient { client, headers })
-        } else {
-            Err(BiliClientError::InitClientError)
-        }
-    }
-
-    pub async fn fetch_webid(&self, account: &AccountRow) -> Result<String, BiliClientError> {
-        // get webid from html content
-        // webid is in script tag <script id="__RENDER_DATA__" type="application/json">
-        // https://space.bilibili.com/{user_id}
-        let url = format!("https://space.bilibili.com/{}", account.uid);
-        let res = self.client.get(&url).send().await?;
-        let content = res.text().await?;
-        let re =
-            Regex::new(r#"<script id="__RENDER_DATA__" type="application/json">(.+?)</script>"#)
-                .unwrap();
-        let cap = re.captures(&content).ok_or(BiliClientError::InvalidValue)?;
-        let str = cap.get(1).ok_or(BiliClientError::InvalidValue)?.as_str();
-        // str need url decode
-        let json_str = urlencoding::decode(str).map_err(|_| BiliClientError::InvalidValue)?; // url decode
-        let json: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-        let webid = json["access_id"]
-            .as_str()
-            .ok_or(BiliClientError::InvalidValue)?;
-        log::info!("webid: {}", webid);
-        Ok(webid.into())
-    }
-
-    pub async fn get_qr(&self) -> Result<QrInfo, BiliClientError> {
-        let res: serde_json::Value = self
-            .client
-            .get("https://passport.bilibili.com/x/passport-login/web/qrcode/generate")
-            .headers(self.headers.clone())
-            .send()
-            .await?
-            .json()
-            .await?;
-        Ok(QrInfo {
-            oauth_key: res["data"]["qrcode_key"]
-                .as_str()
-                .ok_or(BiliClientError::InvalidValue)?
-                .to_string(),
-            url: res["data"]["url"]
-                .as_str()
-                .ok_or(BiliClientError::InvalidValue)?
-                .to_string(),
-        })
-    }
-
-    pub async fn get_qr_status(&self, qrcode_key: &str) -> Result<QrStatus, BiliClientError> {
-        let res: serde_json::Value = self
-            .client
-            .get(format!(
-                "https://passport.bilibili.com/x/passport-login/web/qrcode/poll?qrcode_key={}",
-                qrcode_key
-            ))
-            .headers(self.headers.clone())
-            .send()
-            .await?
-            .json()
-            .await?;
-        let code: u8 = res["data"]["code"].as_u64().unwrap_or(400) as u8;
-        let mut cookies: String = "".to_string();
-        if code == 0 {
-            let url = res["data"]["url"]
-                .as_str()
-                .ok_or(BiliClientError::InvalidValue)?
-                .to_string();
-            let query_str = url.split('?').last().unwrap();
-            cookies = query_str.replace('&', ";");
-        }
-        Ok(QrStatus { code, cookies })
-    }
-
-    pub async fn logout(&self, account: &AccountRow) -> Result<(), BiliClientError> {
-        let url = "https://passport.bilibili.com/login/exit/v2";
-        let mut headers = self.headers.clone();
-        headers.insert("cookie", account.cookies.parse().unwrap());
-        let params = [("csrf", account.csrf.clone())];
-        let _ = self
-            .client
-            .post(url)
-            .headers(headers)
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .form(&params)
-            .send()
-            .await?;
-        Ok(())
-    }
-
-    pub async fn get_user_info(
-        &self,
+impl BiliRecorder {
+    pub async fn new(
+        app_handle: AppHandle,
         webid: &str,
-        account: &AccountRow,
-        user_id: u64,
-    ) -> Result<UserInfo, BiliClientError> {
-        let params: Value = json!({
-            "mid": user_id.to_string(),
-            "platform": "web",
-            "web_location": "1550101",
-            "token": "",
-            "w_webid": webid,
-        });
-        let params = self.get_sign(params).await?;
-        let mut headers = self.headers.clone();
-        headers.insert("cookie", account.cookies.parse().unwrap());
-        let res: serde_json::Value = self
-            .client
-            .get(format!(
-                "https://api.bilibili.com/x/space/wbi/acc/info?{}",
-                params
-            ))
-            .headers(headers)
-            .send()
-            .await?
-            .json()
-            .await?;
-        if res["code"].as_i64().unwrap_or(-1) != 0 {
-            log::error!(
-                "Get user info failed {}",
-                res["code"].as_i64().unwrap_or(-1)
-            );
-            return Err(BiliClientError::InvalidCode);
-        }
-        Ok(UserInfo {
-            user_id,
-            user_name: res["data"]["name"].as_str().unwrap_or("").to_string(),
-            user_sign: res["data"]["sign"].as_str().unwrap_or("").to_string(),
-            user_avatar_url: res["data"]["face"].as_str().unwrap_or("").to_string(),
-        })
-    }
-
-    pub async fn get_room_info(
-        &self,
-        account: &AccountRow,
+        db: &Arc<Database>,
         room_id: u64,
-    ) -> Result<RoomInfo, BiliClientError> {
-        let mut headers = self.headers.clone();
-        headers.insert("cookie", account.cookies.parse().unwrap());
-        let res: serde_json::Value = self
-            .client
-            .get(format!(
-                "https://api.live.bilibili.com/room/v1/Room/get_info?room_id={}",
-                room_id
-            ))
-            .headers(headers)
-            .send()
-            .await?
-            .json()
+        account: &AccountRow,
+        config: Arc<RwLock<Config>>,
+    ) -> Result<Self, super::errors::RecorderError> {
+        let client = BiliClient::new()?;
+        let room_info = client.get_room_info(account, room_id).await?;
+        let user_info = client
+            .get_user_info(webid, account, room_info.user_id)
             .await?;
-        let code = res["code"].as_u64().ok_or(BiliClientError::InvalidValue)?;
-        if code != 0 {
-            return Err(BiliClientError::InvalidCode);
+        let mut live_status = false;
+        let mut live_stream = None;
+        let mut cover = None;
+        if room_info.live_status == 1 {
+            live_status = true;
+            if let Ok(stream) = client.get_play_url(account, room_info.room_id).await {
+                live_stream = Some(stream);
+            } else {
+                log::error!("[{}]Room is online but fetching stream failed", room_id);
+            }
+
+            // Get cover image
+            if let Ok(cover_base64) = client.get_cover_base64(&room_info.room_cover_url).await {
+                cover = Some(cover_base64);
+            }
         }
 
-        let room_id = res["data"]["room_id"]
-            .as_u64()
-            .ok_or(BiliClientError::InvalidValue)?;
-        let room_title = res["data"]["title"]
-            .as_str()
-            .ok_or(BiliClientError::InvalidValue)?
-            .to_string();
-        let room_cover_url = res["data"]["user_cover"]
-            .as_str()
-            .ok_or(BiliClientError::InvalidValue)?
-            .to_string();
-        let room_keyframe_url = res["data"]["keyframe"]
-            .as_str()
-            .ok_or(BiliClientError::InvalidValue)?
-            .to_string();
-        let user_id = res["data"]["uid"]
-            .as_u64()
-            .ok_or(BiliClientError::InvalidValue)?;
-        let live_status = res["data"]["live_status"]
-            .as_u64()
-            .ok_or(BiliClientError::InvalidValue)? as u8;
-        Ok(RoomInfo {
+        let recorder = Self {
+            app_handle,
+            client: Arc::new(RwLock::new(client)),
+            db: db.clone(),
+            account: account.clone(),
+            config,
             room_id,
-            room_title,
-            room_cover_url,
-            room_keyframe_url,
-            user_id,
-            live_status,
-        })
+            room_info: Arc::new(RwLock::new(room_info)),
+            user_info: Arc::new(RwLock::new(user_info)),
+            live_status: Arc::new(RwLock::new(live_status)),
+            entry_store: Arc::new(RwLock::new(None)),
+            live_id: Arc::new(RwLock::new(String::new())),
+            cover: Arc::new(RwLock::new(cover)),
+            last_update: Arc::new(RwLock::new(Utc::now().timestamp())),
+            quit: Arc::new(Mutex::new(false)),
+            live_stream: Arc::new(RwLock::new(live_stream)),
+            danmu_storage: Arc::new(RwLock::new(None)),
+            m3u8_cache: DashMap::new(),
+        };
+        log::info!("Recorder for room {} created.", room_id);
+        Ok(recorder)
     }
 
-    pub async fn get_play_url(
-        &self,
-        account: &AccountRow,
-        room_id: u64,
-    ) -> Result<BiliStream, BiliClientError> {
-        let mut headers = self.headers.clone();
-        headers.insert("cookie", account.cookies.parse().unwrap());
-        let res: GeneralResponse = self
+    pub async fn reset(&self) {
+        *self.entry_store.write().await = None;
+        *self.live_id.write().await = String::new();
+        *self.last_update.write().await = Utc::now().timestamp();
+        *self.danmu_storage.write().await = None;
+    }
+
+    async fn check_status(&self) -> bool {
+        match self
             .client
-            .get(format!(
-                "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?room_id={}&protocol=1&format=0,1,2&codec=0&qn=10000&platform=h5",
-                room_id
-            ))
-            .headers(headers)
-            .send().await?
-            .json().await?;
-        if res.code == 0 {
-            if let response::Data::RoomPlayInfo(data) = res.data {
-                if let Some(stream) = data.playurl_info.playurl.stream.first() {
-                    // Get fmp4 format
-                    if let Some(f) = stream.format.iter().find(|f| f.format_name == "fmp4") {
-                        self.get_stream(f).await
-                    } else {
-                        log::error!("No fmp4 stream found: {:#?}", data);
-                        Err(BiliClientError::InvalidResponse)
+            .read()
+            .await
+            .get_room_info(&self.account, self.room_id)
+            .await
+        {
+            Ok(room_info) => {
+                *self.room_info.write().await = room_info.clone();
+                let live_status = room_info.live_status == 1;
+
+                // handle live notification
+                if *self.live_status.read().await != live_status {
+                    log::info!("[{}]Live status changed: {}", self.room_id, live_status);
+                    if live_status {
+                        if self.config.read().await.live_start_notify {
+                            self.app_handle
+                                .notification()
+                                .builder()
+                                .title("BiliShadowReplay - 直播开始")
+                                .body(format!(
+                                    "{} 开启了直播：{}",
+                                    self.user_info.read().await.user_name,
+                                    room_info.room_title
+                                ))
+                                .show()
+                                .unwrap();
+                        }
+
+                        // Get stream URL
+                        if let Ok(stream) = self
+                            .client
+                            .read()
+                            .await
+                            .get_play_url(&self.account, self.room_id)
+                            .await
+                        {
+                            *self.live_stream.write().await = Some(stream);
+                        }
+
+                        // Get cover image
+                        if let Ok(cover_base64) = self
+                            .client
+                            .read()
+                            .await
+                            .get_cover_base64(&room_info.room_cover_url)
+                            .await
+                        {
+                            *self.cover.write().await = Some(cover_base64);
+                        }
+                    } else if self.config.read().await.live_end_notify {
+                        self.app_handle
+                            .notification()
+                            .builder()
+                            .title("BiliShadowReplay - 直播结束")
+                            .body(format!(
+                                "{} 的直播结束了",
+                                self.user_info.read().await.user_name
+                            ))
+                            .show()
+                            .unwrap();
+                    }
+                }
+
+                // if stream is confirmed to be closed, live stream cache is cleaned.
+                // all request will go through fs
+                if live_status {
+                    let mut rng = rand::thread_rng();
+                    // WHY: when program started, all stream is fetched nearly at the same time, so they will expire toggether,
+                    // this might meet server rate limit. So we add a random offset to make request spread over time.
+                    let offset = rng.gen_range(5..=120);
+                    // no need to update stream as it's not expired yet
+                    if self
+                        .live_stream
+                        .read()
+                        .await
+                        .as_ref()
+                        .is_some_and(|s| s.expire - offset > Utc::now().timestamp())
+                    {
+                        return live_status;
+                    }
+                    log::info!(
+                        "[{}]Stream is empty or nearly expired, updating",
+                        self.room_id
+                    );
+                    match self
+                        .client
+                        .read()
+                        .await
+                        .get_play_url(&self.account, self.room_id)
+                        .await
+                    {
+                        Ok(stream) => {
+                            log::info!("[{}]Update stream: {:?}", self.room_id, stream);
+                            *self.live_stream.write().await = Some(stream);
+                        }
+                        Err(e) => {
+                            log::error!("[{}]Update stream failed: {}", self.room_id, e);
+                        }
                     }
                 } else {
-                    log::error!("No stream provided: {:#?}", data);
-                    Err(BiliClientError::InvalidResponse)
+                    self.reset().await;
                 }
-            } else {
-                log::error!("Invalid response: {:#?}", res);
-                Err(BiliClientError::InvalidResponse)
+                *self.live_status.write().await = live_status;
+                live_status
             }
-        } else {
-            log::error!("Invalid response: {:#?}", res);
-            Err(BiliClientError::InvalidResponse)
+            Err(e) => {
+                log::error!("[{}]Update room status failed: {}", self.room_id, e);
+                // may encouter internet issues, not sure whether the stream is closed or started, just remain
+                *self.live_status.read().await
+            }
         }
     }
 
-    async fn get_stream(&self, format: &Format) -> Result<BiliStream, BiliClientError> {
-        if let Some(codec) = format.codec.first() {
-            if let Some(url_info) = codec.url_info.first() {
-                Ok(BiliStream::new(
-                    StreamType::FMP4,
-                    &codec.base_url,
-                    &url_info.host,
-                    &url_info.extra,
-                ))
-            } else {
-                Err(BiliClientError::InvalidFormat)
+    async fn danmu(&self) {
+        let cookies = self.account.cookies.clone();
+        let uid: u64 = self.account.uid;
+        while !*self.quit.lock().await {
+            let (tx, rx) = mpsc::unbounded_channel();
+            let ws = ws_socket_object(tx, uid, self.room_id, cookies.as_str());
+            if let Err(e) = tokio::select! {v = ws => v, v = self.recv(self.room_id,rx) => v} {
+                log::error!("danmu error: {}", e);
             }
-        } else {
-            Err(BiliClientError::InvalidFormat)
+            // reconnect after 3s
+            log::warn!("danmu will reconnect after 3s");
+            tokio::time::sleep(Duration::from_secs(3)).await;
         }
+
+        log::info!("danmu thread {} quit.", self.room_id);
     }
 
-    pub async fn get_index_content(&self, url: &String) -> Result<String, BiliClientError> {
-        Ok(self
-            .client
-            .get(url.to_owned())
-            .headers(self.headers.clone())
-            .send()
-            .await?
-            .text()
-            .await?)
-    }
-
-    pub async fn download_ts(&self, url: &str, file_path: &str) -> Result<u64, BiliClientError> {
-        let res = self
-            .client
-            .get(url)
-            .headers(self.headers.clone())
-            .send()
-            .await?;
-        let mut file = std::fs::File::create(file_path)?;
-        let bytes = res.bytes().await?;
-        let size = bytes.len() as u64;
-        let mut content = std::io::Cursor::new(bytes);
-        std::io::copy(&mut content, &mut file)?;
-        Ok(size)
-    }
-
-    // Method from js code
-    pub async fn get_sign(&self, mut parameters: Value) -> Result<String, BiliClientError> {
-        let table = vec![
-            46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42,
-            19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60,
-            51, 30, 4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
-        ];
-        let nav_info: Value = self
-            .client
-            .get("https://api.bilibili.com/x/web-interface/nav")
-            .headers(self.headers.clone())
-            .send()
-            .await?
-            .json()
-            .await?;
-        let re = Regex::new(r"wbi/(.*).png").unwrap();
-        let img = re
-            .captures(nav_info["data"]["wbi_img"]["img_url"].as_str().unwrap())
-            .unwrap()
-            .get(1)
-            .unwrap()
-            .as_str();
-        let sub = re
-            .captures(nav_info["data"]["wbi_img"]["sub_url"].as_str().unwrap())
-            .unwrap()
-            .get(1)
-            .unwrap()
-            .as_str();
-        let raw_string = format!("{}{}", img, sub);
-        let mut encoded = Vec::new();
-        table.into_iter().for_each(|x| {
-            if x < raw_string.len() {
-                encoded.push(raw_string.as_bytes()[x]);
-            }
-        });
-        // only keep 32 bytes of encoded
-        encoded = encoded[0..32].to_vec();
-        let encoded = String::from_utf8(encoded).unwrap();
-        // Timestamp in seconds
-        let wts = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        parameters
-            .as_object_mut()
-            .unwrap()
-            .insert("wts".to_owned(), serde_json::Value::String(wts.to_string()));
-        // Get all keys from parameters into vec
-        let mut keys = parameters
-            .as_object()
-            .unwrap()
-            .keys()
-            .map(|x| x.to_owned())
-            .collect::<Vec<String>>();
-        // sort keys
-        keys.sort();
-        let mut params = String::new();
-        keys.iter().for_each(|x| {
-            params.push_str(x);
-            params.push('=');
-            // Value filters !'()* characters
-            let value = parameters
-                .get(x)
-                .unwrap()
-                .as_str()
-                .unwrap()
-                .replace(['!', '\'', '(', ')', '*'], "");
-            let value = PctString::encode(value.chars(), URIReserved);
-            params.push_str(value.as_str());
-            // add & if not last
-            if x != keys.last().unwrap() {
-                params.push('&');
-            }
-        });
-        // md5 params+encoded
-        let w_rid = md5::compute(params.to_string() + encoded.as_str());
-        let params = params + format!("&w_rid={:x}", w_rid).as_str();
-        Ok(params)
-    }
-
-    async fn preupload_video(
+    async fn recv(
         &self,
-        account: &AccountRow,
-        video_file: &Path,
-    ) -> Result<PreuploadResponse, BiliClientError> {
-        let mut headers = self.headers.clone();
-        headers.insert("cookie", account.cookies.parse().unwrap());
-        let url = format!(
-            "https://member.bilibili.com/preupload?name={}&r=upos&profile=ugcfx/bup",
-            video_file.file_name().unwrap().to_str().unwrap()
-        );
-        let response = self
-            .client
-            .get(&url)
-            .headers(headers)
-            .send()
-            .await?
-            .json::<PreuploadResponse>()
-            .await?;
-        Ok(response)
-    }
-
-    async fn post_video_meta(
-        &self,
-        preupload_response: &PreuploadResponse,
-        video_file: &Path,
-    ) -> Result<PostVideoMetaResponse, BiliClientError> {
-        let url = format!(
-            "https:{}{}?uploads=&output=json&profile=ugcfx/bup&filesize={}&partsize={}&biz_id={}",
-            preupload_response.endpoint,
-            preupload_response.upos_uri.replace("upos:/", ""),
-            video_file.metadata().unwrap().len(),
-            preupload_response.chunk_size,
-            preupload_response.biz_id
-        );
-        let response = self
-            .client
-            .post(&url)
-            .header("X-Upos-Auth", &preupload_response.auth)
-            .send()
-            .await?
-            .json::<PostVideoMetaResponse>()
-            .await?;
-        Ok(response)
-    }
-
-    async fn upload_video(
-        &self,
-        preupload_response: &PreuploadResponse,
-        post_video_meta_response: &PostVideoMetaResponse,
-        video_file: &Path,
-    ) -> Result<usize, BiliClientError> {
-        let mut file = File::open(video_file).await?;
-        let mut buffer = vec![0; preupload_response.chunk_size];
-        let file_size = video_file.metadata()?.len();
-        let chunk_size = preupload_response.chunk_size as u64; // 确保使用 u64 类型
-        let total_chunks = (file_size as f64 / chunk_size as f64).ceil() as usize; // 计算总分块数
-
-        let start = Instant::now();
-        let mut chunk = 0;
-        let mut read_total = 0;
-        while let Ok(size) = file.read(&mut buffer[read_total..]).await {
-            read_total += size;
-            log::debug!("size: {}, total: {}", size, read_total);
-            if size > 0 && (read_total as u64) < chunk_size {
-                continue;
-            }
-            if size == 0 && read_total == 0 {
+        room: u64,
+        mut rx: UnboundedReceiver<WsStreamMessageType>,
+    ) -> Result<(), FelgensError> {
+        while let Some(msg) = rx.recv().await {
+            if *self.quit.lock().await {
                 break;
             }
-            let url = format!(
-                "https:{}{}?partNumber={}&uploadId={}&chunk={}&chunks={}&size={}&start={}&end={}&total={}",
-                preupload_response.endpoint,
-                preupload_response.upos_uri.replace("upos:/", ""),
-                chunk + 1,
-                post_video_meta_response.upload_id,
-                chunk,
-                total_chunks,
-                read_total,
-                chunk * preupload_response.chunk_size,
-                chunk * preupload_response.chunk_size + read_total,
-                video_file.metadata().unwrap().len()
-            );
-            self.client
-                .put(&url)
-                .header("X-Upos-Auth", &preupload_response.auth)
-                .header("Content-Type", "application/octet-stream")
-                .header("Content-Length", read_total.to_string())
-                .body(buffer[..read_total].to_vec())
-                .send()
-                .await?
-                .text()
-                .await?;
-            chunk += 1;
-            read_total = 0;
-            log::debug!(
-                "[bili]speed: {:.1} KiB/s",
-                (chunk * preupload_response.chunk_size) as f64
-                    / start.elapsed().as_secs_f64()
-                    / 1024.0
-            );
+            if let WsStreamMessageType::DanmuMsg(msg) = msg {
+                let _ = self.app_handle.emit(
+                    &format!("danmu:{}", room),
+                    DanmuEntry {
+                        ts: msg.timestamp,
+                        content: msg.msg.clone(),
+                    },
+                );
+                if *self.live_status.read().await {
+                    // save danmu
+                    if let Some(storage) = self.danmu_storage.write().await.as_ref() {
+                        storage.add_line(msg.timestamp, &msg.msg).await;
+                    }
+                }
+            }
         }
-        Ok(total_chunks)
-    }
-
-    async fn end_upload(
-        &self,
-        preupload_response: &PreuploadResponse,
-        post_video_meta_response: &PostVideoMetaResponse,
-        chunks: usize,
-    ) -> Result<(), BiliClientError> {
-        let url = format!(
-            "https:{}{}?output=json&name={}&profile=ugcfx/bup&uploadId={}&biz_id={}",
-            preupload_response.endpoint,
-            preupload_response.upos_uri.replace("upos:/", ""),
-            preupload_response.upos_uri,
-            post_video_meta_response.upload_id,
-            preupload_response.biz_id
-        );
-        let parts: Vec<Value> = (1..=chunks)
-            .map(|i| json!({ "partNumber": i, "eTag": "etag" }))
-            .collect();
-        let body = json!({ "parts": parts });
-        self.client
-            .post(&url)
-            .header("X-Upos-Auth", &preupload_response.auth)
-            .header("Content-Type", "application/json; charset=UTF-8")
-            .body(body.to_string())
-            .send()
-            .await?
-            .text()
-            .await?;
         Ok(())
     }
 
-    pub async fn prepare_video(
-        &self,
-        account: &AccountRow,
-        video_file: &Path,
-    ) -> Result<profile::Video, BiliClientError> {
-        let preupload = self.preupload_video(account, video_file).await?;
-        let metaposted = self.post_video_meta(&preupload, video_file).await?;
-        let uploaded = self
-            .upload_video(&preupload, &metaposted, video_file)
+    async fn get_playlist(&self) -> Result<Playlist, super::errors::RecorderError> {
+        let stream = self.live_stream.read().await.clone();
+        if stream.is_none() {
+            return Err(super::errors::RecorderError::NoStreamAvailable);
+        }
+        let stream = stream.unwrap();
+        match self
+            .client
+            .read()
+            .await
+            .get_index_content(&stream.index())
+            .await
+        {
+            Ok(index_content) => {
+                if index_content.is_empty() {
+                    return Err(super::errors::RecorderError::InvalidStream { stream });
+                }
+                if index_content.contains("Not Found") {
+                    return Err(super::errors::RecorderError::IndexNotFound {
+                        url: stream.index(),
+                    });
+                }
+                m3u8_rs::parse_playlist_res(index_content.as_bytes()).map_err(|_| {
+                    super::errors::RecorderError::M3u8ParseFailed {
+                        content: index_content.clone(),
+                    }
+                })
+            }
+            Err(e) => {
+                log::error!("Failed fetching index content from {}", stream.index());
+                Err(super::errors::RecorderError::BiliClientError { err: e })
+            }
+        }
+    }
+
+    async fn get_header_url(&self) -> Result<String, super::errors::RecorderError> {
+        let stream = self.live_stream.read().await.clone();
+        if stream.is_none() {
+            return Err(super::errors::RecorderError::NoStreamAvailable);
+        }
+        let stream = stream.unwrap();
+        let index_content = self
+            .client
+            .read()
+            .await
+            .get_index_content(&stream.index())
             .await?;
-        self.end_upload(&preupload, &metaposted, uploaded).await?;
-        let filename = Path::new(&metaposted.key)
-            .file_stem()
-            .unwrap()
-            .to_str()
-            .unwrap();
-        Ok(profile::Video {
-            title: "".to_string(),
-            filename: filename.to_string(),
-            desc: "".to_string(),
-            cid: preupload.biz_id,
+        if index_content.is_empty() {
+            return Err(super::errors::RecorderError::InvalidStream { stream });
+        }
+        if index_content.contains("Not Found") {
+            return Err(super::errors::RecorderError::IndexNotFound {
+                url: stream.index(),
+            });
+        }
+        if index_content.contains("BANDWIDTH") {
+            // this index content provides another m3u8 url
+            // example: https://765b047cec3b099771d4b1851136046f.v.smtcdns.net/d1--cn-gotcha204-3.bilivideo.com/live-bvc/246284/live_1323355750_55526594/index.m3u8?expires=1741318366&len=0&oi=1961017843&pt=h5&qn=10000&trid=1007049a5300422eeffd2d6995d67b67ca5a&sigparams=cdn,expires,len,oi,pt,qn,trid&cdn=cn-gotcha204&sign=7ef1241439467ef27d3c804c1eda8d4d&site=1c89ef99adec13fab3a3592ee4db26d3&free_type=0&mid=475210&sche=ban&bvchls=1&trace=16&isp=ct&rg=East&pv=Shanghai&source=puv3_onetier&p2p_type=-1&score=1&suffix=origin&deploy_env=prod&flvsk=e5c4d6fb512ed7832b706f0a92f7a8c8&sk=246b3930727a89629f17520b1b551a2f&pp=rtmp&hot_cdn=57345&origin_bitrate=657300&sl=1&info_source=cache&vd=bc&src=puv3&order=1&TxLiveCode=cold_stream&TxDispType=3&svr_type=live_oc&tencent_test_client_ip=116.226.193.243&dispatch_from=OC_MGR61.170.74.11&utime=1741314857497
+            let new_url = index_content.lines().last().unwrap();
+            let base_url = new_url.split('/').next().unwrap();
+            let host = base_url.split('/').next().unwrap();
+            // extra is params after index.m3u8
+            let extra = new_url.split(base_url).last().unwrap();
+            let stream = BiliStream::new(StreamType::FMP4, base_url, host, extra);
+            log::info!("Update stream: {}", stream);
+            *self.live_stream.write().await = Some(stream);
+            return Box::pin(self.get_header_url()).await;
+        }
+        let mut header_url = String::from("");
+        let re = Regex::new(r"h.*\.m4s").unwrap();
+        if let Some(captures) = re.captures(&index_content) {
+            header_url = captures.get(0).unwrap().as_str().to_string();
+        }
+        if header_url.is_empty() {
+            log::warn!("Parse header url failed: {}", index_content);
+        }
+        Ok(header_url)
+    }
+
+    async fn extract_timestamp(&self, header_url: &str) -> i64 {
+        log::debug!("[{}]Extract timestamp from {}", self.room_id, header_url);
+        let re = Regex::new(r"h(\d+).m4s").unwrap();
+        if let Some(cap) = re.captures(header_url) {
+            let ts: i64 = cap.get(1).unwrap().as_str().parse().unwrap();
+            *self.live_id.write().await = ts.to_string();
+            ts
+        } else {
+            log::error!("Extract timestamp failed: {}", header_url);
+            0
+        }
+    }
+
+    async fn get_work_dir(&self, live_id: &str) -> String {
+        format!(
+            "/{}/bilibili/{}/{}/",
+            self.config.read().await.cache,
+            self.room_id,
+            live_id
+        )
+    }
+
+    async fn update_entries(&self) -> Result<u128, super::errors::RecorderError> {
+        let task_begin_time = std::time::Instant::now();
+        let current_stream = self.live_stream.read().await.clone();
+        if current_stream.is_none() {
+            return Err(super::errors::RecorderError::NoStreamAvailable);
+        }
+        let current_stream = current_stream.unwrap();
+        let parsed = self.get_playlist().await;
+        let mut timestamp: i64 = self.live_id.read().await.parse::<i64>().unwrap_or(0);
+        let mut work_dir = self.get_work_dir(timestamp.to_string().as_str()).await;
+        // Check header if None
+        if (self.entry_store.read().await.as_ref().is_none() || self.entry_store.read().await.as_ref().unwrap().get_header().is_none()) && current_stream.format == StreamType::FMP4 {
+            // Get url from EXT-X-MAP
+            let header_url = self.get_header_url().await?;
+            if header_url.is_empty() {
+                return Err(super::errors::RecorderError::EmptyHeader);
+            }
+            timestamp = self.extract_timestamp(&header_url).await;
+            if timestamp == 0 {
+                log::error!("[{}]Parse timestamp failed: {}", self.room_id, header_url);
+                return Err(super::errors::RecorderError::InvalidTimestamp);
+            }
+            self.db
+                .add_record(
+                    PlatformType::BiliBili,
+                    timestamp.to_string().as_str(),
+                    self.room_id,
+                    &self.room_info.read().await.room_title,
+                    self.cover.read().await.clone(),
+                )
+                .await?;
+            // now work dir is confirmed
+            work_dir = self.get_work_dir(timestamp.to_string().as_str()).await;
+
+            let entry_store = EntryStore::new(&work_dir).await;
+            *self.entry_store.write().await = Some(entry_store);
+
+            // danmau file
+            let danmu_file_path = format!("{}{}", work_dir, "danmu.txt");
+            *self.danmu_storage.write().await = DanmuStorage::new(&danmu_file_path).await;
+            let full_header_url = current_stream.ts_url(&header_url);
+            let file_name = header_url.split('/').last().unwrap();
+            let mut header = TsEntry {
+                url: file_name.to_string(),
+                sequence: 0,
+                length: 0.0,
+                size: 0,
+                ts: timestamp,
+                is_header: true,
+            };
+            // Download header
+            match self
+                .client
+                .read()
+                .await
+                .download_ts(&full_header_url, &format!("{}/{}", work_dir, file_name))
+                .await
+            {
+                Ok(size) => {
+                    header.size = size;
+                    self.entry_store
+                        .write()
+                        .await
+                        .as_mut()
+                        .unwrap()
+                        .add_entry(header)
+                        .await;
+                }
+                Err(e) => {
+                    log::error!("Download header failed: {}", e);
+                }
+            }
+        }
+        match parsed {
+            Ok(Playlist::MasterPlaylist(pl)) => log::debug!("Master playlist:\n{:?}", pl),
+            Ok(Playlist::MediaPlaylist(pl)) => {
+                let mut new_segment_fetched = false;
+                let mut sequence = pl.media_sequence;
+                let last_sequence = self
+                    .entry_store
+                    .read()
+                    .await
+                    .as_ref()
+                    .unwrap()
+                    .last_sequence();
+                for ts in pl.segments {
+                    if sequence <= last_sequence {
+                        sequence += 1;
+                        continue;
+                    }
+                    new_segment_fetched = true;
+                    let mut seg_offset: i64 = 0;
+                    for tag in ts.unknown_tags {
+                        if tag.tag == "BILI-AUX" {
+                            if let Some(rest) = tag.rest {
+                                let parts: Vec<&str> = rest.split('|').collect();
+                                if parts.is_empty() {
+                                    continue;
+                                }
+                                let offset_hex = parts.first().unwrap().to_string();
+                                seg_offset = i64::from_str_radix(&offset_hex, 16).unwrap();
+                            }
+                            break;
+                        }
+                    }
+                    let ts_url = current_stream.ts_url(&ts.uri);
+                    if Url::parse(&ts_url).is_err() {
+                        log::error!("Ts url is invalid. ts_url={} original={}", ts_url, ts.uri);
+                        continue;
+                    }
+                    // encode segment offset into filename
+                    let file_name = ts.uri.split('/').last().unwrap_or(&ts.uri);
+                    let mut ts_length = pl.target_duration as f64;
+                    let ts = timestamp*1000 + seg_offset;
+                    // calculate entry length using offset
+                    // the default #EXTINF is 1.0, which is not accurate
+                    if let Some(last) = self
+                        .entry_store
+                        .read()
+                        .await
+                        .as_ref()
+                        .unwrap()
+                        .last_ts()
+                    {
+                        // skip this entry as it is already in cache or stream changed
+                        if ts <= last {
+                            continue;
+                        }
+                        ts_length = (ts - last) as f64 / 1000.0;
+                    }
+
+                    let client = self.client.clone();
+                    let mut retry = 0;
+                    loop {
+                        if retry > 3 {
+                            log::error!("Download ts failed after retry");
+                            break;
+                        }
+                        match client
+                            .read()
+                            .await
+                            .download_ts(&ts_url, &format!("{}/{}", work_dir, file_name))
+                            .await
+                        {
+                            Ok(size) => {
+                                self.entry_store
+                                    .write()
+                                    .await
+                                    .as_mut()
+                                    .unwrap()
+                                    .add_entry(TsEntry {
+                                        url: file_name.into(),
+                                        sequence,
+                                        length: ts_length,
+                                        size,
+                                        ts,
+                                        is_header: false,
+                                    })
+                                    .await;
+                                break;
+                            }
+                            Err(e) => {
+                                retry += 1;
+                                log::warn!("Download ts failed, retry {}: {}", retry, e);
+                            }
+                        }
+                    }
+
+                    sequence += 1;
+                }
+
+                if new_segment_fetched {
+                    *self.last_update.write().await = Utc::now().timestamp();
+                    self.db
+                        .update_record(
+                            timestamp.to_string().as_str(),
+                            self.entry_store
+                                .read()
+                                .await
+                                .as_ref()
+                                .unwrap()
+                                .total_duration() as i64,
+                            self.entry_store.read().await.as_ref().unwrap().total_size(),
+                        )
+                        .await?;
+                } else {
+                    // if index content is not changed for a long time, we should return a error to fetch a new stream
+                    if *self.last_update.read().await < Utc::now().timestamp() - 10 {
+                        log::error!("Stream content is not updating for 10s, maybe not started yet or not closed properly.");
+                        return Err(super::errors::RecorderError::FreezedStream {
+                            stream: current_stream,
+                        });
+                    }
+                }
+                // check the current stream is too slow or not
+                if let Some(last_ts) = self.entry_store.read().await.as_ref().unwrap().last_ts() {
+                    if last_ts < Utc::now().timestamp() - 10 {
+                        log::error!(
+                            "Stream is too slow, last entry ts is at {}",
+                            last_ts
+                        );
+                        return Err(super::errors::RecorderError::SlowStream {
+                            stream: current_stream,
+                        });
+                    }
+                }
+            }
+            Err(e) => {
+                return Err(e);
+            }
+        }
+        Ok(task_begin_time.elapsed().as_millis())
+    }
+
+    pub async fn clip_archive_range(
+        &self,
+        live_id: &str,
+        x: f64,
+        y: f64,
+        output_path: &str,
+    ) -> Result<String, super::errors::RecorderError> {
+        log::info!("Create archive clip for range [{}, {}]", x, y);
+        let work_dir = self.get_work_dir(live_id).await;
+        let entries = EntryStore::new(&work_dir).await.get_entries().clone();
+        if entries.is_empty() {
+            return Err(super::errors::RecorderError::EmptyCache);
+        }
+        let mut file_list = Vec::new();
+        // header fist
+        file_list.push(format!("{}/h{}.m4s", work_dir, live_id));
+        // add body entries
+        // seconds to ms
+        let begin = (x * 1000.0) as i64;
+        let end = (y * 1000.0) as i64;
+        let ts = entries.first().unwrap().ts;
+        if !entries.is_empty() {
+            for e in entries {
+                if e.ts - ts < begin {
+                    continue;
+                }
+                file_list.push(format!("{}/{}", work_dir, e.url));
+                if e.ts - ts > end {
+                    break;
+                }
+            }
+        }
+
+        let file_name = format!(
+            "[{}]{}_{}_{:.1}.mp4",
+            self.room_id,
+            live_id,
+            Utc::now().format("%m%d%H%M%S"),
+            y - x
+        );
+        Self::generate_clip(&file_list, output_path, &file_name).await
+    }
+
+    pub async fn clip_live_range(
+        &self,
+        x: f64,
+        y: f64,
+        output_path: &str,
+    ) -> Result<String, super::errors::RecorderError> {
+        log::info!("Create live clip for range [{}, {}]", x, y);
+        let work_dir = self.get_work_dir(self.live_id.read().await.as_str()).await;
+        let mut to_combine = Vec::new();
+        let header_copy = self.entry_store.read().await.as_ref().unwrap().get_header().unwrap().clone();
+        let entry_copy = self.entry_store.read().await.as_ref().unwrap().get_entries().clone();
+        if entry_copy.is_empty() {
+            return Err(super::errors::RecorderError::EmptyCache);
+        }
+        let begin = (x * 1000.0) as i64;
+        let end = (y * 1000.0) as i64;
+        let ts = entry_copy.first().unwrap().ts;
+        // TODO using binary search
+        for e in entry_copy.iter() {
+            if e.ts - ts < begin {
+                continue;
+            }
+            to_combine.push(e);
+            if e.ts - ts > end {
+                break;
+            }
+        }
+        if self
+            .live_stream
+            .read()
+            .await
+            .as_ref()
+            .is_some_and(|s| s.format == StreamType::FMP4)
+        {
+            // add header to vec
+            to_combine.insert(0, &header_copy);
+        }
+        let mut file_list = Vec::new();
+        for e in to_combine {
+            let file_name = e.url.split('/').last().unwrap();
+            let file_path = format!(
+                "{}/{}",
+                work_dir,
+                file_name
+            );
+            file_list.push(file_path);
+        }
+        let file_name = format!(
+            "[{}]{}_{}_{:.1}.mp4",
+            self.room_id,
+            self.live_id.read().await,
+            Utc::now().format("%m%d%H%M%S"),
+            y - x
+        );
+        Self::generate_clip(&file_list, output_path, &file_name).await
+    }
+
+    async fn generate_clip(
+        file_list: &Vec<String>,
+        output_path: &str,
+        file_name: &str,
+    ) -> Result<String, super::errors::RecorderError> {
+        std::fs::create_dir_all(output_path).expect("create clips folder failed");
+        let file_name = format!("{}/{}", output_path, file_name,);
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&file_name)
+            .await;
+        if file.is_err() {
+            return Err(super::errors::RecorderError::ClipError {
+                err: file.err().unwrap().to_string(),
+            });
+        }
+        let mut file = file.unwrap();
+        // write file content in file_list into file
+        for f in file_list {
+            let seg_file = OpenOptions::new().read(true).open(f).await;
+            if seg_file.is_err() {
+                log::error!("Reading {} failed, skip", f);
+                continue;
+            }
+            let mut seg_file = seg_file.unwrap();
+            let mut buffer = Vec::new();
+            seg_file.read_to_end(&mut buffer).await.unwrap();
+            file.write_all(&buffer).await.unwrap();
+        }
+        file.flush().await.unwrap();
+        Ok(file_name)
+    }
+
+    async fn generate_archive_m3u8(&self, live_id: &str) -> String {
+        if self.m3u8_cache.contains_key(live_id) {
+            return self.m3u8_cache.get(live_id).unwrap().clone();
+        }
+        let mut m3u8_content = "#EXTM3U\n".to_string();
+        m3u8_content += "#EXT-X-VERSION:6\n";
+        m3u8_content += "#EXT-X-TARGETDURATION:1\n";
+        m3u8_content += "#EXT-X-PLAYLIST-TYPE:VOD\n";
+        // add header, FMP4 need this
+        // TODO handle StreamType::TS
+        let header_url = format!("/bilibili/{}/{}/h{}.m4s", self.room_id, live_id, live_id);
+        m3u8_content += &format!("#EXT-X-MAP:URI=\"{}\"\n", header_url);
+        // add entries from read_dir
+        let work_dir = self.get_work_dir(live_id).await;
+        let entries = EntryStore::new(&work_dir).await.get_entries().clone();
+        if entries.is_empty() {
+            return m3u8_content;
+        }
+        let mut last_sequence = entries.first().unwrap().sequence;
+
+        let live_ts = live_id.parse::<i64>().unwrap();
+        m3u8_content += &format!("#EXT-X-OFFSET:{}\n", (entries.first().unwrap().ts - live_ts*1000) / 1000);
+
+        for e in entries {
+            // ignore header, cause it's already in EXT-X-MAP
+            if e.is_header {
+                continue;
+            }
+            let current_seq = e.sequence;
+            if current_seq - last_sequence > 1 {
+                m3u8_content += "#EXT-X-DISCONTINUITY\n"
+            }
+            // add #EXT-X-PROGRAM-DATE-TIME with ISO 8601 date
+            let ts = e.ts / 1000;
+            let date_str = Utc.timestamp_opt(ts, 0).unwrap().to_rfc3339();
+            m3u8_content += &format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", date_str);
+            m3u8_content += &format!("#EXTINF:{:.2},\n", e.length);
+            m3u8_content += &format!("/bilibili/{}/{}/{}\n", self.room_id, live_id, e.url);
+
+            last_sequence = current_seq;
+        }
+        m3u8_content += "#EXT-X-ENDLIST";
+        // cache this
+        self.m3u8_cache
+            .insert(live_id.to_string(), m3u8_content.clone());
+        m3u8_content
+    }
+
+    /// if fetching live/last stream m3u8, all entries are cached in memory, so it will be much faster than read_dir
+    async fn generate_live_m3u8(&self) -> String {
+        let live_status = *self.live_status.read().await;
+        let mut m3u8_content = "#EXTM3U\n".to_string();
+        m3u8_content += "#EXT-X-VERSION:6\n";
+        m3u8_content += "#EXT-X-TARGETDURATION:1\n";
+        m3u8_content += "#EXT-X-SERVER-CONTROL:HOLD-BACK:3\n";
+        // if stream is closed, switch to VOD
+        if live_status {
+            m3u8_content += "#EXT-X-PLAYLIST-TYPE:EVENT\n";
+        } else {
+            m3u8_content += "#EXT-X-PLAYLIST-TYPE:VOD\n";
+        }
+        let live_id = self.live_id.read().await.clone();
+        // initial segment for fmp4, info from self.header
+        if let Some(header) = self.entry_store.read().await.as_ref().unwrap().get_header() {
+            let file_name = header.url.split('/').last().unwrap();
+            let local_url = format!("/bilibili/{}/{}/{}", self.room_id, live_id, file_name);
+            m3u8_content += &format!("#EXT-X-MAP:URI=\"{}\"\n", local_url);
+        }
+        let entries = self.entry_store.read().await.as_ref().unwrap().get_entries().clone();
+        if entries.is_empty() {
+            m3u8_content += "#EXT-X-OFFSET:0\n";
+            return m3u8_content;
+        }
+
+        let mut last_sequence = entries.first().unwrap().sequence;
+
+        // this does nothing, but privide first entry ts for player
+        let live_ts = live_id.parse::<i64>().unwrap();
+        m3u8_content += &format!("#EXT-X-OFFSET:{}\n", (entries.first().unwrap().ts - live_ts*1000) / 1000);
+
+        for entry in entries.iter() {
+            if entry.sequence - last_sequence > 1 {
+                // discontinuity happens
+                m3u8_content += "#EXT-X-DISCONTINUITY\n"
+            }
+            // add #EXT-X-PROGRAM-DATE-TIME with ISO 8601 date
+            let ts = entry.ts / 1000;
+            let date_str = Utc.timestamp_opt(ts, 0).unwrap().to_rfc3339();
+            m3u8_content += &format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", date_str);
+            m3u8_content += &format!("#EXTINF:{:.2},\n", entry.length);
+            last_sequence = entry.sequence;
+            let file_name = entry.url.split('/').last().unwrap();
+            let local_url = format!("/bilibili/{}/{}/{}", self.room_id, live_id, file_name);
+            m3u8_content += &format!("{}\n", local_url);
+        }
+        // let player know stream is closed
+        if !live_status {
+            m3u8_content += "#EXT-X-ENDLIST";
+        }
+        m3u8_content
+    }
+}
+
+#[async_trait]
+impl super::Recorder for BiliRecorder {
+    async fn run(&self) {
+        let self_clone = self.clone();
+        thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            runtime.block_on(async move {
+                while !*self_clone.quit.lock().await {
+                    if self_clone.check_status().await {
+                        // Live status is ok, start recording.
+                        while !*self_clone.quit.lock().await {
+                            match self_clone.update_entries().await {
+                                Ok(ms) => {
+                                    if ms < 1000 {
+                                        thread::sleep(std::time::Duration::from_millis(
+                                            (1000 - ms) as u64,
+                                        ));
+                                    } else {
+                                        log::warn!(
+                                            "[{}]Update entries cost too long: {}ms",
+                                            self_clone.room_id,
+                                            ms
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    log::error!(
+                                        "[{}]Update entries error: {}",
+                                        self_clone.room_id,
+                                        e
+                                    );
+                                    break;
+                                }
+                            }
+                        }
+                        // go check status again after random 2-5 secs
+                        let mut rng = rand::thread_rng();
+                        let secs = rng.gen_range(2..=5);
+                        thread::sleep(std::time::Duration::from_secs(secs));
+                        continue;
+                    }
+                    // Every 10s check live status.
+                    thread::sleep(std::time::Duration::from_secs(10));
+                }
+                log::info!("recording thread {} quit.", self_clone.room_id);
+            });
+        });
+        // Thread for danmaku
+        let self_clone = self.clone();
+        thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            runtime.block_on(async move {
+                self_clone.danmu().await;
+            });
+        });
+    }
+
+    async fn stop(&self) {
+        *self.quit.lock().await = true;
+    }
+
+    /// x and y are relative to first sequence
+    async fn clip_range(
+        &self,
+        live_id: &str,
+        x: f64,
+        y: f64,
+        output_path: &str,
+    ) -> Result<String, super::errors::RecorderError> {
+        if *self.live_id.read().await == live_id {
+            self.clip_live_range(x, y, output_path).await
+        } else {
+            self.clip_archive_range(live_id, x, y, output_path).await
+        }
+    }
+
+    /// timestamp is the id of live stream
+    async fn m3u8_content(&self, live_id: &str) -> String {
+        if *self.live_id.read().await == live_id {
+            self.generate_live_m3u8().await
+        } else {
+            self.generate_archive_m3u8(live_id).await
+        }
+    }
+
+    async fn info(&self) -> super::RecorderInfo {
+        let room_info = self.room_info.read().await;
+        let user_info = self.user_info.read().await;
+        super::RecorderInfo {
+            room_id: self.room_id,
+            room_info: super::RoomInfo {
+                room_id: self.room_id,
+                room_title: room_info.room_title.clone(),
+                room_cover: room_info.room_cover_url.clone(),
+            },
+            user_info: super::UserInfo {
+                user_id: user_info.user_id.to_string(),
+                user_name: user_info.user_name.clone(),
+                user_avatar: user_info.user_avatar_url.clone(),
+            },
+            total_length: if let Some(store) = self.entry_store.read().await.as_ref() {
+                store.total_duration()
+            } else {
+                0.0
+            },
+            current_live_id: self.live_id.read().await.clone(),
+            live_status: *self.live_status.read().await,
+            platform: PlatformType::BiliBili.as_str().to_string(),
+        }
+    }
+
+    async fn comments(
+        &self,
+        live_id: &str,
+    ) -> Result<Vec<DanmuEntry>, super::errors::RecorderError> {
+        Ok(if live_id == *self.live_id.read().await {
+            // just return current cache content
+            match self.danmu_storage.read().await.as_ref() {
+                Some(storage) => storage.get_entries().await,
+                None => Vec::new(),
+            }
+        } else {
+            // load disk cache
+            let cache_file_path = format!(
+                "{}/bilibili/{}/{}/{}",
+                self.config.read().await.cache,
+                self.room_id,
+                live_id,
+                "danmu.txt"
+            );
+            log::info!("loading danmu cache from {}", cache_file_path);
+            let storage = DanmuStorage::new(&cache_file_path).await;
+            if storage.is_none() {
+                return Ok(Vec::new());
+            }
+            let storage = storage.unwrap();
+            storage.get_entries().await
         })
     }
 
-    pub async fn submit_video(
-        &self,
-        account: &AccountRow,
-        profile_template: &Profile,
-        video: &profile::Video,
-    ) -> Result<VideoSubmitData, BiliClientError> {
-        let mut headers = self.headers.clone();
-        headers.insert("cookie", account.cookies.parse().unwrap());
-        let url = format!(
-            "https://member.bilibili.com/x/vu/web/add/v3?ts={}&csrf={}",
-            chrono::Local::now().timestamp(),
-            account.csrf
-        );
-        let mut preprofile = profile_template.clone();
-        preprofile.videos.push(video.clone());
-        match self
-            .client
-            .post(&url)
-            .headers(headers)
-            .header("Content-Type", "application/json; charset=UTF-8")
-            .body(serde_json::ser::to_string(&preprofile).unwrap_or("".to_string()))
-            .send()
-            .await
-        {
-            Ok(raw_resp) => {
-                let json = raw_resp.json().await?;
-                if let Ok(resp) = serde_json::from_value::<GeneralResponse>(json) {
-                    match resp.data {
-                        response::Data::VideoSubmit(data) => Ok(data),
-                        _ => Err(BiliClientError::InvalidResponse),
-                    }
-                } else {
-                    println!("Parse response failed");
-                    Err(BiliClientError::InvalidResponse)
-                }
-            }
-            Err(e) => {
-                println!("Send failed {}", e);
-                Err(BiliClientError::InvalidResponse)
-            }
-        }
-    }
-
-    pub async fn upload_cover(
-        &self,
-        account: &AccountRow,
-        cover: &str,
-    ) -> Result<String, BiliClientError> {
-        let url = format!(
-            "https://member.bilibili.com/x/vu/web/cover/up?ts={}",
-            chrono::Local::now().timestamp(),
-        );
-        let mut headers = self.headers.clone();
-        headers.insert("cookie", account.cookies.parse().unwrap());
-        let params = [("csrf", account.csrf.clone()), ("cover", cover.to_string())];
-        match self
-            .client
-            .post(&url)
-            .headers(headers)
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .form(&params)
-            .send()
-            .await
-        {
-            Ok(raw_resp) => {
-                let json = raw_resp.json().await?;
-                if let Ok(resp) = serde_json::from_value::<GeneralResponse>(json) {
-                    match resp.data {
-                        response::Data::Cover(data) => Ok(data.url),
-                        _ => Err(BiliClientError::InvalidResponse),
-                    }
-                } else {
-                    println!("Parse response failed");
-                    Err(BiliClientError::InvalidResponse)
-                }
-            }
-            Err(e) => {
-                println!("Send failed {}", e);
-                Err(BiliClientError::InvalidResponse)
-            }
-        }
-    }
-
-    pub async fn send_danmaku(
-        &self,
-        account: &AccountRow,
-        room_id: u64,
-        message: &str,
-    ) -> Result<(), BiliClientError> {
-        let url = "https://api.live.bilibili.com/msg/send".to_string();
-        let mut headers = self.headers.clone();
-        headers.insert("cookie", account.cookies.parse().unwrap());
-        let params = [
-            ("bubble", "0"),
-            ("msg", message),
-            ("color", "16777215"),
-            ("mode", "1"),
-            ("fontsize", "25"),
-            ("room_type", "0"),
-            ("rnd", &format!("{}", chrono::Local::now().timestamp())),
-            ("roomid", &format!("{}", room_id)),
-            ("csrf", &account.csrf),
-            ("csrf_token", &account.csrf),
-        ];
-        let _ = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .form(&params)
-            .send()
-            .await?;
-        Ok(())
-    }
-
-    pub async fn get_video_typelist(
-        &self,
-        account: &AccountRow,
-    ) -> Result<Vec<response::Typelist>, BiliClientError> {
-        let url = "https://member.bilibili.com/x/vupre/web/archive/pre?lang=cn";
-        let mut headers = self.headers.clone();
-        headers.insert("cookie", account.cookies.parse().unwrap());
-        let resp: GeneralResponse = self
-            .client
-            .get(url)
-            .headers(headers)
-            .send()
-            .await?
-            .json()
-            .await?;
-        if resp.code == 0 {
-            if let response::Data::VideoTypeList(data) = resp.data {
-                Ok(data.typelist)
-            } else {
-                Err(BiliClientError::InvalidResponse)
-            }
-        } else {
-            log::error!("Get video typelist failed with code {}", resp.code);
-            Err(BiliClientError::InvalidResponse)
-        }
+    async fn is_recording(&self, live_id: &str) -> bool {
+        *self.live_id.read().await == live_id && *self.live_status.read().await
     }
 }

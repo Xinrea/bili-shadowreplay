@@ -7,5 +7,17 @@ body {
   height: 100%;
   width: 100%;
   user-select: none;
+  cursor: default;
 }
 
+.icon-white {
+    color: white;
+}
+
+.icon-primary {
+    color: #007bff;
+}
+
+.icon-danger {
+    color: #dc3545;
+}

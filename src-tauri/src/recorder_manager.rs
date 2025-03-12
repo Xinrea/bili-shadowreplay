@@ -1,11 +1,15 @@
+use crate::database::DatabaseError;
 use crate::database::{account::AccountRow, record::RecordRow, Database};
-use crate::recorder::bilibili::UserInfo;
 use crate::recorder::danmu::DanmuEntry;
-use crate::recorder::RecorderError;
-use crate::recorder::{bilibili::RoomInfo, BiliRecorder};
-use crate::Config;
+use crate::recorder::douyin::DouyinRecorder;
+use crate::recorder::errors::RecorderError;
+use crate::recorder::bilibili::BiliRecorder;
+use crate::config::Config;
+use crate::recorder::Recorder;
+use crate::recorder::RecorderInfo;
+use crate::recorder::PlatformType;
 use custom_error::custom_error;
-use dashmap::DashMap;
+use std::collections::HashMap;
 use hyper::Method;
 use hyper::{
     service::{make_service_fn, service_fn},
@@ -22,29 +26,23 @@ pub struct RecorderList {
     pub recorders: Vec<RecorderInfo>,
 }
 
-#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
-pub struct RecorderInfo {
-    pub room_id: u64,
-    pub room_info: RoomInfo,
-    pub user_info: UserInfo,
-    pub total_length: f64,
-    pub current_ts: u64,
-    pub live_status: bool,
-}
-
 pub struct RecorderManager {
     app_handle: AppHandle,
+    db: Arc<Database>,
     config: Arc<RwLock<Config>>,
-    recorders: Arc<DashMap<u64, BiliRecorder>>,
+    recorders: Arc<RwLock<HashMap<String, Box<dyn Recorder>>>>,
     hls_server_addr: Arc<RwLock<Option<SocketAddr>>>,
 }
 
 custom_error! {pub RecorderManagerError
     AlreadyExisted { room_id: u64 } = "Recorder {room_id} already existed",
     NotFound {room_id: u64 } = "Recorder {room_id} not found",
-    RecorderError { err: RecorderError } = "Recorder error",
-    IOError {err: std::io::Error } = "IO error",
-    HLSError { err: hyper::Error } = "HLS server error",
+    InvalidPlatformType { platform: String } = "Invalid platform type: {platform}",
+    RecorderError { err: RecorderError } = "Recorder error: {err}",
+    IOError {err: std::io::Error } = "IO error: {err}",
+    HLSError { err: hyper::Error } = "HLS server error: {err}",
+    DatabaseError { err: DatabaseError } = "Database error: {err}",
+    Recording { live_id: String } = "无法删除正在录制的直播 {live_id}",
 }
 
 impl From<hyper::Error> for RecorderManagerError {
@@ -65,6 +63,12 @@ impl From<RecorderError> for RecorderManagerError {
     }
 }
 
+impl From<DatabaseError> for RecorderManagerError {
+    fn from(value: DatabaseError) -> Self {
+        RecorderManagerError::DatabaseError { err: value }
+    }
+}
+
 impl From<RecorderManagerError> for String {
     fn from(value: RecorderManagerError) -> Self {
         value.to_string()
@@ -72,11 +76,12 @@ impl From<RecorderManagerError> for String {
 }
 
 impl RecorderManager {
-    pub fn new(app_handle: AppHandle, config: Arc<RwLock<Config>>) -> RecorderManager {
+    pub fn new(app_handle: AppHandle, db: Arc<Database>, config: Arc<RwLock<Config>>) -> RecorderManager {
         RecorderManager {
             app_handle,
+            db,
             config,
-            recorders: Arc::new(DashMap::new()),
+            recorders: Arc::new(RwLock::new(HashMap::new())),
             hls_server_addr: Arc::new(RwLock::new(None)),
         }
     }
@@ -84,120 +89,109 @@ impl RecorderManager {
     /// starting HLS server
     pub async fn run_hls(&self) -> Result<(), RecorderManagerError> {
         let addr = SocketAddr::from(([127, 0, 0, 1], 0));
-        let listener = TcpListener::bind(&addr).await?;
-        let server_addr = self.start_hls_server(listener).await?;
-        log::info!("HLS server started on {}", server_addr);
-        self.hls_server_addr.write().await.replace(server_addr);
+        let listener = TcpListener::bind(addr).await?;
+        let addr = self.start_hls_server(listener).await?;
+        *self.hls_server_addr.write().await = Some(addr);
         Ok(())
     }
 
     pub async fn add_recorder(
         &self,
         webid: &str,
-        db: &Arc<Database>,
         account: &AccountRow,
+        platform: PlatformType,
         room_id: u64,
     ) -> Result<(), RecorderManagerError> {
-        // check existing recorder
-        if self.recorders.contains_key(&room_id) {
+        let recorder_id = format!("{}:{}", platform.as_str(), room_id);
+        if self.recorders.read().await.contains_key(&recorder_id) {
             return Err(RecorderManagerError::AlreadyExisted { room_id });
         }
-        let recorder = BiliRecorder::new(
-            self.app_handle.clone(),
-            webid,
-            db,
-            room_id,
-            account,
-            self.config.clone(),
-        )
-        .await?;
-        self.recorders.insert(room_id, recorder);
-        // run recorder
-        let recorder = self.recorders.get(&room_id).unwrap();
-        recorder.value().run().await;
+
+        let recorder: Box<dyn Recorder + 'static> = match platform {
+            PlatformType::BiliBili => Box::new(BiliRecorder::new(
+                self.app_handle.clone(),
+                webid,
+                &self.db,
+                room_id,
+                account,
+                self.config.clone(),
+            ).await?),
+            PlatformType::Douyin => Box::new(DouyinRecorder::new(
+                room_id,
+                self.config.clone(),
+                account,
+                &self.db,
+            )),
+            _ => return Err(RecorderManagerError::InvalidPlatformType { platform: platform.as_str().to_string() }),
+        };
+        self.recorders.write().await.insert(recorder_id.clone(), recorder);
+        if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
+            recorder_ref.run().await;
+        }
         Ok(())
     }
 
-    pub async fn remove_recorder(&self, room_id: u64) -> Result<(), RecorderManagerError> {
-        let recorder = self.recorders.remove(&room_id);
-        if recorder.is_none() {
+    pub async fn remove_recorder(&self, platform: PlatformType, room_id: u64) -> Result<(), RecorderManagerError> {
+        // check recorder exists
+        let recorder_id = format!("{}:{}", platform.as_str(), room_id);
+        if !self.recorders.read().await.contains_key(&recorder_id) {
             return Err(RecorderManagerError::NotFound { room_id });
         }
-        recorder.unwrap().1.stop().await;
+        
+        // stop recorder
+        if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
+            recorder_ref.stop().await;
+        }
+        
+        // remove recorder
+        self.recorders.write().await.remove(&recorder_id);
+        
         // remove related cache folder
-        let cache_folder = format!("{}/{}", self.config.read().await.cache, room_id);
+        let cache_folder = format!("{}/{}/{}", self.config.read().await.cache, platform.as_str(), room_id);
         let _ = tokio::fs::remove_dir_all(cache_folder).await;
         log::info!("Recorder {} cache folder removed", room_id);
+        
         Ok(())
-    }
-
-    pub async fn clip(
-        &self,
-        output_path: &str,
-        room_id: u64,
-        d: f64,
-    ) -> Result<String, RecorderManagerError> {
-        let recorder = self.recorders.get(&room_id);
-        if recorder.is_none() {
-            return Err(RecorderManagerError::NotFound { room_id });
-        }
-        let recorder = recorder.unwrap();
-        Ok(recorder.value().clip(room_id, d, output_path).await?)
     }
 
     pub async fn clip_range(
         &self,
         output_path: &str,
+        platform: PlatformType,
         room_id: u64,
-        ts: u64,
+        live_id: &str,
         start: f64,
         end: f64,
     ) -> Result<String, RecorderManagerError> {
-        let recorder = self.recorders.get(&room_id);
-        if recorder.is_none() {
+        let recorders = self.recorders.read().await;
+        let recorder_id = format!("{}:{}", platform.as_str(), room_id);
+        if !recorders.contains_key(&recorder_id) {
+            log::error!("Recorder {} not found", recorder_id);
             return Err(RecorderManagerError::NotFound { room_id });
         }
-        let recorder = recorder.unwrap();
-        Ok(recorder
-            .value()
-            .clip_range(ts, start, end, output_path)
-            .await?)
+        let recorder = recorders.get(&recorder_id).unwrap();
+        Ok(recorder.clip_range(live_id, start, end, output_path).await?)
     }
 
     pub async fn get_recorder_list(&self) -> RecorderList {
         let mut summary = RecorderList {
-            count: self.recorders.len(),
+            count: self.recorders.read().await.len(),
             recorders: Vec::new(),
         };
 
-        for recorder in self.recorders.iter() {
-            let recorder = recorder.value();
-            let room_info = RecorderInfo {
-                room_id: recorder.room_id,
-                room_info: recorder.room_info.read().await.clone(),
-                user_info: recorder.user_info.read().await.clone(),
-                total_length: *recorder.ts_length.read().await,
-                current_ts: *recorder.timestamp.read().await,
-                live_status: *recorder.live_status.read().await,
-            };
+        for recorder_ref in self.recorders.read().await.iter() {
+            let room_info = recorder_ref.1.info().await;
             summary.recorders.push(room_info);
         }
 
         summary.recorders.sort_by(|a, b| a.room_id.cmp(&b.room_id));
-
         summary
     }
 
-    pub async fn get_recorder_info(&self, room_id: u64) -> Option<RecorderInfo> {
-        if let Some(recorder) = self.recorders.get(&room_id) {
-            let room_info = RecorderInfo {
-                room_id: recorder.room_id,
-                room_info: recorder.room_info.read().await.clone(),
-                user_info: recorder.user_info.read().await.clone(),
-                total_length: *recorder.ts_length.read().await,
-                current_ts: *recorder.timestamp.read().await,
-                live_status: *recorder.live_status.read().await,
-            };
+    pub async fn get_recorder_info(&self, platform: PlatformType, room_id: u64) -> Option<RecorderInfo> {
+        let recorder_id = format!("{}:{}", platform.as_str(), room_id);
+        if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
+            let room_info = recorder_ref.info().await;
             Some(room_info)
         } else {
             None
@@ -205,42 +199,39 @@ impl RecorderManager {
     }
 
     pub async fn get_archives(&self, room_id: u64) -> Result<Vec<RecordRow>, RecorderManagerError> {
-        if let Some(recorder) = self.recorders.get(&room_id) {
-            Ok(recorder.get_archives().await?)
-        } else {
-            Err(RecorderManagerError::NotFound { room_id })
-        }
+        Ok(self.db.get_records(room_id).await?)
     }
 
     pub async fn get_archive(
         &self,
         room_id: u64,
-        live_id: u64,
+        live_id: &str,
     ) -> Result<RecordRow, RecorderManagerError> {
-        if let Some(recorder) = self.recorders.get(&room_id) {
-            Ok(recorder.get_archive(live_id).await?)
-        } else {
-            Err(RecorderManagerError::NotFound { room_id })
-        }
+        Ok(self.db.get_record(room_id, live_id).await?)
     }
 
-    pub async fn delete_archive(&self, room_id: u64, ts: u64) -> Result<(), RecorderManagerError> {
-        log::info!("Deleting {}:{}", room_id, ts);
-        if let Some(recorder) = self.recorders.get(&room_id) {
-            Ok(recorder.delete_archive(ts).await?)
-        } else {
-            log::error!("Room not found: {}", room_id);
-            Err(RecorderManagerError::NotFound { room_id })
+    pub async fn delete_archive(&self, platform: PlatformType, room_id: u64, live_id: &str) -> Result<(), RecorderManagerError> {
+        log::info!("Deleting {}:{}", room_id, live_id);
+        // check if this is still recording
+        let recorder_id = format!("{}:{}", platform.as_str(), room_id);
+        if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
+            let recorder = recorder_ref.as_ref();
+            if recorder.is_recording(live_id).await {
+                return Err(RecorderManagerError::Recording { live_id: live_id.to_string() });
+            }
         }
+        Ok(self.db.remove_record(live_id).await?)
     }
 
     pub async fn get_danmu(
         &self,
+        platform: PlatformType,
         room_id: u64,
-        live_id: u64,
+        live_id: &str,
     ) -> Result<Vec<DanmuEntry>, RecorderManagerError> {
-        if let Some(recorder) = self.recorders.get(&room_id) {
-            Ok(recorder.get_danmu_record(live_id).await)
+        let recorder_id = format!("{}:{}", platform.as_str(), room_id);
+        if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
+            Ok(recorder_ref.comments(live_id).await?)
         } else {
             Err(RecorderManagerError::NotFound { room_id })
         }
@@ -272,11 +263,14 @@ impl RecorderManager {
                                     .unwrap(),
                             );
                         }
+
                         let cache_path = config.read().await.cache.clone();
                         let path = req.uri().path();
                         let path_segs: Vec<&str> = path.split('/').collect();
-                        // path_segs should be size 4: /21484828/{timestamp}/playlist.m3u8
-                        if path_segs.len() != 4 {
+
+                        // path_segs should be size 5: /{platform}/{room_id}/{live_id}/playlist.m3u8
+                        if path_segs.len() != 5 {
+                            log::warn!("Invalid request path: {}", path);
                             return Ok::<_, Infallible>(
                                 Response::builder()
                                     .status(400)
@@ -284,13 +278,18 @@ impl RecorderManager {
                                     .unwrap(),
                             );
                         }
+                        // parse recorder type
+                        let platform = path_segs[1];
                         // parse room id
-                        let room_id = path_segs[1].parse::<u64>().unwrap();
-                        let timestamp = path_segs[2].parse::<u64>().unwrap();
-                        // if path is /room_id/{timestamp}/playlist.m3u8
-                        if path_segs[3] == "playlist.m3u8" {
+                        let room_id = path_segs[2].parse::<u64>().unwrap();
+                        // parse live id
+                        let live_id = path_segs[3];
+
+                        if path_segs[4] == "playlist.m3u8" {
                             // get recorder
-                            let recorder = recorders.get(&room_id);
+                            let recorder_key = format!("{}:{}", platform, room_id);
+                            let recorders = recorders.read().await;
+                            let recorder = recorders.get(&recorder_key);
                             if recorder.is_none() {
                                 return Ok::<_, Infallible>(
                                     Response::builder()
@@ -301,7 +300,7 @@ impl RecorderManager {
                             }
                             let recorder = recorder.unwrap();
                             // response with recorder generated m3u8, which contains ts entries that cached in local
-                            let m3u8_content = recorder.value().generate_m3u8(timestamp).await;
+                            let m3u8_content = recorder.m3u8_content(live_id).await;
                             Ok::<_, Infallible>(
                                 Response::builder()
                                     .status(200)
@@ -315,7 +314,9 @@ impl RecorderManager {
                             // try to find requested ts file in recorder's cache
                             // cache files are stored in {cache_dir}/{room_id}/{timestamp}/{ts_file}
                             let ts_file = format!("{}/{}", cache_path, path.replace("%7C", "|"));
-                            let recorder = recorders.get(&room_id);
+                            let recorders = recorders.read().await;
+                            let recorder_id = format!("{}:{}", platform, room_id);
+                            let recorder = recorders.get(&recorder_id);
                             if recorder.is_none() {
                                 return Ok::<_, Infallible>(
                                     Response::builder()

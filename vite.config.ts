@@ -10,6 +10,9 @@ const mobile =
 // https://vitejs.dev/config/
 // @ts-ignore
 export default defineConfig(async () => ({
+  optimizeDeps: {
+    exclude: ["@ffmpeg/ffmpeg", "@ffmpeg/util"],
+  },
   plugins: [
     svelte({
       preprocess: [

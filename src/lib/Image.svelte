@@ -5,13 +5,11 @@
   let b = "";
   async function getImage(url: string) {
     if (!url) {
-      return "";
+      return "/imgs/douyin.png";
     }
     const response = await fetch(url, {
       method: "GET",
     });
-    console.log(response.status); // e.g. 200
-    console.log(response.statusText); // e.g. "OK"
     return URL.createObjectURL(await response.blob());
   }
   async function init() {

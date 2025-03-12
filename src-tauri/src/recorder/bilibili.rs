@@ -384,7 +384,7 @@ impl BiliRecorder {
 
     async fn get_work_dir(&self, live_id: &str) -> String {
         format!(
-            "/{}/bilibili/{}/{}/",
+            "{}/bilibili/{}/{}/",
             self.config.read().await.cache,
             self.room_id,
             live_id
@@ -402,7 +402,17 @@ impl BiliRecorder {
         let mut timestamp: i64 = self.live_id.read().await.parse::<i64>().unwrap_or(0);
         let mut work_dir = self.get_work_dir(timestamp.to_string().as_str()).await;
         // Check header if None
-        if (self.entry_store.read().await.as_ref().is_none() || self.entry_store.read().await.as_ref().unwrap().get_header().is_none()) && current_stream.format == StreamType::FMP4 {
+        if (self.entry_store.read().await.as_ref().is_none()
+            || self
+                .entry_store
+                .read()
+                .await
+                .as_ref()
+                .unwrap()
+                .get_header()
+                .is_none())
+            && current_stream.format == StreamType::FMP4
+        {
             // Get url from EXT-X-MAP
             let header_url = self.get_header_url().await?;
             if header_url.is_empty() {
@@ -504,17 +514,10 @@ impl BiliRecorder {
                     // encode segment offset into filename
                     let file_name = ts.uri.split('/').last().unwrap_or(&ts.uri);
                     let mut ts_length = pl.target_duration as f64;
-                    let ts = timestamp*1000 + seg_offset;
+                    let ts = timestamp * 1000 + seg_offset;
                     // calculate entry length using offset
                     // the default #EXTINF is 1.0, which is not accurate
-                    if let Some(last) = self
-                        .entry_store
-                        .read()
-                        .await
-                        .as_ref()
-                        .unwrap()
-                        .last_ts()
-                    {
+                    if let Some(last) = self.entry_store.read().await.as_ref().unwrap().last_ts() {
                         // skip this entry as it is already in cache or stream changed
                         if ts <= last {
                             continue;
@@ -588,10 +591,7 @@ impl BiliRecorder {
                 // check the current stream is too slow or not
                 if let Some(last_ts) = self.entry_store.read().await.as_ref().unwrap().last_ts() {
                     if last_ts < Utc::now().timestamp() - 10 {
-                        log::error!(
-                            "Stream is too slow, last entry ts is at {}",
-                            last_ts
-                        );
+                        log::error!("Stream is too slow, last entry ts is at {}", last_ts);
                         return Err(super::errors::RecorderError::SlowStream {
                             stream: current_stream,
                         });
@@ -657,8 +657,23 @@ impl BiliRecorder {
         log::info!("Create live clip for range [{}, {}]", x, y);
         let work_dir = self.get_work_dir(self.live_id.read().await.as_str()).await;
         let mut to_combine = Vec::new();
-        let header_copy = self.entry_store.read().await.as_ref().unwrap().get_header().unwrap().clone();
-        let entry_copy = self.entry_store.read().await.as_ref().unwrap().get_entries().clone();
+        let header_copy = self
+            .entry_store
+            .read()
+            .await
+            .as_ref()
+            .unwrap()
+            .get_header()
+            .unwrap()
+            .clone();
+        let entry_copy = self
+            .entry_store
+            .read()
+            .await
+            .as_ref()
+            .unwrap()
+            .get_entries()
+            .clone();
         if entry_copy.is_empty() {
             return Err(super::errors::RecorderError::EmptyCache);
         }
@@ -688,11 +703,7 @@ impl BiliRecorder {
         let mut file_list = Vec::new();
         for e in to_combine {
             let file_name = e.url.split('/').last().unwrap();
-            let file_path = format!(
-                "{}/{}",
-                work_dir,
-                file_name
-            );
+            let file_path = format!("{}/{}", work_dir, file_name);
             file_list.push(file_path);
         }
         let file_name = format!(
@@ -762,7 +773,10 @@ impl BiliRecorder {
         let mut last_sequence = entries.first().unwrap().sequence;
 
         let live_ts = live_id.parse::<i64>().unwrap();
-        m3u8_content += &format!("#EXT-X-OFFSET:{}\n", (entries.first().unwrap().ts - live_ts*1000) / 1000);
+        m3u8_content += &format!(
+            "#EXT-X-OFFSET:{}\n",
+            (entries.first().unwrap().ts - live_ts * 1000) / 1000
+        );
 
         for e in entries {
             // ignore header, cause it's already in EXT-X-MAP
@@ -809,7 +823,14 @@ impl BiliRecorder {
             let local_url = format!("/bilibili/{}/{}/{}", self.room_id, live_id, file_name);
             m3u8_content += &format!("#EXT-X-MAP:URI=\"{}\"\n", local_url);
         }
-        let entries = self.entry_store.read().await.as_ref().unwrap().get_entries().clone();
+        let entries = self
+            .entry_store
+            .read()
+            .await
+            .as_ref()
+            .unwrap()
+            .get_entries()
+            .clone();
         if entries.is_empty() {
             m3u8_content += "#EXT-X-OFFSET:0\n";
             return m3u8_content;
@@ -819,7 +840,10 @@ impl BiliRecorder {
 
         // this does nothing, but privide first entry ts for player
         let live_ts = live_id.parse::<i64>().unwrap();
-        m3u8_content += &format!("#EXT-X-OFFSET:{}\n", (entries.first().unwrap().ts - live_ts*1000) / 1000);
+        m3u8_content += &format!(
+            "#EXT-X-OFFSET:{}\n",
+            (entries.first().unwrap().ts - live_ts * 1000) / 1000
+        );
 
         for entry in entries.iter() {
             if entry.sequence - last_sequence > 1 {

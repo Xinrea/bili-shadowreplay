@@ -1,5 +1,8 @@
 use async_std::{
-    fs::{File, OpenOptions}, io::{prelude::BufReadExt, BufReader, WriteExt}, path::Path, stream::StreamExt
+    fs::{File, OpenOptions},
+    io::{prelude::BufReadExt, BufReader, WriteExt},
+    path::Path,
+    stream::StreamExt,
 };
 
 const ENTRY_FILE_NAME: &str = "entries.log";
@@ -135,7 +138,6 @@ impl EntryStore {
     pub fn total_size(&self) -> u64 {
         self.total_size
     }
-
 
     pub fn last_sequence(&self) -> u64 {
         self.last_sequence

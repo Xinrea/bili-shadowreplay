@@ -1,13 +1,13 @@
 pub mod client;
 mod response;
+use super::entry::{EntryStore, TsEntry};
 use super::{
     danmu::DanmuEntry, errors::RecorderError, PlatformType, Recorder, RecorderInfo, RoomInfo,
     UserInfo,
 };
-use super::entry::{EntryStore, TsEntry};
 use crate::database::Database;
+use crate::ffmpeg::{transcode, TranscodeConfig};
 use crate::{config::Config, database::account::AccountRow};
-use crate::ffmpeg::{TranscodeConfig, TranscodeResult, transcode};
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
 use client::DouyinClientError;
@@ -52,7 +52,12 @@ pub struct DouyinRecorder {
 }
 
 impl DouyinRecorder {
-    pub fn new(room_id: u64, config: Arc<RwLock<Config>>, douyin_account: &AccountRow, db: &Arc<Database>) -> Self {
+    pub fn new(
+        room_id: u64,
+        config: Arc<RwLock<Config>>,
+        douyin_account: &AccountRow,
+        db: &Arc<Database>,
+    ) -> Self {
         let client = client::DouyinClient::new(douyin_account);
         Self {
             db: db.clone(),
@@ -89,19 +94,33 @@ impl DouyinRecorder {
                             *self.live_id.write().await = info.data.data[0].id_str.clone();
                             *self.live_status.write().await = LiveStatus::Live;
                             // create a new record
-                            let cover_url = info.data.data[0].cover.as_ref().map(|cover| cover.url_list[0].clone());
+                            let cover_url = info.data.data[0]
+                                .cover
+                                .as_ref()
+                                .map(|cover| cover.url_list[0].clone());
                             let cover = if let Some(url) = cover_url {
                                 Some(self.client.get_cover_base64(&url).await.unwrap())
                             } else {
                                 None
                             };
 
-                            if let Err(e) = self.db.add_record(PlatformType::Douyin, self.live_id.read().await.as_str(), self.room_id, &info.data.data[0].title, cover).await {
+                            if let Err(e) = self
+                                .db
+                                .add_record(
+                                    PlatformType::Douyin,
+                                    self.live_id.read().await.as_str(),
+                                    self.room_id,
+                                    &info.data.data[0].title,
+                                    cover,
+                                )
+                                .await
+                            {
                                 log::error!("Failed to add record: {}", e);
                             }
 
                             // setup entry store
-                            let work_dir = self.get_work_dir(self.live_id.read().await.as_str()).await;
+                            let work_dir =
+                                self.get_work_dir(self.live_id.read().await.as_str()).await;
                             let entry_store = EntryStore::new(&work_dir).await;
                             *self.entry_store.write().await = Some(entry_store);
                         }
@@ -136,15 +155,25 @@ impl DouyinRecorder {
         )
     }
 
-    async fn get_best_stream_url(&self, room_info: &response::DouyinRoomInfoResponse) -> Option<String> {
-        let stream_url = room_info.data.data[0].stream_url.as_ref().unwrap().hls_pull_url_map.clone();
+    async fn get_best_stream_url(
+        &self,
+        room_info: &response::DouyinRoomInfoResponse,
+    ) -> Option<String> {
+        let stream_url = room_info.data.data[0]
+            .stream_url
+            .as_ref()
+            .unwrap()
+            .hls_pull_url_map
+            .clone();
         if let Some(url) = stream_url.full_hd1 {
             Some(url)
         } else if let Some(url) = stream_url.hd1 {
             Some(url)
         } else if let Some(url) = stream_url.sd1 {
             Some(url)
-        } else { stream_url.sd2 }
+        } else {
+            stream_url.sd2
+        }
     }
 
     async fn update_entries(&self) -> Result<u128, RecorderError> {
@@ -177,8 +206,20 @@ impl DouyinRecorder {
         // Create work directory if not exists
         tokio::fs::create_dir_all(&work_dir).await?;
 
-        let last_sequence = self.entry_store.read().await.as_ref().unwrap().last_sequence();
-        let continue_sequence = self.entry_store.read().await.as_ref().unwrap().continue_sequence;
+        let last_sequence = self
+            .entry_store
+            .read()
+            .await
+            .as_ref()
+            .unwrap()
+            .last_sequence();
+        let continue_sequence = self
+            .entry_store
+            .read()
+            .await
+            .as_ref()
+            .unwrap()
+            .continue_sequence;
         let mut sequence = playlist.media_sequence + continue_sequence;
 
         for segment in playlist.segments {
@@ -226,7 +267,13 @@ impl DouyinRecorder {
                         is_header: false,
                     };
 
-                    self.entry_store.write().await.as_mut().unwrap().add_entry(ts_entry).await;
+                    self.entry_store
+                        .write()
+                        .await
+                        .as_mut()
+                        .unwrap()
+                        .add_entry(ts_entry)
+                        .await;
                 }
                 Err(e) => {
                     log::error!("Failed to download segment: {}", e);
@@ -245,15 +292,22 @@ impl DouyinRecorder {
     }
 
     async fn update_record(&self) {
-        if let Err(e) = self.db
+        if let Err(e) = self
+            .db
             .update_record(
                 self.live_id.read().await.as_str(),
-                self.entry_store.read().await.as_ref().unwrap().total_duration() as i64,
+                self.entry_store
+                    .read()
+                    .await
+                    .as_ref()
+                    .unwrap()
+                    .total_duration() as i64,
                 self.entry_store.read().await.as_ref().unwrap().total_size(),
             )
-            .await {
-                log::error!("Failed to update record: {}", e);
-            }
+            .await
+        {
+            log::error!("Failed to update record: {}", e);
+        }
     }
 
     async fn generate_m3u8(&self, live_id: &str) -> String {
@@ -262,7 +316,13 @@ impl DouyinRecorder {
 
         let entries = if live_id == *self.live_id.read().await {
             m3u8_content += "#EXT-X-PLAYLIST-TYPE:EVENT\n";
-            self.entry_store.read().await.as_ref().unwrap().get_entries().clone()
+            self.entry_store
+                .read()
+                .await
+                .as_ref()
+                .unwrap()
+                .get_entries()
+                .clone()
         } else {
             m3u8_content += "#EXT-X-PLAYLIST-TYPE:VOD\n";
             let work_dir = self.get_work_dir(live_id).await;
@@ -276,7 +336,10 @@ impl DouyinRecorder {
             return m3u8_content;
         }
 
-        m3u8_content += &format!("#EXT-X-TARGETDURATION:{}\n", entries.last().unwrap().length as u64);
+        m3u8_content += &format!(
+            "#EXT-X-TARGETDURATION:{}\n",
+            entries.last().unwrap().length as u64
+        );
 
         let mut previous_seq = entries.first().unwrap().sequence;
         for entry in entries {
@@ -352,7 +415,13 @@ impl Recorder for DouyinRecorder {
     ) -> Result<String, RecorderError> {
         let work_dir = self.get_work_dir(live_id).await;
         let entries = if live_id == *self.live_id.read().await {
-            self.entry_store.read().await.as_ref().unwrap().get_entries().clone()
+            self.entry_store
+                .read()
+                .await
+                .as_ref()
+                .unwrap()
+                .get_entries()
+                .clone()
         } else {
             let entry_store = EntryStore::new(&work_dir).await;
             entry_store.get_entries().clone()

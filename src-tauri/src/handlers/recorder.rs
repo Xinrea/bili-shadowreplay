@@ -2,6 +2,7 @@ use crate::database::record::RecordRow;
 use crate::database::recorder::RecorderRow;
 use crate::recorder::danmu::DanmuEntry;
 use crate::recorder::RecorderInfo;
+use crate::recorder::PlatformType;
 use crate::recorder_manager::RecorderList;
 use crate::state::State;
 use tauri::State as TauriState;
@@ -12,40 +13,59 @@ pub async fn get_recorder_list(state: TauriState<'_, State>) -> Result<RecorderL
 }
 
 #[tauri::command]
-pub async fn add_recorder(state: TauriState<'_, State>, room_id: u64) -> Result<RecorderRow, String> {
-    let account = state
-        .db
-        .get_account(state.config.read().await.primary_uid)
-        .await?;
-    if state.config.read().await.webid_expired() {
-        state.config.write().await.webid = state.client.fetch_webid(&account).await?;
-        state.config.write().await.webid_ts = chrono::Utc::now().timestamp();
-        log::info!("Webid expired, refetching");
-    }
+pub async fn add_recorder(state: TauriState<'_, State>, platform: String, room_id: u64) -> Result<RecorderRow, String> {
+    log::info!("Add recorder: {} {}", platform, room_id);
+    let platform = PlatformType::from_str(&platform).unwrap();
+    let account = match platform {
+        PlatformType::BiliBili => {
+            let account = state
+                .db
+                .get_account("bilibili",state.config.read().await.primary_uid)
+                .await?;
+            if state.config.read().await.webid_expired() {
+                state.config.write().await.webid = state.client.fetch_webid(&account).await?;
+                state.config.write().await.webid_ts = chrono::Utc::now().timestamp();
+                log::info!("Webid expired, refetching");
+            }
+            Some(account)
+        }
+        PlatformType::Douyin => {
+            let account = state.db.get_account_by_platform("douyin").await?;
+            Some(account)
+        }
+        _ => None,
+    };
+
+    if let Some(account) = account {
     match state
         .recorder_manager
         .add_recorder(
-            &state.config.read().await.webid,
+            state.config.read().await.webid.as_str(),
             &account,
+            platform,
             room_id,
         )
         .await
     {
         Ok(()) => {
-            let room = state.db.add_recorder(room_id).await?;
+            let room = state.db.add_recorder(platform, room_id).await?;
             state
                 .db
                 .new_message("添加直播间", &format!("添加了新直播间 {}", room_id))
                 .await?;
             Ok(room)
         }
-        Err(e) => Err(e.to_string()),
+            Err(e) => Err(e.to_string()),
+        }
+    } else {
+        Err("No account available".to_string())
     }
 }
 
 #[tauri::command]
-pub async fn remove_recorder(state: TauriState<'_, State>, room_id: u64) -> Result<(), String> {
-    match state.recorder_manager.remove_recorder(room_id).await {
+pub async fn remove_recorder(state: TauriState<'_, State>, platform: String, room_id: u64) -> Result<(), String> {
+    let platform = PlatformType::from_str(&platform).unwrap();
+    match state.recorder_manager.remove_recorder(platform, room_id).await {
         Ok(()) => {
             state
                 .db
@@ -60,9 +80,11 @@ pub async fn remove_recorder(state: TauriState<'_, State>, room_id: u64) -> Resu
 #[tauri::command]
 pub async fn get_room_info(
     state: TauriState<'_, State>,
+    platform: String,
     room_id: u64,
 ) -> Result<RecorderInfo, String> {
-    if let Some(info) = state.recorder_manager.get_recorder_info(room_id).await {
+    let platform = PlatformType::from_str(&platform).unwrap();
+    if let Some(info) = state.recorder_manager.get_recorder_info(platform, room_id).await {
         Ok(info)
     } else {
         Err("Not found".to_string())
@@ -80,25 +102,25 @@ pub async fn get_archives(
 
 #[tauri::command]
 pub async fn get_archive(
-    state: TauriState<'_, State>,
+    state: TauriState<'_, State>, 
     room_id: u64,
-    live_id: u64,
+    live_id: String,
 ) -> Result<RecordRow, String> {
-    Ok(state.recorder_manager.get_archive(room_id, live_id).await?)
+    Ok(state.recorder_manager.get_archive(room_id, &live_id).await?)
 }
 
 #[tauri::command]
 pub async fn delete_archive(
     state: TauriState<'_, State>,
     room_id: u64,
-    ts: u64,
+    live_id: String,
 ) -> Result<(), String> {
-    state.recorder_manager.delete_archive(room_id, ts).await?;
+    state.recorder_manager.delete_archive(room_id, &live_id).await?;
     state
         .db
         .new_message(
             "删除历史缓存",
-            &format!("删除了房间 {} 的历史缓存 {}", room_id, ts),
+            &format!("删除了房间 {} 的历史缓存 {}", room_id, live_id),
         )
         .await?;
     Ok(())
@@ -107,10 +129,12 @@ pub async fn delete_archive(
 #[tauri::command]
 pub async fn get_danmu_record(
     state: TauriState<'_, State>,
+    platform: String,
     room_id: u64,
-    ts: u64,
+    live_id: String,
 ) -> Result<Vec<DanmuEntry>, String> {
-    Ok(state.recorder_manager.get_danmu(room_id, ts).await?)
+    let platform = PlatformType::from_str(&platform).unwrap();
+    Ok(state.recorder_manager.get_danmu(platform, room_id, &live_id).await?)
 }
 
 #[tauri::command]
@@ -120,7 +144,7 @@ pub async fn send_danmaku(
     room_id: u64,
     message: String,
 ) -> Result<(), String> {
-    let account = state.db.get_account(uid).await?;
+    let account = state.db.get_account("bilibili", uid).await?;
     state
         .client
         .send_danmaku(&account, room_id, &message)

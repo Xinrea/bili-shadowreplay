@@ -3,6 +3,7 @@
   import { open } from "@tauri-apps/plugin-dialog";
 
   import type { Config } from "../lib/interface";
+  import { Bell, HardDrive } from "lucide-svelte";
 
   let setting_model: Config = {
     cache: "",
@@ -58,11 +59,7 @@
           <h2
             class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
           >
-            <img
-              src="https://unpkg.com/lucide-static@latest/icons/hard-drive.svg"
-              class="w-5 h-5 dark:icon-white"
-              alt="存储设置"
-            />
+            <HardDrive class="w-5 h-5 dark:icon-white" />
             <span>存储设置</span>
           </h2>
           <div
@@ -129,11 +126,7 @@
           <h2
             class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
           >
-            <img
-              src="https://unpkg.com/lucide-static@latest/icons/bell.svg"
-              class="w-5 h-5 dark:icon-white"
-              alt="通知设置"
-            />
+            <Bell class="w-5 h-5 dark:icon-white" />
             <span>通知设置</span>
           </h2>
           <div

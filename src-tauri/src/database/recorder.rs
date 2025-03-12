@@ -1,26 +1,29 @@
 use super::Database;
 use super::DatabaseError;
 use chrono::Utc;
-
+use crate::recorder::PlatformType;
 /// Recorder in database is pretty simple
 /// because many room infos are collected in realtime
 #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
 pub struct RecorderRow {
     pub room_id: u64,
     pub created_at: String,
+    pub platform: String,
 }
 
 // recorders
 impl Database {
-    pub async fn add_recorder(&self, room_id: u64) -> Result<RecorderRow, DatabaseError> {
+    pub async fn add_recorder(&self, platform: PlatformType, room_id: u64) -> Result<RecorderRow, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         let recorder = RecorderRow {
             room_id,
             created_at: Utc::now().to_rfc3339(),
+            platform: platform.as_str().to_string(),
         };
-        let _ = sqlx::query("INSERT INTO recorders (room_id, created_at) VALUES ($1, $2)")
+        let _ = sqlx::query("INSERT INTO recorders (room_id, created_at, platform) VALUES ($1, $2, $3)")
             .bind(room_id as i64)
             .bind(&recorder.created_at)
+            .bind(platform.as_str())
             .execute(&lock)
             .await?;
         Ok(recorder)
@@ -43,7 +46,7 @@ impl Database {
 
     pub async fn get_recorders(&self) -> Result<Vec<RecorderRow>, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
-        Ok(sqlx::query_as::<_, RecorderRow>("SELECT * FROM recorders")
+        Ok(sqlx::query_as::<_, RecorderRow>("SELECT room_id, created_at, platform FROM recorders")
             .fetch_all(&lock)
             .await?)
     }

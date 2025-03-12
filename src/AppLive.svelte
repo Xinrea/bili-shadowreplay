@@ -15,9 +15,10 @@
 
   const appWindow = getCurrentWebviewWindow();
   const urlParams = new URLSearchParams(window.location.search);
-  const port = urlParams.get("port");
+  const port = parseInt(urlParams.get("port"));
   const room_id = parseInt(urlParams.get("room_id"));
-  const ts = parseInt(urlParams.get("ts"));
+  const platform = urlParams.get("platform");
+  const live_id = urlParams.get("live_id");
 
   // get profile in local storage with a default value
   let profile: Profile = get_profile();
@@ -107,22 +108,22 @@
         name: a.name,
       };
     });
-    console.log(accounts);
+    accounts = accounts.filter((a) => a.platform === 'bilibili');
   });
 
   get_video_list();
 
-  invoke("get_archive", { roomId: room_id, liveId: ts }).then(
+  invoke("get_archive", { roomId: room_id, liveId: live_id }).then(
     (a: RecordItem) => {
       console.log(a);
       archive = a;
-      appWindow.setTitle(`[${room_id}][${format_ts(ts)}]${archive.title}`);
+      appWindow.setTitle(`[${room_id}]${archive.title}`);
     }
   );
 
   function update_title(str: string) {
     appWindow.setTitle(
-      `[${room_id}][${format_ts(ts)}]${archive.title} - ${str}`
+      `[${room_id}]${archive.title} - ${str}`
     );
   }
 
@@ -168,8 +169,9 @@
     try {
       let new_video = (await invoke("clip_range", {
         roomId: room_id,
+        platform: platform,
         cover: new_cover,
-        ts: ts,
+        liveId: live_id,
         x: start,
         y: end,
       })) as VideoItem;
@@ -241,12 +243,12 @@
   let markers: Marker[] = [];
   // load markers from local storage
   markers = JSON.parse(
-    window.localStorage.getItem(`markers:${room_id}:${ts}`) || "[]"
+    window.localStorage.getItem(`markers:${room_id}:${live_id}`) || "[]"
   );
   $: {
     // makers changed, save to local storage
     window.localStorage.setItem(
-      `markers:${room_id}:${ts}`,
+      `markers:${room_id}:${live_id}`,
       JSON.stringify(markers)
     );
   }
@@ -294,8 +296,9 @@
         bind:end
         bind:this={player}
         {port}
+        {platform}
         {room_id}
-        {ts}
+        {live_id}
         {markers}
         on:markerAdd={(e) => {
           markers.push({
@@ -307,12 +310,14 @@
         }}
       />
       {#if preview}
+        <!-- svelte-ignore a11y-click-events-have-key-events -->
         <div 
           class="fixed inset-0 bg-black/30 backdrop-blur-sm z-[1000] transition-opacity duration-200"
           class:opacity-0={!preview}
           class:opacity-100={preview}
           on:click={() => preview = false}
         >
+          <!-- svelte-ignore a11y-click-events-have-key-events -->
           <div 
             class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] bg-[#1c1c1e] rounded-xl shadow-2xl overflow-hidden transition-all duration-200 scale-100"
             class:opacity-0={!preview}
@@ -335,6 +340,7 @@
             </div>
             <!-- 视频容器 -->
             <div class="relative aspect-video bg-black">
+              <!-- svelte-ignore a11y-media-has-caption -->
               <video 
                 src={video_src} 
                 controls 
@@ -470,10 +476,11 @@
                 <h3 class="text-sm font-medium text-gray-400">基本信息</h3>
                 <!-- 标题 -->
                 <div class="space-y-2">
-                  <label class="block text-sm font-medium text-gray-300"
+                  <label for="title" class="block text-sm font-medium text-gray-300"
                     >标题</label
                   >
                   <input
+                    id="title"
                     type="text"
                     bind:value={profile.title}
                     placeholder="输入视频标题"
@@ -486,17 +493,17 @@
 
                 <!-- 视频分区 -->
                 <div class="space-y-2">
-                  <label class="block text-sm font-medium text-gray-300"
+                  <label for="tid" class="block text-sm font-medium text-gray-300"
                     >视频分区</label
                   >
-                  <div class="w-full">
+                  <div class="w-full" id="tid">
                     <TypeSelect bind:value={profile.tid} />
                   </div>
                 </div>
 
                 <!-- 投稿账号 -->
-                <div class="space-y-2">
-                  <label class="block text-sm font-medium text-gray-300"
+                <div id="uid" class="space-y-2">
+                  <label for="uid" class="block text-sm font-medium text-gray-300"
                     >投稿账号</label
                   >
                   <select
@@ -517,10 +524,11 @@
               <div class="space-y-4">
                 <h3 class="text-sm font-medium text-gray-400">封面设置</h3>
                 <div class="space-y-2">
-                  <label class="block text-sm font-medium text-gray-300"
+                  <label for="cover_text" class="block text-sm font-medium text-gray-300"
                     >封面文本</label
                   >
                   <textarea
+                    id="cover_text"
                     bind:value={cover_text}
                     placeholder="输入封面文本"
                     class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg
@@ -536,10 +544,11 @@
                 <h3 class="text-sm font-medium text-gray-400">详细信息</h3>
                 <!-- 描述 -->
                 <div class="space-y-2">
-                  <label class="block text-sm font-medium text-gray-300"
+                  <label for="desc" class="block text-sm font-medium text-gray-300"
                     >描述</label
                   >
                   <textarea
+                    id="desc"
                     bind:value={profile.desc}
                     placeholder="输入视频描述"
                     class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg
@@ -551,10 +560,11 @@
 
                 <!-- 标签 -->
                 <div class="space-y-2">
-                  <label class="block text-sm font-medium text-gray-300"
+                  <label for="tag" class="block text-sm font-medium text-gray-300"
                     >标签</label
                   >
                   <input
+                    id="tag"
                     type="text"
                     bind:value={profile.tag}
                     placeholder="输入视频标签，用逗号分隔"
@@ -567,10 +577,11 @@
 
                 <!-- 动态 -->
                 <div class="space-y-2">
-                  <label class="block text-sm font-medium text-gray-300"
+                  <label for="dynamic" class="block text-sm font-medium text-gray-300"
                     >动态</label
                   >
                   <textarea
+                    id="dynamic"
                     bind:value={profile.dynamic}
                     placeholder="输入动态内容"
                     class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg

@@ -1,10 +1,13 @@
+use crate::recorder::PlatformType;
+
 use super::Database;
 use super::DatabaseError;
 use chrono::Utc;
 
 #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
 pub struct RecordRow {
-    pub live_id: u64,
+    pub platform: String,
+    pub live_id: String,
     pub room_id: u64,
     pub title: String,
     pub length: i64,
@@ -25,12 +28,12 @@ impl Database {
         )
     }
 
-    pub async fn get_record(&self, room_id: u64, live_id: u64) -> Result<RecordRow, DatabaseError> {
+    pub async fn get_record(&self, room_id: u64, live_id: &str) -> Result<RecordRow, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         Ok(sqlx::query_as::<_, RecordRow>(
             "SELECT * FROM records WHERE live_id = $1 and room_id = $2",
         )
-        .bind(live_id as i64)
+        .bind(live_id)
         .bind(room_id as i64)
         .fetch_one(&lock)
         .await?)
@@ -38,14 +41,16 @@ impl Database {
 
     pub async fn add_record(
         &self,
-        live_id: u64,
+        platform: PlatformType,
+        live_id: &str,
         room_id: u64,
         title: &str,
         cover: Option<String>,
     ) -> Result<RecordRow, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         let record = RecordRow {
-            live_id,
+            platform: platform.as_str().to_string(),
+            live_id: live_id.to_string(),
             room_id,
             title: title.into(),
             length: 0,
@@ -53,8 +58,8 @@ impl Database {
             created_at: Utc::now().to_rfc3339(),
             cover,
         };
-        if let Err(e) = sqlx::query("INSERT INTO records (live_id, room_id, title, length, size, cover, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)").bind(record.live_id as i64)
-            .bind(record.room_id as i64).bind(&record.title).bind(0).bind(0).bind(&record.cover).bind(&record.created_at).execute(&lock).await {
+        if let Err(e) = sqlx::query("INSERT INTO records (live_id, room_id, title, length, size, cover, created_at, platform) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)").bind(record.live_id.clone())
+            .bind(record.room_id as i64).bind(&record.title).bind(0).bind(0).bind(&record.cover).bind(&record.created_at).bind(platform.as_str().to_string()).execute(&lock).await {
                 // if the record already exists, return the existing record
                 if e.to_string().contains("UNIQUE constraint failed") {
                     return self.get_record(room_id, live_id).await;
@@ -63,10 +68,10 @@ impl Database {
         Ok(record)
     }
 
-    pub async fn remove_record(&self, live_id: u64) -> Result<(), DatabaseError> {
+    pub async fn remove_record(&self, live_id: &str) -> Result<(), DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         sqlx::query("DELETE FROM records WHERE live_id = $1")
-            .bind(live_id as i64)
+            .bind(live_id)
             .execute(&lock)
             .await?;
         Ok(())
@@ -74,7 +79,7 @@ impl Database {
 
     pub async fn update_record(
         &self,
-        live_id: u64,
+        live_id: &str,
         length: i64,
         size: u64,
     ) -> Result<(), DatabaseError> {
@@ -82,7 +87,7 @@ impl Database {
         sqlx::query("UPDATE records SET length = $1, size = $2 WHERE live_id = $3")
             .bind(length)
             .bind(size as i64)
-            .bind(live_id as i64)
+            .bind(live_id)
             .execute(&lock)
             .await?;
         Ok(())

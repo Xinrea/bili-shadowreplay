@@ -4,32 +4,24 @@
   import Summary from "./page/Summary.svelte";
   import Setting from "./page/Setting.svelte";
   import Account from "./page/Account.svelte";
-  import Messages from "./page/Messages.svelte";
   import About from "./page/About.svelte";
-  import { platform } from "@tauri-apps/plugin-os";
   let active = "#总览";
-  let room_count = 0;
-  let message_cnt = 0;
-  let use_titlebar = platform() == "windows";
 </script>
 
 <main>
   <div class="wrap">
     <div class="sidebar">
-      <BSidebar bind:activeUrl={active} {room_count} {message_cnt} />
+      <BSidebar bind:activeUrl={active} />
     </div>
     <div class="content bg-white dark:bg-[#2c2c2e]">
       <!-- switch component by active -->
       <div class="page" class:visible={active == "#总览"}>
         <Summary />
       </div>
-      <div class="h-full page" class:visible={active == "#直播间"}>
-        <Room bind:room_count />
+      <div class="page" class:visible={active == "#直播间"}>
+        <Room />
       </div>
-      <div class="h-full page" class:visible={active == "#消息"}>
-        <Messages bind:message_cnt />
-      </div>
-      <div class="h-full page" class:visible={active == "#账号"}>
+      <div class="page" class:visible={active == "#账号"}>
         <Account />
       </div>
       <div class="page" class:visible={active == "#设置"}>

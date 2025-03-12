@@ -1,5 +1,6 @@
 use crate::database::video::VideoRow;
 use crate::recorder::bilibili::profile::Profile;
+use crate::recorder::PlatformType;
 use crate::state::State;
 use chrono::Utc;
 use std::path::Path;
@@ -10,21 +11,23 @@ use tauri_plugin_notification::NotificationExt;
 pub async fn clip_range(
     state: TauriState<'_, State>,
     cover: String,
+    platform: String,
     room_id: u64,
-    ts: u64,
+    live_id: String,
     x: f64,
     y: f64,
 ) -> Result<VideoRow, String> {
     log::info!(
         "Clip room_id: {}, ts: {}, start: {}, end: {}",
         room_id,
-        ts,
+        live_id,
         x,
         y
     );
+    let platform = PlatformType::from_str(&platform).unwrap();
     let file = state
         .recorder_manager
-        .clip_range(&state.config.read().await.output, room_id, ts, x, y)
+        .clip_range(&state.config.read().await.output, platform, room_id, &live_id, x, y)
         .await?;
     // get file metadata from fs
     let metadata = std::fs::metadata(&file).map_err(|e| e.to_string())?;
@@ -87,7 +90,7 @@ pub async fn upload_procedure(
     cover: String,
     mut profile: Profile,
 ) -> Result<String, String> {
-    let account = state.db.get_account(uid).await?;
+    let account = state.db.get_account("bilibili", uid).await?;
     // get video info from dbs
     let mut video_row = state.db.get_video(video_id).await?;
     // construct file path
@@ -162,7 +165,7 @@ pub async fn get_video_typelist(
 ) -> Result<Vec<crate::recorder::bilibili::response::Typelist>, String> {
     let account = state
         .db
-        .get_account(state.config.read().await.primary_uid)
+        .get_account("bilibili", state.config.read().await.primary_uid)
         .await?;
     Ok(state.client.get_video_typelist(&account).await?)
 } 

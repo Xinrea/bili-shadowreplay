@@ -5,6 +5,7 @@ use tauri_utils::config::WindowEffectsConfig;
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 
+use crate::recorder::PlatformType;
 use crate::state::State;
  
 pub fn copy_dir_all(
@@ -138,24 +139,26 @@ pub async fn export_to_file(
 
 
 #[tauri::command]
-pub async fn open_live(state: tauri::State<'_, State>, room_id: u64, ts: u64) -> Result<(), String> {
-    log::info!("Open player window: {} {}", room_id, ts);
+pub async fn open_live(state: tauri::State<'_, State>, platform: String, room_id: u64, live_id: String) -> Result<(), String> {
+    log::info!("Open player window: {} {}", room_id, live_id);
     let addr = state.recorder_manager.get_hls_server_addr().await.unwrap();
+    let platform = PlatformType::from_str(&platform).unwrap();
     let recorder_info = state
         .recorder_manager
-        .get_recorder_info(room_id)
+        .get_recorder_info(platform, room_id)
         .await
         .unwrap();
     let handle = state.app_handle.clone();
     let builder = tauri::WebviewWindowBuilder::new(
         &handle,
-        format!("Live:{}:{}", room_id, ts),
+        format!("Live:{}:{}", room_id, live_id),
         tauri::WebviewUrl::App(
             format!(
-                "live_index.html?port={}&room_id={}&ts={}",
+                "live_index.html?port={}&platform={}&room_id={}&live_id={}",
                 addr.port(),
+                platform.as_str(),
                 room_id,
-                ts
+                live_id
             )
             .into(),
         ),

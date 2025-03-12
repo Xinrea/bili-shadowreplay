@@ -1,6 +1,6 @@
 import Database from "@tauri-apps/plugin-sql";
 
-export const db = await Database.load("sqlite:data.db");
+export const db = await Database.load("sqlite:data_v2.db");
 
 // sql: r#"
 //     CREATE TABLE records (live_id INTEGER PRIMARY KEY, room_id INTEGER, length INTEGER, size INTEGER, created_at TEXT);
@@ -10,11 +10,13 @@ export const db = await Database.load("sqlite:data.db");
 //     "#,
 
 export interface RecorderItem {
+  platform: string;
   room_id: number;
   created_at: string;
 }
 
 export interface AccountItem {
+  platform: string;
   uid: number;
   name: string;
   avatar: string;
@@ -33,8 +35,9 @@ export interface MessageItem {
 
 // from RecordRow
 export interface RecordItem {
+  platform: string;
   title: string;
-  live_id: number;
+  live_id: string;
   room_id: number;
   length: number;
   size: number;
@@ -45,38 +48,4 @@ export interface RecordItem {
 export interface AccountInfo {
   primary_uid: number;
   accounts: AccountItem[];
-}
-
-//     CREATE TABLE recorders (room_id INTEGER PRIMARY KEY, created_at TEXT);
-export class Recorders {
-  static async add(room_id: number): Promise<boolean> {
-    const result = await db.execute(
-      "INSERT into recorders (room_id, created_at) VALUES ($1, $2)",
-      [room_id, new Date().toISOString()],
-    );
-    return result.rowsAffected == 1;
-  }
-
-  static async remove(room_id: number): Promise<boolean> {
-    const result = await db.execute("DELETE FROM recirders WHERE room_id=$1", [
-      room_id,
-    ]);
-    return result.rowsAffected == 1;
-  }
-
-  static async query(): Promise<RecorderItem[]> {
-    return await db.select("SELECT * FROM recorders");
-  }
-}
-
-function parseCookies(cookies_str: string) {
-  const cookies = cookies_str.split("; ");
-  const cookieObject = {};
-
-  cookies.forEach((cookie) => {
-    const [name, value] = cookie.split("=");
-    cookieObject[decodeURIComponent(name)] = decodeURIComponent(value);
-  });
-
-  return cookieObject;
 }

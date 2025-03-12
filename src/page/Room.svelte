@@ -7,6 +7,9 @@
   import type { RecorderList } from "../lib/interface";
   import Image from "../lib/Image.svelte";
   import type { RecordItem } from "../lib/db";
+  import { Ellipsis, Play, Plus, Scissors, Search, Trash2, X, History } from "lucide-svelte";
+  import BilibiliIcon from "../lib/BilibiliIcon.svelte";
+  import DouyinIcon from "../lib/DouyinIcon.svelte";
 
   export let room_count = 0;
   let room_active = 0;
@@ -47,12 +50,13 @@
 
   // modals
   let deleteModal = false;
-  let deleteRoom = 0;
+  let deleteRoom = null;
 
   let addModal = false;
   let addRoom = "";
   let addValid = false;
   let addErrorMsg = "";
+  let selectedPlatform = "bilibili";
 
   let archiveModal = false;
   let archiveRoom = null;
@@ -126,11 +130,7 @@
       </div>
       <div class="flex items-center space-x-3">
         <div class="relative">
-          <img
-            src="https://unpkg.com/lucide-static@latest/icons/search.svg"
-            class="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 dark:text-gray-500"
-            alt="搜索"
-          />
+          <Search class="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 dark:text-gray-500" />
           <input
             type="text"
             bind:value={searchQuery}
@@ -144,11 +144,7 @@
             addModal = true;
           }}
         >
-          <img
-            src="https://unpkg.com/lucide-static@latest/icons/plus.svg"
-            class="w-5 h-5 icon-white"
-            alt="添加"
-          />
+          <Plus class="w-5 h-5 icon-white" />
           <span>添加新直播间</span>
         </button>
       </div>
@@ -164,7 +160,7 @@
           >
             <div class="relative">
               <Image
-                src={room.room_info.room_cover_url}
+                src={room.room_info.room_cover}
                 iclass="w-full h-40 object-cover rounded-lg"
               />
               <div
@@ -175,11 +171,7 @@
               <button
                 class="absolute top-2 right-2 p-1.5 rounded-lg bg-gray-900/50 hover:bg-gray-900/70 transition-colors"
               >
-                <img
-                  src="https://unpkg.com/lucide-static@latest/icons/ellipsis.svg"
-                  class="w-5 h-5 icon-white"
-                  alt="更多"
-                />
+                <Ellipsis class="w-5 h-5 icon-white" />
               </button>
               <Dropdown class="whitespace-nowrap">
                 <DropdownItem
@@ -190,7 +182,7 @@
                 <DropdownItem
                   class="text-red-500"
                   on:click={() => {
-                    deleteRoom = room.room_id;
+                    deleteRoom = room;
                     deleteModal = true;
                   }}>移除直播间</DropdownItem
                 >
@@ -199,9 +191,16 @@
             <div class="mt-3 space-y-2">
               <div class="flex items-start justify-between">
                 <div>
-                  <h3 class="font-medium text-gray-900 dark:text-white">
-                    {room.room_info.room_title}
-                  </h3>
+                  <div class="flex items-center space-x-2">
+                    {#if room.platform === 'bilibili'}
+                      <BilibiliIcon class="w-4 h-4" />
+                    {:else if room.platform === 'douyin'}
+                      <DouyinIcon class="w-4 h-4" />
+                    {/if}
+                    <h3 class="font-medium text-gray-900 dark:text-white">
+                      {room.room_info.room_title}
+                    </h3>
+                  </div>
                 </div>
               </div>
               <div class="flex items-center justify-between">
@@ -211,13 +210,20 @@
                   <button
                     class="flex items-center space-x-2 p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
                     on:click={() => {
-                      open(
-                        "https://space.bilibili.com/" + room.user_info.user_id
-                      );
+                      if (room.platform === 'bilibili') {
+                        open(
+                          "https://space.bilibili.com/" + room.user_info.user_id
+                        );
+                      } else if (room.platform === 'douyin') {
+                        console.log(room.user_info);
+                        open(
+                          "https://www.douyin.com/user/" + room.user_info.user_id
+                        );
+                      }
                     }}
                   >
                     <Image
-                      src={room.user_info.user_avatar_url}
+                      src={room.user_info.user_avatar}
                       iclass="w-8 h-8 rounded-full"
                     />
                     <span>{room.user_info.user_name}</span>
@@ -228,16 +234,13 @@
                     class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
                     on:click={() => {
                       invoke("open_live", {
+                        platform: room.platform,
                         roomId: room.room_id,
-                        ts: room.current_ts,
+                        liveId: room.current_live_id,
                       });
                     }}
                   >
-                    <img
-                      src="https://unpkg.com/lucide-static@latest/icons/play.svg"
-                      class="w-5 h-5 dark:icon-white"
-                      alt="Play icon"
-                    />
+                    <Play class="w-5 h-5 dark:icon-white" />
                   </button>
                   <button
                     class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
@@ -246,11 +249,7 @@
                       showArchives(room.room_id);
                     }}
                   >
-                    <img
-                      src="https://unpkg.com/lucide-static@latest/icons/history.svg"
-                      class="w-5 h-5 dark:icon-white"
-                      alt="History icon"
-                    />
+                    <History class="w-5 h-5 dark:icon-white" />
                   </button>
                 </div>
               </div>
@@ -267,7 +266,7 @@
           >
             <div class="relative">
               <Image
-                src={room.room_info.room_cover_url}
+                src={room.room_info.room_cover}
                 iclass="w-full h-40 object-cover rounded-lg brightness-75"
               />
               <div
@@ -278,19 +277,16 @@
               <button
                 class="absolute top-2 right-2 p-1.5 rounded-lg bg-gray-900/50 hover:bg-gray-900/70 transition-colors"
               >
-                <img
-                  src="https://unpkg.com/lucide-static@latest/icons/ellipsis.svg"
-                  class="w-5 h-5 icon-white"
-                  alt="更多"
-                />
+                <Ellipsis class="w-5 h-5" color="white" />
               </button>
               <Dropdown class="whitespace-nowrap">
                 {#if room.live_status}
                   <DropdownItem
                     on:click={async () => {
                       await invoke("open_live", {
+                        platform: room.platform,
                         roomId: room.room_id,
-                        ts: room.current_ts,
+                        liveId: room.current_live_id,
                       });
                     }}>打开直播流</DropdownItem
                   >
@@ -303,7 +299,7 @@
                 <DropdownItem
                   class="text-red-500"
                   on:click={() => {
-                    deleteRoom = room.room_id;
+                    deleteRoom = room;
                     deleteModal = true;
                   }}>移除直播间</DropdownItem
                 >
@@ -312,9 +308,16 @@
             <div class="mt-3 space-y-2">
               <div class="flex items-start justify-between">
                 <div>
-                  <h3 class="font-medium text-gray-900 dark:text-white">
-                    {room.room_info.room_title}
-                  </h3>
+                  <div class="flex items-center space-x-2">
+                    {#if room.platform === 'bilibili'}
+                      <BilibiliIcon class="w-4 h-4" />
+                    {:else if room.platform === 'douyin'}
+                      <DouyinIcon class="w-4 h-4" />
+                    {/if}
+                    <h3 class="font-medium text-gray-900 dark:text-white">
+                      {room.room_info.room_title}
+                    </h3>
+                  </div>
                 </div>
               </div>
               <div class="flex items-center justify-between">
@@ -324,13 +327,20 @@
                   <button
                     class="flex items-center space-x-2 p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
                     on:click={() => {
-                      open(
-                        "https://space.bilibili.com/" + room.user_info.user_id
-                      );
+                      if (room.platform === 'bilibili') {
+                        open(
+                          "https://space.bilibili.com/" + room.user_info.user_id
+                        );
+                      } else if (room.platform === 'douyin') {
+                        console.log(room.user_info);
+                        open(
+                          "https://www.douyin.com/user/" + room.user_info.user_id
+                        );
+                      }
                     }}
                   >
                     <Image
-                      src={room.user_info.user_avatar_url}
+                      src={room.user_info.user_avatar}
                       iclass="w-8 h-8 rounded-full"
                     />
                     <span>{room.user_info.user_name}</span>
@@ -344,11 +354,7 @@
                       showArchives(room.room_id);
                     }}
                   >
-                    <img
-                      src="https://unpkg.com/lucide-static@latest/icons/history.svg"
-                      class="w-5 h-5 dark:icon-white"
-                      alt="History icon"
-                    />
+                    <History class="w-5 h-5 dark:icon-white" />
                   </button>
                 </div>
               </div>
@@ -367,11 +373,7 @@
         <div
           class="w-12 h-12 rounded-full bg-blue-500/10 flex items-center justify-center"
         >
-          <img
-            src="https://unpkg.com/lucide-static@latest/icons/plus.svg"
-            class="w-6 h-6 icon-primary"
-            alt="添加直播间"
-          />
+          <Plus class="w-6 h-6 icon-primary" />
         </div>
         <span class="text-sm font-medium text-blue-600 dark:text-blue-400"
           >添加新直播间</span
@@ -415,7 +417,7 @@
             <button
               class="w-24 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors"
               on:click={async () => {
-                await invoke("remove_recorder", { roomId: deleteRoom });
+                await invoke("remove_recorder", { roomId: deleteRoom.room_id, platform: deleteRoom.platform });
                 deleteModal = false;
               }}
             >
@@ -447,17 +449,40 @@
           <div class="space-y-4">
             <div class="space-y-2">
               <label
+                for="platform"
+                class="block text-sm font-medium text-gray-700 dark:text-gray-300"
+              >
+                平台
+              </label>
+              <div class="flex p-0.5 bg-[#f5f5f7] dark:bg-[#1c1c1e] rounded-lg">
+                <button
+                  class="flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform === 'bilibili' ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
+                  on:click={() => selectedPlatform = 'bilibili'}
+                >
+                  哔哩哔哩
+                </button>
+                <button
+                  class="flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform === 'douyin' ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
+                  on:click={() => selectedPlatform = 'douyin'}
+                >
+                  抖音
+                </button>
+              </div>
+            </div>
+
+            <div class="space-y-2">
+              <label
                 for="room_id"
                 class="block text-sm font-medium text-gray-700 dark:text-gray-300"
               >
-                房间号
+                {selectedPlatform === 'bilibili' ? '房间号' : '直播间ID'}
               </label>
               <input
                 id="room_id"
                 type="text"
                 bind:value={addRoom}
                 class="w-full px-3 py-2 bg-[#f5f5f7] dark:bg-[#1c1c1e] border-0 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400"
-                placeholder="请输入直播间房间号"
+                placeholder={selectedPlatform === 'bilibili' ? '请输入直播间房间号' : '请输入抖音直播间ID'}
                 on:change={() => {
                   if (!addRoom) {
                     addErrorMsg = "";
@@ -469,7 +494,7 @@
                     addErrorMsg = "";
                     addValid = true;
                   } else {
-                    addErrorMsg = "房间号格式错误，请检查输入";
+                    addErrorMsg = "ID格式错误，请检查输入";
                     addValid = false;
                   }
                 }}
@@ -494,12 +519,16 @@
                 class="px-4 py-2 bg-[#0A84FF] hover:bg-[#0A84FF]/90 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 disabled={!addValid}
                 on:click={() => {
-                  invoke("add_recorder", { roomId: Number(addRoom) })
+                  invoke("add_recorder", { 
+                    roomId: Number(addRoom),
+                    platform: selectedPlatform 
+                  })
                     .then(() => {
                       addModal = false;
+                      addRoom = "";
                     })
                     .catch(async (e) => {
-                      await message("请检查房间号是否有效：" + e, "添加失败");
+                      await message("请检查ID是否有效：" + e, "添加失败");
                     });
                 }}
               >
@@ -535,11 +564,7 @@
             class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors"
             on:click={() => archiveModal = false}
           >
-            <img
-              src="https://unpkg.com/lucide-static@latest/icons/x.svg"
-              class="w-5 h-5 dark:icon-white"
-              alt="关闭"
-            />
+            <X class="w-5 h-5 dark:icon-white" />
           </button>
         </div>
 
@@ -584,16 +609,13 @@
                             title="编辑切片"
                             on:click={() => {
                               invoke("open_live", {
+                                platform: archiveRoom.platform,
                                 roomId: archiveRoom.room_id,
-                                ts: archive.live_id,
+                                liveId: archive.live_id,
                               });
                             }}
                           >
-                            <img
-                              src="https://unpkg.com/lucide-static@latest/icons/scissors.svg"
-                              class="w-4 h-4 icon-primary"
-                              alt="编辑切片"
-                            />
+                            <Scissors class="w-4 h-4 icon-primary" />
                           </button>
                           <button
                             class="p-1.5 rounded-lg hover:bg-red-500/10 transition-colors"
@@ -601,7 +623,7 @@
                             on:click={() => {
                               invoke("delete_archive", {
                                 roomId: archiveRoom.room_id,
-                                ts: archive.live_id,
+                                liveId: archive.live_id,
                               })
                                 .then(async () => {
                                   archives = await invoke("get_archives", {
@@ -613,11 +635,7 @@
                                 });
                             }}
                           >
-                            <img
-                              src="https://unpkg.com/lucide-static@latest/icons/trash-2.svg"
-                              class="w-4 h-4 text-red-500"
-                              alt="删除记录"
-                            />
+                            <Trash2 class="w-4 h-4 text-red-500" />
                           </button>
                         </div>
                       </td>

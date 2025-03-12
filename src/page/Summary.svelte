@@ -4,6 +4,7 @@
   import type { RecordItem } from "../lib/db";
   const INTERVAL = 1000;
   import { scale } from "svelte/transition";
+  import { CalendarCheck, Clock, Database, HardDrive, Play, RefreshCw, Trash2, Users, Video } from "lucide-svelte";
 
   let summary: RecorderList = {
     count: 0,
@@ -179,7 +180,7 @@
     try {
       await invoke("delete_archive", {
         roomId: record.room_id,
-        ts: record.live_id,
+        liveId: record.live_id,
       });
       
       // Remove the record from the list
@@ -223,11 +224,7 @@
       >
         <div class="flex items-center space-x-3">
           <div class="p-3 rounded-lg bg-blue-500">
-            <img
-              src="https://unpkg.com/lucide-static@latest/icons/hard-drive.svg"
-              class="w-6 h-6 icon-white"
-              alt="Hard drive icon"
-            />
+            <HardDrive class="w-6 h-6 icon-white" />
           </div>
           <div>
             <p class="text-sm text-gray-600 dark:text-gray-400">缓存占用</p>
@@ -243,11 +240,7 @@
       >
         <div class="flex items-center space-x-3">
           <div class="p-3 rounded-lg bg-orange-500">
-            <img
-              src="https://unpkg.com/lucide-static@latest/icons/database.svg"
-              class="w-6 h-6 icon-white"
-              alt="Disk icon"
-            />
+            <Database class="w-6 h-6 icon-white" />
           </div>
           <div class="min-w-0 flex-1">
             <div class="flex items-baseline justify-between">
@@ -279,11 +272,7 @@
       >
         <div class="flex items-center space-x-3">
           <div class="p-3 rounded-lg bg-green-500">
-            <img
-              src="https://unpkg.com/lucide-static@latest/icons/video.svg"
-              class="w-6 h-6 icon-white"
-              alt="Video icon"
-            />
+            <Video class="w-6 h-6 icon-white" />
           </div>
           <div>
             <p class="text-sm text-gray-600 dark:text-gray-400">直播间</p>
@@ -300,11 +289,7 @@
       >
         <div class="flex items-center space-x-3">
           <div class="p-3 rounded-lg bg-purple-500">
-            <img
-              src="https://unpkg.com/lucide-static@latest/icons/users.svg"
-              class="w-6 h-6 icon-white"
-              alt="Users icon"
-            />
+            <Users class="w-6 h-6 icon-white" />
           </div>
           <div>
             <p class="text-sm text-gray-600 dark:text-gray-400">账号</p>
@@ -321,11 +306,7 @@
       >
         <div class="flex items-center space-x-3">
           <div class="p-3 rounded-lg bg-indigo-500">
-            <img
-              src="https://unpkg.com/lucide-static@latest/icons/clock.svg"
-              class="w-6 h-6 icon-white"
-              alt="Clock icon"
-            />
+            <Clock class="w-6 h-6 icon-white" />
           </div>
           <div>
             <p class="text-sm text-gray-600 dark:text-gray-400">总缓存时长</p>
@@ -342,11 +323,7 @@
       >
         <div class="flex items-center space-x-3">
           <div class="p-3 rounded-lg bg-pink-500">
-            <img
-              src="https://unpkg.com/lucide-static@latest/icons/calendar-check.svg"
-              class="w-6 h-6 icon-white"
-              alt="Calendar check icon"
-            />
+            <CalendarCheck class="w-6 h-6 icon-white" />
           </div>
           <div>
             <p class="text-sm text-gray-600 dark:text-gray-400">
@@ -371,11 +348,7 @@
             class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors text-gray-500 dark:text-gray-400"
             on:click={refreshRecords}
           >
-            <img
-              src="https://unpkg.com/lucide-static@latest/icons/refresh-cw.svg"
-              class="w-5 h-5 dark:icon-white"
-              alt="Refresh icon"
-            />
+            <RefreshCw class="w-5 h-5 dark:icon-white" />
           </button>
         </div>
         {#if hasNewRecords}
@@ -415,27 +388,20 @@
                 class="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
                 on:click={() => {
                   invoke("open_live", {
+                    platform: record.platform,
                     roomId: record.room_id,
-                    ts: record.live_id,
+                    liveId: record.live_id,
                   });
                 }}
               >
-                <img
-                  src="https://unpkg.com/lucide-static@latest/icons/play.svg"
-                  class="w-5 h-5 dark:icon-white"
-                  alt="Play icon"
-                />
+                <Play class="w-5 h-5 dark:icon-white" />
               </button>
               <div class="relative dropdown-container">
                 <button
                   class="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-red-600 dark:text-red-400"
                   on:click|stopPropagation={() => toggleDropdown(record.live_id)}
                 >
-                  <img
-                    src="https://unpkg.com/lucide-static@latest/icons/trash-2.svg"
-                    class="w-5 h-5 icon-danger"
-                    alt="Delete icon"
-                  />
+                  <Trash2 class="w-5 h-5 icon-danger" />
                 </button>
                 {#if activeDropdown === record.live_id}
                   <div

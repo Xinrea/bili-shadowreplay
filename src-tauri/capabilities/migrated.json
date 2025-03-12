@@ -48,6 +48,12 @@
         },
         {
           "url": "https://*.afdiancdn.com/"
+        },
+        {
+          "url": "https://*.douyin.com/"
+        },
+        {
+          "url": "https://*.douyinpic.com/"
         }
       ]
     },

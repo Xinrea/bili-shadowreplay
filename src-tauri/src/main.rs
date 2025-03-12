@@ -8,10 +8,11 @@ mod recorder;
 mod recorder_manager;
 mod state;
 mod tray;
+mod ffmpeg;
 
 use config::Config;
 use database::Database;
-use recorder::bilibili::client::BiliClient;
+use recorder::{bilibili::client::BiliClient, PlatformType};
 use recorder_manager::RecorderManager;
 use state::State;
 use std::fs::File;
@@ -43,19 +44,13 @@ fn get_migrations() -> Vec<Migration> {
             version: 1,
             description: "create_initial_tables",
             sql: r#"
-                CREATE TABLE accounts (uid INTEGER PRIMARY KEY, name TEXT, avatar TEXT, csrf TEXT, cookies TEXT, created_at TEXT);
-                CREATE TABLE recorders (room_id INTEGER PRIMARY KEY, created_at TEXT);
-                CREATE TABLE records (live_id INTEGER PRIMARY KEY, room_id INTEGER, title TEXT, length INTEGER, size INTEGER, created_at TEXT);
-                CREATE TABLE danmu_statistics (live_id INTEGER PRIMARY KEY, room_id INTEGER, value INTEGER, time_point TEXT);
+                CREATE TABLE accounts (uid INTEGER, platform TEXT NOT NULL DEFAULT 'bilibili', name TEXT, avatar TEXT, csrf TEXT, cookies TEXT, created_at TEXT, PRIMARY KEY(uid, platform));
+                CREATE TABLE recorders (room_id INTEGER PRIMARY KEY, platform TEXT NOT NULL DEFAULT 'bilibili', created_at TEXT);
+                CREATE TABLE records (live_id TEXT PRIMARY KEY, platform TEXT NOT NULL DEFAULT 'bilibili', room_id INTEGER, title TEXT, length INTEGER, size INTEGER, cover BLOB, created_at TEXT);
+                CREATE TABLE danmu_statistics (live_id TEXT PRIMARY KEY, room_id INTEGER, value INTEGER, time_point TEXT);
                 CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, read INTEGER, created_at TEXT);
                 CREATE TABLE videos (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER, cover TEXT, file TEXT, length INTEGER, size INTEGER, status INTEGER, bvid TEXT, title TEXT, desc TEXT, tags TEXT, area INTEGER, created_at TEXT);
                 "#,
-            kind: MigrationKind::Up,
-        },
-        Migration {
-            version: 2,
-            description: "add_cover_to_records",
-            sql: "ALTER TABLE records ADD COLUMN cover BLOB;",
             kind: MigrationKind::Up,
         }
     ]
@@ -75,7 +70,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
 
     let _ = recorder_manager_clone.run_hls().await;
     let binding = dbs.0.lock().await;
-    let dbpool = binding.get("sqlite:data.db").unwrap();
+    let dbpool = binding.get("sqlite:data_v2.db").unwrap();
     let sqlite_pool = match dbpool {
         tauri_plugin_sql::DbPool::Sqlite(pool) => Some(pool),
     };
@@ -119,6 +114,12 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
 
     // update account infos
     for account in accounts {
+        // only update bilibili account
+        let platform = PlatformType::from_str(&account.platform).unwrap();
+        if platform != PlatformType::BiliBili {
+            continue;
+        }
+
         match client_clone
             .get_user_info(&webid, &primary_account, account.uid)
             .await
@@ -126,6 +127,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
             Ok(account_info) => {
                 if let Err(e) = db_clone
                     .update_account(
+                        &account.platform,
                         account_info.user_id,
                         &account_info.user_name,
                         &account_info.user_avatar_url,
@@ -141,17 +143,40 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         }
     }
 
-    if let Ok(account) = db_clone.get_account(primary_uid).await {
-        for room in initial_rooms {
+    if let Ok(account) = db_clone.get_account(&primary_account.platform, primary_uid).await {
+        for room in &initial_rooms {
+            let platform = PlatformType::from_str(&room.platform).unwrap();
+            if platform != PlatformType::BiliBili {
+                continue;
+            }
             if let Err(e) = recorder_manager_clone
-                .add_recorder(&webid, &account, room.room_id)
+                .add_recorder(&webid, &account, platform, room.room_id)
                 .await
             {
                 log::error!("error when adding initial rooms: {}", e);
             }
         }
     } else {
-        log::warn!("No available account found");
+        log::warn!("No available account found for bilibili");
+    }
+
+    match db_clone.get_account_by_platform("douyin").await {
+        Ok(account) => {
+            for room in &initial_rooms {
+                if room.platform != "douyin" {
+                    continue;
+                }
+                if let Err(e) = recorder_manager_clone
+                    .add_recorder(&webid, &account, PlatformType::Douyin, room.room_id)
+                    .await
+                {
+                    log::error!("error when adding initial rooms: {}", e);
+                }
+            }
+        }
+        Err(e) => {
+            log::warn!("No available douyin account found: {}", e);
+        }
     }
 
     Ok(State {
@@ -178,7 +203,7 @@ fn setup_plugins(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::W
         .plugin(tauri_plugin_single_instance::init(|_, _, _| {}))
         .plugin(
             tauri_plugin_sql::Builder::default()
-                .add_migrations("sqlite:data.db", migrations)
+                .add_migrations("sqlite:data_v2.db", migrations)
                 .build(),
         )
         .plugin(tauri_plugin_http::init())
@@ -241,6 +266,8 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     setup_logging()?;
+
+    ffmpeg_sidecar::download::auto_download().unwrap();
 
     let builder = tauri::Builder::default();
     let builder = setup_plugins(builder);

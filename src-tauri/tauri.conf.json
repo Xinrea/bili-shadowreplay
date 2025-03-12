@@ -21,7 +21,7 @@
   "identifier": "cn.vjoi.bilishadowreplay",
   "plugins": {
     "sql": {
-      "preload": ["sqlite:data.db"]
+      "preload": ["sqlite:data_v2.db"]
     }
   },
   "app": {

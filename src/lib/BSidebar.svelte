@@ -1,25 +1,8 @@
 <script>
-  import {
-    Sidebar,
-    SidebarGroup,
-    SidebarItem,
-    SidebarWrapper,
-  } from "flowbite-svelte";
-  import {
-    ChartPieSolid,
-    GridSolid,
-    MailBoxSolid,
-    UserSolid,
-    EditOutline,
-    BookSolid,
-    InfoCircleSolid,
-    CogSolid,
-  } from "flowbite-svelte-icons";
-  let spanClass = "ms-2 whitespace-nowrap";
+  import { Info, LayoutDashboard, Settings, Users, Video, FileVideo } from "lucide-svelte";
+
   // acitveUrl is shared between project
   export let activeUrl = "#总览";
-  export let room_count = 0;
-  export let message_cnt = 0;
 
   function navigate(route) {
     activeUrl = route;
@@ -48,10 +31,8 @@
       on:click={() => navigate("#总览")}
       class="flex w-full items-center space-x-2 px-3 py-2 rounded-lg {activeUrl === '#总览' ? 'bg-blue-500/10 text-[#0A84FF]' : 'text-gray-700'} dark:text-[#0A84FF] hover:bg-[#e5e5e5] dark:hover:bg-[#3a3a3c]"
     >
-      <img
-        src="https://unpkg.com/lucide-static@latest/icons/layout-dashboard.svg"
+      <LayoutDashboard
         class="w-5 h-5 {activeUrl === '#总览' ? 'text-[#0A84FF]' : 'text-gray-700 dark:text-[#0A84FF]'}"
-        alt="总览"
       />
       <span>总览</span>
     </button>
@@ -59,44 +40,28 @@
       on:click={() => navigate("#直播间")}
       class="flex w-full items-center space-x-2 px-3 py-2 rounded-lg {activeUrl === '#直播间' ? 'bg-blue-500/10 text-[#0A84FF]' : 'text-gray-700'} dark:text-[#0A84FF] hover:bg-[#e5e5e5] dark:hover:bg-[#3a3a3c]"
     >
-      <img
-        src="https://unpkg.com/lucide-static@latest/icons/video.svg"
-        class="w-5 h-5 {activeUrl === '#直播间' ? 'text-[#0A84FF]' : 'text-gray-700 dark:text-[#0A84FF]'}"
-        alt="直播间"
-      />
+      <Video class="w-5 h-5 {activeUrl === '#直播间' ? 'text-[#0A84FF]' : 'text-gray-700 dark:text-[#0A84FF]'}" />
       <span>直播间</span>
     </button>
     <button
       on:click={() => navigate("#账号")}
       class="flex w-full items-center space-x-2 px-3 py-2 rounded-lg {activeUrl === '#账号' ? 'bg-blue-500/10 text-[#0A84FF]' : 'text-gray-700'} dark:text-[#0A84FF] hover:bg-[#e5e5e5] dark:hover:bg-[#3a3a3c]"
     >
-      <img
-        src="https://unpkg.com/lucide-static@latest/icons/users.svg"
-        class="w-5 h-5 {activeUrl === '#账号' ? 'text-[#0A84FF]' : 'text-gray-700 dark:text-[#0A84FF]'}"
-        alt="账号"
-      />
+      <Users class="w-5 h-5 {activeUrl === '#账号' ? 'text-[#0A84FF]' : 'text-gray-700 dark:text-[#0A84FF]'}" />
       <span>账号</span>
     </button>
     <button
       on:click={() => navigate("#设置")}
       class="flex w-full items-center space-x-2 px-3 py-2 rounded-lg {activeUrl === '#设置' ? 'bg-blue-500/10 text-[#0A84FF]' : 'text-gray-700'} dark:text-[#0A84FF] hover:bg-[#e5e5e5] dark:hover:bg-[#3a3a3c]"
     >
-      <img
-        src="https://unpkg.com/lucide-static@latest/icons/settings.svg"
-        class="w-5 h-5 {activeUrl === '#设置' ? 'text-[#0A84FF]' : 'text-gray-700 dark:text-[#0A84FF]'}"
-        alt="设置"
-      />
+      <Settings class="w-5 h-5 {activeUrl === '#设置' ? 'text-[#0A84FF]' : 'text-gray-700 dark:text-[#0A84FF]'}" />
       <span>设置</span>
     </button>
     <button
       on:click={() => navigate("#关于")}
       class="flex w-full items-center space-x-2 px-3 py-2 rounded-lg {activeUrl === '#关于' ? 'bg-blue-500/10 text-[#0A84FF]' : 'text-gray-700'} dark:text-[#0A84FF] hover:bg-[#e5e5e5] dark:hover:bg-[#3a3a3c]"
     >
-      <img
-        src="https://unpkg.com/lucide-static@latest/icons/info.svg"
-        class="w-5 h-5 {activeUrl === '#关于' ? 'text-[#0A84FF]' : 'text-gray-700 dark:text-[#0A84FF]'}"
-        alt="关于"
-      />
+      <Info class="w-5 h-5 {activeUrl === '#关于' ? 'text-[#0A84FF]' : 'text-gray-700 dark:text-[#0A84FF]'}" />
       <span>关于</span>
     </button>
   </nav>

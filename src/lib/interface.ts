@@ -1,6 +1,6 @@
 export interface RoomInfo {
   live_status: number;
-  room_cover_url: string;
+  room_cover: string;
   room_id: number;
   room_keyframe_url: string;
   room_title: string;
@@ -11,15 +11,16 @@ export interface UserInfo {
   user_id: string;
   user_name: string;
   user_sign: string;
-  user_avatar_url: string;
+  user_avatar: string;
 }
 
 export interface RecorderInfo {
+  platform: string;
   room_id: number;
   room_info: RoomInfo;
   user_info: UserInfo;
   total_length: number;
-  current_ts: number;
+  current_live_id: string;
   live_status: boolean;
 }
 

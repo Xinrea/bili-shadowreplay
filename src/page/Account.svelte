@@ -1,26 +1,11 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { scale, fade } from "svelte/transition";
-  import {
-    Button,
-    Card,
-    Table,
-    TableHead,
-    TableHeadCell,
-    TableBody,
-    TableBodyRow,
-    TableBodyCell,
-    ButtonGroup,
-    SpeedDial,
-    Listgroup,
-    ListgroupItem,
-    Textarea,
-    Hr,
-  } from "flowbite-svelte";
+  import { Textarea } from "flowbite-svelte";
   import Image from "../lib/Image.svelte";
   import QRCode from "qrcode";
   import type { AccountItem, AccountInfo } from "../lib/db";
-  import { PlusOutline, UserAddSolid } from "flowbite-svelte-icons";
+  import { Ellipsis, Plus } from "lucide-svelte";
 
   let account_info: AccountInfo = {
     primary_uid: 0,
@@ -35,6 +20,7 @@
 
   let addModal = false;
   let activeTab = "qr"; // 'qr' or 'manual'
+  let selectedPlatform = "bilibili"; // 'bilibili' or 'douyin'
   let oauth_key = "";
   let check_interval = null;
   let cookie_str = "";
@@ -96,7 +82,7 @@
     );
     if (qr_status.code == 0) {
       clearInterval(check_interval);
-      await invoke("add_account", { cookies: qr_status.cookies });
+      await invoke("add_account", { cookies: qr_status.cookies, platform: selectedPlatform });
       await update_accounts();
       addModal = false;
     }
@@ -107,12 +93,13 @@
       return;
     }
     try {
-      await invoke("add_account", { cookies: cookie_str });
+      console.log("add_cookie", cookie_str, selectedPlatform);
+      await invoke("add_account", { cookies: cookie_str, platform: selectedPlatform });
       await update_accounts();
       cookie_str = "";
       addModal = false;
     } catch (e) {
-      alert("Err adding cookie:" + e);
+      alert("添加账号失败：" + e);
     }
   }
 </script>
@@ -145,11 +132,7 @@
         }}
         class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center space-x-2"
       >
-        <img
-          src="https://unpkg.com/lucide-static@latest/icons/plus.svg"
-          class="w-5 h-5 icon-white"
-          alt="添加账号"
-        />
+        <Plus class="w-5 h-5 icon-white" />
         <span>添加账号</span>
       </button>
     </div>
@@ -172,7 +155,7 @@
               <div>
                 <div class="flex items-center space-x-2">
                   <h3 class="font-medium text-gray-900 dark:text-white">
-                    {account.name}
+                    {account.platform === "bilibili" ? account.name : "抖音账号" + account.uid}
                   </h3>
                   {#if account.uid == account_info.primary_uid}
                     <span
@@ -181,9 +164,16 @@
                     >
                   {/if}
                 </div>
-                <p class="text-sm text-gray-600 dark:text-gray-400">
-                  UID: {account.uid}
-                </p>
+                {#if account.platform === "bilibili"}
+                  <p class="text-sm text-gray-600 dark:text-gray-400">
+                    UID: {account.uid}
+                  </p>
+                {/if}
+                {#if account.platform === "douyin"}
+                  <p class="text-sm text-gray-600 dark:text-gray-400">
+                    仅用于获取直播流
+                  </p>
+                {/if}
               </div>
             </div>
             <div class="flex items-center space-x-3">
@@ -192,11 +182,7 @@
                   class="p-2 rounded-lg hover:bg-[#e5e5e5] dark:hover:bg-[#3a3a3c]"
                   on:click|stopPropagation={() => toggleDropdown(account.uid)}
                 >
-                  <img
-                    src="https://unpkg.com/lucide-static@latest/icons/ellipsis.svg"
-                    class="w-5 h-5 dark:icon-white"
-                    alt="options"
-                  />
+                  <Ellipsis class="w-5 h-5 dark:icon-white" />
                 </button>
                 {#if activeDropdown === account.uid}
                   <div
@@ -205,7 +191,7 @@
                     in:scale={{ duration: 100, start: 0.95 }}
                     out:scale={{ duration: 100, start: 0.95 }}
                   >
-                    {#if account.uid !== account_info.primary_uid}
+                    {#if account.uid !== account_info.primary_uid && account.platform === "bilibili"}
                       <button
                         class="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-white hover:bg-[#e5e5e5] dark:hover:bg-[#3a3a3c] rounded-t-lg"
                         on:click={async () => {
@@ -252,11 +238,7 @@
           <div
             class="w-12 h-12 rounded-full bg-blue-500/10 flex items-center justify-center"
           >
-            <img
-              src="https://unpkg.com/lucide-static@latest/icons/plus.svg"
-              class="w-6 h-6 icon-primary"
-              alt="添加账号"
-            />
+            <Plus class="w-6 h-6 icon-primary" />
           </div>
           <div class="text-center">
             <p class="text-sm font-medium text-blue-600 dark:text-blue-400">
@@ -289,7 +271,36 @@
       </div>
 
       <div class="p-6 space-y-6">
-        <!-- Tab Buttons -->
+        <!-- Platform Selection -->
+        <div class="space-y-2">
+          <label for="platform" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+            平台
+          </label>
+          <div class="flex p-0.5 bg-[#f5f5f7] dark:bg-[#1c1c1e] rounded-lg">
+            <button
+              class="flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform === 'bilibili' ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
+              on:click={() => {
+                selectedPlatform = 'bilibili';
+                activeTab = 'qr';
+                requestAnimationFrame(handle_qr);
+              }}
+            >
+              哔哩哔哩
+            </button>
+            <button
+              class="flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform === 'douyin' ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
+              on:click={() => {
+                selectedPlatform = 'douyin';
+                activeTab = 'manual';
+              }}
+            >
+              抖音
+            </button>
+          </div>
+        </div>
+
+        <!-- Login Methods (Only show for Bilibili) -->
+        {#if selectedPlatform === 'bilibili'}
         <div class="flex rounded-lg bg-[#f5f5f7] dark:bg-[#1c1c1e] p-1">
           <button
             class="flex-1 px-4 py-1.5 text-sm rounded-md transition-colors {activeTab ===
@@ -315,10 +326,11 @@
             手动输入
           </button>
         </div>
+        {/if}
 
         <!-- Tab Content -->
         <div class="space-y-4">
-          {#if activeTab === "qr"}
+          {#if selectedPlatform === 'bilibili' && activeTab === "qr"}
             <div class="flex flex-col items-center space-y-4">
               <div class="bg-white p-4 rounded-lg">
                 <canvas id="qr" />
@@ -333,7 +345,7 @@
                 bind:value={cookie_str}
                 rows="4"
                 class="w-full px-3 py-2 bg-[#f5f5f7] dark:bg-[#1c1c1e] border-0 rounded-lg resize-none focus:ring-2 focus:ring-blue-500"
-                placeholder="请粘贴 BiliBili 账号的 Cookie"
+                placeholder={selectedPlatform === 'bilibili' ? "请粘贴 BiliBili 账号的 Cookie" : "请粘贴抖音账号的 Cookie"}
               />
               <div class="flex justify-end">
                 <button

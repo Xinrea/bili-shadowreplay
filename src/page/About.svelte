@@ -2,6 +2,7 @@
   import { getVersion } from "@tauri-apps/api/app";
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import { open } from "@tauri-apps/plugin-shell";
+  import { BookOpen, MessageCircle, Video } from "lucide-svelte";
   const appWindow = getCurrentWebviewWindow();
   let version = "";
   getVersion().then((v) => {
@@ -45,11 +46,7 @@
       <div
         class="w-24 h-24 mx-auto bg-gradient-to-br from-blue-500 to-purple-600 rounded-2xl shadow-lg flex items-center justify-center"
       >
-        <img
-          src="https://unpkg.com/lucide-static@latest/icons/video.svg"
-          class="w-12 h-12 icon-white"
-          alt="BiliBili ShadowReplay Logo"
-        />
+        <Video class="w-12 h-12 icon-white" />
       </div>
       <div>
         <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">
@@ -72,11 +69,7 @@
           <div
             class="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center"
           >
-            <img
-              src="https://unpkg.com/lucide-static@latest/icons/book-open.svg"
-              class="w-5 h-5 icon-primary"
-              alt="Documentation icon"
-            />
+            <BookOpen class="w-5 h-5 icon-primary" />
           </div>
           <span class="text-sm font-medium text-gray-900 dark:text-white"
             >Documentation</span
@@ -94,11 +87,7 @@
           <div
             class="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center"
           >
-            <img
-              src="https://unpkg.com/lucide-static@latest/icons/message-circle.svg"
-              class="w-5 h-5 icon-primary"
-              alt="Support icon"
-            />
+            <MessageCircle class="w-5 h-5 icon-primary" />
           </div>
           <span class="text-sm font-medium text-gray-900 dark:text-white"
             >Support</span

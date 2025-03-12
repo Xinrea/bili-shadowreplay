@@ -2,11 +2,12 @@ pub mod client;
 pub mod errors;
 pub mod profile;
 pub mod response;
+use super::entry::EntryStore;
+use super::PlatformType;
 use crate::database::account::AccountRow;
 
 use super::danmu::{DanmuEntry, DanmuStorage};
-use super::TsEntry;
-use async_std::{fs, stream::StreamExt};
+use super::entry::TsEntry;
 use chrono::{TimeZone, Utc};
 use client::{BiliClient, BiliStream, RoomInfo, StreamType, UserInfo};
 use dashmap::DashMap;
@@ -26,7 +27,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::config::Config;
-use crate::database::{record::RecordRow, Database, DatabaseError};
+use crate::database::{Database, DatabaseError};
 
 use async_trait::async_trait;
 
@@ -46,18 +47,14 @@ pub struct BiliRecorder {
     pub room_info: Arc<RwLock<RoomInfo>>,
     pub user_info: Arc<RwLock<UserInfo>>,
     pub live_status: Arc<RwLock<bool>>,
-    pub last_sequence: Arc<RwLock<u64>>,
-    pub ts_length: Arc<RwLock<f64>>,
-    pub timestamp: Arc<RwLock<u64>>,
+    pub live_id: Arc<RwLock<String>>,
     pub cover: Arc<RwLock<Option<String>>>,
-    ts_entries: Arc<RwLock<Vec<TsEntry>>>,
+    pub entry_store: Arc<RwLock<Option<EntryStore>>>,
     last_update: Arc<RwLock<i64>>,
     quit: Arc<Mutex<bool>>,
-    header: Arc<RwLock<Option<TsEntry>>>,
     pub live_stream: Arc<RwLock<Option<BiliStream>>>,
-    cache_size: Arc<RwLock<u64>>,
     danmu_storage: Arc<RwLock<Option<DanmuStorage>>>,
-    m3u8_cache: DashMap<u64, String>,
+    m3u8_cache: DashMap<String, String>,
 }
 
 impl From<DatabaseError> for super::errors::RecorderError {
@@ -68,7 +65,7 @@ impl From<DatabaseError> for super::errors::RecorderError {
 
 impl From<BiliClientError> for super::errors::RecorderError {
     fn from(value: BiliClientError) -> Self {
-        super::errors::RecorderError::ClientError { err: value }
+        super::errors::RecorderError::BiliClientError { err: value }
     }
 }
 
@@ -113,16 +110,12 @@ impl BiliRecorder {
             room_info: Arc::new(RwLock::new(room_info)),
             user_info: Arc::new(RwLock::new(user_info)),
             live_status: Arc::new(RwLock::new(live_status)),
-            last_sequence: Arc::new(RwLock::new(0)),
-            ts_length: Arc::new(RwLock::new(0.0)),
-            ts_entries: Arc::new(RwLock::new(Vec::new())),
-            timestamp: Arc::new(RwLock::new(0)),
+            entry_store: Arc::new(RwLock::new(None)),
+            live_id: Arc::new(RwLock::new(String::new())),
             cover: Arc::new(RwLock::new(cover)),
             last_update: Arc::new(RwLock::new(Utc::now().timestamp())),
             quit: Arc::new(Mutex::new(false)),
-            header: Arc::new(RwLock::new(None)),
             live_stream: Arc::new(RwLock::new(live_stream)),
-            cache_size: Arc::new(RwLock::new(0)),
             danmu_storage: Arc::new(RwLock::new(None)),
             m3u8_cache: DashMap::new(),
         };
@@ -131,11 +124,8 @@ impl BiliRecorder {
     }
 
     pub async fn reset(&self) {
-        *self.ts_length.write().await = 0.0;
-        *self.last_sequence.write().await = 0;
-        self.ts_entries.write().await.clear();
-        *self.header.write().await = None;
-        *self.timestamp.write().await = 0;
+        *self.entry_store.write().await = None;
+        *self.live_id.write().await = String::new();
         *self.last_update.write().await = Utc::now().timestamp();
         *self.danmu_storage.write().await = None;
     }
@@ -241,7 +231,7 @@ impl BiliRecorder {
                             log::error!("[{}]Update stream failed: {}", self.room_id, e);
                         }
                     }
-            } else {
+                } else {
                     self.reset().await;
                 }
                 *self.live_status.write().await = live_status;
@@ -253,33 +243,6 @@ impl BiliRecorder {
                 *self.live_status.read().await
             }
         }
-    }
-
-    pub async fn get_archives(&self) -> Result<Vec<RecordRow>, super::errors::RecorderError> {
-        Ok(self.db.get_records(self.room_id).await?)
-    }
-
-    pub async fn get_archive(
-        &self,
-        live_id: u64,
-    ) -> Result<RecordRow, super::errors::RecorderError> {
-        Ok(self.db.get_record(self.room_id, live_id).await?)
-    }
-
-    pub async fn delete_archive(&self, ts: u64) -> Result<(), super::errors::RecorderError> {
-        if ts == *self.timestamp.read().await {
-            return Err(super::errors::RecorderError::ArchiveInUse { ts });
-        }
-        if let Err(e) = self.db.remove_record(ts).await {
-            log::error!("remove archive failed: {}", e);
-            return Err(e.into());
-        }
-        let target_dir = format!("{}/{}/{}", self.config.read().await.cache, self.room_id, ts);
-        if let Err(e) = fs::remove_dir_all(target_dir).await {
-            log::error!("remove archive failed [{}]{}: {}", self.room_id, ts, e);
-            return Err(super::errors::RecorderError::IoError { err: e });
-        }
-        Ok(())
     }
 
     async fn danmu(&self) {
@@ -357,7 +320,7 @@ impl BiliRecorder {
             }
             Err(e) => {
                 log::error!("Failed fetching index content from {}", stream.index());
-                Err(super::errors::RecorderError::ClientError { err: e })
+                Err(super::errors::RecorderError::BiliClientError { err: e })
             }
         }
     }
@@ -406,17 +369,26 @@ impl BiliRecorder {
         Ok(header_url)
     }
 
-    async fn extract_timestamp(&self, header_url: &str) -> u64 {
+    async fn extract_timestamp(&self, header_url: &str) -> i64 {
         log::debug!("[{}]Extract timestamp from {}", self.room_id, header_url);
         let re = Regex::new(r"h(\d+).m4s").unwrap();
         if let Some(cap) = re.captures(header_url) {
-            let ts = cap.get(1).unwrap().as_str().parse().unwrap();
-            *self.timestamp.write().await = ts;
+            let ts: i64 = cap.get(1).unwrap().as_str().parse().unwrap();
+            *self.live_id.write().await = ts.to_string();
             ts
         } else {
             log::error!("Extract timestamp failed: {}", header_url);
             0
         }
+    }
+
+    async fn get_work_dir(&self, live_id: &str) -> String {
+        format!(
+            "/{}/bilibili/{}/{}/",
+            self.config.read().await.cache,
+            self.room_id,
+            live_id
+        )
     }
 
     async fn update_entries(&self) -> Result<u128, super::errors::RecorderError> {
@@ -427,15 +399,10 @@ impl BiliRecorder {
         }
         let current_stream = current_stream.unwrap();
         let parsed = self.get_playlist().await;
-        let mut timestamp = *self.timestamp.read().await;
-        let mut work_dir = format!(
-            "{}/{}/{}/",
-            self.config.read().await.cache,
-            self.room_id,
-            timestamp
-        );
+        let mut timestamp: i64 = self.live_id.read().await.parse::<i64>().unwrap_or(0);
+        let mut work_dir = self.get_work_dir(timestamp.to_string().as_str()).await;
         // Check header if None
-        if self.header.read().await.is_none() && current_stream.format == StreamType::FMP4 {
+        if (self.entry_store.read().await.as_ref().is_none() || self.entry_store.read().await.as_ref().unwrap().get_header().is_none()) && current_stream.format == StreamType::FMP4 {
             // Get url from EXT-X-MAP
             let header_url = self.get_header_url().await?;
             if header_url.is_empty() {
@@ -448,32 +415,19 @@ impl BiliRecorder {
             }
             self.db
                 .add_record(
-                    timestamp,
+                    PlatformType::BiliBili,
+                    timestamp.to_string().as_str(),
                     self.room_id,
                     &self.room_info.read().await.room_title,
                     self.cover.read().await.clone(),
                 )
                 .await?;
             // now work dir is confirmed
-            work_dir = format!(
-                "{}/{}/{}/",
-                self.config.read().await.cache,
-                self.room_id,
-                timestamp
-            );
-            // if folder is exisited, need to load previous data into cache
-            if let Ok(meta) = fs::metadata(&work_dir).await {
-                if meta.is_dir() {
-                    log::warn!("Live {} is already cached. Try to restore", timestamp);
-                    self.restore(&work_dir).await;
-            } else {
-                    // make sure work_dir is created
-                    fs::create_dir_all(&work_dir).await.unwrap();
-            }
-        } else {
-                // make sure work_dir is created
-                fs::create_dir_all(&work_dir).await.unwrap();
-            }
+            work_dir = self.get_work_dir(timestamp.to_string().as_str()).await;
+
+            let entry_store = EntryStore::new(&work_dir).await;
+            *self.entry_store.write().await = Some(entry_store);
+
             // danmau file
             let danmu_file_path = format!("{}{}", work_dir, "danmu.txt");
             *self.danmu_storage.write().await = DanmuStorage::new(&danmu_file_path).await;
@@ -481,14 +435,15 @@ impl BiliRecorder {
             let file_name = header_url.split('/').last().unwrap();
             let mut header = TsEntry {
                 url: file_name.to_string(),
-                offset: 0,
                 sequence: 0,
                 length: 0.0,
                 size: 0,
+                ts: timestamp,
+                is_header: true,
             };
             // Download header
             match self
-            .client
+                .client
                 .read()
                 .await
                 .download_ts(&full_header_url, &format!("{}/{}", work_dir, file_name))
@@ -496,9 +451,13 @@ impl BiliRecorder {
             {
                 Ok(size) => {
                     header.size = size;
-                    *self.header.write().await = Some(header);
-                    // add size into cache_size
-                    *self.cache_size.write().await += size;
+                    self.entry_store
+                        .write()
+                        .await
+                        .as_mut()
+                        .unwrap()
+                        .add_entry(header)
+                        .await;
                 }
                 Err(e) => {
                     log::error!("Download header failed: {}", e);
@@ -510,14 +469,20 @@ impl BiliRecorder {
             Ok(Playlist::MediaPlaylist(pl)) => {
                 let mut new_segment_fetched = false;
                 let mut sequence = pl.media_sequence;
+                let last_sequence = self
+                    .entry_store
+                    .read()
+                    .await
+                    .as_ref()
+                    .unwrap()
+                    .last_sequence();
                 for ts in pl.segments {
-                    if sequence <= *self.last_sequence.read().await {
+                    if sequence <= last_sequence {
                         sequence += 1;
                         continue;
                     }
                     new_segment_fetched = true;
-                    let mut offset_hex: String = "".into();
-                    let mut seg_offset: u64 = 0;
+                    let mut seg_offset: i64 = 0;
                     for tag in ts.unknown_tags {
                         if tag.tag == "BILI-AUX" {
                             if let Some(rest) = tag.rest {
@@ -525,8 +490,8 @@ impl BiliRecorder {
                                 if parts.is_empty() {
                                     continue;
                                 }
-                                offset_hex = parts.first().unwrap().to_string();
-                                seg_offset = u64::from_str_radix(&offset_hex, 16).unwrap();
+                                let offset_hex = parts.first().unwrap().to_string();
+                                seg_offset = i64::from_str_radix(&offset_hex, 16).unwrap();
                             }
                             break;
                         }
@@ -537,25 +502,26 @@ impl BiliRecorder {
                         continue;
                     }
                     // encode segment offset into filename
-                    let file_name =
-                        format!("{}-{}", &offset_hex, ts.uri.split('/').last().unwrap());
-                    let mut ts_length = 1.0;
+                    let file_name = ts.uri.split('/').last().unwrap_or(&ts.uri);
+                    let mut ts_length = pl.target_duration as f64;
+                    let ts = timestamp*1000 + seg_offset;
                     // calculate entry length using offset
                     // the default #EXTINF is 1.0, which is not accurate
-                    if let Some(last) = self.ts_entries.read().await.last() {
+                    if let Some(last) = self
+                        .entry_store
+                        .read()
+                        .await
+                        .as_ref()
+                        .unwrap()
+                        .last_ts()
+                    {
                         // skip this entry as it is already in cache or stream changed
-                        if seg_offset <= last.offset {
+                        if ts <= last {
                             continue;
                         }
-                        ts_length = (seg_offset - last.offset) as f64 / 1000.0;
+                        ts_length = (ts - last) as f64 / 1000.0;
                     }
-                    let ts_entry = TsEntry {
-                        url: file_name.clone(),
-                        offset: seg_offset,
-                        sequence,
-                        length: ts_length,
-                        size: 0,
-                    };
+
                     let client = self.client.clone();
                     let mut retry = 0;
                     loop {
@@ -570,8 +536,20 @@ impl BiliRecorder {
                             .await
                         {
                             Ok(size) => {
-                                self.ts_entries.write().await.push(ts_entry);
-                                *self.cache_size.write().await += size;
+                                self.entry_store
+                                    .write()
+                                    .await
+                                    .as_mut()
+                                    .unwrap()
+                                    .add_entry(TsEntry {
+                                        url: file_name.into(),
+                                        sequence,
+                                        length: ts_length,
+                                        size,
+                                        ts,
+                                        is_header: false,
+                                    })
+                                    .await;
                                 break;
                             }
                             Err(e) => {
@@ -580,9 +558,7 @@ impl BiliRecorder {
                             }
                         }
                     }
-                    *self.last_sequence.write().await = sequence;
-                    let mut total_length = self.ts_length.write().await;
-                    *total_length += ts.duration as f64;
+
                     sequence += 1;
                 }
 
@@ -590,15 +566,16 @@ impl BiliRecorder {
                     *self.last_update.write().await = Utc::now().timestamp();
                     self.db
                         .update_record(
-                            timestamp,
-                            self.ts_entries
+                            timestamp.to_string().as_str(),
+                            self.entry_store
                                 .read()
                                 .await
-                                .iter()
-                                .fold(0.0, |t, e| t + e.length) as i64,
-                            *self.cache_size.read().await,
+                                .as_ref()
+                                .unwrap()
+                                .total_duration() as i64,
+                            self.entry_store.read().await.as_ref().unwrap().total_size(),
                         )
-            .await?;
+                        .await?;
                 } else {
                     // if index content is not changed for a long time, we should return a error to fetch a new stream
                     if *self.last_update.read().await < Utc::now().timestamp() - 10 {
@@ -609,12 +586,11 @@ impl BiliRecorder {
                     }
                 }
                 // check the current stream is too slow or not
-                if let Some(last_entry) = self.ts_entries.read().await.last() {
-                    let last_entry_time = (last_entry.offset + *self.timestamp.read().await) as i64;
-                    if last_entry_time < Utc::now().timestamp() - 10 {
+                if let Some(last_ts) = self.entry_store.read().await.as_ref().unwrap().last_ts() {
+                    if last_ts < Utc::now().timestamp() - 10 {
                         log::error!(
                             "Stream is too slow, last entry ts is at {}",
-                            last_entry_time
+                            last_ts
                         );
                         return Err(super::errors::RecorderError::SlowStream {
                             stream: current_stream,
@@ -629,47 +605,34 @@ impl BiliRecorder {
         Ok(task_begin_time.elapsed().as_millis())
     }
 
-    async fn restore(&self, work_dir: &str) {
-        // by the way, header will be set after restore, so we don't need to restore it.
-        let entries = self.get_fs_entries(work_dir).await;
-        if entries.is_empty() {
-            return;
-        }
-        self.ts_entries.write().await.extend_from_slice(&entries);
-        *self.ts_length.write().await = entries.len() as f64;
-        *self.cache_size.write().await = entries.iter().map(|e| e.size).sum();
-        *self.last_sequence.write().await = entries.last().unwrap().sequence;
-        log::info!("Restore {} entries from local file", entries.len());
-    }
-
     pub async fn clip_archive_range(
         &self,
-        ts: u64,
+        live_id: &str,
         x: f64,
         y: f64,
         output_path: &str,
     ) -> Result<String, super::errors::RecorderError> {
         log::info!("Create archive clip for range [{}, {}]", x, y);
-        let work_dir = format!("{}/{}/{}", self.config.read().await.cache, self.room_id, ts);
-        let entries = self.get_fs_entries(&work_dir).await;
+        let work_dir = self.get_work_dir(live_id).await;
+        let entries = EntryStore::new(&work_dir).await.get_entries().clone();
         if entries.is_empty() {
             return Err(super::errors::RecorderError::EmptyCache);
         }
         let mut file_list = Vec::new();
         // header fist
-        file_list.push(format!("{}/h{}.m4s", work_dir, ts));
+        file_list.push(format!("{}/h{}.m4s", work_dir, live_id));
         // add body entries
         // seconds to ms
-        let begin = (x * 1000.0) as u64;
-        let end = (y * 1000.0) as u64;
-        let offset = entries.first().unwrap().offset;
+        let begin = (x * 1000.0) as i64;
+        let end = (y * 1000.0) as i64;
+        let ts = entries.first().unwrap().ts;
         if !entries.is_empty() {
             for e in entries {
-                if e.offset - offset < begin {
+                if e.ts - ts < begin {
                     continue;
                 }
                 file_list.push(format!("{}/{}", work_dir, e.url));
-                if e.offset - offset > end {
+                if e.ts - ts > end {
                     break;
                 }
             }
@@ -678,7 +641,7 @@ impl BiliRecorder {
         let file_name = format!(
             "[{}]{}_{}_{:.1}.mp4",
             self.room_id,
-            ts,
+            live_id,
             Utc::now().format("%m%d%H%M%S"),
             y - x
         );
@@ -693,21 +656,21 @@ impl BiliRecorder {
     ) -> Result<String, super::errors::RecorderError> {
         log::info!("Create live clip for range [{}, {}]", x, y);
         let mut to_combine = Vec::new();
-        let header_copy = self.header.read().await.clone();
-        let entry_copy = self.ts_entries.read().await.clone();
+        let header_copy = self.entry_store.read().await.as_ref().unwrap().get_header().unwrap().clone();
+        let entry_copy = self.entry_store.read().await.as_ref().unwrap().get_entries().clone();
         if entry_copy.is_empty() {
             return Err(super::errors::RecorderError::EmptyCache);
         }
-        let begin = (x * 1000.0) as u64;
-        let end = (y * 1000.0) as u64;
-        let offset = entry_copy.first().unwrap().offset;
+        let begin = (x * 1000.0) as i64;
+        let end = (y * 1000.0) as i64;
+        let ts = entry_copy.first().unwrap().ts;
         // TODO using binary search
         for e in entry_copy.iter() {
-            if e.offset - offset < begin {
+            if e.ts - ts < begin {
                 continue;
             }
             to_combine.push(e);
-            if e.offset - offset > end {
+            if e.ts - ts > end {
                 break;
             }
         }
@@ -719,11 +682,10 @@ impl BiliRecorder {
             .is_some_and(|s| s.format == StreamType::FMP4)
         {
             // add header to vec
-            let header = header_copy.as_ref().unwrap();
-            to_combine.insert(0, header);
+            to_combine.insert(0, &header_copy);
         }
         let mut file_list = Vec::new();
-        let timestamp = *self.timestamp.read().await;
+        let timestamp = self.live_id.read().await.parse::<u64>().unwrap();
         for e in to_combine {
             let file_name = e.url.split('/').last().unwrap();
             let file_path = format!(
@@ -738,7 +700,7 @@ impl BiliRecorder {
         let file_name = format!(
             "[{}]{}_{}_{:.1}.mp4",
             self.room_id,
-            self.timestamp.read().await,
+            self.live_id.read().await,
             Utc::now().format("%m%d%H%M%S"),
             y - x
         );
@@ -781,9 +743,9 @@ impl BiliRecorder {
         Ok(file_name)
     }
 
-    async fn generate_archive_m3u8(&self, timestamp: u64) -> String {
-        if self.m3u8_cache.contains_key(&timestamp) {
-            return self.m3u8_cache.get(&timestamp).unwrap().clone();
+    async fn generate_archive_m3u8(&self, live_id: &str) -> String {
+        if self.m3u8_cache.contains_key(live_id) {
+            return self.m3u8_cache.get(live_id).unwrap().clone();
         }
         let mut m3u8_content = "#EXTM3U\n".to_string();
         m3u8_content += "#EXT-X-VERSION:6\n";
@@ -791,111 +753,42 @@ impl BiliRecorder {
         m3u8_content += "#EXT-X-PLAYLIST-TYPE:VOD\n";
         // add header, FMP4 need this
         // TODO handle StreamType::TS
-        let header_url = format!("/{}/{}/h{}.m4s", self.room_id, timestamp, timestamp);
+        let header_url = format!("/bilibili/{}/{}/h{}.m4s", self.room_id, live_id, live_id);
         m3u8_content += &format!("#EXT-X-MAP:URI=\"{}\"\n", header_url);
         // add entries from read_dir
-        let work_dir = format!(
-            "{}/{}/{}",
-            self.config.read().await.cache,
-            self.room_id,
-            timestamp
-        );
-        let entries = self.get_fs_entries(&work_dir).await;
+        let work_dir = self.get_work_dir(live_id).await;
+        let entries = EntryStore::new(&work_dir).await.get_entries().clone();
         if entries.is_empty() {
             return m3u8_content;
         }
         let mut last_sequence = entries.first().unwrap().sequence;
-        m3u8_content += &format!("#EXT-X-OFFSET:{}\n", entries.first().unwrap().offset);
+
+        let live_ts = live_id.parse::<i64>().unwrap();
+        m3u8_content += &format!("#EXT-X-OFFSET:{}\n", (entries.first().unwrap().ts - live_ts*1000) / 1000);
+
         for e in entries {
+            // ignore header, cause it's already in EXT-X-MAP
+            if e.is_header {
+                continue;
+            }
             let current_seq = e.sequence;
             if current_seq - last_sequence > 1 {
                 m3u8_content += "#EXT-X-DISCONTINUITY\n"
             }
             // add #EXT-X-PROGRAM-DATE-TIME with ISO 8601 date
-            let ts = timestamp + e.offset / 1000;
-            let date_str = Utc.timestamp_opt(ts as i64, 0).unwrap().to_rfc3339();
+            let ts = e.ts / 1000;
+            let date_str = Utc.timestamp_opt(ts, 0).unwrap().to_rfc3339();
             m3u8_content += &format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", date_str);
             m3u8_content += &format!("#EXTINF:{:.2},\n", e.length);
-            m3u8_content += &format!("/{}/{}/{}\n", self.room_id, timestamp, e.url);
+            m3u8_content += &format!("/bilibili/{}/{}/{}\n", self.room_id, live_id, e.url);
 
             last_sequence = current_seq;
         }
         m3u8_content += "#EXT-X-ENDLIST";
         // cache this
-        self.m3u8_cache.insert(timestamp, m3u8_content.clone());
+        self.m3u8_cache
+            .insert(live_id.to_string(), m3u8_content.clone());
         m3u8_content
-    }
-
-    /// Fetch HLS segments from local cached file, header is excluded
-    async fn get_fs_entries(&self, path: &str) -> Vec<TsEntry> {
-        let mut ret = Vec::new();
-        let direntry = fs::read_dir(path).await;
-        if direntry.is_err() {
-            return ret;
-        }
-        let mut direntry = direntry.unwrap();
-        while let Some(e) = direntry.next().await {
-            if e.is_err() {
-                continue;
-            }
-            let e = e.unwrap();
-            let etype = e.file_type().await;
-            if etype.is_err() {
-                continue;
-            }
-            let etype = etype.unwrap();
-            if !etype.is_file() {
-                continue;
-            }
-            if let Some(file_ext) = e.path().extension() {
-                let file_ext = file_ext.to_str().unwrap().to_string();
-                // need to exclude other files, such as danmu file
-                if file_ext != "m4s" {
-                    continue;
-                    }
-                } else {
-                continue;
-            }
-            let file_name = e.file_name().to_str().unwrap().to_string();
-            if file_name.starts_with("h") {
-                continue;
-            }
-            let meta_info: &str = file_name.split('.').next().unwrap();
-            let infos: Vec<&str> = meta_info.split('-').collect();
-            let offset: u64;
-            let sequence: u64;
-            // BREAKCHANGE do not support legacy files that not named with offset
-            if infos.len() == 1 {
-                continue;
-            } else {
-                if let Ok(parsed_offset) = u64::from_str_radix(infos.first().unwrap(), 16) {
-                    offset = parsed_offset;
-                } else {
-                    continue;
-                }
-                sequence = infos.get(1).unwrap().parse().unwrap();
-            }
-            ret.push(TsEntry {
-                url: file_name.clone(),
-                offset,
-                sequence,
-                length: 1.0,
-                size: e.metadata().await.unwrap().len(),
-            });
-        }
-        ret.sort_by(|a, b| a.sequence.cmp(&b.sequence));
-        if ret.is_empty() {
-            return ret;
-        }
-        let mut last_offset = ret.first().unwrap().offset;
-        for (i, entry) in ret.iter_mut().enumerate() {
-            if i == 0 {
-                continue;
-            }
-            entry.length = (entry.offset - last_offset) as f64 / 1000.0;
-            last_offset = entry.offset;
-        }
-        ret
     }
 
     /// if fetching live/last stream m3u8, all entries are cached in memory, so it will be much faster than read_dir
@@ -911,34 +804,38 @@ impl BiliRecorder {
         } else {
             m3u8_content += "#EXT-X-PLAYLIST-TYPE:VOD\n";
         }
-        let timestamp = *self.timestamp.read().await;
+        let live_id = self.live_id.read().await.clone();
         // initial segment for fmp4, info from self.header
-        if let Some(header) = self.header.read().await.as_ref() {
+        if let Some(header) = self.entry_store.read().await.as_ref().unwrap().get_header() {
             let file_name = header.url.split('/').last().unwrap();
-            let local_url = format!("/{}/{}/{}", self.room_id, timestamp, file_name);
+            let local_url = format!("/bilibili/{}/{}/{}", self.room_id, live_id, file_name);
             m3u8_content += &format!("#EXT-X-MAP:URI=\"{}\"\n", local_url);
         }
-        let entries = self.ts_entries.read().await.clone();
+        let entries = self.entry_store.read().await.as_ref().unwrap().get_entries().clone();
         if entries.is_empty() {
             m3u8_content += "#EXT-X-OFFSET:0\n";
             return m3u8_content;
         }
-        let timestamp = *self.timestamp.read().await;
+
         let mut last_sequence = entries.first().unwrap().sequence;
-        m3u8_content += &format!("#EXT-X-OFFSET:{}\n", entries.first().unwrap().offset);
+
+        // this does nothing, but privide first entry ts for player
+        let live_ts = live_id.parse::<i64>().unwrap();
+        m3u8_content += &format!("#EXT-X-OFFSET:{}\n", (entries.first().unwrap().ts - live_ts*1000) / 1000);
+
         for entry in entries.iter() {
             if entry.sequence - last_sequence > 1 {
                 // discontinuity happens
                 m3u8_content += "#EXT-X-DISCONTINUITY\n"
             }
             // add #EXT-X-PROGRAM-DATE-TIME with ISO 8601 date
-            let ts = timestamp + entry.offset / 1000;
-            let date_str = Utc.timestamp_opt(ts as i64, 0).unwrap().to_rfc3339();
+            let ts = entry.ts / 1000;
+            let date_str = Utc.timestamp_opt(ts, 0).unwrap().to_rfc3339();
             m3u8_content += &format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", date_str);
-            m3u8_content += &format!("#EXTINF:{:.2},\n", entry.length,);
+            m3u8_content += &format!("#EXTINF:{:.2},\n", entry.length);
             last_sequence = entry.sequence;
             let file_name = entry.url.split('/').last().unwrap();
-            let local_url = format!("/{}/{}/{}", self.room_id, timestamp, file_name);
+            let local_url = format!("/bilibili/{}/{}/{}", self.room_id, live_id, file_name);
             m3u8_content += &format!("{}\n", local_url);
         }
         // let player know stream is closed
@@ -951,10 +848,6 @@ impl BiliRecorder {
 
 #[async_trait]
 impl super::Recorder for BiliRecorder {
-    fn recorder_type(&self) -> super::RecorderType {
-        super::RecorderType::BiliBili
-    }
-
     async fn run(&self) {
         let self_clone = self.clone();
         thread::spawn(move || {
@@ -970,15 +863,15 @@ impl super::Recorder for BiliRecorder {
                                         thread::sleep(std::time::Duration::from_millis(
                                             (1000 - ms) as u64,
                                         ));
-                } else {
+                                    } else {
                                         log::warn!(
                                             "[{}]Update entries cost too long: {}ms",
                                             self_clone.room_id,
                                             ms
                                         );
-                }
-            }
-            Err(e) => {
+                                    }
+                                }
+                                Err(e) => {
                                     log::error!(
                                         "[{}]Update entries error: {}",
                                         self_clone.room_id,
@@ -1017,40 +910,58 @@ impl super::Recorder for BiliRecorder {
     /// x and y are relative to first sequence
     async fn clip_range(
         &self,
-        ts: u64,
+        live_id: &str,
         x: f64,
         y: f64,
         output_path: &str,
     ) -> Result<String, super::errors::RecorderError> {
-        if *self.timestamp.read().await == ts {
+        if *self.live_id.read().await == live_id {
             self.clip_live_range(x, y, output_path).await
-            } else {
-            self.clip_archive_range(ts, x, y, output_path).await
+        } else {
+            self.clip_archive_range(live_id, x, y, output_path).await
         }
     }
 
     /// timestamp is the id of live stream
-    async fn m3u8_content(&self, timestamp: u64) -> String {
-        if *self.timestamp.read().await == timestamp {
+    async fn m3u8_content(&self, live_id: &str) -> String {
+        if *self.live_id.read().await == live_id {
             self.generate_live_m3u8().await
         } else {
-            self.generate_archive_m3u8(timestamp).await
+            self.generate_archive_m3u8(live_id).await
         }
     }
 
     async fn info(&self) -> super::RecorderInfo {
+        let room_info = self.room_info.read().await;
+        let user_info = self.user_info.read().await;
         super::RecorderInfo {
             room_id: self.room_id,
-            room_info: self.room_info.read().await.clone(),
-            user_info: self.user_info.read().await.clone(),
-            total_length: *self.ts_length.read().await,
-            current_ts: *self.timestamp.read().await,
+            room_info: super::RoomInfo {
+                room_id: self.room_id,
+                room_title: room_info.room_title.clone(),
+                room_cover: room_info.room_cover_url.clone(),
+            },
+            user_info: super::UserInfo {
+                user_id: user_info.user_id.to_string(),
+                user_name: user_info.user_name.clone(),
+                user_avatar: user_info.user_avatar_url.clone(),
+            },
+            total_length: if let Some(store) = self.entry_store.read().await.as_ref() {
+                store.total_duration()
+            } else {
+                0.0
+            },
+            current_live_id: self.live_id.read().await.clone(),
             live_status: *self.live_status.read().await,
+            platform: PlatformType::BiliBili.as_str().to_string(),
         }
     }
 
-    async fn comments(&self, ts: u64) -> Result<Vec<DanmuEntry>, super::errors::RecorderError> {
-        Ok(if ts == *self.timestamp.read().await {
+    async fn comments(
+        &self,
+        live_id: &str,
+    ) -> Result<Vec<DanmuEntry>, super::errors::RecorderError> {
+        Ok(if live_id == *self.live_id.read().await {
             // just return current cache content
             match self.danmu_storage.read().await.as_ref() {
                 Some(storage) => storage.get_entries().await,
@@ -1059,10 +970,10 @@ impl super::Recorder for BiliRecorder {
         } else {
             // load disk cache
             let cache_file_path = format!(
-                "{}/{}/{}/{}",
+                "{}/bilibili/{}/{}/{}",
                 self.config.read().await.cache,
                 self.room_id,
-                ts,
+                live_id,
                 "danmu.txt"
             );
             log::info!("loading danmu cache from {}", cache_file_path);

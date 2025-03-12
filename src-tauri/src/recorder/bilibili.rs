@@ -5,6 +5,7 @@ pub mod response;
 use super::entry::EntryStore;
 use super::PlatformType;
 use crate::database::account::AccountRow;
+use crate::ffmpeg::{transcode, TranscodeConfig};
 
 use super::danmu::{DanmuEntry, DanmuStorage};
 use super::entry::TsEntry;
@@ -722,13 +723,13 @@ impl BiliRecorder {
         file_name: &str,
     ) -> Result<String, super::errors::RecorderError> {
         std::fs::create_dir_all(output_path).expect("create clips folder failed");
-        let file_name = format!("{}/{}", output_path, file_name,);
+        let output_name = format!("{}/{}", output_path, file_name,);
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(true)
-            .open(&file_name)
+            .open(&output_name)
             .await;
         if file.is_err() {
             return Err(super::errors::RecorderError::ClipError {
@@ -748,8 +749,22 @@ impl BiliRecorder {
             seg_file.read_to_end(&mut buffer).await.unwrap();
             file.write_all(&buffer).await.unwrap();
         }
+
         file.flush().await.unwrap();
-        Ok(file_name)
+
+        let transcode_config = TranscodeConfig {
+            input_path: file_name.to_string(),
+            input_format: "mp4".to_string(),
+            // replace .ts with .mp4
+            output_path: format!("fixed_{}", file_name),
+        };
+
+        let transcode_result = transcode(output_path, transcode_config);
+
+        // delete the original ts file
+        tokio::fs::remove_file(output_name).await?;
+
+        Ok(transcode_result.unwrap().output_path)
     }
 
     async fn generate_archive_m3u8(&self, live_id: &str) -> String {

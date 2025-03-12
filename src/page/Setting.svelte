@@ -39,8 +39,8 @@
   get_config();
 </script>
 
-<div class="flex-1 overflow-hidden">
-  <div class="h-screen overflow-y-auto">
+<div class="flex-1 overflow-auto">
+  <div class="h-screen">
     <div class="p-6 space-y-6">
       <!-- Header -->
       <div

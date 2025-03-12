@@ -60,7 +60,6 @@
     recorders = (
       (await invoke("get_recorder_list")) as RecorderList
     ).recorders.filter((r) => r.live_status && r.room_id != room_id);
-    console.log("live recorders", recorders);
   }
 
   function go_to(platform: string, room_id: number, live_id: string) {
@@ -177,7 +176,7 @@
         const cur = Math.floor(
           (video.currentTime + global_offset + ts) * 1000
         );
-        console.log("Now playing:", new Date(cur).toString());
+
         let danmus = danmu_records.filter((v) => {
           return v.ts >= cur - 1000 && v.ts < cur;
         });

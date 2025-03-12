@@ -109,7 +109,7 @@
   }
 </script>
 
-<div class="flex-1 p-6">
+<div class="flex-1 p-6 overflow-auto">
   <div class="space-y-6">
     <!-- Header -->
     <div class="flex justify-between items-center">
@@ -385,8 +385,6 @@
     </div>
   </div>
 </div>
-
-<div class="p-8 pt-12 h-full overflow-auto">
   {#if deleteModal}
     <div
       class="fixed inset-0 bg-black/20 dark:bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center"
@@ -649,6 +647,5 @@
       </div>
     </div>
   {/if}
-</div>
 
 <svelte:window on:mousedown={handleModalClickOutside} />

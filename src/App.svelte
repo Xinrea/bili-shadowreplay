@@ -51,7 +51,6 @@
     opacity: 1 !important;
     height: 100% !important;
     transform: translateX(0) !important;
-    overflow: auto !important;
   }
 
   .page {

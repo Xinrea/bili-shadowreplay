@@ -2,16 +2,17 @@
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import Player from "./lib/Player.svelte";
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-  import html2canvas from "html2canvas";
   import type { AccountInfo, RecordItem } from "./lib/db";
   import {
-    AngleRightOutline,
-    AngleLeftOutline,
-    PlayOutline,
-  } from "flowbite-svelte-icons";
+    ChevronRight,
+    ChevronLeft,
+    Play,
+    Pen,
+  } from "lucide-svelte";
   import type { Profile, VideoItem, Config, Marker } from "./lib/interface";
   import TypeSelect from "./lib/TypeSelect.svelte";
   import MarkerPanel from "./lib/MarkerPanel.svelte";
+  import CoverEditor from "./lib/CoverEditor.svelte";
 
   const appWindow = getCurrentWebviewWindow();
   const urlParams = new URLSearchParams(window.location.search);
@@ -89,23 +90,26 @@
     return canvas.toDataURL();
   }
 
-  let cover_text = "";
   let preview = false;
+  let show_cover_editor = false;
+  let text_style = {
+    position: { x: 8, y: 8 },
+    fontSize: 24,
+    color: "#FF7F00"
+  };
   let uid_selected = 0;
   let video_selected = 0;
-  $: video_src = video ? convertFileSrc(config.output + "/" + video.name) : "";
-
   let accounts = [];
   let videos = [];
 
-  let video = null;
-  let cover = "";
+  let selected_video = null;
 
   invoke("get_accounts").then((account_info: AccountInfo) => {
     accounts = account_info.accounts.map((a) => {
       return {
         value: a.uid,
         name: a.name,
+        platform: a.platform,
       };
     });
     accounts = accounts.filter((a) => a.platform === 'bilibili');
@@ -127,11 +131,6 @@
     );
   }
 
-  function format_ts(ts: number) {
-    const date = new Date(ts * 1000);
-    return date.toLocaleString();
-  }
-
   async function get_video_list() {
     videos = (
       (await invoke("get_videos", { roomId: room_id })) as VideoItem[]
@@ -139,19 +138,22 @@
       return {
         value: v.id,
         name: v.file,
+        file: convertFileSrc(config.output + "/" + v.file),
         cover: v.cover,
       };
     });
-    console.log(videos, video_selected);
   }
 
   function find_video(e) {
+    if (!e.target) {
+      selected_video = null;
+      return;
+    }
     const id = parseInt(e.target.value);
-    video = videos.find((v) => {
+    selected_video = videos.find((v) => {
       return v.value == id;
     });
-    cover = video.cover;
-    console.log("video selected", videos, video, e, id);
+    console.log("video selected", videos, selected_video, e, id);
   }
 
   async function generate_clip() {
@@ -176,13 +178,13 @@
         y: end,
       })) as VideoItem;
       update_title(`切片生成成功`);
-      console.log("video file generatd:", video);
+      console.log("video file generatd:", selected_video);
       await get_video_list();
       video_selected = new_video.id;
-      video = videos.find((v) => {
+      selected_video = videos.find((v) => {
         return v.value == new_video.id;
       });
-      cover = new_video.cover;
+      selected_video.cover = new_video.cover;
       loading = false;
     } catch (e) {
       alert("Err generating clip: " + e);
@@ -190,24 +192,19 @@
   }
 
   async function do_post() {
-    if (!video) {
+    if (!selected_video) {
       return;
     }
     update_title(`投稿上传中`);
     loading = true;
-    // render cover with text
-    const ecapture = document.getElementById("capture");
-    const render_canvas = await html2canvas(ecapture, {
-      scale: 720 / ecapture.clientHeight,
-    });
-    const rendered_cover = render_canvas.toDataURL();
+
     // update profile in local storage
     window.localStorage.setItem("profile-" + room_id, JSON.stringify(profile));
     invoke("upload_procedure", {
       uid: uid_selected,
       roomId: room_id,
       videoId: video_selected,
-      cover: rendered_cover,
+      cover: selected_video.cover,
       profile: profile,
     })
       .then(async () => {
@@ -224,7 +221,7 @@
   }
 
   async function delete_video() {
-    if (!video) {
+    if (!selected_video) {
       return;
     }
     loading = true;
@@ -233,8 +230,7 @@
     update_title(`删除成功`);
     loading = false;
     video_selected = 0;
-    video = null;
-    cover = "";
+    selected_video = null;
     await get_video_list();
   }
   let player;
@@ -284,9 +280,9 @@
         }}
       >
         {#if lpanel_collapsed}
-          <AngleRightOutline color="white" />
+          <ChevronRight class="text-white" size={20} />
         {:else}
-          <AngleLeftOutline color="white" />
+          <ChevronLeft class="text-white" size={20} />
         {/if}
       </button>
     </div>
@@ -342,7 +338,7 @@
             <div class="relative aspect-video bg-black">
               <!-- svelte-ignore a11y-media-has-caption -->
               <video 
-                src={video_src} 
+                src={selected_video?.file} 
                 controls 
                 class="w-full h-full"
               />
@@ -365,9 +361,9 @@
         }}
       >
         {#if rpanel_collapsed}
-          <AngleLeftOutline color="white" />
+          <ChevronLeft class="text-white" size={20} />
         {:else}
-          <AngleRightOutline color="white" />
+          <ChevronRight class="text-white" size={20} />
         {/if}
       </button>
       <div
@@ -407,7 +403,7 @@
                     {/if}
                     <span>生成切片</span>
                   </button>
-                  {#if video}
+                  {#if selected_video}
                     <button
                       on:click={delete_video}
                       disabled={loading}
@@ -436,23 +432,25 @@
               </select>
             </section>
 
-            {#if video}
-              <!-- 封面预览 -->
+            <!-- 封面预览 -->
+            {#if selected_video && selected_video.id != -1}
               <section>
                 <div class="group">
-                  <div class="text-sm text-gray-400 mb-2 flex items-center">
+                  <div class="text-sm text-gray-400 mb-2 flex items-center justify-between">
                     <span>视频封面</span>
-                    <span class="ml-auto text-xs opacity-60">点击预览视频</span>
+                    <button
+                      class="text-[#0A84FF] hover:text-[#0A84FF]/80 transition-colors duration-200 flex items-center space-x-1"
+                      on:click={() => show_cover_editor = true}
+                    >
+                      <Pen class="w-4 h-4" />
+                      <span class="text-xs">创建新封面</span>
+                    </button>
                   </div>
-                  <button
+                  <div
                     id="capture"
-                    class="relative rounded-xl overflow-hidden bg-black/20 border border-gray-800/50
-                           transition duration-200 hover:border-[#0A84FF]/50 cursor-pointer"
-                    on:click={() => (preview = true)}
+                    class="relative rounded-xl overflow-hidden bg-black/20 border border-gray-800/50 cursor-pointer group"
+                    on:click={() => preview = true}
                   >
-                    <div class="cover-text absolute py-1 px-8">
-                      {cover_text}
-                    </div>
                     <div
                       class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100
                               transition duration-200 flex items-center justify-center backdrop-blur-[2px]"
@@ -460,11 +458,11 @@
                       <div
                         class="bg-white/10 backdrop-blur p-3 rounded-full opacity-0 group-hover:opacity-50"
                       >
-                        <PlayOutline class="w-6 h-6" color="white" />
+                        <Play class="w-6 h-6 text-white" />
                       </div>
                     </div>
-                    <img src={cover} alt="视频封面" class="w-full" />
-                  </button>
+                    <img src={selected_video.cover} alt="视频封面" class="w-full" />
+                  </div>
                 </div>
               </section>
             {/if}
@@ -517,25 +515,6 @@
                       <option value={account.value}>{account.name}</option>
                     {/each}
                   </select>
-                </div>
-              </div>
-
-              <!-- 封面设置 -->
-              <div class="space-y-4">
-                <h3 class="text-sm font-medium text-gray-400">封面设置</h3>
-                <div class="space-y-2">
-                  <label for="cover_text" class="block text-sm font-medium text-gray-300"
-                    >封面文本</label
-                  >
-                  <textarea
-                    id="cover_text"
-                    bind:value={cover_text}
-                    placeholder="输入封面文本"
-                    class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg
-                           border border-gray-800/50 focus:border-[#0A84FF]
-                           transition duration-200 outline-none resize-none h-20
-                           hover:border-gray-700/50"
-                  />
                 </div>
               </div>
 
@@ -594,14 +573,14 @@
             </section>
 
             <!-- 投稿按钮 -->
-            {#if video}
-              <div class="h-20" />
+            {#if selected_video}
+              <div class="h-10" />
             {/if}
           </div>
         </div>
 
         <!-- 底部按钮 -->
-        {#if video}
+        {#if selected_video}
           <div
             class="flex-none sticky bottom-0 px-6 py-4 bg-gradient-to-t from-[#1c1c1e] via-[#1c1c1e] to-transparent"
           >
@@ -627,27 +606,21 @@
   </div>
 </main>
 
+<CoverEditor 
+  bind:show={show_cover_editor}
+  video={selected_video}
+  on:coverUpdate={(event) => {
+    selected_video = {
+      ...selected_video,
+      cover: event.detail.cover
+    };
+  }}
+/>
+
 <style>
   main {
     width: 100vw;
     height: 100vh;
-  }
-
-  .cover-text {
-    white-space: pre-wrap;
-    font-size: 24px;
-    line-height: 1.3;
-    font-weight: bold;
-    color: rgb(255, 127, 0);
-    text-shadow:
-      -1px -1px 0 rgba(255, 255, 255, 1),
-      1px -1px 0 rgba(255, 255, 255, 1),
-      -1px 1px 0 rgba(255, 255, 255, 1),
-      1px 1px 0 rgba(255, 255, 255, 1),
-      -2px -2px 0 rgba(255, 255, 255, 0.5),
-      2px -2px 0 rgba(255, 255, 255, 0.5),
-      -2px 2px 0 rgba(255, 255, 255, 0.5),
-      2px 2px 0 rgba(255, 255, 255, 0.5); /* 创建细腻的白色描边效果 */
   }
 
   .collapse-btn {

@@ -2,9 +2,10 @@
   import { getVersion } from "@tauri-apps/api/app";
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import { open } from "@tauri-apps/plugin-shell";
-  import { BookOpen, MessageCircle, Video } from "lucide-svelte";
+  import { BookOpen, MessageCircle, Video, Heart } from "lucide-svelte";
   const appWindow = getCurrentWebviewWindow();
   let version = "";
+  let showDonateModal = false;
   getVersion().then((v) => {
     version = v;
     appWindow.setTitle(`BiliBili ShadowReplay - v${version}`);
@@ -37,9 +38,13 @@
       })
       .filter(line => line.length > 0);
   }
+
+  function toggleDonateModal() {
+    showDonateModal = !showDonateModal;
+  }
 </script>
 
-<div class="flex-1 p-6">
+<div class="flex-1 p-6 overflow-auto">
   <div class="max-w-2xl mx-auto space-y-8">
     <!-- App Info -->
     <div class="text-center space-y-4">
@@ -57,7 +62,7 @@
     </div>
 
     <!-- Quick Actions -->
-    <div class="grid grid-cols-2 gap-4">
+    <div class="grid grid-cols-3 gap-4">
       <button
         class="p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
         on:click={() => {
@@ -72,7 +77,7 @@
             <BookOpen class="w-5 h-5 icon-primary" />
           </div>
           <span class="text-sm font-medium text-gray-900 dark:text-white"
-            >Documentation</span
+            >说明</span
           >
         </div>
       </button>
@@ -90,7 +95,22 @@
             <MessageCircle class="w-5 h-5 icon-primary" />
           </div>
           <span class="text-sm font-medium text-gray-900 dark:text-white"
-            >Support</span
+            >意见反馈</span
+          >
+        </div>
+      </button>
+      <button
+        class="p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
+        on:click={toggleDonateModal}
+      >
+        <div class="flex flex-col items-center space-y-2">
+          <div
+            class="w-10 h-10 rounded-full bg-pink-500/10 flex items-center justify-center"
+          >
+            <Heart class="w-5 h-5 text-pink-500" />
+          </div>
+          <span class="text-sm font-medium text-gray-900 dark:text-white"
+            >打赏支持</span
           >
         </div>
       </button>
@@ -128,3 +148,29 @@
     </div>
   </div>
 </div>
+
+{#if showDonateModal}
+  <div class="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center" style="position: absolute; min-height: 100%; width: 100%; top: 0; left: 0;">
+    <div class="bg-white dark:bg-[#3c3c3e] rounded-lg p-6 max-w-md w-full mx-4">
+      <div class="flex justify-between items-center mb-4">
+        <h3 class="text-lg font-medium text-gray-900 dark:text-white">打赏支持</h3>
+        <button 
+          class="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+          on:click={toggleDonateModal}
+        >
+          ✕
+        </button>
+      </div>
+      <div class="flex justify-center">
+        <img 
+          src="/imgs/donate.png"
+          class="max-w-full h-auto rounded-lg"
+          alt="打赏二维码"
+        />
+      </div>
+      <p class="mt-4 text-center text-sm text-gray-600 dark:text-gray-300">
+        感谢您的支持！
+      </p>
+    </div>
+  </div>
+{/if}

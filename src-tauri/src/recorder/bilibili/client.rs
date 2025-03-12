@@ -629,11 +629,15 @@ impl BiliClient {
         account: &AccountRow,
         video_file: &Path,
     ) -> Result<profile::Video, BiliClientError> {
+        log::info!("Start Preparing Video: {}", video_file.to_str().unwrap());
         let preupload = self.preupload_video(account, video_file).await?;
+        log::info!("Preupload Response: {:?}", preupload);
         let metaposted = self.post_video_meta(&preupload, video_file).await?;
+        log::info!("Post Video Meta Response: {:?}", metaposted);
         let uploaded = self
             .upload_video(&preupload, &metaposted, video_file)
             .await?;
+        log::info!("Uploaded: {}", uploaded);
         self.end_upload(&preupload, &metaposted, uploaded).await?;
         let filename = Path::new(&metaposted.key)
             .file_stem()

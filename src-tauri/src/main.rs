@@ -257,6 +257,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::video::get_videos,
         crate::handlers::video::delete_video,
         crate::handlers::video::get_video_typelist,
+        crate::handlers::video::update_video_cover,
         crate::handlers::utils::show_in_folder,
         crate::handlers::utils::export_to_file,
         crate::handlers::utils::get_disk_info,

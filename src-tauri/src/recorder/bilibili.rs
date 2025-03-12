@@ -655,6 +655,7 @@ impl BiliRecorder {
         output_path: &str,
     ) -> Result<String, super::errors::RecorderError> {
         log::info!("Create live clip for range [{}, {}]", x, y);
+        let work_dir = self.get_work_dir(self.live_id.read().await.as_str()).await;
         let mut to_combine = Vec::new();
         let header_copy = self.entry_store.read().await.as_ref().unwrap().get_header().unwrap().clone();
         let entry_copy = self.entry_store.read().await.as_ref().unwrap().get_entries().clone();
@@ -685,14 +686,11 @@ impl BiliRecorder {
             to_combine.insert(0, &header_copy);
         }
         let mut file_list = Vec::new();
-        let timestamp = self.live_id.read().await.parse::<u64>().unwrap();
         for e in to_combine {
             let file_name = e.url.split('/').last().unwrap();
             let file_path = format!(
-                "{}/{}/{}/{}",
-                self.config.read().await.cache,
-                self.room_id,
-                timestamp,
+                "{}/{}",
+                work_dir,
                 file_name
             );
             file_list.push(file_path);

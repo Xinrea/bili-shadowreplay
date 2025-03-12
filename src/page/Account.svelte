@@ -109,8 +109,8 @@
   on:mousedown={handleModalClickOutside}
 />
 
-<div class="flex-1 p-6 overflow-hidden">
-  <div class="space-y-6 h-screen overflow-y-auto">
+<div class="flex-1 p-6 overflow-auto">
+  <div class="space-y-6">
     <!-- Header -->
     <div class="flex justify-between items-center">
       <div class="flex items-center space-x-4">

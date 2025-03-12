@@ -169,3 +169,8 @@ pub async fn get_video_typelist(
         .await?;
     Ok(state.client.get_video_typelist(&account).await?)
 } 
+
+#[tauri::command]
+pub async fn update_video_cover(state: TauriState<'_, State>, id: i64, cover: String) -> Result<(), String> {
+    Ok(state.db.update_video_cover(id, cover).await?)
+}

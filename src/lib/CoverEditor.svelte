@@ -2,20 +2,22 @@
   import { Play, X, Type, Palette, Move, Plus, Trash2 } from "lucide-svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { onMount, createEventDispatcher } from "svelte";
-  
+
   const dispatch = createEventDispatcher();
   export let video = null;
   export let show: boolean = false;
 
   // 文本列表
-  let texts = [{
-    id: 1,
-    content: "",
-    position: { x: 50, y: 50 },
-    fontSize: 48,
-    color: "#FF7F00",
-    strokeColor: "#FFFFFF"
-  }];
+  let texts = [
+    {
+      id: 1,
+      content: "",
+      position: { x: 50, y: 50 },
+      fontSize: 48,
+      color: "#FF7F00",
+      strokeColor: "#FFFFFF",
+    },
+  ];
 
   let selectedTextId = 1;
 
@@ -39,12 +41,12 @@
   let isRedrawScheduled = false;
 
   onMount(() => {
-    ctx = canvas.getContext('2d');
+    ctx = canvas.getContext("2d");
     loadBackgroundImage();
     resizeCanvas();
-    window.addEventListener('resize', handleResize);
+    window.addEventListener("resize", handleResize);
     return () => {
-      window.removeEventListener('resize', handleResize);
+      window.removeEventListener("resize", handleResize);
       if (redrawRequestId !== null) {
         cancelAnimationFrame(redrawRequestId);
       }
@@ -73,7 +75,7 @@
 
   function loadBackgroundImage() {
     if (!videoFrame) {
-        return;
+      return;
     }
     backgroundImage = new Image();
     backgroundImage.crossOrigin = "anonymous";
@@ -89,14 +91,14 @@
   function resizeCanvas() {
     const container = document.getElementById("cover-container");
     if (!container) return;
-    
+
     const rect = container.getBoundingClientRect();
     scale = rect.width / canvasWidth;
     canvas.style.width = `${rect.width}px`;
     canvas.style.height = `${rect.height}px`;
     canvas.width = canvasWidth;
     canvas.height = canvasHeight;
-    
+
     scheduleRedraw();
   }
 
@@ -110,9 +112,9 @@
     if (backgroundImage && backgroundImage.complete) {
       ctx.drawImage(backgroundImage, 0, 0, canvas.width, canvas.height);
     }
-    
+
     // 绘制所有文本
-    texts.forEach(text => {
+    texts.forEach((text) => {
       drawText(text);
     });
   }
@@ -122,15 +124,15 @@
 
     const x = (text.position.x / 100) * canvas.width;
     const y = (text.position.y / 100) * canvas.height;
-    
+
     ctx.font = `bold ${text.fontSize}px sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
 
     // 绘制描边
     ctx.strokeStyle = text.strokeColor;
     ctx.lineWidth = 4;
-    ctx.lineJoin = 'round';
+    ctx.lineJoin = "round";
     ctx.miterLimit = 2;
     ctx.strokeText(text.content, x, y);
 
@@ -148,22 +150,22 @@
     const rect = canvas.getBoundingClientRect();
     const x = event.clientX - rect.left;
     const y = event.clientY - rect.top;
-    
+
     // 检查是否点击到文本
-    texts.forEach(text => {
+    texts.forEach((text) => {
       const textX = (text.position.x / 100) * rect.width;
       const textY = (text.position.y / 100) * rect.height;
-      
+
       ctx.font = `bold ${text.fontSize}px sans-serif`;
       const metrics = ctx.measureText(text.content);
       const textWidth = metrics.width;
       const textHeight = text.fontSize;
-      
+
       if (
-        x >= textX - textWidth/2 - 10 &&
-        x <= textX + textWidth/2 + 10 &&
-        y >= textY - textHeight/2 - 10 &&
-        y <= textY + textHeight/2 + 10
+        x >= textX - textWidth / 2 - 10 &&
+        x <= textX + textWidth / 2 + 10 &&
+        y >= textY - textHeight / 2 - 10 &&
+        y <= textY + textHeight / 2 + 10
       ) {
         isDragging = true;
         selectedTextId = text.id;
@@ -175,28 +177,28 @@
 
   function handleMouseMove(event: MouseEvent) {
     if (!isDragging) return;
-    
+
     const rect = canvas.getBoundingClientRect();
     const deltaX = ((event.clientX - startPos.x) / rect.width) * 100;
     const deltaY = ((event.clientY - startPos.y) / rect.height) * 100;
-    
+
     // 限制文本位置在画布范围内
     const newX = Math.max(0, Math.min(100, startTextPos.x + deltaX));
     const newY = Math.max(0, Math.min(100, startTextPos.y + deltaY));
-    
-    texts = texts.map(text => {
+
+    texts = texts.map((text) => {
       if (text.id === selectedTextId) {
         return {
           ...text,
           position: {
             x: newX,
-            y: newY
-          }
+            y: newY,
+          },
         };
       }
       return text;
     });
-    
+
     scheduleRedraw();
   }
 
@@ -207,21 +209,24 @@
   }
 
   function addNewText() {
-    const newId = Math.max(0, ...texts.map(t => t.id)) + 1;
-    texts = [...texts, {
-      id: newId,
-      content: "",
-      position: { x: 50, y: 50 },
-      fontSize: 48,
-      color: "#FF7F00",
-      strokeColor: "#FFFFFF"
-    }];
+    const newId = Math.max(0, ...texts.map((t) => t.id)) + 1;
+    texts = [
+      ...texts,
+      {
+        id: newId,
+        content: "",
+        position: { x: 50, y: 50 },
+        fontSize: 48,
+        color: "#FF7F00",
+        strokeColor: "#FFFFFF",
+      },
+    ];
     selectedTextId = newId;
     scheduleRedraw();
   }
 
   function deleteText(id: number) {
-    texts = texts.filter(t => t.id !== id);
+    texts = texts.filter((t) => t.id !== id);
     if (texts.length > 0) {
       selectedTextId = texts[0].id;
     }
@@ -250,18 +255,18 @@
   function formatTime(seconds: number): string {
     const mins = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
+    return `${mins}:${secs.toString().padStart(2, "0")}`;
   }
 
   function updateCoverFromVideo() {
     if (!videoElement) return;
-    
-    const tempCanvas = document.createElement('canvas');
+
+    const tempCanvas = document.createElement("canvas");
     tempCanvas.width = videoElement.videoWidth;
     tempCanvas.height = videoElement.videoHeight;
-    const tempCtx = tempCanvas.getContext('2d');
+    const tempCtx = tempCanvas.getContext("2d");
     tempCtx.drawImage(videoElement, 0, 0, tempCanvas.width, tempCanvas.height);
-    videoFrame = tempCanvas.toDataURL('image/jpeg');
+    videoFrame = tempCanvas.toDataURL("image/jpeg");
     loadBackgroundImage();
   }
 
@@ -271,7 +276,7 @@
 
   async function handleSave() {
     // 确保 Canvas 已完全渲染
-    await new Promise<void>(resolve => {
+    await new Promise<void>((resolve) => {
       requestAnimationFrame(async () => {
         // 强制重绘一次
         redraw();
@@ -279,15 +284,15 @@
         requestAnimationFrame(async () => {
           try {
             // 直接使用 canvas 的内容作为新封面
-            const newCover = canvas.toDataURL('image/jpeg');
-            
+            const newCover = canvas.toDataURL("image/jpeg");
+
             await invoke("update_video_cover", {
               id: video.value,
-              cover: newCover
+              cover: newCover,
             });
-            
+
             // 触发自定义事件通知父组件更新封面
-            dispatch('coverUpdate', { cover: newCover });
+            dispatch("coverUpdate", { cover: newCover });
             handleClose();
           } catch (e) {
             alert("更新封面失败: " + e);
@@ -307,14 +312,14 @@
   $: {
     // 当文本内容或样式改变时重绘
     if (ctx) {
-      texts = texts.map(text => {
+      texts = texts.map((text) => {
         if (text.id === selectedTextId) {
           return {
             ...text,
             content: text.content,
             fontSize: text.fontSize,
             color: text.color,
-            position: text.position
+            position: text.position,
           };
         }
         return text;
@@ -323,7 +328,7 @@
     }
   }
 
-  $: selectedText = texts.find(t => t.id === selectedTextId);
+  $: selectedText = texts.find((t) => t.id === selectedTextId);
 
   // 监听 show 变化，当模态框显示时重新绘制
   $: if (show && ctx) {
@@ -334,10 +339,10 @@
   }
 </script>
 
-<svelte:window 
+<svelte:window
   on:mousemove={handleMouseMove}
   on:mouseup={handleMouseUp}
-  on:blur={() => isDragging = false}
+  on:blur={() => (isDragging = false)}
   on:visibilitychange={() => {
     if (document.hidden) {
       isDragging = false;
@@ -346,14 +351,14 @@
 />
 
 <!-- Modal Backdrop -->
-<div 
+<div
   class="fixed inset-0 bg-black/30 backdrop-blur-sm z-[1000] transition-opacity duration-200"
   class:opacity-0={!show}
   class:opacity-100={show}
   class:pointer-events-none={!show}
 >
   <!-- Modal Content -->
-  <div 
+  <div
     class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] bg-[#1c1c1e] rounded-2xl shadow-2xl overflow-hidden transition-all duration-200"
     class:opacity-0={!show}
     class:opacity-100={show}
@@ -361,13 +366,17 @@
     class:scale-100={show}
   >
     <!-- Header -->
-    <div class="flex items-center justify-between px-6 py-4 border-b border-gray-800/50 bg-[#2c2c2e]">
+    <div
+      class="flex items-center justify-between px-6 py-4 border-b border-gray-800/50 bg-[#2c2c2e]"
+    >
       <h3 class="text-base font-medium text-white">编辑封面</h3>
-      <button 
+      <button
         class="w-[22px] h-[22px] rounded-full bg-[#ff5f57] hover:bg-[#ff5f57]/90 transition-colors duration-200 flex items-center justify-center group"
         on:click={handleClose}
       >
-        <X class="w-3 h-3 text-[#1c1c1e] opacity-0 group-hover:opacity-100 transition-opacity duration-200" />
+        <X
+          class="w-3 h-3 text-[#1c1c1e] opacity-0 group-hover:opacity-100 transition-opacity duration-200"
+        />
       </button>
     </div>
 
@@ -383,13 +392,14 @@
             <span>{formatTime(duration)}</span>
           </div>
         </div>
-        
+
         <!-- Hidden Video Element -->
         <!-- svelte-ignore a11y-media-has-caption -->
         <video
           bind:this={videoElement}
           src={video?.file}
           class="hidden"
+          crossorigin="anonymous"
           on:loadedmetadata={handleVideoLoaded}
           on:timeupdate={handleTimeUpdate}
         />
@@ -437,7 +447,9 @@
             <!-- Text List -->
             <div class="flex items-center justify-between">
               <!-- svelte-ignore a11y-label-has-associated-control -->
-              <label class="flex items-center space-x-2 text-sm font-medium text-gray-300">
+              <label
+                class="flex items-center space-x-2 text-sm font-medium text-gray-300"
+              >
                 <Type class="w-4 h-4" />
                 <span>文字列表</span>
               </label>
@@ -451,10 +463,10 @@
             <div class="space-y-1.5">
               {#each texts as text (text.id)}
                 <!-- svelte-ignore a11y-click-events-have-key-events -->
-                <div 
+                <div
                   class="flex items-center space-x-2 p-2 rounded-lg transition-colors duration-200 cursor-pointer"
                   class:bg-[#2c2c2e]={selectedTextId === text.id}
-                  on:click={() => selectedTextId = text.id}
+                  on:click={() => (selectedTextId = text.id)}
                 >
                   <textarea
                     value={text.content}
@@ -474,19 +486,26 @@
               {/each}
             </div>
           </div>
-          
+
           <!-- Text Style Controls -->
           {#if selectedText}
             <div class="w-48 space-y-2">
               <!-- svelte-ignore a11y-label-has-associated-control -->
-              <label class="flex items-center space-x-2 text-sm font-medium text-gray-300">
+              <label
+                class="flex items-center space-x-2 text-sm font-medium text-gray-300"
+              >
                 <Palette class="w-4 h-4" />
                 <span>文字样式</span>
               </label>
-              <div class="space-y-3 p-2.5 rounded-lg bg-[#2c2c2e] border border-gray-800/50">
+              <div
+                class="space-y-3 p-2.5 rounded-lg bg-[#2c2c2e] border border-gray-800/50"
+              >
                 <!-- Font Size -->
                 <div class="space-y-1">
-                  <label for="fontSize" class="text-xs text-gray-400 font-medium">字体大小</label>
+                  <label
+                    for="fontSize"
+                    class="text-xs text-gray-400 font-medium">字体大小</label
+                  >
                   <input
                     id="fontSize"
                     type="range"
@@ -500,7 +519,10 @@
                 <div class="grid grid-cols-2 gap-2">
                   <!-- Text Color -->
                   <div class="space-y-1">
-                    <label for="textColor" class="text-xs text-gray-400 font-medium">文字颜色</label>
+                    <label
+                      for="textColor"
+                      class="text-xs text-gray-400 font-medium">文字颜色</label
+                    >
                     <input
                       id="textColor"
                       type="color"
@@ -510,7 +532,10 @@
                   </div>
                   <!-- Stroke Color -->
                   <div class="space-y-1">
-                    <label for="strokeColor" class="text-xs text-gray-400 font-medium">描边颜色</label>
+                    <label
+                      for="strokeColor"
+                      class="text-xs text-gray-400 font-medium">描边颜色</label
+                    >
                     <input
                       id="strokeColor"
                       type="color"
@@ -527,7 +552,9 @@
     </div>
 
     <!-- Footer -->
-    <div class="px-5 py-3 border-t border-gray-800/50 flex justify-end space-x-3">
+    <div
+      class="px-5 py-3 border-t border-gray-800/50 flex justify-end space-x-3"
+    >
       <button
         class="px-4 py-1.5 text-gray-400 hover:text-white transition-colors duration-200 text-sm font-medium"
         on:click={handleClose}
@@ -566,7 +593,7 @@
     height: 16px;
     width: 16px;
     border-radius: 50%;
-    background: #0A84FF;
+    background: #0a84ff;
     margin-top: -6px;
     cursor: pointer;
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
@@ -604,10 +631,11 @@
   }
 
   textarea {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+      Helvetica, Arial, sans-serif;
   }
 
   textarea::placeholder {
     color: rgba(255, 255, 255, 0.3);
   }
-</style> 
+</style>

@@ -112,10 +112,12 @@ pub async fn get_archive(
 #[tauri::command]
 pub async fn delete_archive(
     state: TauriState<'_, State>,
+    platform: String,
     room_id: u64,
     live_id: String,
 ) -> Result<(), String> {
-    state.recorder_manager.delete_archive(room_id, &live_id).await?;
+    let platform = PlatformType::from_str(&platform).unwrap();
+    state.recorder_manager.delete_archive(platform, room_id, &live_id).await?;
     state
         .db
         .new_message(

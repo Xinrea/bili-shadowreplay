@@ -473,4 +473,8 @@ impl Recorder for DouyinRecorder {
     async fn comments(&self, _live_id: &str) -> Result<Vec<DanmuEntry>, RecorderError> {
         Ok(vec![])
     }
+
+    async fn is_recording(&self, live_id: &str) -> bool {
+        *self.live_id.read().await == live_id && *self.live_status.read().await == LiveStatus::Live
+    }
 }

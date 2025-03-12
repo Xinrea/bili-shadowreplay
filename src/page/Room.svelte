@@ -620,6 +620,7 @@
                             title="删除记录"
                             on:click={() => {
                               invoke("delete_archive", {
+                                platform: archiveRoom.platform,
                                 roomId: archiveRoom.room_id,
                                 liveId: archive.live_id,
                               })

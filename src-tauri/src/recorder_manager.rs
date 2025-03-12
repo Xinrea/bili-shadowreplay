@@ -38,10 +38,11 @@ custom_error! {pub RecorderManagerError
     AlreadyExisted { room_id: u64 } = "Recorder {room_id} already existed",
     NotFound {room_id: u64 } = "Recorder {room_id} not found",
     InvalidPlatformType { platform: String } = "Invalid platform type: {platform}",
-    RecorderError { err: RecorderError } = "Recorder error",
-    IOError {err: std::io::Error } = "IO error",
-    HLSError { err: hyper::Error } = "HLS server error",
-    DatabaseError { err: DatabaseError } = "Database error",
+    RecorderError { err: RecorderError } = "Recorder error: {err}",
+    IOError {err: std::io::Error } = "IO error: {err}",
+    HLSError { err: hyper::Error } = "HLS server error: {err}",
+    DatabaseError { err: DatabaseError } = "Database error: {err}",
+    Recording { live_id: String } = "无法删除正在录制的直播 {live_id}",
 }
 
 impl From<hyper::Error> for RecorderManagerError {
@@ -209,8 +210,16 @@ impl RecorderManager {
         Ok(self.db.get_record(room_id, live_id).await?)
     }
 
-    pub async fn delete_archive(&self, room_id: u64, live_id: &str) -> Result<(), RecorderManagerError> {
+    pub async fn delete_archive(&self, platform: PlatformType, room_id: u64, live_id: &str) -> Result<(), RecorderManagerError> {
         log::info!("Deleting {}:{}", room_id, live_id);
+        // check if this is still recording
+        let recorder_id = format!("{}:{}", platform.as_str(), room_id);
+        if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
+            let recorder = recorder_ref.as_ref();
+            if recorder.is_recording(live_id).await {
+                return Err(RecorderManagerError::Recording { live_id: live_id.to_string() });
+            }
+        }
         Ok(self.db.remove_record(live_id).await?)
     }
 
@@ -258,7 +267,7 @@ impl RecorderManager {
                         let cache_path = config.read().await.cache.clone();
                         let path = req.uri().path();
                         let path_segs: Vec<&str> = path.split('/').collect();
-                        
+
                         // path_segs should be size 5: /{platform}/{room_id}/{live_id}/playlist.m3u8
                         if path_segs.len() != 5 {
                             log::warn!("Invalid request path: {}", path);

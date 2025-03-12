@@ -983,4 +983,8 @@ impl super::Recorder for BiliRecorder {
             storage.get_entries().await
         })
     }
+
+    async fn is_recording(&self, live_id: &str) -> bool {
+        *self.live_id.read().await == live_id && *self.live_status.read().await
+    }
 }

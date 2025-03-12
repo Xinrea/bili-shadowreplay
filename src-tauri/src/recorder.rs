@@ -70,4 +70,5 @@ pub trait Recorder: Send + Sync + 'static {
     async fn m3u8_content(&self, live_id: &str) -> String;
     async fn info(&self) -> RecorderInfo;
     async fn comments(&self, live_id: &str) -> Result<Vec<DanmuEntry>, errors::RecorderError>;
+    async fn is_recording(&self, live_id: &str) -> bool;
 }

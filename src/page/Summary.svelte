@@ -179,6 +179,7 @@
   async function deleteRecord(record: RecordItem) {
     try {
       await invoke("delete_archive", {
+        platform: record.platform,
         roomId: record.room_id,
         liveId: record.live_id,
       });
@@ -193,7 +194,7 @@
         today_record_count--;
       }
     } catch (error) {
-      console.error("Failed to delete record:", error);
+      alert(error);
     }
   }
 

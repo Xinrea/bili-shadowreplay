@@ -29,12 +29,6 @@
   let global_offset = 0;
   let recorders: RecorderInfo[] = [];
 
-  update_stream_list();
-
-  setInterval(async () => {
-    await update_stream_list();
-  }, 5 * 1000);
-
   // TODO get custom tag from shaka player instead of manual parsing
   async function meta_parse() {
     fetch(
@@ -68,6 +62,14 @@
   }
 
   async function init() {
+    await meta_parse();
+
+    update_stream_list();
+
+    setInterval(async () => {
+      await update_stream_list();
+    }, 5 * 1000);
+
     video = document.getElementById("video") as HTMLVideoElement;
     const ui = video["ui"];
     const controls = ui.getControls();
@@ -173,9 +175,7 @@
         if (isLive() && get_total() - video.currentTime <= 5) {
           return;
         }
-        const cur = Math.floor(
-          (video.currentTime + global_offset + ts) * 1000
-        );
+        const cur = Math.floor((video.currentTime + global_offset + ts) * 1000);
 
         let danmus = danmu_records.filter((v) => {
           return v.ts >= cur - 1000 && v.ts < cur;
@@ -198,7 +198,7 @@
         // get accounts from tauri
         const account_info = (await invoke("get_accounts")) as AccountInfo;
         account_info.accounts.forEach((account) => {
-          if (account.platform !== 'bilibili') {
+          if (account.platform !== "bilibili") {
             return;
           }
           const option = document.createElement("option");
@@ -651,8 +651,6 @@
     }
     requestAnimationFrame(updateSeekbar);
   }
-
-  meta_parse();
 
   // receive tauri emit
   document.addEventListener("shaka-ui-loaded", init);

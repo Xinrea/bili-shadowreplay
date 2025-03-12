@@ -9,7 +9,7 @@
         "width": 1300,
         "height": 600,
         "transparent": false,
-        "decorations": false,
+        "decorations": true,
         "theme": "Light"
       }
     ]

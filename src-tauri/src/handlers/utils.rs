@@ -7,7 +7,7 @@ use tokio::io::AsyncWriteExt;
 
 use crate::recorder::PlatformType;
 use crate::state::State;
- 
+
 pub fn copy_dir_all(
     src: impl AsRef<std::path::Path>,
     dst: impl AsRef<std::path::Path>,
@@ -68,7 +68,12 @@ pub fn show_in_folder(path: String) {
 
     #[cfg(target_os = "macos")]
     {
-        Command::new("open").args(["-R", &path]).spawn().unwrap().wait().unwrap();
+        Command::new("open")
+            .args(["-R", &path])
+            .spawn()
+            .unwrap()
+            .wait()
+            .unwrap();
     }
 }
 
@@ -111,7 +116,6 @@ pub async fn get_disk_info(state: tauri::State<'_, State>) -> Result<DiskInfo, (
     Ok(disk_info)
 }
 
-
 #[tauri::command]
 pub async fn export_to_file(
     _state: tauri::State<'_, State>,
@@ -137,9 +141,13 @@ pub async fn export_to_file(
     Ok(())
 }
 
-
 #[tauri::command]
-pub async fn open_live(state: tauri::State<'_, State>, platform: String, room_id: u64, live_id: String) -> Result<(), String> {
+pub async fn open_live(
+    state: tauri::State<'_, State>,
+    platform: String,
+    room_id: u64,
+    live_id: String,
+) -> Result<(), String> {
     log::info!("Open player window: {} {}", room_id, live_id);
     let addr = state.recorder_manager.get_hls_server_addr().await.unwrap();
     let platform = PlatformType::from_str(&platform).unwrap();
@@ -178,23 +186,10 @@ pub async fn open_live(state: tauri::State<'_, State>, platform: String, room_id
         radius: None,
         color: None,
     });
-    #[cfg(target_os = "macos")]
-    {
-        if let Err(e) = builder.decorations(true).build() {
-            log::error!("live window build failed: {}", e);
-        }
+
+    if let Err(e) = builder.decorations(true).build() {
+        log::error!("live window build failed: {}", e);
     }
-    #[cfg(target_os = "windows")]
-    {
-        if let Err(e) = builder.decorations(false).transparent(true).build() {
-            log::error!("live window build failed: {}", e);
-        }
-    }
-    #[cfg(target_os = "linux")]
-    {
-        if let Err(e) = builder.decorations(true).build() {
-            log::error!("live window build failed: {}", e);
-        }
-    }
+
     Ok(())
 }

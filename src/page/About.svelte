@@ -19,28 +19,40 @@
     .then((response) => response.json())
     .then((data) => {
       latest_version = data[0].tag_name;
-      releases = data.slice(0, 3).map(release => ({
+      releases = data.slice(0, 3).map((release) => ({
         version: release.tag_name,
         date: new Date(release.published_at).toLocaleDateString(),
-        description: release.body
+        description: release.body,
       }));
     });
 
   function formatReleaseNotes(notes) {
     if (!notes) return [];
-    return notes.split('\n')
-      .filter(line => line.trim().startsWith('*') || line.trim().startsWith('-'))
-      .map(line => {
-        line = line.trim().replace(/^[*-]\s*/, '');
+    return notes
+      .split("\n")
+      .filter(
+        (line) => line.trim().startsWith("*") || line.trim().startsWith("-")
+      )
+      .map((line) => {
+        line = line.trim().replace(/^[*-]\s*/, "");
         // Remove commit hash at the end (- hash or hash)
-        line = line.replace(/\s*-\s*[a-f0-9]{40}$/, '').replace(/\s+[a-f0-9]{40}$/, '');
+        line = line
+          .replace(/\s*-\s*[a-f0-9]{40}$/, "")
+          .replace(/\s+[a-f0-9]{40}$/, "");
         return line;
       })
-      .filter(line => line.length > 0);
+      .filter((line) => line.length > 0);
   }
 
   function toggleDonateModal() {
     showDonateModal = !showDonateModal;
+  }
+
+  function handleModalClickOutside(event) {
+    const modal = document.querySelector(".mac-modal");
+    if (modal && !modal.contains(event.target)) {
+      showDonateModal = false;
+    }
   }
 </script>
 
@@ -125,7 +137,11 @@
         class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700"
       >
         {#each releases as release}
-          <div class="p-4 {release !== releases[releases.length - 1] ? 'border-b border-gray-200 dark:border-gray-700' : ''}">
+          <div
+            class="p-4 {release !== releases[releases.length - 1]
+              ? 'border-b border-gray-200 dark:border-gray-700'
+              : ''}"
+          >
             <div class="flex items-center justify-between">
               <h3 class="text-sm font-medium text-gray-900 dark:text-white">
                 Version {release.version}
@@ -150,11 +166,18 @@
 </div>
 
 {#if showDonateModal}
-  <div class="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center" style="position: absolute; min-height: 100%; width: 100%; top: 0; left: 0;">
-    <div class="bg-white dark:bg-[#3c3c3e] rounded-lg p-6 max-w-md w-full mx-4">
+  <div
+    class="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center"
+    style="position: absolute; min-height: 100%; width: 100%; top: 0; left: 0;"
+  >
+    <div
+      class="bg-white dark:bg-[#3c3c3e] rounded-lg p-6 max-w-md w-full mx-4 mac-modal"
+    >
       <div class="flex justify-between items-center mb-4">
-        <h3 class="text-lg font-medium text-gray-900 dark:text-white">打赏支持</h3>
-        <button 
+        <h3 class="text-lg font-medium text-gray-900 dark:text-white">
+          打赏支持
+        </h3>
+        <button
           class="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
           on:click={toggleDonateModal}
         >
@@ -162,7 +185,7 @@
         </button>
       </div>
       <div class="flex justify-center">
-        <img 
+        <img
           src="/imgs/donate.png"
           class="max-w-full h-auto rounded-lg"
           alt="打赏二维码"
@@ -174,3 +197,5 @@
     </div>
   </div>
 {/if}
+
+<svelte:window on:mousedown={handleModalClickOutside} />

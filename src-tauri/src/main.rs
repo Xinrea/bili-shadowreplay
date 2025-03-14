@@ -3,12 +3,12 @@
 
 mod config;
 mod database;
+mod ffmpeg;
 mod handlers;
 mod recorder;
 mod recorder_manager;
 mod state;
 mod tray;
-mod ffmpeg;
 
 use config::Config;
 use database::Database;
@@ -39,11 +39,10 @@ fn setup_logging() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn get_migrations() -> Vec<Migration> {
-    vec![
-        Migration {
-            version: 1,
-            description: "create_initial_tables",
-            sql: r#"
+    vec![Migration {
+        version: 1,
+        description: "create_initial_tables",
+        sql: r#"
                 CREATE TABLE accounts (uid INTEGER, platform TEXT NOT NULL DEFAULT 'bilibili', name TEXT, avatar TEXT, csrf TEXT, cookies TEXT, created_at TEXT, PRIMARY KEY(uid, platform));
                 CREATE TABLE recorders (room_id INTEGER PRIMARY KEY, platform TEXT NOT NULL DEFAULT 'bilibili', created_at TEXT);
                 CREATE TABLE records (live_id TEXT PRIMARY KEY, platform TEXT NOT NULL DEFAULT 'bilibili', room_id INTEGER, title TEXT, length INTEGER, size INTEGER, cover BLOB, created_at TEXT);
@@ -51,9 +50,8 @@ fn get_migrations() -> Vec<Migration> {
                 CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, read INTEGER, created_at TEXT);
                 CREATE TABLE videos (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER, cover TEXT, file TEXT, length INTEGER, size INTEGER, status INTEGER, bvid TEXT, title TEXT, desc TEXT, tags TEXT, area INTEGER, created_at TEXT);
                 "#,
-            kind: MigrationKind::Up,
-        }
-    ]
+        kind: MigrationKind::Up,
+    }]
 }
 
 async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::Error>> {
@@ -65,7 +63,11 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     let db_clone = db.clone();
     let client_clone = client.clone();
 
-    let recorder_manager = Arc::new(RecorderManager::new(app.handle().clone(), db.clone(), config.clone()));
+    let recorder_manager = Arc::new(RecorderManager::new(
+        app.handle().clone(),
+        db.clone(),
+        config.clone(),
+    ));
     let recorder_manager_clone = recorder_manager.clone();
 
     let _ = recorder_manager_clone.run_hls().await;
@@ -75,7 +77,6 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         tauri_plugin_sql::DbPool::Sqlite(pool) => Some(pool),
     };
     db_clone.set(sqlite_pool.unwrap().clone()).await;
-    let initial_rooms = db_clone.get_recorders().await?;
     let mut primary_uid = config_clone.read().await.primary_uid;
     let accounts = db_clone.get_accounts().await?;
     if accounts.is_empty() {
@@ -143,21 +144,35 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         }
     }
 
-    if let Ok(account) = db_clone.get_account(&primary_account.platform, primary_uid).await {
-        for room in &initial_rooms {
-            let platform = PlatformType::from_str(&room.platform).unwrap();
-            if platform != PlatformType::BiliBili {
-                continue;
-            }
-            if let Err(e) = recorder_manager_clone
-                .add_recorder(&webid, &account, platform, room.room_id)
-                .await
-            {
-                log::error!("error when adding initial rooms: {}", e);
-            }
+    init_rooms(db_clone, recorder_manager_clone, &primary_account, &webid).await;
+
+    Ok(State {
+        db,
+        client,
+        config,
+        recorder_manager,
+        app_handle: app.handle().clone(),
+    })
+}
+
+async fn init_rooms(
+    db_clone: Arc<Database>,
+    recorder_manager_clone: Arc<RecorderManager>,
+    primary_account: &database::account::AccountRow,
+    webid: &str,
+) {
+    let initial_rooms = db_clone.get_recorders().await.unwrap();
+    for room in &initial_rooms {
+        let platform = PlatformType::from_str(&room.platform).unwrap();
+        if platform != PlatformType::BiliBili {
+            continue;
         }
-    } else {
-        log::warn!("No available account found for bilibili");
+        if let Err(e) = recorder_manager_clone
+            .add_recorder(webid, &primary_account, platform, room.room_id)
+            .await
+        {
+            log::error!("error when adding initial rooms: {}", e);
+        }
     }
 
     match db_clone.get_account_by_platform("douyin").await {
@@ -167,7 +182,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
                     continue;
                 }
                 if let Err(e) = recorder_manager_clone
-                    .add_recorder(&webid, &account, PlatformType::Douyin, room.room_id)
+                    .add_recorder(webid, &account, PlatformType::Douyin, room.room_id)
                     .await
                 {
                     log::error!("error when adding initial rooms: {}", e);
@@ -178,14 +193,6 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
             log::warn!("No available douyin account found: {}", e);
         }
     }
-
-    Ok(State {
-        db,
-        client,
-        config,
-        recorder_manager,
-        app_handle: app.handle().clone(),
-    })
 }
 
 fn setup_plugins(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {

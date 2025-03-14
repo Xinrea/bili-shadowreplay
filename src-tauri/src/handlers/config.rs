@@ -8,13 +8,17 @@ pub async fn get_config(state: TauriState<'_, State>) -> Result<Config, ()> {
 }
 
 #[tauri::command]
-pub async fn set_cache_path(state: TauriState<'_, State>, cache_path: String) -> Result<(), String> {
+pub async fn set_cache_path(
+    state: TauriState<'_, State>,
+    cache_path: String,
+) -> Result<(), String> {
     let old_cache_path = state.config.read().await.cache.clone();
+    // TODO only pause recorders
+    // stop and clear all recorders
+    state.recorder_manager.stop_all().await;
     // first switch to new cache
     state.config.write().await.set_cache_path(&cache_path);
     log::info!("Cache path changed: {}", cache_path);
-    // wait 2 seconds for cache switch
-    std::thread::sleep(std::time::Duration::from_secs(2));
     // Copy old cache to new cache
     log::info!("Start copy old cache to new cache");
     state
@@ -29,6 +33,18 @@ pub async fn set_cache_path(state: TauriState<'_, State>, cache_path: String) ->
     }
     log::info!("Copy old cache to new cache done");
     state.db.new_message("缓存目录切换", "缓存切换完成").await?;
+    // start all recorders
+    let primary_account = state
+        .db
+        .get_account("bilibili", state.config.read().await.primary_uid)
+        .await?;
+    crate::init_rooms(
+        state.db.clone(),
+        state.recorder_manager.clone(),
+        &primary_account,
+        &state.config.read().await.webid,
+    )
+    .await;
     // Remove old cache
     if old_cache_path != cache_path {
         if let Err(e) = std::fs::remove_dir_all(old_cache_path) {
@@ -69,4 +85,4 @@ pub async fn update_notify(
     state.config.write().await.post_notify = post_notify;
     state.config.write().await.save();
     Ok(())
-} 
+}

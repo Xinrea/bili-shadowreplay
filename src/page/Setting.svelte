@@ -3,7 +3,7 @@
   import { open } from "@tauri-apps/plugin-dialog";
 
   import type { Config } from "../lib/interface";
-  import { Bell, HardDrive } from "lucide-svelte";
+  import { Bell, HardDrive, AlertTriangle } from "lucide-svelte";
 
   let setting_model: Config = {
     cache: "",
@@ -15,6 +15,8 @@
     post_notify: true,
     auto_cleanup: true,
   };
+
+  let showModal = false;
 
   async function get_config() {
     let config: Config = await invoke("get_config");
@@ -36,6 +38,31 @@
     });
   }
 
+  async function handleCacheChange() {
+    showModal = true;
+  }
+
+  async function handleOutputChange() {
+    const new_folder = await browse_folder();
+    if (new_folder) {
+      setting_model.output = new_folder;
+      await invoke("set_output_path", {
+        outputPath: setting_model.output,
+      });
+    }
+  }
+
+  async function confirmChange() {
+    showModal = false;
+    const new_folder = await browse_folder();
+    if (new_folder) {
+      setting_model.cache = new_folder;
+      await invoke("set_cache_path", {
+        cachePath: setting_model.cache,
+      });
+    }
+  }
+
   get_config();
 </script>
 
@@ -53,7 +80,6 @@
 
       <!-- Settings Sections -->
       <div class="space-y-6 pb-6">
-
         <!-- Storage Settings -->
         <div class="space-y-4">
           <h2
@@ -78,15 +104,7 @@
                 </div>
                 <button
                   class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
-                  on:click={async () => {
-                    const new_folder = await browse_folder();
-                    if (new_folder) {
-                      setting_model.cache = new_folder;
-                      await invoke("set_cache_path", {
-                        cachePath: setting_model.cache,
-                      });
-                    }
-                  }}
+                  on:click={handleCacheChange}
                 >
                   变更
                 </button>
@@ -104,15 +122,7 @@
                 </div>
                 <button
                   class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
-                  on:click={async () => {
-                    const new_folder = await browse_folder();
-                    if (new_folder) {
-                      setting_model.output = new_folder;
-                      await invoke("set_output_path", {
-                        outputPath: setting_model.output,
-                      });
-                    }
-                  }}
+                  on:click={handleOutputChange}
                 >
                   变更
                 </button>
@@ -231,3 +241,44 @@
     </div>
   </div>
 </div>
+
+<!-- Modal -->
+{#if showModal}
+  <div
+    class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+  >
+    <div class="bg-white dark:bg-[#2c2c2e] rounded-xl p-6 max-w-md w-full mx-4">
+      <div class="flex items-start space-x-3 mb-4">
+        <AlertTriangle class="w-6 h-6 text-yellow-500 flex-shrink-0" />
+        <div>
+          <h3 class="text-lg font-medium text-gray-900 dark:text-white">
+            确认变更
+          </h3>
+          <p class="text-gray-600 dark:text-gray-400 mt-2">
+            根据文件大小，可能需要耗时较长时间，迁移期间直播间会暂时移除，迁移完成后直播间会自动恢复。
+          </p>
+          <p class="text-gray-600 dark:text-gray-400 mt-2 font-bold">
+            迁移期间请不要关闭程序，且不要在迁移期间再次更改目录！
+          </p>
+          <p class="text-gray-600 dark:text-gray-400 mt-2">
+            确认要进行变更吗？
+          </p>
+        </div>
+      </div>
+      <div class="flex justify-end space-x-4">
+        <button
+          class="px-4 py-2 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+          on:click={() => (showModal = false)}
+        >
+          取消
+        </button>
+        <button
+          class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+          on:click={confirmChange}
+        >
+          确认
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}

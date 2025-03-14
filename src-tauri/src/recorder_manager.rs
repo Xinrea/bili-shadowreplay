@@ -1,20 +1,20 @@
+use crate::config::Config;
 use crate::database::DatabaseError;
 use crate::database::{account::AccountRow, record::RecordRow, Database};
+use crate::recorder::bilibili::BiliRecorder;
 use crate::recorder::danmu::DanmuEntry;
 use crate::recorder::douyin::DouyinRecorder;
 use crate::recorder::errors::RecorderError;
-use crate::recorder::bilibili::BiliRecorder;
-use crate::config::Config;
+use crate::recorder::PlatformType;
 use crate::recorder::Recorder;
 use crate::recorder::RecorderInfo;
-use crate::recorder::PlatformType;
 use custom_error::custom_error;
-use std::collections::HashMap;
 use hyper::Method;
 use hyper::{
     service::{make_service_fn, service_fn},
     Body, Request, Response, Server,
 };
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::{convert::Infallible, sync::Arc};
 use tauri::AppHandle;
@@ -76,7 +76,11 @@ impl From<RecorderManagerError> for String {
 }
 
 impl RecorderManager {
-    pub fn new(app_handle: AppHandle, db: Arc<Database>, config: Arc<RwLock<Config>>) -> RecorderManager {
+    pub fn new(
+        app_handle: AppHandle,
+        db: Arc<Database>,
+        config: Arc<RwLock<Config>>,
+    ) -> RecorderManager {
         RecorderManager {
             app_handle,
             db,
@@ -108,49 +112,77 @@ impl RecorderManager {
         }
 
         let recorder: Box<dyn Recorder + 'static> = match platform {
-            PlatformType::BiliBili => Box::new(BiliRecorder::new(
-                self.app_handle.clone(),
-                webid,
-                &self.db,
-                room_id,
-                account,
-                self.config.clone(),
-            ).await?),
+            PlatformType::BiliBili => Box::new(
+                BiliRecorder::new(
+                    self.app_handle.clone(),
+                    webid,
+                    &self.db,
+                    room_id,
+                    account,
+                    self.config.clone(),
+                )
+                .await?,
+            ),
             PlatformType::Douyin => Box::new(DouyinRecorder::new(
                 room_id,
                 self.config.clone(),
                 account,
                 &self.db,
             )),
-            _ => return Err(RecorderManagerError::InvalidPlatformType { platform: platform.as_str().to_string() }),
+            _ => {
+                return Err(RecorderManagerError::InvalidPlatformType {
+                    platform: platform.as_str().to_string(),
+                })
+            }
         };
-        self.recorders.write().await.insert(recorder_id.clone(), recorder);
+        self.recorders
+            .write()
+            .await
+            .insert(recorder_id.clone(), recorder);
         if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
             recorder_ref.run().await;
         }
         Ok(())
     }
 
-    pub async fn remove_recorder(&self, platform: PlatformType, room_id: u64) -> Result<(), RecorderManagerError> {
+    pub async fn stop_all(&self) {
+        for recorder_ref in self.recorders.read().await.values() {
+            recorder_ref.stop().await;
+        }
+
+        // remove all recorders
+        self.recorders.write().await.clear();
+    }
+
+    pub async fn remove_recorder(
+        &self,
+        platform: PlatformType,
+        room_id: u64,
+    ) -> Result<(), RecorderManagerError> {
         // check recorder exists
         let recorder_id = format!("{}:{}", platform.as_str(), room_id);
         if !self.recorders.read().await.contains_key(&recorder_id) {
             return Err(RecorderManagerError::NotFound { room_id });
         }
-        
+
         // stop recorder
         if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
             recorder_ref.stop().await;
         }
-        
+
         // remove recorder
         self.recorders.write().await.remove(&recorder_id);
-        
+
         // remove related cache folder
-        let cache_folder = format!("{}/{}/{}", self.config.read().await.cache, platform.as_str(), room_id);
+        let cache_folder = format!(
+            "{}/{}/{}",
+            self.config.read().await.cache,
+            platform.as_str(),
+            room_id
+        );
         let _ = tokio::fs::remove_dir_all(cache_folder).await;
         log::info!("Recorder {} cache folder removed", room_id);
-        
+
         Ok(())
     }
 
@@ -170,7 +202,9 @@ impl RecorderManager {
             return Err(RecorderManagerError::NotFound { room_id });
         }
         let recorder = recorders.get(&recorder_id).unwrap();
-        Ok(recorder.clip_range(live_id, start, end, output_path).await?)
+        Ok(recorder
+            .clip_range(live_id, start, end, output_path)
+            .await?)
     }
 
     pub async fn get_recorder_list(&self) -> RecorderList {
@@ -188,7 +222,11 @@ impl RecorderManager {
         summary
     }
 
-    pub async fn get_recorder_info(&self, platform: PlatformType, room_id: u64) -> Option<RecorderInfo> {
+    pub async fn get_recorder_info(
+        &self,
+        platform: PlatformType,
+        room_id: u64,
+    ) -> Option<RecorderInfo> {
         let recorder_id = format!("{}:{}", platform.as_str(), room_id);
         if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
             let room_info = recorder_ref.info().await;
@@ -210,14 +248,21 @@ impl RecorderManager {
         Ok(self.db.get_record(room_id, live_id).await?)
     }
 
-    pub async fn delete_archive(&self, platform: PlatformType, room_id: u64, live_id: &str) -> Result<(), RecorderManagerError> {
+    pub async fn delete_archive(
+        &self,
+        platform: PlatformType,
+        room_id: u64,
+        live_id: &str,
+    ) -> Result<(), RecorderManagerError> {
         log::info!("Deleting {}:{}", room_id, live_id);
         // check if this is still recording
         let recorder_id = format!("{}:{}", platform.as_str(), room_id);
         if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
             let recorder = recorder_ref.as_ref();
             if recorder.is_recording(live_id).await {
-                return Err(RecorderManagerError::Recording { live_id: live_id.to_string() });
+                return Err(RecorderManagerError::Recording {
+                    live_id: live_id.to_string(),
+                });
             }
         }
         Ok(self.db.remove_record(live_id).await?)

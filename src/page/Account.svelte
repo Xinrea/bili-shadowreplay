@@ -82,7 +82,10 @@
     );
     if (qr_status.code == 0) {
       clearInterval(check_interval);
-      await invoke("add_account", { cookies: qr_status.cookies, platform: selectedPlatform });
+      await invoke("add_account", {
+        cookies: qr_status.cookies,
+        platform: selectedPlatform,
+      });
       await update_accounts();
       addModal = false;
     }
@@ -94,7 +97,10 @@
     }
     try {
       console.log("add_cookie", cookie_str, selectedPlatform);
-      await invoke("add_account", { cookies: cookie_str, platform: selectedPlatform });
+      await invoke("add_account", {
+        cookies: cookie_str,
+        platform: selectedPlatform,
+      });
       await update_accounts();
       cookie_str = "";
       addModal = false;
@@ -140,7 +146,7 @@
     <!-- Account List -->
     <div class="space-y-4">
       <!-- Online Account -->
-      {#each account_info.accounts.sort((a, b) => b.uid === account_info.primary_uid ? 1 : a.uid === account_info.primary_uid ? -1 : 0) as account (account.uid)}
+      {#each account_info.accounts.sort( (a, b) => (b.uid === account_info.primary_uid ? 1 : a.uid === account_info.primary_uid ? -1 : 0) ) as account (account.uid)}
         <div
           class="p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 hover:border-blue-500 dark:hover:border-blue-400 transition-colors"
         >
@@ -155,7 +161,9 @@
               <div>
                 <div class="flex items-center space-x-2">
                   <h3 class="font-medium text-gray-900 dark:text-white">
-                    {account.platform === "bilibili" ? account.name : "抖音账号" + account.uid}
+                    {account.platform === "bilibili"
+                      ? account.name
+                      : "抖音账号" + account.uid}
                   </h3>
                   {#if account.uid == account_info.primary_uid}
                     <span
@@ -209,7 +217,10 @@
                         ? ''
                         : 'rounded-t-lg'} rounded-b-lg"
                       on:click={async () => {
-                        await invoke("remove_account", { uid: account.uid });
+                        await invoke("remove_account", {
+                          platform: account.platform,
+                          uid: account.uid,
+                        });
                         await update_accounts();
                         activeDropdown = null;
                       }}
@@ -273,25 +284,34 @@
       <div class="p-6 space-y-6">
         <!-- Platform Selection -->
         <div class="space-y-2">
-          <label for="platform" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+          <label
+            for="platform"
+            class="block text-sm font-medium text-gray-700 dark:text-gray-300"
+          >
             平台
           </label>
           <div class="flex p-0.5 bg-[#f5f5f7] dark:bg-[#1c1c1e] rounded-lg">
             <button
-              class="flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform === 'bilibili' ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
+              class="flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform ===
+              'bilibili'
+                ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white'
+                : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
               on:click={() => {
-                selectedPlatform = 'bilibili';
-                activeTab = 'qr';
+                selectedPlatform = "bilibili";
+                activeTab = "qr";
                 requestAnimationFrame(handle_qr);
               }}
             >
               哔哩哔哩
             </button>
             <button
-              class="flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform === 'douyin' ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
+              class="flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform ===
+              'douyin'
+                ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white'
+                : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
               on:click={() => {
-                selectedPlatform = 'douyin';
-                activeTab = 'manual';
+                selectedPlatform = "douyin";
+                activeTab = "manual";
               }}
             >
               抖音
@@ -300,37 +320,37 @@
         </div>
 
         <!-- Login Methods (Only show for Bilibili) -->
-        {#if selectedPlatform === 'bilibili'}
-        <div class="flex rounded-lg bg-[#f5f5f7] dark:bg-[#1c1c1e] p-1">
-          <button
-            class="flex-1 px-4 py-1.5 text-sm rounded-md transition-colors {activeTab ===
-            'qr'
-              ? 'bg-white dark:bg-[#3c3c3e] shadow-sm font-medium'
-              : 'text-gray-600 dark:text-gray-400'}"
-            on:click={() => {
-              activeTab = "qr";
-              requestAnimationFrame(handle_qr);
-            }}
-          >
-            扫码登录
-          </button>
-          <button
-            class="flex-1 px-4 py-1.5 text-sm rounded-md transition-colors {activeTab ===
-            'manual'
-              ? 'bg-white dark:bg-[#3c3c3e] shadow-sm font-medium'
-              : 'text-gray-600 dark:text-gray-400'}"
-            on:click={() => {
-              activeTab = "manual";
-            }}
-          >
-            手动输入
-          </button>
-        </div>
+        {#if selectedPlatform === "bilibili"}
+          <div class="flex rounded-lg bg-[#f5f5f7] dark:bg-[#1c1c1e] p-1">
+            <button
+              class="flex-1 px-4 py-1.5 text-sm rounded-md transition-colors {activeTab ===
+              'qr'
+                ? 'bg-white dark:bg-[#3c3c3e] shadow-sm font-medium'
+                : 'text-gray-600 dark:text-gray-400'}"
+              on:click={() => {
+                activeTab = "qr";
+                requestAnimationFrame(handle_qr);
+              }}
+            >
+              扫码登录
+            </button>
+            <button
+              class="flex-1 px-4 py-1.5 text-sm rounded-md transition-colors {activeTab ===
+              'manual'
+                ? 'bg-white dark:bg-[#3c3c3e] shadow-sm font-medium'
+                : 'text-gray-600 dark:text-gray-400'}"
+              on:click={() => {
+                activeTab = "manual";
+              }}
+            >
+              手动输入
+            </button>
+          </div>
         {/if}
 
         <!-- Tab Content -->
         <div class="space-y-4">
-          {#if selectedPlatform === 'bilibili' && activeTab === "qr"}
+          {#if selectedPlatform === "bilibili" && activeTab === "qr"}
             <div class="flex flex-col items-center space-y-4">
               <div class="bg-white p-4 rounded-lg">
                 <canvas id="qr" />
@@ -345,7 +365,9 @@
                 bind:value={cookie_str}
                 rows="4"
                 class="w-full px-3 py-2 bg-[#f5f5f7] dark:bg-[#1c1c1e] border-0 rounded-lg resize-none focus:ring-2 focus:ring-blue-500"
-                placeholder={selectedPlatform === 'bilibili' ? "请粘贴 BiliBili 账号的 Cookie" : "请粘贴抖音账号的 Cookie"}
+                placeholder={selectedPlatform === "bilibili"
+                  ? "请粘贴 BiliBili 账号的 Cookie"
+                  : "请粘贴抖音账号的 Cookie"}
               />
               <div class="flex justify-end">
                 <button

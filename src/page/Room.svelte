@@ -7,7 +7,16 @@
   import type { RecorderList } from "../lib/interface";
   import Image from "../lib/Image.svelte";
   import type { RecordItem } from "../lib/db";
-  import { Ellipsis, Play, Plus, Scissors, Search, Trash2, X, History } from "lucide-svelte";
+  import {
+    Ellipsis,
+    Play,
+    Plus,
+    Scissors,
+    Search,
+    Trash2,
+    X,
+    History,
+  } from "lucide-svelte";
   import BilibiliIcon from "../lib/BilibiliIcon.svelte";
   import DouyinIcon from "../lib/DouyinIcon.svelte";
 
@@ -130,7 +139,9 @@
       </div>
       <div class="flex items-center space-x-3">
         <div class="relative">
-          <Search class="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 dark:text-gray-500" />
+          <Search
+            class="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 dark:text-gray-500"
+          />
           <input
             type="text"
             bind:value={searchQuery}
@@ -192,9 +203,9 @@
               <div class="flex items-start justify-between">
                 <div>
                   <div class="flex items-center space-x-2">
-                    {#if room.platform === 'bilibili'}
+                    {#if room.platform === "bilibili"}
                       <BilibiliIcon class="w-4 h-4" />
-                    {:else if room.platform === 'douyin'}
+                    {:else if room.platform === "douyin"}
                       <DouyinIcon class="w-4 h-4" />
                     {/if}
                     <h3 class="font-medium text-gray-900 dark:text-white">
@@ -210,14 +221,15 @@
                   <button
                     class="flex items-center space-x-2 p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
                     on:click={() => {
-                      if (room.platform === 'bilibili') {
+                      if (room.platform === "bilibili") {
                         open(
                           "https://space.bilibili.com/" + room.user_info.user_id
                         );
-                      } else if (room.platform === 'douyin') {
+                      } else if (room.platform === "douyin") {
                         console.log(room.user_info);
                         open(
-                          "https://www.douyin.com/user/" + room.user_info.user_id
+                          "https://www.douyin.com/user/" +
+                            room.user_info.user_id
                         );
                       }
                     }}
@@ -309,9 +321,9 @@
               <div class="flex items-start justify-between">
                 <div>
                   <div class="flex items-center space-x-2">
-                    {#if room.platform === 'bilibili'}
+                    {#if room.platform === "bilibili"}
                       <BilibiliIcon class="w-4 h-4" />
-                    {:else if room.platform === 'douyin'}
+                    {:else if room.platform === "douyin"}
                       <DouyinIcon class="w-4 h-4" />
                     {/if}
                     <h3 class="font-medium text-gray-900 dark:text-white">
@@ -327,14 +339,15 @@
                   <button
                     class="flex items-center space-x-2 p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
                     on:click={() => {
-                      if (room.platform === 'bilibili') {
+                      if (room.platform === "bilibili") {
                         open(
                           "https://space.bilibili.com/" + room.user_info.user_id
                         );
-                      } else if (room.platform === 'douyin') {
+                      } else if (room.platform === "douyin") {
                         console.log(room.user_info);
                         open(
-                          "https://www.douyin.com/user/" + room.user_info.user_id
+                          "https://www.douyin.com/user/" +
+                            room.user_info.user_id
                         );
                       }
                     }}
@@ -385,268 +398,319 @@
     </div>
   </div>
 </div>
-  {#if deleteModal}
+{#if deleteModal}
+  <div
+    class="fixed inset-0 bg-black/20 dark:bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center"
+    transition:fade={{ duration: 200 }}
+  >
     <div
-      class="fixed inset-0 bg-black/20 dark:bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center"
-      transition:fade={{ duration: 200 }}
+      class="mac-modal w-[320px] bg-white dark:bg-[#323234] rounded-xl shadow-xl overflow-hidden"
+      transition:scale={{ duration: 150, start: 0.95 }}
     >
-      <div
-        class="mac-modal w-[320px] bg-white dark:bg-[#323234] rounded-xl shadow-xl overflow-hidden"
-        transition:scale={{ duration: 150, start: 0.95 }}
-      >
-        <div class="p-6 space-y-4">
-          <div class="text-center space-y-2">
-            <h3 class="text-base font-medium text-gray-900 dark:text-white">
-              移除直播间
-            </h3>
-            <p class="text-sm text-gray-500 dark:text-gray-400">
-              此操作将移除所有相关的录制记录
-            </p>
+      <div class="p-6 space-y-4">
+        <div class="text-center space-y-2">
+          <h3 class="text-base font-medium text-gray-900 dark:text-white">
+            移除直播间
+          </h3>
+          <p class="text-sm text-gray-500 dark:text-gray-400">
+            此操作将移除所有相关的录制记录
+          </p>
+        </div>
+        <div class="flex justify-center space-x-3">
+          <button
+            class="w-24 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-[#f5f5f7] dark:hover:bg-[#3a3a3c] rounded-lg transition-colors"
+            on:click={() => {
+              deleteModal = false;
+            }}
+          >
+            取消
+          </button>
+          <button
+            class="w-24 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors"
+            on:click={async () => {
+              await invoke("remove_recorder", {
+                roomId: deleteRoom.room_id,
+                platform: deleteRoom.platform,
+              });
+              deleteModal = false;
+            }}
+          >
+            移除
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if addModal}
+  <div
+    class="fixed inset-0 bg-black/20 dark:bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center"
+    transition:fade={{ duration: 200 }}
+  >
+    <div
+      class="mac-modal w-[400px] bg-white dark:bg-[#323234] rounded-xl shadow-xl overflow-hidden"
+      transition:scale={{ duration: 150, start: 0.95 }}
+    >
+      <!-- Header -->
+      <div class="px-6 py-4 border-b border-gray-200 dark:border-gray-700/50">
+        <h2 class="text-base font-medium text-gray-900 dark:text-white">
+          添加直播间
+        </h2>
+      </div>
+
+      <div class="p-6 space-y-6">
+        <div class="space-y-4">
+          <div class="space-y-2">
+            <label
+              for="platform"
+              class="block text-sm font-medium text-gray-700 dark:text-gray-300"
+            >
+              平台
+            </label>
+            <div class="flex p-0.5 bg-[#f5f5f7] dark:bg-[#1c1c1e] rounded-lg">
+              <button
+                class="flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform ===
+                'bilibili'
+                  ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white'
+                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
+                on:click={() => (selectedPlatform = "bilibili")}
+              >
+                哔哩哔哩
+              </button>
+              <button
+                class="flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform ===
+                'douyin'
+                  ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white'
+                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
+                on:click={() => (selectedPlatform = "douyin")}
+              >
+                抖音
+              </button>
+            </div>
           </div>
-          <div class="flex justify-center space-x-3">
+
+          <div class="space-y-2">
+            <label
+              for="room_id"
+              class="block text-sm font-medium text-gray-700 dark:text-gray-300"
+            >
+              {selectedPlatform === "bilibili" ? "房间号" : "直播间ID"}
+            </label>
+            <input
+              id="room_id"
+              type="text"
+              bind:value={addRoom}
+              class="w-full px-3 py-2 bg-[#f5f5f7] dark:bg-[#1c1c1e] border-0 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400"
+              placeholder={selectedPlatform === "bilibili"
+                ? "请输入直播间房间号"
+                : "请输入抖音直播间ID"}
+              on:change={() => {
+                if (!addRoom) {
+                  addErrorMsg = "";
+                  addValid = false;
+                  return;
+                }
+                const room_id = Number(addRoom);
+                if (Number.isInteger(room_id) && room_id > 0) {
+                  addErrorMsg = "";
+                  addValid = true;
+                } else {
+                  addErrorMsg = "ID格式错误，请检查输入";
+                  addValid = false;
+                }
+              }}
+            />
+            {#if addErrorMsg}
+              <p class="text-sm text-red-600 dark:text-red-500">
+                {addErrorMsg}
+              </p>
+            {/if}
+          </div>
+
+          <div class="flex justify-end space-x-3">
             <button
-              class="w-24 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-[#f5f5f7] dark:hover:bg-[#3a3a3c] rounded-lg transition-colors"
+              class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-[#f5f5f7] dark:hover:bg-[#3a3a3c] rounded-lg transition-colors"
               on:click={() => {
-                deleteModal = false;
+                addModal = false;
               }}
             >
               取消
             </button>
             <button
-              class="w-24 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors"
-              on:click={async () => {
-                await invoke("remove_recorder", { roomId: deleteRoom.room_id, platform: deleteRoom.platform });
-                deleteModal = false;
+              class="px-4 py-2 bg-[#0A84FF] hover:bg-[#0A84FF]/90 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={!addValid}
+              on:click={() => {
+                invoke("add_recorder", {
+                  roomId: Number(addRoom),
+                  platform: selectedPlatform,
+                })
+                  .then(() => {
+                    addModal = false;
+                    addRoom = "";
+                  })
+                  .catch(async (e) => {
+                    await message(e);
+                  });
               }}
             >
-              移除
+              添加
             </button>
           </div>
         </div>
       </div>
     </div>
-  {/if}
+  </div>
+{/if}
 
-  {#if addModal}
+{#if archiveModal}
+  <div
+    class="fixed inset-0 bg-black/20 dark:bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center"
+    transition:fade={{ duration: 200 }}
+  >
     <div
-      class="fixed inset-0 bg-black/20 dark:bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center"
-      transition:fade={{ duration: 200 }}
+      class="mac-modal w-[900px] bg-white dark:bg-[#323234] rounded-xl shadow-xl overflow-hidden flex flex-col max-h-[80vh]"
+      transition:scale={{ duration: 150, start: 0.95 }}
     >
+      <!-- Header -->
       <div
-        class="mac-modal w-[400px] bg-white dark:bg-[#323234] rounded-xl shadow-xl overflow-hidden"
-        transition:scale={{ duration: 150, start: 0.95 }}
+        class="flex justify-between items-center px-6 py-4 border-b border-gray-200 dark:border-gray-700/50"
       >
-        <!-- Header -->
-        <div class="px-6 py-4 border-b border-gray-200 dark:border-gray-700/50">
+        <div class="flex items-center space-x-3">
           <h2 class="text-base font-medium text-gray-900 dark:text-white">
-            添加直播间
+            直播间记录
           </h2>
+          <span class="text-sm text-gray-500 dark:text-gray-400">
+            {archiveRoom?.user_info.user_name} · {archiveRoom?.room_id}
+          </span>
         </div>
-
-        <div class="p-6 space-y-6">
-          <div class="space-y-4">
-            <div class="space-y-2">
-              <label
-                for="platform"
-                class="block text-sm font-medium text-gray-700 dark:text-gray-300"
-              >
-                平台
-              </label>
-              <div class="flex p-0.5 bg-[#f5f5f7] dark:bg-[#1c1c1e] rounded-lg">
-                <button
-                  class="flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform === 'bilibili' ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-                  on:click={() => selectedPlatform = 'bilibili'}
-                >
-                  哔哩哔哩
-                </button>
-                <button
-                  class="flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform === 'douyin' ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-                  on:click={() => selectedPlatform = 'douyin'}
-                >
-                  抖音
-                </button>
-              </div>
-            </div>
-
-            <div class="space-y-2">
-              <label
-                for="room_id"
-                class="block text-sm font-medium text-gray-700 dark:text-gray-300"
-              >
-                {selectedPlatform === 'bilibili' ? '房间号' : '直播间ID'}
-              </label>
-              <input
-                id="room_id"
-                type="text"
-                bind:value={addRoom}
-                class="w-full px-3 py-2 bg-[#f5f5f7] dark:bg-[#1c1c1e] border-0 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400"
-                placeholder={selectedPlatform === 'bilibili' ? '请输入直播间房间号' : '请输入抖音直播间ID'}
-                on:change={() => {
-                  if (!addRoom) {
-                    addErrorMsg = "";
-                    addValid = false;
-                    return;
-                  }
-                  const room_id = Number(addRoom);
-                  if (Number.isInteger(room_id) && room_id > 0) {
-                    addErrorMsg = "";
-                    addValid = true;
-                  } else {
-                    addErrorMsg = "ID格式错误，请检查输入";
-                    addValid = false;
-                  }
-                }}
-              />
-              {#if addErrorMsg}
-                <p class="text-sm text-red-600 dark:text-red-500">
-                  {addErrorMsg}
-                </p>
-              {/if}
-            </div>
-
-            <div class="flex justify-end space-x-3">
-              <button
-                class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-[#f5f5f7] dark:hover:bg-[#3a3a3c] rounded-lg transition-colors"
-                on:click={() => {
-                  addModal = false;
-                }}
-              >
-                取消
-              </button>
-              <button
-                class="px-4 py-2 bg-[#0A84FF] hover:bg-[#0A84FF]/90 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                disabled={!addValid}
-                on:click={() => {
-                  invoke("add_recorder", { 
-                    roomId: Number(addRoom),
-                    platform: selectedPlatform 
-                  })
-                    .then(() => {
-                      addModal = false;
-                      addRoom = "";
-                    })
-                    .catch(async (e) => {
-                      await message("请检查ID是否有效：" + e, "添加失败");
-                    });
-                }}
-              >
-                添加
-              </button>
-            </div>
-          </div>
-        </div>
+        <button
+          class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors"
+          on:click={() => (archiveModal = false)}
+        >
+          <X class="w-5 h-5 dark:icon-white" />
+        </button>
       </div>
-    </div>
-  {/if}
 
-  {#if archiveModal}
-    <div
-      class="fixed inset-0 bg-black/20 dark:bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center"
-      transition:fade={{ duration: 200 }}
-    >
-      <div
-        class="mac-modal w-[900px] bg-white dark:bg-[#323234] rounded-xl shadow-xl overflow-hidden flex flex-col max-h-[80vh]"
-        transition:scale={{ duration: 150, start: 0.95 }}
-      >
-        <!-- Header -->
-        <div class="flex justify-between items-center px-6 py-4 border-b border-gray-200 dark:border-gray-700/50">
-          <div class="flex items-center space-x-3">
-            <h2 class="text-base font-medium text-gray-900 dark:text-white">
-              直播间记录
-            </h2>
-            <span class="text-sm text-gray-500 dark:text-gray-400">
-              {archiveRoom?.user_info.user_name} · {archiveRoom?.room_id}
-            </span>
-          </div>
-          <button
-            class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors"
-            on:click={() => archiveModal = false}
-          >
-            <X class="w-5 h-5 dark:icon-white" />
-          </button>
-        </div>
-
-        <div class="flex-1 overflow-auto">
-          <div class="p-6">
-            <div class="overflow-x-auto">
-              <table class="w-full">
-                <thead>
-                  <tr class="border-b border-gray-200 dark:border-gray-700/50">
-                    <th class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400">直播时间</th>
-                    <th class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400">标题</th>
-                    <th class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400">时长</th>
-                    <th class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400">大小</th>
-                    <th class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400">码率</th>
-                    <th class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400">操作</th>
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-gray-200 dark:divide-gray-700/50">
-                  {#each archives as archive}
-                    <tr class="group hover:bg-[#f5f5f7] dark:hover:bg-[#3a3a3c] transition-colors">
-                      <td class="px-4 py-3">
-                        <div class="flex flex-col">
-                          <span class="text-sm text-gray-900 dark:text-white">{format_ts(archive.created_at).split(' ')[0]}</span>
-                          <span class="text-xs text-gray-500 dark:text-gray-400">{format_ts(archive.created_at).split(' ')[1]}</span>
-                        </div>
-                      </td>
-                      <td class="px-4 py-3">
-                        <div class="flex items-center space-x-3">
-                          {#if archive.cover}
-                            <Image src={archive.cover} iclass="w-12 h-8 rounded object-cover" />
-                          {/if}
-                          <span class="text-sm text-gray-900 dark:text-white">{archive.title}</span>
-                        </div>
-                      </td>
-                      <td class="px-4 py-3 text-sm text-gray-900 dark:text-white">{format_duration(archive.length)}</td>
-                      <td class="px-4 py-3 text-sm text-gray-900 dark:text-white">{format_size(archive.size)}</td>
-                      <td class="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">{calc_bitrate(archive.size, archive.length)} Kbps</td>
-                      <td class="px-4 py-3">
-                        <div class="flex items-center space-x-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button
-                            class="p-1.5 rounded-lg hover:bg-blue-500/10 transition-colors"
-                            title="编辑切片"
-                            on:click={() => {
-                              invoke("open_live", {
-                                platform: archiveRoom.platform,
-                                roomId: archiveRoom.room_id,
-                                liveId: archive.live_id,
-                              });
-                            }}
-                          >
-                            <Scissors class="w-4 h-4 icon-primary" />
-                          </button>
-                          <button
-                            class="p-1.5 rounded-lg hover:bg-red-500/10 transition-colors"
-                            title="删除记录"
-                            on:click={() => {
-                              invoke("delete_archive", {
-                                platform: archiveRoom.platform,
-                                roomId: archiveRoom.room_id,
-                                liveId: archive.live_id,
-                              })
-                                .then(async () => {
-                                  archives = await invoke("get_archives", {
-                                    roomId: archiveRoom.room_id,
-                                  });
-                                })
-                                .catch((e) => {
-                                  alert(e);
+      <div class="flex-1 overflow-auto">
+        <div class="p-6">
+          <div class="overflow-x-auto">
+            <table class="w-full">
+              <thead>
+                <tr class="border-b border-gray-200 dark:border-gray-700/50">
+                  <th
+                    class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400"
+                    >直播时间</th
+                  >
+                  <th
+                    class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400"
+                    >标题</th
+                  >
+                  <th
+                    class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400"
+                    >时长</th
+                  >
+                  <th
+                    class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400"
+                    >大小</th
+                  >
+                  <th
+                    class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400"
+                    >码率</th
+                  >
+                  <th
+                    class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400"
+                    >操作</th
+                  >
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-gray-200 dark:divide-gray-700/50">
+                {#each archives as archive}
+                  <tr
+                    class="group hover:bg-[#f5f5f7] dark:hover:bg-[#3a3a3c] transition-colors"
+                  >
+                    <td class="px-4 py-3">
+                      <div class="flex flex-col">
+                        <span class="text-sm text-gray-900 dark:text-white"
+                          >{format_ts(archive.created_at).split(" ")[0]}</span
+                        >
+                        <span class="text-xs text-gray-500 dark:text-gray-400"
+                          >{format_ts(archive.created_at).split(" ")[1]}</span
+                        >
+                      </div>
+                    </td>
+                    <td class="px-4 py-3">
+                      <div class="flex items-center space-x-3">
+                        {#if archive.cover}
+                          <Image
+                            src={archive.cover}
+                            iclass="w-12 h-8 rounded object-cover"
+                          />
+                        {/if}
+                        <span class="text-sm text-gray-900 dark:text-white"
+                          >{archive.title}</span
+                        >
+                      </div>
+                    </td>
+                    <td class="px-4 py-3 text-sm text-gray-900 dark:text-white"
+                      >{format_duration(archive.length)}</td
+                    >
+                    <td class="px-4 py-3 text-sm text-gray-900 dark:text-white"
+                      >{format_size(archive.size)}</td
+                    >
+                    <td
+                      class="px-4 py-3 text-sm text-gray-500 dark:text-gray-400"
+                      >{calc_bitrate(archive.size, archive.length)} Kbps</td
+                    >
+                    <td class="px-4 py-3">
+                      <div
+                        class="flex items-center space-x-2 opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        <button
+                          class="p-1.5 rounded-lg hover:bg-blue-500/10 transition-colors"
+                          title="编辑切片"
+                          on:click={() => {
+                            invoke("open_live", {
+                              platform: archiveRoom.platform,
+                              roomId: archiveRoom.room_id,
+                              liveId: archive.live_id,
+                            });
+                          }}
+                        >
+                          <Scissors class="w-4 h-4 icon-primary" />
+                        </button>
+                        <button
+                          class="p-1.5 rounded-lg hover:bg-red-500/10 transition-colors"
+                          title="删除记录"
+                          on:click={() => {
+                            invoke("delete_archive", {
+                              platform: archiveRoom.platform,
+                              roomId: archiveRoom.room_id,
+                              liveId: archive.live_id,
+                            })
+                              .then(async () => {
+                                archives = await invoke("get_archives", {
+                                  roomId: archiveRoom.room_id,
                                 });
-                            }}
-                          >
-                            <Trash2 class="w-4 h-4 text-red-500" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  {/each}
-                </tbody>
-              </table>
-            </div>
+                              })
+                              .catch((e) => {
+                                alert(e);
+                              });
+                          }}
+                        >
+                          <Trash2 class="w-4 h-4 text-red-500" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
           </div>
         </div>
       </div>
     </div>
-  {/if}
+  </div>
+{/if}
 
 <svelte:window on:mousedown={handleModalClickOutside} />

@@ -35,13 +35,13 @@ pub struct RecorderManager {
 }
 
 custom_error! {pub RecorderManagerError
-    AlreadyExisted { room_id: u64 } = "Recorder {room_id} already existed",
-    NotFound {room_id: u64 } = "Recorder {room_id} not found",
-    InvalidPlatformType { platform: String } = "Invalid platform type: {platform}",
-    RecorderError { err: RecorderError } = "Recorder error: {err}",
-    IOError {err: std::io::Error } = "IO error: {err}",
-    HLSError { err: hyper::Error } = "HLS server error: {err}",
-    DatabaseError { err: DatabaseError } = "Database error: {err}",
+    AlreadyExisted { room_id: u64 } = "房间 {room_id} 已存在",
+    NotFound {room_id: u64 } = "房间 {room_id} 不存在",
+    InvalidPlatformType { platform: String } = "不支持的平台: {platform}",
+    RecorderError { err: RecorderError } = "录播器错误: {err}",
+    IOError {err: std::io::Error } = "IO 错误: {err}",
+    HLSError { err: hyper::Error } = "HLS 服务器错误: {err}",
+    DatabaseError { err: DatabaseError } = "数据库错误: {err}",
     Recording { live_id: String } = "无法删除正在录制的直播 {live_id}",
 }
 

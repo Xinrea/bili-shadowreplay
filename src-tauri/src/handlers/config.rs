@@ -13,6 +13,9 @@ pub async fn set_cache_path(
     cache_path: String,
 ) -> Result<(), String> {
     let old_cache_path = state.config.read().await.cache.clone();
+    if old_cache_path == cache_path {
+        return Ok(());
+    }
     // TODO only pause recorders
     // stop and clear all recorders
     state.recorder_manager.stop_all().await;
@@ -28,9 +31,31 @@ pub async fn set_cache_path(
             "缓存正在迁移中，根据数据量情况可能花费较长时间，在此期间流预览功能不可用",
         )
         .await?;
-    if let Err(e) = crate::handlers::utils::copy_dir_all(&old_cache_path, &cache_path) {
-        log::error!("Copy old cache to new cache error: {}", e);
+
+    let mut old_cache_entries = vec![];
+    if let Ok(entries) = std::fs::read_dir(&old_cache_path) {
+        for entry in entries.flatten() {
+            // check if entry is the same as new cache path
+            if entry.path() == std::path::Path::new(&cache_path) {
+                continue;
+            }
+            old_cache_entries.push(entry.path());
+        }
     }
+
+    // copy all entries to new cache
+    for entry in &old_cache_entries {
+        let new_entry = std::path::Path::new(&cache_path).join(entry.file_name().unwrap());
+        // if entry is a folder
+        if entry.is_dir() {
+            if let Err(e) = crate::handlers::utils::copy_dir_all(entry, &new_entry) {
+                log::error!("Copy old cache to new cache error: {}", e);
+            }
+        } else if let Err(e) = std::fs::copy(entry, &new_entry) {
+            log::error!("Copy old cache to new cache error: {}", e);
+        }
+    }
+
     log::info!("Copy old cache to new cache done");
     state.db.new_message("缓存目录切换", "缓存切换完成").await?;
     // start all recorders
@@ -45,12 +70,18 @@ pub async fn set_cache_path(
         &state.config.read().await.webid,
     )
     .await;
-    // Remove old cache
-    if old_cache_path != cache_path {
-        if let Err(e) = std::fs::remove_dir_all(old_cache_path) {
-            println!("Remove old cache error: {}", e);
+
+    // remove all old cache entries
+    for entry in old_cache_entries {
+        if entry.is_dir() {
+            if let Err(e) = std::fs::remove_dir_all(&entry) {
+                log::error!("Remove old cache error: {}", e);
+            }
+        } else if let Err(e) = std::fs::remove_file(&entry) {
+            log::error!("Remove old cache error: {}", e);
         }
     }
+
     Ok(())
 }
 
@@ -58,16 +89,46 @@ pub async fn set_cache_path(
 pub async fn set_output_path(state: TauriState<'_, State>, output_path: String) -> Result<(), ()> {
     let mut config = state.config.write().await;
     let old_output_path = config.output.clone();
-    if let Err(e) = crate::handlers::utils::copy_dir_all(&old_output_path, &output_path) {
-        log::error!("Copy old output to new output error: {}", e);
+    if old_output_path == output_path {
+        return Ok(());
     }
-    config.set_output_path(&output_path);
-    // remove old output
-    if old_output_path != output_path {
-        if let Err(e) = std::fs::remove_dir_all(old_output_path) {
-            log::error!("Remove old output error: {}", e);
+    // list all file and folder in old output
+    let mut old_output_entries = vec![];
+    if let Ok(entries) = std::fs::read_dir(&old_output_path) {
+        for entry in entries.flatten() {
+            // check if entry is the same as new output path
+            if entry.path() == std::path::Path::new(&output_path) {
+                continue;
+            }
+            old_output_entries.push(entry.path());
         }
     }
+
+    // rename all entries to new output
+    for entry in &old_output_entries {
+        let new_entry = std::path::Path::new(&output_path).join(entry.file_name().unwrap());
+        // if entry is a folder
+        if entry.is_dir() {
+            if let Err(e) = crate::handlers::utils::copy_dir_all(entry, &new_entry) {
+                log::error!("Copy old cache to new cache error: {}", e);
+            }
+        } else if let Err(e) = std::fs::copy(entry, &new_entry) {
+            log::error!("Copy old cache to new cache error: {}", e);
+        }
+    }
+
+    // remove all old output entries
+    for entry in old_output_entries {
+        if entry.is_dir() {
+            if let Err(e) = std::fs::remove_dir_all(&entry) {
+                log::error!("Remove old cache error: {}", e);
+            }
+        } else if let Err(e) = std::fs::remove_file(&entry) {
+            log::error!("Remove old cache error: {}", e);
+        }
+    }
+
+    config.set_output_path(&output_path);
     Ok(())
 }
 

@@ -58,12 +58,6 @@ impl Config {
     }
 
     pub fn set_cache_path(&mut self, path: &str) {
-        // Copy all files in cache to new cache
-        if self.cache == path {
-            return;
-        }
-        let old_cache = self.cache.clone();
-        crate::handlers::utils::copy_dir_all(old_cache, path).unwrap();
         self.cache = path.to_string();
         self.save();
     }
@@ -78,4 +72,4 @@ impl Config {
         // expire in 20 hours
         now - self.webid_ts > 72000
     }
-} 
+}

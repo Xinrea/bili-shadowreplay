@@ -45,6 +45,9 @@ pub struct DouyinRecorder {
     pub entry_store: Arc<RwLock<Option<EntryStore>>>,
     pub live_id: Arc<RwLock<String>>,
     pub live_status: Arc<RwLock<LiveStatus>>,
+    is_recording: Arc<RwLock<bool>>,
+    auto_start: Arc<RwLock<bool>>,
+    current_record: Arc<RwLock<bool>>,
     running: Arc<RwLock<bool>>,
     last_update: Arc<RwLock<i64>>,
     m3u8_cache: DashMap<String, String>,
@@ -57,6 +60,7 @@ impl DouyinRecorder {
         config: Arc<RwLock<Config>>,
         douyin_account: &AccountRow,
         db: &Arc<Database>,
+        auto_start: bool,
     ) -> Self {
         let client = client::DouyinClient::new(douyin_account);
         Self {
@@ -69,10 +73,21 @@ impl DouyinRecorder {
             stream_url: Arc::new(RwLock::new(None)),
             live_status: Arc::new(RwLock::new(LiveStatus::Offline)),
             running: Arc::new(RwLock::new(false)),
+            is_recording: Arc::new(RwLock::new(false)),
+            auto_start: Arc::new(RwLock::new(auto_start)),
+            current_record: Arc::new(RwLock::new(false)),
             last_update: Arc::new(RwLock::new(Utc::now().timestamp())),
             m3u8_cache: DashMap::new(),
             config,
         }
+    }
+
+    async fn should_record(&self) -> bool {
+        if !*self.running.read().await {
+            return false;
+        }
+
+        *self.current_record.read().await
     }
 
     async fn check_status(&self) -> bool {
@@ -83,6 +98,9 @@ impl DouyinRecorder {
                 if (*self.live_status.read().await == LiveStatus::Live) != live_status {
                     log::info!("[{}]Live status changed: {}", self.room_id, live_status);
                     if live_status {
+                        if *self.auto_start.read().await {
+                            *self.current_record.write().await = true;
+                        }
                         // Get stream URL when live starts
                         if !info.data.data[0]
                             .stream_url
@@ -126,6 +144,7 @@ impl DouyinRecorder {
                         }
                     } else {
                         *self.live_status.write().await = LiveStatus::Offline;
+                        *self.current_record.write().await = false;
                         self.reset().await;
                     }
                 }
@@ -371,7 +390,7 @@ impl Recorder for DouyinRecorder {
             while *self_clone.running.read().await {
                 if self_clone.check_status().await {
                     // Live status is ok, start recording
-                    while *self_clone.running.read().await {
+                    while self_clone.should_record().await {
                         match self_clone.update_entries().await {
                             Ok(ms) => {
                                 if ms < 1000 {
@@ -535,6 +554,8 @@ impl Recorder for DouyinRecorder {
             },
             current_live_id: self.live_id.read().await.clone(),
             live_status: *self.live_status.read().await == LiveStatus::Live,
+            is_recording: *self.is_recording.read().await,
+            auto_start: *self.auto_start.read().await,
             platform: PlatformType::Douyin.as_str().to_string(),
         }
     }
@@ -545,5 +566,17 @@ impl Recorder for DouyinRecorder {
 
     async fn is_recording(&self, live_id: &str) -> bool {
         *self.live_id.read().await == live_id && *self.live_status.read().await == LiveStatus::Live
+    }
+
+    async fn force_start(&self) {
+        *self.current_record.write().await = true;
+    }
+
+    async fn force_stop(&self) {
+        *self.current_record.write().await = false;
+    }
+
+    async fn set_auto_start(&self, auto_start: bool) {
+        *self.auto_start.write().await = auto_start;
     }
 }

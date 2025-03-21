@@ -1,7 +1,7 @@
 use super::Database;
 use super::DatabaseError;
-use chrono::Utc;
 use crate::recorder::PlatformType;
+use chrono::Utc;
 /// Recorder in database is pretty simple
 /// because many room infos are collected in realtime
 #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
@@ -9,23 +9,32 @@ pub struct RecorderRow {
     pub room_id: u64,
     pub created_at: String,
     pub platform: String,
+    pub auto_start: bool,
 }
 
 // recorders
 impl Database {
-    pub async fn add_recorder(&self, platform: PlatformType, room_id: u64) -> Result<RecorderRow, DatabaseError> {
+    pub async fn add_recorder(
+        &self,
+        platform: PlatformType,
+        room_id: u64,
+    ) -> Result<RecorderRow, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         let recorder = RecorderRow {
             room_id,
             created_at: Utc::now().to_rfc3339(),
             platform: platform.as_str().to_string(),
+            auto_start: true,
         };
-        let _ = sqlx::query("INSERT INTO recorders (room_id, created_at, platform) VALUES ($1, $2, $3)")
-            .bind(room_id as i64)
-            .bind(&recorder.created_at)
-            .bind(platform.as_str())
-            .execute(&lock)
-            .await?;
+        let _ = sqlx::query(
+            "INSERT INTO recorders (room_id, created_at, platform, auto_start) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(room_id as i64)
+        .bind(&recorder.created_at)
+        .bind(platform.as_str())
+        .bind(recorder.auto_start)
+        .execute(&lock)
+        .await?;
         Ok(recorder)
     }
 
@@ -46,9 +55,11 @@ impl Database {
 
     pub async fn get_recorders(&self) -> Result<Vec<RecorderRow>, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
-        Ok(sqlx::query_as::<_, RecorderRow>("SELECT room_id, created_at, platform FROM recorders")
-            .fetch_all(&lock)
-            .await?)
+        Ok(sqlx::query_as::<_, RecorderRow>(
+            "SELECT room_id, created_at, platform, auto_start FROM recorders",
+        )
+        .fetch_all(&lock)
+        .await?)
     }
 
     pub async fn remove_archive(&self, room_id: u64) -> Result<(), DatabaseError> {
@@ -57,6 +68,24 @@ impl Database {
             .bind(room_id as i64)
             .execute(&lock)
             .await?;
+        Ok(())
+    }
+
+    pub async fn update_recorder(
+        &self,
+        platform: PlatformType,
+        room_id: u64,
+        auto_start: bool,
+    ) -> Result<(), DatabaseError> {
+        let lock = self.db.read().await.clone().unwrap();
+        let _ = sqlx::query(
+            "UPDATE recorders SET auto_start = $1 WHERE platform = $2 AND room_id = $3",
+        )
+        .bind(auto_start)
+        .bind(platform.as_str().to_string())
+        .bind(room_id as i64)
+        .execute(&lock)
+        .await?;
         Ok(())
     }
 }

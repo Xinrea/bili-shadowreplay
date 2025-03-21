@@ -4,7 +4,7 @@
   import { fade, scale } from "svelte/transition";
   import { Dropdown, DropdownItem } from "flowbite-svelte";
   import { open } from "@tauri-apps/plugin-shell";
-  import type { RecorderList } from "../lib/interface";
+  import type { RecorderList, RecorderInfo } from "../lib/interface";
   import Image from "../lib/Image.svelte";
   import type { RecordItem } from "../lib/db";
   import {
@@ -16,6 +16,8 @@
     Trash2,
     X,
     History,
+    Video,
+    Radio,
   } from "lucide-svelte";
   import BilibiliIcon from "../lib/BilibiliIcon.svelte";
   import DouyinIcon from "../lib/DouyinIcon.svelte";
@@ -40,12 +42,23 @@
   });
 
   async function update_summary() {
-    summary = (await invoke("get_recorder_list")) as RecorderList;
-    room_count = summary.count;
-    room_active = summary.recorders.filter((room) => room.live_status).length;
-    room_inactive = summary.recorders.filter(
+    let new_summary = (await invoke("get_recorder_list")) as RecorderList;
+    room_count = new_summary.count;
+    room_active = new_summary.recorders.filter(
+      (room) => room.live_status
+    ).length;
+    room_inactive = new_summary.recorders.filter(
       (room) => !room.live_status
     ).length;
+
+    // sort new_summary.recorders by live_status
+    new_summary.recorders.sort((a, b) => {
+      if (a.live_status && !b.live_status) return -1;
+      if (!a.live_status && b.live_status) return 1;
+      return 0;
+    });
+
+    summary = new_summary;
   }
   update_summary();
   setInterval(update_summary, 1000);
@@ -116,6 +129,18 @@
       archiveModal = false;
     }
   }
+
+  // Add toggle state for auto-recording
+  let autoRecordStates = new Map<string, boolean>();
+
+  // Function to toggle auto-record state
+  function toggleAutoRecord(room: RecorderInfo) {
+    invoke("set_auto_start", {
+      roomId: room.room_id,
+      platform: room.platform,
+      autoStart: !room.auto_start,
+    });
+  }
 </script>
 
 <div class="flex-1 p-6 overflow-auto">
@@ -165,83 +190,132 @@
     <div class="grid grid-cols-3 gap-4">
       <!-- Active Room Card -->
       {#each filteredRecorders as room (room.room_id)}
-        {#if room.live_status}
-          <div
-            class="p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 hover:border-blue-500 dark:hover:border-blue-400 transition-colors"
-          >
-            <div class="relative">
-              <Image
-                src={room.room_info.room_cover}
-                iclass="w-full h-40 object-cover rounded-lg"
+        <div
+          class="p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 hover:border-blue-500 dark:hover:border-blue-400 transition-colors"
+        >
+          <div class="relative">
+            <Image
+              src={room.room_info.room_cover}
+              iclass={"w-full h-40 object-cover rounded-lg " +
+                (room.live_status ? "" : "brightness-75")}
+            />
+            <div
+              class={"absolute top-2 left-2 p-1.5 px-2 rounded-full text-white text-xs flex items-center justify-center " +
+                (room.is_recording ? "bg-red-500" : "bg-gray-700/90")}
+            >
+              <Radio
+                class="w-4 h-4 text-white"
+                fill={room.is_recording ? "currentColor" : "none"}
               />
-              <div
-                class="absolute top-2 left-2 px-2 py-1 rounded-full bg-green-500 text-white text-xs flex items-center space-x-1"
-              >
-                <span>直播中</span>
-              </div>
-              <button
-                class="absolute top-2 right-2 p-1.5 rounded-lg bg-gray-900/50 hover:bg-gray-900/70 transition-colors"
-              >
-                <Ellipsis class="w-5 h-5 icon-white" />
-              </button>
-              <Dropdown class="whitespace-nowrap">
-                <DropdownItem
-                  on:click={() => {
-                    open("https://live.bilibili.com/" + room.room_id);
-                  }}>打开网页直播间</DropdownItem
-                >
-                <DropdownItem
-                  class="text-red-500"
-                  on:click={() => {
-                    deleteRoom = room;
-                    deleteModal = true;
-                  }}>移除直播间</DropdownItem
-                >
-              </Dropdown>
+              {#if room.is_recording}
+                <span class="ml-1">录制中</span>
+              {/if}
             </div>
-            <div class="mt-3 space-y-2">
-              <div class="flex items-start justify-between">
-                <div>
-                  <div class="flex items-center space-x-2">
-                    {#if room.platform === "bilibili"}
-                      <BilibiliIcon class="w-4 h-4" />
-                    {:else if room.platform === "douyin"}
-                      <DouyinIcon class="w-4 h-4" />
-                    {/if}
-                    <h3 class="font-medium text-gray-900 dark:text-white">
-                      {room.room_info.room_title}
-                    </h3>
-                  </div>
+            {#if !room.live_status}
+              <div
+                class={"absolute bottom-2 right-2 p-1.5 px-2 rounded-full text-white text-xs flex items-center justify-center bg-gray-700"}
+              >
+                <span>直播未开始</span>
+              </div>
+            {/if}
+            <button
+              class="absolute top-2 right-2 p-1.5 rounded-lg bg-gray-900/50 hover:bg-gray-900/70 transition-colors"
+            >
+              <Ellipsis class="w-5 h-5 icon-white" />
+            </button>
+            <Dropdown class="whitespace-nowrap">
+              {#if !room.auto_start}
+                {#if room.is_recording}
+                  <DropdownItem
+                    on:click={() => {
+                      invoke("force_stop", {
+                        platform: room.platform,
+                        roomId: room.room_id,
+                      });
+                    }}>暂停录制</DropdownItem
+                  >
+                {/if}
+                {#if !room.is_recording && room.live_status}
+                  <DropdownItem
+                    on:click={() => {
+                      invoke("force_start", {
+                        platform: room.platform,
+                        roomId: room.room_id,
+                      });
+                    }}>开始录制</DropdownItem
+                  >
+                {/if}
+              {/if}
+              <button
+                class="px-4 py-2 flex items-center justify-between hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"
+                on:click={() => toggleAutoRecord(room)}
+              >
+                <span
+                  class="text-sm text-gray-700 dark:text-gray-200 font-medium"
+                  >自动开始录制</span
+                >
+                <label class="toggle-switch ml-1">
+                  <input type="checkbox" checked={room.auto_start} />
+                  <span class="toggle-slider"></span>
+                </label>
+              </button>
+              <DropdownItem
+                on:click={() => {
+                  open("https://live.bilibili.com/" + room.room_id);
+                }}>打开网页直播间</DropdownItem
+              >
+              <DropdownItem
+                class="text-red-500"
+                on:click={() => {
+                  deleteRoom = room;
+                  deleteModal = true;
+                }}>移除直播间</DropdownItem
+              >
+            </Dropdown>
+          </div>
+          <div class="mt-3 space-y-2">
+            <div class="flex items-start justify-between">
+              <div>
+                <div class="flex items-center space-x-2">
+                  {#if room.platform === "bilibili"}
+                    <BilibiliIcon class="w-4 h-4" />
+                  {:else if room.platform === "douyin"}
+                    <DouyinIcon class="w-4 h-4" />
+                  {/if}
+                  <h3 class="font-medium text-gray-900 dark:text-white">
+                    {room.room_info.room_title}
+                  </h3>
                 </div>
               </div>
-              <div class="flex items-center justify-between">
-                <div
-                  class="flex items-center space-x-2 text-sm text-gray-600 dark:text-gray-400"
+            </div>
+            <div class="flex items-center justify-between">
+              <div
+                class="flex items-center space-x-2 text-sm text-gray-600 dark:text-gray-400"
+              >
+                <button
+                  class="flex items-center space-x-2 p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
+                  on:click={() => {
+                    if (room.platform === "bilibili") {
+                      open(
+                        "https://space.bilibili.com/" + room.user_info.user_id
+                      );
+                    } else if (room.platform === "douyin") {
+                      console.log(room.user_info);
+                      open(
+                        "https://www.douyin.com/user/" + room.user_info.user_id
+                      );
+                    }
+                  }}
                 >
-                  <button
-                    class="flex items-center space-x-2 p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
-                    on:click={() => {
-                      if (room.platform === "bilibili") {
-                        open(
-                          "https://space.bilibili.com/" + room.user_info.user_id
-                        );
-                      } else if (room.platform === "douyin") {
-                        console.log(room.user_info);
-                        open(
-                          "https://www.douyin.com/user/" +
-                            room.user_info.user_id
-                        );
-                      }
-                    }}
-                  >
-                    <Image
-                      src={room.user_info.user_avatar}
-                      iclass="w-8 h-8 rounded-full"
-                    />
-                    <span>{room.user_info.user_name}</span>
-                  </button>
-                </div>
-                <div class="flex items-center space-x-1">
+                  <Image
+                    src={room.user_info.user_avatar}
+                    iclass="w-8 h-8 rounded-full"
+                  />
+                  <span>{room.user_info.user_name}</span>
+                </button>
+              </div>
+              <div class="flex items-center space-x-1">
+                {#if room.is_recording}
                   <button
                     class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
                     on:click={() => {
@@ -254,126 +328,20 @@
                   >
                     <Play class="w-5 h-5 dark:icon-white" />
                   </button>
-                  <button
-                    class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
-                    on:click={() => {
-                      archiveRoom = room;
-                      showArchives(room.room_id);
-                    }}
-                  >
-                    <History class="w-5 h-5 dark:icon-white" />
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        {/if}
-      {/each}
-
-      <!-- Inactive Room Card -->
-      {#each filteredRecorders as room (room.room_id)}
-        {#if !room.live_status}
-          <div
-            class="p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 hover:border-blue-500 dark:hover:border-blue-400 transition-colors"
-          >
-            <div class="relative">
-              <Image
-                src={room.room_info.room_cover}
-                iclass="w-full h-40 object-cover rounded-lg brightness-75"
-              />
-              <div
-                class="absolute top-2 left-2 px-2 py-1 rounded-full bg-gray-700 text-white text-xs flex items-center space-x-1"
-              >
-                <span>未直播</span>
-              </div>
-              <button
-                class="absolute top-2 right-2 p-1.5 rounded-lg bg-gray-900/50 hover:bg-gray-900/70 transition-colors"
-              >
-                <Ellipsis class="w-5 h-5" color="white" />
-              </button>
-              <Dropdown class="whitespace-nowrap">
-                {#if room.live_status}
-                  <DropdownItem
-                    on:click={async () => {
-                      await invoke("open_live", {
-                        platform: room.platform,
-                        roomId: room.room_id,
-                        liveId: room.current_live_id,
-                      });
-                    }}>打开直播流</DropdownItem
-                  >
                 {/if}
-                <DropdownItem
+                <button
+                  class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
                   on:click={() => {
-                    open("https://live.bilibili.com/" + room.room_id);
-                  }}>打开网页直播间</DropdownItem
+                    archiveRoom = room;
+                    showArchives(room.room_id);
+                  }}
                 >
-                <DropdownItem
-                  class="text-red-500"
-                  on:click={() => {
-                    deleteRoom = room;
-                    deleteModal = true;
-                  }}>移除直播间</DropdownItem
-                >
-              </Dropdown>
-            </div>
-            <div class="mt-3 space-y-2">
-              <div class="flex items-start justify-between">
-                <div>
-                  <div class="flex items-center space-x-2">
-                    {#if room.platform === "bilibili"}
-                      <BilibiliIcon class="w-4 h-4" />
-                    {:else if room.platform === "douyin"}
-                      <DouyinIcon class="w-4 h-4" />
-                    {/if}
-                    <h3 class="font-medium text-gray-900 dark:text-white">
-                      {room.room_info.room_title}
-                    </h3>
-                  </div>
-                </div>
-              </div>
-              <div class="flex items-center justify-between">
-                <div
-                  class="flex items-center space-x-2 text-sm text-gray-600 dark:text-gray-400"
-                >
-                  <button
-                    class="flex items-center space-x-2 p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
-                    on:click={() => {
-                      if (room.platform === "bilibili") {
-                        open(
-                          "https://space.bilibili.com/" + room.user_info.user_id
-                        );
-                      } else if (room.platform === "douyin") {
-                        console.log(room.user_info);
-                        open(
-                          "https://www.douyin.com/user/" +
-                            room.user_info.user_id
-                        );
-                      }
-                    }}
-                  >
-                    <Image
-                      src={room.user_info.user_avatar}
-                      iclass="w-8 h-8 rounded-full"
-                    />
-                    <span>{room.user_info.user_name}</span>
-                  </button>
-                </div>
-                <div class="flex items-center space-x-1">
-                  <button
-                    class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
-                    on:click={() => {
-                      archiveRoom = room;
-                      showArchives(room.room_id);
-                    }}
-                  >
-                    <History class="w-5 h-5 dark:icon-white" />
-                  </button>
-                </div>
+                  <History class="w-5 h-5 dark:icon-white" />
+                </button>
               </div>
             </div>
           </div>
-        {/if}
+        </div>
       {/each}
 
       <!-- Add Room Card -->
@@ -714,3 +682,60 @@
 {/if}
 
 <svelte:window on:mousedown={handleModalClickOutside} />
+
+<style>
+  /* macOS style toggle switch */
+  .toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 36px;
+    height: 20px;
+  }
+
+  .toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+
+  .toggle-slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(120, 120, 128, 0.32);
+    transition: 0.2s;
+    border-radius: 20px;
+  }
+
+  .toggle-slider:before {
+    position: absolute;
+    content: "";
+    height: 16px;
+    width: 16px;
+    left: 2px;
+    bottom: 2px;
+    background-color: white;
+    transition: 0.2s;
+    border-radius: 50%;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  }
+
+  input:checked + .toggle-slider {
+    background-color: #34c759;
+  }
+
+  input:checked + .toggle-slider:before {
+    transform: translateX(16px);
+  }
+
+  .dark input:checked + .toggle-slider {
+    background-color: #30d158;
+  }
+
+  .dark .toggle-slider {
+    background-color: rgba(120, 120, 128, 0.32);
+  }
+</style>

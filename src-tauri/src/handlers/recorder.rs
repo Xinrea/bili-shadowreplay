@@ -55,6 +55,7 @@ pub async fn add_recorder(
                 &account,
                 platform,
                 room_id,
+                true,
             )
             .await
         {
@@ -211,4 +212,41 @@ pub async fn get_recent_record(
         Ok(records) => Ok(records),
         Err(e) => Err(format!("Failed to get recent record: {}", e)),
     }
+}
+
+#[tauri::command]
+pub async fn set_auto_start(
+    state: TauriState<'_, State>,
+    platform: String,
+    room_id: u64,
+    auto_start: bool,
+) -> Result<(), String> {
+    let platform = PlatformType::from_str(&platform).unwrap();
+    state
+        .recorder_manager
+        .set_auto_start(platform, room_id, auto_start)
+        .await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn force_start(
+    state: TauriState<'_, State>,
+    platform: String,
+    room_id: u64,
+) -> Result<(), String> {
+    let platform = PlatformType::from_str(&platform).unwrap();
+    state.recorder_manager.force_start(platform, room_id).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn force_stop(
+    state: TauriState<'_, State>,
+    platform: String,
+    room_id: u64,
+) -> Result<(), String> {
+    let platform = PlatformType::from_str(&platform).unwrap();
+    state.recorder_manager.force_stop(platform, room_id).await;
+    Ok(())
 }

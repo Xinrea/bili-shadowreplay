@@ -51,6 +51,9 @@ pub struct BiliRecorder {
     pub live_id: Arc<RwLock<String>>,
     pub cover: Arc<RwLock<Option<String>>>,
     pub entry_store: Arc<RwLock<Option<EntryStore>>>,
+    pub is_recording: Arc<RwLock<bool>>,
+    pub auto_start: Arc<RwLock<bool>>,
+    pub current_record: Arc<RwLock<bool>>,
     last_update: Arc<RwLock<i64>>,
     quit: Arc<Mutex<bool>>,
     pub live_stream: Arc<RwLock<Option<BiliStream>>>,
@@ -78,6 +81,7 @@ impl BiliRecorder {
         room_id: u64,
         account: &AccountRow,
         config: Arc<RwLock<Config>>,
+        auto_start: bool,
     ) -> Result<Self, super::errors::RecorderError> {
         let client = BiliClient::new()?;
         let room_info = client.get_room_info(account, room_id).await?;
@@ -112,6 +116,9 @@ impl BiliRecorder {
             user_info: Arc::new(RwLock::new(user_info)),
             live_status: Arc::new(RwLock::new(live_status)),
             entry_store: Arc::new(RwLock::new(None)),
+            is_recording: Arc::new(RwLock::new(false)),
+            auto_start: Arc::new(RwLock::new(auto_start)),
+            current_record: Arc::new(RwLock::new(false)),
             live_id: Arc::new(RwLock::new(String::new())),
             cover: Arc::new(RwLock::new(cover)),
             last_update: Arc::new(RwLock::new(Utc::now().timestamp())),
@@ -129,6 +136,14 @@ impl BiliRecorder {
         *self.live_id.write().await = String::new();
         *self.last_update.write().await = Utc::now().timestamp();
         *self.danmu_storage.write().await = None;
+    }
+
+    async fn should_record(&self) -> bool {
+        if *self.quit.lock().await {
+            return false;
+        }
+
+        *self.current_record.read().await
     }
 
     async fn check_status(&self) -> bool {
@@ -199,23 +214,31 @@ impl BiliRecorder {
                 // if stream is confirmed to be closed, live stream cache is cleaned.
                 // all request will go through fs
                 if live_status {
-                    match self
-                        .client
-                        .read()
-                        .await
-                        .get_play_url(&self.account, self.room_id)
-                        .await
-                    {
-                        Ok(stream) => {
-                            log::info!("[{}]Update stream: {:?}", self.room_id, stream);
-                            *self.live_stream.write().await = Some(stream);
-                        }
-                        Err(e) => {
-                            log::error!("[{}]Update stream failed: {}", self.room_id, e);
+                    if *self.auto_start.read().await {
+                        *self.current_record.write().await = true;
+                    }
+
+                    // if not recording, no need to update stream
+                    if *self.current_record.read().await {
+                        match self
+                            .client
+                            .read()
+                            .await
+                            .get_play_url(&self.account, self.room_id)
+                            .await
+                        {
+                            Ok(stream) => {
+                                log::info!("[{}]Update stream: {:?}", self.room_id, stream);
+                                *self.live_stream.write().await = Some(stream);
+                            }
+                            Err(e) => {
+                                log::error!("[{}]Update stream failed: {}", self.room_id, e);
+                            }
                         }
                     }
                 } else {
                     self.reset().await;
+                    *self.current_record.write().await = false;
                 }
                 *self.live_status.write().await = live_status;
                 live_status
@@ -893,7 +916,7 @@ impl super::Recorder for BiliRecorder {
                 while !*self_clone.quit.lock().await {
                     if self_clone.check_status().await {
                         // Live status is ok, start recording.
-                        while !*self_clone.quit.lock().await {
+                        while self_clone.should_record().await {
                             match self_clone.update_entries().await {
                                 Ok(ms) => {
                                     if ms < 1000 {
@@ -907,6 +930,7 @@ impl super::Recorder for BiliRecorder {
                                             ms
                                         );
                                     }
+                                    *self_clone.is_recording.write().await = true;
                                 }
                                 Err(e) => {
                                     log::error!(
@@ -918,6 +942,7 @@ impl super::Recorder for BiliRecorder {
                                 }
                             }
                         }
+                        *self_clone.is_recording.write().await = false;
                         // go check status again after random 2-5 secs
                         let mut rng = rand::thread_rng();
                         let secs = rng.gen_range(2..=5);
@@ -990,6 +1015,8 @@ impl super::Recorder for BiliRecorder {
             },
             current_live_id: self.live_id.read().await.clone(),
             live_status: *self.live_status.read().await,
+            is_recording: *self.is_recording.read().await,
+            auto_start: *self.auto_start.read().await,
             platform: PlatformType::BiliBili.as_str().to_string(),
         }
     }
@@ -1025,5 +1052,17 @@ impl super::Recorder for BiliRecorder {
 
     async fn is_recording(&self, live_id: &str) -> bool {
         *self.live_id.read().await == live_id && *self.live_status.read().await
+    }
+
+    async fn force_start(&self) {
+        *self.current_record.write().await = true;
+    }
+
+    async fn force_stop(&self) {
+        *self.current_record.write().await = false;
+    }
+
+    async fn set_auto_start(&self, auto_start: bool) {
+        *self.auto_start.write().await = auto_start;
     }
 }

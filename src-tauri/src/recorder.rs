@@ -1,6 +1,6 @@
 pub mod bilibili;
-pub mod douyin;
 pub mod danmu;
+pub mod douyin;
 pub mod errors;
 
 mod entry;
@@ -45,6 +45,8 @@ pub struct RecorderInfo {
     pub total_length: f64,
     pub current_live_id: String,
     pub live_status: bool,
+    pub is_recording: bool,
+    pub auto_start: bool,
     pub platform: String,
 }
 
@@ -66,9 +68,18 @@ pub struct UserInfo {
 pub trait Recorder: Send + Sync + 'static {
     async fn run(&self);
     async fn stop(&self);
-    async fn clip_range(&self, live_id: &str, x: f64, y: f64, output_path: &str) -> Result<String, errors::RecorderError>;
+    async fn clip_range(
+        &self,
+        live_id: &str,
+        x: f64,
+        y: f64,
+        output_path: &str,
+    ) -> Result<String, errors::RecorderError>;
     async fn m3u8_content(&self, live_id: &str) -> String;
     async fn info(&self) -> RecorderInfo;
     async fn comments(&self, live_id: &str) -> Result<Vec<DanmuEntry>, errors::RecorderError>;
     async fn is_recording(&self, live_id: &str) -> bool;
+    async fn force_start(&self);
+    async fn force_stop(&self);
+    async fn set_auto_start(&self, auto_start: bool);
 }

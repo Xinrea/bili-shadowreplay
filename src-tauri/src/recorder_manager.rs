@@ -105,6 +105,7 @@ impl RecorderManager {
         account: &AccountRow,
         platform: PlatformType,
         room_id: u64,
+        auto_start: bool,
     ) -> Result<(), RecorderManagerError> {
         let recorder_id = format!("{}:{}", platform.as_str(), room_id);
         if self.recorders.read().await.contains_key(&recorder_id) {
@@ -120,6 +121,7 @@ impl RecorderManager {
                     room_id,
                     account,
                     self.config.clone(),
+                    auto_start,
                 )
                 .await?,
             ),
@@ -128,6 +130,7 @@ impl RecorderManager {
                 self.config.clone(),
                 account,
                 &self.db,
+                auto_start,
             )),
             _ => {
                 return Err(RecorderManagerError::InvalidPlatformType {
@@ -408,5 +411,31 @@ impl RecorderManager {
 
     pub async fn get_hls_server_addr(&self) -> Option<SocketAddr> {
         *self.hls_server_addr.read().await
+    }
+
+    pub async fn set_auto_start(&self, platform: PlatformType, room_id: u64, auto_start: bool) {
+        // update RecordRow auto_start field
+        if let Err(e) = self.db.update_recorder(platform, room_id, auto_start).await {
+            log::error!("Failed to update recorder auto_start: {}", e);
+        }
+
+        let recorder_id = format!("{}:{}", platform.as_str(), room_id);
+        if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
+            recorder_ref.set_auto_start(auto_start).await;
+        }
+    }
+
+    pub async fn force_start(&self, platform: PlatformType, room_id: u64) {
+        let recorder_id = format!("{}:{}", platform.as_str(), room_id);
+        if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
+            recorder_ref.force_start().await;
+        }
+    }
+
+    pub async fn force_stop(&self, platform: PlatformType, room_id: u64) {
+        let recorder_id = format!("{}:{}", platform.as_str(), room_id);
+        if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
+            recorder_ref.force_stop().await;
+        }
     }
 }

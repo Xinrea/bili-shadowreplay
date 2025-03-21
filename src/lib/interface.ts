@@ -22,6 +22,8 @@ export interface RecorderInfo {
   total_length: number;
   current_live_id: string;
   live_status: boolean;
+  is_recording: boolean;
+  auto_start: boolean;
 }
 
 export interface RecorderList {

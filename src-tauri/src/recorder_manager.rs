@@ -105,6 +105,7 @@ impl RecorderManager {
         account: &AccountRow,
         platform: PlatformType,
         room_id: u64,
+        auto_start: bool,
     ) -> Result<(), RecorderManagerError> {
         let recorder_id = format!("{}:{}", platform.as_str(), room_id);
         if self.recorders.read().await.contains_key(&recorder_id) {
@@ -120,6 +121,7 @@ impl RecorderManager {
                     room_id,
                     account,
                     self.config.clone(),
+                    auto_start,
                 )
                 .await?,
             ),
@@ -128,6 +130,7 @@ impl RecorderManager {
                 self.config.clone(),
                 account,
                 &self.db,
+                auto_start,
             )),
             _ => {
                 return Err(RecorderManagerError::InvalidPlatformType {

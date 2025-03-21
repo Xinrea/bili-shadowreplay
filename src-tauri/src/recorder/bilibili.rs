@@ -51,6 +51,8 @@ pub struct BiliRecorder {
     pub live_id: Arc<RwLock<String>>,
     pub cover: Arc<RwLock<Option<String>>>,
     pub entry_store: Arc<RwLock<Option<EntryStore>>>,
+    pub is_recording: Arc<RwLock<bool>>,
+    pub auto_start: Arc<RwLock<bool>>,
     last_update: Arc<RwLock<i64>>,
     quit: Arc<Mutex<bool>>,
     pub live_stream: Arc<RwLock<Option<BiliStream>>>,
@@ -78,6 +80,7 @@ impl BiliRecorder {
         room_id: u64,
         account: &AccountRow,
         config: Arc<RwLock<Config>>,
+        auto_start: bool,
     ) -> Result<Self, super::errors::RecorderError> {
         let client = BiliClient::new()?;
         let room_info = client.get_room_info(account, room_id).await?;
@@ -112,6 +115,8 @@ impl BiliRecorder {
             user_info: Arc::new(RwLock::new(user_info)),
             live_status: Arc::new(RwLock::new(live_status)),
             entry_store: Arc::new(RwLock::new(None)),
+            is_recording: Arc::new(RwLock::new(false)),
+            auto_start: Arc::new(RwLock::new(auto_start)),
             live_id: Arc::new(RwLock::new(String::new())),
             cover: Arc::new(RwLock::new(cover)),
             last_update: Arc::new(RwLock::new(Utc::now().timestamp())),
@@ -990,6 +995,8 @@ impl super::Recorder for BiliRecorder {
             },
             current_live_id: self.live_id.read().await.clone(),
             live_status: *self.live_status.read().await,
+            is_recording: *self.is_recording.read().await,
+            auto_start: *self.auto_start.read().await,
             platform: PlatformType::BiliBili.as_str().to_string(),
         }
     }

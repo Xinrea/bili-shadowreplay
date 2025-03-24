@@ -1,6 +1,6 @@
-use custom_error::custom_error;
 use super::bilibili::client::BiliStream;
 use super::douyin::client::DouyinClientError;
+use custom_error::custom_error;
 
 custom_error! {pub RecorderError
     IndexNotFound {url: String} = "Index not found: {url}",
@@ -9,6 +9,7 @@ custom_error! {pub RecorderError
     M3u8ParseFailed {content: String } = "Parse m3u8 content failed: {content}",
     NoStreamAvailable = "No available stream provided",
     FreezedStream {stream: BiliStream} = "Stream is freezed: {stream}",
+    StreamExpired {stream: BiliStream} = "Stream is nearly expired: {stream}",
     NoRoomInfo = "No room info provided",
     InvalidStream {stream: BiliStream} = "Invalid stream: {stream}",
     SlowStream {stream: BiliStream} = "Stream is too slow: {stream}",

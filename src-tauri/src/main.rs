@@ -16,12 +16,23 @@ use recorder::{bilibili::client::BiliClient, PlatformType};
 use recorder_manager::RecorderManager;
 use state::State;
 use std::fs::File;
+use std::path::Path;
 use std::sync::Arc;
 use tauri::{Manager, WindowEvent};
 use tauri_plugin_sql::{Migration, MigrationKind};
 use tokio::sync::RwLock;
 
-fn setup_logging() -> Result<(), Box<dyn std::error::Error>> {
+fn setup_logging(log_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    // mkdir if not exists
+    if !log_dir.exists() {
+        std::fs::create_dir_all(log_dir)?;
+    }
+
+    let log_file = log_dir.join("bsr.log");
+
+    // open file with append mode
+    let file = File::options().create(true).append(true).open(&log_file)?;
+
     simplelog::CombinedLogger::init(vec![
         simplelog::TermLogger::new(
             simplelog::LevelFilter::Info,
@@ -32,7 +43,7 @@ fn setup_logging() -> Result<(), Box<dyn std::error::Error>> {
         simplelog::WriteLogger::new(
             simplelog::LevelFilter::Info,
             simplelog::Config::default(),
-            File::create("bsr.log").unwrap(),
+            file,
         ),
     ])?;
     Ok(())
@@ -62,6 +73,9 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     let db = Arc::new(Database::new());
     let db_clone = db.clone();
     let client_clone = client.clone();
+
+    let log_dir = app.path().app_log_dir()?;
+    setup_logging(&log_dir)?;
 
     let recorder_manager = Arc::new(RecorderManager::new(
         app.handle().clone(),
@@ -273,9 +287,10 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    setup_logging()?;
-
-    ffmpeg_sidecar::download::auto_download().unwrap();
+    // only auto download ffmpeg if it's not macOS
+    if !cfg!(target_os = "macos") {
+        ffmpeg_sidecar::download::auto_download().unwrap();
+    }
 
     let builder = tauri::Builder::default();
     let builder = setup_plugins(builder);

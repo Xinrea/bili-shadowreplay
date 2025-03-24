@@ -98,9 +98,6 @@ impl DouyinRecorder {
                 if (*self.live_status.read().await == LiveStatus::Live) != live_status {
                     log::info!("[{}]Live status changed: {}", self.room_id, live_status);
                     if live_status {
-                        if *self.auto_start.read().await {
-                            *self.current_record.write().await = true;
-                        }
                         // Get stream URL when live starts
                         if !info.data.data[0]
                             .stream_url
@@ -147,6 +144,14 @@ impl DouyinRecorder {
                         *self.current_record.write().await = false;
                         self.reset().await;
                     }
+                }
+
+                if live_status {
+                    if *self.auto_start.read().await {
+                        *self.current_record.write().await = true;
+                    }
+                } else {
+                    *self.current_record.write().await = false;
                 }
 
                 *self.room_info.write().await = Some(info);
@@ -403,6 +408,7 @@ impl Recorder for DouyinRecorder {
                                         ms
                                     );
                                 }
+                                *self_clone.is_recording.write().await = true;
                             }
                             Err(e) => {
                                 log::error!("[{}]Update entries error: {}", self_clone.room_id, e);
@@ -410,6 +416,7 @@ impl Recorder for DouyinRecorder {
                             }
                         }
                     }
+                    *self_clone.is_recording.write().await = false;
                     // Check status again after 2-5 seconds
                     tokio::time::sleep(Duration::from_secs(2)).await;
                     continue;

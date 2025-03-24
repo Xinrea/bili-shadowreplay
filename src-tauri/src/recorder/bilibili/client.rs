@@ -2,16 +2,17 @@ use super::errors::BiliClientError;
 use super::profile;
 use super::profile::Profile;
 use super::response;
-use base64::Engine;
-use pct_str::PctString;
-use pct_str::URIReserved;
-use regex::Regex;
-use reqwest::Client;
 use super::response::Format;
 use super::response::GeneralResponse;
 use super::response::PostVideoMetaResponse;
 use super::response::PreuploadResponse;
 use super::response::VideoSubmitData;
+use crate::database::account::AccountRow;
+use base64::Engine;
+use pct_str::PctString;
+use pct_str::URIReserved;
+use regex::Regex;
+use reqwest::Client;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::json;
@@ -23,7 +24,6 @@ use std::time::SystemTime;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::time::Instant;
-use crate::database::account::AccountRow;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct RoomInfo {
@@ -322,7 +322,9 @@ impl BiliClient {
         let response = self.client.get(url).send().await?;
         let bytes = response.bytes().await?;
         let base64 = base64::engine::general_purpose::STANDARD.encode(bytes);
-        let mime_type = mime_guess::from_path(url).first_or_octet_stream().to_string();
+        let mime_type = mime_guess::from_path(url)
+            .first_or_octet_stream()
+            .to_string();
         Ok(format!("data:{};base64,{}", mime_type, base64))
     }
 

@@ -199,24 +199,6 @@ impl BiliRecorder {
                 // if stream is confirmed to be closed, live stream cache is cleaned.
                 // all request will go through fs
                 if live_status {
-                    let mut rng = rand::thread_rng();
-                    // WHY: when program started, all stream is fetched nearly at the same time, so they will expire toggether,
-                    // this might meet server rate limit. So we add a random offset to make request spread over time.
-                    let offset = rng.gen_range(5..=120);
-                    // no need to update stream as it's not expired yet
-                    if self
-                        .live_stream
-                        .read()
-                        .await
-                        .as_ref()
-                        .is_some_and(|s| s.expire - offset > Utc::now().timestamp())
-                    {
-                        return live_status;
-                    }
-                    log::info!(
-                        "[{}]Stream is empty or nearly expired, updating",
-                        self.room_id
-                    );
                     match self
                         .client
                         .read()
@@ -603,6 +585,24 @@ impl BiliRecorder {
                 return Err(e);
             }
         }
+
+        // check stream is nearly expired
+        // WHY: when program started, all stream is fetched nearly at the same time, so they will expire toggether,
+        // this might meet server rate limit. So we add a random offset to make request spread over time.
+        let mut rng = rand::thread_rng();
+        let pre_offset = rng.gen_range(5..=120);
+        // no need to update stream as it's not expired yet
+        let current_stream = self.live_stream.read().await.clone();
+        if current_stream
+            .as_ref()
+            .is_some_and(|s| s.expire - Utc::now().timestamp() < pre_offset)
+        {
+            log::info!("Stream is nearly expired");
+            return Err(super::errors::RecorderError::StreamExpired {
+                stream: current_stream.unwrap(),
+            });
+        }
+
         Ok(task_begin_time.elapsed().as_millis())
     }
 

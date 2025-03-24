@@ -16,11 +16,11 @@
     Trash2,
     X,
     History,
-    Video,
-    Radio,
+    Activity,
   } from "lucide-svelte";
   import BilibiliIcon from "../lib/BilibiliIcon.svelte";
   import DouyinIcon from "../lib/DouyinIcon.svelte";
+  import AutoRecordIcon from "../lib/AutoRecordIcon.svelte";
 
   export let room_count = 0;
   let room_active = 0;
@@ -203,12 +203,13 @@
               class={"absolute top-2 left-2 p-1.5 px-2 rounded-full text-white text-xs flex items-center justify-center " +
                 (room.is_recording ? "bg-red-500" : "bg-gray-700/90")}
             >
-              <Radio
-                class="w-4 h-4 text-white"
-                fill={room.is_recording ? "currentColor" : "none"}
-              />
+              {#if room.auto_start}
+                <AutoRecordIcon class="w-4 h-4 text-white" />
+              {:else}
+                <Activity class="w-4 h-4 text-white" />
+              {/if}
               {#if room.is_recording}
-                <span class="ml-1">录制中</span>
+                <span class="text-white ml-1">录制中</span>
               {/if}
             </div>
             {#if !room.live_status}
@@ -731,11 +732,16 @@
     transform: translateX(16px);
   }
 
-  .dark input:checked + .toggle-slider {
-    background-color: #30d158;
+  @keyframes spin-slow {
+    from {
+      transform: rotate(0deg);
+    }
+    to {
+      transform: rotate(360deg);
+    }
   }
 
-  .dark .toggle-slider {
-    background-color: rgba(120, 120, 128, 0.32);
+  .animate-spin-slow {
+    animation: spin-slow 3s linear infinite;
   }
 </style>

@@ -28,7 +28,11 @@ impl Database {
         )
     }
 
-    pub async fn get_record(&self, room_id: u64, live_id: &str) -> Result<RecordRow, DatabaseError> {
+    pub async fn get_record(
+        &self,
+        room_id: u64,
+        live_id: &str,
+    ) -> Result<RecordRow, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         Ok(sqlx::query_as::<_, RecordRow>(
             "SELECT * FROM records WHERE live_id = $1 and room_id = $2",
@@ -104,18 +108,30 @@ impl Database {
     pub async fn get_today_record_count(&self) -> Result<i64, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         let result: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM records WHERE created_at >= $1;")
-            .bind(Utc::now().date_naive().and_hms_opt(0, 0, 0).unwrap().to_string())
+            .bind(
+                Utc::now()
+                    .date_naive()
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap()
+                    .to_string(),
+            )
             .fetch_one(&lock)
             .await?;
         Ok(result.0)
     }
 
-    pub async fn get_recent_record(&self, offset: u64, limit: u64) -> Result<Vec<RecordRow>, DatabaseError> {
+    pub async fn get_recent_record(
+        &self,
+        offset: u64,
+        limit: u64,
+    ) -> Result<Vec<RecordRow>, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
-        Ok(sqlx::query_as::<_, RecordRow>("SELECT * FROM records ORDER BY created_at DESC LIMIT $1 OFFSET $2")
-            .bind(limit as i64)
-            .bind(offset as i64)
-            .fetch_all(&lock)
-            .await?)
+        Ok(sqlx::query_as::<_, RecordRow>(
+            "SELECT * FROM records ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+        )
+        .bind(limit as i64)
+        .bind(offset as i64)
+        .fetch_all(&lock)
+        .await?)
     }
 }

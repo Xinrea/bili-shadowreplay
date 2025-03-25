@@ -50,10 +50,11 @@ fn setup_logging(log_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn get_migrations() -> Vec<Migration> {
-    vec![Migration {
-        version: 1,
-        description: "create_initial_tables",
-        sql: r#"
+    vec![
+        Migration {
+            version: 1,
+            description: "create_initial_tables",
+            sql: r#"
                 CREATE TABLE accounts (uid INTEGER, platform TEXT NOT NULL DEFAULT 'bilibili', name TEXT, avatar TEXT, csrf TEXT, cookies TEXT, created_at TEXT, PRIMARY KEY(uid, platform));
                 CREATE TABLE recorders (room_id INTEGER PRIMARY KEY, platform TEXT NOT NULL DEFAULT 'bilibili', created_at TEXT);
                 CREATE TABLE records (live_id TEXT PRIMARY KEY, platform TEXT NOT NULL DEFAULT 'bilibili', room_id INTEGER, title TEXT, length INTEGER, size INTEGER, cover BLOB, created_at TEXT);
@@ -61,8 +62,15 @@ fn get_migrations() -> Vec<Migration> {
                 CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, read INTEGER, created_at TEXT);
                 CREATE TABLE videos (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER, cover TEXT, file TEXT, length INTEGER, size INTEGER, status INTEGER, bvid TEXT, title TEXT, desc TEXT, tags TEXT, area INTEGER, created_at TEXT);
                 "#,
-        kind: MigrationKind::Up,
-    }]
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 2,
+            description: "add_auto_start_column",
+            sql: r#"ALTER TABLE recorders ADD COLUMN auto_start INTEGER NOT NULL DEFAULT 1;"#,
+            kind: MigrationKind::Up,
+        },
+    ]
 }
 
 async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::Error>> {
@@ -182,7 +190,13 @@ async fn init_rooms(
             continue;
         }
         if let Err(e) = recorder_manager_clone
-            .add_recorder(webid, &primary_account, platform, room.room_id)
+            .add_recorder(
+                webid,
+                &primary_account,
+                platform,
+                room.room_id,
+                room.auto_start,
+            )
             .await
         {
             log::error!("error when adding initial rooms: {}", e);
@@ -196,7 +210,13 @@ async fn init_rooms(
                     continue;
                 }
                 if let Err(e) = recorder_manager_clone
-                    .add_recorder(webid, &account, PlatformType::Douyin, room.room_id)
+                    .add_recorder(
+                        webid,
+                        &account,
+                        PlatformType::Douyin,
+                        room.room_id,
+                        room.auto_start,
+                    )
                     .await
                 {
                     log::error!("error when adding initial rooms: {}", e);
@@ -272,6 +292,9 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::recorder::get_total_length,
         crate::handlers::recorder::get_today_record_count,
         crate::handlers::recorder::get_recent_record,
+        crate::handlers::recorder::set_auto_start,
+        crate::handlers::recorder::force_start,
+        crate::handlers::recorder::force_stop,
         crate::handlers::video::clip_range,
         crate::handlers::video::upload_procedure,
         crate::handlers::video::get_video,

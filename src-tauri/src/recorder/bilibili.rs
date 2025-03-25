@@ -51,6 +51,9 @@ pub struct BiliRecorder {
     pub live_id: Arc<RwLock<String>>,
     pub cover: Arc<RwLock<Option<String>>>,
     pub entry_store: Arc<RwLock<Option<EntryStore>>>,
+    pub is_recording: Arc<RwLock<bool>>,
+    pub auto_start: Arc<RwLock<bool>>,
+    pub current_record: Arc<RwLock<bool>>,
     last_update: Arc<RwLock<i64>>,
     quit: Arc<Mutex<bool>>,
     pub live_stream: Arc<RwLock<Option<BiliStream>>>,
@@ -78,6 +81,7 @@ impl BiliRecorder {
         room_id: u64,
         account: &AccountRow,
         config: Arc<RwLock<Config>>,
+        auto_start: bool,
     ) -> Result<Self, super::errors::RecorderError> {
         let client = BiliClient::new()?;
         let room_info = client.get_room_info(account, room_id).await?;
@@ -85,15 +89,9 @@ impl BiliRecorder {
             .get_user_info(webid, account, room_info.user_id)
             .await?;
         let mut live_status = false;
-        let mut live_stream = None;
         let mut cover = None;
         if room_info.live_status == 1 {
             live_status = true;
-            if let Ok(stream) = client.get_play_url(account, room_info.room_id).await {
-                live_stream = Some(stream);
-            } else {
-                log::error!("[{}]Room is online but fetching stream failed", room_id);
-            }
 
             // Get cover image
             if let Ok(cover_base64) = client.get_cover_base64(&room_info.room_cover_url).await {
@@ -112,11 +110,14 @@ impl BiliRecorder {
             user_info: Arc::new(RwLock::new(user_info)),
             live_status: Arc::new(RwLock::new(live_status)),
             entry_store: Arc::new(RwLock::new(None)),
+            is_recording: Arc::new(RwLock::new(false)),
+            auto_start: Arc::new(RwLock::new(auto_start)),
+            current_record: Arc::new(RwLock::new(false)),
             live_id: Arc::new(RwLock::new(String::new())),
             cover: Arc::new(RwLock::new(cover)),
             last_update: Arc::new(RwLock::new(Utc::now().timestamp())),
             quit: Arc::new(Mutex::new(false)),
-            live_stream: Arc::new(RwLock::new(live_stream)),
+            live_stream: Arc::new(RwLock::new(None)),
             danmu_storage: Arc::new(RwLock::new(None)),
             m3u8_cache: DashMap::new(),
         };
@@ -127,8 +128,17 @@ impl BiliRecorder {
     pub async fn reset(&self) {
         *self.entry_store.write().await = None;
         *self.live_id.write().await = String::new();
+        *self.live_stream.write().await = None;
         *self.last_update.write().await = Utc::now().timestamp();
         *self.danmu_storage.write().await = None;
+    }
+
+    async fn should_record(&self) -> bool {
+        if *self.quit.lock().await {
+            return false;
+        }
+
+        *self.current_record.read().await
     }
 
     async fn check_status(&self) -> bool {
@@ -145,7 +155,16 @@ impl BiliRecorder {
 
                 // handle live notification
                 if *self.live_status.read().await != live_status {
-                    log::info!("[{}]Live status changed: {}", self.room_id, live_status);
+                    log::info!(
+                        "[{}]Live status changed to {}, current_record: {}, auto_start: {}",
+                        self.room_id,
+                        live_status,
+                        *self.current_record.read().await,
+                        *self.auto_start.read().await
+                    );
+                    // just doing reset
+                    self.reset().await;
+
                     if live_status {
                         if self.config.read().await.live_start_notify {
                             self.app_handle
@@ -159,17 +178,6 @@ impl BiliRecorder {
                                 ))
                                 .show()
                                 .unwrap();
-                        }
-
-                        // Get stream URL
-                        if let Ok(stream) = self
-                            .client
-                            .read()
-                            .await
-                            .get_play_url(&self.account, self.room_id)
-                            .await
-                        {
-                            *self.live_stream.write().await = Some(stream);
                         }
 
                         // Get cover image
@@ -196,29 +204,68 @@ impl BiliRecorder {
                     }
                 }
 
-                // if stream is confirmed to be closed, live stream cache is cleaned.
-                // all request will go through fs
-                if live_status {
-                    match self
-                        .client
+                *self.live_status.write().await = live_status;
+
+                if !live_status {
+                    self.reset().await;
+                    *self.current_record.write().await = false;
+
+                    return false;
+                }
+
+                // no need to check stream if current_record is false and auto_start is false
+                if !*self.current_record.read().await && !*self.auto_start.read().await {
+                    return true;
+                }
+
+                // current_record => update stream
+                // auto_start+is_new_stream => update stream and current_record=true
+                let new_stream = match self
+                    .client
+                    .read()
+                    .await
+                    .get_play_url(&self.account, self.room_id)
+                    .await
+                {
+                    Ok(stream) => Some(stream),
+                    Err(e) => {
+                        log::error!("[{}]Fetch stream failed: {}", self.room_id, e);
+                        None
+                    }
+                };
+
+                if new_stream.is_none() {
+                    return true;
+                }
+
+                let stream = new_stream.unwrap();
+
+                // auto start must be true here, if what fetched is a new stream, set current_record=true to auto start recording
+                if self.live_stream.read().await.is_none()
+                    || !self
+                        .live_stream
                         .read()
                         .await
-                        .get_play_url(&self.account, self.room_id)
-                        .await
-                    {
-                        Ok(stream) => {
-                            log::info!("[{}]Update stream: {:?}", self.room_id, stream);
-                            *self.live_stream.write().await = Some(stream);
-                        }
-                        Err(e) => {
-                            log::error!("[{}]Update stream failed: {}", self.room_id, e);
-                        }
-                    }
-                } else {
-                    self.reset().await;
+                        .as_ref()
+                        .unwrap()
+                        .is_same(&stream)
+                {
+                    log::info!(
+                        "[{}]Fetched different stream: {:?} => {}",
+                        self.room_id,
+                        self.live_stream.read().await.clone(),
+                        stream
+                    );
+                    *self.current_record.write().await = true;
                 }
-                *self.live_status.write().await = live_status;
-                live_status
+
+                if *self.current_record.read().await {
+                    *self.live_stream.write().await = Some(stream);
+
+                    return true;
+                }
+
+                true
             }
             Err(e) => {
                 log::error!("[{}]Update room status failed: {}", self.room_id, e);
@@ -352,15 +399,15 @@ impl BiliRecorder {
         Ok(header_url)
     }
 
-    async fn extract_timestamp(&self, header_url: &str) -> i64 {
-        log::debug!("[{}]Extract timestamp from {}", self.room_id, header_url);
+    async fn extract_liveid(&self, header_url: &str) -> i64 {
+        log::debug!("[{}]Extract liveid from {}", self.room_id, header_url);
         let re = Regex::new(r"h(\d+).m4s").unwrap();
         if let Some(cap) = re.captures(header_url) {
-            let ts: i64 = cap.get(1).unwrap().as_str().parse().unwrap();
-            *self.live_id.write().await = ts.to_string();
-            ts
+            let liveid: i64 = cap.get(1).unwrap().as_str().parse().unwrap();
+            *self.live_id.write().await = liveid.to_string();
+            liveid
         } else {
-            log::error!("Extract timestamp failed: {}", header_url);
+            log::error!("Extract liveid failed: {}", header_url);
             0
         }
     }
@@ -401,7 +448,7 @@ impl BiliRecorder {
             if header_url.is_empty() {
                 return Err(super::errors::RecorderError::EmptyHeader);
             }
-            timestamp = self.extract_timestamp(&header_url).await;
+            timestamp = self.extract_liveid(&header_url).await;
             if timestamp == 0 {
                 log::error!("[{}]Parse timestamp failed: {}", self.room_id, header_url);
                 return Err(super::errors::RecorderError::InvalidTimestamp);
@@ -893,7 +940,7 @@ impl super::Recorder for BiliRecorder {
                 while !*self_clone.quit.lock().await {
                     if self_clone.check_status().await {
                         // Live status is ok, start recording.
-                        while !*self_clone.quit.lock().await {
+                        while self_clone.should_record().await {
                             match self_clone.update_entries().await {
                                 Ok(ms) => {
                                     if ms < 1000 {
@@ -907,6 +954,7 @@ impl super::Recorder for BiliRecorder {
                                             ms
                                         );
                                     }
+                                    *self_clone.is_recording.write().await = true;
                                 }
                                 Err(e) => {
                                     log::error!(
@@ -918,6 +966,7 @@ impl super::Recorder for BiliRecorder {
                                 }
                             }
                         }
+                        *self_clone.is_recording.write().await = false;
                         // go check status again after random 2-5 secs
                         let mut rng = rand::thread_rng();
                         let secs = rng.gen_range(2..=5);
@@ -990,6 +1039,8 @@ impl super::Recorder for BiliRecorder {
             },
             current_live_id: self.live_id.read().await.clone(),
             live_status: *self.live_status.read().await,
+            is_recording: *self.is_recording.read().await,
+            auto_start: *self.auto_start.read().await,
             platform: PlatformType::BiliBili.as_str().to_string(),
         }
     }
@@ -1025,5 +1076,17 @@ impl super::Recorder for BiliRecorder {
 
     async fn is_recording(&self, live_id: &str) -> bool {
         *self.live_id.read().await == live_id && *self.live_status.read().await
+    }
+
+    async fn force_start(&self) {
+        *self.current_record.write().await = true;
+    }
+
+    async fn force_stop(&self) {
+        *self.current_record.write().await = false;
+    }
+
+    async fn set_auto_start(&self, auto_start: bool) {
+        *self.auto_start.write().await = auto_start;
     }
 }

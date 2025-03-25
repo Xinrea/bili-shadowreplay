@@ -3,22 +3,33 @@
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import { open } from "@tauri-apps/plugin-shell";
   import { BookOpen, MessageCircle, Video, Heart } from "lucide-svelte";
+  import {
+    hasNewVersion,
+    currentVersion,
+    latestVersion,
+  } from "../lib/stores/version";
   const appWindow = getCurrentWebviewWindow();
   let version = "";
   let showDonateModal = false;
+
   getVersion().then((v) => {
-    version = v;
-    appWindow.setTitle(`BiliBili ShadowReplay - v${version}`);
+    version = "v" + v;
+    currentVersion.set(v);
+    appWindow.setTitle(`BiliBili ShadowReplay - ${version}`);
     console.log(version);
   });
-  let latest_version = "";
   let releases = [];
 
   // get releases from github api
   fetch("https://api.github.com/repos/Xinrea/bili-shadowreplay/releases")
     .then((response) => response.json())
     .then((data) => {
-      latest_version = data[0].tag_name;
+      const latest = data[0].tag_name;
+      latestVersion.set(latest);
+      // Compare versions and set hasNewVersion
+      if (version && latest !== version) {
+        hasNewVersion.set(true);
+      }
       releases = data.slice(0, 3).map((release) => ({
         version: release.tag_name,
         date: new Date(release.published_at).toLocaleDateString(),

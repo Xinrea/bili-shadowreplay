@@ -1,6 +1,6 @@
+use custom_error::custom_error;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use custom_error::custom_error;
 
 use crate::config::Config;
 use crate::database::Database;
@@ -20,4 +20,7 @@ pub struct State {
     pub config: Arc<RwLock<Config>>,
     pub recorder_manager: Arc<RecorderManager>,
     pub app_handle: tauri::AppHandle,
+    pub cancel_flag_map: Arc<
+        RwLock<std::collections::HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+    >,
 }

@@ -141,3 +141,13 @@ export interface Marker {
   realtime: number;
   content: string;
 }
+
+export interface ProgressUpdate {
+  id: string;
+  content: string;
+  cancel: string;
+}
+
+export interface ProgressFinished {
+  id: string;
+}

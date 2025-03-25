@@ -7,6 +7,7 @@ use super::{
 };
 use crate::database::Database;
 use crate::ffmpeg::{transcode, TranscodeConfig};
+use crate::progress_event::{emit_progress_finished, emit_progress_update};
 use crate::{config::Config, database::account::AccountRow};
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
@@ -493,11 +494,13 @@ impl Recorder for DouyinRecorder {
 
     async fn clip_range(
         &self,
+        app_handle: AppHandle,
         live_id: &str,
         x: f64,
         y: f64,
         output_path: &str,
     ) -> Result<String, RecorderError> {
+        let event_id = format!("clip_{}", self.room_id);
         let work_dir = self.get_work_dir(live_id).await;
         let entries = if live_id == *self.live_id.read().await {
             self.entry_store
@@ -547,13 +550,24 @@ impl Recorder for DouyinRecorder {
         let mut output = tokio::fs::File::create(&output_file)
             .await
             .map_err(|e| RecorderError::IoError { err: e })?;
-        for file_path in file_list {
+        for (i, file_path) in file_list.iter().enumerate() {
             if let Ok(mut file) = tokio::fs::File::open(file_path).await {
                 let mut buffer = Vec::new();
                 if file.read_to_end(&mut buffer).await.is_ok() {
                     let _ = output.write_all(&buffer).await;
                 }
             }
+
+            emit_progress_update(
+                &app_handle,
+                event_id.as_str(),
+                format!(
+                    "生成中：{:.1}%",
+                    (i + 1) as f64 * 100.0 / file_list.len() as f64
+                )
+                .as_str(),
+                "",
+            );
         }
         output
             .flush()
@@ -567,10 +581,17 @@ impl Recorder for DouyinRecorder {
             output_path: file_name.replace(".ts", ".mp4"),
         };
 
-        let transcode_result = transcode(output_path, transcode_config);
+        let transcode_result = transcode(
+            &app_handle,
+            event_id.as_str(),
+            output_path,
+            transcode_config,
+        );
 
         // delete the original ts file
         tokio::fs::remove_file(output_file).await?;
+
+        emit_progress_finished(&app_handle, event_id.as_str());
 
         Ok(transcode_result.unwrap().output_path)
     }

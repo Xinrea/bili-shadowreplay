@@ -1,4 +1,5 @@
 use crate::database::video::VideoRow;
+use crate::progress_event::{emit_progress_finished, emit_progress_update};
 use crate::recorder::bilibili::profile::Profile;
 use crate::recorder::PlatformType;
 use crate::state::State;
@@ -27,7 +28,14 @@ pub async fn clip_range(
     let platform = PlatformType::from_str(&platform).unwrap();
     let file = state
         .recorder_manager
-        .clip_range(&state.config.read().await.output, platform, room_id, &live_id, x, y)
+        .clip_range(
+            &state.config.read().await.output,
+            platform,
+            room_id,
+            &live_id,
+            x,
+            y,
+        )
         .await?;
     // get file metadata from fs
     let metadata = std::fs::metadata(&file).map_err(|e| e.to_string())?;
@@ -90,6 +98,7 @@ pub async fn upload_procedure(
     cover: String,
     mut profile: Profile,
 ) -> Result<String, String> {
+    let event_id = format!("post_{}", room_id);
     let account = state.db.get_account("bilibili", uid).await?;
     // get video info from dbs
     let mut video_row = state.db.get_video(video_id).await?;
@@ -98,42 +107,91 @@ pub async fn upload_procedure(
     let file = format!("{}/{}", output, video_row.file);
     let path = Path::new(&file);
     let cover_url = state.client.upload_cover(&account, &cover);
-    if let Ok(video) = state.client.prepare_video(&account, path).await {
-        profile.cover = cover_url.await.unwrap_or("".to_string());
-        if let Ok(ret) = state.client.submit_video(&account, &profile, &video).await {
-            // update video status and details
-            // 1 means uploaded
-            video_row.status = 1;
-            video_row.bvid = ret.bvid.clone();
-            video_row.title = profile.title;
-            video_row.desc = profile.desc;
-            video_row.tags = profile.tag;
-            video_row.area = profile.tid as i64;
-            state.db.update_video(&video_row).await?;
-            state
-                .db
-                .new_message(
-                    "投稿成功",
-                    &format!("投稿了房间 {} 的切片：{}", room_id, ret.bvid),
-                )
-                .await?;
-            if state.config.read().await.post_notify {
-                state
-                    .app_handle
-                    .notification()
-                    .builder()
-                    .title("BiliShadowReplay - 投稿成功")
-                    .body(format!("投稿了房间 {} 的切片: {}", room_id, ret.bvid))
-                    .show()
-                    .unwrap();
-            }
-            Ok(ret.bvid)
-        } else {
-            Err("Submit video failed".to_string())
-        }
-    } else {
-        Err("Preload video failed".to_string())
+
+    let cancel_id = format!("cancel_{}_{}", room_id, video_id);
+    if state.cancel_flag_map.read().await.get(&cancel_id).is_some() {
+        return Err("已经处于上传状态".to_string());
     }
+
+    let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    state
+        .cancel_flag_map
+        .write()
+        .await
+        .insert(cancel_id.clone(), cancel_flag.clone());
+
+    emit_progress_update(
+        &state.app_handle,
+        event_id.as_str(),
+        "投稿预处理中",
+        &cancel_id,
+    );
+
+    match state
+        .client
+        .prepare_video(
+            &state.app_handle,
+            &event_id,
+            &cancel_id,
+            &account,
+            path,
+            &cancel_flag,
+        )
+        .await
+    {
+        Ok(video) => {
+            profile.cover = cover_url.await.unwrap_or("".to_string());
+            if let Ok(ret) = state.client.submit_video(&account, &profile, &video).await {
+                // update video status and details
+                // 1 means uploaded
+                video_row.status = 1;
+                video_row.bvid = ret.bvid.clone();
+                video_row.title = profile.title;
+                video_row.desc = profile.desc;
+                video_row.tags = profile.tag;
+                video_row.area = profile.tid as i64;
+                state.db.update_video(&video_row).await?;
+                state
+                    .db
+                    .new_message(
+                        "投稿成功",
+                        &format!("投稿了房间 {} 的切片：{}", room_id, ret.bvid),
+                    )
+                    .await?;
+                if state.config.read().await.post_notify {
+                    state
+                        .app_handle
+                        .notification()
+                        .builder()
+                        .title("BiliShadowReplay - 投稿成功")
+                        .body(format!("投稿了房间 {} 的切片: {}", room_id, ret.bvid))
+                        .show()
+                        .unwrap();
+                }
+                emit_progress_finished(&state.app_handle, event_id.as_str());
+                state.cancel_flag_map.write().await.remove(&cancel_id);
+                Ok(ret.bvid)
+            } else {
+                emit_progress_finished(&state.app_handle, event_id.as_str());
+                state.cancel_flag_map.write().await.remove(&cancel_id);
+                Err("Submit video failed".to_string())
+            }
+        }
+        Err(e) => {
+            emit_progress_finished(&state.app_handle, event_id.as_str());
+            state.cancel_flag_map.write().await.remove(&cancel_id);
+            Err(format!("Preload video failed: {}", e))
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn cancel_upload(state: TauriState<'_, State>, cancel_id: String) -> Result<(), String> {
+    if let Some(cancel_flag) = state.cancel_flag_map.read().await.get(&cancel_id) {
+        cancel_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -142,7 +200,10 @@ pub async fn get_video(state: TauriState<'_, State>, id: i64) -> Result<VideoRow
 }
 
 #[tauri::command]
-pub async fn get_videos(state: TauriState<'_, State>, room_id: u64) -> Result<Vec<VideoRow>, String> {
+pub async fn get_videos(
+    state: TauriState<'_, State>,
+    room_id: u64,
+) -> Result<Vec<VideoRow>, String> {
     Ok(state.db.get_videos(room_id).await?)
 }
 
@@ -168,9 +229,13 @@ pub async fn get_video_typelist(
         .get_account("bilibili", state.config.read().await.primary_uid)
         .await?;
     Ok(state.client.get_video_typelist(&account).await?)
-} 
+}
 
 #[tauri::command]
-pub async fn update_video_cover(state: TauriState<'_, State>, id: i64, cover: String) -> Result<(), String> {
+pub async fn update_video_cover(
+    state: TauriState<'_, State>,
+    id: i64,
+    cover: String,
+) -> Result<(), String> {
     Ok(state.db.update_video_cover(id, cover).await?)
 }

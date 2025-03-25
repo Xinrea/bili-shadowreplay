@@ -29,6 +29,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::config::Config;
 use crate::database::{Database, DatabaseError};
+use crate::progress_event::{emit_progress_finished, emit_progress_update};
 
 use async_trait::async_trait;
 
@@ -655,6 +656,7 @@ impl BiliRecorder {
 
     pub async fn clip_archive_range(
         &self,
+        app_handle: AppHandle,
         live_id: &str,
         x: f64,
         y: f64,
@@ -693,11 +695,13 @@ impl BiliRecorder {
             Utc::now().format("%m%d%H%M%S"),
             y - x
         );
-        Self::generate_clip(&file_list, output_path, &file_name).await
+        self.generate_clip(app_handle, &file_list, output_path, &file_name)
+            .await
     }
 
     pub async fn clip_live_range(
         &self,
+        app_handle: AppHandle,
         x: f64,
         y: f64,
         output_path: &str,
@@ -761,15 +765,19 @@ impl BiliRecorder {
             Utc::now().format("%m%d%H%M%S"),
             y - x
         );
-        Self::generate_clip(&file_list, output_path, &file_name).await
+        self.generate_clip(app_handle, &file_list, output_path, &file_name)
+            .await
     }
 
     async fn generate_clip(
+        &self,
+        app_handle: AppHandle,
         file_list: &Vec<String>,
         output_path: &str,
         file_name: &str,
     ) -> Result<String, super::errors::RecorderError> {
         std::fs::create_dir_all(output_path).expect("create clips folder failed");
+        let event_id = format!("clip_{}", self.room_id);
         let output_name = format!("{}/{}", output_path, file_name,);
         let file = OpenOptions::new()
             .read(true)
@@ -784,8 +792,9 @@ impl BiliRecorder {
             });
         }
         let mut file = file.unwrap();
+        let total_files = file_list.len();
         // write file content in file_list into file
-        for f in file_list {
+        for (i, f) in file_list.iter().enumerate() {
             let seg_file = OpenOptions::new().read(true).open(f).await;
             if seg_file.is_err() {
                 log::error!("Reading {} failed, skip", f);
@@ -795,6 +804,17 @@ impl BiliRecorder {
             let mut buffer = Vec::new();
             seg_file.read_to_end(&mut buffer).await.unwrap();
             file.write_all(&buffer).await.unwrap();
+
+            emit_progress_update(
+                &app_handle,
+                event_id.as_str(),
+                format!(
+                    "生成中：{:.1}%",
+                    (i + 1) as f64 * 100.0 / total_files as f64
+                )
+                .as_str(),
+                "",
+            );
         }
 
         file.flush().await.unwrap();
@@ -806,10 +826,17 @@ impl BiliRecorder {
             output_path: format!("fixed_{}", file_name),
         };
 
-        let transcode_result = transcode(output_path, transcode_config);
+        let transcode_result = transcode(
+            &app_handle,
+            event_id.as_str(),
+            output_path,
+            transcode_config,
+        );
 
         // delete the original ts file
         tokio::fs::remove_file(output_name).await?;
+
+        emit_progress_finished(&app_handle, event_id.as_str());
 
         Ok(transcode_result.unwrap().output_path)
     }
@@ -996,15 +1023,17 @@ impl super::Recorder for BiliRecorder {
     /// x and y are relative to first sequence
     async fn clip_range(
         &self,
+        app_handle: AppHandle,
         live_id: &str,
         x: f64,
         y: f64,
         output_path: &str,
     ) -> Result<String, super::errors::RecorderError> {
         if *self.live_id.read().await == live_id {
-            self.clip_live_range(x, y, output_path).await
+            self.clip_live_range(app_handle, x, y, output_path).await
         } else {
-            self.clip_archive_range(live_id, x, y, output_path).await
+            self.clip_archive_range(app_handle, live_id, x, y, output_path)
+                .await
         }
     }
 

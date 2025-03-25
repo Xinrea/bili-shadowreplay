@@ -7,6 +7,7 @@ mod entry;
 
 use async_trait::async_trait;
 use danmu::DanmuEntry;
+use tauri::AppHandle;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlatformType {
@@ -70,6 +71,7 @@ pub trait Recorder: Send + Sync + 'static {
     async fn stop(&self);
     async fn clip_range(
         &self,
+        app_handle: AppHandle,
         live_id: &str,
         x: f64,
         y: f64,

@@ -8,6 +8,7 @@ use super::response::PostVideoMetaResponse;
 use super::response::PreuploadResponse;
 use super::response::VideoSubmitData;
 use crate::database::account::AccountRow;
+use crate::progress_event::emit_progress_update;
 use base64::Engine;
 use pct_str::PctString;
 use pct_str::URIReserved;
@@ -21,6 +22,7 @@ use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 use std::time::SystemTime;
+use tauri::AppHandle;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::time::Instant;
@@ -364,7 +366,7 @@ impl BiliClient {
                     if let Some(f) = stream.format.iter().find(|f| f.format_name == "fmp4") {
                         self.get_stream(f).await
                     } else {
-                        log::error!("No fmp4 stream found: {:#?}", data);
+                        log::error!("No fmp4 stream found: {:?}", data);
                         Err(BiliClientError::InvalidResponse)
                     }
                 } else {
@@ -552,20 +554,32 @@ impl BiliClient {
 
     async fn upload_video(
         &self,
+        app_handle: &AppHandle,
+        event_id: &str,
+        cancel_id: &str,
         preupload_response: &PreuploadResponse,
         post_video_meta_response: &PostVideoMetaResponse,
         video_file: &Path,
+        cancel_flag: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<usize, BiliClientError> {
         let mut file = File::open(video_file).await?;
         let mut buffer = vec![0; preupload_response.chunk_size];
         let file_size = video_file.metadata()?.len();
-        let chunk_size = preupload_response.chunk_size as u64; // 确保使用 u64 类型
-        let total_chunks = (file_size as f64 / chunk_size as f64).ceil() as usize; // 计算总分块数
+        let chunk_size = preupload_response.chunk_size as u64;
+        let total_chunks = (file_size as f64 / chunk_size as f64).ceil() as usize;
 
         let start = Instant::now();
         let mut chunk = 0;
         let mut read_total = 0;
+        let max_retries = 3;
+        let timeout = Duration::from_secs(30);
+
         while let Ok(size) = file.read(&mut buffer[read_total..]).await {
+            // Check for cancellation
+            if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(BiliClientError::UploadCancelled);
+            }
+
             read_total += size;
             log::debug!("size: {}, total: {}", size, read_total);
             if size > 0 && (read_total as u64) < chunk_size {
@@ -574,29 +588,76 @@ impl BiliClient {
             if size == 0 && read_total == 0 {
                 break;
             }
-            let url = format!(
-                "https:{}{}?partNumber={}&uploadId={}&chunk={}&chunks={}&size={}&start={}&end={}&total={}",
-                preupload_response.endpoint,
-                preupload_response.upos_uri.replace("upos:/", ""),
-                chunk + 1,
-                post_video_meta_response.upload_id,
-                chunk,
-                total_chunks,
-                read_total,
-                chunk * preupload_response.chunk_size,
-                chunk * preupload_response.chunk_size + read_total,
-                video_file.metadata().unwrap().len()
-            );
-            self.client
-                .put(&url)
-                .header("X-Upos-Auth", &preupload_response.auth)
-                .header("Content-Type", "application/octet-stream")
-                .header("Content-Length", read_total.to_string())
-                .body(buffer[..read_total].to_vec())
-                .send()
-                .await?
-                .text()
-                .await?;
+
+            let mut retry_count = 0;
+            let mut success = false;
+
+            while retry_count < max_retries && !success {
+                // Check for cancellation before each retry
+                if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Err(BiliClientError::UploadCancelled);
+                }
+
+                let url = format!(
+                    "https:{}{}?partNumber={}&uploadId={}&chunk={}&chunks={}&size={}&start={}&end={}&total={}",
+                    preupload_response.endpoint,
+                    preupload_response.upos_uri.replace("upos:/", ""),
+                    chunk + 1,
+                    post_video_meta_response.upload_id,
+                    chunk,
+                    total_chunks,
+                    read_total,
+                    chunk * preupload_response.chunk_size,
+                    chunk * preupload_response.chunk_size + read_total,
+                    video_file.metadata().unwrap().len()
+                );
+
+                match self
+                    .client
+                    .put(&url)
+                    .header("X-Upos-Auth", &preupload_response.auth)
+                    .header("Content-Type", "application/octet-stream")
+                    .header("Content-Length", read_total.to_string())
+                    .timeout(timeout)
+                    .body(buffer[..read_total].to_vec())
+                    .send()
+                    .await
+                {
+                    Ok(response) => {
+                        if response.status().is_success() {
+                            success = true;
+                            let _ = response.text().await?;
+                        } else {
+                            log::error!("Upload failed with status: {}", response.status());
+                            retry_count += 1;
+                            if retry_count < max_retries {
+                                tokio::time::sleep(Duration::from_secs(
+                                    2u64.pow(retry_count as u32),
+                                ))
+                                .await;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Upload error: {}", e);
+                        retry_count += 1;
+                        if retry_count < max_retries {
+                            tokio::time::sleep(Duration::from_secs(2u64.pow(retry_count as u32)))
+                                .await;
+                        }
+                    }
+                }
+            }
+
+            if !success {
+                return Err(BiliClientError::UploadError {
+                    err: format!(
+                        "Failed to upload chunk {} after {} retries",
+                        chunk, max_retries
+                    ),
+                });
+            }
+
             chunk += 1;
             read_total = 0;
             log::debug!(
@@ -604,6 +665,20 @@ impl BiliClient {
                 (chunk * preupload_response.chunk_size) as f64
                     / start.elapsed().as_secs_f64()
                     / 1024.0
+            );
+
+            emit_progress_update(
+                app_handle,
+                event_id,
+                format!(
+                    "{:.1}% | {:.1} KiB/s",
+                    (chunk * 100) as f64 / total_chunks as f64,
+                    (chunk * preupload_response.chunk_size) as f64
+                        / start.elapsed().as_secs_f64()
+                        / 1024.0
+                )
+                .as_str(),
+                cancel_id,
             );
         }
         Ok(total_chunks)
@@ -641,8 +716,12 @@ impl BiliClient {
 
     pub async fn prepare_video(
         &self,
+        app_handle: &AppHandle,
+        event_id: &str,
+        cancel_id: &str,
         account: &AccountRow,
         video_file: &Path,
+        cancel_flag: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<profile::Video, BiliClientError> {
         log::info!("Start Preparing Video: {}", video_file.to_str().unwrap());
         let preupload = self.preupload_video(account, video_file).await?;
@@ -650,7 +729,15 @@ impl BiliClient {
         let metaposted = self.post_video_meta(&preupload, video_file).await?;
         log::info!("Post Video Meta Response: {:?}", metaposted);
         let uploaded = self
-            .upload_video(&preupload, &metaposted, video_file)
+            .upload_video(
+                app_handle,
+                event_id,
+                cancel_id,
+                &preupload,
+                &metaposted,
+                video_file,
+                cancel_flag,
+            )
             .await?;
         log::info!("Uploaded: {}", uploaded);
         self.end_upload(&preupload, &metaposted, uploaded).await?;

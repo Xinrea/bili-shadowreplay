@@ -1,4 +1,5 @@
 use crate::database::video::VideoRow;
+use crate::progress_event::{emit_progress_finished, emit_progress_update};
 use crate::recorder::bilibili::profile::Profile;
 use crate::recorder::PlatformType;
 use crate::state::State;
@@ -27,7 +28,14 @@ pub async fn clip_range(
     let platform = PlatformType::from_str(&platform).unwrap();
     let file = state
         .recorder_manager
-        .clip_range(&state.config.read().await.output, platform, room_id, &live_id, x, y)
+        .clip_range(
+            &state.config.read().await.output,
+            platform,
+            room_id,
+            &live_id,
+            x,
+            y,
+        )
         .await?;
     // get file metadata from fs
     let metadata = std::fs::metadata(&file).map_err(|e| e.to_string())?;
@@ -90,6 +98,7 @@ pub async fn upload_procedure(
     cover: String,
     mut profile: Profile,
 ) -> Result<String, String> {
+    let event_id = format!("post_{}", room_id);
     let account = state.db.get_account("bilibili", uid).await?;
     // get video info from dbs
     let mut video_row = state.db.get_video(video_id).await?;
@@ -98,7 +107,12 @@ pub async fn upload_procedure(
     let file = format!("{}/{}", output, video_row.file);
     let path = Path::new(&file);
     let cover_url = state.client.upload_cover(&account, &cover);
-    if let Ok(video) = state.client.prepare_video(&account, path).await {
+    emit_progress_update(&state.app_handle, event_id.as_str(), "投稿预处理中");
+    if let Ok(video) = state
+        .client
+        .prepare_video(&state.app_handle, &event_id, &account, path)
+        .await
+    {
         profile.cover = cover_url.await.unwrap_or("".to_string());
         if let Ok(ret) = state.client.submit_video(&account, &profile, &video).await {
             // update video status and details
@@ -127,11 +141,14 @@ pub async fn upload_procedure(
                     .show()
                     .unwrap();
             }
+            emit_progress_finished(&state.app_handle, event_id.as_str());
             Ok(ret.bvid)
         } else {
+            emit_progress_finished(&state.app_handle, event_id.as_str());
             Err("Submit video failed".to_string())
         }
     } else {
+        emit_progress_finished(&state.app_handle, event_id.as_str());
         Err("Preload video failed".to_string())
     }
 }
@@ -142,7 +159,10 @@ pub async fn get_video(state: TauriState<'_, State>, id: i64) -> Result<VideoRow
 }
 
 #[tauri::command]
-pub async fn get_videos(state: TauriState<'_, State>, room_id: u64) -> Result<Vec<VideoRow>, String> {
+pub async fn get_videos(
+    state: TauriState<'_, State>,
+    room_id: u64,
+) -> Result<Vec<VideoRow>, String> {
     Ok(state.db.get_videos(room_id).await?)
 }
 
@@ -168,9 +188,13 @@ pub async fn get_video_typelist(
         .get_account("bilibili", state.config.read().await.primary_uid)
         .await?;
     Ok(state.client.get_video_typelist(&account).await?)
-} 
+}
 
 #[tauri::command]
-pub async fn update_video_cover(state: TauriState<'_, State>, id: i64, cover: String) -> Result<(), String> {
+pub async fn update_video_cover(
+    state: TauriState<'_, State>,
+    id: i64,
+    cover: String,
+) -> Result<(), String> {
     Ok(state.db.update_video_cover(id, cover).await?)
 }

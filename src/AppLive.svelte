@@ -3,16 +3,20 @@
   import Player from "./lib/Player.svelte";
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import type { AccountInfo, RecordItem } from "./lib/db";
+  import { ChevronRight, ChevronLeft, Play, Pen } from "lucide-svelte";
   import {
-    ChevronRight,
-    ChevronLeft,
-    Play,
-    Pen,
-  } from "lucide-svelte";
-  import type { Profile, VideoItem, Config, Marker } from "./lib/interface";
+    type Profile,
+    type VideoItem,
+    type Config,
+    type Marker,
+    type ProgressUpdate,
+    type ProgressFinished,
+  } from "./lib/interface";
   import TypeSelect from "./lib/TypeSelect.svelte";
   import MarkerPanel from "./lib/MarkerPanel.svelte";
   import CoverEditor from "./lib/CoverEditor.svelte";
+  import { listen } from "@tauri-apps/api/event";
+  import { onDestroy } from "svelte";
 
   const appWindow = getCurrentWebviewWindow();
   const urlParams = new URLSearchParams(window.location.search);
@@ -72,6 +76,41 @@
     };
   }
 
+  let progress_update_listener = listen<ProgressUpdate>(
+    `progress-update`,
+    (e) => {
+      // clip_{room_id}
+      // post_{room_id}
+      let event_id = e.payload.id;
+      let event_room_id = event_id.split("_")[1];
+      if (event_room_id != room_id.toString()) {
+        return;
+      }
+
+      if (event_id.includes("clip")) {
+        loading = true;
+        update_clip_prompt(e.payload.content);
+      } else if (event_id.includes("post")) {
+        loading = true;
+        update_post_prompt(e.payload.content);
+      }
+    }
+  );
+  let progress_finished_listener = listen<ProgressFinished>(
+    `progress-finished`,
+    () => {
+      loading = false;
+      update_clip_prompt(`生成切片`);
+      update_post_prompt(`投稿`);
+    }
+  );
+
+  // remove listeners when component is destroyed
+  onDestroy(() => {
+    progress_update_listener.then((fn) => fn());
+    progress_finished_listener.then((fn) => fn());
+  });
+
   let archive: RecordItem = null;
 
   let loading = false;
@@ -95,7 +134,7 @@
   let text_style = {
     position: { x: 8, y: 8 },
     fontSize: 24,
-    color: "#FF7F00"
+    color: "#FF7F00",
   };
   let uid_selected = 0;
   let video_selected = 0;
@@ -112,7 +151,7 @@
         platform: a.platform,
       };
     });
-    accounts = accounts.filter((a) => a.platform === 'bilibili');
+    accounts = accounts.filter((a) => a.platform === "bilibili");
   });
 
   get_video_list();
@@ -125,10 +164,19 @@
     }
   );
 
-  function update_title(str: string) {
-    appWindow.setTitle(
-      `[${room_id}]${archive.title} - ${str}`
-    );
+  function update_clip_prompt(str: string) {
+    // update button text
+    const span = document.getElementById("generate-clip-prompt");
+    if (span) {
+      span.textContent = str;
+    }
+  }
+
+  function update_post_prompt(str: string) {
+    const span = document.getElementById("post-prompt");
+    if (span) {
+      span.textContent = str;
+    }
   }
 
   async function get_video_list() {
@@ -167,7 +215,7 @@
     }
     loading = true;
     let new_cover = generateCover();
-    update_title(`切片生成中`);
+    update_clip_prompt(`切片生成中`);
     try {
       let new_video = (await invoke("clip_range", {
         roomId: room_id,
@@ -177,7 +225,6 @@
         x: start,
         y: end,
       })) as VideoItem;
-      update_title(`切片生成成功`);
       console.log("video file generatd:", selected_video);
       await get_video_list();
       video_selected = new_video.id;
@@ -195,7 +242,7 @@
     if (!selected_video) {
       return;
     }
-    update_title(`投稿上传中`);
+    update_post_prompt(`投稿上传中`);
     loading = true;
 
     // update profile in local storage
@@ -209,13 +256,11 @@
     })
       .then(async () => {
         loading = false;
-        update_title(`投稿成功`);
         video_selected = 0;
         await get_video_list();
       })
       .catch((e) => {
         loading = false;
-        update_title(`投稿失败`);
         alert(e);
       });
   }
@@ -225,9 +270,7 @@
       return;
     }
     loading = true;
-    update_title(`删除中`);
     await invoke("delete_video", { id: video_selected });
-    update_title(`删除成功`);
     loading = false;
     video_selected = 0;
     selected_video = null;
@@ -307,14 +350,14 @@
       />
       {#if preview}
         <!-- svelte-ignore a11y-click-events-have-key-events -->
-        <div 
+        <div
           class="fixed inset-0 bg-black/30 backdrop-blur-sm z-[1000] transition-opacity duration-200"
           class:opacity-0={!preview}
           class:opacity-100={preview}
-          on:click={() => preview = false}
+          on:click={() => (preview = false)}
         >
           <!-- svelte-ignore a11y-click-events-have-key-events -->
-          <div 
+          <div
             class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] bg-[#1c1c1e] rounded-xl shadow-2xl overflow-hidden transition-all duration-200 scale-100"
             class:opacity-0={!preview}
             class:opacity-100={preview}
@@ -323,13 +366,21 @@
             on:click|stopPropagation
           >
             <!-- 标题栏 -->
-            <div class="flex items-center justify-between px-6 py-4 border-b border-gray-800/50 bg-[#2c2c2e]">
+            <div
+              class="flex items-center justify-between px-6 py-4 border-b border-gray-800/50 bg-[#2c2c2e]"
+            >
               <h3 class="text-lg font-medium text-white">预览视频</h3>
-              <button 
+              <button
                 class="w-6 h-6 rounded-full bg-[#ff5f57] hover:bg-[#ff5f57]/90 transition-colors duration-200 flex items-center justify-center group"
-                on:click={() => preview = false}
+                on:click={() => (preview = false)}
               >
-                <svg class="w-3 h-3 text-[#1c1c1e] opacity-0 group-hover:opacity-100 transition-opacity duration-200" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                <svg
+                  class="w-3 h-3 text-[#1c1c1e] opacity-0 group-hover:opacity-100 transition-opacity duration-200"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="3"
+                >
                   <path d="M18 6L6 18M6 6l12 12" />
                 </svg>
               </button>
@@ -337,9 +388,9 @@
             <!-- 视频容器 -->
             <div class="relative aspect-video bg-black">
               <!-- svelte-ignore a11y-media-has-caption -->
-              <video 
-                src={selected_video?.file} 
-                controls 
+              <video
+                src={selected_video?.file}
+                controls
                 class="w-full h-full"
               />
             </div>
@@ -401,7 +452,7 @@
                         class="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin"
                       />
                     {/if}
-                    <span>生成切片</span>
+                    <span id="generate-clip-prompt">生成切片</span>
                   </button>
                   {#if selected_video}
                     <button
@@ -436,20 +487,23 @@
             {#if selected_video && selected_video.id != -1}
               <section>
                 <div class="group">
-                  <div class="text-sm text-gray-400 mb-2 flex items-center justify-between">
+                  <div
+                    class="text-sm text-gray-400 mb-2 flex items-center justify-between"
+                  >
                     <span>视频封面</span>
                     <button
                       class="text-[#0A84FF] hover:text-[#0A84FF]/80 transition-colors duration-200 flex items-center space-x-1"
-                      on:click={() => show_cover_editor = true}
+                      on:click={() => (show_cover_editor = true)}
                     >
                       <Pen class="w-4 h-4" />
                       <span class="text-xs">创建新封面</span>
                     </button>
                   </div>
+                  <!-- svelte-ignore a11y-click-events-have-key-events -->
                   <div
                     id="capture"
                     class="relative rounded-xl overflow-hidden bg-black/20 border border-gray-800/50 cursor-pointer group"
-                    on:click={() => preview = true}
+                    on:click={() => (preview = true)}
                   >
                     <div
                       class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100
@@ -461,7 +515,11 @@
                         <Play class="w-6 h-6 text-white" />
                       </div>
                     </div>
-                    <img src={selected_video.cover} alt="视频封面" class="w-full" />
+                    <img
+                      src={selected_video.cover}
+                      alt="视频封面"
+                      class="w-full"
+                    />
                   </div>
                 </div>
               </section>
@@ -474,8 +532,9 @@
                 <h3 class="text-sm font-medium text-gray-400">基本信息</h3>
                 <!-- 标题 -->
                 <div class="space-y-2">
-                  <label for="title" class="block text-sm font-medium text-gray-300"
-                    >标题</label
+                  <label
+                    for="title"
+                    class="block text-sm font-medium text-gray-300">标题</label
                   >
                   <input
                     id="title"
@@ -491,7 +550,9 @@
 
                 <!-- 视频分区 -->
                 <div class="space-y-2">
-                  <label for="tid" class="block text-sm font-medium text-gray-300"
+                  <label
+                    for="tid"
+                    class="block text-sm font-medium text-gray-300"
                     >视频分区</label
                   >
                   <div class="w-full" id="tid">
@@ -501,7 +562,9 @@
 
                 <!-- 投稿账号 -->
                 <div id="uid" class="space-y-2">
-                  <label for="uid" class="block text-sm font-medium text-gray-300"
+                  <label
+                    for="uid"
+                    class="block text-sm font-medium text-gray-300"
                     >投稿账号</label
                   >
                   <select
@@ -523,8 +586,9 @@
                 <h3 class="text-sm font-medium text-gray-400">详细信息</h3>
                 <!-- 描述 -->
                 <div class="space-y-2">
-                  <label for="desc" class="block text-sm font-medium text-gray-300"
-                    >描述</label
+                  <label
+                    for="desc"
+                    class="block text-sm font-medium text-gray-300">描述</label
                   >
                   <textarea
                     id="desc"
@@ -539,8 +603,9 @@
 
                 <!-- 标签 -->
                 <div class="space-y-2">
-                  <label for="tag" class="block text-sm font-medium text-gray-300"
-                    >标签</label
+                  <label
+                    for="tag"
+                    class="block text-sm font-medium text-gray-300">标签</label
                   >
                   <input
                     id="tag"
@@ -556,8 +621,9 @@
 
                 <!-- 动态 -->
                 <div class="space-y-2">
-                  <label for="dynamic" class="block text-sm font-medium text-gray-300"
-                    >动态</label
+                  <label
+                    for="dynamic"
+                    class="block text-sm font-medium text-gray-300">动态</label
                   >
                   <textarea
                     id="dynamic"
@@ -597,7 +663,7 @@
                   class="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin"
                 />
               {/if}
-              <span>投稿</span>
+              <span id="post-prompt">投稿</span>
             </button>
           </div>
         {/if}
@@ -606,13 +672,13 @@
   </div>
 </main>
 
-<CoverEditor 
+<CoverEditor
   bind:show={show_cover_editor}
   video={selected_video}
   on:coverUpdate={(event) => {
     selected_video = {
       ...selected_video,
-      cover: event.detail.cover
+      cover: event.detail.cover,
     };
   }}
 />

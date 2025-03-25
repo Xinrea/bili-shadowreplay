@@ -210,7 +210,7 @@ impl RecorderManager {
         }
         let recorder = recorders.get(&recorder_id).unwrap();
         Ok(recorder
-            .clip_range(live_id, start, end, output_path)
+            .clip_range(self.app_handle.clone(), live_id, start, end, output_path)
             .await?)
     }
 

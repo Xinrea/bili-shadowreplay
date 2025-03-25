@@ -8,6 +8,7 @@ use super::response::PostVideoMetaResponse;
 use super::response::PreuploadResponse;
 use super::response::VideoSubmitData;
 use crate::database::account::AccountRow;
+use crate::progress_event::emit_progress_update;
 use base64::Engine;
 use pct_str::PctString;
 use pct_str::URIReserved;
@@ -21,6 +22,7 @@ use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 use std::time::SystemTime;
+use tauri::AppHandle;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::time::Instant;
@@ -552,6 +554,8 @@ impl BiliClient {
 
     async fn upload_video(
         &self,
+        app_handle: &AppHandle,
+        event_id: &str,
         preupload_response: &PreuploadResponse,
         post_video_meta_response: &PostVideoMetaResponse,
         video_file: &Path,
@@ -605,6 +609,19 @@ impl BiliClient {
                     / start.elapsed().as_secs_f64()
                     / 1024.0
             );
+
+            emit_progress_update(
+                app_handle,
+                event_id,
+                format!(
+                    "{:.1}% | {:.1} KiB/s",
+                    (chunk * 100) as f64 / total_chunks as f64,
+                    (chunk * preupload_response.chunk_size) as f64
+                        / start.elapsed().as_secs_f64()
+                        / 1024.0
+                )
+                .as_str(),
+            );
         }
         Ok(total_chunks)
     }
@@ -641,6 +658,8 @@ impl BiliClient {
 
     pub async fn prepare_video(
         &self,
+        app_handle: &AppHandle,
+        event_id: &str,
         account: &AccountRow,
         video_file: &Path,
     ) -> Result<profile::Video, BiliClientError> {
@@ -650,7 +669,7 @@ impl BiliClient {
         let metaposted = self.post_video_meta(&preupload, video_file).await?;
         log::info!("Post Video Meta Response: {:?}", metaposted);
         let uploaded = self
-            .upload_video(&preupload, &metaposted, video_file)
+            .upload_video(app_handle, event_id, &preupload, &metaposted, video_file)
             .await?;
         log::info!("Uploaded: {}", uploaded);
         self.end_upload(&preupload, &metaposted, uploaded).await?;

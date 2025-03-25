@@ -5,6 +5,7 @@ mod config;
 mod database;
 mod ffmpeg;
 mod handlers;
+mod progress_event;
 mod recorder;
 mod recorder_manager;
 mod state;

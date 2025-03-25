@@ -125,13 +125,17 @@ impl RecorderManager {
                 )
                 .await?,
             ),
-            PlatformType::Douyin => Box::new(DouyinRecorder::new(
-                room_id,
-                self.config.clone(),
-                account,
-                &self.db,
-                auto_start,
-            )),
+            PlatformType::Douyin => Box::new(
+                DouyinRecorder::new(
+                    self.app_handle.clone(),
+                    room_id,
+                    self.config.clone(),
+                    account,
+                    &self.db,
+                    auto_start,
+                )
+                .await?,
+            ),
             _ => {
                 return Err(RecorderManagerError::InvalidPlatformType {
                     platform: platform.as_str().to_string(),

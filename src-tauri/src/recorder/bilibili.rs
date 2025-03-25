@@ -89,15 +89,9 @@ impl BiliRecorder {
             .get_user_info(webid, account, room_info.user_id)
             .await?;
         let mut live_status = false;
-        let mut live_stream = None;
         let mut cover = None;
         if room_info.live_status == 1 {
             live_status = true;
-            if let Ok(stream) = client.get_play_url(account, room_info.room_id).await {
-                live_stream = Some(stream);
-            } else {
-                log::error!("[{}]Room is online but fetching stream failed", room_id);
-            }
 
             // Get cover image
             if let Ok(cover_base64) = client.get_cover_base64(&room_info.room_cover_url).await {
@@ -123,7 +117,7 @@ impl BiliRecorder {
             cover: Arc::new(RwLock::new(cover)),
             last_update: Arc::new(RwLock::new(Utc::now().timestamp())),
             quit: Arc::new(Mutex::new(false)),
-            live_stream: Arc::new(RwLock::new(live_stream)),
+            live_stream: Arc::new(RwLock::new(None)),
             danmu_storage: Arc::new(RwLock::new(None)),
             m3u8_cache: DashMap::new(),
         };
@@ -134,6 +128,7 @@ impl BiliRecorder {
     pub async fn reset(&self) {
         *self.entry_store.write().await = None;
         *self.live_id.write().await = String::new();
+        *self.live_stream.write().await = None;
         *self.last_update.write().await = Utc::now().timestamp();
         *self.danmu_storage.write().await = None;
     }
@@ -160,7 +155,16 @@ impl BiliRecorder {
 
                 // handle live notification
                 if *self.live_status.read().await != live_status {
-                    log::info!("[{}]Live status changed: {}", self.room_id, live_status);
+                    log::info!(
+                        "[{}]Live status changed to {}, current_record: {}, auto_start: {}",
+                        self.room_id,
+                        live_status,
+                        *self.current_record.read().await,
+                        *self.auto_start.read().await
+                    );
+                    // just doing reset
+                    self.reset().await;
+
                     if live_status {
                         if self.config.read().await.live_start_notify {
                             self.app_handle
@@ -174,17 +178,6 @@ impl BiliRecorder {
                                 ))
                                 .show()
                                 .unwrap();
-                        }
-
-                        // Get stream URL
-                        if let Ok(stream) = self
-                            .client
-                            .read()
-                            .await
-                            .get_play_url(&self.account, self.room_id)
-                            .await
-                        {
-                            *self.live_stream.write().await = Some(stream);
                         }
 
                         // Get cover image
@@ -211,37 +204,68 @@ impl BiliRecorder {
                     }
                 }
 
-                // if stream is confirmed to be closed, live stream cache is cleaned.
-                // all request will go through fs
-                if live_status {
-                    if *self.auto_start.read().await {
-                        *self.current_record.write().await = true;
-                    }
+                *self.live_status.write().await = live_status;
 
-                    // if not recording, no need to update stream
-                    if *self.current_record.read().await {
-                        match self
-                            .client
-                            .read()
-                            .await
-                            .get_play_url(&self.account, self.room_id)
-                            .await
-                        {
-                            Ok(stream) => {
-                                log::info!("[{}]Update stream: {:?}", self.room_id, stream);
-                                *self.live_stream.write().await = Some(stream);
-                            }
-                            Err(e) => {
-                                log::error!("[{}]Update stream failed: {}", self.room_id, e);
-                            }
-                        }
-                    }
-                } else {
+                if !live_status {
                     self.reset().await;
                     *self.current_record.write().await = false;
+
+                    return false;
                 }
-                *self.live_status.write().await = live_status;
-                live_status
+
+                // no need to check stream if current_record is false and auto_start is false
+                if !*self.current_record.read().await && !*self.auto_start.read().await {
+                    return true;
+                }
+
+                // current_record => update stream
+                // auto_start+is_new_stream => update stream and current_record=true
+                let new_stream = match self
+                    .client
+                    .read()
+                    .await
+                    .get_play_url(&self.account, self.room_id)
+                    .await
+                {
+                    Ok(stream) => Some(stream),
+                    Err(e) => {
+                        log::error!("[{}]Fetch stream failed: {}", self.room_id, e);
+                        None
+                    }
+                };
+
+                if new_stream.is_none() {
+                    return true;
+                }
+
+                let stream = new_stream.unwrap();
+
+                // auto start must be true here, if what fetched is a new stream, set current_record=true to auto start recording
+                if self.live_stream.read().await.is_none()
+                    || !self
+                        .live_stream
+                        .read()
+                        .await
+                        .as_ref()
+                        .unwrap()
+                        .is_same(&stream)
+                {
+                    log::info!(
+                        "[{}]Fetched different stream: {:?} => {}",
+                        self.room_id,
+                        self.live_stream.read().await.clone(),
+                        stream
+                    );
+                    *self.current_record.write().await = true;
+                }
+
+                if *self.current_record.read().await {
+                    *self.live_stream.write().await = Some(stream);
+
+                    return true;
+                }
+
+                true
             }
             Err(e) => {
                 log::error!("[{}]Update room status failed: {}", self.room_id, e);
@@ -375,15 +399,15 @@ impl BiliRecorder {
         Ok(header_url)
     }
 
-    async fn extract_timestamp(&self, header_url: &str) -> i64 {
-        log::debug!("[{}]Extract timestamp from {}", self.room_id, header_url);
+    async fn extract_liveid(&self, header_url: &str) -> i64 {
+        log::debug!("[{}]Extract liveid from {}", self.room_id, header_url);
         let re = Regex::new(r"h(\d+).m4s").unwrap();
         if let Some(cap) = re.captures(header_url) {
-            let ts: i64 = cap.get(1).unwrap().as_str().parse().unwrap();
-            *self.live_id.write().await = ts.to_string();
-            ts
+            let liveid: i64 = cap.get(1).unwrap().as_str().parse().unwrap();
+            *self.live_id.write().await = liveid.to_string();
+            liveid
         } else {
-            log::error!("Extract timestamp failed: {}", header_url);
+            log::error!("Extract liveid failed: {}", header_url);
             0
         }
     }
@@ -424,7 +448,7 @@ impl BiliRecorder {
             if header_url.is_empty() {
                 return Err(super::errors::RecorderError::EmptyHeader);
             }
-            timestamp = self.extract_timestamp(&header_url).await;
+            timestamp = self.extract_liveid(&header_url).await;
             if timestamp == 0 {
                 log::error!("[{}]Parse timestamp failed: {}", self.room_id, header_url);
                 return Err(super::errors::RecorderError::InvalidTimestamp);

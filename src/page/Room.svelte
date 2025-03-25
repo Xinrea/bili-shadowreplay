@@ -225,27 +225,25 @@
               <Ellipsis class="w-5 h-5 icon-white" />
             </button>
             <Dropdown class="whitespace-nowrap">
-              {#if !room.auto_start}
-                {#if room.is_recording}
-                  <DropdownItem
-                    on:click={() => {
-                      invoke("force_stop", {
-                        platform: room.platform,
-                        roomId: room.room_id,
-                      });
-                    }}>暂停录制</DropdownItem
-                  >
-                {/if}
-                {#if !room.is_recording && room.live_status}
-                  <DropdownItem
-                    on:click={() => {
-                      invoke("force_start", {
-                        platform: room.platform,
-                        roomId: room.room_id,
-                      });
-                    }}>开始录制</DropdownItem
-                  >
-                {/if}
+              {#if room.is_recording}
+                <DropdownItem
+                  on:click={() => {
+                    invoke("force_stop", {
+                      platform: room.platform,
+                      roomId: room.room_id,
+                    });
+                  }}>暂停本次录制</DropdownItem
+                >
+              {/if}
+              {#if !room.is_recording && room.live_status}
+                <DropdownItem
+                  on:click={() => {
+                    invoke("force_start", {
+                      platform: room.platform,
+                      roomId: room.room_id,
+                    });
+                  }}>开始录制</DropdownItem
+                >
               {/if}
               <button
                 class="px-4 py-2 flex items-center justify-between hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"

@@ -14,6 +14,8 @@ use client::DouyinClientError;
 use dashmap::DashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tauri::AppHandle;
+use tauri_plugin_notification::NotificationExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
 
@@ -37,6 +39,7 @@ impl From<DouyinClientError> for RecorderError {
 
 #[derive(Clone)]
 pub struct DouyinRecorder {
+    app_handle: AppHandle,
     client: client::DouyinClient,
     db: Arc<Database>,
     pub room_id: u64,
@@ -55,23 +58,31 @@ pub struct DouyinRecorder {
 }
 
 impl DouyinRecorder {
-    pub fn new(
+    pub async fn new(
+        app_handle: AppHandle,
         room_id: u64,
         config: Arc<RwLock<Config>>,
         douyin_account: &AccountRow,
         db: &Arc<Database>,
         auto_start: bool,
-    ) -> Self {
+    ) -> Result<Self, super::errors::RecorderError> {
         let client = client::DouyinClient::new(douyin_account);
-        Self {
+        let room_info = client.get_room_info(room_id).await?;
+        let mut live_status = LiveStatus::Offline;
+        if room_info.data.room_status == 0 {
+            live_status = LiveStatus::Live;
+        }
+
+        Ok(Self {
+            app_handle,
             db: db.clone(),
             room_id,
             live_id: Arc::new(RwLock::new(String::new())),
             entry_store: Arc::new(RwLock::new(None)),
             client,
-            room_info: Arc::new(RwLock::new(None)),
+            room_info: Arc::new(RwLock::new(Some(room_info))),
             stream_url: Arc::new(RwLock::new(None)),
-            live_status: Arc::new(RwLock::new(LiveStatus::Offline)),
+            live_status: Arc::new(RwLock::new(live_status)),
             running: Arc::new(RwLock::new(false)),
             is_recording: Arc::new(RwLock::new(false)),
             auto_start: Arc::new(RwLock::new(auto_start)),
@@ -79,7 +90,7 @@ impl DouyinRecorder {
             last_update: Arc::new(RwLock::new(Utc::now().timestamp())),
             m3u8_cache: DashMap::new(),
             config,
-        }
+        })
     }
 
     async fn should_record(&self) -> bool {
@@ -94,68 +105,116 @@ impl DouyinRecorder {
         match self.client.get_room_info(self.room_id).await {
             Ok(info) => {
                 let live_status = info.data.room_status == 0; // room_status == 0 表示正在直播
+                let previous_liveid = self.live_id.read().await.clone();
+
+                *self.room_info.write().await = Some(info.clone());
 
                 if (*self.live_status.read().await == LiveStatus::Live) != live_status {
-                    log::info!("[{}]Live status changed: {}", self.room_id, live_status);
+                    // live status changed, reset current record flag
+                    *self.current_record.write().await = false;
+                    self.reset().await;
+
+                    log::info!(
+                        "[{}]Live status changed to {}, current_record: {}, auto_start: {}",
+                        self.room_id,
+                        live_status,
+                        *self.current_record.read().await,
+                        *self.auto_start.read().await
+                    );
+
                     if live_status {
-                        // Get stream URL when live starts
-                        if !info.data.data[0]
-                            .stream_url
-                            .as_ref()
-                            .unwrap()
-                            .hls_pull_url
-                            .is_empty()
-                        {
-                            *self.live_id.write().await = info.data.data[0].id_str.clone();
-                            *self.live_status.write().await = LiveStatus::Live;
-                            // create a new record
-                            let cover_url = info.data.data[0]
-                                .cover
-                                .as_ref()
-                                .map(|cover| cover.url_list[0].clone());
-                            let cover = if let Some(url) = cover_url {
-                                Some(self.client.get_cover_base64(&url).await.unwrap())
-                            } else {
-                                None
-                            };
-
-                            if let Err(e) = self
-                                .db
-                                .add_record(
-                                    PlatformType::Douyin,
-                                    self.live_id.read().await.as_str(),
-                                    self.room_id,
-                                    &info.data.data[0].title,
-                                    cover,
-                                )
-                                .await
-                            {
-                                log::error!("Failed to add record: {}", e);
-                            }
-
-                            // setup entry store
-                            let work_dir =
-                                self.get_work_dir(self.live_id.read().await.as_str()).await;
-                            let entry_store = EntryStore::new(&work_dir).await;
-                            *self.entry_store.write().await = Some(entry_store);
-                        }
+                        self.app_handle
+                            .notification()
+                            .builder()
+                            .title("BiliShadowReplay - 直播开始")
+                            .body(format!(
+                                "{} 开启了直播：{}",
+                                info.data.user.nickname, info.data.data[0].title
+                            ))
+                            .show()
+                            .unwrap();
                     } else {
-                        *self.live_status.write().await = LiveStatus::Offline;
-                        *self.current_record.write().await = false;
-                        self.reset().await;
+                        self.app_handle
+                            .notification()
+                            .builder()
+                            .title("BiliShadowReplay - 直播结束")
+                            .body(format!(
+                                "{} 关闭了直播：{}",
+                                info.data.user.nickname, info.data.data[0].title
+                            ))
+                            .show()
+                            .unwrap();
                     }
                 }
 
                 if live_status {
-                    if *self.auto_start.read().await {
-                        *self.current_record.write().await = true;
-                    }
+                    *self.live_status.write().await = LiveStatus::Live;
                 } else {
-                    *self.current_record.write().await = false;
+                    *self.live_status.write().await = LiveStatus::Offline;
                 }
 
-                *self.room_info.write().await = Some(info);
-                live_status
+                if !live_status {
+                    *self.current_record.write().await = false;
+                    self.reset().await;
+
+                    return false;
+                }
+
+                if !*self.current_record.read().await && !*self.auto_start.read().await {
+                    return true;
+                }
+
+                if *self.auto_start.read().await
+                    && previous_liveid != info.data.data[0].id_str.clone()
+                {
+                    *self.current_record.write().await = true;
+                }
+
+                if *self.current_record.read().await {
+                    // Get stream URL when live starts
+                    if !info.data.data[0]
+                        .stream_url
+                        .as_ref()
+                        .unwrap()
+                        .hls_pull_url
+                        .is_empty()
+                    {
+                        *self.live_id.write().await = info.data.data[0].id_str.clone();
+                        // create a new record
+                        let cover_url = info.data.data[0]
+                            .cover
+                            .as_ref()
+                            .map(|cover| cover.url_list[0].clone());
+                        let cover = if let Some(url) = cover_url {
+                            Some(self.client.get_cover_base64(&url).await.unwrap())
+                        } else {
+                            None
+                        };
+
+                        if let Err(e) = self
+                            .db
+                            .add_record(
+                                PlatformType::Douyin,
+                                self.live_id.read().await.as_str(),
+                                self.room_id,
+                                &info.data.data[0].title,
+                                cover,
+                            )
+                            .await
+                        {
+                            log::error!("Failed to add record: {}", e);
+                        }
+
+                        // setup entry store
+                        let work_dir = self.get_work_dir(self.live_id.read().await.as_str()).await;
+                        let entry_store = EntryStore::new(&work_dir).await;
+                        *self.entry_store.write().await = Some(entry_store);
+                    }
+
+                    return true;
+                }
+
+                true
             }
             Err(e) => {
                 log::error!("[{}]Update room status failed: {}", self.room_id, e);

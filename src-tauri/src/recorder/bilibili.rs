@@ -17,6 +17,7 @@ use felgens::{ws_socket_object, FelgensError, WsStreamMessageType};
 use m3u8_rs::Playlist;
 use rand::Rng;
 use regex::Regex;
+use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -776,9 +777,12 @@ impl BiliRecorder {
         output_path: &str,
         file_name: &str,
     ) -> Result<String, super::errors::RecorderError> {
-        std::fs::create_dir_all(output_path).expect("create clips folder failed");
+        if let Err(e) = std::fs::create_dir_all(output_path) {
+            log::error!("Create clips folder failed: {}", e.to_string());
+            return Err(super::errors::RecorderError::ClipError { err: e.to_string() });
+        }
         let event_id = format!("clip_{}", self.room_id);
-        let output_name = format!("{}/{}", output_path, file_name,);
+        let output_name = Path::new(output_path).join(file_name);
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -787,8 +791,10 @@ impl BiliRecorder {
             .open(&output_name)
             .await;
         if file.is_err() {
+            let err = file.err().unwrap();
+            log::error!("Open clip file failed: {}", err.to_string());
             return Err(super::errors::RecorderError::ClipError {
-                err: file.err().unwrap().to_string(),
+                err: err.to_string(),
             });
         }
         let mut file = file.unwrap();
@@ -834,7 +840,9 @@ impl BiliRecorder {
         );
 
         // delete the original ts file
-        tokio::fs::remove_file(output_name).await?;
+        if let Err(e) = tokio::fs::remove_file(output_name).await {
+            log::error!("Delete temp clip file failed: {}", e.to_string());
+        }
 
         emit_progress_finished(&app_handle, event_id.as_str());
 

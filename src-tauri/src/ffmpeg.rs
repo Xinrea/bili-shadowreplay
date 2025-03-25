@@ -26,9 +26,10 @@ pub fn transcode(
     let input_format = config.input_format;
     let output_path = config.output_path;
 
-    println!(
-        "transcode task start: input_path: {}, output_path: {}",
-        input_path, output_path
+    log::info!(
+        "Transcode task start: input_path: {}, output_path: {}",
+        input_path,
+        output_path
     );
 
     FfmpegCommand::new()
@@ -51,7 +52,7 @@ pub fn transcode(
             _ => {}
         });
 
-    println!("transcode task end: output_path: {}", output_path);
+    log::info!("Transcode task end: output_path: {}", output_path);
 
     Ok(TranscodeResult {
         output_path: format!("{}/{}", work_dir, output_path),

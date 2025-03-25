@@ -107,50 +107,91 @@ pub async fn upload_procedure(
     let file = format!("{}/{}", output, video_row.file);
     let path = Path::new(&file);
     let cover_url = state.client.upload_cover(&account, &cover);
-    emit_progress_update(&state.app_handle, event_id.as_str(), "投稿预处理中");
-    if let Ok(video) = state
+
+    let cancel_id = format!("cancel_{}_{}", room_id, video_id);
+    if state.cancel_flag_map.read().await.get(&cancel_id).is_some() {
+        return Err("已经处于上传状态".to_string());
+    }
+
+    let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    state
+        .cancel_flag_map
+        .write()
+        .await
+        .insert(cancel_id.clone(), cancel_flag.clone());
+
+    emit_progress_update(
+        &state.app_handle,
+        event_id.as_str(),
+        "投稿预处理中",
+        &cancel_id,
+    );
+
+    match state
         .client
-        .prepare_video(&state.app_handle, &event_id, &account, path)
+        .prepare_video(
+            &state.app_handle,
+            &event_id,
+            &cancel_id,
+            &account,
+            path,
+            &cancel_flag,
+        )
         .await
     {
-        profile.cover = cover_url.await.unwrap_or("".to_string());
-        if let Ok(ret) = state.client.submit_video(&account, &profile, &video).await {
-            // update video status and details
-            // 1 means uploaded
-            video_row.status = 1;
-            video_row.bvid = ret.bvid.clone();
-            video_row.title = profile.title;
-            video_row.desc = profile.desc;
-            video_row.tags = profile.tag;
-            video_row.area = profile.tid as i64;
-            state.db.update_video(&video_row).await?;
-            state
-                .db
-                .new_message(
-                    "投稿成功",
-                    &format!("投稿了房间 {} 的切片：{}", room_id, ret.bvid),
-                )
-                .await?;
-            if state.config.read().await.post_notify {
+        Ok(video) => {
+            profile.cover = cover_url.await.unwrap_or("".to_string());
+            if let Ok(ret) = state.client.submit_video(&account, &profile, &video).await {
+                // update video status and details
+                // 1 means uploaded
+                video_row.status = 1;
+                video_row.bvid = ret.bvid.clone();
+                video_row.title = profile.title;
+                video_row.desc = profile.desc;
+                video_row.tags = profile.tag;
+                video_row.area = profile.tid as i64;
+                state.db.update_video(&video_row).await?;
                 state
-                    .app_handle
-                    .notification()
-                    .builder()
-                    .title("BiliShadowReplay - 投稿成功")
-                    .body(format!("投稿了房间 {} 的切片: {}", room_id, ret.bvid))
-                    .show()
-                    .unwrap();
+                    .db
+                    .new_message(
+                        "投稿成功",
+                        &format!("投稿了房间 {} 的切片：{}", room_id, ret.bvid),
+                    )
+                    .await?;
+                if state.config.read().await.post_notify {
+                    state
+                        .app_handle
+                        .notification()
+                        .builder()
+                        .title("BiliShadowReplay - 投稿成功")
+                        .body(format!("投稿了房间 {} 的切片: {}", room_id, ret.bvid))
+                        .show()
+                        .unwrap();
+                }
+                emit_progress_finished(&state.app_handle, event_id.as_str());
+                state.cancel_flag_map.write().await.remove(&cancel_id);
+                Ok(ret.bvid)
+            } else {
+                emit_progress_finished(&state.app_handle, event_id.as_str());
+                state.cancel_flag_map.write().await.remove(&cancel_id);
+                Err("Submit video failed".to_string())
             }
-            emit_progress_finished(&state.app_handle, event_id.as_str());
-            Ok(ret.bvid)
-        } else {
-            emit_progress_finished(&state.app_handle, event_id.as_str());
-            Err("Submit video failed".to_string())
         }
-    } else {
-        emit_progress_finished(&state.app_handle, event_id.as_str());
-        Err("Preload video failed".to_string())
+        Err(e) => {
+            emit_progress_finished(&state.app_handle, event_id.as_str());
+            state.cancel_flag_map.write().await.remove(&cancel_id);
+            Err(format!("Preload video failed: {}", e))
+        }
     }
+}
+
+#[tauri::command]
+pub async fn cancel_upload(state: TauriState<'_, State>, cancel_id: String) -> Result<(), String> {
+    if let Some(cancel_flag) = state.cancel_flag_map.read().await.get(&cancel_id) {
+        cancel_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(())
 }
 
 #[tauri::command]

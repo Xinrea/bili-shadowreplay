@@ -145,6 +145,7 @@ export interface Marker {
 export interface ProgressUpdate {
   id: string;
   content: string;
+  cancel: string;
 }
 
 export interface ProgressFinished {

@@ -76,6 +76,8 @@
     };
   }
 
+  let procedure_cancel_id = null;
+
   let progress_update_listener = listen<ProgressUpdate>(
     `progress-update`,
     (e) => {
@@ -93,6 +95,7 @@
       } else if (event_id.includes("post")) {
         loading = true;
         update_post_prompt(e.payload.content);
+        procedure_cancel_id = e.payload.cancel;
       }
     }
   );
@@ -263,6 +266,13 @@
         loading = false;
         alert(e);
       });
+  }
+
+  async function cancel_post() {
+    if (!procedure_cancel_id) {
+      return;
+    }
+    invoke("cancel_upload", { cancelId: procedure_cancel_id });
   }
 
   async function delete_video() {
@@ -650,21 +660,33 @@
           <div
             class="flex-none sticky bottom-0 px-6 py-4 bg-gradient-to-t from-[#1c1c1e] via-[#1c1c1e] to-transparent"
           >
-            <button
-              on:click={do_post}
-              disabled={loading}
-              class="w-full px-4 py-2.5 bg-[#0A84FF] text-white rounded-lg
-                     transition-all duration-200 hover:bg-[#0A84FF]/90
-                     disabled:opacity-50 disabled:cursor-not-allowed
-                     flex items-center justify-center space-x-2"
-            >
-              {#if loading}
-                <div
-                  class="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin"
-                />
+            <div class="flex gap-3">
+              <button
+                on:click={do_post}
+                disabled={loading}
+                class="flex-1 px-4 py-2.5 bg-[#0A84FF] text-white rounded-lg
+                       transition-all duration-200 hover:bg-[#0A84FF]/90
+                       disabled:opacity-50 disabled:cursor-not-allowed
+                       flex items-center justify-center space-x-2"
+              >
+                {#if loading}
+                  <div
+                    class="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin"
+                  />
+                {/if}
+                <span id="post-prompt">投稿</span>
+              </button>
+              {#if loading && procedure_cancel_id}
+                <button
+                  on:click={() => cancel_post()}
+                  class="w-24 px-3 py-2 bg-red-500 text-white rounded-lg
+                         transition-all duration-200 hover:bg-red-500/90
+                         flex items-center justify-center"
+                >
+                  取消
+                </button>
               {/if}
-              <span id="post-prompt">投稿</span>
-            </button>
+            </div>
           </div>
         {/if}
       </div>

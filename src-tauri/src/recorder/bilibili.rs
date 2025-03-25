@@ -813,6 +813,7 @@ impl BiliRecorder {
                     (i + 1) as f64 * 100.0 / total_files as f64
                 )
                 .as_str(),
+                "",
             );
         }
 

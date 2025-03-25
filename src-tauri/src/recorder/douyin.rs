@@ -566,6 +566,7 @@ impl Recorder for DouyinRecorder {
                     (i + 1) as f64 * 100.0 / file_list.len() as f64
                 )
                 .as_str(),
+                "",
             );
         }
         output

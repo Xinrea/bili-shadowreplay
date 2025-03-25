@@ -46,6 +46,7 @@ pub fn transcode(
                 app_handle,
                 event_id,
                 format!("修复编码中：{}", p.time).as_str(),
+                "",
             ),
             _ => {}
         });

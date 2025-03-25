@@ -366,7 +366,7 @@ impl BiliClient {
                     if let Some(f) = stream.format.iter().find(|f| f.format_name == "fmp4") {
                         self.get_stream(f).await
                     } else {
-                        log::error!("No fmp4 stream found: {:#?}", data);
+                        log::error!("No fmp4 stream found: {:?}", data);
                         Err(BiliClientError::InvalidResponse)
                     }
                 } else {
@@ -556,9 +556,11 @@ impl BiliClient {
         &self,
         app_handle: &AppHandle,
         event_id: &str,
+        cancel_id: &str,
         preupload_response: &PreuploadResponse,
         post_video_meta_response: &PostVideoMetaResponse,
         video_file: &Path,
+        cancel_flag: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<usize, BiliClientError> {
         let mut file = File::open(video_file).await?;
         let mut buffer = vec![0; preupload_response.chunk_size];
@@ -573,6 +575,11 @@ impl BiliClient {
         let timeout = Duration::from_secs(30);
 
         while let Ok(size) = file.read(&mut buffer[read_total..]).await {
+            // Check for cancellation
+            if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(BiliClientError::UploadCancelled);
+            }
+
             read_total += size;
             log::debug!("size: {}, total: {}", size, read_total);
             if size > 0 && (read_total as u64) < chunk_size {
@@ -586,6 +593,11 @@ impl BiliClient {
             let mut success = false;
 
             while retry_count < max_retries && !success {
+                // Check for cancellation before each retry
+                if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Err(BiliClientError::UploadCancelled);
+                }
+
                 let url = format!(
                     "https:{}{}?partNumber={}&uploadId={}&chunk={}&chunks={}&size={}&start={}&end={}&total={}",
                     preupload_response.endpoint,
@@ -666,6 +678,7 @@ impl BiliClient {
                         / 1024.0
                 )
                 .as_str(),
+                cancel_id,
             );
         }
         Ok(total_chunks)
@@ -705,8 +718,10 @@ impl BiliClient {
         &self,
         app_handle: &AppHandle,
         event_id: &str,
+        cancel_id: &str,
         account: &AccountRow,
         video_file: &Path,
+        cancel_flag: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<profile::Video, BiliClientError> {
         log::info!("Start Preparing Video: {}", video_file.to_str().unwrap());
         let preupload = self.preupload_video(account, video_file).await?;
@@ -714,7 +729,15 @@ impl BiliClient {
         let metaposted = self.post_video_meta(&preupload, video_file).await?;
         log::info!("Post Video Meta Response: {:?}", metaposted);
         let uploaded = self
-            .upload_video(app_handle, event_id, &preupload, &metaposted, video_file)
+            .upload_video(
+                app_handle,
+                event_id,
+                cancel_id,
+                &preupload,
+                &metaposted,
+                video_file,
+                cancel_flag,
+            )
             .await?;
         log::info!("Uploaded: {}", uploaded);
         self.end_upload(&preupload, &metaposted, uploaded).await?;

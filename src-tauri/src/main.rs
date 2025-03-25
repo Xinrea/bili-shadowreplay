@@ -110,6 +110,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
             config,
             recorder_manager,
             app_handle: app.handle().clone(),
+            cancel_flag_map: Arc::new(RwLock::new(std::collections::HashMap::new())),
         });
     }
 
@@ -175,6 +176,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         config,
         recorder_manager,
         app_handle: app.handle().clone(),
+        cancel_flag_map: Arc::new(RwLock::new(std::collections::HashMap::new())),
     })
 }
 
@@ -298,6 +300,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::recorder::force_stop,
         crate::handlers::video::clip_range,
         crate::handlers::video::upload_procedure,
+        crate::handlers::video::cancel_upload,
         crate::handlers::video::get_video,
         crate::handlers::video::get_videos,
         crate::handlers::video::delete_video,

@@ -563,12 +563,15 @@ impl BiliClient {
         let mut file = File::open(video_file).await?;
         let mut buffer = vec![0; preupload_response.chunk_size];
         let file_size = video_file.metadata()?.len();
-        let chunk_size = preupload_response.chunk_size as u64; // 确保使用 u64 类型
-        let total_chunks = (file_size as f64 / chunk_size as f64).ceil() as usize; // 计算总分块数
+        let chunk_size = preupload_response.chunk_size as u64;
+        let total_chunks = (file_size as f64 / chunk_size as f64).ceil() as usize;
 
         let start = Instant::now();
         let mut chunk = 0;
         let mut read_total = 0;
+        let max_retries = 3;
+        let timeout = Duration::from_secs(30);
+
         while let Ok(size) = file.read(&mut buffer[read_total..]).await {
             read_total += size;
             log::debug!("size: {}, total: {}", size, read_total);
@@ -578,29 +581,71 @@ impl BiliClient {
             if size == 0 && read_total == 0 {
                 break;
             }
-            let url = format!(
-                "https:{}{}?partNumber={}&uploadId={}&chunk={}&chunks={}&size={}&start={}&end={}&total={}",
-                preupload_response.endpoint,
-                preupload_response.upos_uri.replace("upos:/", ""),
-                chunk + 1,
-                post_video_meta_response.upload_id,
-                chunk,
-                total_chunks,
-                read_total,
-                chunk * preupload_response.chunk_size,
-                chunk * preupload_response.chunk_size + read_total,
-                video_file.metadata().unwrap().len()
-            );
-            self.client
-                .put(&url)
-                .header("X-Upos-Auth", &preupload_response.auth)
-                .header("Content-Type", "application/octet-stream")
-                .header("Content-Length", read_total.to_string())
-                .body(buffer[..read_total].to_vec())
-                .send()
-                .await?
-                .text()
-                .await?;
+
+            let mut retry_count = 0;
+            let mut success = false;
+
+            while retry_count < max_retries && !success {
+                let url = format!(
+                    "https:{}{}?partNumber={}&uploadId={}&chunk={}&chunks={}&size={}&start={}&end={}&total={}",
+                    preupload_response.endpoint,
+                    preupload_response.upos_uri.replace("upos:/", ""),
+                    chunk + 1,
+                    post_video_meta_response.upload_id,
+                    chunk,
+                    total_chunks,
+                    read_total,
+                    chunk * preupload_response.chunk_size,
+                    chunk * preupload_response.chunk_size + read_total,
+                    video_file.metadata().unwrap().len()
+                );
+
+                match self
+                    .client
+                    .put(&url)
+                    .header("X-Upos-Auth", &preupload_response.auth)
+                    .header("Content-Type", "application/octet-stream")
+                    .header("Content-Length", read_total.to_string())
+                    .timeout(timeout)
+                    .body(buffer[..read_total].to_vec())
+                    .send()
+                    .await
+                {
+                    Ok(response) => {
+                        if response.status().is_success() {
+                            success = true;
+                            let _ = response.text().await?;
+                        } else {
+                            log::error!("Upload failed with status: {}", response.status());
+                            retry_count += 1;
+                            if retry_count < max_retries {
+                                tokio::time::sleep(Duration::from_secs(
+                                    2u64.pow(retry_count as u32),
+                                ))
+                                .await;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Upload error: {}", e);
+                        retry_count += 1;
+                        if retry_count < max_retries {
+                            tokio::time::sleep(Duration::from_secs(2u64.pow(retry_count as u32)))
+                                .await;
+                        }
+                    }
+                }
+            }
+
+            if !success {
+                return Err(BiliClientError::UploadError {
+                    err: format!(
+                        "Failed to upload chunk {} after {} retries",
+                        chunk, max_retries
+                    ),
+                });
+            }
+
             chunk += 1;
             read_total = 0;
             log::debug!(

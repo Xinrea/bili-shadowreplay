@@ -7,6 +7,7 @@ custom_error! {pub BiliClientError
     InvalidValue = "Invalid value",
     InvalidUrl = "Invalid url",
     InvalidFormat = "Invalid stream format",
+    UploadError{err: String} = "Upload error: {err}",
     EmptyCache = "Empty cache",
     ClientError{err: reqwest::Error} = "Client error: {err}",
     IOError{err: std::io::Error} = "IO error: {err}",

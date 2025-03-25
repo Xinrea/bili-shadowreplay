@@ -309,7 +309,8 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::utils::show_in_folder,
         crate::handlers::utils::export_to_file,
         crate::handlers::utils::get_disk_info,
-        crate::handlers::utils::open_live
+        crate::handlers::utils::open_live,
+        crate::handlers::utils::open_log_folder,
     ])
 }
 

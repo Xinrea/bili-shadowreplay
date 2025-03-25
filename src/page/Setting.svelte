@@ -52,6 +52,10 @@
     }
   }
 
+  async function handleLogFolder() {
+    await invoke("open_log_folder");
+  }
+
   async function confirmChange() {
     showModal = false;
     const new_folder = await browse_folder();
@@ -125,6 +129,24 @@
                   on:click={handleOutputChange}
                 >
                   变更
+                </button>
+              </div>
+            </div>
+            <div class="p-4">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                    日志文件夹
+                  </h3>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    查看应用程序日志文件
+                  </p>
+                </div>
+                <button
+                  class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+                  on:click={handleLogFolder}
+                >
+                  打开
                 </button>
               </div>
             </div>

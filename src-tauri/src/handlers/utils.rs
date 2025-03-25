@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use tauri::Theme;
+use tauri::{Manager, Theme};
 use tauri_utils::config::WindowEffectsConfig;
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
@@ -133,6 +133,13 @@ pub async fn export_to_file(
     if let Err(e) = file.flush().await {
         return Err(format!("Flush file failed: {}", e));
     }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn open_log_folder(state: tauri::State<'_, State>) -> Result<(), String> {
+    let log_dir = state.app_handle.path().app_log_dir().unwrap();
+    show_in_folder(log_dir.to_str().unwrap().to_string());
     Ok(())
 }
 

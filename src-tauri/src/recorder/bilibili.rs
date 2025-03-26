@@ -18,6 +18,7 @@ use m3u8_rs::Playlist;
 use rand::Rng;
 use regex::Regex;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -56,6 +57,7 @@ pub struct BiliRecorder {
     pub is_recording: Arc<RwLock<bool>>,
     pub auto_start: Arc<RwLock<bool>>,
     pub current_record: Arc<RwLock<bool>>,
+    force_update: Arc<AtomicBool>,
     last_update: Arc<RwLock<i64>>,
     quit: Arc<Mutex<bool>>,
     pub live_stream: Arc<RwLock<Option<BiliStream>>>,
@@ -118,6 +120,7 @@ impl BiliRecorder {
             live_id: Arc::new(RwLock::new(String::new())),
             cover: Arc::new(RwLock::new(cover)),
             last_update: Arc::new(RwLock::new(Utc::now().timestamp())),
+            force_update: Arc::new(AtomicBool::new(false)),
             quit: Arc::new(Mutex::new(false)),
             live_stream: Arc::new(RwLock::new(None)),
             danmu_storage: Arc::new(RwLock::new(None)),
@@ -251,14 +254,16 @@ impl BiliRecorder {
                         .as_ref()
                         .unwrap()
                         .is_same(&stream)
+                    || self.force_update.load(Ordering::Relaxed)
                 {
                     log::info!(
-                        "[{}]Fetched different stream: {:?} => {}",
+                        "[{}]Fetched a new stream: {:?} => {}",
                         self.room_id,
                         self.live_stream.read().await.clone(),
                         stream
                     );
                     *self.current_record.write().await = true;
+                    self.force_update.store(false, Ordering::Relaxed);
                 }
 
                 if *self.current_record.read().await {
@@ -646,7 +651,8 @@ impl BiliRecorder {
             .as_ref()
             .is_some_and(|s| s.expire - Utc::now().timestamp() < pre_offset)
         {
-            log::info!("Stream is nearly expired");
+            log::info!("Stream is nearly expired, force update");
+            self.force_update.store(true, Ordering::Relaxed);
             return Err(super::errors::RecorderError::StreamExpired {
                 stream: current_stream.unwrap(),
             });

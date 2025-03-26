@@ -195,7 +195,7 @@ async fn init_rooms(
         if let Err(e) = recorder_manager_clone
             .add_recorder(
                 webid,
-                &primary_account,
+                primary_account,
                 platform,
                 room.room_id,
                 room.auto_start,

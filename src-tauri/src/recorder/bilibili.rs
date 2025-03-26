@@ -773,7 +773,7 @@ impl BiliRecorder {
     async fn generate_clip(
         &self,
         app_handle: AppHandle,
-        file_list: &Vec<String>,
+        file_list: &[String],
         output_path: &str,
         file_name: &str,
     ) -> Result<String, super::errors::RecorderError> {

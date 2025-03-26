@@ -27,6 +27,17 @@ use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::time::Instant;
 
+#[derive(Clone)]
+struct UploadParams<'a> {
+    app_handle: &'a AppHandle,
+    event_id: &'a str,
+    cancel_id: &'a str,
+    preupload_response: &'a PreuploadResponse,
+    post_video_meta_response: &'a PostVideoMetaResponse,
+    video_file: &'a Path,
+    cancel_flag: &'a std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct RoomInfo {
     pub live_status: u8,
@@ -552,20 +563,11 @@ impl BiliClient {
         Ok(response)
     }
 
-    async fn upload_video(
-        &self,
-        app_handle: &AppHandle,
-        event_id: &str,
-        cancel_id: &str,
-        preupload_response: &PreuploadResponse,
-        post_video_meta_response: &PostVideoMetaResponse,
-        video_file: &Path,
-        cancel_flag: &std::sync::Arc<std::sync::atomic::AtomicBool>,
-    ) -> Result<usize, BiliClientError> {
-        let mut file = File::open(video_file).await?;
-        let mut buffer = vec![0; preupload_response.chunk_size];
-        let file_size = video_file.metadata()?.len();
-        let chunk_size = preupload_response.chunk_size as u64;
+    async fn upload_video(&self, params: UploadParams<'_>) -> Result<usize, BiliClientError> {
+        let mut file = File::open(params.video_file).await?;
+        let mut buffer = vec![0; params.preupload_response.chunk_size];
+        let file_size = params.video_file.metadata()?.len();
+        let chunk_size = params.preupload_response.chunk_size as u64;
         let total_chunks = (file_size as f64 / chunk_size as f64).ceil() as usize;
 
         let start = Instant::now();
@@ -576,7 +578,10 @@ impl BiliClient {
 
         while let Ok(size) = file.read(&mut buffer[read_total..]).await {
             // Check for cancellation
-            if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            if params
+                .cancel_flag
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
                 return Err(BiliClientError::UploadCancelled);
             }
 
@@ -594,28 +599,31 @@ impl BiliClient {
 
             while retry_count < max_retries && !success {
                 // Check for cancellation before each retry
-                if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                if params
+                    .cancel_flag
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
                     return Err(BiliClientError::UploadCancelled);
                 }
 
                 let url = format!(
                     "https:{}{}?partNumber={}&uploadId={}&chunk={}&chunks={}&size={}&start={}&end={}&total={}",
-                    preupload_response.endpoint,
-                    preupload_response.upos_uri.replace("upos:/", ""),
+                    params.preupload_response.endpoint,
+                    params.preupload_response.upos_uri.replace("upos:/", ""),
                     chunk + 1,
-                    post_video_meta_response.upload_id,
+                    params.post_video_meta_response.upload_id,
                     chunk,
                     total_chunks,
                     read_total,
-                    chunk * preupload_response.chunk_size,
-                    chunk * preupload_response.chunk_size + read_total,
-                    video_file.metadata().unwrap().len()
+                    chunk * params.preupload_response.chunk_size,
+                    chunk * params.preupload_response.chunk_size + read_total,
+                    params.video_file.metadata().unwrap().len()
                 );
 
                 match self
                     .client
                     .put(&url)
-                    .header("X-Upos-Auth", &preupload_response.auth)
+                    .header("X-Upos-Auth", &params.preupload_response.auth)
                     .header("Content-Type", "application/octet-stream")
                     .header("Content-Length", read_total.to_string())
                     .timeout(timeout)
@@ -662,23 +670,23 @@ impl BiliClient {
             read_total = 0;
             log::debug!(
                 "[bili]speed: {:.1} KiB/s",
-                (chunk * preupload_response.chunk_size) as f64
+                (chunk * params.preupload_response.chunk_size) as f64
                     / start.elapsed().as_secs_f64()
                     / 1024.0
             );
 
             emit_progress_update(
-                app_handle,
-                event_id,
+                params.app_handle,
+                params.event_id,
                 format!(
                     "{:.1}% | {:.1} KiB/s",
                     (chunk * 100) as f64 / total_chunks as f64,
-                    (chunk * preupload_response.chunk_size) as f64
+                    (chunk * params.preupload_response.chunk_size) as f64
                         / start.elapsed().as_secs_f64()
                         / 1024.0
                 )
                 .as_str(),
-                cancel_id,
+                params.cancel_id,
             );
         }
         Ok(total_chunks)
@@ -729,15 +737,15 @@ impl BiliClient {
         let metaposted = self.post_video_meta(&preupload, video_file).await?;
         log::info!("Post Video Meta Response: {:?}", metaposted);
         let uploaded = self
-            .upload_video(
+            .upload_video(UploadParams {
                 app_handle,
                 event_id,
                 cancel_id,
-                &preupload,
-                &metaposted,
+                preupload_response: &preupload,
+                post_video_meta_response: &metaposted,
                 video_file,
                 cancel_flag,
-            )
+            })
             .await?;
         log::info!("Uploaded: {}", uploaded);
         self.end_upload(&preupload, &metaposted, uploaded).await?;

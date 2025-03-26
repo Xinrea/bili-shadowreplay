@@ -17,7 +17,7 @@ use felgens::{ws_socket_object, FelgensError, WsStreamMessageType};
 use m3u8_rs::Playlist;
 use rand::Rng;
 use regex::Regex;
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -661,8 +661,8 @@ impl BiliRecorder {
         live_id: &str,
         x: f64,
         y: f64,
-        output_path: &str,
-    ) -> Result<String, super::errors::RecorderError> {
+        output_path: PathBuf,
+    ) -> Result<PathBuf, super::errors::RecorderError> {
         log::info!("Create archive clip for range [{}, {}]", x, y);
         let work_dir = self.get_work_dir(live_id).await;
         let entries = EntryStore::new(&work_dir).await.get_entries().clone();
@@ -705,8 +705,8 @@ impl BiliRecorder {
         app_handle: AppHandle,
         x: f64,
         y: f64,
-        output_path: &str,
-    ) -> Result<String, super::errors::RecorderError> {
+        output_path: PathBuf,
+    ) -> Result<PathBuf, super::errors::RecorderError> {
         log::info!("Create live clip for range [{}, {}]", x, y);
         let work_dir = self.get_work_dir(self.live_id.read().await.as_str()).await;
         let mut to_combine = Vec::new();
@@ -773,16 +773,16 @@ impl BiliRecorder {
     async fn generate_clip(
         &self,
         app_handle: AppHandle,
-        file_list: &Vec<String>,
-        output_path: &str,
+        file_list: &[String],
+        output_path: PathBuf,
         file_name: &str,
-    ) -> Result<String, super::errors::RecorderError> {
-        if let Err(e) = std::fs::create_dir_all(output_path) {
+    ) -> Result<PathBuf, super::errors::RecorderError> {
+        if let Err(e) = std::fs::create_dir_all(&output_path) {
             log::error!("Create clips folder failed: {}", e.to_string());
             return Err(super::errors::RecorderError::ClipError { err: e.to_string() });
         }
         let event_id = format!("clip_{}", self.room_id);
-        let output_name = Path::new(output_path).join(file_name);
+        let output_name = output_path.join(file_name);
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -826,10 +826,10 @@ impl BiliRecorder {
         file.flush().await.unwrap();
 
         let transcode_config = TranscodeConfig {
-            input_path: file_name.to_string(),
+            input_path: file_name.to_string().into(),
             input_format: "mp4".to_string(),
             // replace .ts with .mp4
-            output_path: format!("fixed_{}", file_name),
+            output_path: format!("fixed_{}", file_name).into(),
         };
 
         let transcode_result = transcode(
@@ -1035,8 +1035,8 @@ impl super::Recorder for BiliRecorder {
         live_id: &str,
         x: f64,
         y: f64,
-        output_path: &str,
-    ) -> Result<String, super::errors::RecorderError> {
+        output_path: PathBuf,
+    ) -> Result<PathBuf, super::errors::RecorderError> {
         if *self.live_id.read().await == live_id {
             self.clip_live_range(app_handle, x, y, output_path).await
         } else {

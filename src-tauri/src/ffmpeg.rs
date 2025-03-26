@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use ffmpeg_sidecar::{
     command::FfmpegCommand,
     event::{FfmpegEvent, LogLevel},
@@ -7,19 +9,19 @@ use tauri::AppHandle;
 use crate::progress_event::emit_progress_update;
 
 pub struct TranscodeConfig {
-    pub input_path: String,
+    pub input_path: PathBuf,
     pub input_format: String,
-    pub output_path: String,
+    pub output_path: PathBuf,
 }
 
 pub struct TranscodeResult {
-    pub output_path: String,
+    pub output_path: PathBuf,
 }
 
 pub fn transcode(
     app_handle: &AppHandle,
     event_id: &str,
-    work_dir: &str,
+    work_dir: PathBuf,
     config: TranscodeConfig,
 ) -> Result<TranscodeResult, String> {
     let input_path = config.input_path;
@@ -28,15 +30,15 @@ pub fn transcode(
 
     log::info!(
         "Transcode task start: input_path: {}, output_path: {}",
-        input_path,
-        output_path
+        input_path.display(),
+        output_path.display()
     );
 
     FfmpegCommand::new()
         .args(["-f", input_format.as_str()])
-        .input(format!("{}/{}", work_dir, input_path))
+        .input(work_dir.join(input_path).to_str().unwrap())
         .args(["-c", "copy"])
-        .args(["-y", format!("{}/{}", work_dir, output_path).as_str()])
+        .args(["-y", work_dir.join(&output_path).to_str().unwrap()])
         .spawn()
         .unwrap()
         .iter()
@@ -52,9 +54,12 @@ pub fn transcode(
             _ => {}
         });
 
-    log::info!("Transcode task end: output_path: {}", output_path);
+    log::info!(
+        "Transcode task end: output_path: {}",
+        &output_path.display()
+    );
 
     Ok(TranscodeResult {
-        output_path: format!("{}/{}", work_dir, output_path),
+        output_path: work_dir.join(output_path),
     })
 }

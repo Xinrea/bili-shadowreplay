@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
 use client::DouyinClientError;
 use dashmap::DashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::AppHandle;
@@ -498,8 +499,8 @@ impl Recorder for DouyinRecorder {
         live_id: &str,
         x: f64,
         y: f64,
-        output_path: &str,
-    ) -> Result<String, RecorderError> {
+        output_path: PathBuf,
+    ) -> Result<PathBuf, RecorderError> {
         let event_id = format!("clip_{}", self.room_id);
         let work_dir = self.get_work_dir(live_id).await;
         let entries = if live_id == *self.live_id.read().await {
@@ -541,8 +542,8 @@ impl Recorder for DouyinRecorder {
             y - x
         );
 
-        let output_file = format!("{}/{}", output_path, file_name);
-        tokio::fs::create_dir_all(output_path)
+        let output_file = output_path.join(&file_name);
+        tokio::fs::create_dir_all(&output_path)
             .await
             .map_err(|e| RecorderError::IoError { err: e })?;
 
@@ -575,10 +576,10 @@ impl Recorder for DouyinRecorder {
             .map_err(|e| RecorderError::IoError { err: e })?;
 
         let transcode_config = TranscodeConfig {
-            input_path: file_name.clone(),
+            input_path: PathBuf::from(&file_name),
             input_format: "mpegts".to_string(),
             // replace .ts with .mp4
-            output_path: file_name.replace(".ts", ".mp4"),
+            output_path: file_name.replace(".ts", ".mp4").into(),
         };
 
         let transcode_result = transcode(

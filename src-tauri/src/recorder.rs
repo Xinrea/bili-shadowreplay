@@ -5,6 +5,8 @@ pub mod errors;
 
 mod entry;
 
+use std::path::PathBuf;
+
 use async_trait::async_trait;
 use danmu::DanmuEntry;
 use tauri::AppHandle;
@@ -75,8 +77,8 @@ pub trait Recorder: Send + Sync + 'static {
         live_id: &str,
         x: f64,
         y: f64,
-        output_path: &str,
-    ) -> Result<String, errors::RecorderError>;
+        output_path: PathBuf,
+    ) -> Result<PathBuf, errors::RecorderError>;
     async fn m3u8_content(&self, live_id: &str) -> String;
     async fn info(&self) -> RecorderInfo;
     async fn comments(&self, live_id: &str) -> Result<Vec<DanmuEntry>, errors::RecorderError>;

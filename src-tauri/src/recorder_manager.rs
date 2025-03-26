@@ -16,6 +16,7 @@ use hyper::{
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::{convert::Infallible, sync::Arc};
 use tauri::AppHandle;
 use tokio::{net::TcpListener, sync::RwLock};
@@ -201,7 +202,7 @@ impl RecorderManager {
         live_id: &str,
         start: f64,
         end: f64,
-    ) -> Result<String, RecorderManagerError> {
+    ) -> Result<PathBuf, RecorderManagerError> {
         let recorders = self.recorders.read().await;
         let recorder_id = format!("{}:{}", platform.as_str(), room_id);
         if !recorders.contains_key(&recorder_id) {
@@ -210,7 +211,13 @@ impl RecorderManager {
         }
         let recorder = recorders.get(&recorder_id).unwrap();
         Ok(recorder
-            .clip_range(self.app_handle.clone(), live_id, start, end, output_path)
+            .clip_range(
+                self.app_handle.clone(),
+                live_id,
+                start,
+                end,
+                output_path.into(),
+            )
             .await?)
     }
 

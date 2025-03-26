@@ -108,7 +108,7 @@
         class="p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
         on:click={() => {
           // tauri open url
-          open("https://github.com/Xinrea/bili-shadowreplay/issues");
+          open("https://qm.qq.com/q/v4lrE6gyum");
         }}
       >
         <div class="flex flex-col items-center space-y-2">
@@ -118,7 +118,7 @@
             <MessageCircle class="w-5 h-5 icon-primary" />
           </div>
           <span class="text-sm font-medium text-gray-900 dark:text-white"
-            >意见反馈</span
+            >反馈交流群</span
           >
         </div>
       </button>

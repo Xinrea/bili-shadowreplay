@@ -9,6 +9,7 @@ mod progress_event;
 mod recorder;
 mod recorder_manager;
 mod state;
+mod subtitle_generator;
 mod tray;
 
 use config::Config;

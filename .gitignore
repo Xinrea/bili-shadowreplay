@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# test files
+src-tauri/tests/audio/*.srt
+src-tauri/tests/model/*.bin

@@ -28,7 +28,7 @@ toml = "0.7.3"
 custom_error = "1.9.2"
 felgens = { git = "https://github.com/Xinrea/felgens.git", tag = "v0.4.1" }
 regex = "1.7.3"
-tokio = "1.27.0"
+tokio = { version = "1.27.0", features = ["process"] }
 platform-dirs = "0.3.0"
 pct-str = "1.2.0"
 md5 = "0.7.0"
@@ -51,6 +51,8 @@ rand = "0.8.5"
 base64 = "0.21"
 mime_guess = "2.0"
 async-trait = "0.1.87"
+whisper-rs = "0.14.2"
+hound = "3.5.1"
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem
@@ -59,3 +61,11 @@ custom-protocol = ["tauri/custom-protocol"]
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"
+
+[target.'cfg(windows)'.dependencies.whisper-rs]
+version = "0.14.2"
+features = ["cuda"]
+
+[target.'cfg(darwin)'.dependencies.whisper-rs]
+version = "0.14.2"
+features = ["metal"]

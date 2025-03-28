@@ -21,7 +21,6 @@ pub struct TranscodeResult {
 pub fn transcode(
     app_handle: &AppHandle,
     event_id: &str,
-    work_dir: PathBuf,
     config: TranscodeConfig,
 ) -> Result<TranscodeResult, String> {
     let input_path = config.input_path;
@@ -36,9 +35,9 @@ pub fn transcode(
 
     FfmpegCommand::new()
         .args(["-f", input_format.as_str()])
-        .input(work_dir.join(input_path).to_str().unwrap())
+        .input(input_path.to_str().unwrap())
         .args(["-c", "copy"])
-        .args(["-y", work_dir.join(&output_path).to_str().unwrap()])
+        .args(["-y", output_path.to_str().unwrap()])
         .spawn()
         .unwrap()
         .iter()
@@ -59,9 +58,7 @@ pub fn transcode(
         &output_path.display()
     );
 
-    Ok(TranscodeResult {
-        output_path: work_dir.join(output_path),
-    })
+    Ok(TranscodeResult { output_path })
 }
 
 pub async fn extract_audio(file: &Path) -> Result<(), String> {

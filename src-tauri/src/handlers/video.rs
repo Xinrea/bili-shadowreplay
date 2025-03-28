@@ -14,6 +14,7 @@ use tauri_plugin_notification::NotificationExt;
 #[tauri::command]
 pub async fn clip_range(
     state: TauriState<'_, State>,
+    title: String,
     cover: String,
     platform: String,
     room_id: u64,
@@ -30,16 +31,32 @@ pub async fn clip_range(
     );
     let event_id = format!("clip_{}", room_id);
     let platform = PlatformType::from_str(&platform).unwrap();
+
+    // get format config
+    // filter special characters from title to make sure file name is valid
+    let title = title
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect::<String>();
+    let format_config = state.config.read().await.clip_name_format.clone();
+    let format_config = format_config.replace("{title}", &title);
+    let format_config = format_config.replace("{platform}", platform.as_str());
+    let format_config = format_config.replace("{room_id}", &room_id.to_string());
+    let format_config = format_config.replace("{live_id}", &live_id);
+    let format_config = format_config.replace("{x}", &x.to_string());
+    let format_config = format_config.replace("{y}", &y.to_string());
+    let format_config = format_config.replace(
+        "{created_at}",
+        &Utc::now().format("%Y-%m-%d_%H-%M-%S").to_string(),
+    );
+    let format_config = format_config.replace("{length}", &((y - x) as i64).to_string());
+
+    let output = state.config.read().await.output.clone();
+    let clip_file = Path::new(&output).join(&format_config);
+
     let file = state
         .recorder_manager
-        .clip_range(
-            &state.config.read().await.output,
-            platform,
-            room_id,
-            &live_id,
-            x,
-            y,
-        )
+        .clip_range(clip_file, platform, room_id, &live_id, x, y)
         .await?;
     // get file metadata from fs
     let metadata = std::fs::metadata(&file).map_err(|e| e.to_string())?;
@@ -317,7 +334,9 @@ pub async fn update_video_subtitle(
     let filepath = format!("{}/{}", state.config.read().await.output, video.file);
     let file = Path::new(&filepath);
     let subtitle_path = file.with_extension("srt");
-    std::fs::write(subtitle_path, subtitle).map_err(|e| e.to_string())?;
+    if let Err(e) = std::fs::write(subtitle_path, subtitle) {
+        log::warn!("Update video subtitle error: {}", e);
+    }
     Ok(())
 }
 

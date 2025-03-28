@@ -167,3 +167,13 @@ pub async fn update_subtitle_setting(
     state.config.write().await.save();
     Ok(())
 }
+
+#[tauri::command]
+pub async fn update_clip_name_format(
+    state: TauriState<'_, State>,
+    clip_name_format: String,
+) -> Result<(), ()> {
+    state.config.write().await.clip_name_format = clip_name_format;
+    state.config.write().await.save();
+    Ok(())
+}

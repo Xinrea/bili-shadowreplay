@@ -13,5 +13,8 @@
         "theme": "Light"
       }
     ]
+  },
+  "bundle": {
+    "resources": ["cudart64*.dll", "cublas64*.dll", "cublasLt64*.dll"]
   }
 }

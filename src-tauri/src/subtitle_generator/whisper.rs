@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
-use async_std::path::{Path, PathBuf};
 use async_std::sync::{Arc, RwLock};
+use std::path::Path;
 use tokio::io::AsyncWriteExt;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
@@ -10,7 +10,6 @@ use super::SubtitleGenerator;
 #[derive(Clone)]
 pub struct WhisperCPP {
     ctx: Arc<RwLock<WhisperContext>>,
-    model_path: Arc<RwLock<PathBuf>>,
 }
 
 pub async fn new(model: &Path) -> Result<WhisperCPP, String> {
@@ -22,13 +21,16 @@ pub async fn new(model: &Path) -> Result<WhisperCPP, String> {
 
     Ok(WhisperCPP {
         ctx: Arc::new(RwLock::new(ctx)),
-        model_path: Arc::new(RwLock::new(model.to_path_buf())),
     })
 }
 
 #[async_trait]
 impl SubtitleGenerator for WhisperCPP {
-    async fn generate_subtitle(&self, audio_path: &Path, output_path: &Path) -> Result<(), String> {
+    async fn generate_subtitle(
+        &self,
+        audio_path: &Path,
+        output_path: &Path,
+    ) -> Result<String, String> {
         let samples: Vec<i16> = hound::WavReader::open(audio_path)
             .unwrap()
             .into_samples::<i16>()
@@ -73,6 +75,7 @@ impl SubtitleGenerator for WhisperCPP {
         let num_segments = state
             .full_n_segments()
             .expect("failed to get number of segments");
+        let mut subtitle = String::new();
         for i in 0..num_segments {
             let segment = state
                 .full_get_segment_text(i)
@@ -88,7 +91,7 @@ impl SubtitleGenerator for WhisperCPP {
                 let hours = (timestamp / 3600.0).floor();
                 let minutes = ((timestamp - hours * 3600.0) / 60.0).floor();
                 let seconds = timestamp - hours * 3600.0 - minutes * 60.0;
-                format!("{:02}:{:02}:{:06.3}", hours, minutes, seconds)
+                format!("{:02}:{:02}:{:06.3}", hours, minutes, seconds).replace(".", ",")
             };
 
             let line = format!(
@@ -99,13 +102,15 @@ impl SubtitleGenerator for WhisperCPP {
                 segment,
             );
 
-            output_file
-                .write_all(line.as_bytes())
-                .await
-                .expect("failed to write to output file");
+            subtitle.push_str(&line);
         }
 
-        Ok(())
+        output_file
+            .write_all(subtitle.as_bytes())
+            .await
+            .expect("failed to write to output file");
+
+        Ok(subtitle)
     }
 }
 

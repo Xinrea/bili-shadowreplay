@@ -1,8 +1,11 @@
 use crate::database::video::VideoRow;
+use crate::ffmpeg;
 use crate::progress_event::{emit_progress_finished, emit_progress_update};
 use crate::recorder::bilibili::profile::Profile;
 use crate::recorder::PlatformType;
 use crate::state::State;
+use crate::subtitle_generator::whisper::{self};
+use crate::subtitle_generator::SubtitleGenerator;
 use chrono::Utc;
 use std::path::Path;
 use tauri::State as TauriState;
@@ -25,6 +28,7 @@ pub async fn clip_range(
         x,
         y
     );
+    let event_id = format!("clip_{}", room_id);
     let platform = PlatformType::from_str(&platform).unwrap();
     let file = state
         .recorder_manager
@@ -64,6 +68,21 @@ pub async fn clip_range(
             area: 0,
         })
         .await?;
+    if state.config.read().await.auto_subtitle
+        && !state.config.read().await.whisper_model.is_empty()
+    {
+        if let Ok(generator) =
+            whisper::new(Path::new(&state.config.read().await.whisper_model)).await
+        {
+            emit_progress_update(&state.app_handle, event_id.as_str(), "提取音频中", "");
+            let audio_path = file.with_extension("wav");
+            ffmpeg::extract_audio(&file).await?;
+            emit_progress_update(&state.app_handle, event_id.as_str(), "生成字幕中", "");
+            generator
+                .generate_subtitle(&audio_path, &file.with_extension("srt"))
+                .await?;
+        }
+    }
     state
         .db
         .new_message(
@@ -86,6 +105,9 @@ pub async fn clip_range(
             .show()
             .unwrap();
     }
+
+    emit_progress_finished(&state.app_handle, event_id.as_str());
+
     Ok(video)
 }
 
@@ -211,13 +233,25 @@ pub async fn get_videos(
 pub async fn delete_video(state: TauriState<'_, State>, id: i64) -> Result<(), String> {
     // get video info from dbus
     let video = state.db.get_video(id).await?;
+    // delete video from db
+    state.db.delete_video(id).await?;
     // delete video files
     let filepath = format!("{}/{}", state.config.read().await.output, video.file);
     let file = Path::new(&filepath);
     if let Err(e) = std::fs::remove_file(file) {
-        log::error!("Delete video file error: {}", e);
+        log::warn!("Delete video file error: {}", e);
     }
-    Ok(state.db.delete_video(id).await?)
+    // delete srt file
+    let srt_path = file.with_extension("srt");
+    if let Err(e) = std::fs::remove_file(srt_path) {
+        log::warn!("Delete srt file error: {}", e);
+    }
+    // delete wav file
+    let wav_path = file.with_extension("wav");
+    if let Err(e) = std::fs::remove_file(wav_path) {
+        log::warn!("Delete wav file error: {}", e);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -238,4 +272,85 @@ pub async fn update_video_cover(
     cover: String,
 ) -> Result<(), String> {
     Ok(state.db.update_video_cover(id, cover).await?)
+}
+
+#[tauri::command]
+pub async fn get_video_subtitle(state: TauriState<'_, State>, id: i64) -> Result<String, String> {
+    let video = state.db.get_video(id).await?;
+    let filepath = format!("{}/{}", state.config.read().await.output, video.file);
+    let file = Path::new(&filepath);
+    // read file content
+    if let Ok(content) = std::fs::read_to_string(file.with_extension("srt")) {
+        Ok(content)
+    } else {
+        Ok("".to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn generate_video_subtitle(
+    state: TauriState<'_, State>,
+    id: i64,
+) -> Result<String, String> {
+    let video = state.db.get_video(id).await?;
+    let filepath = format!("{}/{}", state.config.read().await.output, video.file);
+    let file = Path::new(&filepath);
+    if let Ok(generator) = whisper::new(Path::new(&state.config.read().await.whisper_model)).await {
+        let audio_path = file.with_extension("wav");
+        ffmpeg::extract_audio(file).await?;
+        let subtitle = generator
+            .generate_subtitle(&audio_path, &file.with_extension("srt"))
+            .await?;
+        Ok(subtitle)
+    } else {
+        Err("Whisper model not found".to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn update_video_subtitle(
+    state: TauriState<'_, State>,
+    id: i64,
+    subtitle: String,
+) -> Result<(), String> {
+    let video = state.db.get_video(id).await?;
+    let filepath = format!("{}/{}", state.config.read().await.output, video.file);
+    let file = Path::new(&filepath);
+    let subtitle_path = file.with_extension("srt");
+    std::fs::write(subtitle_path, subtitle).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn encode_video_subtitle(
+    state: TauriState<'_, State>,
+    id: i64,
+    srt_style: String,
+) -> Result<VideoRow, String> {
+    let video = state.db.get_video(id).await?;
+    let filepath = format!("{}/{}", state.config.read().await.output, video.file);
+    let file = Path::new(&filepath);
+    let output_file =
+        ffmpeg::encode_video_subtitle(file, &file.with_extension("srt"), srt_style).await?;
+
+    let new_video = state
+        .db
+        .add_video(&VideoRow {
+            id: 0,
+            status: video.status,
+            room_id: video.room_id,
+            created_at: Utc::now().to_rfc3339(),
+            cover: video.cover.clone(),
+            file: output_file,
+            length: video.length,
+            size: video.size,
+            bvid: video.bvid.clone(),
+            title: video.title.clone(),
+            desc: video.desc.clone(),
+            tags: video.tags.clone(),
+            area: video.area,
+        })
+        .await?;
+
+    Ok(new_video)
 }

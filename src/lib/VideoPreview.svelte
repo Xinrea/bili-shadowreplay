@@ -25,7 +25,7 @@
   export let videos: any[] = [];
   export let onVideoChange: ((video: VideoItem) => void) | undefined =
     undefined;
-  export let onVideoListUpdate: (() => void) | undefined = undefined;
+  export let onVideoListUpdate: (() => Promise<void>) | undefined = undefined;
 
   interface Subtitle {
     startTime: number;
@@ -135,10 +135,14 @@
   // 保存字幕到 localStorage
   async function saveSubtitles() {
     if (video?.file) {
-      await invoke("update_video_subtitle", {
-        id: video.id,
-        subtitle: subtitlesToSrt(subtitles),
-      });
+      try {
+        await invoke("update_video_subtitle", {
+          id: video.id,
+          subtitle: subtitlesToSrt(subtitles),
+        });
+      } catch (error) {
+        console.warn(error);
+      }
     }
   }
 
@@ -484,7 +488,7 @@
       });
       console.log(result);
       // 压制成功后更新视频列表
-      onVideoListUpdate?.();
+      await onVideoListUpdate?.();
     } catch (error) {
       console.error(error);
       alert("压制失败：" + error);
@@ -549,12 +553,19 @@
           <button
             class="text-red-500 hover:text-red-400 transition-colors duration-200 px-2 py-1.5 rounded-md hover:bg-red-500/10"
             on:click={async () => {
+              if (!video) return;
               try {
                 await invoke("delete_video", { id: video.id });
                 // 更新视频列表
-                onVideoListUpdate?.();
-                // 关闭预览
-                handleClose();
+                await onVideoListUpdate?.();
+                // 如果列表不为空，选择新的视频
+                if (videos.length > 0) {
+                  const newVideo = videos[0];
+                  onVideoChange?.(newVideo);
+                } else {
+                  // 如果列表为空，关闭预览
+                  await handleClose();
+                }
               } catch (error) {
                 console.error(error);
                 alert("删除失败：" + error);

@@ -334,7 +334,9 @@ pub async fn update_video_subtitle(
     let filepath = format!("{}/{}", state.config.read().await.output, video.file);
     let file = Path::new(&filepath);
     let subtitle_path = file.with_extension("srt");
-    std::fs::write(subtitle_path, subtitle).map_err(|e| e.to_string())?;
+    if let Err(e) = std::fs::write(subtitle_path, subtitle) {
+        log::warn!("Update video subtitle error: {}", e);
+    }
     Ok(())
 }
 

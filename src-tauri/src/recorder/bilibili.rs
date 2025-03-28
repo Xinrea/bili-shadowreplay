@@ -268,6 +268,7 @@ impl BiliRecorder {
 
                 if *self.current_record.read().await {
                     *self.live_stream.write().await = Some(stream);
+                    *self.last_update.write().await = Utc::now().timestamp();
 
                     return true;
                 }

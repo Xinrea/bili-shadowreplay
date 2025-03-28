@@ -667,7 +667,7 @@ impl BiliRecorder {
         live_id: &str,
         x: f64,
         y: f64,
-        output_path: PathBuf,
+        clip_file: PathBuf,
     ) -> Result<PathBuf, super::errors::RecorderError> {
         log::info!("Create archive clip for range [{}, {}]", x, y);
         let work_dir = self.get_work_dir(live_id).await;
@@ -695,15 +695,7 @@ impl BiliRecorder {
             }
         }
 
-        let file_name = format!(
-            "[{}]{}_{}_{:.1}.mp4",
-            self.room_id,
-            live_id,
-            Utc::now().format("%m%d%H%M%S"),
-            y - x
-        );
-        self.generate_clip(app_handle, &file_list, output_path, &file_name)
-            .await
+        self.generate_clip(app_handle, &file_list, clip_file).await
     }
 
     pub async fn clip_live_range(
@@ -711,7 +703,7 @@ impl BiliRecorder {
         app_handle: AppHandle,
         x: f64,
         y: f64,
-        output_path: PathBuf,
+        clip_file: PathBuf,
     ) -> Result<PathBuf, super::errors::RecorderError> {
         log::info!("Create live clip for range [{}, {}]", x, y);
         let work_dir = self.get_work_dir(self.live_id.read().await.as_str()).await;
@@ -765,36 +757,24 @@ impl BiliRecorder {
             let file_path = format!("{}/{}", work_dir, file_name);
             file_list.push(file_path);
         }
-        let file_name = format!(
-            "[{}]{}_{}_{:.1}.mp4",
-            self.room_id,
-            self.live_id.read().await,
-            Utc::now().format("%m%d%H%M%S"),
-            y - x
-        );
-        self.generate_clip(app_handle, &file_list, output_path, &file_name)
-            .await
+        self.generate_clip(app_handle, &file_list, clip_file).await
     }
 
     async fn generate_clip(
         &self,
         app_handle: AppHandle,
         file_list: &[String],
-        output_path: PathBuf,
-        file_name: &str,
+        clip_file: PathBuf,
     ) -> Result<PathBuf, super::errors::RecorderError> {
-        if let Err(e) = std::fs::create_dir_all(&output_path) {
-            log::error!("Create clips folder failed: {}", e.to_string());
-            return Err(super::errors::RecorderError::ClipError { err: e.to_string() });
-        }
         let event_id = format!("clip_{}", self.room_id);
-        let output_name = output_path.join(file_name);
+
+        let tmp_file = clip_file.with_extension("tmp");
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(true)
-            .open(&output_name)
+            .open(&tmp_file)
             .await;
         if file.is_err() {
             let err = file.err().unwrap();
@@ -832,21 +812,15 @@ impl BiliRecorder {
         file.flush().await.unwrap();
 
         let transcode_config = TranscodeConfig {
-            input_path: file_name.to_string().into(),
+            input_path: tmp_file.clone(),
             input_format: "mp4".to_string(),
-            // replace .ts with .mp4
-            output_path: format!("fixed_{}", file_name).into(),
+            output_path: clip_file,
         };
 
-        let transcode_result = transcode(
-            &app_handle,
-            event_id.as_str(),
-            output_path,
-            transcode_config,
-        );
+        let transcode_result = transcode(&app_handle, event_id.as_str(), transcode_config);
 
         // delete the original ts file
-        if let Err(e) = tokio::fs::remove_file(output_name).await {
+        if let Err(e) = tokio::fs::remove_file(tmp_file).await {
             log::error!("Delete temp clip file failed: {}", e.to_string());
         }
 

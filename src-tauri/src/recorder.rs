@@ -77,7 +77,7 @@ pub trait Recorder: Send + Sync + 'static {
         live_id: &str,
         x: f64,
         y: f64,
-        output_path: PathBuf,
+        clip_file: PathBuf,
     ) -> Result<PathBuf, errors::RecorderError>;
     async fn m3u8_content(&self, live_id: &str) -> String;
     async fn info(&self) -> RecorderInfo;

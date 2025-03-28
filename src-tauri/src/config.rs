@@ -16,6 +16,8 @@ pub struct Config {
     pub auto_subtitle: bool,
     #[serde(default = "default_whisper_model")]
     pub whisper_model: String,
+    #[serde(default = "default_clip_name_format")]
+    pub clip_name_format: String,
 }
 
 fn default_auto_subtitle() -> bool {
@@ -24,6 +26,10 @@ fn default_auto_subtitle() -> bool {
 
 fn default_whisper_model() -> String {
     "".to_string()
+}
+
+fn default_clip_name_format() -> String {
+    "[{room_id}][{live_id}][{title}][{created_at}].mp4".to_string()
 }
 
 impl Config {
@@ -57,6 +63,7 @@ impl Config {
             post_notify: true,
             auto_subtitle: false,
             whisper_model: "".to_string(),
+            clip_name_format: "[{room_id}][{live_id}][{title}][{created_at}].mp4".to_string(),
         };
         config.save();
         config

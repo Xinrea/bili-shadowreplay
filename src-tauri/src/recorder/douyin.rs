@@ -499,7 +499,7 @@ impl Recorder for DouyinRecorder {
         live_id: &str,
         x: f64,
         y: f64,
-        output_path: PathBuf,
+        clip_file: PathBuf,
     ) -> Result<PathBuf, RecorderError> {
         let event_id = format!("clip_{}", self.room_id);
         let work_dir = self.get_work_dir(live_id).await;
@@ -534,28 +534,16 @@ impl Recorder for DouyinRecorder {
             }
         }
 
-        let file_name = format!(
-            "[{}]{}_{}_{:.1}.ts",
-            self.room_id,
-            live_id,
-            Utc::now().format("%m%d%H%M%S"),
-            y - x
-        );
-
-        let output_file = output_path.join(&file_name);
-        tokio::fs::create_dir_all(&output_path)
-            .await
-            .map_err(|e| RecorderError::IoError { err: e })?;
-
+        let tmp_file = clip_file.with_extension("tmp");
         // Merge ts files
-        let mut output = tokio::fs::File::create(&output_file)
+        let mut tmpf = tokio::fs::File::create(&tmp_file)
             .await
             .map_err(|e| RecorderError::IoError { err: e })?;
         for (i, file_path) in file_list.iter().enumerate() {
             if let Ok(mut file) = tokio::fs::File::open(file_path).await {
                 let mut buffer = Vec::new();
                 if file.read_to_end(&mut buffer).await.is_ok() {
-                    let _ = output.write_all(&buffer).await;
+                    let _ = tmpf.write_all(&buffer).await;
                 }
             }
 
@@ -570,27 +558,20 @@ impl Recorder for DouyinRecorder {
                 "",
             );
         }
-        output
-            .flush()
+        tmpf.flush()
             .await
             .map_err(|e| RecorderError::IoError { err: e })?;
 
         let transcode_config = TranscodeConfig {
-            input_path: PathBuf::from(&file_name),
-            input_format: "mpegts".to_string(),
-            // replace .ts with .mp4
-            output_path: file_name.replace(".ts", ".mp4").into(),
+            input_path: tmp_file.clone(),
+            input_format: "mpegts".into(),
+            output_path: clip_file,
         };
 
-        let transcode_result = transcode(
-            &app_handle,
-            event_id.as_str(),
-            output_path,
-            transcode_config,
-        );
+        let transcode_result = transcode(&app_handle, event_id.as_str(), transcode_config);
 
         // delete the original ts file
-        tokio::fs::remove_file(output_file).await?;
+        tokio::fs::remove_file(tmp_file).await?;
 
         emit_progress_finished(&app_handle, event_id.as_str());
 

@@ -283,6 +283,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::config::update_notify,
         crate::handlers::config::update_whisper_model,
         crate::handlers::config::update_subtitle_setting,
+        crate::handlers::config::update_clip_name_format,
         crate::handlers::message::get_messages,
         crate::handlers::message::read_message,
         crate::handlers::message::delete_message,

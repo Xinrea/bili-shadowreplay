@@ -16,6 +16,7 @@
     auto_cleanup: true,
     auto_subtitle: false,
     whisper_model: "",
+    clip_name_format: "",
   };
 
   let showModal = false;
@@ -348,6 +349,51 @@
                 >
                   变更
                 </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Clip Name Format Settings -->
+        <div class="space-y-4">
+          <h2
+            class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
+          >
+            <FileText class="w-5 h-5 dark:icon-white" />
+            <span>切片文件名格式</span>
+          </h2>
+          <div
+            class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700"
+          >
+            <div class="p-4">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                    文件名格式
+                  </h3>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    可用标签：{"{title}"}
+                    {"{platform}"}
+                    {"{room_id}"}
+                    {"{live_id}"}
+                    {"{x}"}
+                    {"{y}"}
+                    {"{created_at}"}
+                    {"{length}"}
+                  </p>
+                </div>
+                <div class="flex items-center space-x-2">
+                  <input
+                    type="text"
+                    class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
+                    bind:value={setting_model.clip_name_format}
+                    on:change={async () => {
+                      await invoke("update_clip_name_format", {
+                        clipNameFormat: setting_model.clip_name_format,
+                      });
+                    }}
+                  />
+                </div>
               </div>
             </div>
           </div>

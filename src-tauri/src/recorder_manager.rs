@@ -196,7 +196,7 @@ impl RecorderManager {
 
     pub async fn clip_range(
         &self,
-        output_path: &str,
+        clip_file: PathBuf,
         platform: PlatformType,
         room_id: u64,
         live_id: &str,
@@ -211,13 +211,7 @@ impl RecorderManager {
         }
         let recorder = recorders.get(&recorder_id).unwrap();
         Ok(recorder
-            .clip_range(
-                self.app_handle.clone(),
-                live_id,
-                start,
-                end,
-                output_path.into(),
-            )
+            .clip_range(self.app_handle.clone(), live_id, start, end, clip_file)
             .await?)
     }
 

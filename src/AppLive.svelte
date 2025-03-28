@@ -236,6 +236,7 @@
     update_clip_prompt(`切片生成中`);
     try {
       let new_video = (await invoke("clip_range", {
+        title: archive.title,
         roomId: room_id,
         platform: platform,
         cover: new_cover,

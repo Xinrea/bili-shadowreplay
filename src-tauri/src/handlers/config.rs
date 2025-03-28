@@ -147,3 +147,23 @@ pub async fn update_notify(
     state.config.write().await.save();
     Ok(())
 }
+
+#[tauri::command]
+pub async fn update_whisper_model(
+    state: TauriState<'_, State>,
+    whisper_model: String,
+) -> Result<(), ()> {
+    state.config.write().await.whisper_model = whisper_model;
+    state.config.write().await.save();
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_subtitle_setting(
+    state: TauriState<'_, State>,
+    auto_subtitle: bool,
+) -> Result<(), ()> {
+    state.config.write().await.auto_subtitle = auto_subtitle;
+    state.config.write().await.save();
+    Ok(())
+}

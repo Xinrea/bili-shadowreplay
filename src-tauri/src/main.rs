@@ -9,6 +9,7 @@ mod progress_event;
 mod recorder;
 mod recorder_manager;
 mod state;
+mod subtitle_generator;
 mod tray;
 
 use config::Config;
@@ -280,6 +281,8 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::config::set_cache_path,
         crate::handlers::config::set_output_path,
         crate::handlers::config::update_notify,
+        crate::handlers::config::update_whisper_model,
+        crate::handlers::config::update_subtitle_setting,
         crate::handlers::message::get_messages,
         crate::handlers::message::read_message,
         crate::handlers::message::delete_message,
@@ -306,6 +309,10 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::video::delete_video,
         crate::handlers::video::get_video_typelist,
         crate::handlers::video::update_video_cover,
+        crate::handlers::video::generate_video_subtitle,
+        crate::handlers::video::get_video_subtitle,
+        crate::handlers::video::update_video_subtitle,
+        crate::handlers::video::encode_video_subtitle,
         crate::handlers::utils::show_in_folder,
         crate::handlers::utils::export_to_file,
         crate::handlers::utils::get_disk_info,

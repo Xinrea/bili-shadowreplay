@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use ffmpeg_sidecar::{
     command::FfmpegCommand,
@@ -62,4 +62,82 @@ pub fn transcode(
     Ok(TranscodeResult {
         output_path: work_dir.join(output_path),
     })
+}
+
+pub async fn extract_audio(file: &Path) -> Result<(), String> {
+    // ffmpeg -i fixed_\[30655190\]1742887114_0325084106_81.5.mp4 -ar 16000 test.wav
+    log::info!("Extract audio task start: {}", file.display());
+    let output_path = file.with_extension("wav");
+    FfmpegCommand::new()
+        .args(["-i", file.to_str().unwrap()])
+        .args(["-ar", "16000"])
+        .args([output_path.to_str().unwrap()])
+        .args(["-y"])
+        .spawn()
+        .unwrap()
+        .iter()
+        .unwrap()
+        .for_each(|e| {
+            if let FfmpegEvent::Log(LogLevel::Error, e) = e {
+                println!("Error: {}", e);
+            }
+        });
+
+    log::info!("Extract audio task end: {}", output_path.display());
+    Ok(())
+}
+
+pub async fn encode_video_subtitle(
+    file: &Path,
+    subtitle: &Path,
+    srt_style: String,
+) -> Result<String, String> {
+    // ffmpeg -i fixed_\[30655190\]1742887114_0325084106_81.5.mp4 -vf "subtitles=test.srt:force_style='FontSize=24'" -c:v libx264 -c:a copy output.mp4
+    log::info!("Encode video subtitle task start: {}", file.display());
+    log::info!("srt_style: {}", srt_style);
+    // output path is file with prefix [subtitle]
+    let output_filename = format!("[subtitle]{}", file.file_name().unwrap().to_str().unwrap());
+    let output_path = file.with_file_name(&output_filename);
+
+    // check output path exists
+    if output_path.exists() {
+        log::info!("Output path already exists: {}", output_path.display());
+        return Err("Output path already exists".to_string());
+    }
+
+    let mut command_error = None;
+
+    FfmpegCommand::new()
+        .args(["-i", file.to_str().unwrap()])
+        .args([
+            "-vf",
+            format!(
+                "subtitles='{}':force_style='{}'",
+                subtitle.to_str().unwrap(),
+                srt_style
+            )
+            .as_str(),
+        ])
+        .args(["-c:v", "libx264"])
+        .args(["-c:a", "copy"])
+        .args([output_path.to_str().unwrap()])
+        .args(["-y"])
+        .spawn()
+        .unwrap()
+        .iter()
+        .unwrap()
+        .for_each(|e| {
+            if let FfmpegEvent::Log(LogLevel::Error, e) = e {
+                log::error!("Error: {}", e);
+                command_error = Some(e.to_string());
+            }
+        });
+
+    log::info!("Encode video subtitle task end: {}", output_path.display());
+
+    if let Some(error) = command_error {
+        Err(error)
+    } else {
+        Ok(output_filename)
+    }
 }

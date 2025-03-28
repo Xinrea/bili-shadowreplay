@@ -31,7 +31,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::config::Config;
 use crate::database::{Database, DatabaseError};
-use crate::progress_event::{emit_progress_finished, emit_progress_update};
+use crate::progress_event::emit_progress_update;
 
 use async_trait::async_trait;
 
@@ -849,8 +849,6 @@ impl BiliRecorder {
         if let Err(e) = tokio::fs::remove_file(output_name).await {
             log::error!("Delete temp clip file failed: {}", e.to_string());
         }
-
-        emit_progress_finished(&app_handle, event_id.as_str());
 
         Ok(transcode_result.unwrap().output_path)
     }

@@ -15,8 +15,9 @@
   import TypeSelect from "./lib/TypeSelect.svelte";
   import MarkerPanel from "./lib/MarkerPanel.svelte";
   import CoverEditor from "./lib/CoverEditor.svelte";
+  import VideoPreview from "./lib/VideoPreview.svelte";
   import { listen } from "@tauri-apps/api/event";
-  import { onDestroy } from "svelte";
+  import { onDestroy, onMount } from "svelte";
 
   const appWindow = getCurrentWebviewWindow();
   const urlParams = new URLSearchParams(window.location.search);
@@ -146,6 +147,19 @@
 
   let selected_video = null;
 
+  let video: HTMLVideoElement;
+
+  function pauseVideo() {
+    if (video) {
+      video.pause();
+    }
+  }
+
+  // Initialize video element when component is mounted
+  onMount(() => {
+    video = document.getElementById("video") as HTMLVideoElement;
+  });
+
   invoke("get_accounts").then((account_info: AccountInfo) => {
     accounts = account_info.accounts.map((a) => {
       return {
@@ -187,6 +201,7 @@
       (await invoke("get_videos", { roomId: room_id })) as VideoItem[]
     ).map((v) => {
       return {
+        id: v.id,
         value: v.id,
         name: v.file,
         file: convertFileSrc(config.output + "/" + v.file),
@@ -358,55 +373,20 @@
           markers = markers.sort((a, b) => a.offset - b.offset);
         }}
       />
-      {#if preview}
-        <!-- svelte-ignore a11y-click-events-have-key-events -->
-        <div
-          class="fixed inset-0 bg-black/30 backdrop-blur-sm z-[1000] transition-opacity duration-200"
-          class:opacity-0={!preview}
-          class:opacity-100={preview}
-          on:click={() => (preview = false)}
-        >
-          <!-- svelte-ignore a11y-click-events-have-key-events -->
-          <div
-            class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] bg-[#1c1c1e] rounded-xl shadow-2xl overflow-hidden transition-all duration-200 scale-100"
-            class:opacity-0={!preview}
-            class:opacity-100={preview}
-            class:scale-95={!preview}
-            class:scale-100={preview}
-            on:click|stopPropagation
-          >
-            <!-- 标题栏 -->
-            <div
-              class="flex items-center justify-between px-6 py-4 border-b border-gray-800/50 bg-[#2c2c2e]"
-            >
-              <h3 class="text-lg font-medium text-white">预览视频</h3>
-              <button
-                class="w-6 h-6 rounded-full bg-[#ff5f57] hover:bg-[#ff5f57]/90 transition-colors duration-200 flex items-center justify-center group"
-                on:click={() => (preview = false)}
-              >
-                <svg
-                  class="w-3 h-3 text-[#1c1c1e] opacity-0 group-hover:opacity-100 transition-opacity duration-200"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="3"
-                >
-                  <path d="M18 6L6 18M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-            <!-- 视频容器 -->
-            <div class="relative aspect-video bg-black">
-              <!-- svelte-ignore a11y-media-has-caption -->
-              <video
-                src={selected_video?.file}
-                controls
-                class="w-full h-full"
-              />
-            </div>
-          </div>
-        </div>
-      {/if}
+      <VideoPreview
+        bind:show={preview}
+        video={selected_video}
+        roomId={room_id}
+        {videos}
+        onVideoChange={(video) => {
+          selected_video = video;
+        }}
+        onClose={() => {
+          preview = false;
+          selected_video = null;
+        }}
+        onVideoListUpdate={get_video_list}
+      />
     </div>
     <div
       class="flex relative h-screen border-solid bg-gray-950 border-l-2 border-gray-800 text-white transition-all duration-300 ease-in-out"
@@ -513,7 +493,10 @@
                   <div
                     id="capture"
                     class="relative rounded-xl overflow-hidden bg-black/20 border border-gray-800/50 cursor-pointer group"
-                    on:click={() => (preview = true)}
+                    on:click={() => {
+                      pauseVideo();
+                      preview = true;
+                    }}
                   >
                     <div
                       class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100

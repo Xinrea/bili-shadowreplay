@@ -3,7 +3,7 @@
   import { open } from "@tauri-apps/plugin-dialog";
 
   import type { Config } from "../lib/interface";
-  import { Bell, HardDrive, AlertTriangle } from "lucide-svelte";
+  import { Bell, HardDrive, AlertTriangle, FileText } from "lucide-svelte";
 
   let setting_model: Config = {
     cache: "",
@@ -14,6 +14,8 @@
     clip_notify: true,
     post_notify: true,
     auto_cleanup: true,
+    auto_subtitle: false,
+    whisper_model: "",
   };
 
   let showModal = false;
@@ -65,6 +67,32 @@
         cachePath: setting_model.cache,
       });
     }
+  }
+
+  async function handleWhisperModelPathChange() {
+    const selected = await open({
+      multiple: false,
+      filters: [
+        {
+          name: "Whisper Model",
+          extensions: ["bin"],
+        },
+      ],
+    });
+    if (selected) {
+      setting_model.whisper_model = Array.isArray(selected)
+        ? selected[0]
+        : selected;
+      await invoke("update_whisper_model", {
+        whisperModel: setting_model.whisper_model,
+      });
+    }
+  }
+
+  async function update_subtitle_setting() {
+    await invoke("update_subtitle_setting", {
+      autoSubtitle: setting_model.auto_subtitle,
+    });
   }
 
   get_config();
@@ -255,6 +283,71 @@
                     class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
                   ></span>
                 </label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Subtitle Generation Settings -->
+        <div class="space-y-4">
+          <h2
+            class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
+          >
+            <FileText class="w-5 h-5 dark:icon-white" />
+            <span>字幕生成</span>
+          </h2>
+          <div
+            class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700"
+          >
+            <!-- Auto Subtitle Generation -->
+            <div class="p-4">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                    自动生成字幕
+                  </h3>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    启用后，切片完成后会自动生成字幕
+                  </p>
+                </div>
+                <label class="relative inline-block w-11 h-6">
+                  <input
+                    type="checkbox"
+                    class="peer opacity-0 w-0 h-0"
+                    bind:checked={setting_model.auto_subtitle}
+                    on:change={update_subtitle_setting}
+                  />
+                  <span
+                    class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
+                  ></span>
+                </label>
+              </div>
+            </div>
+            <!-- Whisper Model Path -->
+            <div class="p-4">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                    Whisper 模型路径
+                  </h3>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    {setting_model.whisper_model || "未设置"}
+                    <span class="block mt-1 text-xs"
+                      >可前往 <a
+                        href="https://ggml.ggerganov.com/"
+                        class="text-blue-500 hover:underline"
+                        target="_blank"
+                        rel="noopener noreferrer">ggml.ggerganov.com</a
+                      > 下载模型文件</span
+                    >
+                  </p>
+                </div>
+                <button
+                  class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+                  on:click={handleWhisperModelPathChange}
+                >
+                  变更
+                </button>
               </div>
             </div>
           </div>

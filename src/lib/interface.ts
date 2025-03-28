@@ -93,6 +93,8 @@ export interface Config {
   clip_notify: boolean;
   post_notify: boolean;
   auto_cleanup: boolean;
+  auto_subtitle: boolean;
+  whisper_model: string;
 }
 
 export interface DiskInfo {
@@ -150,4 +152,37 @@ export interface ProgressUpdate {
 
 export interface ProgressFinished {
   id: string;
+}
+
+export interface SubtitleStyle {
+  fontName: string;
+  fontSize: number;
+  fontColor: string;
+  outlineColor: string;
+  outlineWidth: number;
+  alignment: number;
+  marginV: number;
+  marginL: number;
+  marginR: number;
+}
+
+export function parseSubtitleStyle(style: SubtitleStyle): string {
+  // Convert hex color to ASS/SSA format (&HBBGGRR)
+  function hexToAssColor(hex: string): string {
+    if (!hex.startsWith("#")) return hex;
+    const r = hex.slice(1, 3);
+    const g = hex.slice(3, 5);
+    const b = hex.slice(5, 7);
+    return `&H${b}${g}${r}`;
+  }
+
+  return `FontName=${style.fontName},FontSize=${
+    style.fontSize
+  },PrimaryColour=${hexToAssColor(
+    style.fontColor
+  )},OutlineColour=${hexToAssColor(style.outlineColor)},Outline=${
+    style.outlineWidth
+  },Alignment=${style.alignment},MarginV=${style.marginV},MarginL=${
+    style.marginL
+  },MarginR=${style.marginR}`;
 }

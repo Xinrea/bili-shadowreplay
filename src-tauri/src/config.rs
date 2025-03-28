@@ -12,6 +12,18 @@ pub struct Config {
     pub live_end_notify: bool,
     pub clip_notify: bool,
     pub post_notify: bool,
+    #[serde(default = "default_auto_subtitle")]
+    pub auto_subtitle: bool,
+    #[serde(default = "default_whisper_model")]
+    pub whisper_model: String,
+}
+
+fn default_auto_subtitle() -> bool {
+    false
+}
+
+fn default_whisper_model() -> String {
+    "".to_string()
 }
 
 impl Config {
@@ -43,6 +55,8 @@ impl Config {
             live_end_notify: true,
             clip_notify: true,
             post_notify: true,
+            auto_subtitle: false,
+            whisper_model: "".to_string(),
         };
         config.save();
         config

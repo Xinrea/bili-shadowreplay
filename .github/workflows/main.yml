@@ -29,6 +29,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set build type
+        id: build_type
+        run: |
+          if [[ "${{ github.ref }}" == *"rc"* ]]; then
+            echo "debug=true" >> $GITHUB_OUTPUT
+          else
+            echo "debug=false" >> $GITHUB_OUTPUT
+          fi
+        shell: bash
+
       - name: install dependencies (ubuntu only)
         if: matrix.platform == 'ubuntu-22.04' # This must match the platform value defined above.
         run: |
@@ -76,7 +86,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CMAKE_OSX_DEPLOYMENT_TARGET: "13.3"
           WHISPER_BACKEND: ${{ matrix.features }}
-          TAURI_CONF_FILE: ${{ matrix.platform == 'windows-latest' && matrix.features == 'openblas' && 'src-tauri/tauri.windows.openblas.conf.json' || '' }}
+          TAURI_CONF_FILE: ${{ matrix.platform == 'windows-latest' && matrix.features == 'openblas' && 'tauri.windows.openblas.conf.json' || 'tauri.windows.conf.json' }}
         with:
           tagName: v__VERSION__
           releaseName: "BiliBili ShadowReplay v__VERSION__${{ matrix.suffix }}"
@@ -84,3 +94,4 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+          includeDebug: ${{ steps.build_type.outputs.debug == 'true' && 'true' || 'false' }}

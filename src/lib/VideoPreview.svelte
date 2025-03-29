@@ -9,6 +9,8 @@
     Settings,
     ChevronDown,
     Trash2,
+    BrainCircuit,
+    Eraser,
   } from "lucide-svelte";
   import {
     parseSubtitleStyle,
@@ -325,8 +327,14 @@
     subtitles = subtitles.sort((a, b) => a.startTime - b.startTime);
   }
 
-  function removeSubtitle(index: number) {
+  async function removeSubtitle(index: number) {
     subtitles = subtitles.filter((_, i) => i !== index);
+    await saveSubtitles(); // 删除字幕时保存
+  }
+
+  async function clearSubtitles() {
+    subtitles = [];
+    await saveSubtitles(); // 清空字幕时保存
   }
 
   function seekToTime(time: number) {
@@ -893,7 +901,7 @@
         class="w-80 border-l border-gray-800/50 bg-[#2c2c2e] overflow-y-auto"
       >
         <div class="p-4 space-y-4">
-          <div class="w-full">
+          <div class="w-full sticky top-0 bg-[#2c2c2e] z-10 pb-4">
             <div class="flex flex-col space-y-2">
               <div class="flex space-x-2">
                 <button
@@ -903,6 +911,15 @@
                   <Settings class="w-4 h-4" />
                   <span>字幕样式</span>
                 </button>
+                <button
+                  class="flex-1 px-3 py-1.5 text-sm bg-[#1c1c1e] text-gray-300 rounded-lg hover:bg-[#2c2c2e] transition-colors duration-200 flex items-center justify-center space-x-1 border border-gray-700"
+                  on:click={clearSubtitles}
+                >
+                  <Eraser class="w-4 h-4" />
+                  <span>清空列表</span>
+                </button>
+              </div>
+              <div class="flex space-x-2">
                 <button
                   class="flex-1 px-3 py-1.5 text-sm bg-[#1c1c1e] text-gray-300 rounded-lg hover:bg-[#2c2c2e] transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-1 border border-gray-700"
                   on:click={generateSubtitles}
@@ -931,17 +948,18 @@
                     </svg>
                     <span>生成中...</span>
                   {:else}
+                    <BrainCircuit class="w-4 h-4" />
                     <span>AI 生成字幕</span>
                   {/if}
                 </button>
+                <button
+                  class="flex-1 px-3 py-1.5 text-sm bg-[#1c1c1e] text-gray-300 rounded-lg hover:bg-[#2c2c2e] transition-colors duration-200 flex items-center justify-center space-x-1 border border-gray-700"
+                  on:click={addSubtitle}
+                >
+                  <Plus class="w-4 h-4" />
+                  <span>手动添加</span>
+                </button>
               </div>
-              <button
-                class="w-full px-3 py-1.5 text-sm bg-[#1c1c1e] text-gray-300 rounded-lg hover:bg-[#2c2c2e] transition-colors duration-200 flex items-center justify-center space-x-1 border border-gray-700"
-                on:click={addSubtitle}
-              >
-                <Plus class="w-4 h-4" />
-                <span>手动添加</span>
-              </button>
             </div>
           </div>
 
@@ -1001,7 +1019,7 @@
                   </div>
                   <button
                     class="text-sm text-red-500 hover:text-red-400"
-                    on:click={() => removeSubtitle(index)}
+                    on:click={async () => await removeSubtitle(index)}
                   >
                     删除
                   </button>

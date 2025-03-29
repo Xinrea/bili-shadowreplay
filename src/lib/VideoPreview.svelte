@@ -62,7 +62,7 @@
   let videoHeight = 0;
   let subtitleStyle: SubtitleStyle = {
     fontName: "Arial",
-    fontSize: 24,
+    fontSize: 18,
     fontColor: "#FFFFFF",
     outlineColor: "#000000",
     outlineWidth: 2,
@@ -705,10 +705,12 @@
                   font-family: {subtitleStyle.fontName};
                   font-size: {videoHeight * (subtitleStyle.fontSize / 720)}px;
                   color: {subtitleStyle.fontColor};
-                  text-shadow: {videoHeight *
-                  (subtitleStyle.outlineWidth / 720)}px {videoHeight *
-                  (subtitleStyle.outlineWidth /
-                    720)}px 0 {subtitleStyle.outlineColor};
+                  text-shadow: {`
+                    ${subtitleStyle.outlineWidth}px ${subtitleStyle.outlineWidth}px 0 ${subtitleStyle.outlineColor},
+                    -${subtitleStyle.outlineWidth}px ${subtitleStyle.outlineWidth}px 0 ${subtitleStyle.outlineColor},
+                    ${subtitleStyle.outlineWidth}px -${subtitleStyle.outlineWidth}px 0 ${subtitleStyle.outlineColor},
+                    -${subtitleStyle.outlineWidth}px -${subtitleStyle.outlineWidth}px 0 ${subtitleStyle.outlineColor}
+                  `};
                   text-align: {subtitleStyle.alignment === 1
                   ? 'left'
                   : subtitleStyle.alignment === 2

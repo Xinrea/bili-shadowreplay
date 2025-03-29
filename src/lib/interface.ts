@@ -95,6 +95,7 @@ export interface Config {
   auto_cleanup: boolean;
   auto_subtitle: boolean;
   whisper_model: string;
+  whisper_prompt: string;
   clip_name_format: string;
 }
 

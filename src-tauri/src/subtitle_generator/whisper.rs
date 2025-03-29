@@ -10,9 +10,10 @@ use super::SubtitleGenerator;
 #[derive(Clone)]
 pub struct WhisperCPP {
     ctx: Arc<RwLock<WhisperContext>>,
+    prompt: String,
 }
 
-pub async fn new(model: &Path) -> Result<WhisperCPP, String> {
+pub async fn new(model: &Path, prompt: &str) -> Result<WhisperCPP, String> {
     let ctx = WhisperContext::new_with_params(
         model.to_str().unwrap(),
         WhisperContextParameters::default(),
@@ -21,6 +22,7 @@ pub async fn new(model: &Path) -> Result<WhisperCPP, String> {
 
     Ok(WhisperCPP {
         ctx: Arc::new(RwLock::new(ctx)),
+        prompt: prompt.to_string(),
     })
 }
 
@@ -50,7 +52,7 @@ impl SubtitleGenerator for WhisperCPP {
 
         // and set the language to translate to to auto
         params.set_language(None);
-        params.set_initial_prompt("以下是普通话的句子。");
+        params.set_initial_prompt(self.prompt.as_str());
 
         // we also explicitly disable anything that prints to stdout
         params.set_print_special(false);
@@ -126,16 +128,19 @@ mod tests {
     #[tokio::test]
     #[ignore = "need whisper-cli"]
     async fn create_whisper_cpp() {
-        let result = new(Path::new("tests/model/ggml-model-whisper-tiny.bin")).await;
+        let result = new(Path::new("tests/model/ggml-model-whisper-tiny.bin"), "").await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     #[ignore = "need large model"]
     async fn process_by_whisper_cpp() {
-        let whisper = new(Path::new("tests/model/ggml-model-whisper-large-q5_0.bin"))
-            .await
-            .unwrap();
+        let whisper = new(
+            Path::new("tests/model/ggml-model-whisper-large-q5_0.bin"),
+            "",
+        )
+        .await
+        .unwrap();
         let audio_path = Path::new("tests/audio/test.wav");
         let output_path = Path::new("tests/audio/test.srt");
         let result = whisper.generate_subtitle(audio_path, output_path).await;

@@ -16,6 +16,7 @@
     auto_cleanup: true,
     auto_subtitle: false,
     whisper_model: "",
+    whisper_prompt: "",
     clip_name_format: "",
   };
 
@@ -349,6 +350,30 @@
                 >
                   变更
                 </button>
+              </div>
+            </div>
+            <div class="p-4">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                    Whisper 提示词
+                  </h3>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    生成字幕时使用的提示词，提示词的含义无意义，只用于设定风格
+                  </p>
+                </div>
+                <div class="flex items-center space-x-2">
+                  <input
+                    type="text"
+                    class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
+                    bind:value={setting_model.whisper_prompt}
+                    on:change={async () => {
+                      await invoke("update_whisper_prompt", {
+                        whisperPrompt: setting_model.whisper_prompt,
+                      });
+                    }}
+                  />
+                </div>
               </div>
             </div>
           </div>

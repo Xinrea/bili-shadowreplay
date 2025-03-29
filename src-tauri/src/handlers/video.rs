@@ -88,8 +88,11 @@ pub async fn clip_range(
     if state.config.read().await.auto_subtitle
         && !state.config.read().await.whisper_model.is_empty()
     {
-        if let Ok(generator) =
-            whisper::new(Path::new(&state.config.read().await.whisper_model)).await
+        if let Ok(generator) = whisper::new(
+            Path::new(&state.config.read().await.whisper_model),
+            &state.config.read().await.whisper_prompt,
+        )
+        .await
         {
             emit_progress_update(&state.app_handle, event_id.as_str(), "提取音频中", "");
             let audio_path = file.with_extension("wav");
@@ -312,7 +315,12 @@ pub async fn generate_video_subtitle(
     let video = state.db.get_video(id).await?;
     let filepath = format!("{}/{}", state.config.read().await.output, video.file);
     let file = Path::new(&filepath);
-    if let Ok(generator) = whisper::new(Path::new(&state.config.read().await.whisper_model)).await {
+    if let Ok(generator) = whisper::new(
+        Path::new(&state.config.read().await.whisper_model),
+        &state.config.read().await.whisper_prompt,
+    )
+    .await
+    {
         let audio_path = file.with_extension("wav");
         ffmpeg::extract_audio(file).await?;
         let subtitle = generator

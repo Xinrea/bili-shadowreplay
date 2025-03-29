@@ -177,3 +177,13 @@ pub async fn update_clip_name_format(
     state.config.write().await.save();
     Ok(())
 }
+
+#[tauri::command]
+pub async fn update_whisper_prompt(
+    state: TauriState<'_, State>,
+    whisper_prompt: String,
+) -> Result<(), ()> {
+    state.config.write().await.whisper_prompt = whisper_prompt;
+    state.config.write().await.save();
+    Ok(())
+}

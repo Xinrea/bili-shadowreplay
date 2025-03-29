@@ -19,11 +19,9 @@ jobs:
           - platform: "windows-latest"
             args: "--features cuda"
             features: "cuda"
-            suffix: "-cuda"
           - platform: "windows-latest"
-            args: "--features openblas"
-            features: "openblas"
-            suffix: "-openblas"
+            args: ""
+            features: "cpu"
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -85,13 +83,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CMAKE_OSX_DEPLOYMENT_TARGET: "13.3"
+          CMAKE_CUDA_ARCHITECTURES: "75"
           WHISPER_BACKEND: ${{ matrix.features }}
-          TAURI_CONF_FILE: ${{ matrix.platform == 'windows-latest' && matrix.features == 'openblas' && 'tauri.windows.openblas.conf.json' || 'tauri.windows.conf.json' }}
         with:
           tagName: v__VERSION__
-          releaseName: "BiliBili ShadowReplay v__VERSION__${{ matrix.suffix }}"
+          releaseName: "BiliBili ShadowReplay v__VERSION__"
           releaseBody: "See the assets to download this version and install."
           releaseDraft: true
           prerelease: false
-          args: ${{ matrix.args }}
+          args: ${{ matrix.args }} ${{ matrix.platform == 'windows-latest' && matrix.features == 'cpu' && '--config src-tauri/tauri.windows.cpu.conf.json' || '' }}
           includeDebug: ${{ steps.build_type.outputs.debug == 'true' && 'true' || 'false' }}

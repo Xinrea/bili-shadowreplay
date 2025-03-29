@@ -50,6 +50,7 @@ impl SubtitleGenerator for WhisperCPP {
 
         // and set the language to translate to to auto
         params.set_language(None);
+        params.set_initial_prompt("以下是普通话的句子。");
 
         // we also explicitly disable anything that prints to stdout
         params.set_print_special(false);

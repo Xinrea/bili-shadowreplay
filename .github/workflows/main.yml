@@ -17,7 +17,13 @@ jobs:
           - platform: "ubuntu-22.04"
             args: ""
           - platform: "windows-latest"
-            args: ""
+            args: "--features cuda"
+            features: "cuda"
+            suffix: "-cuda"
+          - platform: "windows-latest"
+            args: "--features openblas"
+            features: "openblas"
+            suffix: "-openblas"
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -41,8 +47,8 @@ jobs:
           # Those targets are only used on macos runners so it's in an `if` to slightly speed up windows and linux builds.
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
-      - name: Install CUDA toolkit (Windows only)
-        if: matrix.platform == 'windows-latest'
+      - name: Install CUDA toolkit (Windows CUDA only)
+        if: matrix.platform == 'windows-latest' && matrix.features == 'cuda'
         uses: Jimver/cuda-toolkit@master
 
       - name: Rust cache
@@ -54,8 +60,8 @@ jobs:
         # If you don't have `beforeBuildCommand` configured you may want to build your frontend here too.
         run: yarn install # change this to npm or pnpm depending on which one you use.
 
-      - name: Copy CUDA DLLs (Windows only)
-        if: matrix.platform == 'windows-latest'
+      - name: Copy CUDA DLLs (Windows CUDA only)
+        if: matrix.platform == 'windows-latest' && matrix.features == 'cuda'
         shell: pwsh
         run: |
           $cudaPath = "$env:CUDA_PATH\bin"
@@ -69,9 +75,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CMAKE_OSX_DEPLOYMENT_TARGET: "13.3"
+          WHISPER_BACKEND: ${{ matrix.features }}
+          TAURI_CONF_FILE: ${{ matrix.platform == 'windows-latest' && matrix.features == 'openblas' && 'src-tauri/tauri.windows.openblas.conf.json' || '' }}
         with:
           tagName: v__VERSION__
-          releaseName: "BiliBili ShadowReplay v__VERSION__"
+          releaseName: "BiliBili ShadowReplay v__VERSION__${{ matrix.suffix }}"
           releaseBody: "See the assets to download this version and install."
           releaseDraft: true
           prerelease: false

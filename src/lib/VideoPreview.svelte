@@ -475,6 +475,8 @@
   function handleScaleChange(e: Event) {
     const input = e.target as HTMLInputElement;
     timelineScale = parseFloat(input.value);
+    const rect = timelineElement.getBoundingClientRect();
+    timelineWidth = rect.width;
     updateTimeMarkers();
   }
 

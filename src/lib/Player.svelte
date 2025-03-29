@@ -163,24 +163,30 @@
     let ts = parseInt(live_id);
 
     if (platform == "bilibili") {
+      let danmu_displayed = {};
       // history danmaku sender
       setInterval(() => {
-        if (video.paused) {
+        if (video.paused || !danmu_enabled || danmu_records.length == 0) {
           return;
         }
-        if (danmu_records.length == 0) {
-          return;
-        }
+
         // using live source
         if (isLive() && get_total() - video.currentTime <= 5) {
           return;
         }
+
         const cur = Math.floor((video.currentTime + global_offset + ts) * 1000);
 
         let danmus = danmu_records.filter((v) => {
           return v.ts >= cur - 1000 && v.ts < cur;
         });
-        danmus.forEach((v) => danmu_handler(v.content));
+        danmus.forEach((v) => {
+          if (danmu_displayed[v.ts]) {
+            delete danmu_displayed[v.ts];
+            return;
+          }
+          danmu_handler(v.content);
+        });
       }, 1000);
 
       if (isLive()) {
@@ -242,12 +248,16 @@
         const unlisten = await listen(
           "danmu:" + room_id,
           (event: { payload: DanmuEntry }) => {
-            // add into records
-            danmu_records.push(event.payload);
             // if not enabled or playback is not keep up with live, ignore the danmaku
             if (!danmu_enabled || get_total() - video.currentTime > 5) {
+              danmu_records.push(event.payload);
               return;
             }
+            if (Object.keys(danmu_displayed).length > 1000) {
+              danmu_displayed = {};
+            }
+            danmu_displayed[event.payload.ts] = true;
+            danmu_records.push(event.payload);
             danmu_handler(event.payload.content);
           }
         );

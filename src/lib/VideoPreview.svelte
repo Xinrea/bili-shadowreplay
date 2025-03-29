@@ -239,8 +239,7 @@
 
     const duration = videoElement.duration;
     const minMarkerWidth = 100; // 最小标记宽度（像素）
-    const totalWidth = timelineWidth * timelineScale;
-    const maxMarkers = Math.floor(totalWidth / minMarkerWidth);
+    const maxMarkers = Math.floor(timelineWidth / minMarkerWidth);
     const interval = Math.ceil(duration / maxMarkers);
 
     timeMarkers = Array.from(
@@ -738,7 +737,7 @@
               <input
                 type="range"
                 min="1"
-                max="5"
+                max="10"
                 step="0.1"
                 value={timelineScale}
                 on:input={handleScaleChange}

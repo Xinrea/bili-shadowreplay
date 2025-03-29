@@ -146,7 +146,7 @@ pub async fn upload_procedure(
     let mut video_row = state.db.get_video(video_id).await?;
     // construct file path
     let output = state.config.read().await.output.clone();
-    let file = format!("{}/{}", output, video_row.file);
+    let file = Path::new(&output).join(&video_row.file);
     let path = Path::new(&file);
     let cover_url = state.client.upload_cover(&account, &cover);
 
@@ -256,7 +256,7 @@ pub async fn delete_video(state: TauriState<'_, State>, id: i64) -> Result<(), S
     // delete video from db
     state.db.delete_video(id).await?;
     // delete video files
-    let filepath = format!("{}/{}", state.config.read().await.output, video.file);
+    let filepath = Path::new(state.config.read().await.output.as_str()).join(&video.file);
     let file = Path::new(&filepath);
     if let Err(e) = std::fs::remove_file(file) {
         log::warn!("Delete video file error: {}", e);
@@ -297,7 +297,7 @@ pub async fn update_video_cover(
 #[tauri::command]
 pub async fn get_video_subtitle(state: TauriState<'_, State>, id: i64) -> Result<String, String> {
     let video = state.db.get_video(id).await?;
-    let filepath = format!("{}/{}", state.config.read().await.output, video.file);
+    let filepath = Path::new(state.config.read().await.output.as_str()).join(&video.file);
     let file = Path::new(&filepath);
     // read file content
     if let Ok(content) = std::fs::read_to_string(file.with_extension("srt")) {
@@ -313,7 +313,7 @@ pub async fn generate_video_subtitle(
     id: i64,
 ) -> Result<String, String> {
     let video = state.db.get_video(id).await?;
-    let filepath = format!("{}/{}", state.config.read().await.output, video.file);
+    let filepath = Path::new(state.config.read().await.output.as_str()).join(&video.file);
     let file = Path::new(&filepath);
     if let Ok(generator) = whisper::new(
         Path::new(&state.config.read().await.whisper_model),
@@ -339,7 +339,7 @@ pub async fn update_video_subtitle(
     subtitle: String,
 ) -> Result<(), String> {
     let video = state.db.get_video(id).await?;
-    let filepath = format!("{}/{}", state.config.read().await.output, video.file);
+    let filepath = Path::new(state.config.read().await.output.as_str()).join(&video.file);
     let file = Path::new(&filepath);
     let subtitle_path = file.with_extension("srt");
     if let Err(e) = std::fs::write(subtitle_path, subtitle) {
@@ -355,7 +355,7 @@ pub async fn encode_video_subtitle(
     srt_style: String,
 ) -> Result<VideoRow, String> {
     let video = state.db.get_video(id).await?;
-    let filepath = format!("{}/{}", state.config.read().await.output, video.file);
+    let filepath = Path::new(&state.config.read().await.output).join(&video.file);
     let file = Path::new(&filepath);
     let output_file =
         ffmpeg::encode_video_subtitle(file, &file.with_extension("srt"), srt_style).await?;

@@ -104,17 +104,28 @@ pub async fn encode_video_subtitle(
 
     let mut command_error = None;
 
+    // if windows
+    let subtitle = if cfg!(target_os = "windows") {
+        // escape characters in subtitle path
+        let subtitle = subtitle
+            .to_str()
+            .unwrap()
+            .replace("\\", "\\\\")
+            .replace(":", "\\:");
+        format!("'{}'", subtitle)
+    } else {
+        format!("'{}'", subtitle.display())
+    };
+    let vf = format!(
+        "subtitles={}:force_style='{}'",
+        subtitle.to_string(),
+        srt_style
+    );
+    log::info!("vf: {}", vf);
+
     FfmpegCommand::new()
         .args(["-i", file.to_str().unwrap()])
-        .args([
-            "-vf",
-            format!(
-                "subtitles='{}':force_style='{}'",
-                subtitle.to_str().unwrap(),
-                srt_style
-            )
-            .as_str(),
-        ])
+        .args(["-vf", vf.as_str()])
         .args(["-c:v", "libx264"])
         .args(["-c:a", "copy"])
         .args([output_path.to_str().unwrap()])

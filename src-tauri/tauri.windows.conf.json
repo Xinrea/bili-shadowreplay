@@ -1,5 +1,4 @@
 {
-  "productName": "bili-shadowreplay-cuda",
   "app": {
     "windows": [
       {
@@ -16,6 +15,6 @@
     ]
   },
   "bundle": {
-    "resources": ["cudart64*.dll", "cublas64*.dll", "cublasLt64*.dll"]
+    "resources": []
   }
 }

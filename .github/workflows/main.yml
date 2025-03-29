@@ -17,11 +17,25 @@ jobs:
           - platform: "ubuntu-22.04"
             args: ""
           - platform: "windows-latest"
+            args: "--features cuda"
+            features: "cuda"
+          - platform: "windows-latest"
             args: ""
+            features: "cpu"
 
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set build type
+        id: build_type
+        run: |
+          if [[ "${{ github.ref }}" == *"rc"* ]]; then
+            echo "debug=true" >> $GITHUB_OUTPUT
+          else
+            echo "debug=false" >> $GITHUB_OUTPUT
+          fi
+        shell: bash
 
       - name: install dependencies (ubuntu only)
         if: matrix.platform == 'ubuntu-22.04' # This must match the platform value defined above.
@@ -41,8 +55,8 @@ jobs:
           # Those targets are only used on macos runners so it's in an `if` to slightly speed up windows and linux builds.
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
-      - name: Install CUDA toolkit (Windows only)
-        if: matrix.platform == 'windows-latest'
+      - name: Install CUDA toolkit (Windows CUDA only)
+        if: matrix.platform == 'windows-latest' && matrix.features == 'cuda'
         uses: Jimver/cuda-toolkit@master
 
       - name: Rust cache
@@ -54,8 +68,8 @@ jobs:
         # If you don't have `beforeBuildCommand` configured you may want to build your frontend here too.
         run: yarn install # change this to npm or pnpm depending on which one you use.
 
-      - name: Copy CUDA DLLs (Windows only)
-        if: matrix.platform == 'windows-latest'
+      - name: Copy CUDA DLLs (Windows CUDA only)
+        if: matrix.platform == 'windows-latest' && matrix.features == 'cuda'
         shell: pwsh
         run: |
           $cudaPath = "$env:CUDA_PATH\bin"
@@ -69,10 +83,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CMAKE_OSX_DEPLOYMENT_TARGET: "13.3"
+          CMAKE_CUDA_ARCHITECTURES: "75"
+          WHISPER_BACKEND: ${{ matrix.features }}
         with:
           tagName: v__VERSION__
           releaseName: "BiliBili ShadowReplay v__VERSION__"
           releaseBody: "See the assets to download this version and install."
           releaseDraft: true
           prerelease: false
-          args: ${{ matrix.args }}
+          args: ${{ matrix.args }} ${{ matrix.platform == 'windows-latest' && matrix.features == 'cuda' && '--config src-tauri/tauri.windows.cuda.conf.json' || '' }}
+          includeDebug: ${{ steps.build_type.outputs.debug == 'true' && 'true' || 'false' }}

@@ -58,13 +58,13 @@ hound = "3.5.1"
 # this feature is used for production builds or when `devPath` points to the filesystem
 # DO NOT REMOVE!!
 custom-protocol = ["tauri/custom-protocol"]
+cuda = ["whisper-rs/cuda"]
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"
 
-[target.'cfg(windows)'.dependencies.whisper-rs]
-version = "0.14.2"
-features = ["cuda"]
+[target.'cfg(windows)'.dependencies]
+whisper-rs = { version = "0.14.2", default-features = false }
 
 [target.'cfg(darwin)'.dependencies.whisper-rs]
 version = "0.14.2"

@@ -335,10 +335,10 @@
                     {setting_model.whisper_model || "未设置"}
                     <span class="block mt-1 text-xs"
                       >可前往 <a
-                        href="https://ggml.ggerganov.com/"
+                        href="https://huggingface.co/ggerganov/whisper.cpp/tree/main"
                         class="text-blue-500 hover:underline"
                         target="_blank"
-                        rel="noopener noreferrer">ggml.ggerganov.com</a
+                        rel="noopener noreferrer">ggerganov/whisper.cpp</a
                       > 下载模型文件</span
                     >
                   </p>

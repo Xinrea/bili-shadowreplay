@@ -31,6 +31,8 @@ impl SubtitleGenerator for WhisperCPP {
         audio_path: &Path,
         output_path: &Path,
     ) -> Result<String, String> {
+        log::info!("Generating subtitle for {:?}", audio_path);
+        let start_time = std::time::Instant::now();
         let samples: Vec<i16> = hound::WavReader::open(audio_path)
             .unwrap()
             .into_samples::<i16>()
@@ -48,13 +50,13 @@ impl SubtitleGenerator for WhisperCPP {
 
         // and set the language to translate to to auto
         params.set_language(None);
+        params.set_initial_prompt("以下是普通话的句子。");
 
         // we also explicitly disable anything that prints to stdout
         params.set_print_special(false);
         params.set_print_progress(false);
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
-        params.set_token_timestamps(true);
 
         let mut inter_samples = vec![Default::default(); samples.len()];
 
@@ -109,6 +111,9 @@ impl SubtitleGenerator for WhisperCPP {
             .write_all(subtitle.as_bytes())
             .await
             .expect("failed to write to output file");
+
+        log::info!("Subtitle generated: {:?}", output_path);
+        log::info!("Time taken: {} seconds", start_time.elapsed().as_secs_f64());
 
         Ok(subtitle)
     }

@@ -9,7 +9,7 @@
   // 默认样式
   const defaultStyle: SubtitleStyle = {
     fontName: "Arial",
-    fontSize: 24,
+    fontSize: 18,
     fontColor: "#FFFFFF",
     outlineColor: "#000000",
     outlineWidth: 2,

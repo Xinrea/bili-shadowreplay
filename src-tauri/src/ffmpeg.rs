@@ -65,6 +65,7 @@ pub async fn extract_audio(file: &Path) -> Result<(), String> {
     // ffmpeg -i fixed_\[30655190\]1742887114_0325084106_81.5.mp4 -ar 16000 test.wav
     log::info!("Extract audio task start: {}", file.display());
     let output_path = file.with_extension("wav");
+    let mut extract_error = None;
     FfmpegCommand::new()
         .args(["-i", file.to_str().unwrap()])
         .args(["-ar", "16000"])
@@ -76,12 +77,17 @@ pub async fn extract_audio(file: &Path) -> Result<(), String> {
         .unwrap()
         .for_each(|e| {
             if let FfmpegEvent::Log(LogLevel::Error, e) = e {
-                println!("Error: {}", e);
+                log::error!("Extract audio error: {}", e);
+                extract_error = Some(e.to_string());
             }
         });
 
     log::info!("Extract audio task end: {}", output_path.display());
-    Ok(())
+    if let Some(error) = extract_error {
+        Err(error)
+    } else {
+        Ok(())
+    }
 }
 
 pub async fn encode_video_subtitle(

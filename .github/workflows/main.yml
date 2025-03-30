@@ -19,9 +19,6 @@ jobs:
           - platform: "windows-latest"
             args: "--features cuda"
             features: "cuda"
-          - platform: "windows-latest"
-            args: ""
-            features: "cpu"
 
     runs-on: ${{ matrix.platform }}
     steps:

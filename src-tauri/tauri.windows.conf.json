@@ -15,6 +15,6 @@
     ]
   },
   "bundle": {
-    "resources": []
+    "resources": ["ffmpeg.exe", "ffplay.exe", "ffprobe.exe"]
   }
 }

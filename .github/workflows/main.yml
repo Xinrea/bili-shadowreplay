@@ -19,6 +19,9 @@ jobs:
           - platform: "windows-latest"
             args: "--features cuda"
             features: "cuda"
+          - platform: "windows-latest"
+            args: ""
+            features: "none"
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -60,6 +63,14 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: "./src-tauri -> target"
+
+      - name: Setup ffmpeg
+        if: matrix.platform == 'windows-latest'
+        working-directory: ./
+        shell: pwsh
+        # running script ffmpeg_setup.ps1 to install ffmpeg on windows.
+        # This script is located in the root of the repository.
+        run: ./ffmpeg_setup.ps1
 
       - name: install frontend dependencies
         # If you don't have `beforeBuildCommand` configured you may want to build your frontend here too.

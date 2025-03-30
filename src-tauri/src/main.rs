@@ -331,8 +331,8 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = fix_path_env::fix();
-    // only auto download ffmpeg if it's not macOS
-    if !cfg!(target_os = "macos") {
+    // only auto download ffmpeg if it's linux
+    if cfg!(target_os = "linux") {
         ffmpeg_sidecar::download::auto_download().unwrap();
     }
 

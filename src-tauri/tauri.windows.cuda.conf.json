@@ -15,6 +15,13 @@
     ]
   },
   "bundle": {
-    "resources": ["cudart64*.dll", "cublas64*.dll", "cublasLt64*.dll"]
+    "resources": [
+      "ffmpeg.exe",
+      "ffplay.exe",
+      "ffprobe.exe",
+      "cudart64*.dll",
+      "cublas64*.dll",
+      "cublasLt64*.dll"
+    ]
   }
 }

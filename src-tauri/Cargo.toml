@@ -53,6 +53,7 @@ mime_guess = "2.0"
 async-trait = "0.1.87"
 whisper-rs = "0.14.2"
 hound = "3.5.1"
+fix-path-env = { git = "https://github.com/tauri-apps/fix-path-env-rs" }
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem

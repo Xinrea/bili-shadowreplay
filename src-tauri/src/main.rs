@@ -48,6 +48,12 @@ fn setup_logging(log_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
             file,
         ),
     ])?;
+
+    log::info!(
+        "FFMPEG version: {:?}",
+        ffmpeg_sidecar::version::ffmpeg_version()
+    );
+
     Ok(())
 }
 
@@ -324,6 +330,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let _ = fix_path_env::fix();
     // only auto download ffmpeg if it's not macOS
     if !cfg!(target_os = "macos") {
         ffmpeg_sidecar::download::auto_download().unwrap();

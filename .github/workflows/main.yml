@@ -92,4 +92,4 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }} ${{ matrix.platform == 'windows-latest' && matrix.features == 'cuda' && '--config src-tauri/tauri.windows.cuda.conf.json' || '' }}
-          includeDebug: ${{ steps.build_type.outputs.debug == 'true' && 'true' || 'false' }}
+          includeDebug: true

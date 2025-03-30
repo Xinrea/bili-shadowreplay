@@ -1,6 +1,6 @@
 # BiliBili ShadowReplay
 
-![icon](doc/header.png)
+![icon](docs/header.png)
 
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/xinrea/bili-shadowreplay/main.yml)
 ![GitHub Release](https://img.shields.io/github/v/release/xinrea/bili-shadowreplay)
@@ -13,26 +13,30 @@ BiliBili ShadowReplay 是一个缓存直播并进行实时编辑投稿的工具�
 
 目前仅支持 B 站和抖音平台的直播。
 
-![rooms](doc/summary.png)
+![rooms](docs/summary.png)
+
+## 参与开发
+
+[Contributing](.github/CONTRIBUTING.md)
 
 ## 总览
 
-![rooms](doc/summary.png)
+![rooms](docs/summary.png)
 
 ## 直播间管理
 
-![clip](doc/rooms.png)
+![clip](docs/rooms.png)
 
 显示当前缓存的直播间列表，在添加前需要在账号页面添加至少一个账号（主账号）用于直播流以及用户信息的获取。
 操作菜单包含打开直播流、查看历史记录以及删除等操作。其中历史记录以列表形式展示，可以进行回放以及删除。
 
-![archives](doc/archives.png)
+![archives](docs/archives.png)
 
 无论是正在进行的直播还是历史录播，都可在预览窗口进行回放，同时也可以进行切片编辑以及投稿。关于预览窗口的相关说明请见 [预览窗口](#预览窗口)。
 
 ## 账号管理
 
-![accounts](doc/accounts.png)
+![accounts](docs/accounts.png)
 
 程序需要至少一个账号用于直播流以及用户信息的获取，可以在此页面添加账号。
 
@@ -42,7 +46,7 @@ BiliBili ShadowReplay 是一个缓存直播并进行实时编辑投稿的工具�
 
 ## 预览窗口
 
-![livewindow](doc/livewindow.png)
+![livewindow](docs/livewindow.png)
 
 预览窗口是一个多功能的窗口，可以用于观看直播流、回放历史录播、编辑切片、记录时间点以及投稿等操作。如果当前播放的是直播流，那么会有实时弹幕观看以及发送弹幕相关的选项。
 
@@ -54,13 +58,13 @@ BiliBili ShadowReplay 是一个缓存直播并进行实时编辑投稿的工具�
 
 ## 封面编辑
 
-![cover](doc/coveredit.png)
+![cover](docs/coveredit.png)
 
 在预览窗口中，生成切片后可以进行封面编辑，包括关键帧的选择、文字的添加和拖动等。
 
 ## 设置
 
-![settings](doc/settings.png)
+![settings](docs/settings.png)
 
 在设置页面可以进行一些基本的设置，包括缓存和切片的保存路径，以及相关事件是否显示通知等。
 

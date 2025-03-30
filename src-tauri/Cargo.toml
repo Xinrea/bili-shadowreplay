@@ -21,7 +21,6 @@ serde = "1.0.158"
 sysinfo = "0.32.0"
 m3u8-rs = "5.0.3"
 async-std = "1.12.0"
-futures = "0.3.28"
 ffmpeg-sidecar = "1.2.0"
 chrono = { version = "0.4.24", features = ["serde"] }
 toml = "0.7.3"
@@ -32,7 +31,6 @@ tokio = { version = "1.27.0", features = ["process"] }
 platform-dirs = "0.3.0"
 pct-str = "1.2.0"
 md5 = "0.7.0"
-notify-rust = "4.8.0"
 hyper = { version = "0.14", features = ["full"] }
 dashmap = "6.1.0"
 urlencoding = "2.1.3"

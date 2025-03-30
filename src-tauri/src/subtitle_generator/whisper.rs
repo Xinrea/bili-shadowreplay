@@ -59,6 +59,9 @@ impl SubtitleGenerator for WhisperCPP {
         params.set_print_progress(false);
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
+        params.set_progress_callback_safe(|p| {
+            log::info!("Progress: {}%", p);
+        });
 
         let mut inter_samples = vec![Default::default(); samples.len()];
 

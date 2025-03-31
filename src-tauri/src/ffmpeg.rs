@@ -40,6 +40,7 @@ pub async fn transcode(
         .args(["-i", input_path.to_str().unwrap()])
         .args(["-c", "copy"])
         .args(["-y", output_path.to_str().unwrap()])
+        .args(["-progress", "pipe:2"])
         .stderr(Stdio::piped())
         .spawn();
 

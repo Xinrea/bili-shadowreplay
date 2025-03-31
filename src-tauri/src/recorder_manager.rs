@@ -370,8 +370,41 @@ impl RecorderManager {
                                 );
                             }
                             let recorder = recorder.unwrap();
+                            let params = req.uri().query();
+                            // parse params, example: start=10&end=20
+                            // start and end are optional
+                            // split params by &, and then split each param by =
+                            let params = if let Some(params) = params {
+                                let params = params
+                                    .split('&')
+                                    .map(|param| param.split('=').collect::<Vec<&str>>())
+                                    .collect::<Vec<Vec<&str>>>();
+                                Some(params)
+                            } else {
+                                None
+                            };
+
+                            let start = if let Some(params) = &params {
+                                params
+                                    .iter()
+                                    .find(|param| param[0] == "start")
+                                    .map(|param| param[1].parse::<i64>().unwrap())
+                                    .unwrap_or(0)
+                            } else {
+                                0
+                            };
+                            let end = if let Some(params) = &params {
+                                params
+                                    .iter()
+                                    .find(|param| param[0] == "end")
+                                    .map(|param| param[1].parse::<i64>().unwrap())
+                                    .unwrap_or(0)
+                            } else {
+                                0
+                            };
+
                             // response with recorder generated m3u8, which contains ts entries that cached in local
-                            let m3u8_content = recorder.m3u8_content(live_id).await;
+                            let m3u8_content = recorder.m3u8_content(live_id, start, end).await;
                             Ok::<_, Infallible>(
                                 Response::builder()
                                     .status(200)

@@ -19,6 +19,8 @@
   export let live_id: string;
   export let start = 0;
   export let end = 0;
+  export let focus_start = 0;
+  export let focus_end = 0;
   export let markers: Marker[] = [];
   export function seek(offset: number) {
     video.currentTime = offset;
@@ -32,7 +34,7 @@
   // TODO get custom tag from shaka player instead of manual parsing
   async function meta_parse() {
     fetch(
-      `http://127.0.0.1:${port}/${platform}/${room_id}/${live_id}/playlist.m3u8`
+      `http://127.0.0.1:${port}/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`
     )
       .then((response) => response.text())
       .then((m3u8Content) => {
@@ -57,6 +59,16 @@
   }
 
   function go_to(platform: string, room_id: number, live_id: string) {
+    const url = `${window.location.origin}${window.location.pathname}?port=${port}&platform=${platform}&room_id=${room_id}&live_id=${live_id}`;
+    window.location.href = url;
+  }
+
+  function zoomOnRange(start: number, end: number) {
+    const url = `${window.location.origin}${window.location.pathname}?port=${port}&platform=${platform}&room_id=${room_id}&live_id=${live_id}&start=${start}&end=${end}`;
+    window.location.href = url;
+  }
+
+  function resetZoom() {
     const url = `${window.location.origin}${window.location.pathname}?port=${port}&platform=${platform}&room_id=${room_id}&live_id=${live_id}`;
     window.location.href = url;
   }
@@ -89,7 +101,7 @@
 
     player.configure({
       streaming: {
-        lowLatencyMode: true,
+        lowLatencyMode: false,
       },
     });
 
@@ -103,7 +115,7 @@
 
     try {
       await player.load(
-        `http://127.0.0.1:${port}/${platform}/${room_id}/${live_id}/playlist.m3u8`
+        `http://127.0.0.1:${port}/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`
       );
       // This runs if the asynchronous load is successful.
       console.log("The video has now been loaded!");
@@ -530,6 +542,17 @@
           e.preventDefault();
           show_detail = !show_detail;
           break;
+        case "Escape":
+          e.preventDefault();
+          resetZoom();
+          break;
+        case "g":
+          e.preventDefault();
+          if ((start == 0 && end == 0) || start > end) {
+            break;
+          }
+          zoomOnRange(focus_start + start, focus_start + end);
+          break;
       }
     });
 
@@ -686,10 +709,11 @@
   </p>
   {#if show_detail}
     <span>
-      <p><kbd>Esc</kbd>关闭窗口</p>
+      <p><kbd>Esc</kbd>返回直播/录播</p>
       <p><kbd>Space</kbd>播放/暂停</p>
       <p><kbd>[</kbd>设定选区开始</p>
       <p><kbd>]</kbd>设定选区结束</p>
+      <p><kbd>g</kbd>预览选区片段</p>
       <p><kbd>q</kbd>跳转到选区开始</p>
       <p><kbd>e</kbd>跳转到选区结束</p>
       <p><kbd>←</kbd>前进</p>

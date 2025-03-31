@@ -397,11 +397,13 @@ impl DouyinRecorder {
         }
     }
 
-    async fn generate_m3u8(&self, live_id: &str) -> String {
+    async fn generate_m3u8(&self, live_id: &str, start: i64, end: i64) -> String {
         let mut m3u8_content = "#EXTM3U\n".to_string();
+        let range_required = start != 0 || end != 0;
         m3u8_content += "#EXT-X-VERSION:3\n";
 
-        let entries = if live_id == *self.live_id.read().await {
+        // if requires a range, we need to filter entries and only use entries in the range, so m3u8 type is VOD.
+        let entries = if !range_required && live_id == *self.live_id.read().await {
             m3u8_content += "#EXT-X-PLAYLIST-TYPE:EVENT\n";
             self.entry_store
                 .read()
@@ -429,7 +431,13 @@ impl DouyinRecorder {
         );
 
         let mut previous_seq = entries.first().unwrap().sequence;
+        let first_entry_ts = entries.first().unwrap().ts;
         for entry in entries {
+            if range_required
+                && (entry.ts - first_entry_ts < start || entry.ts - first_entry_ts > end)
+            {
+                continue;
+            }
             if entry.sequence - previous_seq > 1 {
                 m3u8_content += "#EXT-X-DISCONTINUITY\n";
             }
@@ -583,11 +591,14 @@ impl Recorder for DouyinRecorder {
         Ok(transcode_result.unwrap().output_path)
     }
 
-    async fn m3u8_content(&self, live_id: &str) -> String {
-        if let Some(cached) = self.m3u8_cache.get(live_id) {
+    async fn m3u8_content(&self, live_id: &str, start: i64, end: i64) -> String {
+        let cache_key = format!("{}:{}:{}", live_id, start, end);
+        if let Some(cached) = self.m3u8_cache.get(&cache_key) {
             return cached.clone();
         }
-        self.generate_m3u8(live_id).await
+        let m3u8_content = self.generate_m3u8(live_id, start, end).await;
+        self.m3u8_cache.insert(cache_key, m3u8_content.clone());
+        m3u8_content
     }
 
     async fn info(&self) -> RecorderInfo {

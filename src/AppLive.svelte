@@ -27,6 +27,8 @@
   const room_id = parseInt(urlParams.get("room_id"));
   const platform = urlParams.get("platform");
   const live_id = urlParams.get("live_id");
+  const focus_start = parseInt(urlParams.get("start") || "0");
+  const focus_end = parseInt(urlParams.get("end") || "0");
 
   // get profile in local storage with a default value
   let profile: Profile = get_profile();
@@ -245,8 +247,8 @@
       platform: platform,
       cover: new_cover,
       live_id: live_id,
-      x: start,
-      y: end,
+      x: focus_start + start,
+      y: focus_start + end,
     });
     console.log("video file generatd:", new_video);
     await get_video_list();
@@ -362,6 +364,8 @@
         bind:start
         bind:end
         bind:this={player}
+        {focus_start}
+        {focus_end}
         {port}
         {platform}
         {room_id}

@@ -836,9 +836,14 @@ impl BiliRecorder {
         Ok(transcode_result.unwrap().output_path)
     }
 
-    async fn generate_archive_m3u8(&self, live_id: &str) -> String {
-        if self.m3u8_cache.contains_key(live_id) {
-            return self.m3u8_cache.get(live_id).unwrap().clone();
+    async fn generate_archive_m3u8(&self, live_id: &str, start: i64, end: i64) -> String {
+        let range_required = start != 0 || end != 0;
+        if range_required {
+            log::info!("Generate archive m3u8 for range [{}, {}]", start, end);
+        }
+        let cache_key = format!("{}:{}:{}", live_id, start, end);
+        if self.m3u8_cache.contains_key(&cache_key) {
+            return self.m3u8_cache.get(&cache_key).unwrap().clone();
         }
         let mut m3u8_content = "#EXTM3U\n".to_string();
         m3u8_content += "#EXT-X-VERSION:6\n";
@@ -862,9 +867,17 @@ impl BiliRecorder {
             (entries.first().unwrap().ts - live_ts * 1000) / 1000
         );
 
+        let mut first_entry_ts = None;
         for e in entries {
             // ignore header, cause it's already in EXT-X-MAP
             if e.is_header {
+                continue;
+            }
+            if first_entry_ts.is_none() {
+                first_entry_ts = Some(e.ts / 1000);
+            }
+            let entry_offset = e.ts / 1000 - first_entry_ts.unwrap();
+            if range_required && (entry_offset < start || entry_offset > end) {
                 continue;
             }
             let current_seq = e.sequence;
@@ -882,20 +895,24 @@ impl BiliRecorder {
         }
         m3u8_content += "#EXT-X-ENDLIST";
         // cache this
-        self.m3u8_cache
-            .insert(live_id.to_string(), m3u8_content.clone());
+        self.m3u8_cache.insert(cache_key, m3u8_content.clone());
         m3u8_content
     }
 
     /// if fetching live/last stream m3u8, all entries are cached in memory, so it will be much faster than read_dir
-    async fn generate_live_m3u8(&self) -> String {
+    async fn generate_live_m3u8(&self, start: i64, end: i64) -> String {
+        let range_required = start != 0 || end != 0;
+        if range_required {
+            log::info!("Generate live m3u8 for range [{}, {}]", start, end);
+        }
+
         let live_status = *self.live_status.read().await;
         let mut m3u8_content = "#EXTM3U\n".to_string();
         m3u8_content += "#EXT-X-VERSION:6\n";
         m3u8_content += "#EXT-X-TARGETDURATION:1\n";
         m3u8_content += "#EXT-X-SERVER-CONTROL:HOLD-BACK:3\n";
         // if stream is closed, switch to VOD
-        if live_status {
+        if live_status && !range_required {
             m3u8_content += "#EXT-X-PLAYLIST-TYPE:EVENT\n";
         } else {
             m3u8_content += "#EXT-X-PLAYLIST-TYPE:VOD\n";
@@ -929,7 +946,12 @@ impl BiliRecorder {
             (entries.first().unwrap().ts - live_ts * 1000) / 1000
         );
 
+        let first_entry_ts = entries.first().unwrap().ts / 1000;
         for entry in entries.iter() {
+            let entry_offset = entry.ts / 1000 - first_entry_ts;
+            if range_required && (entry_offset < start || entry_offset > end) {
+                continue;
+            }
             if entry.sequence - last_sequence > 1 {
                 // discontinuity happens
                 m3u8_content += "#EXT-X-DISCONTINUITY\n"
@@ -1033,11 +1055,11 @@ impl super::Recorder for BiliRecorder {
     }
 
     /// timestamp is the id of live stream
-    async fn m3u8_content(&self, live_id: &str) -> String {
+    async fn m3u8_content(&self, live_id: &str, start: i64, end: i64) -> String {
         if *self.live_id.read().await == live_id && *self.current_record.read().await {
-            self.generate_live_m3u8().await
+            self.generate_live_m3u8(start, end).await
         } else {
-            self.generate_archive_m3u8(live_id).await
+            self.generate_archive_m3u8(live_id, start, end).await
         }
     }
 

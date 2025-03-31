@@ -80,7 +80,7 @@ pub trait Recorder: Send + Sync + 'static {
         y: f64,
         clip_file: PathBuf,
     ) -> Result<PathBuf, errors::RecorderError>;
-    async fn m3u8_content(&self, live_id: &str) -> String;
+    async fn m3u8_content(&self, live_id: &str, start: i64, end: i64) -> String;
     async fn info(&self) -> RecorderInfo;
     async fn comments(&self, live_id: &str) -> Result<Vec<DanmuEntry>, errors::RecorderError>;
     async fn is_recording(&self, live_id: &str) -> bool;

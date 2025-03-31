@@ -1033,7 +1033,7 @@ impl super::Recorder for BiliRecorder {
 
     /// timestamp is the id of live stream
     async fn m3u8_content(&self, live_id: &str) -> String {
-        if *self.live_id.read().await == live_id {
+        if *self.live_id.read().await == live_id && *self.current_record.read().await {
             self.generate_live_m3u8().await
         } else {
             self.generate_archive_m3u8(live_id).await

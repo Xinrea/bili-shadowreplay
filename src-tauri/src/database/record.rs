@@ -50,6 +50,7 @@ impl Database {
         room_id: u64,
         title: &str,
         cover: Option<String>,
+        created_at: Option<&str>,
     ) -> Result<RecordRow, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         let record = RecordRow {
@@ -59,7 +60,7 @@ impl Database {
             title: title.into(),
             length: 0,
             size: 0,
-            created_at: Utc::now().to_rfc3339(),
+            created_at: created_at.unwrap_or(&Utc::now().to_rfc3339()).to_string(),
             cover,
         };
         if let Err(e) = sqlx::query("INSERT INTO records (live_id, room_id, title, length, size, cover, created_at, platform) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)").bind(record.live_id.clone())

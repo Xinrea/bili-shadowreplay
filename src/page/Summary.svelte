@@ -4,7 +4,17 @@
   import type { RecordItem } from "../lib/db";
   const INTERVAL = 1000;
   import { scale } from "svelte/transition";
-  import { CalendarCheck, Clock, Database, HardDrive, Play, RefreshCw, Trash2, Users, Video } from "lucide-svelte";
+  import {
+    CalendarCheck,
+    Clock,
+    Database,
+    HardDrive,
+    Play,
+    RefreshCw,
+    Trash2,
+    Users,
+    Video,
+  } from "lucide-svelte";
 
   let summary: RecorderList = {
     count: 0,
@@ -57,8 +67,12 @@
         offset: 0,
         limit: 1,
       })) as RecordItem[];
-      
-      if (latestRecords.length > 0 && (!recent_records[0] || latestRecords[0].live_id !== recent_records[0].live_id)) {
+
+      if (
+        latestRecords.length > 0 &&
+        (!recent_records[0] ||
+          latestRecords[0].live_id !== recent_records[0].live_id)
+      ) {
         hasNewRecords = true;
       }
     } else {
@@ -69,13 +83,13 @@
 
   async function loadMoreRecords() {
     if (loading || (!hasMore && !hasNewRecords)) return;
-    
+
     loading = true;
     const newRecords = (await invoke("get_recent_record", {
       offset: hasNewRecords ? 0 : offset,
       limit: RECORDS_PER_PAGE,
     })) as RecordItem[];
-    
+
     if (hasNewRecords) {
       recent_records = newRecords;
       offset = newRecords.length;
@@ -90,7 +104,7 @@
     }
 
     console.log(recent_records);
-    
+
     loading = false;
   }
 
@@ -101,9 +115,10 @@
       loadMoreRecords();
       return;
     }
-    
+
     // Otherwise check if we need to load more old records
-    const bottom = target.scrollHeight - target.scrollTop - target.clientHeight < 50;
+    const bottom =
+      target.scrollHeight - target.scrollTop - target.clientHeight < 50;
     if (bottom && !hasNewRecords) {
       loadMoreRecords();
     }
@@ -171,7 +186,10 @@
   }
 
   function handleClickOutside(event) {
-    if (activeDropdown !== null && !event.target.closest(".dropdown-container")) {
+    if (
+      activeDropdown !== null &&
+      !event.target.closest(".dropdown-container")
+    ) {
       activeDropdown = null;
     }
   }
@@ -183,14 +201,18 @@
         roomId: record.room_id,
         liveId: record.live_id,
       });
-      
+
       // Remove the record from the list
-      recent_records = recent_records.filter(r => r.live_id !== record.live_id);
-      
+      recent_records = recent_records.filter(
+        (r) => r.live_id !== record.live_id
+      );
+
       // Update stats
       disk_usage -= record.size;
       total_length -= record.length;
-      if (new Date(record.created_at).toDateString() === new Date().toDateString()) {
+      if (
+        new Date(record.created_at).toDateString() === new Date().toDateString()
+      ) {
         today_record_count--;
       }
     } catch (error) {
@@ -368,19 +390,27 @@
             class="p-4 rounded-lg bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 flex items-center justify-between hover:border-blue-500 dark:hover:border-blue-400 transition-colors"
           >
             <div class="flex items-center space-x-4">
-              {#if record.cover !== ""}
+              {#if record.cover}
                 <img
                   src={record.cover}
                   class="w-32 h-18 rounded-lg object-cover"
                   alt="Gaming stream thumbnail"
-                  />
+                />
+              {:else}
+                <div
+                  class="w-32 h-20 rounded-lg bg-gray-200 dark:bg-gray-700 flex items-center justify-center"
+                >
+                  <Video class="w-8 h-8 text-gray-400 dark:text-gray-500" />
+                </div>
               {/if}
               <div>
                 <h3 class="font-medium text-gray-900 dark:text-white">
                   {record.title}
                 </h3>
                 <p class="text-sm text-gray-600 dark:text-gray-400">
-                  {format_date(record.created_at)} • {format_size(record.size)}
+                  {record.platform} • {record.room_id} • {format_date(
+                    record.created_at
+                  )} • {format_size(record.size)}
                 </p>
               </div>
             </div>
@@ -400,7 +430,8 @@
               <div class="relative dropdown-container">
                 <button
                   class="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-red-600 dark:text-red-400"
-                  on:click|stopPropagation={() => toggleDropdown(record.live_id)}
+                  on:click|stopPropagation={() =>
+                    toggleDropdown(record.live_id)}
                 >
                   <Trash2 class="w-5 h-5 icon-danger" />
                 </button>
@@ -411,9 +442,17 @@
                     in:scale={{ duration: 100, start: 0.95 }}
                     out:scale={{ duration: 100, start: 0.95 }}
                   >
-                    <div class="px-4 py-3 border-b border-gray-200 dark:border-gray-700">
-                      <h3 class="text-sm font-medium text-gray-900 dark:text-white">确认删除</h3>
-                      <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">此操作无法撤销</p>
+                    <div
+                      class="px-4 py-3 border-b border-gray-200 dark:border-gray-700"
+                    >
+                      <h3
+                        class="text-sm font-medium text-gray-900 dark:text-white"
+                      >
+                        确认删除
+                      </h3>
+                      <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        此操作无法撤销
+                      </p>
                     </div>
                     <div class="p-2 flex space-x-2">
                       <button
@@ -440,13 +479,15 @@
             </div>
           </div>
         {/each}
-        
+
         {#if loading}
           <div class="flex justify-center py-4">
-            <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+            <div
+              class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"
+            ></div>
           </div>
         {/if}
-        
+
         {#if !hasMore && recent_records.length > 0}
           <div class="text-center py-4 text-gray-500 dark:text-gray-400">
             没有更多记录了

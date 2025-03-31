@@ -202,6 +202,7 @@ impl DouyinRecorder {
                                 self.room_id,
                                 &info.data.data[0].title,
                                 cover,
+                                None,
                             )
                             .await
                         {

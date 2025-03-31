@@ -1,6 +1,7 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod archive_migration;
 mod config;
 mod database;
 mod ffmpeg;
@@ -12,6 +13,7 @@ mod state;
 mod subtitle_generator;
 mod tray;
 
+use archive_migration::try_rebuild_archives;
 use config::Config;
 use database::Database;
 use recorder::{bilibili::client::BiliClient, PlatformType};
@@ -169,7 +171,13 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         }
     }
 
-    init_rooms(db_clone, recorder_manager_clone, &primary_account, &webid).await;
+    init_rooms(&db_clone, recorder_manager_clone, &primary_account, &webid).await;
+
+    // try to rebuild archive table
+    let cache_path = config_clone.read().await.cache.clone();
+    if let Err(e) = try_rebuild_archives(&db_clone, cache_path.into()).await {
+        log::error!("Error when rebuilding archive table: {}", e);
+    }
 
     Ok(State {
         db,
@@ -181,7 +189,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
 }
 
 async fn init_rooms(
-    db_clone: Arc<Database>,
+    db_clone: &Arc<Database>,
     recorder_manager_clone: Arc<RecorderManager>,
     primary_account: &database::account::AccountRow,
     webid: &str,

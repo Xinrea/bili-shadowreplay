@@ -468,6 +468,7 @@ impl BiliRecorder {
                     self.room_id,
                     &self.room_info.read().await.room_title,
                     self.cover.read().await.clone(),
+                    None,
                 )
                 .await?;
             // now work dir is confirmed

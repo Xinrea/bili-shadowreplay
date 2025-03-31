@@ -18,7 +18,7 @@ use hyper::{
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{convert::Infallible, sync::Arc};
 use tauri::AppHandle;
 use tokio::{net::TcpListener, sync::RwLock};
@@ -285,7 +285,13 @@ impl RecorderManager {
                 });
             }
         }
-        Ok(self.db.remove_record(live_id).await?)
+        self.db.remove_record(live_id).await?;
+        let cache_folder = Path::new(self.config.read().await.cache.as_str())
+            .join(platform.as_str())
+            .join(room_id.to_string())
+            .join(live_id);
+        let _ = tokio::fs::remove_dir_all(cache_folder).await;
+        Ok(())
     }
 
     pub async fn get_danmu(

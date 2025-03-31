@@ -64,7 +64,7 @@ pub async fn set_cache_path(
         .get_account("bilibili", state.config.read().await.primary_uid)
         .await?;
     crate::init_rooms(
-        state.db.clone(),
+        &state.db,
         state.recorder_manager.clone(),
         &primary_account,
         &state.config.read().await.webid,

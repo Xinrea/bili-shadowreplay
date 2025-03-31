@@ -85,6 +85,12 @@
   let archives: RecordItem[] = [];
   async function showArchives(room_id: number) {
     archives = await invoke("get_archives", { roomId: room_id });
+    // sort archives by ts in descending order
+    archives.sort((a, b) => {
+      return (
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+    });
     archiveModal = true;
     console.log(archives);
   }

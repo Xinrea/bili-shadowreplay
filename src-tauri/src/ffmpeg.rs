@@ -69,6 +69,11 @@ pub async fn transcode(
         }
     }
 
+    if let Err(e) = child.wait().await {
+        log::error!("Transcode error: {}", e);
+        return Err(e.to_string());
+    }
+
     if let Some(error) = extract_error {
         log::error!("Transcode error: {}", error);
         return Err(error);
@@ -115,6 +120,11 @@ pub async fn extract_audio(file: &Path) -> Result<(), String> {
             FfmpegEvent::LogEOF => break,
             _ => {}
         }
+    }
+
+    if let Err(e) = child.wait().await {
+        log::error!("Extract audio error: {}", e);
+        return Err(e.to_string());
     }
 
     if let Some(error) = extract_error {

@@ -101,7 +101,7 @@
 
     player.configure({
       streaming: {
-        lowLatencyMode: false,
+        lowLatencyMode: true,
       },
     });
 

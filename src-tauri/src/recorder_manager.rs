@@ -15,6 +15,7 @@ use hyper::{
     service::{make_service_fn, service_fn},
     Body, Request, Response, Server,
 };
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -26,6 +27,17 @@ use tokio::{net::TcpListener, sync::RwLock};
 pub struct RecorderList {
     pub count: usize,
     pub recorders: Vec<RecorderInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ClipRangeParams {
+    pub title: String,
+    pub cover: String,
+    pub platform: String,
+    pub room_id: u64,
+    pub live_id: String,
+    pub x: f64,
+    pub y: f64,
 }
 
 pub struct RecorderManager {
@@ -199,21 +211,19 @@ impl RecorderManager {
         &self,
         reporter: &ProgressReporter,
         clip_file: PathBuf,
-        platform: PlatformType,
-        room_id: u64,
-        live_id: &str,
-        start: f64,
-        end: f64,
+        params: &ClipRangeParams,
     ) -> Result<PathBuf, RecorderManagerError> {
         let recorders = self.recorders.read().await;
-        let recorder_id = format!("{}:{}", platform.as_str(), room_id);
+        let recorder_id = format!("{}:{}", params.platform, params.room_id);
         if !recorders.contains_key(&recorder_id) {
             log::error!("Recorder {} not found", recorder_id);
-            return Err(RecorderManagerError::NotFound { room_id });
+            return Err(RecorderManagerError::NotFound {
+                room_id: params.room_id,
+            });
         }
         let recorder = recorders.get(&recorder_id).unwrap();
         Ok(recorder
-            .clip_range(reporter, live_id, start, end, clip_file)
+            .clip_range(reporter, &params.live_id, params.x, params.y, clip_file)
             .await?)
     }
 

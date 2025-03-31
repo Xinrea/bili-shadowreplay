@@ -9,7 +9,6 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 use danmu::DanmuEntry;
-use tauri::AppHandle;
 
 use crate::progress_event::ProgressReporter;
 

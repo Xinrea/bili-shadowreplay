@@ -3,25 +3,14 @@ use crate::ffmpeg;
 use crate::progress_event::{cancel_progress, ProgressReporter, ProgressReporterTrait};
 use crate::recorder::bilibili::profile::Profile;
 use crate::recorder::PlatformType;
+use crate::recorder_manager::ClipRangeParams;
 use crate::state::State;
 use crate::subtitle_generator::whisper::{self};
 use crate::subtitle_generator::SubtitleGenerator;
 use chrono::Utc;
-use serde::Deserialize;
 use std::path::Path;
 use tauri::State as TauriState;
 use tauri_plugin_notification::NotificationExt;
-
-#[derive(Debug, Deserialize)]
-pub struct ClipRangeParams {
-    pub title: String,
-    pub cover: String,
-    pub platform: String,
-    pub room_id: u64,
-    pub live_id: String,
-    pub x: f64,
-    pub y: f64,
-}
 
 #[tauri::command]
 pub async fn clip_range(
@@ -82,15 +71,7 @@ async fn clip_range_inner(
 
     let file = state
         .recorder_manager
-        .clip_range(
-            reporter,
-            clip_file,
-            platform,
-            params.room_id,
-            &params.live_id,
-            params.x,
-            params.y,
-        )
+        .clip_range(reporter, clip_file, &params)
         .await?;
     log::info!("Clip range done, doing post processing");
     // get file metadata from fs

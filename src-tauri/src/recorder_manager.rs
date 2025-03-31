@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::database::DatabaseError;
 use crate::database::{account::AccountRow, record::RecordRow, Database};
+use crate::progress_event::ProgressReporter;
 use crate::recorder::bilibili::BiliRecorder;
 use crate::recorder::danmu::DanmuEntry;
 use crate::recorder::douyin::DouyinRecorder;
@@ -196,6 +197,7 @@ impl RecorderManager {
 
     pub async fn clip_range(
         &self,
+        reporter: &ProgressReporter,
         clip_file: PathBuf,
         platform: PlatformType,
         room_id: u64,
@@ -211,7 +213,7 @@ impl RecorderManager {
         }
         let recorder = recorders.get(&recorder_id).unwrap();
         Ok(recorder
-            .clip_range(self.app_handle.clone(), live_id, start, end, clip_file)
+            .clip_range(reporter, live_id, start, end, clip_file)
             .await?)
     }
 

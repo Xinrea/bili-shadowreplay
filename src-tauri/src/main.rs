@@ -24,7 +24,7 @@ use tauri::{Manager, WindowEvent};
 use tauri_plugin_sql::{Migration, MigrationKind};
 use tokio::sync::RwLock;
 
-fn setup_logging(log_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+async fn setup_logging(log_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     // mkdir if not exists
     if !log_dir.exists() {
         std::fs::create_dir_all(log_dir)?;
@@ -48,11 +48,6 @@ fn setup_logging(log_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
             file,
         ),
     ])?;
-
-    log::info!(
-        "FFMPEG version: {:?}",
-        ffmpeg_sidecar::version::ffmpeg_version()
-    );
 
     Ok(())
 }
@@ -91,7 +86,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     let client_clone = client.clone();
 
     let log_dir = app.path().app_log_dir()?;
-    setup_logging(&log_dir)?;
+    setup_logging(&log_dir).await?;
 
     let recorder_manager = Arc::new(RecorderManager::new(
         app.handle().clone(),
@@ -117,7 +112,6 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
             config,
             recorder_manager,
             app_handle: app.handle().clone(),
-            cancel_flag_map: Arc::new(RwLock::new(std::collections::HashMap::new())),
         });
     }
 
@@ -183,7 +177,6 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         config,
         recorder_manager,
         app_handle: app.handle().clone(),
-        cancel_flag_map: Arc::new(RwLock::new(std::collections::HashMap::new())),
     })
 }
 
@@ -311,7 +304,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::recorder::force_stop,
         crate::handlers::video::clip_range,
         crate::handlers::video::upload_procedure,
-        crate::handlers::video::cancel_upload,
+        crate::handlers::video::cancel,
         crate::handlers::video::get_video,
         crate::handlers::video::get_videos,
         crate::handlers::video::delete_video,
@@ -331,10 +324,6 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = fix_path_env::fix();
-    // only auto download ffmpeg if it's linux
-    if cfg!(target_os = "linux") {
-        ffmpeg_sidecar::download::auto_download().unwrap();
-    }
 
     let builder = tauri::Builder::default();
     let builder = setup_plugins(builder);
@@ -346,6 +335,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             tauri::async_runtime::block_on(async {
                 let state = setup_app_state(app).await?;
                 let _ = tray::create_tray(app.handle());
+
+                // only auto download ffmpeg if it's linux
+                if cfg!(target_os = "linux") {
+                    if let Err(e) = async_ffmpeg_sidecar::download::auto_download().await {
+                        log::error!("Error when auto downloading ffmpeg: {}", e);
+                    }
+                }
+
+                log::info!(
+                    "FFMPEG version: {:?}",
+                    async_ffmpeg_sidecar::version::ffmpeg_version().await
+                );
+
                 app.manage(state);
                 Ok(())
             })

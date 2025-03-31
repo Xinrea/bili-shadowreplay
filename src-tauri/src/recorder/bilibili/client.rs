@@ -8,7 +8,8 @@ use super::response::PostVideoMetaResponse;
 use super::response::PreuploadResponse;
 use super::response::VideoSubmitData;
 use crate::database::account::AccountRow;
-use crate::progress_event::emit_progress_update;
+use crate::progress_event::ProgressReporter;
+use crate::progress_event::ProgressReporterTrait;
 use base64::Engine;
 use pct_str::PctString;
 use pct_str::URIReserved;
@@ -22,20 +23,16 @@ use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 use std::time::SystemTime;
-use tauri::AppHandle;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::time::Instant;
 
 #[derive(Clone)]
 struct UploadParams<'a> {
-    app_handle: &'a AppHandle,
-    event_id: &'a str,
-    cancel_id: &'a str,
+    reporter: &'a ProgressReporter,
     preupload_response: &'a PreuploadResponse,
     post_video_meta_response: &'a PostVideoMetaResponse,
     video_file: &'a Path,
-    cancel_flag: &'a std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -579,7 +576,8 @@ impl BiliClient {
         while let Ok(size) = file.read(&mut buffer[read_total..]).await {
             // Check for cancellation
             if params
-                .cancel_flag
+                .reporter
+                .cancel
                 .load(std::sync::atomic::Ordering::Relaxed)
             {
                 return Err(BiliClientError::UploadCancelled);
@@ -600,7 +598,8 @@ impl BiliClient {
             while retry_count < max_retries && !success {
                 // Check for cancellation before each retry
                 if params
-                    .cancel_flag
+                    .reporter
+                    .cancel
                     .load(std::sync::atomic::Ordering::Relaxed)
                 {
                     return Err(BiliClientError::UploadCancelled);
@@ -675,9 +674,7 @@ impl BiliClient {
                     / 1024.0
             );
 
-            emit_progress_update(
-                params.app_handle,
-                params.event_id,
+            params.reporter.update(
                 format!(
                     "{:.1}% | {:.1} KiB/s",
                     (chunk * 100) as f64 / total_chunks as f64,
@@ -686,7 +683,6 @@ impl BiliClient {
                         / 1024.0
                 )
                 .as_str(),
-                params.cancel_id,
             );
         }
         Ok(total_chunks)
@@ -724,12 +720,9 @@ impl BiliClient {
 
     pub async fn prepare_video(
         &self,
-        app_handle: &AppHandle,
-        event_id: &str,
-        cancel_id: &str,
+        reporter: &ProgressReporter,
         account: &AccountRow,
         video_file: &Path,
-        cancel_flag: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<profile::Video, BiliClientError> {
         log::info!("Start Preparing Video: {}", video_file.to_str().unwrap());
         let preupload = self.preupload_video(account, video_file).await?;
@@ -738,13 +731,10 @@ impl BiliClient {
         log::info!("Post Video Meta Response: {:?}", metaposted);
         let uploaded = self
             .upload_video(UploadParams {
-                app_handle,
-                event_id,
-                cancel_id,
+                reporter,
                 preupload_response: &preupload,
                 post_video_meta_response: &metaposted,
                 video_file,
-                cancel_flag,
             })
             .await?;
         log::info!("Uploaded: {}", uploaded);

@@ -11,6 +11,8 @@ use async_trait::async_trait;
 use danmu::DanmuEntry;
 use tauri::AppHandle;
 
+use crate::progress_event::ProgressReporter;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlatformType {
     BiliBili,
@@ -73,7 +75,7 @@ pub trait Recorder: Send + Sync + 'static {
     async fn stop(&self);
     async fn clip_range(
         &self,
-        app_handle: AppHandle,
+        reporter: &ProgressReporter,
         live_id: &str,
         x: f64,
         y: f64,

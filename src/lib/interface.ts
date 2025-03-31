@@ -1,3 +1,5 @@
+import { invoke } from "@tauri-apps/api/core";
+
 export interface RoomInfo {
   live_status: number;
   room_cover: string;
@@ -149,11 +151,12 @@ export interface Marker {
 export interface ProgressUpdate {
   id: string;
   content: string;
-  cancel: string;
 }
 
 export interface ProgressFinished {
   id: string;
+  success: boolean;
+  message: string;
 }
 
 export interface SubtitleStyle {
@@ -187,4 +190,25 @@ export function parseSubtitleStyle(style: SubtitleStyle): string {
   },Alignment=${style.alignment},MarginV=${style.marginV},MarginL=${
     style.marginL
   },MarginR=${style.marginR}`;
+}
+
+export interface ClipRangeParams {
+  title: string;
+  cover: string;
+  platform: string;
+  room_id: number;
+  live_id: string;
+  x: number;
+  y: number;
+}
+
+export function generateEventId() {
+  return Math.random().toString(36).substring(2, 15);
+}
+
+export async function clipRange(eventId: string, params: ClipRangeParams) {
+  return (await invoke("clip_range", {
+    eventId: eventId,
+    params,
+  })) as VideoItem;
 }

@@ -1,12 +1,10 @@
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 
-use ffmpeg_sidecar::{
-    command::FfmpegCommand,
-    event::{FfmpegEvent, LogLevel},
-};
-use tauri::AppHandle;
-
-use crate::progress_event::emit_progress_update;
+use crate::progress_event::ProgressReporterTrait;
+use async_ffmpeg_sidecar::event::FfmpegEvent;
+use async_ffmpeg_sidecar::log_parser::FfmpegLogParser;
+use tokio::io::BufReader;
 
 pub struct TranscodeConfig {
     pub input_path: PathBuf,
@@ -18,9 +16,8 @@ pub struct TranscodeResult {
     pub output_path: PathBuf,
 }
 
-pub fn transcode(
-    app_handle: &AppHandle,
-    event_id: &str,
+pub async fn transcode(
+    reporter: &impl ProgressReporterTrait,
     config: TranscodeConfig,
 ) -> Result<TranscodeResult, String> {
     let input_path = config.input_path;
@@ -33,25 +30,48 @@ pub fn transcode(
         output_path.display()
     );
 
-    FfmpegCommand::new()
+    log::info!(
+        "FFMPEG version: {:?}",
+        async_ffmpeg_sidecar::version::ffmpeg_version().await
+    );
+
+    let child = tokio::process::Command::new("ffmpeg")
         .args(["-f", input_format.as_str()])
-        .input(input_path.to_str().unwrap())
+        .args(["-i", input_path.to_str().unwrap()])
         .args(["-c", "copy"])
         .args(["-y", output_path.to_str().unwrap()])
-        .spawn()
-        .unwrap()
-        .iter()
-        .unwrap()
-        .for_each(|e| match e {
-            FfmpegEvent::Log(LogLevel::Error, e) => println!("Error: {}", e),
-            FfmpegEvent::Progress(p) => emit_progress_update(
-                app_handle,
-                event_id,
-                format!("修复编码中：{}", p.time).as_str(),
-                "",
-            ),
+        .stderr(Stdio::piped())
+        .spawn();
+
+    if let Err(e) = child {
+        log::error!("Transcode error: {}", e);
+        return Err(e.to_string());
+    }
+
+    let mut child = child.unwrap();
+
+    let stderr = child.stderr.take().unwrap();
+    let reader = BufReader::new(stderr);
+    let mut parser = FfmpegLogParser::new(reader);
+
+    let mut extract_error = None;
+
+    while let Ok(event) = parser.parse_next_event().await {
+        match event {
+            FfmpegEvent::Error(e) => {
+                log::error!("Transcode error: {}", e);
+                extract_error = Some(e.to_string());
+            }
+            FfmpegEvent::Progress(p) => reporter.update(format!("编码中：{}", p.time).as_str()),
+            FfmpegEvent::LogEOF => break,
             _ => {}
-        });
+        }
+    }
+
+    if let Some(error) = extract_error {
+        log::error!("Transcode error: {}", error);
+        return Err(error);
+    }
 
     log::info!(
         "Transcode task end: output_path: {}",
@@ -66,31 +86,47 @@ pub async fn extract_audio(file: &Path) -> Result<(), String> {
     log::info!("Extract audio task start: {}", file.display());
     let output_path = file.with_extension("wav");
     let mut extract_error = None;
-    FfmpegCommand::new()
+
+    let child = tokio::process::Command::new("ffmpeg")
         .args(["-i", file.to_str().unwrap()])
         .args(["-ar", "16000"])
         .args([output_path.to_str().unwrap()])
         .args(["-y"])
-        .spawn()
-        .unwrap()
-        .iter()
-        .unwrap()
-        .for_each(|e| {
-            if let FfmpegEvent::Log(LogLevel::Error, e) = e {
+        .args(["-progress", "pipe:2"])
+        .stderr(Stdio::piped())
+        .spawn();
+
+    if let Err(e) = child {
+        return Err(e.to_string());
+    }
+
+    let mut child = child.unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let reader = BufReader::new(stderr);
+    let mut parser = FfmpegLogParser::new(reader);
+
+    while let Ok(event) = parser.parse_next_event().await {
+        match event {
+            FfmpegEvent::Error(e) => {
                 log::error!("Extract audio error: {}", e);
                 extract_error = Some(e.to_string());
             }
-        });
+            FfmpegEvent::LogEOF => break,
+            _ => {}
+        }
+    }
 
-    log::info!("Extract audio task end: {}", output_path.display());
     if let Some(error) = extract_error {
+        log::error!("Extract audio error: {}", error);
         Err(error)
     } else {
+        log::info!("Extract audio task end: {}", output_path.display());
         Ok(())
     }
 }
 
 pub async fn encode_video_subtitle(
+    reporter: &impl ProgressReporterTrait,
     file: &Path,
     subtitle: &Path,
     srt_style: String,
@@ -122,36 +158,54 @@ pub async fn encode_video_subtitle(
     } else {
         format!("'{}'", subtitle.display())
     };
-    let vf = format!(
-        "subtitles={}:force_style='{}'",
-        subtitle.to_string(),
-        srt_style
-    );
+    let vf = format!("subtitles={}:force_style='{}'", subtitle, srt_style);
     log::info!("vf: {}", vf);
 
-    FfmpegCommand::new()
+    let child = tokio::process::Command::new("ffmpeg")
         .args(["-i", file.to_str().unwrap()])
         .args(["-vf", vf.as_str()])
         .args(["-c:v", "libx264"])
         .args(["-c:a", "copy"])
         .args([output_path.to_str().unwrap()])
         .args(["-y"])
-        .spawn()
-        .unwrap()
-        .iter()
-        .unwrap()
-        .for_each(|e| {
-            if let FfmpegEvent::Log(LogLevel::Error, e) = e {
-                log::error!("Error: {}", e);
+        .args(["-progress", "pipe:2"])
+        .stderr(Stdio::piped())
+        .spawn();
+
+    if let Err(e) = child {
+        return Err(e.to_string());
+    }
+
+    let mut child = child.unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let reader = BufReader::new(stderr);
+    let mut parser = FfmpegLogParser::new(reader);
+
+    while let Ok(event) = parser.parse_next_event().await {
+        match event {
+            FfmpegEvent::Error(e) => {
+                log::error!("Encode video subtitle error: {}", e);
                 command_error = Some(e.to_string());
             }
-        });
+            FfmpegEvent::Progress(p) => {
+                log::info!("Encode video subtitle progress: {}", p.time);
+                reporter.update(format!("压制中：{}", p.time).as_str());
+            }
+            FfmpegEvent::LogEOF => break,
+            _ => {}
+        }
+    }
 
-    log::info!("Encode video subtitle task end: {}", output_path.display());
+    if let Err(e) = child.wait().await {
+        log::error!("Encode video subtitle error: {}", e);
+        return Err(e.to_string());
+    }
 
     if let Some(error) = command_error {
+        log::error!("Encode video subtitle error: {}", error);
         Err(error)
     } else {
+        log::info!("Encode video subtitle task end: {}", output_path.display());
         Ok(output_filename)
     }
 }

@@ -11,6 +11,8 @@
     type Marker,
     type ProgressUpdate,
     type ProgressFinished,
+    clipRange,
+    generateEventId,
   } from "./lib/interface";
   import TypeSelect from "./lib/TypeSelect.svelte";
   import MarkerPanel from "./lib/MarkerPanel.svelte";
@@ -77,35 +79,37 @@
     };
   }
 
-  let procedure_cancel_id = null;
+  let current_clip_event_id = null;
+  let current_post_event_id = null;
 
   let progress_update_listener = listen<ProgressUpdate>(
     `progress-update`,
     (e) => {
-      // clip_{room_id}
-      // post_{room_id}
       let event_id = e.payload.id;
-      let event_room_id = event_id.split("_")[1];
-      if (event_room_id != room_id.toString()) {
-        return;
-      }
-
-      if (event_id.includes("clip")) {
-        loading = true;
+      if (event_id == current_clip_event_id) {
         update_clip_prompt(e.payload.content);
-      } else if (event_id.includes("post")) {
-        loading = true;
+      } else if (event_id == current_post_event_id) {
         update_post_prompt(e.payload.content);
-        procedure_cancel_id = e.payload.cancel;
       }
     }
   );
   let progress_finished_listener = listen<ProgressFinished>(
     `progress-finished`,
-    () => {
-      loading = false;
-      update_clip_prompt(`生成切片`);
-      update_post_prompt(`投稿`);
+    (e) => {
+      let event_id = e.payload.id;
+      if (event_id == current_clip_event_id) {
+        update_clip_prompt(`生成切片`);
+        if (!e.payload.success) {
+          alert("切片失败: " + e.payload.message);
+        }
+        current_clip_event_id = null;
+      } else if (event_id == current_post_event_id) {
+        update_post_prompt(`投稿`);
+        if (!e.payload.success) {
+          alert("投稿失败: " + e.payload.message);
+        }
+        current_post_event_id = null;
+      }
     }
   );
 
@@ -117,7 +121,6 @@
 
   let archive: RecordItem = null;
 
-  let loading = false;
   let start = 0.0;
   let end = 0.0;
 
@@ -231,73 +234,72 @@
       alert("选区过短:," + (end - start).toFixed(2));
       return;
     }
-    loading = true;
+
     let new_cover = generateCover();
     update_clip_prompt(`切片生成中`);
-    try {
-      let new_video = (await invoke("clip_range", {
-        title: archive.title,
-        roomId: room_id,
-        platform: platform,
-        cover: new_cover,
-        liveId: live_id,
-        x: start,
-        y: end,
-      })) as VideoItem;
-      console.log("video file generatd:", selected_video);
-      await get_video_list();
-      video_selected = new_video.id;
-      selected_video = videos.find((v) => {
-        return v.value == new_video.id;
-      });
-      selected_video.cover = new_video.cover;
-      loading = false;
-    } catch (e) {
-      alert("Err generating clip: " + e);
-    }
+    let event_id = generateEventId();
+    current_clip_event_id = event_id;
+    let new_video = await clipRange(event_id, {
+      title: archive.title,
+      room_id: room_id,
+      platform: platform,
+      cover: new_cover,
+      live_id: live_id,
+      x: start,
+      y: end,
+    });
+    console.log("video file generatd:", new_video);
+    await get_video_list();
+    video_selected = new_video.id;
+    selected_video = videos.find((v) => {
+      return v.value == new_video.id;
+    });
+    selected_video.cover = new_video.cover;
   }
 
   async function do_post() {
     if (!selected_video) {
       return;
     }
-    update_post_prompt(`投稿上传中`);
-    loading = true;
 
+    let event_id = generateEventId();
+    current_post_event_id = event_id;
+
+    update_post_prompt(`投稿上传中`);
     // update profile in local storage
     window.localStorage.setItem("profile-" + room_id, JSON.stringify(profile));
     invoke("upload_procedure", {
       uid: uid_selected,
+      eventId: event_id,
       roomId: room_id,
       videoId: video_selected,
       cover: selected_video.cover,
       profile: profile,
-    })
-      .then(async () => {
-        loading = false;
-        video_selected = 0;
-        await get_video_list();
-      })
-      .catch((e) => {
-        loading = false;
-        alert(e);
-      });
+    }).then(async () => {
+      video_selected = 0;
+      await get_video_list();
+    });
+  }
+
+  async function cancel_clip() {
+    if (!current_clip_event_id) {
+      return;
+    }
+    invoke("cancel", { eventId: current_clip_event_id });
   }
 
   async function cancel_post() {
-    if (!procedure_cancel_id) {
+    if (!current_post_event_id) {
       return;
     }
-    invoke("cancel_upload", { cancelId: procedure_cancel_id });
+    invoke("cancel", { eventId: current_post_event_id });
   }
 
   async function delete_video() {
     if (!selected_video) {
       return;
     }
-    loading = true;
     await invoke("delete_video", { id: video_selected });
-    loading = false;
     video_selected = 0;
     selected_video = null;
     await get_video_list();
@@ -432,23 +434,32 @@
                 <div class="flex space-x-2">
                   <button
                     on:click={generate_clip}
-                    disabled={loading}
+                    disabled={current_clip_event_id != null}
                     class="px-4 py-1.5 bg-[#0A84FF] text-white text-sm rounded-lg
                            transition-all duration-200 hover:bg-[#0A84FF]/90
                            disabled:opacity-50 disabled:cursor-not-allowed
                            flex items-center space-x-2"
                   >
-                    {#if loading}
+                    {#if current_clip_event_id != null}
                       <div
                         class="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin"
                       />
                     {/if}
                     <span id="generate-clip-prompt">生成切片</span>
                   </button>
+                  {#if current_clip_event_id != null}
+                    <button
+                      on:click={cancel_clip}
+                      class="px-4 py-1.5 text-red-500 text-sm rounded-lg
+                             transition-all duration-200 hover:bg-red-500/10
+                             disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      取消
+                    </button>
+                  {/if}
                   {#if selected_video}
                     <button
                       on:click={delete_video}
-                      disabled={loading}
                       class="px-4 py-1.5 text-red-500 text-sm rounded-lg
                              transition-all duration-200 hover:bg-red-500/10
                              disabled:opacity-50 disabled:cursor-not-allowed"
@@ -647,20 +658,20 @@
             <div class="flex gap-3">
               <button
                 on:click={do_post}
-                disabled={loading}
+                disabled={current_post_event_id != null}
                 class="flex-1 px-4 py-2.5 bg-[#0A84FF] text-white rounded-lg
                        transition-all duration-200 hover:bg-[#0A84FF]/90
                        disabled:opacity-50 disabled:cursor-not-allowed
                        flex items-center justify-center space-x-2"
               >
-                {#if loading}
+                {#if current_post_event_id != null}
                   <div
                     class="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin"
                   />
                 {/if}
                 <span id="post-prompt">投稿</span>
               </button>
-              {#if loading && procedure_cancel_id}
+              {#if current_post_event_id != null}
                 <button
                   on:click={() => cancel_post()}
                   class="w-24 px-3 py-2 bg-red-500 text-white rounded-lg

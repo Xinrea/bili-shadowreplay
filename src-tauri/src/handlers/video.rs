@@ -1,65 +1,103 @@
 use crate::database::video::VideoRow;
 use crate::ffmpeg;
-use crate::progress_event::{emit_progress_finished, emit_progress_update};
+use crate::progress_event::{cancel_progress, ProgressReporter, ProgressReporterTrait};
 use crate::recorder::bilibili::profile::Profile;
 use crate::recorder::PlatformType;
 use crate::state::State;
 use crate::subtitle_generator::whisper::{self};
 use crate::subtitle_generator::SubtitleGenerator;
 use chrono::Utc;
+use serde::Deserialize;
 use std::path::Path;
 use tauri::State as TauriState;
 use tauri_plugin_notification::NotificationExt;
 
+#[derive(Debug, Deserialize)]
+pub struct ClipRangeParams {
+    pub title: String,
+    pub cover: String,
+    pub platform: String,
+    pub room_id: u64,
+    pub live_id: String,
+    pub x: f64,
+    pub y: f64,
+}
+
 #[tauri::command]
 pub async fn clip_range(
     state: TauriState<'_, State>,
-    title: String,
-    cover: String,
-    platform: String,
-    room_id: u64,
-    live_id: String,
-    x: f64,
-    y: f64,
+    event_id: String,
+    params: ClipRangeParams,
+) -> Result<VideoRow, String> {
+    let reporter = ProgressReporter::new(&state.app_handle, &event_id).await?;
+    match clip_range_inner(state, &reporter, params).await {
+        Ok(video) => {
+            reporter.finish(true, "切片完成").await;
+            Ok(video)
+        }
+        Err(e) => {
+            reporter.finish(false, &format!("切片失败: {}", e)).await;
+            Err(e)
+        }
+    }
+}
+
+async fn clip_range_inner(
+    state: TauriState<'_, State>,
+    reporter: &ProgressReporter,
+    params: ClipRangeParams,
 ) -> Result<VideoRow, String> {
     log::info!(
         "Clip room_id: {}, ts: {}, start: {}, end: {}",
-        room_id,
-        live_id,
-        x,
-        y
+        params.room_id,
+        params.live_id,
+        params.x,
+        params.y
     );
-    let event_id = format!("clip_{}", room_id);
-    let platform = PlatformType::from_str(&platform).unwrap();
+    let platform = PlatformType::from_str(&params.platform).unwrap();
 
     // get format config
     // filter special characters from title to make sure file name is valid
-    let title = title
+    let title = params
+        .title
         .chars()
         .filter(|c| c.is_alphanumeric())
         .collect::<String>();
     let format_config = state.config.read().await.clip_name_format.clone();
     let format_config = format_config.replace("{title}", &title);
     let format_config = format_config.replace("{platform}", platform.as_str());
-    let format_config = format_config.replace("{room_id}", &room_id.to_string());
-    let format_config = format_config.replace("{live_id}", &live_id);
-    let format_config = format_config.replace("{x}", &x.to_string());
-    let format_config = format_config.replace("{y}", &y.to_string());
+    let format_config = format_config.replace("{room_id}", &params.room_id.to_string());
+    let format_config = format_config.replace("{live_id}", &params.live_id);
+    let format_config = format_config.replace("{x}", &params.x.to_string());
+    let format_config = format_config.replace("{y}", &params.y.to_string());
     let format_config = format_config.replace(
         "{created_at}",
         &Utc::now().format("%Y-%m-%d_%H-%M-%S").to_string(),
     );
-    let format_config = format_config.replace("{length}", &((y - x) as i64).to_string());
+    let format_config =
+        format_config.replace("{length}", &((params.y - params.x) as i64).to_string());
 
     let output = state.config.read().await.output.clone();
     let clip_file = Path::new(&output).join(&format_config);
 
     let file = state
         .recorder_manager
-        .clip_range(clip_file, platform, room_id, &live_id, x, y)
+        .clip_range(
+            reporter,
+            clip_file,
+            platform,
+            params.room_id,
+            &params.live_id,
+            params.x,
+            params.y,
+        )
         .await?;
+    log::info!("Clip range done, doing post processing");
     // get file metadata from fs
-    let metadata = std::fs::metadata(&file).map_err(|e| e.to_string())?;
+    let metadata = std::fs::metadata(&file).map_err(|e| {
+        log::error!("Get file metadata error: {} {}", e, file.display());
+        e.to_string()
+    })?;
     // get filename from path
     let filename = Path::new(&file)
         .file_name()
@@ -72,11 +110,11 @@ pub async fn clip_range(
         .add_video(&VideoRow {
             id: 0,
             status: 0,
-            room_id,
+            room_id: params.room_id,
             created_at: Utc::now().to_rfc3339(),
-            cover: cover.clone(),
+            cover: params.cover.clone(),
             file: filename.into(),
-            length: (y - x) as i64,
+            length: (params.y - params.x) as i64,
             size: metadata.len() as i64,
             bvid: "".into(),
             title: "".into(),
@@ -88,18 +126,19 @@ pub async fn clip_range(
     if state.config.read().await.auto_subtitle
         && !state.config.read().await.whisper_model.is_empty()
     {
+        log::info!("Auto subtitle enabled");
         if let Ok(generator) = whisper::new(
             Path::new(&state.config.read().await.whisper_model),
             &state.config.read().await.whisper_prompt,
         )
         .await
         {
-            emit_progress_update(&state.app_handle, event_id.as_str(), "提取音频中", "");
+            reporter.update("提取音频中");
             let audio_path = file.with_extension("wav");
             ffmpeg::extract_audio(&file).await?;
-            emit_progress_update(&state.app_handle, event_id.as_str(), "生成字幕中", "");
+            reporter.update("生成字幕中");
             generator
-                .generate_subtitle(&audio_path, &file.with_extension("srt"))
+                .generate_subtitle(reporter, &audio_path, &file.with_extension("srt"))
                 .await?;
         }
     }
@@ -109,8 +148,8 @@ pub async fn clip_range(
             "生成新切片",
             &format!(
                 "生成了房间 {} 的切片，长度 {:.1}s：{}",
-                room_id,
-                y - x,
+                params.room_id,
+                params.y - params.x,
                 filename
             ),
         )
@@ -121,12 +160,15 @@ pub async fn clip_range(
             .notification()
             .builder()
             .title("BiliShadowReplay - 切片完成")
-            .body(format!("生成了房间 {} 的切片: {}", room_id, filename))
+            .body(format!(
+                "生成了房间 {} 的切片: {}",
+                params.room_id, filename
+            ))
             .show()
             .unwrap();
     }
 
-    emit_progress_finished(&state.app_handle, event_id.as_str());
+    reporter.finish(true, "切片完成").await;
 
     Ok(video)
 }
@@ -134,13 +176,35 @@ pub async fn clip_range(
 #[tauri::command]
 pub async fn upload_procedure(
     state: TauriState<'_, State>,
+    event_id: String,
+    uid: u64,
+    room_id: u64,
+    video_id: i64,
+    cover: String,
+    profile: Profile,
+) -> Result<String, String> {
+    let reporter = ProgressReporter::new(&state.app_handle, &event_id).await?;
+    match upload_procedure_inner(state, &reporter, uid, room_id, video_id, cover, profile).await {
+        Ok(bvid) => {
+            reporter.finish(true, "投稿成功").await;
+            Ok(bvid)
+        }
+        Err(e) => {
+            reporter.finish(false, &format!("投稿失败: {}", e)).await;
+            Err(e)
+        }
+    }
+}
+
+async fn upload_procedure_inner(
+    state: TauriState<'_, State>,
+    reporter: &ProgressReporter,
     uid: u64,
     room_id: u64,
     video_id: i64,
     cover: String,
     mut profile: Profile,
 ) -> Result<String, String> {
-    let event_id = format!("post_{}", room_id);
     let account = state.db.get_account("bilibili", uid).await?;
     // get video info from dbs
     let mut video_row = state.db.get_video(video_id).await?;
@@ -149,39 +213,9 @@ pub async fn upload_procedure(
     let file = Path::new(&output).join(&video_row.file);
     let path = Path::new(&file);
     let cover_url = state.client.upload_cover(&account, &cover);
+    reporter.update("投稿预处理中");
 
-    let cancel_id = format!("cancel_{}_{}", room_id, video_id);
-    if state.cancel_flag_map.read().await.get(&cancel_id).is_some() {
-        return Err("已经处于上传状态".to_string());
-    }
-
-    let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-
-    state
-        .cancel_flag_map
-        .write()
-        .await
-        .insert(cancel_id.clone(), cancel_flag.clone());
-
-    emit_progress_update(
-        &state.app_handle,
-        event_id.as_str(),
-        "投稿预处理中",
-        &cancel_id,
-    );
-
-    match state
-        .client
-        .prepare_video(
-            &state.app_handle,
-            &event_id,
-            &cancel_id,
-            &account,
-            path,
-            &cancel_flag,
-        )
-        .await
-    {
+    match state.client.prepare_video(reporter, &account, path).await {
         Ok(video) => {
             profile.cover = cover_url.await.unwrap_or("".to_string());
             if let Ok(ret) = state.client.submit_video(&account, &profile, &video).await {
@@ -211,28 +245,25 @@ pub async fn upload_procedure(
                         .show()
                         .unwrap();
                 }
-                emit_progress_finished(&state.app_handle, event_id.as_str());
-                state.cancel_flag_map.write().await.remove(&cancel_id);
+                reporter.finish(true, "投稿成功").await;
                 Ok(ret.bvid)
             } else {
-                emit_progress_finished(&state.app_handle, event_id.as_str());
-                state.cancel_flag_map.write().await.remove(&cancel_id);
+                reporter.finish(false, "投稿失败").await;
                 Err("Submit video failed".to_string())
             }
         }
         Err(e) => {
-            emit_progress_finished(&state.app_handle, event_id.as_str());
-            state.cancel_flag_map.write().await.remove(&cancel_id);
+            reporter
+                .finish(false, &format!("Preload video failed: {}", e))
+                .await;
             Err(format!("Preload video failed: {}", e))
         }
     }
 }
 
 #[tauri::command]
-pub async fn cancel_upload(state: TauriState<'_, State>, cancel_id: String) -> Result<(), String> {
-    if let Some(cancel_flag) = state.cancel_flag_map.read().await.get(&cancel_id) {
-        cancel_flag.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
+pub async fn cancel(_state: TauriState<'_, State>, event_id: String) -> Result<(), String> {
+    cancel_progress(&event_id).await;
     Ok(())
 }
 
@@ -310,6 +341,27 @@ pub async fn get_video_subtitle(state: TauriState<'_, State>, id: i64) -> Result
 #[tauri::command]
 pub async fn generate_video_subtitle(
     state: TauriState<'_, State>,
+    event_id: String,
+    id: i64,
+) -> Result<String, String> {
+    let reporter = ProgressReporter::new(&state.app_handle, &event_id).await?;
+    match generate_video_subtitle_inner(state, &reporter, id).await {
+        Ok(subtitle) => {
+            reporter.finish(true, "字幕生成完成").await;
+            Ok(subtitle)
+        }
+        Err(e) => {
+            reporter
+                .finish(false, &format!("字幕生成失败: {}", e))
+                .await;
+            Err(e)
+        }
+    }
+}
+
+async fn generate_video_subtitle_inner(
+    state: TauriState<'_, State>,
+    reporter: &ProgressReporter,
     id: i64,
 ) -> Result<String, String> {
     let video = state.db.get_video(id).await?;
@@ -323,8 +375,9 @@ pub async fn generate_video_subtitle(
     {
         let audio_path = file.with_extension("wav");
         ffmpeg::extract_audio(file).await?;
+
         let subtitle = generator
-            .generate_subtitle(&audio_path, &file.with_extension("srt"))
+            .generate_subtitle(reporter, &audio_path, &file.with_extension("srt"))
             .await?;
         Ok(subtitle)
     } else {
@@ -351,6 +404,28 @@ pub async fn update_video_subtitle(
 #[tauri::command]
 pub async fn encode_video_subtitle(
     state: TauriState<'_, State>,
+    event_id: String,
+    id: i64,
+    srt_style: String,
+) -> Result<VideoRow, String> {
+    let reporter = ProgressReporter::new(&state.app_handle, &event_id).await?;
+    match encode_video_subtitle_inner(state, &reporter, id, srt_style).await {
+        Ok(video) => {
+            reporter.finish(true, "字幕编码完成").await;
+            Ok(video)
+        }
+        Err(e) => {
+            reporter
+                .finish(false, &format!("字幕编码失败: {}", e))
+                .await;
+            Err(e)
+        }
+    }
+}
+
+async fn encode_video_subtitle_inner(
+    state: TauriState<'_, State>,
+    reporter: &ProgressReporter,
     id: i64,
     srt_style: String,
 ) -> Result<VideoRow, String> {
@@ -358,7 +433,8 @@ pub async fn encode_video_subtitle(
     let filepath = Path::new(&state.config.read().await.output).join(&video.file);
     let file = Path::new(&filepath);
     let output_file =
-        ffmpeg::encode_video_subtitle(file, &file.with_extension("srt"), srt_style).await?;
+        ffmpeg::encode_video_subtitle(reporter, file, &file.with_extension("srt"), srt_style)
+            .await?;
 
     let new_video = state
         .db

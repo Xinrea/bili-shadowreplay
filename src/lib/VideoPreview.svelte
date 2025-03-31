@@ -7,18 +7,22 @@
     Pause,
     Film,
     Settings,
-    ChevronDown,
     Trash2,
     BrainCircuit,
     Eraser,
   } from "lucide-svelte";
   import {
+    generateEventId,
     parseSubtitleStyle,
+    type ProgressFinished,
+    type ProgressUpdate,
     type SubtitleStyle,
     type VideoItem,
   } from "./interface";
   import SubtitleStyleEditor from "./SubtitleStyleEditor.svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
+  import { onDestroy } from "svelte/internal";
 
   export let show = false;
   export let video: VideoItem;
@@ -55,9 +59,7 @@
   let currentSubtitleIndex = -1;
   let subtitleElements: HTMLElement[] = [];
   let timelineContainer: HTMLElement;
-  let isGenerating = false;
-  let showEncodeModal = false; // 添加控制编码确认框的状态
-  let isEncoding = false; // 添加编码状态控制
+  let showEncodeModal = false;
   let videoWidth = 0;
   let videoHeight = 0;
   let subtitleStyle: SubtitleStyle = {
@@ -71,6 +73,61 @@
     marginL: 20,
     marginR: 20,
   };
+
+  let current_encode_event_id = null;
+  let current_generate_event_id = null;
+
+  let progress_update_listener = listen<ProgressUpdate>(
+    `progress-update`,
+    (e) => {
+      let event_id = e.payload.id;
+      console.log(e.payload);
+      if (event_id == current_encode_event_id) {
+        update_encode_prompt(e.payload.content);
+      } else if (event_id == current_generate_event_id) {
+        update_generate_prompt(e.payload.content);
+      }
+    }
+  );
+
+  let progress_finished_listener = listen<ProgressFinished>(
+    `progress-finished`,
+    (e) => {
+      let event_id = e.payload.id;
+      if (event_id == current_encode_event_id) {
+        update_encode_prompt(`压制字幕`);
+        if (!e.payload.success) {
+          alert("压制失败: " + e.payload.message);
+        }
+        current_encode_event_id = null;
+      } else if (event_id == current_generate_event_id) {
+        update_generate_prompt(`AI 生成字幕`);
+        if (!e.payload.success) {
+          alert("生成字幕失败: " + e.payload.message);
+        }
+        current_generate_event_id = null;
+      }
+    }
+  );
+
+  function update_encode_prompt(content: string) {
+    const encode_prompt = document.getElementById("encode-prompt");
+    if (encode_prompt) {
+      encode_prompt.textContent = content;
+    }
+  }
+
+  function update_generate_prompt(content: string) {
+    const generate_prompt = document.getElementById("generate-prompt");
+    if (generate_prompt) {
+      generate_prompt.textContent = content;
+    }
+  }
+  // remove listeners when component is destroyed
+  onDestroy(() => {
+    progress_update_listener.then((fn) => fn());
+    progress_finished_listener.then((fn) => fn());
+  });
 
   // 监听当前字幕索引变化
   $: if (currentSubtitleIndex >= 0 && subtitleElements[currentSubtitleIndex]) {
@@ -149,19 +206,13 @@
   }
 
   async function generateSubtitles() {
-    if (video?.file && !isGenerating) {
-      isGenerating = true;
-      try {
-        const savedSubtitles = (await invoke("generate_video_subtitle", {
-          id: video.id,
-        })) as string;
-        subtitles = srtToSubtitles(savedSubtitles);
-      } catch (error) {
-        console.error(error);
-        alert("生成字幕失败，请确认设置中 Whisper 模型是否正确: " + error);
-      } finally {
-        isGenerating = false;
-      }
+    if (video?.file) {
+      current_generate_event_id = generateEventId();
+      const savedSubtitles = (await invoke("generate_video_subtitle", {
+        eventId: current_generate_event_id,
+        id: video.id,
+      })) as string;
+      subtitles = srtToSubtitles(savedSubtitles);
     }
   }
 
@@ -488,23 +539,16 @@
   }
 
   async function encodeVideoSubtitle() {
-    if (!video || isEncoding) return;
-    isEncoding = true;
-    try {
-      const result = await invoke("encode_video_subtitle", {
-        id: video.id,
-        srtStyle: parseSubtitleStyle(subtitleStyle),
-      });
-      console.log(result);
-      // 压制成功后更新视频列表
-      await onVideoListUpdate?.();
-    } catch (error) {
-      console.error(error);
-      alert("压制失败：" + error);
-    } finally {
-      isEncoding = false;
-      showEncodeModal = false;
-    }
+    const event_id = generateEventId();
+    current_encode_event_id = event_id;
+    const result = await invoke("encode_video_subtitle", {
+      eventId: event_id,
+      id: video.id,
+      srtStyle: parseSubtitleStyle(subtitleStyle),
+    });
+    console.log(result);
+    // 压制成功后更新视频列表
+    await onVideoListUpdate?.();
   }
 
   function handleVideoSelect(e: Event) {
@@ -590,9 +634,9 @@
         <button
           class="px-4 py-1.5 text-sm bg-[#0A84FF] text-white rounded-md hover:bg-[#0A84FF]/90 transition-colors duration-200 border border-gray-600/50 flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
           on:click={() => (showEncodeModal = true)}
-          disabled={isEncoding}
+          disabled={current_encode_event_id != null}
         >
-          {#if isEncoding}
+          {#if current_encode_event_id != null}
             <svg
               class="animate-spin h-4 w-4"
               xmlns="http://www.w3.org/2000/svg"
@@ -613,11 +657,10 @@
                 d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
               ></path>
             </svg>
-            <span>压制中...</span>
           {:else}
             <Film class="w-4 h-4" />
-            <span>压制字幕切片</span>
           {/if}
+          <span id="encode-prompt">压制字幕</span>
         </button>
       </div>
     </div>
@@ -674,7 +717,6 @@
                 showEncodeModal = false;
                 encodeVideoSubtitle();
               }}
-              disabled={isEncoding}
             >
               <span>确认</span>
             </button>
@@ -926,9 +968,9 @@
                 <button
                   class="flex-1 px-3 py-1.5 text-sm bg-[#1c1c1e] text-gray-300 rounded-lg hover:bg-[#2c2c2e] transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-1 border border-gray-700"
                   on:click={generateSubtitles}
-                  disabled={isGenerating}
+                  disabled={current_generate_event_id !== null}
                 >
-                  {#if isGenerating}
+                  {#if current_generate_event_id !== null}
                     <svg
                       class="animate-spin h-4 w-4"
                       xmlns="http://www.w3.org/2000/svg"
@@ -949,11 +991,10 @@
                         d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
                       ></path>
                     </svg>
-                    <span>生成中...</span>
                   {:else}
                     <BrainCircuit class="w-4 h-4" />
-                    <span>AI 生成字幕</span>
                   {/if}
+                  <span id="generate-prompt">AI 生成字幕</span>
                 </button>
                 <button
                   class="flex-1 px-3 py-1.5 text-sm bg-[#1c1c1e] text-gray-300 rounded-lg hover:bg-[#2c2c2e] transition-colors duration-200 flex items-center justify-center space-x-1 border border-gray-700"

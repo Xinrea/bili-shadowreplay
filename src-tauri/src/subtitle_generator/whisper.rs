@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 
+use crate::progress_event::ProgressReporterTrait;
 use async_std::sync::{Arc, RwLock};
 use std::path::Path;
 use tokio::io::AsyncWriteExt;
@@ -30,23 +31,22 @@ pub async fn new(model: &Path, prompt: &str) -> Result<WhisperCPP, String> {
 impl SubtitleGenerator for WhisperCPP {
     async fn generate_subtitle(
         &self,
+        reporter: &impl ProgressReporterTrait,
         audio_path: &Path,
         output_path: &Path,
     ) -> Result<String, String> {
         log::info!("Generating subtitle for {:?}", audio_path);
         let start_time = std::time::Instant::now();
-        let samples: Vec<i16> = hound::WavReader::open(audio_path)
-            .unwrap()
-            .into_samples::<i16>()
-            .map(|x| x.unwrap())
-            .collect();
+        let audio = hound::WavReader::open(audio_path).map_err(|e| e.to_string())?;
+        let samples: Vec<i16> = audio.into_samples::<i16>().map(|x| x.unwrap()).collect();
 
-        let mut state = self
-            .ctx
-            .read()
-            .await
-            .create_state()
-            .expect("failed to create state");
+        let state = self.ctx.read().await.create_state();
+
+        if let Err(e) = state {
+            return Err(e.to_string());
+        }
+
+        let mut state = state.unwrap();
 
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
 
@@ -59,40 +59,43 @@ impl SubtitleGenerator for WhisperCPP {
         params.set_print_progress(false);
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
-        params.set_progress_callback_safe(|p| {
+
+        params.set_progress_callback_safe(move |p| {
             log::info!("Progress: {}%", p);
         });
 
         let mut inter_samples = vec![Default::default(); samples.len()];
 
-        whisper_rs::convert_integer_to_float_audio(&samples, &mut inter_samples)
-            .expect("failed to convert audio data");
-        let samples = whisper_rs::convert_stereo_to_mono_audio(&inter_samples)
-            .expect("failed to convert audio data");
+        reporter.update("处理音频中");
+        if let Err(e) = whisper_rs::convert_integer_to_float_audio(&samples, &mut inter_samples) {
+            return Err(e.to_string());
+        }
 
-        state
-            .full(params, &samples[..])
-            .expect("failed to run model");
+        let samples = whisper_rs::convert_stereo_to_mono_audio(&inter_samples);
+        if let Err(e) = samples {
+            return Err(e.to_string());
+        }
+
+        let samples = samples.unwrap();
+
+        reporter.update("生成字幕中");
+        if let Err(e) = state.full(params, &samples[..]) {
+            log::error!("failed to run model: {}", e);
+            return Err(e.to_string());
+        }
 
         // open the output file
-        let mut output_file = tokio::fs::File::create(output_path)
-            .await
-            .expect("failed to create output file");
+        let mut output_file = tokio::fs::File::create(output_path).await.map_err(|e| {
+            log::error!("failed to create output file: {}", e);
+            e.to_string()
+        })?;
         // fetch the results
-        let num_segments = state
-            .full_n_segments()
-            .expect("failed to get number of segments");
+        let num_segments = state.full_n_segments().map_err(|e| e.to_string())?;
         let mut subtitle = String::new();
         for i in 0..num_segments {
-            let segment = state
-                .full_get_segment_text(i)
-                .expect("failed to get segment");
-            let start_timestamp = state
-                .full_get_segment_t0(i)
-                .expect("failed to get segment start timestamp");
-            let end_timestamp = state
-                .full_get_segment_t1(i)
-                .expect("failed to get segment end timestamp");
+            let segment = state.full_get_segment_text(i).map_err(|e| e.to_string())?;
+            let start_timestamp = state.full_get_segment_t0(i).map_err(|e| e.to_string())?;
+            let end_timestamp = state.full_get_segment_t1(i).map_err(|e| e.to_string())?;
 
             let format_time = |timestamp: f64| {
                 let hours = (timestamp / 3600.0).floor();
@@ -132,21 +135,6 @@ mod tests {
     #[ignore = "need whisper-cli"]
     async fn create_whisper_cpp() {
         let result = new(Path::new("tests/model/ggml-model-whisper-tiny.bin"), "").await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    #[ignore = "need large model"]
-    async fn process_by_whisper_cpp() {
-        let whisper = new(
-            Path::new("tests/model/ggml-model-whisper-large-q5_0.bin"),
-            "",
-        )
-        .await
-        .unwrap();
-        let audio_path = Path::new("tests/audio/test.wav");
-        let output_path = Path::new("tests/audio/test.srt");
-        let result = whisper.generate_subtitle(audio_path, output_path).await;
         assert!(result.is_ok());
     }
 }

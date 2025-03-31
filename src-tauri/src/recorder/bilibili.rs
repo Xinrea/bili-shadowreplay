@@ -31,7 +31,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::config::Config;
 use crate::database::{Database, DatabaseError};
-use crate::progress_event::emit_progress_update;
+use crate::progress_event::{ProgressReporter, ProgressReporterTrait};
 
 use async_trait::async_trait;
 
@@ -664,7 +664,7 @@ impl BiliRecorder {
 
     pub async fn clip_archive_range(
         &self,
-        app_handle: AppHandle,
+        reporter: &ProgressReporter,
         live_id: &str,
         x: f64,
         y: f64,
@@ -696,12 +696,12 @@ impl BiliRecorder {
             }
         }
 
-        self.generate_clip(app_handle, &file_list, clip_file).await
+        self.generate_clip(reporter, &file_list, clip_file).await
     }
 
     pub async fn clip_live_range(
         &self,
-        app_handle: AppHandle,
+        reporter: &ProgressReporter,
         x: f64,
         y: f64,
         clip_file: PathBuf,
@@ -758,17 +758,15 @@ impl BiliRecorder {
             let file_path = format!("{}/{}", work_dir, file_name);
             file_list.push(file_path);
         }
-        self.generate_clip(app_handle, &file_list, clip_file).await
+        self.generate_clip(reporter, &file_list, clip_file).await
     }
 
     async fn generate_clip(
         &self,
-        app_handle: AppHandle,
+        reporter: &ProgressReporter,
         file_list: &[String],
         clip_file: PathBuf,
     ) -> Result<PathBuf, super::errors::RecorderError> {
-        let event_id = format!("clip_{}", self.room_id);
-
         let tmp_file = clip_file.with_extension("tmp");
         let file = OpenOptions::new()
             .read(true)
@@ -788,6 +786,11 @@ impl BiliRecorder {
         let total_files = file_list.len();
         // write file content in file_list into file
         for (i, f) in file_list.iter().enumerate() {
+            if reporter.cancel.load(Ordering::Relaxed) {
+                return Err(super::errors::RecorderError::ClipError {
+                    err: "Cancelled".to_string(),
+                });
+            }
             let seg_file = OpenOptions::new().read(true).open(f).await;
             if seg_file.is_err() {
                 log::error!("Reading {} failed, skip", f);
@@ -798,19 +801,18 @@ impl BiliRecorder {
             seg_file.read_to_end(&mut buffer).await.unwrap();
             file.write_all(&buffer).await.unwrap();
 
-            emit_progress_update(
-                &app_handle,
-                event_id.as_str(),
+            reporter.update(
                 format!(
                     "生成中：{:.1}%",
                     (i + 1) as f64 * 100.0 / total_files as f64
                 )
                 .as_str(),
-                "",
             );
         }
 
         file.flush().await.unwrap();
+        file.sync_all().await.unwrap();
+        log::info!("Clip tmp file generated: {}", tmp_file.display());
 
         let transcode_config = TranscodeConfig {
             input_path: tmp_file.clone(),
@@ -818,11 +820,16 @@ impl BiliRecorder {
             output_path: clip_file,
         };
 
-        let transcode_result = transcode(&app_handle, event_id.as_str(), transcode_config);
+        let transcode_result = transcode(reporter, transcode_config).await;
 
-        // delete the original ts file
+        // delete the tmp ts file
         if let Err(e) = tokio::fs::remove_file(tmp_file).await {
             log::error!("Delete temp clip file failed: {}", e.to_string());
+        }
+
+        if let Err(e) = transcode_result {
+            log::error!("Transcode clip file failed: {}", e.to_string());
+            return Err(super::errors::RecorderError::ClipError { err: e.to_string() });
         }
 
         Ok(transcode_result.unwrap().output_path)
@@ -1010,16 +1017,16 @@ impl super::Recorder for BiliRecorder {
     /// x and y are relative to first sequence
     async fn clip_range(
         &self,
-        app_handle: AppHandle,
+        reporter: &ProgressReporter,
         live_id: &str,
         x: f64,
         y: f64,
         output_path: PathBuf,
     ) -> Result<PathBuf, super::errors::RecorderError> {
         if *self.live_id.read().await == live_id {
-            self.clip_live_range(app_handle, x, y, output_path).await
+            self.clip_live_range(reporter, x, y, output_path).await
         } else {
-            self.clip_archive_range(app_handle, live_id, x, y, output_path)
+            self.clip_archive_range(reporter, live_id, x, y, output_path)
                 .await
         }
     }

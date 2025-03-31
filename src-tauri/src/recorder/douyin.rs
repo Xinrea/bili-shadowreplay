@@ -7,13 +7,14 @@ use super::{
 };
 use crate::database::Database;
 use crate::ffmpeg::{transcode, TranscodeConfig};
-use crate::progress_event::{emit_progress_finished, emit_progress_update};
+use crate::progress_event::{ProgressReporter, ProgressReporterTrait};
 use crate::{config::Config, database::account::AccountRow};
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
 use client::DouyinClientError;
 use dashmap::DashMap;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::AppHandle;
@@ -495,13 +496,12 @@ impl Recorder for DouyinRecorder {
 
     async fn clip_range(
         &self,
-        app_handle: AppHandle,
+        reporter: &ProgressReporter,
         live_id: &str,
         x: f64,
         y: f64,
         clip_file: PathBuf,
     ) -> Result<PathBuf, RecorderError> {
-        let event_id = format!("clip_{}", self.room_id);
         let work_dir = self.get_work_dir(live_id).await;
         let entries = if live_id == *self.live_id.read().await {
             self.entry_store
@@ -540,6 +540,12 @@ impl Recorder for DouyinRecorder {
             .await
             .map_err(|e| RecorderError::IoError { err: e })?;
         for (i, file_path) in file_list.iter().enumerate() {
+            if reporter.cancel.load(Ordering::Relaxed) {
+                return Err(RecorderError::ClipError {
+                    err: "Cancelled".to_string(),
+                });
+            }
+
             if let Ok(mut file) = tokio::fs::File::open(file_path).await {
                 let mut buffer = Vec::new();
                 if file.read_to_end(&mut buffer).await.is_ok() {
@@ -547,15 +553,12 @@ impl Recorder for DouyinRecorder {
                 }
             }
 
-            emit_progress_update(
-                &app_handle,
-                event_id.as_str(),
+            reporter.update(
                 format!(
                     "生成中：{:.1}%",
                     (i + 1) as f64 * 100.0 / file_list.len() as f64
                 )
                 .as_str(),
-                "",
             );
         }
         tmpf.flush()
@@ -568,12 +571,13 @@ impl Recorder for DouyinRecorder {
             output_path: clip_file,
         };
 
-        let transcode_result = transcode(&app_handle, event_id.as_str(), transcode_config);
+        let transcode_result = transcode(reporter, transcode_config).await;
+        if let Err(e) = transcode_result {
+            return Err(RecorderError::ClipError { err: e.to_string() });
+        }
 
         // delete the original ts file
         tokio::fs::remove_file(tmp_file).await?;
-
-        emit_progress_finished(&app_handle, event_id.as_str());
 
         Ok(transcode_result.unwrap().output_path)
     }

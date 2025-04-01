@@ -273,6 +273,7 @@ impl DouyinRecorder {
             if new_stream_url.is_none() {
                 return Err(RecorderError::NoStreamAvailable);
             }
+            log::info!("New douyin stream URL: {}", new_stream_url.clone().unwrap());
             *self.stream_url.write().await = Some(new_stream_url.unwrap());
         }
         let stream_url = self.stream_url.read().await.as_ref().unwrap().clone();
@@ -420,10 +421,7 @@ impl DouyinRecorder {
             return m3u8_content;
         }
 
-        m3u8_content += &format!(
-            "#EXT-X-TARGETDURATION:{}\n",
-            entries.last().unwrap().length as u64
-        );
+        m3u8_content += "#EXT-X-TARGETDURATION:6\n";
 
         let mut previous_seq = entries.first().unwrap().sequence;
         let first_entry_ts = entries.first().unwrap().ts;
@@ -517,17 +515,23 @@ impl Recorder for DouyinRecorder {
         let room_info = self.room_info.read().await;
         let room_cover_url = room_info
             .as_ref()
-            .and_then(|info| info.data.data[0].cover.as_ref())
-            .map(|cover| cover.url_list[0].clone())
+            .and_then(|info| {
+                info.data
+                    .data
+                    .first()
+                    .and_then(|data| data.cover.as_ref())
+                    .map(|cover| cover.url_list[0].clone())
+            })
+            .unwrap_or_default();
+        let room_title = room_info
+            .as_ref()
+            .and_then(|info| info.data.data.first().map(|data| data.title.clone()))
             .unwrap_or_default();
         RecorderInfo {
             room_id: self.room_id,
             room_info: RoomInfo {
                 room_id: self.room_id,
-                room_title: room_info
-                    .as_ref()
-                    .map(|info| info.data.data[0].title.clone())
-                    .unwrap_or_default(),
+                room_title,
                 room_cover: room_cover_url,
             },
             user_info: UserInfo {

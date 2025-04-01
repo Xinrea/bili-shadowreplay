@@ -83,6 +83,7 @@
     }, 5 * 1000);
 
     video = document.getElementById("video") as HTMLVideoElement;
+    video.crossOrigin = "anonymous";
     const ui = video["ui"];
     const controls = ui.getControls();
     const player = controls.getPlayer();
@@ -572,6 +573,9 @@
 
     // draw statistics
     function drawStatistics(points: { ts: number; count: number }[]) {
+      if (player.getPresentationStartTimeAsDate() == null) {
+        return;
+      }
       if (points == undefined) {
         points = [];
       }

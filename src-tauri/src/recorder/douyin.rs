@@ -500,6 +500,11 @@ impl Recorder for DouyinRecorder {
 
     async fn m3u8_content(&self, live_id: &str, start: i64, end: i64) -> String {
         let cache_key = format!("{}:{}:{}", live_id, start, end);
+        let range_required = start != 0 || end != 0;
+        if !range_required {
+            return self.generate_m3u8(live_id, start, end).await;
+        }
+
         if let Some(cached) = self.m3u8_cache.get(&cache_key) {
             return cached.clone();
         }

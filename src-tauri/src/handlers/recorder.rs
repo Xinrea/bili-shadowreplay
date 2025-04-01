@@ -119,7 +119,6 @@ pub async fn get_archives(
     state: TauriState<'_, State>,
     room_id: u64,
 ) -> Result<Vec<RecordRow>, String> {
-    log::debug!("Get archives for {}", room_id);
     Ok(state.recorder_manager.get_archives(room_id).await?)
 }
 

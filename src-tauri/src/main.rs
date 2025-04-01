@@ -18,6 +18,7 @@ use config::Config;
 use database::Database;
 use recorder::{bilibili::client::BiliClient, PlatformType};
 use recorder_manager::RecorderManager;
+use simplelog::ConfigBuilder;
 use state::State;
 use std::fs::File;
 use std::path::Path;
@@ -37,10 +38,19 @@ async fn setup_logging(log_dir: &Path) -> Result<(), Box<dyn std::error::Error>>
     // open file with append mode
     let file = File::options().create(true).append(true).open(&log_file)?;
 
+    let config = ConfigBuilder::new()
+        .set_target_level(simplelog::LevelFilter::Debug)
+        .set_location_level(simplelog::LevelFilter::Debug)
+        .add_filter_ignore_str("tokio")
+        .add_filter_ignore_str("hyper")
+        .add_filter_ignore_str("sqlx")
+        .add_filter_ignore_str("reqwest")
+        .build();
+
     simplelog::CombinedLogger::init(vec![
         simplelog::TermLogger::new(
-            simplelog::LevelFilter::Info,
-            simplelog::Config::default(),
+            simplelog::LevelFilter::Debug,
+            config,
             simplelog::TerminalMode::Mixed,
             simplelog::ColorChoice::Auto,
         ),

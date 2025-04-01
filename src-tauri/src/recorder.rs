@@ -5,12 +5,8 @@ pub mod errors;
 
 mod entry;
 
-use std::path::PathBuf;
-
 use async_trait::async_trait;
 use danmu::DanmuEntry;
-
-use crate::progress_event::ProgressReporter;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlatformType {
@@ -72,14 +68,6 @@ pub struct UserInfo {
 pub trait Recorder: Send + Sync + 'static {
     async fn run(&self);
     async fn stop(&self);
-    async fn clip_range(
-        &self,
-        reporter: &ProgressReporter,
-        live_id: &str,
-        x: f64,
-        y: f64,
-        clip_file: PathBuf,
-    ) -> Result<PathBuf, errors::RecorderError>;
     async fn m3u8_content(&self, live_id: &str, start: i64, end: i64) -> String;
     async fn info(&self) -> RecorderInfo;
     async fn comments(&self, live_id: &str) -> Result<Vec<DanmuEntry>, errors::RecorderError>;

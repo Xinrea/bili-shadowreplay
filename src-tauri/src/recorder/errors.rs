@@ -18,6 +18,5 @@ custom_error! {pub RecorderError
     InvalidDBOP {err: crate::database::DatabaseError } = "Database error: {err}",
     BiliClientError {err: super::bilibili::errors::BiliClientError} = "BiliClient error: {err}",
     DouyinClientError {err: DouyinClientError} = "DouyinClient error: {err}",
-    ClipError {err: String} = "FFMPEG error: {err}",
     IoError {err: std::io::Error} = "IO error: {err}",
 }

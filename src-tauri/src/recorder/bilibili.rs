@@ -5,7 +5,6 @@ pub mod response;
 use super::entry::EntryStore;
 use super::PlatformType;
 use crate::database::account::AccountRow;
-use crate::ffmpeg::{transcode, TranscodeConfig};
 
 use super::danmu::{DanmuEntry, DanmuStorage};
 use super::entry::TsEntry;
@@ -17,21 +16,17 @@ use felgens::{ws_socket_object, FelgensError, WsStreamMessageType};
 use m3u8_rs::Playlist;
 use rand::Rng;
 use regex::Regex;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Url};
 use tauri_plugin_notification::NotificationExt;
-use tokio::fs::OpenOptions;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::config::Config;
 use crate::database::{Database, DatabaseError};
-use crate::progress_event::{ProgressReporter, ProgressReporterTrait};
 
 use async_trait::async_trait;
 
@@ -663,179 +658,6 @@ impl BiliRecorder {
         Ok(task_begin_time.elapsed().as_millis())
     }
 
-    pub async fn clip_archive_range(
-        &self,
-        reporter: &ProgressReporter,
-        live_id: &str,
-        x: f64,
-        y: f64,
-        clip_file: PathBuf,
-    ) -> Result<PathBuf, super::errors::RecorderError> {
-        log::info!("Create archive clip for range [{}, {}]", x, y);
-        let work_dir = self.get_work_dir(live_id).await;
-        let entries = EntryStore::new(&work_dir).await.get_entries().clone();
-        if entries.is_empty() {
-            return Err(super::errors::RecorderError::EmptyCache);
-        }
-        let mut file_list = Vec::new();
-        // header fist
-        file_list.push(format!("{}/h{}.m4s", work_dir, live_id));
-        // add body entries
-        // seconds to ms
-        let begin = (x * 1000.0) as i64;
-        let end = (y * 1000.0) as i64;
-        let ts = entries.first().unwrap().ts;
-        if !entries.is_empty() {
-            for e in entries {
-                if e.ts - ts < begin {
-                    continue;
-                }
-                file_list.push(format!("{}/{}", work_dir, e.url));
-                if e.ts - ts > end {
-                    break;
-                }
-            }
-        }
-
-        self.generate_clip(reporter, &file_list, clip_file).await
-    }
-
-    pub async fn clip_live_range(
-        &self,
-        reporter: &ProgressReporter,
-        x: f64,
-        y: f64,
-        clip_file: PathBuf,
-    ) -> Result<PathBuf, super::errors::RecorderError> {
-        log::info!("Create live clip for range [{}, {}]", x, y);
-        let work_dir = self.get_work_dir(self.live_id.read().await.as_str()).await;
-        let mut to_combine = Vec::new();
-        let header_copy = self
-            .entry_store
-            .read()
-            .await
-            .as_ref()
-            .unwrap()
-            .get_header()
-            .unwrap()
-            .clone();
-        let entry_copy = self
-            .entry_store
-            .read()
-            .await
-            .as_ref()
-            .unwrap()
-            .get_entries()
-            .clone();
-        if entry_copy.is_empty() {
-            return Err(super::errors::RecorderError::EmptyCache);
-        }
-        let begin = (x * 1000.0) as i64;
-        let end = (y * 1000.0) as i64;
-        let ts = entry_copy.first().unwrap().ts;
-        // TODO using binary search
-        for e in entry_copy.iter() {
-            if e.ts - ts < begin {
-                continue;
-            }
-            to_combine.push(e);
-            if e.ts - ts > end {
-                break;
-            }
-        }
-        if self
-            .live_stream
-            .read()
-            .await
-            .as_ref()
-            .is_some_and(|s| s.format == StreamType::FMP4)
-        {
-            // add header to vec
-            to_combine.insert(0, &header_copy);
-        }
-        let mut file_list = Vec::new();
-        for e in to_combine {
-            let file_name = e.url.split('/').last().unwrap();
-            let file_path = format!("{}/{}", work_dir, file_name);
-            file_list.push(file_path);
-        }
-        self.generate_clip(reporter, &file_list, clip_file).await
-    }
-
-    async fn generate_clip(
-        &self,
-        reporter: &ProgressReporter,
-        file_list: &[String],
-        clip_file: PathBuf,
-    ) -> Result<PathBuf, super::errors::RecorderError> {
-        let tmp_file = clip_file.with_extension("tmp");
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp_file)
-            .await;
-        if file.is_err() {
-            let err = file.err().unwrap();
-            log::error!("Open clip file failed: {}", err.to_string());
-            return Err(super::errors::RecorderError::ClipError {
-                err: err.to_string(),
-            });
-        }
-        let mut file = file.unwrap();
-        let total_files = file_list.len();
-        // write file content in file_list into file
-        for (i, f) in file_list.iter().enumerate() {
-            if reporter.cancel.load(Ordering::Relaxed) {
-                return Err(super::errors::RecorderError::ClipError {
-                    err: "Cancelled".to_string(),
-                });
-            }
-            let seg_file = OpenOptions::new().read(true).open(f).await;
-            if seg_file.is_err() {
-                log::error!("Reading {} failed, skip", f);
-                continue;
-            }
-            let mut seg_file = seg_file.unwrap();
-            let mut buffer = Vec::new();
-            seg_file.read_to_end(&mut buffer).await.unwrap();
-            file.write_all(&buffer).await.unwrap();
-
-            reporter.update(
-                format!(
-                    "生成中：{:.1}%",
-                    (i + 1) as f64 * 100.0 / total_files as f64
-                )
-                .as_str(),
-            );
-        }
-
-        file.flush().await.unwrap();
-        file.sync_all().await.unwrap();
-        log::info!("Clip tmp file generated: {}", tmp_file.display());
-
-        let transcode_config = TranscodeConfig {
-            input_path: tmp_file.clone(),
-            input_format: "mp4".to_string(),
-            output_path: clip_file,
-        };
-
-        let transcode_result = transcode(reporter, transcode_config).await;
-
-        // delete the tmp ts file
-        if let Err(e) = tokio::fs::remove_file(tmp_file).await {
-            log::error!("Delete temp clip file failed: {}", e.to_string());
-        }
-
-        if let Err(e) = transcode_result {
-            log::error!("Transcode clip file failed: {}", e.to_string());
-            return Err(super::errors::RecorderError::ClipError { err: e.to_string() });
-        }
-
-        Ok(transcode_result.unwrap().output_path)
-    }
-
     async fn generate_archive_m3u8(&self, live_id: &str, start: i64, end: i64) -> String {
         let range_required = start != 0 || end != 0;
         if range_required {
@@ -1035,23 +857,6 @@ impl super::Recorder for BiliRecorder {
 
     async fn stop(&self) {
         *self.quit.lock().await = true;
-    }
-
-    /// x and y are relative to first sequence
-    async fn clip_range(
-        &self,
-        reporter: &ProgressReporter,
-        live_id: &str,
-        x: f64,
-        y: f64,
-        output_path: PathBuf,
-    ) -> Result<PathBuf, super::errors::RecorderError> {
-        if *self.live_id.read().await == live_id {
-            self.clip_live_range(reporter, x, y, output_path).await
-        } else {
-            self.clip_archive_range(reporter, live_id, x, y, output_path)
-                .await
-        }
     }
 
     /// timestamp is the id of live stream

@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
 
 use crate::progress_event::ProgressReporterTrait;
@@ -6,38 +6,13 @@ use async_ffmpeg_sidecar::event::FfmpegEvent;
 use async_ffmpeg_sidecar::log_parser::FfmpegLogParser;
 use tokio::io::BufReader;
 
-pub struct TranscodeConfig {
-    pub input_path: PathBuf,
-    pub input_format: String,
-    pub output_path: PathBuf,
-}
-
-pub struct TranscodeResult {
-    pub output_path: PathBuf,
-}
-
-pub async fn transcode(
+pub async fn clip_from_m3u8(
     reporter: &impl ProgressReporterTrait,
-    config: TranscodeConfig,
-) -> Result<TranscodeResult, String> {
-    let input_path = config.input_path;
-    let input_format = config.input_format;
-    let output_path = config.output_path;
-
-    log::info!(
-        "Transcode task start: input_path: {}, output_path: {}",
-        input_path.display(),
-        output_path.display()
-    );
-
-    log::info!(
-        "FFMPEG version: {:?}",
-        async_ffmpeg_sidecar::version::ffmpeg_version().await
-    );
-
+    m3u8_url: &str,
+    output_path: &Path,
+) -> Result<(), String> {
     let child = tokio::process::Command::new("ffmpeg")
-        .args(["-f", input_format.as_str()])
-        .args(["-i", input_path.to_str().unwrap()])
+        .args(["-i", m3u8_url])
         .args(["-c", "copy"])
         .args(["-y", output_path.to_str().unwrap()])
         .args(["-progress", "pipe:2"])
@@ -45,46 +20,39 @@ pub async fn transcode(
         .spawn();
 
     if let Err(e) = child {
-        log::error!("Transcode error: {}", e);
         return Err(e.to_string());
     }
 
     let mut child = child.unwrap();
-
     let stderr = child.stderr.take().unwrap();
     let reader = BufReader::new(stderr);
     let mut parser = FfmpegLogParser::new(reader);
 
-    let mut extract_error = None;
-
+    let mut clip_error = None;
     while let Ok(event) = parser.parse_next_event().await {
         match event {
-            FfmpegEvent::Error(e) => {
-                log::error!("Transcode error: {}", e);
-                extract_error = Some(e.to_string());
-            }
             FfmpegEvent::Progress(p) => reporter.update(format!("编码中：{}", p.time).as_str()),
             FfmpegEvent::LogEOF => break,
+            FfmpegEvent::Error(e) => {
+                log::error!("Clip error: {}", e);
+                clip_error = Some(e.to_string());
+            }
             _ => {}
         }
     }
 
     if let Err(e) = child.wait().await {
-        log::error!("Transcode error: {}", e);
+        log::error!("Clip error: {}", e);
         return Err(e.to_string());
     }
 
-    if let Some(error) = extract_error {
-        log::error!("Transcode error: {}", error);
-        return Err(error);
+    if let Some(error) = clip_error {
+        log::error!("Clip error: {}", error);
+        Err(error)
+    } else {
+        log::info!("Clip task end: {}", output_path.display());
+        Ok(())
     }
-
-    log::info!(
-        "Transcode task end: output_path: {}",
-        &output_path.display()
-    );
-
-    Ok(TranscodeResult { output_path })
 }
 
 pub async fn extract_audio(file: &Path) -> Result<(), String> {

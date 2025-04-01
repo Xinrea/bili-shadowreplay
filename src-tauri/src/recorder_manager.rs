@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::database::DatabaseError;
 use crate::database::{account::AccountRow, record::RecordRow, Database};
+use crate::ffmpeg::clip_from_m3u8;
 use crate::progress_event::ProgressReporter;
 use crate::recorder::bilibili::BiliRecorder;
 use crate::recorder::danmu::DanmuEntry;
@@ -57,6 +58,7 @@ custom_error! {pub RecorderManagerError
     HLSError { err: hyper::Error } = "HLS 服务器错误: {err}",
     DatabaseError { err: DatabaseError } = "数据库错误: {err}",
     Recording { live_id: String } = "无法删除正在录制的直播 {live_id}",
+    ClipError { err: String } = "切片错误: {err}",
 }
 
 impl From<hyper::Error> for RecorderManagerError {
@@ -221,10 +223,22 @@ impl RecorderManager {
                 room_id: params.room_id,
             });
         }
-        let recorder = recorders.get(&recorder_id).unwrap();
-        Ok(recorder
-            .clip_range(reporter, &params.live_id, params.x, params.y, clip_file)
-            .await?)
+        let range_m3u8 = format!(
+            "http://127.0.0.1:{}/{}/{}/{}/playlist.m3u8?start={}&end={}",
+            self.get_hls_server_addr().await.unwrap().port(),
+            params.platform,
+            params.room_id,
+            params.live_id,
+            params.x.floor() as i64,
+            params.y.floor() as i64
+        );
+
+        if let Err(e) = clip_from_m3u8(reporter, &range_m3u8, &clip_file).await {
+            log::error!("Failed to generate clip file: {}", e);
+            return Err(RecorderManagerError::ClipError { err: e.to_string() });
+        }
+
+        Ok(clip_file)
     }
 
     pub async fn get_recorder_list(&self) -> RecorderList {

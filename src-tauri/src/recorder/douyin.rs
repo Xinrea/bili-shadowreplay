@@ -448,7 +448,7 @@ impl DouyinRecorder {
             m3u8_content += &format!("/douyin/{}/{}/{}\n", self.room_id, live_id, entry.url);
         }
 
-        if *self.live_status.read().await != LiveStatus::Live {
+        if *self.live_status.read().await != LiveStatus::Live || range_required {
             m3u8_content += "#EXT-X-ENDLIST\n";
         }
 

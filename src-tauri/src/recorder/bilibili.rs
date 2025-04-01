@@ -967,7 +967,7 @@ impl BiliRecorder {
             m3u8_content += &format!("{}\n", local_url);
         }
         // let player know stream is closed
-        if !live_status {
+        if !live_status || range_required {
             m3u8_content += "#EXT-X-ENDLIST";
         }
         m3u8_content

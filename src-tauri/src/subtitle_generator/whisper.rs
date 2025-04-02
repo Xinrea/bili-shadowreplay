@@ -19,7 +19,10 @@ pub async fn new(model: &Path, prompt: &str) -> Result<WhisperCPP, String> {
         model.to_str().unwrap(),
         WhisperContextParameters::default(),
     )
-    .expect("failed to load model");
+    .map_err(|e| {
+        log::error!("Create whisper context failed: {}", e);
+        e.to_string()
+    })?;
 
     Ok(WhisperCPP {
         ctx: Arc::new(RwLock::new(ctx)),
@@ -41,7 +44,6 @@ impl SubtitleGenerator for WhisperCPP {
         let samples: Vec<i16> = audio.into_samples::<i16>().map(|x| x.unwrap()).collect();
 
         let state = self.ctx.read().await.create_state();
-
         if let Err(e) = state {
             return Err(e.to_string());
         }
@@ -118,7 +120,10 @@ impl SubtitleGenerator for WhisperCPP {
         output_file
             .write_all(subtitle.as_bytes())
             .await
-            .expect("failed to write to output file");
+            .map_err(|e| {
+                log::error!("failed to write to output file: {}", e);
+                e.to_string()
+            })?;
 
         log::info!("Subtitle generated: {:?}", output_path);
         log::info!("Time taken: {} seconds", start_time.elapsed().as_secs_f64());

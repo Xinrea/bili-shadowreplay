@@ -136,10 +136,55 @@ impl SubtitleGenerator for WhisperCPP {
 mod tests {
     use super::*;
 
+    // create a mock for the ProgressReporterTrait
+    #[derive(Clone)]
+    struct MockReporter {}
+    impl MockReporter {
+        fn update(&self, _message: &str) {
+            // mock implementation
+        }
+    }
+
+    #[async_trait]
+    impl ProgressReporterTrait for MockReporter {
+        fn update(&self, message: &str) {
+            println!("Mock update: {}", message);
+        }
+
+        async fn finish(&self, success: bool, message: &str) {
+            if success {
+                println!("Mock finish: {}", message);
+            } else {
+                println!("Mock error: {}", message);
+            }
+        }
+    }
+    impl MockReporter {
+        fn new() -> Self {
+            MockReporter {}
+        }
+    }
+
     #[tokio::test]
-    #[ignore = "need whisper-cli"]
     async fn create_whisper_cpp() {
-        let result = new(Path::new("tests/model/ggml-model-whisper-tiny.bin"), "").await;
+        let result = new(Path::new("tests/model/ggml-tiny-q5_1.bin"), "").await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn generate_subtitle() {
+        let whisper = new(Path::new("tests/model/ggml-tiny-q5_1.bin"), "")
+            .await
+            .unwrap();
+        let audio_path = Path::new("tests/audio/test.wav");
+        let output_path = Path::new("tests/audio/test.srt");
+        let reporter = MockReporter::new();
+        let result = whisper
+            .generate_subtitle(&reporter, audio_path, output_path)
+            .await;
+        if let Err(e) = result {
+            println!("Error: {}", e);
+            panic!("Failed to generate subtitle");
+        }
     }
 }

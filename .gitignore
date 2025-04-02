@@ -28,4 +28,3 @@ src-tauri/*.exe
 
 # test files
 src-tauri/tests/audio/*.srt
-src-tauri/tests/model/*.bin

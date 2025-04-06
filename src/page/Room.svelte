@@ -45,10 +45,10 @@
     let new_summary = (await invoke("get_recorder_list")) as RecorderList;
     room_count = new_summary.count;
     room_active = new_summary.recorders.filter(
-      (room) => room.live_status
+      (room) => room.live_status,
     ).length;
     room_inactive = new_summary.recorders.filter(
-      (room) => !room.live_status
+      (room) => !room.live_status,
     ).length;
 
     // sort new_summary.recorders by live_status
@@ -146,6 +146,25 @@
       platform: room.platform,
       autoStart: !room.auto_start,
     });
+  }
+
+  function openUserUrl(room: RecorderInfo) {
+    if (room.platform === "bilibili") {
+      open("https://space.bilibili.com/" + room.user_info.user_id);
+    } else if (room.platform === "douyin") {
+      console.log(room.user_info);
+      open("https://www.douyin.com/user/" + room.user_info.user_id);
+    }
+  }
+
+  function openLiveUrl(room: RecorderInfo) {
+    if (room.platform === "bilibili") {
+      open("https://live.bilibili.com/" + room.room_id);
+    }
+
+    if (room.platform === "douyin") {
+      open("https://live.douyin.com/" + room.room_id);
+    }
   }
 </script>
 
@@ -266,7 +285,7 @@
               </button>
               <DropdownItem
                 on:click={() => {
-                  open("https://live.bilibili.com/" + room.room_id);
+                  openLiveUrl(room);
                 }}>打开网页直播间</DropdownItem
               >
               <DropdownItem
@@ -300,16 +319,7 @@
                 <button
                   class="flex items-center space-x-2 p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
                   on:click={() => {
-                    if (room.platform === "bilibili") {
-                      open(
-                        "https://space.bilibili.com/" + room.user_info.user_id
-                      );
-                    } else if (room.platform === "douyin") {
-                      console.log(room.user_info);
-                      open(
-                        "https://www.douyin.com/user/" + room.user_info.user_id
-                      );
-                    }
+                    openUserUrl(room);
                   }}
                 >
                   <Image

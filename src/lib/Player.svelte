@@ -31,10 +31,17 @@
   let global_offset = 0;
   let recorders: RecorderInfo[] = [];
 
+  // save start and end to localStorage
+  function saveStartEnd() {
+    localStorage.setItem("start", (start + focus_start).toString());
+    localStorage.setItem("end", (end + focus_start).toString());
+    console.log("Saved start and end", start + focus_start, end + focus_start);
+  }
+
   // TODO get custom tag from shaka player instead of manual parsing
   async function meta_parse() {
     fetch(
-      `http://127.0.0.1:${port}/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`
+      `http://127.0.0.1:${port}/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`,
     )
       .then((response) => response.text())
       .then((m3u8Content) => {
@@ -116,7 +123,7 @@
 
     try {
       await player.load(
-        `http://127.0.0.1:${port}/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`
+        `http://127.0.0.1:${port}/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`,
       );
       // This runs if the asynchronous load is successful.
       console.log("The video has now been loaded!");
@@ -144,7 +151,7 @@
     document.getElementsByClassName("shaka-fullscreen-button")[0].remove();
     // add self-defined element in shaka-bottom-controls.shaka-no-propagation (second seekbar)
     const shakaBottomControls = document.querySelector(
-      ".shaka-bottom-controls.shaka-no-propagation"
+      ".shaka-bottom-controls.shaka-no-propagation",
     );
     const selfSeekbar = document.createElement("div");
     selfSeekbar.className = "shaka-seek-bar shaka-no-propagation";
@@ -272,7 +279,7 @@
             danmu_displayed[event.payload.ts] = true;
             danmu_records.push(event.payload);
             danmu_handler(event.payload.content);
-          }
+          },
         );
         window.onbeforeunload = () => {
           unlisten();
@@ -466,6 +473,8 @@
           if (end < start) {
             end = get_total();
           }
+
+          saveStartEnd();
           console.log(start, end);
           break;
         case "【":
@@ -474,6 +483,7 @@
           if (end < start) {
             end = get_total();
           }
+          saveStartEnd();
           console.log(start, end);
           break;
         case "]":
@@ -482,6 +492,7 @@
           if (start > end) {
             start = 0;
           }
+          saveStartEnd();
           console.log(start, end);
           break;
         case "】":
@@ -490,6 +501,7 @@
           if (start > end) {
             start = 0;
           }
+          saveStartEnd();
           console.log(start, end);
           break;
         case " ":
@@ -558,11 +570,11 @@
     });
 
     const seekbarContainer = selfSeekbar.querySelector(
-      ".shaka-seek-bar-container.self-defined"
+      ".shaka-seek-bar-container.self-defined",
     ) as HTMLElement;
 
     const statisticGraph = document.createElement(
-      "canvas"
+      "canvas",
     ) as HTMLCanvasElement;
     statisticGraph.style.pointerEvents = "none";
     statisticGraph.style.position = "absolute";
@@ -655,7 +667,7 @@
       }%, rgba(255, 255, 255, 0.2) ${first_point * 100}%)`;
       // render markers in shaka-ad-markers
       const adMarkers = document.querySelector(
-        ".shaka-ad-markers"
+        ".shaka-ad-markers",
       ) as HTMLElement;
       if (adMarkers) {
         // clean previous markers
@@ -746,7 +758,7 @@
             go_to(
               recorder.platform,
               recorder.room_id,
-              recorder.current_live_id
+              recorder.current_live_id,
             );
           }}
         >

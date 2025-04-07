@@ -93,7 +93,7 @@
       } else if (event_id == current_post_event_id) {
         update_post_prompt(e.payload.content);
       }
-    }
+    },
   );
   let progress_finished_listener = listen<ProgressFinished>(
     `progress-finished`,
@@ -112,7 +112,7 @@
         }
         current_post_event_id = null;
       }
-    }
+    },
   );
 
   // remove listeners when component is destroyed
@@ -125,6 +125,16 @@
 
   let start = 0.0;
   let end = 0.0;
+
+  // load start and end from localStorage
+  if (localStorage.getItem("start")) {
+    start = parseFloat(localStorage.getItem("start")) - focus_start;
+  }
+  if (localStorage.getItem("end")) {
+    end = parseFloat(localStorage.getItem("end")) - focus_start;
+  }
+
+  console.log("Loaded start and end", start, end);
 
   function generateCover() {
     const video = document.getElementById("video") as HTMLVideoElement;
@@ -183,7 +193,7 @@
       console.log(a);
       archive = a;
       appWindow.setTitle(`[${room_id}]${archive.title}`);
-    }
+    },
   );
 
   function update_clip_prompt(str: string) {
@@ -312,13 +322,13 @@
   let markers: Marker[] = [];
   // load markers from local storage
   markers = JSON.parse(
-    window.localStorage.getItem(`markers:${room_id}:${live_id}`) || "[]"
+    window.localStorage.getItem(`markers:${room_id}:${live_id}`) || "[]",
   );
   $: {
     // makers changed, save to local storage
     window.localStorage.setItem(
       `markers:${room_id}:${live_id}`,
-      JSON.stringify(markers)
+      JSON.stringify(markers),
     );
   }
 </script>

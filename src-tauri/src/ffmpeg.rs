@@ -20,7 +20,7 @@ pub async fn clip_from_m3u8(
         .spawn();
 
     if let Err(e) = child {
-        return Err(e.to_string());
+        return Err(format!("Spawn ffmpeg process failed: {}", e));
     }
 
     let mut child = child.unwrap();

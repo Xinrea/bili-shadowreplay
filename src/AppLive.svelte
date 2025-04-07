@@ -102,13 +102,13 @@
       if (event_id == current_clip_event_id) {
         update_clip_prompt(`生成切片`);
         if (!e.payload.success) {
-          alert("切片失败: " + e.payload.message);
+          alert("请检查 ffmpeg 是否配置正确：" + e.payload.message);
         }
         current_clip_event_id = null;
       } else if (event_id == current_post_event_id) {
         update_post_prompt(`投稿`);
         if (!e.payload.success) {
-          alert("投稿失败: " + e.payload.message);
+          alert(e.payload.message);
         }
         current_post_event_id = null;
       }

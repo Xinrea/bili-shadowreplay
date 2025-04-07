@@ -69,6 +69,7 @@
     "http:default",
     "shell:default",
     "sql:default",
-    "os:default"
+    "os:default",
+    "dialog:default"
   ]
 }

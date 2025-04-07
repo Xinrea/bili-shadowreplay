@@ -11,7 +11,7 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.1.1",
+    "@tauri-apps/api": "^2.4.1",
     "@tauri-apps/plugin-dialog": "~2",
     "@tauri-apps/plugin-fs": "~2",
     "@tauri-apps/plugin-http": "~2",
@@ -25,7 +25,7 @@
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^2.0.0",
-    "@tauri-apps/cli": "^2.1.0",
+    "@tauri-apps/cli": "^2.4.1",
     "@tsconfig/svelte": "^3.0.0",
     "@types/node": "^18.7.10",
     "@types/qrcode": "^1.5.5",

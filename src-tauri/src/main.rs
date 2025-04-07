@@ -108,7 +108,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     let recorder_manager_clone = recorder_manager.clone();
 
     let _ = recorder_manager_clone.run_hls().await;
-    let binding = dbs.0.lock().await;
+    let binding = dbs.0.read().await;
     let dbpool = binding.get("sqlite:data_v2.db").unwrap();
     let sqlite_pool = match dbpool {
         tauri_plugin_sql::DbPool::Sqlite(pool) => Some(pool),

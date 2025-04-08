@@ -6,6 +6,7 @@ mod config;
 mod database;
 mod ffmpeg;
 mod handlers;
+mod playlist;
 mod progress_event;
 mod recorder;
 mod recorder_manager;

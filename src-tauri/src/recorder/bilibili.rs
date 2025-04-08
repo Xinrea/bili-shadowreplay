@@ -5,6 +5,7 @@ pub mod response;
 use super::entry::EntryStore;
 use super::PlatformType;
 use crate::database::account::AccountRow;
+use crate::playlist::HLSPlaylist;
 
 use super::danmu::{DanmuEntry, DanmuStorage};
 use super::entry::TsEntry;
@@ -13,7 +14,7 @@ use client::{BiliClient, BiliStream, RoomInfo, StreamType, UserInfo};
 use dashmap::DashMap;
 use errors::BiliClientError;
 use felgens::{ws_socket_object, FelgensError, WsStreamMessageType};
-use m3u8_rs::Playlist;
+use m3u8_rs::{ExtTag, MediaSegment, Playlist};
 use rand::Rng;
 use regex::Regex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -658,37 +659,38 @@ impl BiliRecorder {
         Ok(task_begin_time.elapsed().as_millis())
     }
 
-    async fn generate_archive_m3u8(&self, live_id: &str, start: i64, end: i64) -> String {
+    async fn generate_archive_playlist(&self, live_id: &str, start: i64, end: i64) -> String {
         let range_required = start != 0 || end != 0;
         if range_required {
             log::info!("Generate archive m3u8 for range [{}, {}]", start, end);
         }
-        let cache_key = format!("{}:{}:{}", live_id, start, end);
-        if self.m3u8_cache.contains_key(&cache_key) {
-            return self.m3u8_cache.get(&cache_key).unwrap().clone();
-        }
-        let mut m3u8_content = "#EXTM3U\n".to_string();
-        m3u8_content += "#EXT-X-VERSION:6\n";
-        m3u8_content += "#EXT-X-TARGETDURATION:1\n";
-        m3u8_content += "#EXT-X-PLAYLIST-TYPE:VOD\n";
-        // add header, FMP4 need this
-        // TODO handle StreamType::TS
-        let header_url = format!("/bilibili/{}/{}/h{}.m4s", self.room_id, live_id, live_id);
-        m3u8_content += &format!("#EXT-X-MAP:URI=\"{}\"\n", header_url);
+
+        let mut playlist = HLSPlaylist::new();
+        playlist.version = 6;
+        playlist.target_duration = 1.0;
         // add entries from read_dir
         let work_dir = self.get_work_dir(live_id).await;
-        let entries = EntryStore::new(&work_dir).await.get_entries().clone();
+        let entry_store = EntryStore::new(&work_dir).await;
+        let entries = entry_store.get_entries().clone();
         if entries.is_empty() {
-            return m3u8_content;
+            return playlist.to_string();
         }
-        let mut last_sequence = entries.first().unwrap().sequence;
+
+        if let Some(header) = entry_store.get_header() {
+            let header_url = format!("/bilibili/{}/{}/{}", self.room_id, live_id, header.url);
+            playlist.extra_tags.push(ExtTag {
+                tag: "X-MAP".to_string(),
+                rest: Some(format!("URI=\"{}\"", header_url)),
+            })
+        }
 
         let live_ts = live_id.parse::<i64>().unwrap();
-        m3u8_content += &format!(
-            "#EXT-X-OFFSET:{}\n",
-            (entries.first().unwrap().ts - live_ts * 1000) / 1000
-        );
+        playlist.extra_tags.push(ExtTag {
+            tag: "X-OFFSET".to_string(),
+            rest: Some(((entries.first().unwrap().ts - live_ts * 1000) / 1000).to_string()),
+        });
 
+        let mut last_sequence = entries.first().unwrap().sequence;
         let mut first_entry_ts = None;
         for e in entries {
             // ignore header, cause it's already in EXT-X-MAP
@@ -702,23 +704,23 @@ impl BiliRecorder {
             if range_required && (entry_offset < start || entry_offset > end) {
                 continue;
             }
+            let mut segment = MediaSegment::default();
             let current_seq = e.sequence;
             if current_seq - last_sequence > 1 {
-                m3u8_content += "#EXT-X-DISCONTINUITY\n"
+                segment.discontinuity = true;
             }
             // add #EXT-X-PROGRAM-DATE-TIME with ISO 8601 date
             let ts = e.ts / 1000;
-            let date_str = Utc.timestamp_opt(ts, 0).unwrap().to_rfc3339();
-            m3u8_content += &format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", date_str);
-            m3u8_content += &format!("#EXTINF:{:.2},\n", e.length);
-            m3u8_content += &format!("/bilibili/{}/{}/{}\n", self.room_id, live_id, e.url);
+            segment.program_date_time = Some(Utc.timestamp_opt(ts, 0).unwrap().into());
+            segment.duration = e.length as f32;
+            segment.uri = format!("/bilibili/{}/{}/{}\n", self.room_id, live_id, e.url);
+
+            playlist.segments.push(segment);
 
             last_sequence = current_seq;
         }
-        m3u8_content += "#EXT-X-ENDLIST";
-        // cache this
-        self.m3u8_cache.insert(cache_key, m3u8_content.clone());
-        m3u8_content
+
+        playlist.to_string()
     }
 
     /// if fetching live/last stream m3u8, all entries are cached in memory, so it will be much faster than read_dir
@@ -864,7 +866,7 @@ impl super::Recorder for BiliRecorder {
         if *self.live_id.read().await == live_id && *self.current_record.read().await {
             self.generate_live_m3u8(start, end).await
         } else {
-            self.generate_archive_m3u8(live_id, start, end).await
+            self.generate_archive_playlist(live_id, start, end).await
         }
     }
 

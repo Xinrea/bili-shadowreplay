@@ -220,6 +220,7 @@ pub async fn set_auto_start(
     room_id: u64,
     auto_start: bool,
 ) -> Result<(), String> {
+    log::info!("Set auto-start for {} {}", platform, room_id);
     let platform = PlatformType::from_str(&platform).unwrap();
     state
         .recorder_manager
@@ -234,6 +235,7 @@ pub async fn force_start(
     platform: String,
     room_id: u64,
 ) -> Result<(), String> {
+    log::info!("Force start recording for {} {}", platform, room_id);
     let platform = PlatformType::from_str(&platform).unwrap();
     state.recorder_manager.force_start(platform, room_id).await;
     Ok(())
@@ -245,6 +247,7 @@ pub async fn force_stop(
     platform: String,
     room_id: u64,
 ) -> Result<(), String> {
+    log::info!("Force stop recording for {} {}", platform, room_id);
     let platform = PlatformType::from_str(&platform).unwrap();
     state.recorder_manager.force_stop(platform, room_id).await;
     Ok(())

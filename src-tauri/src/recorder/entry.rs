@@ -1,9 +1,15 @@
 use async_std::{
     fs::{File, OpenOptions},
     io::{prelude::BufReadExt, BufReader, WriteExt},
-    path::Path,
     stream::StreamExt,
 };
+use chrono::{TimeZone, Utc};
+use m3u8_rs::{ExtTag, MediaPlaylistType, MediaSegment};
+use std::path::Path;
+
+use crate::playlist::HLSPlaylist;
+
+use super::PlatformType;
 
 const ENTRY_FILE_NAME: &str = "entries.log";
 
@@ -30,16 +36,16 @@ pub struct EntryStore {
 }
 
 impl EntryStore {
-    pub async fn new(work_dir: &str) -> Self {
+    pub async fn new(work_dir: &Path) -> Self {
         // if work_dir is not exists, create it
-        if !Path::new(work_dir).exists().await {
+        if !Path::new(work_dir).exists() {
             std::fs::create_dir_all(work_dir).unwrap();
         }
         // open append only log file
         let log_file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(format!("{}/{}", work_dir, ENTRY_FILE_NAME))
+            .open(work_dir.join(ENTRY_FILE_NAME))
             .await
             .unwrap();
         let mut entry_store = Self {
@@ -57,11 +63,11 @@ impl EntryStore {
         entry_store
     }
 
-    async fn load(&mut self, work_dir: &str) {
+    async fn load(&mut self, work_dir: &Path) {
         let file = OpenOptions::new()
             .create(false)
             .read(true)
-            .open(format!("{}/{}", work_dir, ENTRY_FILE_NAME))
+            .open(work_dir.join(ENTRY_FILE_NAME))
             .await
             .unwrap();
         let mut lines = BufReader::new(file).lines();
@@ -123,10 +129,6 @@ impl EntryStore {
         self.total_size += entry.size;
     }
 
-    pub fn get_header(&self) -> Option<&TsEntry> {
-        self.header.as_ref()
-    }
-
     pub fn get_entries(&self) -> &Vec<TsEntry> {
         &self.entries
     }
@@ -143,7 +145,67 @@ impl EntryStore {
         self.last_sequence
     }
 
-    pub fn last_ts(&self) -> Option<i64> {
-        self.entries.last().map(|entry| entry.ts)
+    // Used for migrating entry store to MediaPlaylist
+    pub fn to_hls_playlist(
+        &self,
+        platform: PlatformType,
+        room_id: u64,
+        live_id: &str,
+        is_live: bool,
+    ) -> HLSPlaylist {
+        let mut playlist = HLSPlaylist::new();
+        playlist.playlist_type = if is_live {
+            MediaPlaylistType::Event
+        } else {
+            MediaPlaylistType::Vod
+        };
+
+        if let Some(header) = &self.header {
+            let header_url = format!("/{}/{}/{}/{}", platform, room_id, live_id, header.url);
+            playlist.extra_tags.push(ExtTag {
+                tag: "X-MAP".to_string(),
+                rest: Some(format!("URI=\"{}\"", header_url)),
+            })
+        }
+
+        let mut last_sequence = self.entries.first().unwrap().sequence;
+        let mut first_entry_ts = None;
+        for e in &self.entries {
+            if first_entry_ts.is_none() {
+                first_entry_ts = Some(e.ts / 1000);
+            }
+
+            let mut segment = MediaSegment::default();
+            let current_seq = e.sequence;
+            if current_seq - last_sequence > 1 {
+                segment.discontinuity = true;
+            }
+
+            // add #EXT-X-PROGRAM-DATE-TIME with ISO 8601 date
+            let ts = e.ts / 1000;
+            segment.program_date_time = Some(Utc.timestamp_opt(ts, 0).unwrap().into());
+            segment.duration = e.length as f32;
+            segment.uri = format!("/{}/{}/{}/{}\n", platform, room_id, live_id, e.url);
+
+            playlist.segments.push(segment);
+
+            last_sequence = current_seq;
+        }
+
+        if let Some(first_entry_ts) = first_entry_ts {
+            playlist.extra_tags.push(ExtTag {
+                tag: "X-OFFSET".to_string(),
+                rest: Some(format!("{}", first_entry_ts)),
+            });
+        }
+
+        // set default target duration
+        playlist.target_duration = self
+            .entries
+            .iter()
+            .map(|e| e.length as f32)
+            .fold(0.0, |a, b| a.max(b));
+
+        playlist
     }
 }

@@ -86,12 +86,12 @@ impl Database {
         &self,
         live_id: &str,
         length: i64,
-        size: u64,
+        delta_size: u64,
     ) -> Result<(), DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
-        sqlx::query("UPDATE records SET length = $1, size = $2 WHERE live_id = $3")
+        sqlx::query("UPDATE records SET length = $1, size = size + $2 WHERE live_id = $3")
             .bind(length)
-            .bind(size as i64)
+            .bind(delta_size as i64)
             .bind(live_id)
             .execute(&lock)
             .await?;

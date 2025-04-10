@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
 use client::DouyinClientError;
 use dashmap::DashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::AppHandle;
@@ -228,13 +229,12 @@ impl DouyinRecorder {
         *self.last_update.write().await = Utc::now().timestamp();
     }
 
-    async fn get_work_dir(&self, live_id: &str) -> String {
-        format!(
-            "{}/douyin/{}/{}/",
-            self.config.read().await.cache,
-            self.room_id,
-            live_id
-        )
+    async fn get_work_dir(&self, live_id: &str) -> PathBuf {
+        let cache_dir = self.config.read().await.cache.clone();
+        Path::new(&cache_dir)
+            .join("douyin")
+            .join(self.room_id.to_string())
+            .join(live_id)
     }
 
     async fn get_best_stream_url(
@@ -337,7 +337,7 @@ impl DouyinRecorder {
             // Download segment
             match self
                 .client
-                .download_ts(&ts_url, &format!("{}/{}", work_dir, file_name))
+                .download_ts(&ts_url, &work_dir.join(&file_name))
                 .await
             {
                 Ok(size) => {
@@ -549,7 +549,7 @@ impl Recorder for DouyinRecorder {
                     .unwrap_or_default(),
             },
             total_length: if let Some(store) = self.entry_store.read().await.as_ref() {
-                store.total_duration()
+                store.total_duration() as f32
             } else {
                 0.0
             },

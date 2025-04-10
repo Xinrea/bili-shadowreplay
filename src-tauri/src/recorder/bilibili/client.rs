@@ -81,6 +81,7 @@ pub enum StreamType {
 
 #[derive(Clone, Debug)]
 pub struct BiliStream {
+    pub live_time: i64,
     pub format: StreamType,
     pub host: String,
     pub path: String,
@@ -99,8 +100,15 @@ impl fmt::Display for BiliStream {
 }
 
 impl BiliStream {
-    pub fn new(format: StreamType, base_url: &str, host: &str, extra: &str) -> BiliStream {
+    pub fn new(
+        live_time: i64,
+        format: StreamType,
+        base_url: &str,
+        host: &str,
+        extra: &str,
+    ) -> BiliStream {
         BiliStream {
+            live_time,
             format,
             host: host.into(),
             path: BiliStream::get_path(base_url),
@@ -372,7 +380,7 @@ impl BiliClient {
                 if let Some(stream) = data.playurl_info.playurl.stream.first() {
                     // Get fmp4 format
                     if let Some(f) = stream.format.iter().find(|f| f.format_name == "fmp4") {
-                        self.get_stream(f).await
+                        self.get_stream(data.live_time, f).await
                     } else {
                         log::error!("No fmp4 stream found: {:?}", data);
                         Err(BiliClientError::InvalidResponse)
@@ -391,10 +399,15 @@ impl BiliClient {
         }
     }
 
-    async fn get_stream(&self, format: &Format) -> Result<BiliStream, BiliClientError> {
+    async fn get_stream(
+        &self,
+        live_id: i64,
+        format: &Format,
+    ) -> Result<BiliStream, BiliClientError> {
         if let Some(codec) = format.codec.first() {
             if let Some(url_info) = codec.url_info.first() {
                 Ok(BiliStream::new(
+                    live_id,
                     StreamType::FMP4,
                     &codec.base_url,
                     &url_info.host,
@@ -419,7 +432,7 @@ impl BiliClient {
             .await?)
     }
 
-    pub async fn download_ts(&self, url: &str, file_path: &str) -> Result<u64, BiliClientError> {
+    pub async fn download_ts(&self, url: &str, file_path: &Path) -> Result<u64, BiliClientError> {
         let res = self
             .client
             .get(url)

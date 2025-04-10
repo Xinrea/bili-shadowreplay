@@ -8,21 +8,21 @@ use crate::database::account::AccountRow;
 use crate::playlist::HLSPlaylist;
 
 use super::danmu::{DanmuEntry, DanmuStorage};
-use super::entry::TsEntry;
 use chrono::{TimeZone, Utc};
 use client::{BiliClient, BiliStream, RoomInfo, StreamType, UserInfo};
-use dashmap::DashMap;
 use errors::BiliClientError;
 use felgens::{ws_socket_object, FelgensError, WsStreamMessageType};
-use m3u8_rs::{ExtTag, MediaSegment, Playlist};
+use m3u8_rs::Playlist;
 use rand::Rng;
-use regex::Regex;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Url};
 use tauri_plugin_notification::NotificationExt;
+use tokio::fs::File;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::sync::{Mutex, RwLock};
 
@@ -49,7 +49,7 @@ pub struct BiliRecorder {
     pub live_status: Arc<RwLock<bool>>,
     pub live_id: Arc<RwLock<String>>,
     pub cover: Arc<RwLock<Option<String>>>,
-    pub entry_store: Arc<RwLock<Option<EntryStore>>>,
+    pub hls_playlist: Arc<RwLock<Option<HLSPlaylist>>>,
     pub is_recording: Arc<RwLock<bool>>,
     pub auto_start: Arc<RwLock<bool>>,
     pub current_record: Arc<RwLock<bool>>,
@@ -58,7 +58,6 @@ pub struct BiliRecorder {
     quit: Arc<Mutex<bool>>,
     pub live_stream: Arc<RwLock<Option<BiliStream>>>,
     danmu_storage: Arc<RwLock<Option<DanmuStorage>>>,
-    m3u8_cache: DashMap<String, String>,
 }
 
 impl From<DatabaseError> for super::errors::RecorderError {
@@ -109,7 +108,7 @@ impl BiliRecorder {
             room_info: Arc::new(RwLock::new(room_info)),
             user_info: Arc::new(RwLock::new(user_info)),
             live_status: Arc::new(RwLock::new(live_status)),
-            entry_store: Arc::new(RwLock::new(None)),
+            hls_playlist: Arc::new(RwLock::new(None)),
             is_recording: Arc::new(RwLock::new(false)),
             auto_start: Arc::new(RwLock::new(auto_start)),
             current_record: Arc::new(RwLock::new(false)),
@@ -120,14 +119,13 @@ impl BiliRecorder {
             quit: Arc::new(Mutex::new(false)),
             live_stream: Arc::new(RwLock::new(None)),
             danmu_storage: Arc::new(RwLock::new(None)),
-            m3u8_cache: DashMap::new(),
         };
         log::info!("Recorder for room {} created.", room_id);
         Ok(recorder)
     }
 
     pub async fn reset(&self) {
-        *self.entry_store.write().await = None;
+        *self.hls_playlist.write().await = None;
         *self.live_id.write().await = String::new();
         *self.live_stream.write().await = None;
         *self.last_update.write().await = Utc::now().timestamp();
@@ -143,6 +141,7 @@ impl BiliRecorder {
     }
 
     async fn check_status(&self) -> bool {
+        log::debug!("[{}]Check status", self.room_id);
         match self
             .client
             .read()
@@ -263,8 +262,48 @@ impl BiliRecorder {
                 }
 
                 if *self.current_record.read().await {
-                    *self.live_stream.write().await = Some(stream);
+                    let live_id = stream.live_time.to_string();
+                    let real_stream = self.fetch_real_stream(stream).await;
+                    match real_stream {
+                        Ok(stream) => {
+                            log::info!("[{}]Fetched stream: {}", self.room_id, stream);
+                            *self.live_stream.write().await = Some(stream.clone());
+                        }
+                        Err(e) => {
+                            log::error!("[{}]Fetch stream failed: {}", self.room_id, e);
+                            *self.live_stream.write().await = None;
+
+                            return true;
+                        }
+                    }
+
                     *self.last_update.write().await = Utc::now().timestamp();
+
+                    let _ = self
+                        .db
+                        .add_record(
+                            PlatformType::BiliBili,
+                            &live_id,
+                            self.room_id,
+                            &self.room_info.read().await.room_title,
+                            self.cover.read().await.clone(),
+                            None,
+                        )
+                        .await;
+
+                    *self.live_id.write().await = live_id.to_string();
+
+                    let playlist = self.load_previous_playlist(&live_id).await;
+                    if let Some(playlist) = &playlist {
+                        if let Err(e) = self.update_stream_header(playlist).await {
+                            log::error!("[{}]Update stream header failed: {}", self.room_id, e);
+                        }
+                    }
+                    *self.hls_playlist.write().await = playlist;
+
+                    let work_dir = self.get_work_dir(&live_id).await;
+                    let danmu_file_path = Path::new(&work_dir).join("danmu.txt");
+                    *self.danmu_storage.write().await = DanmuStorage::new(&danmu_file_path).await;
 
                     return true;
                 }
@@ -276,6 +315,76 @@ impl BiliRecorder {
                 // may encouter internet issues, not sure whether the stream is closed or started, just remain
                 *self.live_status.read().await
             }
+        }
+    }
+
+    async fn load_previous_playlist(&self, live_id: &str) -> Option<HLSPlaylist> {
+        // first: check existed playlist file
+        let work_dir = self.get_work_dir(live_id).await;
+        let playlist_filepath = Path::new(&work_dir).join("index.m3u8");
+        let file = File::open(&playlist_filepath).await;
+        if let Err(e) = file {
+            log::warn!("Local index.m3u8 open failed: {}", e);
+
+            log::info!("Load playlist from entry store");
+            let playlist = self.load_playlist_from_entrystore(live_id).await;
+            if playlist.is_some() {
+                // write playlist to file
+                let mut file = File::create(&playlist_filepath).await.unwrap();
+                let playlist = playlist.clone().unwrap();
+                let playlist_content = playlist.to_string();
+                file.write_all(playlist_content.as_bytes()).await.unwrap();
+                file.flush().await.unwrap();
+                // close file
+                drop(file);
+                log::info!(
+                    "Generate entrystore playlist to file: {}",
+                    playlist_filepath.display()
+                );
+            }
+
+            return playlist;
+        }
+
+        let mut file = file.unwrap();
+        let mut playlist_content = String::new();
+        let _ = file.read_to_string(&mut playlist_content).await;
+
+        let playlist = m3u8_rs::parse_playlist_res(playlist_content.as_bytes());
+        if let Err(e) = playlist {
+            log::error!("Parse local playlist failed: {}", e,);
+            log::error!("Playlist content: {}", playlist_content);
+
+            return None;
+        }
+
+        let playlist = playlist.unwrap();
+        match playlist {
+            Playlist::MediaPlaylist(p) => Some(HLSPlaylist::from(&p)),
+            Playlist::MasterPlaylist(_) => None,
+        }
+    }
+
+    async fn load_playlist_from_entrystore(&self, live_id: &str) -> Option<HLSPlaylist> {
+        let work_dir = self.get_work_dir(live_id).await;
+        let entry_store = EntryStore::new(&work_dir).await;
+        if entry_store.get_entries().is_empty() {
+            None
+        } else {
+            Some(entry_store.to_hls_playlist(PlatformType::BiliBili, self.room_id, live_id, false))
+        }
+    }
+
+    async fn save_playlist(&self) {
+        let work_dir = self.get_work_dir(&self.live_id.read().await).await;
+        let playlist_filepath = Path::new(&work_dir).join("index.m3u8");
+        if let Some(playlist) = self.hls_playlist.read().await.as_ref() {
+            let mut file = File::create(&playlist_filepath).await.unwrap();
+            let playlist_content = playlist.output(true);
+            file.write_all(playlist_content.as_bytes()).await.unwrap();
+            file.flush().await.unwrap();
+            // close file
+            drop(file);
         }
     }
 
@@ -317,6 +426,8 @@ impl BiliRecorder {
                     // save danmu
                     if let Some(storage) = self.danmu_storage.write().await.as_ref() {
                         storage.add_line(msg.timestamp, &msg.msg).await;
+                    } else {
+                        log::error!("Danmu storage not privided");
                     }
                 }
             }
@@ -359,12 +470,10 @@ impl BiliRecorder {
         }
     }
 
-    async fn get_header_url(&self) -> Result<String, super::errors::RecorderError> {
-        let stream = self.live_stream.read().await.clone();
-        if stream.is_none() {
-            return Err(super::errors::RecorderError::NoStreamAvailable);
-        }
-        let stream = stream.unwrap();
+    async fn fetch_real_stream(
+        &self,
+        stream: BiliStream,
+    ) -> Result<BiliStream, super::errors::RecorderError> {
         let index_content = self
             .client
             .read()
@@ -381,48 +490,61 @@ impl BiliRecorder {
         }
         if index_content.contains("BANDWIDTH") {
             // this index content provides another m3u8 url
-            // example: https://765b047cec3b099771d4b1851136046f.v.smtcdns.net/d1--cn-gotcha204-3.bilivideo.com/live-bvc/246284/live_1323355750_55526594/index.m3u8?expires=1741318366&len=0&oi=1961017843&pt=h5&qn=10000&trid=1007049a5300422eeffd2d6995d67b67ca5a&sigparams=cdn,expires,len,oi,pt,qn,trid&cdn=cn-gotcha204&sign=7ef1241439467ef27d3c804c1eda8d4d&site=1c89ef99adec13fab3a3592ee4db26d3&free_type=0&mid=475210&sche=ban&bvchls=1&trace=16&isp=ct&rg=East&pv=Shanghai&source=puv3_onetier&p2p_type=-1&score=1&suffix=origin&deploy_env=prod&flvsk=e5c4d6fb512ed7832b706f0a92f7a8c8&sk=246b3930727a89629f17520b1b551a2f&pp=rtmp&hot_cdn=57345&origin_bitrate=657300&sl=1&info_source=cache&vd=bc&src=puv3&order=1&TxLiveCode=cold_stream&TxDispType=3&svr_type=live_oc&tencent_test_client_ip=116.226.193.243&dispatch_from=OC_MGR61.170.74.11&utime=1741314857497
             let new_url = index_content.lines().last().unwrap();
             let base_url = new_url.split('/').next().unwrap();
             let host = base_url.split('/').next().unwrap();
             // extra is params after index.m3u8
             let extra = new_url.split(base_url).last().unwrap();
-            let stream = BiliStream::new(StreamType::FMP4, base_url, host, extra);
+            let stream = BiliStream::new(stream.live_time, StreamType::FMP4, base_url, host, extra);
             log::info!("Update stream: {}", stream);
-            *self.live_stream.write().await = Some(stream);
-            return Box::pin(self.get_header_url()).await;
+            return Box::pin(self.fetch_real_stream(stream)).await;
         }
-        let mut header_url = String::from("");
-        let re = Regex::new(r"h.*\.m4s").unwrap();
-        if let Some(captures) = re.captures(&index_content) {
-            header_url = captures.get(0).unwrap().as_str().to_string();
-        }
-        if header_url.is_empty() {
-            log::warn!("Parse header url failed: {}", index_content);
-        }
-        Ok(header_url)
+        Ok(stream)
     }
 
-    async fn extract_liveid(&self, header_url: &str) -> i64 {
-        log::debug!("[{}]Extract liveid from {}", self.room_id, header_url);
-        let re = Regex::new(r"h(\d+).m4s").unwrap();
-        if let Some(cap) = re.captures(header_url) {
-            let liveid: i64 = cap.get(1).unwrap().as_str().parse().unwrap();
-            *self.live_id.write().await = liveid.to_string();
-            liveid
-        } else {
-            log::error!("Extract liveid failed: {}", header_url);
-            0
-        }
+    async fn get_work_dir(&self, live_id: &str) -> PathBuf {
+        let cache_dir = self.config.read().await.cache.clone();
+        Path::new(&cache_dir)
+            .join("bilibili")
+            .join(self.room_id.to_string())
+            .join(live_id)
     }
 
-    async fn get_work_dir(&self, live_id: &str) -> String {
-        format!(
-            "{}/bilibili/{}/{}/",
-            self.config.read().await.cache,
-            self.room_id,
-            live_id
-        )
+    async fn update_stream_header(
+        &self,
+        playlist: &HLSPlaylist,
+    ) -> Result<(), super::errors::RecorderError> {
+        let header_path = playlist.get_header();
+        if header_path.is_none() {
+            return Ok(());
+        }
+        let header_path = header_path.unwrap();
+        let current_stream = self.live_stream.read().await.clone();
+        if current_stream.is_none() {
+            return Ok(());
+        }
+        let current_stream = current_stream.unwrap();
+        let timestamp: i64 = self.live_id.read().await.parse::<i64>().unwrap_or(0);
+        let work_dir = self.get_work_dir(timestamp.to_string().as_str()).await;
+        let header_url = current_stream.ts_url(&header_path);
+        if Url::parse(&header_url).is_err() {
+            log::error!("Header url is invalid. header_url={}", header_url);
+            return Err(super::errors::RecorderError::EmptyHeader);
+        }
+        let header_filename = header_path.split('/').last().unwrap_or(&header_path);
+        let header_full_path = work_dir.join(header_filename);
+        if header_full_path.exists() {
+            log::info!("Header file already exists: {}", header_full_path.display());
+            return Ok(());
+        }
+        log::info!("Download header file: {}", header_full_path.display());
+        self.client
+            .read()
+            .await
+            .download_ts(&header_url, &header_full_path)
+            .await?;
+
+        Ok(())
     }
 
     async fn update_entries(&self) -> Result<u128, super::errors::RecorderError> {
@@ -433,102 +555,42 @@ impl BiliRecorder {
         }
         let current_stream = current_stream.unwrap();
         let parsed = self.get_playlist().await;
-        let mut timestamp: i64 = self.live_id.read().await.parse::<i64>().unwrap_or(0);
-        let mut work_dir = self.get_work_dir(timestamp.to_string().as_str()).await;
-        // Check header if None
-        if (self.entry_store.read().await.as_ref().is_none()
-            || self
-                .entry_store
-                .read()
-                .await
-                .as_ref()
-                .unwrap()
-                .get_header()
-                .is_none())
-            && current_stream.format == StreamType::FMP4
-        {
-            // Get url from EXT-X-MAP
-            let header_url = self.get_header_url().await?;
-            if header_url.is_empty() {
-                return Err(super::errors::RecorderError::EmptyHeader);
-            }
-            timestamp = self.extract_liveid(&header_url).await;
-            if timestamp == 0 {
-                log::error!("[{}]Parse timestamp failed: {}", self.room_id, header_url);
-                return Err(super::errors::RecorderError::InvalidTimestamp);
-            }
-            self.db
-                .add_record(
-                    PlatformType::BiliBili,
-                    timestamp.to_string().as_str(),
-                    self.room_id,
-                    &self.room_info.read().await.room_title,
-                    self.cover.read().await.clone(),
-                    None,
-                )
-                .await?;
-            // now work dir is confirmed
-            work_dir = self.get_work_dir(timestamp.to_string().as_str()).await;
+        let timestamp: i64 = self.live_id.read().await.parse::<i64>().unwrap_or(0);
+        let work_dir = self.get_work_dir(timestamp.to_string().as_str()).await;
 
-            let entry_store = EntryStore::new(&work_dir).await;
-            *self.entry_store.write().await = Some(entry_store);
-
-            // danmau file
-            let danmu_file_path = format!("{}{}", work_dir, "danmu.txt");
-            *self.danmu_storage.write().await = DanmuStorage::new(&danmu_file_path).await;
-            let full_header_url = current_stream.ts_url(&header_url);
-            let file_name = header_url.split('/').last().unwrap();
-            let mut header = TsEntry {
-                url: file_name.to_string(),
-                sequence: 0,
-                length: 0.0,
-                size: 0,
-                ts: timestamp,
-                is_header: true,
-            };
-            // Download header
-            match self
-                .client
-                .read()
-                .await
-                .download_ts(&full_header_url, &format!("{}/{}", work_dir, file_name))
-                .await
-            {
-                Ok(size) => {
-                    header.size = size;
-                    self.entry_store
-                        .write()
-                        .await
-                        .as_mut()
-                        .unwrap()
-                        .add_entry(header)
-                        .await;
-                }
-                Err(e) => {
-                    log::error!("Download header failed: {}", e);
-                }
-            }
-        }
         match parsed {
             Ok(Playlist::MasterPlaylist(pl)) => log::debug!("Master playlist:\n{:?}", pl),
             Ok(Playlist::MediaPlaylist(pl)) => {
-                let mut new_segment_fetched = false;
-                let mut sequence = pl.media_sequence;
+                let mut new_segment_size = 0;
+                if self.hls_playlist.read().await.is_none() {
+                    let mut new_playlist = HLSPlaylist::from(&pl);
+                    self.update_stream_header(&new_playlist).await?;
+                    new_playlist.setup_danmu_offset_info();
+                    new_playlist.segments.clear();
+                    *self.hls_playlist.write().await = Some(new_playlist);
+                    log::info!("New playlist created");
+                    self.save_playlist().await;
+                }
+
                 let last_sequence = self
-                    .entry_store
+                    .hls_playlist
                     .read()
                     .await
                     .as_ref()
                     .unwrap()
-                    .last_sequence();
-                for ts in pl.segments {
-                    if sequence <= last_sequence {
-                        sequence += 1;
+                    .last_sequence()
+                    .unwrap_or(0);
+
+                let media_sequence = pl.media_sequence;
+
+                for (i, ts) in pl.segments.iter().enumerate() {
+                    let current_sequence = media_sequence + i as u64;
+                    // skip this entry if it is already in cache
+                    if current_sequence <= last_sequence {
                         continue;
                     }
-                    new_segment_fetched = true;
                     let mut seg_offset: i64 = 0;
-                    for tag in ts.unknown_tags {
+                    for tag in ts.unknown_tags.clone() {
                         if tag.tag == "BILI-AUX" {
                             if let Some(rest) = tag.rest {
                                 let parts: Vec<&str> = rest.split('|').collect();
@@ -541,24 +603,15 @@ impl BiliRecorder {
                             break;
                         }
                     }
+
                     let ts_url = current_stream.ts_url(&ts.uri);
                     if Url::parse(&ts_url).is_err() {
                         log::error!("Ts url is invalid. ts_url={} original={}", ts_url, ts.uri);
                         continue;
                     }
-                    // encode segment offset into filename
-                    let file_name = ts.uri.split('/').last().unwrap_or(&ts.uri);
-                    let mut ts_length = pl.target_duration as f64;
-                    let ts = timestamp * 1000 + seg_offset;
-                    // calculate entry length using offset
-                    // the default #EXTINF is 1.0, which is not accurate
-                    if let Some(last) = self.entry_store.read().await.as_ref().unwrap().last_ts() {
-                        // skip this entry as it is already in cache or stream changed
-                        if ts <= last {
-                            continue;
-                        }
-                        ts_length = (ts - last) as f64 / 1000.0;
-                    }
+
+                    let ts_filename = ts.uri.split('/').last().unwrap_or(&ts.uri);
+                    let ts_timestamp = timestamp * 1000 + seg_offset;
 
                     let client = self.client.clone();
                     let mut retry = 0;
@@ -570,24 +623,34 @@ impl BiliRecorder {
                         match client
                             .read()
                             .await
-                            .download_ts(&ts_url, &format!("{}/{}", work_dir, file_name))
+                            .download_ts(&ts_url, &work_dir.join(ts_filename))
                             .await
                         {
                             Ok(size) => {
-                                self.entry_store
+                                new_segment_size += size;
+
+                                log::debug!(
+                                    "[{}]Download segment: {}",
+                                    self.room_id,
+                                    current_sequence
+                                );
+                                let mut new_segment = ts.clone();
+                                new_segment.program_date_time =
+                                    Some(Utc.timestamp_opt(ts_timestamp / 1000, 0).unwrap().into());
+                                self.hls_playlist
                                     .write()
                                     .await
                                     .as_mut()
                                     .unwrap()
-                                    .add_entry(TsEntry {
-                                        url: file_name.into(),
-                                        sequence,
-                                        length: ts_length,
-                                        size,
-                                        ts,
-                                        is_header: false,
-                                    })
-                                    .await;
+                                    .append_segement(new_segment);
+
+                                self.hls_playlist
+                                    .write()
+                                    .await
+                                    .as_mut()
+                                    .unwrap()
+                                    .update_last_sequence(current_sequence);
+
                                 break;
                             }
                             Err(e) => {
@@ -596,38 +659,33 @@ impl BiliRecorder {
                             }
                         }
                     }
-
-                    sequence += 1;
                 }
 
-                if new_segment_fetched {
+                if new_segment_size > 0 {
                     *self.last_update.write().await = Utc::now().timestamp();
+                    // total length is the offset of the last segment - the offset of the first segment
+                    let total_length = self
+                        .hls_playlist
+                        .read()
+                        .await
+                        .as_ref()
+                        .unwrap()
+                        .total_duration();
+                    // update record in database
                     self.db
                         .update_record(
                             timestamp.to_string().as_str(),
-                            self.entry_store
-                                .read()
-                                .await
-                                .as_ref()
-                                .unwrap()
-                                .total_duration() as i64,
-                            self.entry_store.read().await.as_ref().unwrap().total_size(),
+                            total_length as i64,
+                            new_segment_size,
                         )
                         .await?;
+
+                    self.save_playlist().await;
                 } else {
                     // if index content is not changed for a long time, we should return a error to fetch a new stream
                     if *self.last_update.read().await < Utc::now().timestamp() - 10 {
                         log::error!("Stream content is not updating for 10s, maybe not started yet or not closed properly.");
                         return Err(super::errors::RecorderError::FreezedStream {
-                            stream: current_stream,
-                        });
-                    }
-                }
-                // check the current stream is too slow or not
-                if let Some(last_ts) = self.entry_store.read().await.as_ref().unwrap().last_ts() {
-                    if last_ts < Utc::now().timestamp() - 10 {
-                        log::error!("Stream is too slow, last entry ts is at {}", last_ts);
-                        return Err(super::errors::RecorderError::SlowStream {
                             stream: current_stream,
                         });
                     }
@@ -657,144 +715,6 @@ impl BiliRecorder {
         }
 
         Ok(task_begin_time.elapsed().as_millis())
-    }
-
-    async fn generate_archive_playlist(&self, live_id: &str, start: i64, end: i64) -> String {
-        let range_required = start != 0 || end != 0;
-        if range_required {
-            log::info!("Generate archive m3u8 for range [{}, {}]", start, end);
-        }
-
-        let mut playlist = HLSPlaylist::new();
-        playlist.version = 6;
-        playlist.target_duration = 1.0;
-        // add entries from read_dir
-        let work_dir = self.get_work_dir(live_id).await;
-        let entry_store = EntryStore::new(&work_dir).await;
-        let entries = entry_store.get_entries().clone();
-        if entries.is_empty() {
-            return playlist.to_string();
-        }
-
-        if let Some(header) = entry_store.get_header() {
-            let header_url = format!("/bilibili/{}/{}/{}", self.room_id, live_id, header.url);
-            playlist.extra_tags.push(ExtTag {
-                tag: "X-MAP".to_string(),
-                rest: Some(format!("URI=\"{}\"", header_url)),
-            })
-        }
-
-        let live_ts = live_id.parse::<i64>().unwrap();
-        playlist.extra_tags.push(ExtTag {
-            tag: "X-OFFSET".to_string(),
-            rest: Some(((entries.first().unwrap().ts - live_ts * 1000) / 1000).to_string()),
-        });
-
-        let mut last_sequence = entries.first().unwrap().sequence;
-        let mut first_entry_ts = None;
-        for e in entries {
-            // ignore header, cause it's already in EXT-X-MAP
-            if e.is_header {
-                continue;
-            }
-            if first_entry_ts.is_none() {
-                first_entry_ts = Some(e.ts / 1000);
-            }
-            let entry_offset = e.ts / 1000 - first_entry_ts.unwrap();
-            if range_required && (entry_offset < start || entry_offset > end) {
-                continue;
-            }
-            let mut segment = MediaSegment::default();
-            let current_seq = e.sequence;
-            if current_seq - last_sequence > 1 {
-                segment.discontinuity = true;
-            }
-            // add #EXT-X-PROGRAM-DATE-TIME with ISO 8601 date
-            let ts = e.ts / 1000;
-            segment.program_date_time = Some(Utc.timestamp_opt(ts, 0).unwrap().into());
-            segment.duration = e.length as f32;
-            segment.uri = format!("/bilibili/{}/{}/{}\n", self.room_id, live_id, e.url);
-
-            playlist.segments.push(segment);
-
-            last_sequence = current_seq;
-        }
-
-        playlist.to_string()
-    }
-
-    /// if fetching live/last stream m3u8, all entries are cached in memory, so it will be much faster than read_dir
-    async fn generate_live_m3u8(&self, start: i64, end: i64) -> String {
-        let range_required = start != 0 || end != 0;
-        if range_required {
-            log::info!("Generate live m3u8 for range [{}, {}]", start, end);
-        }
-
-        let live_status = *self.live_status.read().await;
-        let mut m3u8_content = "#EXTM3U\n".to_string();
-        m3u8_content += "#EXT-X-VERSION:6\n";
-        m3u8_content += "#EXT-X-TARGETDURATION:1\n";
-        m3u8_content += "#EXT-X-SERVER-CONTROL:HOLD-BACK:3\n";
-        // if stream is closed, switch to VOD
-        if live_status && !range_required {
-            m3u8_content += "#EXT-X-PLAYLIST-TYPE:EVENT\n";
-        } else {
-            m3u8_content += "#EXT-X-PLAYLIST-TYPE:VOD\n";
-        }
-        let live_id = self.live_id.read().await.clone();
-        // initial segment for fmp4, info from self.header
-        if let Some(header) = self.entry_store.read().await.as_ref().unwrap().get_header() {
-            let file_name = header.url.split('/').last().unwrap();
-            let local_url = format!("/bilibili/{}/{}/{}", self.room_id, live_id, file_name);
-            m3u8_content += &format!("#EXT-X-MAP:URI=\"{}\"\n", local_url);
-        }
-        let entries = self
-            .entry_store
-            .read()
-            .await
-            .as_ref()
-            .unwrap()
-            .get_entries()
-            .clone();
-        if entries.is_empty() {
-            m3u8_content += "#EXT-X-OFFSET:0\n";
-            return m3u8_content;
-        }
-
-        let mut last_sequence = entries.first().unwrap().sequence;
-
-        // this does nothing, but privide first entry ts for player
-        let live_ts = live_id.parse::<i64>().unwrap();
-        m3u8_content += &format!(
-            "#EXT-X-OFFSET:{}\n",
-            (entries.first().unwrap().ts - live_ts * 1000) / 1000
-        );
-
-        let first_entry_ts = entries.first().unwrap().ts / 1000;
-        for entry in entries.iter() {
-            let entry_offset = entry.ts / 1000 - first_entry_ts;
-            if range_required && (entry_offset < start || entry_offset > end) {
-                continue;
-            }
-            if entry.sequence - last_sequence > 1 {
-                // discontinuity happens
-                m3u8_content += "#EXT-X-DISCONTINUITY\n"
-            }
-            // add #EXT-X-PROGRAM-DATE-TIME with ISO 8601 date
-            let ts = entry.ts / 1000;
-            let date_str = Utc.timestamp_opt(ts, 0).unwrap().to_rfc3339();
-            m3u8_content += &format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", date_str);
-            m3u8_content += &format!("#EXTINF:{:.2},\n", entry.length);
-            last_sequence = entry.sequence;
-            let file_name = entry.url.split('/').last().unwrap();
-            let local_url = format!("/bilibili/{}/{}/{}", self.room_id, live_id, file_name);
-            m3u8_content += &format!("{}\n", local_url);
-        }
-        // let player know stream is closed
-        if !live_status || range_required {
-            m3u8_content += "#EXT-X-ENDLIST";
-        }
-        m3u8_content
     }
 }
 
@@ -863,10 +783,19 @@ impl super::Recorder for BiliRecorder {
 
     /// timestamp is the id of live stream
     async fn m3u8_content(&self, live_id: &str, start: i64, end: i64) -> String {
-        if *self.live_id.read().await == live_id && *self.current_record.read().await {
-            self.generate_live_m3u8(start, end).await
+        if *self.live_id.read().await == live_id {
+            let paused = !*self.current_record.read().await;
+            self.hls_playlist
+                .read()
+                .await
+                .clone()
+                .unwrap_or_else(HLSPlaylist::new)
+                .output(paused)
         } else {
-            self.generate_archive_playlist(live_id, start, end).await
+            self.load_previous_playlist(live_id)
+                .await
+                .unwrap_or_else(HLSPlaylist::new)
+                .output(true)
         }
     }
 
@@ -885,11 +814,12 @@ impl super::Recorder for BiliRecorder {
                 user_name: user_info.user_name.clone(),
                 user_avatar: user_info.user_avatar_url.clone(),
             },
-            total_length: if let Some(store) = self.entry_store.read().await.as_ref() {
-                store.total_duration()
-            } else {
-                0.0
-            },
+            total_length: self
+                .hls_playlist
+                .read()
+                .await
+                .as_ref()
+                .map_or(0.0, |p| p.total_duration()),
             current_live_id: self.live_id.read().await.clone(),
             live_status: *self.live_status.read().await,
             is_recording: *self.is_recording.read().await,
@@ -910,14 +840,9 @@ impl super::Recorder for BiliRecorder {
             }
         } else {
             // load disk cache
-            let cache_file_path = format!(
-                "{}/bilibili/{}/{}/{}",
-                self.config.read().await.cache,
-                self.room_id,
-                live_id,
-                "danmu.txt"
-            );
-            log::info!("loading danmu cache from {}", cache_file_path);
+            let work_dir = self.get_work_dir(live_id).await;
+            let cache_file_path = Path::new(&work_dir).join("danmu.txt");
+            log::info!("loading danmu cache from {:?}", cache_file_path);
             let storage = DanmuStorage::new(&cache_file_path).await;
             if storage.is_none() {
                 return Ok(Vec::new());

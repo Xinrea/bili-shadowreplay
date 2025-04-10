@@ -41,7 +41,7 @@
   // TODO get custom tag from shaka player instead of manual parsing
   async function meta_parse() {
     fetch(
-      `http://127.0.0.1:${port}/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`,
+      `http://127.0.0.1:${port}/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`
     )
       .then((response) => response.text())
       .then((m3u8Content) => {
@@ -123,16 +123,13 @@
 
     try {
       await player.load(
-        `http://127.0.0.1:${port}/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`,
+        `http://127.0.0.1:${port}/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`
       );
       // This runs if the asynchronous load is successful.
       console.log("The video has now been loaded!");
     } catch (error) {
       console.error("Error code", error.code, "object", error);
-      if (error.code == 3000) {
-        // reload
-        location.reload();
-      }
+      alert("加载失败：" + error.code + " " + error);
     }
 
     // init video volume from localStorage
@@ -151,7 +148,7 @@
     document.getElementsByClassName("shaka-fullscreen-button")[0].remove();
     // add self-defined element in shaka-bottom-controls.shaka-no-propagation (second seekbar)
     const shakaBottomControls = document.querySelector(
-      ".shaka-bottom-controls.shaka-no-propagation",
+      ".shaka-bottom-controls.shaka-no-propagation"
     );
     const selfSeekbar = document.createElement("div");
     selfSeekbar.className = "shaka-seek-bar shaka-no-propagation";
@@ -195,7 +192,7 @@
           return;
         }
 
-        const cur = Math.floor((video.currentTime + global_offset + ts) * 1000);
+        const cur = Math.floor((video.currentTime + global_offset) * 1000);
 
         let danmus = danmu_records.filter((v) => {
           return v.ts >= cur - 1000 && v.ts < cur;
@@ -279,7 +276,7 @@
             danmu_displayed[event.payload.ts] = true;
             danmu_records.push(event.payload);
             danmu_handler(event.payload.content);
-          },
+          }
         );
         window.onbeforeunload = () => {
           unlisten();
@@ -570,11 +567,11 @@
     });
 
     const seekbarContainer = selfSeekbar.querySelector(
-      ".shaka-seek-bar-container.self-defined",
+      ".shaka-seek-bar-container.self-defined"
     ) as HTMLElement;
 
     const statisticGraph = document.createElement(
-      "canvas",
+      "canvas"
     ) as HTMLCanvasElement;
     statisticGraph.style.pointerEvents = "none";
     statisticGraph.style.position = "absolute";
@@ -667,7 +664,7 @@
       }%, rgba(255, 255, 255, 0.2) ${first_point * 100}%)`;
       // render markers in shaka-ad-markers
       const adMarkers = document.querySelector(
-        ".shaka-ad-markers",
+        ".shaka-ad-markers"
       ) as HTMLElement;
       if (adMarkers) {
         // clean previous markers
@@ -758,7 +755,7 @@
             go_to(
               recorder.platform,
               recorder.room_id,
-              recorder.current_live_id,
+              recorder.current_live_id
             );
           }}
         >

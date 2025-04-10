@@ -46,6 +46,7 @@ async fn setup_logging(log_dir: &Path) -> Result<(), Box<dyn std::error::Error>>
         .add_filter_ignore_str("hyper")
         .add_filter_ignore_str("sqlx")
         .add_filter_ignore_str("reqwest")
+        .add_filter_ignore_str("h2")
         .build();
 
     simplelog::CombinedLogger::init(vec![

@@ -5,6 +5,8 @@ pub mod errors;
 
 mod entry;
 
+use std::fmt::Display;
+
 use async_trait::async_trait;
 use danmu::DanmuEntry;
 
@@ -37,12 +39,18 @@ impl PlatformType {
     }
 }
 
+impl Display for PlatformType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
 pub struct RecorderInfo {
     pub room_id: u64,
     pub room_info: RoomInfo,
     pub user_info: UserInfo,
-    pub total_length: f64,
+    pub total_length: f32,
     pub current_live_id: String,
     pub live_status: bool,
     pub is_recording: bool,

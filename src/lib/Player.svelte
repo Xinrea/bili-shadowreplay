@@ -33,8 +33,8 @@
 
   // save start and end to localStorage
   function saveStartEnd() {
-    localStorage.setItem("start", (start + focus_start).toString());
-    localStorage.setItem("end", (end + focus_start).toString());
+    localStorage.setItem(`${live_id}_start`, (start + focus_start).toString());
+    localStorage.setItem(`${live_id}_end`, (end + focus_start).toString());
     console.log("Saved start and end", start + focus_start, end + focus_start);
   }
 

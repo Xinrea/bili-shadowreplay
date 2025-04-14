@@ -1,5 +1,6 @@
 pub mod client;
 mod response;
+mod stream_info;
 use super::entry::{EntryStore, TsEntry};
 use super::{
     danmu::DanmuEntry, errors::RecorderError, PlatformType, Recorder, RecorderInfo, RoomInfo,
@@ -241,20 +242,28 @@ impl DouyinRecorder {
         &self,
         room_info: &response::DouyinRoomInfoResponse,
     ) -> Option<String> {
-        let stream_url = room_info.data.data[0]
+        let stream_data = room_info.data.data[0]
             .stream_url
             .as_ref()
             .unwrap()
-            .hls_pull_url_map
+            .live_core_sdk_data
+            .pull_data
+            .stream_data
             .clone();
-        if let Some(url) = stream_url.full_hd1 {
-            Some(url)
-        } else if let Some(url) = stream_url.hd1 {
-            Some(url)
-        } else if let Some(url) = stream_url.sd1 {
-            Some(url)
+        // parse stream_data into stream_info
+        let stream_info = serde_json::from_str::<stream_info::StreamInfo>(&stream_data);
+        if let Ok(stream_info) = stream_info {
+            // find the best stream url
+            if stream_info.data.origin.main.hls.is_empty() {
+                log::error!("No stream url found in stream_data: {}", stream_data);
+                return None;
+            }
+
+            Some(stream_info.data.origin.main.hls)
         } else {
-            stream_url.sd2
+            let err = stream_info.unwrap_err();
+            log::error!("Failed to parse stream data: {} {}", err, stream_data);
+            None
         }
     }
 

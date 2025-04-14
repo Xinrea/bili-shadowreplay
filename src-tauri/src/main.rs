@@ -45,6 +45,7 @@ async fn setup_logging(log_dir: &Path) -> Result<(), Box<dyn std::error::Error>>
         .add_filter_ignore_str("hyper")
         .add_filter_ignore_str("sqlx")
         .add_filter_ignore_str("reqwest")
+        .add_filter_ignore_str("h2")
         .build();
 
     simplelog::CombinedLogger::init(vec![
@@ -186,7 +187,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     // try to rebuild archive table
     let cache_path = config_clone.read().await.cache.clone();
     if let Err(e) = try_rebuild_archives(&db_clone, cache_path.into()).await {
-        log::error!("Error when rebuilding archive table: {}", e);
+        log::warn!("Rebuilding archive table failed: {}", e);
     }
 
     Ok(State {

@@ -371,7 +371,6 @@ impl RecorderManager {
                         let live_id = path_segs[3];
 
                         if path_segs[4] == "playlist.m3u8" {
-                            log::debug!("Playlist request for {} {}", platform, room_id);
                             // get recorder
                             let recorder_key = format!("{}:{}", platform, room_id);
                             let recorders = recorders.read().await;

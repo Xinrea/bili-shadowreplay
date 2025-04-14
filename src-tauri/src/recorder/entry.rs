@@ -160,21 +160,18 @@ impl EntryStore {
             MediaPlaylistType::Vod
         };
 
+        let mut header_tag = None;
+
         if let Some(header) = &self.header {
             let header_url = format!("/{}/{}/{}/{}", platform, room_id, live_id, header.url);
-            playlist.extra_tags.push(ExtTag {
+            header_tag = Some(ExtTag {
                 tag: "X-MAP".to_string(),
                 rest: Some(format!("URI=\"{}\"", header_url)),
             })
         }
 
         let mut last_sequence = self.entries.first().unwrap().sequence;
-        let mut first_entry_ts = None;
         for e in &self.entries {
-            if first_entry_ts.is_none() {
-                first_entry_ts = Some(e.ts / 1000);
-            }
-
             let mut segment = MediaSegment::default();
             let current_seq = e.sequence;
             if current_seq - last_sequence > 1 {
@@ -192,10 +189,15 @@ impl EntryStore {
             last_sequence = current_seq;
         }
 
-        if let Some(first_entry_ts) = first_entry_ts {
-            playlist.extra_tags.push(ExtTag {
+        let first_segment = playlist.segments.first_mut();
+        if let Some(first_segment) = first_segment {
+            if let Some(header_tag) = header_tag {
+                first_segment.unknown_tags.push(header_tag);
+            }
+
+            first_segment.unknown_tags.push(ExtTag {
                 tag: "X-OFFSET".to_string(),
-                rest: Some(format!("{}", first_entry_ts)),
+                rest: Some(format!("{}", self.entries[0].ts)),
             });
         }
 

@@ -565,7 +565,6 @@ impl BiliRecorder {
                 if self.hls_playlist.read().await.is_none() {
                     let mut new_playlist = HLSPlaylist::from(&pl);
                     self.update_stream_header(&new_playlist).await?;
-                    new_playlist.setup_danmu_offset_info();
                     new_playlist.segments.clear();
                     *self.hls_playlist.write().await = Some(new_playlist);
                     log::info!("New playlist created");

@@ -14,7 +14,6 @@ pub struct HLSPlaylist {
     pub media_sequence: u64,
     pub segments: Vec<MediaSegment>,
     pub end_list: bool,
-    pub extra_tags: Vec<ExtTag>,
 }
 
 impl HLSPlaylist {
@@ -26,11 +25,11 @@ impl HLSPlaylist {
             media_sequence: 0,
             segments: Vec::new(),
             end_list: false,
-            extra_tags: Vec::new(),
         }
     }
 
     pub fn from(p: &MediaPlaylist) -> Self {
+        log::debug!("Converting MediaPlaylist to HLSPlaylist: {:?}", p);
         HLSPlaylist {
             version: p.version.unwrap_or(6),
             target_duration: p.target_duration,
@@ -38,7 +37,6 @@ impl HLSPlaylist {
             media_sequence: p.media_sequence,
             segments: p.segments.clone(),
             end_list: p.end_list,
-            extra_tags: p.unknown_tags.clone(),
         }
     }
 
@@ -63,22 +61,18 @@ impl HLSPlaylist {
         self.segments.iter().map(|s| s.duration).sum()
     }
 
-    pub fn last_segment_time(&self) -> i64 {
-        if let Some(last) = self.segments.last() {
-            last.program_date_time.map(|dt| dt.timestamp()).unwrap_or(0)
-        } else {
-            0
-        }
-    }
-
     pub fn setup_danmu_offset_info(&mut self) {
-        if let Some(first_segment) = self.segments.first() {
+        if let Some(first_segment) = self.segments.first_mut() {
             if let Some(ts) = first_segment.program_date_time {
-                if self.extra_tags.iter().any(|tag| tag.tag == "X-OFFSET") {
+                if first_segment
+                    .unknown_tags
+                    .iter()
+                    .any(|tag| tag.tag == "X-OFFSET")
+                {
                     log::debug!("X-OFFSET already exists");
                     return;
                 }
-                self.extra_tags.push(ExtTag {
+                first_segment.unknown_tags.push(ExtTag {
                     tag: "X-OFFSET".to_string(),
                     rest: Some(format!("{}", ts.timestamp())),
                 });
@@ -87,29 +81,34 @@ impl HLSPlaylist {
     }
 
     pub fn update_last_sequence(&mut self, seq: u64) {
-        if let Some(tag) = self
-            .extra_tags
-            .iter_mut()
-            .find(|tag| tag.tag == "X-LASTSEQ")
-        {
-            tag.rest = Some(format!("{}", seq));
-        } else {
-            self.extra_tags.push(ExtTag {
-                tag: "X-LASTSEQ".to_string(),
-                rest: Some(format!("{}", seq)),
-            });
+        if let Some(first_segment) = self.segments.first_mut() {
+            if !first_segment
+                .unknown_tags
+                .iter()
+                .any(|tag| tag.tag == "X-LASTSEQ")
+            {
+                first_segment.unknown_tags.push(ExtTag {
+                    tag: "X-LASTSEQ".to_string(),
+                    rest: Some(format!("{}", seq)),
+                });
+            } else {
+                for tag in &mut first_segment.unknown_tags {
+                    if tag.tag == "X-LASTSEQ" {
+                        tag.rest = Some(format!("{}", seq));
+                    }
+                }
+            }
         }
     }
 
     pub fn last_sequence(&self) -> Option<u64> {
-        // find last_sequence in extra_tags
-        for tag in &self.extra_tags {
-            if tag.tag == "X-LASTSEQ" {
-                if let Some(rest) = &tag.rest {
-                    if let Ok(seq) = rest.parse::<u64>() {
-                        return Some(seq);
-                    }
-                }
+        if let Some(first_segment) = self.segments.first() {
+            if let Some(tag) = first_segment
+                .unknown_tags
+                .iter()
+                .find(|tag| tag.tag == "X-LASTSEQ")
+            {
+                return tag.rest.as_ref().and_then(|s| s.parse::<u64>().ok());
             }
         }
 
@@ -123,6 +122,7 @@ impl HLSPlaylist {
         } else {
             MediaPlaylistType::Event
         };
+        playlist.setup_danmu_offset_info();
         playlist.end_list = end;
 
         playlist.to_string()
@@ -138,10 +138,11 @@ impl Display for HLSPlaylist {
             self.target_duration as i64
         ))?;
         f.write_str(&format!("#EXT-X-PLAYLIST-TYPE:{}\n", self.playlist_type))?;
-        f.write_str(&format!("#EXT-X-MEDIA-SEQUENCE:{}\n", self.media_sequence))?;
-        for tag in &self.extra_tags {
-            f.write_str(&format!("{}\n", tag))?;
-        }
+        f.write_str(&format!(
+            "#EXT-X-MEDIA-SEQUENCE:{}\n\n",
+            self.media_sequence
+        ))?;
+
         for segment in &self.segments {
             let mut seg_str = vec![];
             if let Err(e) = segment_format(segment, &mut seg_str) {

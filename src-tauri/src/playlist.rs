@@ -69,9 +69,9 @@ impl HLSPlaylist {
                     .iter()
                     .any(|tag| tag.tag == "X-OFFSET")
                 {
-                    log::debug!("X-OFFSET already exists");
                     return;
                 }
+                log::info!("Setting up danmu offset info: {}", ts);
                 first_segment.unknown_tags.push(ExtTag {
                     tag: "X-OFFSET".to_string(),
                     rest: Some(format!("{}", ts.timestamp())),

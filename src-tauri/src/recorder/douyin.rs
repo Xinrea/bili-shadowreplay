@@ -1,21 +1,25 @@
 pub mod client;
 mod response;
-use super::entry::{EntryStore, TsEntry};
+use super::entry::EntryStore;
 use super::{
     danmu::DanmuEntry, errors::RecorderError, PlatformType, Recorder, RecorderInfo, RoomInfo,
     UserInfo,
 };
 use crate::database::Database;
+use crate::playlist::HLSPlaylist;
 use crate::{config::Config, database::account::AccountRow};
 use async_trait::async_trait;
-use chrono::{TimeZone, Utc};
+use chrono::Utc;
 use client::DouyinClientError;
 use dashmap::DashMap;
+use m3u8_rs::Playlist;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::AppHandle;
 use tauri_plugin_notification::NotificationExt;
+use tokio::fs::File;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -44,7 +48,7 @@ pub struct DouyinRecorder {
     pub room_id: u64,
     pub room_info: Arc<RwLock<Option<response::DouyinRoomInfoResponse>>>,
     pub stream_url: Arc<RwLock<Option<String>>>,
-    pub entry_store: Arc<RwLock<Option<EntryStore>>>,
+    pub hls_playlist: Arc<RwLock<Option<HLSPlaylist>>>,
     pub live_id: Arc<RwLock<String>>,
     pub live_status: Arc<RwLock<LiveStatus>>,
     is_recording: Arc<RwLock<bool>>,
@@ -77,7 +81,7 @@ impl DouyinRecorder {
             db: db.clone(),
             room_id,
             live_id: Arc::new(RwLock::new(String::new())),
-            entry_store: Arc::new(RwLock::new(None)),
+            hls_playlist: Arc::new(RwLock::new(None)),
             client,
             room_info: Arc::new(RwLock::new(Some(room_info))),
             stream_url: Arc::new(RwLock::new(None)),
@@ -178,7 +182,8 @@ impl DouyinRecorder {
                         .hls_pull_url
                         .is_empty()
                     {
-                        *self.live_id.write().await = info.data.data[0].id_str.clone();
+                        let live_id = info.data.data[0].id_str.clone();
+                        *self.live_id.write().await = live_id.clone();
                         // create a new record
                         let cover_url = info.data.data[0]
                             .cover
@@ -205,10 +210,9 @@ impl DouyinRecorder {
                             log::error!("Failed to add record: {}", e);
                         }
 
-                        // setup entry store
-                        let work_dir = self.get_work_dir(self.live_id.read().await.as_str()).await;
-                        let entry_store = EntryStore::new(&work_dir).await;
-                        *self.entry_store.write().await = Some(entry_store);
+                        // setup playlist
+                        let playlist = self.load_previous_playlist(&live_id).await;
+                        *self.hls_playlist.write().await = playlist;
                     }
 
                     return true;
@@ -223,8 +227,71 @@ impl DouyinRecorder {
         }
     }
 
+    async fn load_previous_playlist(&self, live_id: &str) -> Option<HLSPlaylist> {
+        // first: check existed playlist file
+        let work_dir = self.get_work_dir(live_id).await;
+        let playlist_filepath = Path::new(&work_dir).join("index.m3u8");
+        let file = File::open(&playlist_filepath).await;
+        if let Err(e) = file {
+            log::warn!("Local index.m3u8 open failed: {}", e);
+
+            log::info!("Load playlist from entry store");
+            let playlist = self.load_playlist_from_entrystore(live_id).await;
+            if playlist.is_some() {
+                // write playlist to file
+                let mut file = File::create(&playlist_filepath).await.unwrap();
+                let playlist = playlist.clone().unwrap();
+                let playlist_content = playlist.to_string();
+                file.write_all(playlist_content.as_bytes()).await.unwrap();
+                file.flush().await.unwrap();
+                // close file
+                drop(file);
+                log::info!(
+                    "Generate entrystore playlist to file: {}",
+                    playlist_filepath.display()
+                );
+            }
+
+            return playlist;
+        }
+
+        let mut file = file.unwrap();
+        let mut playlist_content = String::new();
+        let _ = file.read_to_string(&mut playlist_content).await;
+
+        let playlist = m3u8_rs::parse_playlist_res(playlist_content.as_bytes());
+        if let Err(e) = playlist {
+            log::error!("Parse local playlist failed: {}", e,);
+            log::error!("Playlist content: {}", playlist_content);
+
+            return None;
+        }
+
+        let playlist = playlist.unwrap();
+        match playlist {
+            Playlist::MediaPlaylist(p) => Some(HLSPlaylist::from(&p)),
+            Playlist::MasterPlaylist(_) => None,
+        }
+    }
+
+    async fn load_playlist_from_entrystore(&self, live_id: &str) -> Option<HLSPlaylist> {
+        let work_dir = self.get_work_dir(live_id).await;
+        let entry_store = EntryStore::new(&work_dir).await;
+        if entry_store.is_none() {
+            log::error!("Entry store not found");
+            return None;
+        }
+
+        let entry_store = entry_store.unwrap();
+        if entry_store.get_entries().is_empty() {
+            None
+        } else {
+            Some(entry_store.to_hls_playlist(PlatformType::BiliBili, self.room_id, live_id, false))
+        }
+    }
+
     async fn reset(&self) {
-        *self.entry_store.write().await = None;
+        *self.hls_playlist.write().await = None;
         *self.live_id.write().await = String::new();
         *self.last_update.write().await = Utc::now().timestamp();
     }
@@ -289,25 +356,25 @@ impl DouyinRecorder {
         // Create work directory if not exists
         tokio::fs::create_dir_all(&work_dir).await?;
 
-        let last_sequence = self
-            .entry_store
-            .read()
-            .await
-            .as_ref()
-            .unwrap()
-            .last_sequence();
-        let continue_sequence = self
-            .entry_store
-            .read()
-            .await
-            .as_ref()
-            .unwrap()
-            .continue_sequence;
-        let mut sequence = playlist.media_sequence + continue_sequence;
+        if self.hls_playlist.read().await.is_none() {
+            let mut new_playlist = HLSPlaylist::from(&playlist);
+            new_playlist.segments.clear();
+            *self.hls_playlist.write().await = Some(new_playlist);
+        }
 
-        for segment in playlist.segments {
-            if sequence <= last_sequence {
-                sequence += 1;
+        let last_sequence = self
+            .hls_playlist
+            .read()
+            .await
+            .as_ref()
+            .unwrap()
+            .last_sequence()
+            .unwrap_or(0);
+
+        let mut new_segment_size = 0;
+        for (i, segment) in playlist.segments.iter().enumerate() {
+            let current_sequence = playlist.media_sequence + i as u64;
+            if current_sequence <= last_sequence {
                 continue;
             }
 
@@ -332,7 +399,7 @@ impl DouyinRecorder {
                 format!("{}{}{}", base_url, uri, query)
             };
 
-            let file_name = format!("{}.ts", sequence);
+            let file_name = format!("{}.ts", current_sequence);
 
             // Download segment
             match self
@@ -341,111 +408,66 @@ impl DouyinRecorder {
                 .await
             {
                 Ok(size) => {
-                    let ts_entry = TsEntry {
-                        url: file_name,
-                        sequence,
-                        length: segment.duration as f64,
-                        size,
-                        ts: Utc::now().timestamp(),
-                        is_header: false,
-                    };
+                    new_segment_size += size;
 
-                    self.entry_store
+                    let mut new_segment = segment.clone();
+                    new_segment.program_date_time = Some(Utc::now().into());
+                    new_segment.uri = file_name;
+                    self.hls_playlist
                         .write()
                         .await
                         .as_mut()
                         .unwrap()
-                        .add_entry(ts_entry)
-                        .await;
+                        .append_segement(new_segment);
+
+                    self.hls_playlist
+                        .write()
+                        .await
+                        .as_mut()
+                        .unwrap()
+                        .update_last_sequence(current_sequence);
+
+                    self.save_playlist().await;
                 }
                 Err(e) => {
                     log::error!("Failed to download segment: {}", e);
                 }
             }
-
-            sequence += 1;
         }
 
         if new_segment_fetched {
             *self.last_update.write().await = Utc::now().timestamp();
-            self.update_record().await;
+            let total_length = self
+                .hls_playlist
+                .read()
+                .await
+                .as_ref()
+                .unwrap()
+                .total_duration();
+            // update record in database
+            self.db
+                .update_record(
+                    self.live_id.read().await.as_str(),
+                    total_length as i64,
+                    new_segment_size,
+                )
+                .await?;
         }
 
         Ok(task_begin_time.elapsed().as_millis())
     }
 
-    async fn update_record(&self) {
-        if let Err(e) = self
-            .db
-            .update_record(
-                self.live_id.read().await.as_str(),
-                self.entry_store
-                    .read()
-                    .await
-                    .as_ref()
-                    .unwrap()
-                    .total_duration() as i64,
-                self.entry_store.read().await.as_ref().unwrap().total_size(),
-            )
-            .await
-        {
-            log::error!("Failed to update record: {}", e);
+    async fn save_playlist(&self) {
+        let work_dir = self.get_work_dir(&self.live_id.read().await).await;
+        let playlist_filepath = Path::new(&work_dir).join("index.m3u8");
+        if let Some(playlist) = self.hls_playlist.read().await.as_ref() {
+            let mut file = File::create(&playlist_filepath).await.unwrap();
+            let playlist_content = playlist.output(true);
+            file.write_all(playlist_content.as_bytes()).await.unwrap();
+            file.flush().await.unwrap();
+            // close file
+            drop(file);
         }
-    }
-
-    async fn generate_m3u8(&self, live_id: &str, start: i64, end: i64) -> String {
-        let mut m3u8_content = "#EXTM3U\n".to_string();
-        let range_required = start != 0 || end != 0;
-        m3u8_content += "#EXT-X-VERSION:3\n";
-
-        // if requires a range, we need to filter entries and only use entries in the range, so m3u8 type is VOD.
-        let entries = if !range_required && live_id == *self.live_id.read().await {
-            m3u8_content += "#EXT-X-PLAYLIST-TYPE:EVENT\n";
-            self.entry_store
-                .read()
-                .await
-                .as_ref()
-                .unwrap()
-                .get_entries()
-                .clone()
-        } else {
-            m3u8_content += "#EXT-X-PLAYLIST-TYPE:VOD\n";
-            let work_dir = self.get_work_dir(live_id).await;
-            let entry_store = EntryStore::new(&work_dir).await;
-            entry_store.get_entries().clone()
-        };
-
-        m3u8_content += "#EXT-X-OFFSET:0\n";
-
-        if entries.is_empty() {
-            return m3u8_content;
-        }
-
-        m3u8_content += "#EXT-X-TARGETDURATION:6\n";
-
-        let mut previous_seq = entries.first().unwrap().sequence;
-        let first_entry_ts = entries.first().unwrap().ts;
-        for entry in entries {
-            if range_required
-                && (entry.ts - first_entry_ts < start || entry.ts - first_entry_ts > end)
-            {
-                continue;
-            }
-            if entry.sequence - previous_seq > 1 {
-                m3u8_content += "#EXT-X-DISCONTINUITY\n";
-            }
-            previous_seq = entry.sequence;
-            let date_str = Utc.timestamp_opt(entry.ts, 0).unwrap().to_rfc3339();
-            m3u8_content += &format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", date_str);
-            m3u8_content += &format!("#EXTINF:{:.2},\n", entry.length);
-            m3u8_content += &format!("/douyin/{}/{}/{}\n", self.room_id, live_id, entry.url);
-        }
-
-        if *self.live_status.read().await != LiveStatus::Live || range_required {
-            m3u8_content += "#EXT-X-ENDLIST\n";
-        }
-
-        m3u8_content
     }
 }
 
@@ -497,18 +519,19 @@ impl Recorder for DouyinRecorder {
     }
 
     async fn m3u8_content(&self, live_id: &str, start: i64, end: i64) -> String {
-        let cache_key = format!("{}:{}:{}", live_id, start, end);
-        let range_required = start != 0 || end != 0;
-        if !range_required {
-            return self.generate_m3u8(live_id, start, end).await;
+        if live_id != self.live_id.read().await.as_str() {
+            self.load_previous_playlist(live_id)
+                .await
+                .unwrap_or_else(HLSPlaylist::new)
+                .output(true)
+        } else {
+            self.hls_playlist
+                .read()
+                .await
+                .as_ref()
+                .unwrap_or(&HLSPlaylist::new())
+                .output(false)
         }
-
-        if let Some(cached) = self.m3u8_cache.get(&cache_key) {
-            return cached.clone();
-        }
-        let m3u8_content = self.generate_m3u8(live_id, start, end).await;
-        self.m3u8_cache.insert(cache_key, m3u8_content.clone());
-        m3u8_content
     }
 
     async fn info(&self) -> RecorderInfo {
@@ -548,11 +571,12 @@ impl Recorder for DouyinRecorder {
                     .map(|info| info.data.user.avatar_thumb.url_list[0].clone())
                     .unwrap_or_default(),
             },
-            total_length: if let Some(store) = self.entry_store.read().await.as_ref() {
-                store.total_duration() as f32
-            } else {
-                0.0
-            },
+            total_length: self
+                .hls_playlist
+                .read()
+                .await
+                .as_ref()
+                .map_or(0.0, |p| p.total_duration()),
             current_live_id: self.live_id.read().await.clone(),
             live_status: *self.live_status.read().await == LiveStatus::Live,
             is_recording: *self.is_recording.read().await,

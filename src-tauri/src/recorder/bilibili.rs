@@ -368,6 +368,12 @@ impl BiliRecorder {
     async fn load_playlist_from_entrystore(&self, live_id: &str) -> Option<HLSPlaylist> {
         let work_dir = self.get_work_dir(live_id).await;
         let entry_store = EntryStore::new(&work_dir).await;
+        if entry_store.is_none() {
+            log::warn!("Entry store not found");
+            return None;
+        }
+
+        let entry_store = entry_store.unwrap();
         if entry_store.get_entries().is_empty() {
             None
         } else {
@@ -650,6 +656,8 @@ impl BiliRecorder {
                                     .unwrap()
                                     .update_last_sequence(current_sequence);
 
+                                self.save_playlist().await;
+
                                 break;
                             }
                             Err(e) => {
@@ -678,8 +686,6 @@ impl BiliRecorder {
                             new_segment_size,
                         )
                         .await?;
-
-                    self.save_playlist().await;
                 } else {
                     // if index content is not changed for a long time, we should return a error to fetch a new stream
                     if *self.last_update.read().await < Utc::now().timestamp() - 10 {

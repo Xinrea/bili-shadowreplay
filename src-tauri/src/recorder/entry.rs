@@ -36,18 +36,23 @@ pub struct EntryStore {
 }
 
 impl EntryStore {
-    pub async fn new(work_dir: &Path) -> Self {
+    pub async fn new(work_dir: &Path) -> Option<Self> {
         // if work_dir is not exists, create it
         if !Path::new(work_dir).exists() {
             std::fs::create_dir_all(work_dir).unwrap();
         }
         // open append only log file
         let log_file = OpenOptions::new()
-            .create(true)
+            .create(false)
             .append(true)
             .open(work_dir.join(ENTRY_FILE_NAME))
-            .await
-            .unwrap();
+            .await;
+        if log_file.is_err() {
+            log::warn!("Failed to open log file: {}", log_file.err().unwrap());
+            return None;
+        }
+
+        let log_file = log_file.unwrap();
         let mut entry_store = Self {
             log_file,
             header: None,
@@ -60,7 +65,7 @@ impl EntryStore {
 
         entry_store.load(work_dir).await;
 
-        entry_store
+        Some(entry_store)
     }
 
     async fn load(&mut self, work_dir: &Path) {

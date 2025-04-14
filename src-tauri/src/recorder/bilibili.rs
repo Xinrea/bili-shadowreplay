@@ -262,7 +262,6 @@ impl BiliRecorder {
                 }
 
                 if *self.current_record.read().await {
-                    let live_id = stream.live_time.to_string();
                     let real_stream = self.fetch_real_stream(stream).await;
                     match real_stream {
                         Ok(stream) => {
@@ -278,32 +277,6 @@ impl BiliRecorder {
                     }
 
                     *self.last_update.write().await = Utc::now().timestamp();
-
-                    let _ = self
-                        .db
-                        .add_record(
-                            PlatformType::BiliBili,
-                            &live_id,
-                            self.room_id,
-                            &self.room_info.read().await.room_title,
-                            self.cover.read().await.clone(),
-                            None,
-                        )
-                        .await;
-
-                    *self.live_id.write().await = live_id.to_string();
-
-                    let playlist = self.load_previous_playlist(&live_id).await;
-                    if let Some(playlist) = &playlist {
-                        if let Err(e) = self.update_stream_header(playlist).await {
-                            log::error!("[{}]Update stream header failed: {}", self.room_id, e);
-                        }
-                    }
-                    *self.hls_playlist.write().await = playlist;
-
-                    let work_dir = self.get_work_dir(&live_id).await;
-                    let danmu_file_path = Path::new(&work_dir).join("danmu.txt");
-                    *self.danmu_storage.write().await = DanmuStorage::new(&danmu_file_path).await;
 
                     return true;
                 }
@@ -561,21 +534,52 @@ impl BiliRecorder {
         }
         let current_stream = current_stream.unwrap();
         let parsed = self.get_playlist().await;
-        let timestamp: i64 = self.live_id.read().await.parse::<i64>().unwrap_or(0);
-        let work_dir = self.get_work_dir(timestamp.to_string().as_str()).await;
 
         match parsed {
             Ok(Playlist::MasterPlaylist(pl)) => log::debug!("Master playlist:\n{:?}", pl),
             Ok(Playlist::MediaPlaylist(pl)) => {
                 let mut new_segment_size = 0;
                 if self.hls_playlist.read().await.is_none() {
-                    let mut new_playlist = HLSPlaylist::from(&pl);
-                    self.update_stream_header(&new_playlist).await?;
-                    new_playlist.segments.clear();
-                    *self.hls_playlist.write().await = Some(new_playlist);
-                    log::info!("New playlist created");
-                    self.save_playlist().await;
+                    // update live id
+                    let fetched_playlist = HLSPlaylist::from(&pl);
+                    let live_id = fetched_playlist.get_live_id().unwrap_or_default();
+                    *self.live_id.write().await = live_id.clone();
+                    let work_dir = self.get_work_dir(&live_id).await;
+                    let danmu_file_path = Path::new(&work_dir).join("danmu.txt");
+                    *self.danmu_storage.write().await = DanmuStorage::new(&danmu_file_path).await;
+
+                    let _ = self
+                        .db
+                        .add_record(
+                            PlatformType::BiliBili,
+                            &live_id,
+                            self.room_id,
+                            &self.room_info.read().await.room_title,
+                            self.cover.read().await.clone(),
+                            None,
+                        )
+                        .await;
+
+                    // first, try to load from local cache
+                    let playlist = self.load_previous_playlist(&live_id).await;
+                    if let Some(playlist) = &playlist {
+                        if let Err(e) = self.update_stream_header(playlist).await {
+                            log::error!("[{}]Update stream header failed: {}", self.room_id, e);
+                        }
+
+                        *self.hls_playlist.write().await = Some(playlist.clone());
+                    } else {
+                        let mut new_playlist = HLSPlaylist::from(&pl);
+                        self.update_stream_header(&new_playlist).await?;
+                        new_playlist.segments.clear();
+                        *self.hls_playlist.write().await = Some(new_playlist);
+                        log::info!("New playlist created");
+                        self.save_playlist().await;
+                    }
                 }
+
+                let work_dir = self.get_work_dir(&self.live_id.read().await).await;
+                let timestamp: i64 = self.live_id.read().await.parse::<i64>().unwrap_or(0);
 
                 let last_sequence = self
                     .hls_playlist
@@ -642,6 +646,19 @@ impl BiliRecorder {
                                 let mut new_segment = ts.clone();
                                 new_segment.program_date_time =
                                     Some(Utc.timestamp_opt(ts_timestamp / 1000, 0).unwrap().into());
+
+                                if !self
+                                    .hls_playlist
+                                    .read()
+                                    .await
+                                    .as_ref()
+                                    .unwrap()
+                                    .segments
+                                    .is_empty()
+                                {
+                                    // remove map from segment
+                                    new_segment.map = None;
+                                }
                                 self.hls_playlist
                                     .write()
                                     .await

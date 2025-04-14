@@ -40,6 +40,21 @@ impl HLSPlaylist {
         }
     }
 
+    pub fn get_live_id(&self) -> Option<String> {
+        if let Some(header) = self.get_header() {
+            // extract live ID from the header, example: h12345.m4s, find out 12345
+            if let Some(start) = header.find("h") {
+                if let Some(end) = header[start..].find(".m4s") {
+                    return Some(header[start + 1..start + end].to_string());
+                }
+            }
+        }
+
+        log::warn!("No live ID found");
+
+        None
+    }
+
     pub fn get_header(&self) -> Option<String> {
         if !self.segments.is_empty() {
             let first_segment = self.segments.first().unwrap();
@@ -71,7 +86,6 @@ impl HLSPlaylist {
                 {
                     return;
                 }
-                log::info!("Setting up danmu offset info: {}", ts);
                 first_segment.unknown_tags.push(ExtTag {
                     tag: "X-OFFSET".to_string(),
                     rest: Some(format!("{}", ts.timestamp())),

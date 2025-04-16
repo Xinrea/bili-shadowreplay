@@ -15,7 +15,6 @@ use custom_error::custom_error;
 use hyper::Uri;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -212,10 +211,31 @@ impl RecorderManager {
             params.platform, params.room_id, params.live_id, params.x, params.y
         );
 
-        if let Err(e) = clip_from_m3u8(reporter, &range_m3u8, &clip_file).await {
+        let manifest_content = self.handle_hls_request(&range_m3u8).await?;
+        let manifest_content = String::from_utf8(manifest_content)
+            .map_err(|e| RecorderManagerError::ClipError { err: e.to_string() })?;
+
+        let cache_path = self.config.read().await.cache.clone();
+        let cache_path = Path::new(&cache_path);
+        let random_filename = format!("manifest_{}.m3u8", uuid::Uuid::new_v4());
+        let tmp_manifest_file_path = cache_path
+            .join(&params.platform)
+            .join(params.room_id.to_string())
+            .join(&params.live_id)
+            .join(random_filename);
+
+        // Write manifest content to temporary file
+        tokio::fs::write(&tmp_manifest_file_path, manifest_content.as_bytes())
+            .await
+            .map_err(|e| RecorderManagerError::ClipError { err: e.to_string() })?;
+
+        if let Err(e) = clip_from_m3u8(reporter, &tmp_manifest_file_path, &clip_file).await {
             log::error!("Failed to generate clip file: {}", e);
             return Err(RecorderManagerError::ClipError { err: e.to_string() });
         }
+
+        // remove temp file
+        let _ = tokio::fs::remove_file(tmp_manifest_file_path).await;
 
         if !params.danmu {
             return Ok(clip_file);

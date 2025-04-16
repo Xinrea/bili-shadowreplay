@@ -8,11 +8,11 @@ use tokio::io::BufReader;
 
 pub async fn clip_from_m3u8(
     reporter: &impl ProgressReporterTrait,
-    m3u8_url: &str,
+    m3u8_index: &Path,
     output_path: &Path,
 ) -> Result<(), String> {
     let child = tokio::process::Command::new("ffmpeg")
-        .args(["-i", m3u8_url])
+        .args(["-i", &format!("{}", m3u8_index.display())])
         .args(["-c", "copy"])
         .args(["-y", output_path.to_str().unwrap()])
         .args(["-progress", "pipe:2"])

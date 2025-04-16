@@ -6,9 +6,9 @@ use tokio::{
     sync::RwLock,
 };
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Debug)]
 pub struct DanmuEntry {
-    pub ts: u64,
+    pub ts: i64,
     pub content: String,
 }
 
@@ -36,7 +36,7 @@ impl DanmuStorage {
         let mut preload_cache: Vec<DanmuEntry> = Vec::new();
         while let Ok(Some(line)) = lines.next_line().await {
             let parts: Vec<&str> = line.split(':').collect();
-            let ts: u64 = parts[0].parse().unwrap();
+            let ts: i64 = parts[0].parse().unwrap();
             let content = parts[1].to_string();
             preload_cache.push(DanmuEntry { ts, content })
         }
@@ -52,7 +52,7 @@ impl DanmuStorage {
         })
     }
 
-    pub async fn add_line(&self, ts: u64, content: &str) {
+    pub async fn add_line(&self, ts: i64, content: &str) {
         self.cache.write().await.push(DanmuEntry {
             ts,
             content: content.to_string(),

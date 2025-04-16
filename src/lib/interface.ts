@@ -200,6 +200,8 @@ export interface ClipRangeParams {
   live_id: string;
   x: number;
   y: number;
+  danmu: boolean;
+  offset: number;
 }
 
 export function generateEventId() {

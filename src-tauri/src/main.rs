@@ -3,6 +3,7 @@
 
 mod archive_migration;
 mod config;
+mod danmu2ass;
 mod database;
 mod ffmpeg;
 mod handlers;

@@ -63,8 +63,7 @@ async fn clip_range_inner(
         "{created_at}",
         &Utc::now().format("%Y-%m-%d_%H-%M-%S").to_string(),
     );
-    let format_config =
-        format_config.replace("{length}", &((params.y - params.x) as i64).to_string());
+    let format_config = format_config.replace("{length}", &(params.y - params.x).to_string());
 
     let output = state.config.read().await.output.clone();
     let clip_file = Path::new(&output).join(&format_config);
@@ -95,7 +94,7 @@ async fn clip_range_inner(
             created_at: Utc::now().to_rfc3339(),
             cover: params.cover.clone(),
             file: filename.into(),
-            length: (params.y - params.x) as i64,
+            length: (params.y - params.x),
             size: metadata.len() as i64,
             bvid: "".into(),
             title: "".into(),

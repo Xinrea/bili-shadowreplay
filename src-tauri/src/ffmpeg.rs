@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use crate::progress_event::ProgressReporterTrait;
@@ -186,5 +186,85 @@ pub async fn encode_video_subtitle(
     } else {
         log::info!("Encode video subtitle task end: {}", output_path.display());
         Ok(output_filename)
+    }
+}
+
+pub async fn encode_video_danmu(
+    reporter: &impl ProgressReporterTrait,
+    file: &Path,
+    subtitle: &Path,
+) -> Result<PathBuf, String> {
+    // ffmpeg -i fixed_\[30655190\]1742887114_0325084106_81.5.mp4 -vf ass=subtitle.ass -c:v libx264 -c:a copy output.mp4
+    log::info!("Encode video danmu task start: {}", file.display());
+    let danmu_filename = format!("[danmu]{}", file.file_name().unwrap().to_str().unwrap());
+    let output_path = file.with_file_name(danmu_filename);
+
+    // check output path exists
+    if output_path.exists() {
+        log::info!("Output path already exists: {}", output_path.display());
+        return Err("Output path already exists".to_string());
+    }
+
+    let mut command_error = None;
+
+    // if windows
+    let subtitle = if cfg!(target_os = "windows") {
+        // escape characters in subtitle path
+        let subtitle = subtitle
+            .to_str()
+            .unwrap()
+            .replace("\\", "\\\\")
+            .replace(":", "\\:");
+        format!("'{}'", subtitle)
+    } else {
+        format!("'{}'", subtitle.display())
+    };
+
+    let child = tokio::process::Command::new("ffmpeg")
+        .args(["-i", file.to_str().unwrap()])
+        .args(["-vf", &format!("ass={}", subtitle)])
+        .args(["-c:v", "libx264"])
+        .args(["-c:a", "copy"])
+        .args([output_path.to_str().unwrap()])
+        .args(["-y"])
+        .args(["-progress", "pipe:2"])
+        .stderr(Stdio::piped())
+        .spawn();
+
+    if let Err(e) = child {
+        return Err(e.to_string());
+    }
+
+    let mut child = child.unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let reader = BufReader::new(stderr);
+    let mut parser = FfmpegLogParser::new(reader);
+
+    while let Ok(event) = parser.parse_next_event().await {
+        match event {
+            FfmpegEvent::Error(e) => {
+                log::error!("Encode video danmu error: {}", e);
+                command_error = Some(e.to_string());
+            }
+            FfmpegEvent::Progress(p) => {
+                log::info!("Encode video danmu progress: {}", p.time);
+                reporter.update(format!("压制中：{}", p.time).as_str());
+            }
+            FfmpegEvent::LogEOF => break,
+            _ => {}
+        }
+    }
+
+    if let Err(e) = child.wait().await {
+        log::error!("Encode video danmu error: {}", e);
+        return Err(e.to_string());
+    }
+
+    if let Some(error) = command_error {
+        log::error!("Encode video danmu error: {}", error);
+        Err(error)
+    } else {
+        log::info!("Encode video danmu task end: {}", output_path.display());
+        Ok(output_path)
     }
 }

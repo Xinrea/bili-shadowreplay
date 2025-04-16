@@ -1,7 +1,8 @@
 use crate::config::Config;
+use crate::danmu2ass;
 use crate::database::DatabaseError;
 use crate::database::{account::AccountRow, record::RecordRow, Database};
-use crate::ffmpeg::clip_from_m3u8;
+use crate::ffmpeg::{clip_from_m3u8, encode_video_danmu};
 use crate::progress_event::ProgressReporter;
 use crate::recorder::bilibili::BiliRecorder;
 use crate::recorder::danmu::DanmuEntry;
@@ -22,6 +23,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::{convert::Infallible, sync::Arc};
 use tauri::AppHandle;
+use tokio::fs::{remove_file, write};
 use tokio::{net::TcpListener, sync::RwLock};
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
@@ -37,8 +39,10 @@ pub struct ClipRangeParams {
     pub platform: String,
     pub room_id: u64,
     pub live_id: String,
-    pub x: f64,
-    pub y: f64,
+    pub x: i64,
+    pub y: i64,
+    pub offset: i64,
+    pub danmu: bool,
 }
 
 pub struct RecorderManager {
@@ -229,8 +233,8 @@ impl RecorderManager {
             params.platform,
             params.room_id,
             params.live_id,
-            params.x.floor() as i64,
-            params.y.floor() as i64
+            params.x,
+            params.y
         );
 
         if let Err(e) = clip_from_m3u8(reporter, &range_m3u8, &clip_file).await {
@@ -238,7 +242,58 @@ impl RecorderManager {
             return Err(RecorderManagerError::ClipError { err: e.to_string() });
         }
 
-        Ok(clip_file)
+        if !params.danmu {
+            return Ok(clip_file);
+        }
+
+        // encode danmu into clip
+        let recorder = recorders.get(&recorder_id).unwrap();
+        let danmus = recorder.comments(&params.live_id).await;
+        if danmus.is_err() {
+            log::error!("Failed to get danmus from {}", recorder_id);
+            return Ok(clip_file);
+        }
+
+        log::info!(
+            "Filter danmus in range [{}, {}] with offset {}",
+            params.x,
+            params.y,
+            params.offset
+        );
+        let mut danmus = danmus.unwrap();
+        log::debug!("First danmu entry: {:?}", danmus.first());
+        // update entry ts to offset
+        for d in &mut danmus {
+            d.ts -= (params.x + params.offset) * 1000;
+        }
+        if params.x != 0 || params.y != 0 {
+            danmus.retain(|x| x.ts >= 0 && x.ts <= (params.y - params.x) * 1000);
+        }
+
+        if danmus.is_empty() {
+            log::warn!("No danmus found, skip danmu encoding");
+
+            return Ok(clip_file);
+        }
+
+        let ass_content = danmu2ass::danmu_to_ass(danmus);
+        // dump ass_content into a temp file
+        let ass_file_path = clip_file.with_extension("ass");
+        if let Err(e) = write(&ass_file_path, ass_content).await {
+            log::error!(
+                "Failed to write temp ass file: {} {}",
+                ass_file_path.display(),
+                e
+            );
+            return Ok(clip_file);
+        }
+
+        let result = encode_video_danmu(reporter, &clip_file, &ass_file_path).await;
+        // clean ass file
+        let _ = remove_file(ass_file_path).await;
+        let _ = remove_file(clip_file).await;
+
+        result.map_err(|e| RecorderManagerError::ClipError { err: e })
     }
 
     pub async fn get_recorder_list(&self) -> RecorderList {
@@ -436,6 +491,7 @@ impl RecorderManager {
                             let recorder_id = format!("{}:{}", platform, room_id);
                             let recorder = recorders.get(&recorder_id);
                             if recorder.is_none() {
+                                log::warn!("Recorder not found: {}", recorder_id);
                                 return Ok::<_, Infallible>(
                                     Response::builder()
                                         .status(404)
@@ -443,8 +499,9 @@ impl RecorderManager {
                                         .unwrap(),
                                 );
                             }
-                            let ts_file_content = tokio::fs::read(ts_file).await;
+                            let ts_file_content = tokio::fs::read(&ts_file).await;
                             if ts_file_content.is_err() {
+                                log::warn!("Segment file not found: {}", ts_file);
                                 return Ok::<_, Infallible>(
                                     Response::builder()
                                         .status(404)

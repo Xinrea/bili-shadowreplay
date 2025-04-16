@@ -19,6 +19,7 @@
   export let live_id: string;
   export let start = 0;
   export let end = 0;
+  export let global_offset = 0;
   export let focus_start = 0;
   export let focus_end = 0;
   export let markers: Marker[] = [];
@@ -28,7 +29,6 @@
   let video: HTMLVideoElement;
   let show_detail = false;
   let show_list = false;
-  let global_offset = 0;
   let recorders: RecorderInfo[] = [];
 
   // save start and end to localStorage

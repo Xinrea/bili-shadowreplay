@@ -83,6 +83,7 @@
 
   let current_clip_event_id = null;
   let current_post_event_id = null;
+  let danmu_enabled = false;
 
   let progress_update_listener = listen<ProgressUpdate>(
     `progress-update`,
@@ -125,6 +126,7 @@
 
   let start = 0.0;
   let end = 0.0;
+  let global_offset = 0;
 
   // load start and end from localStorage
   if (localStorage.getItem(`${live_id}_start`)) {
@@ -150,6 +152,7 @@
 
   let preview = false;
   let show_cover_editor = false;
+  let show_clip_confirm = false;
   let text_style = {
     position: { x: 8, y: 8 },
     fontSize: 24,
@@ -247,6 +250,11 @@
       return;
     }
 
+    show_clip_confirm = true;
+  }
+
+  async function confirm_generate_clip() {
+    show_clip_confirm = false;
     let new_cover = generateCover();
     update_clip_prompt(`切片生成中`);
     let event_id = generateEventId();
@@ -257,8 +265,10 @@
       platform: platform,
       cover: new_cover,
       live_id: live_id,
-      x: focus_start + start,
-      y: focus_start + end,
+      x: Math.floor(focus_start + start),
+      y: Math.floor(focus_start + end),
+      danmu: danmu_enabled,
+      offset: global_offset + parseInt(live_id),
     });
     console.log("video file generatd:", new_video);
     await get_video_list();
@@ -373,6 +383,7 @@
       <Player
         bind:start
         bind:end
+        bind:global_offset
         bind:this={player}
         {focus_start}
         {focus_end}
@@ -702,6 +713,47 @@
     </div>
   </div>
 </main>
+
+<!-- Clip Confirmation Dialog -->
+{#if show_clip_confirm}
+  <div
+    class="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center z-50"
+  >
+    <div class="bg-[#1c1c1e] rounded-lg p-6 max-w-md w-full mx-4">
+      <h3 class="text-lg font-medium text-white mb-4">确认生成切片</h3>
+      <div class="space-y-4">
+        <div class="text-sm text-gray-300">
+          <p>切片时长: {(end - start).toFixed(2)} 秒</p>
+        </div>
+        <div class="flex items-center space-x-2">
+          <input
+            type="checkbox"
+            id="confirm-danmu-checkbox"
+            bind:checked={danmu_enabled}
+            class="w-4 h-4 text-[#0A84FF] bg-[#2c2c2e] border-gray-800 rounded focus:ring-[#0A84FF] focus:ring-offset-[#1c1c1e]"
+          />
+          <label for="confirm-danmu-checkbox" class="text-sm text-gray-300"
+            >压制弹幕</label
+          >
+        </div>
+        <div class="flex justify-end space-x-3">
+          <button
+            on:click={() => (show_clip_confirm = false)}
+            class="px-4 py-2 text-gray-300 hover:text-white transition-colors duration-200"
+          >
+            取消
+          </button>
+          <button
+            on:click={confirm_generate_clip}
+            class="px-4 py-2 bg-[#0A84FF] text-white rounded-lg hover:bg-[#0A84FF]/90 transition-colors duration-200"
+          >
+            确认生成
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <CoverEditor
   bind:show={show_cover_editor}

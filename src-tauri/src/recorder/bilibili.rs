@@ -308,14 +308,14 @@ impl BiliRecorder {
                 let _ = self.app_handle.emit(
                     &format!("danmu:{}", room),
                     DanmuEntry {
-                        ts: msg.timestamp,
+                        ts: msg.timestamp as i64,
                         content: msg.msg.clone(),
                     },
                 );
                 if *self.live_status.read().await {
                     // save danmu
                     if let Some(storage) = self.danmu_storage.write().await.as_ref() {
-                        storage.add_line(msg.timestamp, &msg.msg).await;
+                        storage.add_line(msg.timestamp as i64, &msg.msg).await;
                     }
                 }
             }

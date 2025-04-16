@@ -6,23 +6,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="stylesheet" href="shaka-player/controls.min.css" />
     <link rel="stylesheet" href="shaka-player/youtube-theme.css" />
+    <script src="shaka-player/shaka-player.ui.js"></script>
   </head>
   <body>
     <div id="app"></div>
-    <script>
-      // parse platform from params
-      const urlParams = new URLSearchParams(window.location.search);
-      const platform = urlParams.get("platform");
-      if (platform === "douyin") {
-        const script = document.createElement("script");
-        script.src = "shaka-player/shaka-player.ui.bilibili.js";
-        document.head.appendChild(script);
-      } else {
-        const script = document.createElement("script");
-        script.src = "shaka-player/shaka-player.ui.bilibili.js";
-        document.head.appendChild(script);
-      }
-    </script>
     <script type="module" src="src/live_main.ts"></script>
     <style>
       input[type="range"]::-webkit-slider-thumb {

@@ -9,6 +9,7 @@
     GridOutline,
     SortHorizontalOutline,
     DownloadOutline,
+    FileExportOutline,
   } from "flowbite-svelte-icons";
   import { save } from "@tauri-apps/plugin-dialog";
   const dispatch = createEventDispatcher();
@@ -808,7 +809,7 @@
 
 <div id="export">
   <button id="export-btn">
-    <DownloadOutline />
+    <FileExportOutline />
   </button>
   <ul class="export-list">
     <!-- svelte-ignore a11y-click-events-have-key-events -->
@@ -866,7 +867,7 @@
   #shortcuts {
     position: absolute;
     top: 8px;
-    right: 8px;
+    right: 52px;
     flex-direction: column;
     display: flex;
     align-items: end;
@@ -916,7 +917,7 @@
   #export {
     position: absolute;
     top: 8px;
-    right: 52px;
+    right: 8px;
     flex-direction: column;
     display: flex;
     align-items: end;

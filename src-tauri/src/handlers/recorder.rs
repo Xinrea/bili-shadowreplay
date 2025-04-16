@@ -284,3 +284,12 @@ pub async fn force_stop(
     state.recorder_manager.force_stop(platform, room_id).await;
     Ok(())
 }
+
+#[tauri::command]
+pub async fn fetch_hls(state: TauriState<'_, State>, uri: String) -> Result<Vec<u8>, String> {
+    state
+        .recorder_manager
+        .handle_hls_request(&uri)
+        .await
+        .map_err(|e| e.to_string())
+}

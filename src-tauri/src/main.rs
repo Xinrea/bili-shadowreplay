@@ -108,8 +108,6 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         config.clone(),
     ));
     let recorder_manager_clone = recorder_manager.clone();
-
-    let _ = recorder_manager_clone.run_hls().await;
     let binding = dbs.0.read().await;
     let dbpool = binding.get("sqlite:data_v2.db").unwrap();
     let sqlite_pool = match dbpool {
@@ -303,6 +301,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::recorder::set_auto_start,
         crate::handlers::recorder::force_start,
         crate::handlers::recorder::force_stop,
+        crate::handlers::recorder::fetch_hls,
         crate::handlers::video::clip_range,
         crate::handlers::video::upload_procedure,
         crate::handlers::video::cancel,

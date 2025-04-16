@@ -12,19 +12,16 @@ use crate::recorder::PlatformType;
 use crate::recorder::Recorder;
 use crate::recorder::RecorderInfo;
 use custom_error::custom_error;
-use hyper::Method;
-use hyper::{
-    service::{make_service_fn, service_fn},
-    Body, Request, Response, Server,
-};
+use hyper::Uri;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::{convert::Infallible, sync::Arc};
+use std::str::FromStr;
+use std::sync::Arc;
 use tauri::AppHandle;
 use tokio::fs::{remove_file, write};
-use tokio::{net::TcpListener, sync::RwLock};
+use tokio::sync::RwLock;
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
 pub struct RecorderList {
@@ -50,7 +47,6 @@ pub struct RecorderManager {
     db: Arc<Database>,
     config: Arc<RwLock<Config>>,
     recorders: Arc<RwLock<HashMap<String, Box<dyn Recorder>>>>,
-    hls_server_addr: Arc<RwLock<Option<SocketAddr>>>,
 }
 
 custom_error! {pub RecorderManagerError
@@ -59,16 +55,10 @@ custom_error! {pub RecorderManagerError
     InvalidPlatformType { platform: String } = "不支持的平台: {platform}",
     RecorderError { err: RecorderError } = "录播器错误: {err}",
     IOError {err: std::io::Error } = "IO 错误: {err}",
-    HLSError { err: hyper::Error } = "HLS 服务器错误: {err}",
+    HLSError { err: String } = "HLS 服务器错误: {err}",
     DatabaseError { err: DatabaseError } = "数据库错误: {err}",
     Recording { live_id: String } = "无法删除正在录制的直播 {live_id}",
     ClipError { err: String } = "切片错误: {err}",
-}
-
-impl From<hyper::Error> for RecorderManagerError {
-    fn from(value: hyper::Error) -> Self {
-        RecorderManagerError::HLSError { err: value }
-    }
 }
 
 impl From<std::io::Error> for RecorderManagerError {
@@ -106,17 +96,7 @@ impl RecorderManager {
             db,
             config,
             recorders: Arc::new(RwLock::new(HashMap::new())),
-            hls_server_addr: Arc::new(RwLock::new(None)),
         }
-    }
-
-    /// starting HLS server
-    pub async fn run_hls(&self) -> Result<(), RecorderManagerError> {
-        let addr = SocketAddr::from(([127, 0, 0, 1], 0));
-        let listener = TcpListener::bind(addr).await?;
-        let addr = self.start_hls_server(listener).await?;
-        *self.hls_server_addr.write().await = Some(addr);
-        Ok(())
     }
 
     pub async fn add_recorder(
@@ -228,13 +208,8 @@ impl RecorderManager {
             });
         }
         let range_m3u8 = format!(
-            "http://127.0.0.1:{}/{}/{}/{}/playlist.m3u8?start={}&end={}",
-            self.get_hls_server_addr().await.unwrap().port(),
-            params.platform,
-            params.room_id,
-            params.live_id,
-            params.x,
-            params.y
+            "http://127.0.0.1/{}/{}/{}/playlist.m3u8?start={}&end={}",
+            params.platform, params.room_id, params.live_id, params.x, params.y
         );
 
         if let Err(e) = clip_from_m3u8(reporter, &range_m3u8, &clip_file).await {
@@ -377,167 +352,97 @@ impl RecorderManager {
         }
     }
 
-    async fn start_hls_server(
-        &self,
-        listener: TcpListener,
-    ) -> Result<SocketAddr, RecorderManagerError> {
-        let recorders = self.recorders.clone();
-        let config = self.config.clone();
-        let make_svc = make_service_fn(move |_conn| {
-            let recorders = recorders.clone();
-            let config = config.clone();
-            async move {
-                Ok::<_, Infallible>(service_fn(move |req: Request<Body>| {
-                    let recorders = recorders.clone();
-                    let config = config.clone();
-                    async move {
-                        // handle cors preflight request
-                        if req.method() == Method::OPTIONS {
-                            return Ok::<_, Infallible>(
-                                Response::builder()
-                                    .status(200)
-                                    .header("Access-Control-Allow-Origin", "*")
-                                    .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-                                    .header("Access-Control-Allow-Headers", "Content-Type")
-                                    .body(Body::empty())
-                                    .unwrap(),
-                            );
-                        }
+    pub async fn handle_hls_request(&self, uri: &str) -> Result<Vec<u8>, RecorderManagerError> {
+        let cache_path = self.config.read().await.cache.clone();
+        let uri = Uri::from_str(uri)
+            .map_err(|e| RecorderManagerError::HLSError { err: e.to_string() })?;
+        let path = uri.path();
+        let path_segs: Vec<&str> = path.split('/').collect();
 
-                        let cache_path = config.read().await.cache.clone();
-                        let path = req.uri().path();
-                        let path_segs: Vec<&str> = path.split('/').collect();
+        if path_segs.len() != 5 {
+            log::warn!("Invalid request path: {}", path);
+            return Err(RecorderManagerError::HLSError {
+                err: "Invalid hls path".into(),
+            });
+        }
+        // parse recorder type
+        let platform = path_segs[1];
+        // parse room id
+        let room_id = path_segs[2].parse::<u64>().unwrap();
+        // parse live id
+        let live_id = path_segs[3];
 
-                        // path_segs should be size 5: /{platform}/{room_id}/{live_id}/playlist.m3u8
-                        if path_segs.len() != 5 {
-                            log::warn!("Invalid request path: {}", path);
-                            return Ok::<_, Infallible>(
-                                Response::builder()
-                                    .status(400)
-                                    .body(Body::from("Request Path Not Found"))
-                                    .unwrap(),
-                            );
-                        }
-                        // parse recorder type
-                        let platform = path_segs[1];
-                        // parse room id
-                        let room_id = path_segs[2].parse::<u64>().unwrap();
-                        // parse live id
-                        let live_id = path_segs[3];
-
-                        if path_segs[4] == "playlist.m3u8" {
-                            // get recorder
-                            let recorder_key = format!("{}:{}", platform, room_id);
-                            let recorders = recorders.read().await;
-                            let recorder = recorders.get(&recorder_key);
-                            if recorder.is_none() {
-                                return Ok::<_, Infallible>(
-                                    Response::builder()
-                                        .status(404)
-                                        .body(Body::from("Recorder Not Found"))
-                                        .unwrap(),
-                                );
-                            }
-                            let recorder = recorder.unwrap();
-                            let params = req.uri().query();
-                            // parse params, example: start=10&end=20
-                            // start and end are optional
-                            // split params by &, and then split each param by =
-                            let params = if let Some(params) = params {
-                                let params = params
-                                    .split('&')
-                                    .map(|param| param.split('=').collect::<Vec<&str>>())
-                                    .collect::<Vec<Vec<&str>>>();
-                                Some(params)
-                            } else {
-                                None
-                            };
-
-                            let start = if let Some(params) = &params {
-                                params
-                                    .iter()
-                                    .find(|param| param[0] == "start")
-                                    .map(|param| param[1].parse::<i64>().unwrap())
-                                    .unwrap_or(0)
-                            } else {
-                                0
-                            };
-                            let end = if let Some(params) = &params {
-                                params
-                                    .iter()
-                                    .find(|param| param[0] == "end")
-                                    .map(|param| param[1].parse::<i64>().unwrap())
-                                    .unwrap_or(0)
-                            } else {
-                                0
-                            };
-
-                            // response with recorder generated m3u8, which contains ts entries that cached in local
-                            let m3u8_content = recorder.m3u8_content(live_id, start, end).await;
-                            Ok::<_, Infallible>(
-                                Response::builder()
-                                    .status(200)
-                                    .header("Content-Type", "application/vnd.apple.mpegurl")
-                                    .header("Access-Control-Allow-Origin", "*")
-                                    .header("Access-Control-Allow-Methods", "GET, OPTIONS")
-                                    .body(Body::from(m3u8_content))
-                                    .unwrap(),
-                            )
-                        } else {
-                            // try to find requested ts file in recorder's cache
-                            // cache files are stored in {cache_dir}/{room_id}/{timestamp}/{ts_file}
-                            let ts_file = format!("{}/{}", cache_path, path.replace("%7C", "|"));
-                            let recorders = recorders.read().await;
-                            let recorder_id = format!("{}:{}", platform, room_id);
-                            let recorder = recorders.get(&recorder_id);
-                            if recorder.is_none() {
-                                log::warn!("Recorder not found: {}", recorder_id);
-                                return Ok::<_, Infallible>(
-                                    Response::builder()
-                                        .status(404)
-                                        .body(Body::from("Recorder Not Found"))
-                                        .unwrap(),
-                                );
-                            }
-                            let ts_file_content = tokio::fs::read(&ts_file).await;
-                            if ts_file_content.is_err() {
-                                log::warn!("Segment file not found: {}", ts_file);
-                                return Ok::<_, Infallible>(
-                                    Response::builder()
-                                        .status(404)
-                                        .body(Body::from("TS File Not Found"))
-                                        .unwrap(),
-                                );
-                            }
-                            let ts_file_content = ts_file_content.unwrap();
-                            Ok::<_, Infallible>(
-                                Response::builder()
-                                    .status(200)
-                                    .header("Content-Type", "video/MP2T")
-                                    .header("Access-Control-Allow-Origin", "*")
-                                    .header("Access-Control-Allow-Methods", "GET, OPTIONS")
-                                    .body(Body::from(ts_file_content))
-                                    .unwrap(),
-                            )
-                        }
-                    }
-                }))
+        if path_segs[4] == "playlist.m3u8" {
+            // get recorder
+            let recorder_key = format!("{}:{}", platform, room_id);
+            let recorders = self.recorders.read().await;
+            let recorder = recorders.get(&recorder_key);
+            if recorder.is_none() {
+                return Err(RecorderManagerError::HLSError {
+                    err: "Recorder not found".into(),
+                });
             }
-        });
+            let recorder = recorder.unwrap();
+            let params = uri.query();
+            // parse params, example: start=10&end=20
+            // start and end are optional
+            // split params by &, and then split each param by =
+            let params = if let Some(params) = params {
+                let params = params
+                    .split('&')
+                    .map(|param| param.split('=').collect::<Vec<&str>>())
+                    .collect::<Vec<Vec<&str>>>();
+                Some(params)
+            } else {
+                None
+            };
 
-        let server = Server::from_tcp(listener.into_std().unwrap())?.serve(make_svc);
-        let addr = server.local_addr();
-        tokio::spawn(async move {
-            if let Err(e) = server.await {
-                log::error!("HLS server error: {}", e);
+            let start = if let Some(params) = &params {
+                params
+                    .iter()
+                    .find(|param| param[0] == "start")
+                    .map(|param| param[1].parse::<i64>().unwrap())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            let end = if let Some(params) = &params {
+                params
+                    .iter()
+                    .find(|param| param[0] == "end")
+                    .map(|param| param[1].parse::<i64>().unwrap())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+
+            // response with recorder generated m3u8, which contains ts entries that cached in local
+            let m3u8_content = recorder.m3u8_content(live_id, start, end).await;
+
+            Ok(m3u8_content.into())
+        } else {
+            // try to find requested ts file in recorder's cache
+            // cache files are stored in {cache_dir}/{room_id}/{timestamp}/{ts_file}
+            let ts_file = format!("{}/{}", cache_path, path.replace("%7C", "|"));
+            let recorders = self.recorders.read().await;
+            let recorder_id = format!("{}:{}", platform, room_id);
+            let recorder = recorders.get(&recorder_id);
+            if recorder.is_none() {
+                log::warn!("Recorder not found: {}", recorder_id);
+                return Err(RecorderManagerError::HLSError {
+                    err: "Recorder not found".into(),
+                });
             }
-        });
+            let ts_file_content = tokio::fs::read(&ts_file).await;
+            if ts_file_content.is_err() {
+                log::warn!("Segment file not found: {}", ts_file);
+                return Err(RecorderManagerError::HLSError {
+                    err: "Segment file not found".into(),
+                });
+            }
 
-        Ok(addr)
-    }
-
-    pub async fn get_hls_server_addr(&self) -> Option<SocketAddr> {
-        *self.hls_server_addr.read().await
+            Ok(ts_file_content.unwrap())
+        }
     }
 
     pub async fn set_auto_start(&self, platform: PlatformType, room_id: u64, auto_start: bool) {

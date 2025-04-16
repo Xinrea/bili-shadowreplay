@@ -151,7 +151,6 @@ pub async fn open_live(
     live_id: String,
 ) -> Result<(), String> {
     log::info!("Open player window: {} {}", room_id, live_id);
-    let addr = state.recorder_manager.get_hls_server_addr().await.unwrap();
     let platform = PlatformType::from_str(&platform).unwrap();
     let recorder_info = state
         .recorder_manager
@@ -164,8 +163,7 @@ pub async fn open_live(
         format!("Live:{}:{}", room_id, live_id),
         tauri::WebviewUrl::App(
             format!(
-                "live_index.html?port={}&platform={}&room_id={}&live_id={}",
-                addr.port(),
+                "live_index.html?platform={}&room_id={}&live_id={}",
                 platform.as_str(),
                 room_id,
                 live_id

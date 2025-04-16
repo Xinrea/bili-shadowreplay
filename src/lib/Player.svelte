@@ -1,3 +1,7 @@
+<script lang="ts" context="module">
+  declare const shaka: any;
+</script>
+
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
@@ -19,7 +23,6 @@
     content: string;
   }
 
-  export let port: number;
   export let platform: string;
   export let room_id: number;
   export let live_id: string;
@@ -45,26 +48,82 @@
     console.log("Saved start and end", start + focus_start, end + focus_start);
   }
 
-  // TODO get custom tag from shaka player instead of manual parsing
-  async function meta_parse() {
-    fetch(
-      `http://127.0.0.1:${port}/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`
-    )
-      .then((response) => response.text())
-      .then((m3u8Content) => {
-        const offsetRegex = /#EXT-X-OFFSET:(\d+)/;
-        const match = m3u8Content.match(offsetRegex);
+  function tauriNetworkPlugin(uri, requestType, progressUpdated) {
+    const controller = new AbortController();
+    const abortStatus = {
+      canceled: false,
+      timedOut: false,
+    };
 
-        if (match && match[1]) {
-          global_offset = parseInt(match[1], 10);
-        } else {
-          console.warn("No #EXT-X-OFFSET found");
-        }
-      })
-      .catch((error) => {
-        console.error("Error fetching M3U8 file:", error);
-      });
+    const pendingRequest = new Promise((resolve, reject) => {
+      if (requestType == 0) {
+        console.log("fetch uri: ", uri);
+      }
+      invoke("fetch_hls", { uri })
+        .then((data: number[]) => {
+          if (abortStatus.canceled) {
+            reject(new Error("Request was aborted"));
+            return;
+          }
+
+          // Convert to Uint8Array first to ensure proper byte array
+          const uint8Array = new Uint8Array(data);
+          const arrayBuffer = uint8Array.buffer;
+
+          if (requestType == 0) {
+            let m3u8Content = data.map((v) => String.fromCharCode(v)).join();
+            const offsetRegex = /#EXT-X-OFFSET:(\d+)/;
+            const match = m3u8Content.match(offsetRegex);
+
+            if (match && match[1]) {
+              global_offset = parseInt(match[1], 10);
+            } else {
+              console.warn("No #EXT-X-OFFSET found");
+            }
+          }
+          // Set content-type based on URI extension
+          let content_type =
+            requestType == 1
+              ? "application/octet-stream"
+              : "application/vnd.apple.mpegurl";
+
+          // Create response object with byteLength for segment data
+          const response = {
+            uri: uri,
+            originalUri: uri,
+            status: 200,
+            data: arrayBuffer,
+            headers: {
+              "content-type": content_type,
+            },
+            timeMs: Date.now(),
+            byteLength: arrayBuffer.byteLength,
+          };
+
+          resolve(response);
+        })
+        .catch((error) => {
+          console.error("Network error:", error);
+          reject(
+            new shaka.util.Error(
+              shaka.util.Error.Severity.CRITICAL,
+              shaka.util.Error.Category.NETWORK,
+              shaka.util.Error.Code.OPERATION_ABORTED,
+              error.message || "Network request failed"
+            )
+          );
+        });
+    });
+
+    return new shaka.util.AbortableOperation(pendingRequest, () => {
+      abortStatus.canceled = true;
+      controller.abort();
+      return Promise.resolve();
+    });
   }
+
+  shaka.net.NetworkingEngine.registerScheme("http", tauriNetworkPlugin);
+  shaka.net.NetworkingEngine.registerScheme("https", tauriNetworkPlugin);
 
   async function update_stream_list() {
     recorders = (
@@ -73,23 +132,21 @@
   }
 
   function go_to(platform: string, room_id: number, live_id: string) {
-    const url = `${window.location.origin}${window.location.pathname}?port=${port}&platform=${platform}&room_id=${room_id}&live_id=${live_id}`;
+    const url = `${window.location.origin}${window.location.pathname}?platform=${platform}&room_id=${room_id}&live_id=${live_id}`;
     window.location.href = url;
   }
 
   function zoomOnRange(start: number, end: number) {
-    const url = `${window.location.origin}${window.location.pathname}?port=${port}&platform=${platform}&room_id=${room_id}&live_id=${live_id}&start=${start}&end=${end}`;
+    const url = `${window.location.origin}${window.location.pathname}?platform=${platform}&room_id=${room_id}&live_id=${live_id}&start=${start}&end=${end}`;
     window.location.href = url;
   }
 
   function resetZoom() {
-    const url = `${window.location.origin}${window.location.pathname}?port=${port}&platform=${platform}&room_id=${room_id}&live_id=${live_id}`;
+    const url = `${window.location.origin}${window.location.pathname}?platform=${platform}&room_id=${room_id}&live_id=${live_id}`;
     window.location.href = url;
   }
 
   async function init() {
-    await meta_parse();
-
     update_stream_list();
 
     setInterval(async () => {
@@ -118,6 +175,9 @@
       streaming: {
         lowLatencyMode: true,
       },
+      cmsd: {
+        enabled: false,
+      },
     });
 
     player.addEventListener("ended", async () => {
@@ -130,7 +190,7 @@
 
     try {
       await player.load(
-        `http://127.0.0.1:${port}/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`
+        `http://127.0.0.1/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`
       );
       // This runs if the asynchronous load is successful.
       console.log("The video has now been loaded!");

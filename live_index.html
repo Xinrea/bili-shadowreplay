@@ -15,7 +15,7 @@
       const platform = urlParams.get("platform");
       if (platform === "douyin") {
         const script = document.createElement("script");
-        script.src = "shaka-player/shaka-player.ui.douyin.js";
+        script.src = "shaka-player/shaka-player.ui.bilibili.js";
         document.head.appendChild(script);
       } else {
         const script = document.createElement("script");
@@ -38,7 +38,6 @@
         scrollbar-track-color: #000;
         scrollbar-arrow-color: #000;
         scrollbar-shadow-color: #646464;
-        scrollbar-dark-shadow-color: #646464;
       }
 
       ::-webkit-scrollbar {

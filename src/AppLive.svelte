@@ -23,7 +23,6 @@
 
   const appWindow = getCurrentWebviewWindow();
   const urlParams = new URLSearchParams(window.location.search);
-  const port = parseInt(urlParams.get("port"));
   const room_id = parseInt(urlParams.get("room_id"));
   const platform = urlParams.get("platform");
   const live_id = urlParams.get("live_id");
@@ -387,7 +386,6 @@
         bind:this={player}
         {focus_start}
         {focus_end}
-        {port}
         {platform}
         {room_id}
         {live_id}

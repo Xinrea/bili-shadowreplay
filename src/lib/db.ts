@@ -46,6 +46,5 @@ export interface RecordItem {
 }
 
 export interface AccountInfo {
-  primary_uid: number;
   accounts: AccountItem[];
 }

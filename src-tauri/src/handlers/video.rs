@@ -289,10 +289,7 @@ pub async fn delete_video(state: TauriState<'_, State>, id: i64) -> Result<(), S
 pub async fn get_video_typelist(
     state: TauriState<'_, State>,
 ) -> Result<Vec<crate::recorder::bilibili::response::Typelist>, String> {
-    let account = state
-        .db
-        .get_account("bilibili", state.config.read().await.primary_uid)
-        .await?;
+    let account = state.db.get_account_by_platform("bilibili").await?;
     Ok(state.client.get_video_typelist(&account).await?)
 }
 

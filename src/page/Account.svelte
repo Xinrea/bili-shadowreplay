@@ -8,7 +8,6 @@
   import { Ellipsis, Plus } from "lucide-svelte";
 
   let account_info: AccountInfo = {
-    primary_uid: 0,
     accounts: [],
   };
 
@@ -146,7 +145,7 @@
     <!-- Account List -->
     <div class="space-y-4">
       <!-- Online Account -->
-      {#each account_info.accounts.sort( (a, b) => (b.uid === account_info.primary_uid ? 1 : a.uid === account_info.primary_uid ? -1 : 0) ) as account (account.uid)}
+      {#each account_info.accounts as account (account.uid)}
         <div
           class="p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 hover:border-blue-500 dark:hover:border-blue-400 transition-colors"
         >
@@ -165,12 +164,6 @@
                       ? account.name
                       : "抖音账号" + account.uid}
                   </h3>
-                  {#if account.uid == account_info.primary_uid}
-                    <span
-                      class="px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 text-xs"
-                      >主账号</span
-                    >
-                  {/if}
                 </div>
                 {#if account.platform === "bilibili"}
                   <p class="text-sm text-gray-600 dark:text-gray-400">
@@ -199,23 +192,8 @@
                     in:scale={{ duration: 100, start: 0.95 }}
                     out:scale={{ duration: 100, start: 0.95 }}
                   >
-                    {#if account.uid !== account_info.primary_uid && account.platform === "bilibili"}
-                      <button
-                        class="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-white hover:bg-[#e5e5e5] dark:hover:bg-[#3a3a3c] rounded-t-lg"
-                        on:click={async () => {
-                          await invoke("set_primary", { uid: account.uid });
-                          await update_accounts();
-                          activeDropdown = null;
-                        }}
-                      >
-                        设为主账号
-                      </button>
-                    {/if}
                     <button
-                      class="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-[#e5e5e5] dark:hover:bg-[#3a3a3c] {account.uid !==
-                      account_info.primary_uid
-                        ? ''
-                        : 'rounded-t-lg'} rounded-b-lg"
+                      class="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-[#e5e5e5] dark:hover:bg-[#3a3a3c] rounded-t-lg rounded-b-lg"
                       on:click={async () => {
                         await invoke("remove_account", {
                           platform: account.platform,
@@ -363,7 +341,7 @@
             <div class="space-y-4">
               <Textarea
                 bind:value={cookie_str}
-                rows="4"
+                rows={4}
                 class="w-full px-3 py-2 bg-[#f5f5f7] dark:bg-[#1c1c1e] border-0 rounded-lg resize-none focus:ring-2 focus:ring-blue-500"
                 placeholder={selectedPlatform === "bilibili"
                   ? "请粘贴 BiliBili 账号的 Cookie"

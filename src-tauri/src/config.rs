@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     pub cache: String,
     pub output: String,
-    pub primary_uid: u64,
     pub webid: String,
     pub webid_ts: i64,
     pub live_start_notify: bool,
@@ -62,7 +61,6 @@ impl Config {
                 .to_str()
                 .unwrap()
                 .to_string(),
-            primary_uid: 0,
             live_start_notify: true,
             live_end_notify: true,
             clip_notify: true,

@@ -23,11 +23,7 @@ pub async fn add_recorder(
     let platform = PlatformType::from_str(&platform).unwrap();
     let account = match platform {
         PlatformType::BiliBili => {
-            if let Ok(account) = state
-                .db
-                .get_account("bilibili", state.config.read().await.primary_uid)
-                .await
-            {
+            if let Ok(account) = state.db.get_account_by_platform("bilibili").await {
                 if state.config.read().await.webid_expired() {
                     log::info!("Webid expired, refetching");
                     state.config.write().await.webid = state.client.fetch_webid(&account).await?;

@@ -116,7 +116,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         tauri_plugin_sql::DbPool::Sqlite(pool) => Some(pool),
     };
     db_clone.set(sqlite_pool.unwrap().clone()).await;
-    let mut primary_uid = config_clone.read().await.primary_uid;
+
     let accounts = db_clone.get_accounts().await?;
     if accounts.is_empty() {
         log::warn!("No account found");
@@ -129,28 +129,9 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         });
     }
 
-    let mut primary_account = accounts.first().unwrap().clone();
-    if primary_uid == 0 {
-        primary_uid = primary_account.uid;
-        config_clone.write().await.primary_uid = primary_uid;
-        config_clone.write().await.save();
-    }
+    let bili_account = db_clone.get_account_by_platform("bilibili").await?;
 
-    match accounts.iter().find(|x| x.uid == primary_uid) {
-        Some(account) => {
-            primary_account = account.clone();
-        }
-        None => {
-            log::warn!("Primary account not found, using first account");
-            primary_uid = primary_account.uid;
-            config_clone.write().await.primary_uid = primary_uid;
-            config_clone.write().await.save();
-        }
-    }
-
-    let webid = client_clone.fetch_webid(&primary_account).await?;
-    config_clone.write().await.webid = webid.clone();
-    config_clone.write().await.webid_ts = chrono::Utc::now().timestamp();
+    let webid = client_clone.fetch_webid(&bili_account).await?;
 
     // update account infos
     for account in accounts {
@@ -161,7 +142,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         }
 
         match client_clone
-            .get_user_info(&webid, &primary_account, account.uid)
+            .get_user_info(&webid, &account, account.uid)
             .await
         {
             Ok(account_info) => {
@@ -183,7 +164,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         }
     }
 
-    init_rooms(&db_clone, recorder_manager_clone, &primary_account, &webid).await;
+    init_rooms(&db_clone, recorder_manager_clone, &bili_account, &webid).await;
 
     // try to rebuild archive table
     let cache_path = config_clone.read().await.cache.clone();
@@ -293,7 +274,6 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::account::add_account,
         crate::handlers::account::remove_account,
         crate::handlers::account::get_account_count,
-        crate::handlers::account::set_primary,
         crate::handlers::account::get_qr_status,
         crate::handlers::account::get_qr,
         crate::handlers::config::get_config,

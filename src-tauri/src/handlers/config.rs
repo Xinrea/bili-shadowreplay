@@ -59,14 +59,11 @@ pub async fn set_cache_path(
     log::info!("Copy old cache to new cache done");
     state.db.new_message("缓存目录切换", "缓存切换完成").await?;
     // start all recorders
-    let primary_account = state
-        .db
-        .get_account("bilibili", state.config.read().await.primary_uid)
-        .await?;
+    let bili_account = state.db.get_account_by_platform("bilibili").await?;
     crate::init_rooms(
         &state.db,
         state.recorder_manager.clone(),
-        &primary_account,
+        &bili_account,
         &state.config.read().await.webid,
     )
     .await;

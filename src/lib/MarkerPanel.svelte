@@ -35,13 +35,15 @@
 
   async function export_to_file() {
     let r = "# 由 BiliShadowReplay 自动生成\n";
-    r += `# ${archive.title} - 直播开始时间：${format_realtime(archive.live_id * 1000)}\n\n`;
+    r += `# ${archive.title} - 直播开始时间：${format_realtime(parseInt(archive.live_id) * 1000)}\n\n`;
     for (let i in markers) {
       r += `[${format_realtime(markers[i].realtime)}][${format_duration(markers[i].offset)}] ${
         markers[i].content
       }\n`;
     }
-    let file_name = `[${archive.room_id}][${format_realtime(archive.live_id)
+    let file_name = `[${archive.room_id}][${format_realtime(
+      parseInt(archive.live_id)
+    )
       .split(" ")[0]
       .replaceAll("/", "-")}]${archive.title}.txt`;
     console.log("export to file", file_name);

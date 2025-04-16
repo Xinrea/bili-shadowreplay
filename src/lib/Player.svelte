@@ -5,7 +5,12 @@
   import type { Marker, RecorderList, RecorderInfo } from "./interface";
 
   import { createEventDispatcher } from "svelte";
-  import { GridOutline, SortHorizontalOutline } from "flowbite-svelte-icons";
+  import {
+    GridOutline,
+    SortHorizontalOutline,
+    DownloadOutline,
+  } from "flowbite-svelte-icons";
+  import { save } from "@tauri-apps/plugin-dialog";
   const dispatch = createEventDispatcher();
 
   interface DanmuEntry {
@@ -29,6 +34,7 @@
   let video: HTMLVideoElement;
   let show_detail = false;
   let show_list = false;
+  let show_export = false;
   let recorders: RecorderInfo[] = [];
 
   // save start and end to localStorage
@@ -717,6 +723,33 @@
 
   // set body background color to black
   document.body.style.backgroundColor = "black";
+
+  // Add blur event listener to close menus
+  window.addEventListener("blur", () => {
+    show_list = false;
+    show_export = false;
+  });
+
+  async function exportDanmu(ass: boolean) {
+    console.log("Export danmus");
+    const assContent = (await invoke("export_danmu", {
+      platform: platform,
+      roomId: room_id,
+      liveId: live_id,
+      x: Math.floor(focus_start + start),
+      y: Math.floor(focus_start + end),
+      offset: global_offset + parseInt(live_id),
+      ass: ass,
+    })) as string;
+
+    let file_name = `danmu_${room_id}_${live_id}.${ass ? "ass" : "txt"}`;
+    const path = await save({
+      title: "导出弹幕",
+      defaultPath: file_name,
+    });
+    if (!path) return;
+    await invoke("export_to_file", { fileName: path, content: assContent });
+  }
 </script>
 
 <section id="wrap">
@@ -751,37 +784,52 @@
   {/if}
 </div>
 <div id="shortcuts">
-  <button
-    id="shortcut-btn"
-    on:click={() => {
-      show_list = !show_list;
-    }}
-  >
+  <button id="shortcut-btn">
     <GridOutline />
   </button>
-  {#if show_list}
-    <ul class="shortcut-list">
-      {#each recorders as recorder}
-        <!-- svelte-ignore a11y-click-events-have-key-events -->
-        <li
-          class="shortcut"
-          on:click={() => {
-            go_to(
-              recorder.platform,
-              recorder.room_id,
-              recorder.current_live_id
-            );
-          }}
-        >
-          <SortHorizontalOutline />[{recorder.user_info.user_name}]{recorder
-            .room_info.room_title}
-        </li>
-      {/each}
-      {#if recorders.length == 0}
-        <p>没有其它正在直播的房间</p>
-      {/if}
-    </ul>
-  {/if}
+  <ul class="shortcut-list">
+    {#each recorders as recorder}
+      <!-- svelte-ignore a11y-click-events-have-key-events -->
+      <li
+        class="shortcut"
+        on:click={() => {
+          go_to(recorder.platform, recorder.room_id, recorder.current_live_id);
+        }}
+      >
+        <SortHorizontalOutline />[{recorder.user_info.user_name}]{recorder
+          .room_info.room_title}
+      </li>
+    {/each}
+    {#if recorders.length == 0}
+      <p>没有其它正在直播的房间</p>
+    {/if}
+  </ul>
+</div>
+
+<div id="export">
+  <button id="export-btn">
+    <DownloadOutline />
+  </button>
+  <ul class="export-list">
+    <!-- svelte-ignore a11y-click-events-have-key-events -->
+    <li
+      class="export-item"
+      on:click={() => {
+        exportDanmu(false);
+      }}
+    >
+      导出弹幕为 TXT
+    </li>
+    <!-- svelte-ignore a11y-click-events-have-key-events -->
+    <li
+      class="export-item"
+      on:click={() => {
+        exportDanmu(true);
+      }}
+    >
+      导出弹幕为 ASS
+    </li>
+  </ul>
 </div>
 
 <style>
@@ -844,6 +892,15 @@
     border-radius: 4px;
     padding: 8px;
     background-color: rgba(0, 0, 0, 0.5);
+    display: none;
+    position: absolute;
+    top: 100%;
+    right: 0;
+    min-width: 200px;
+  }
+
+  #shortcuts:hover .shortcut-list {
+    display: block;
   }
 
   .shortcut {
@@ -854,5 +911,56 @@
 
   .shortcut:hover {
     text-decoration: underline;
+  }
+
+  #export {
+    position: absolute;
+    top: 8px;
+    right: 52px;
+    flex-direction: column;
+    display: flex;
+    align-items: end;
+    color: white;
+    font-size: 0.8em;
+    z-index: 501;
+  }
+
+  #export-btn {
+    width: 36px;
+    padding: 8px;
+    margin-bottom: 4px;
+    border-radius: 4px;
+    cursor: pointer;
+    background-color: rgba(0, 0, 0, 0.5);
+  }
+
+  #export-btn:hover {
+    background-color: rgba(255, 255, 255, 0.3);
+  }
+
+  .export-list {
+    border-radius: 4px;
+    padding: 8px;
+    background-color: rgba(0, 0, 0, 0.5);
+    display: none;
+    position: absolute;
+    top: 100%;
+    right: 0;
+    min-width: 150px;
+  }
+
+  #export:hover .export-list {
+    display: block;
+  }
+
+  .export-item {
+    display: flex;
+    flex-direction: row;
+    cursor: pointer;
+    padding: 4px 8px;
+  }
+
+  .export-item:hover {
+    background-color: rgba(255, 255, 255, 0.1);
   }
 </style>

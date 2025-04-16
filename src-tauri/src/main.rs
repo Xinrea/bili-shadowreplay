@@ -315,6 +315,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::recorder::get_archive,
         crate::handlers::recorder::delete_archive,
         crate::handlers::recorder::get_danmu_record,
+        crate::handlers::recorder::export_danmu,
         crate::handlers::recorder::send_danmaku,
         crate::handlers::recorder::get_total_length,
         crate::handlers::recorder::get_today_record_count,

@@ -1,3 +1,4 @@
+use crate::danmu2ass;
 use crate::database::record::RecordRow;
 use crate::database::recorder::RecorderRow;
 use crate::recorder::danmu::DanmuEntry;
@@ -168,6 +169,44 @@ pub async fn get_danmu_record(
         .recorder_manager
         .get_danmu(platform, room_id, &live_id)
         .await?)
+}
+
+#[tauri::command]
+pub async fn export_danmu(
+    state: TauriState<'_, State>,
+    platform: String,
+    room_id: u64,
+    live_id: String,
+    x: i64,
+    y: i64,
+    offset: i64,
+    ass: bool,
+) -> Result<String, String> {
+    let platform = PlatformType::from_str(&platform).unwrap();
+    let mut danmus = state
+        .recorder_manager
+        .get_danmu(platform, room_id, &live_id)
+        .await?;
+
+    log::debug!("First danmu entry: {:?}", danmus.first());
+    // update entry ts to offset
+    for d in &mut danmus {
+        d.ts -= (x + offset) * 1000;
+    }
+    if x != 0 || y != 0 {
+        danmus.retain(|e| e.ts >= 0 && e.ts <= (y - x) * 1000);
+    }
+
+    if ass {
+        Ok(danmu2ass::danmu_to_ass(danmus))
+    } else {
+        // map and join entries
+        Ok(danmus
+            .iter()
+            .map(|e| format!("{}:{}", e.ts, e.content))
+            .collect::<Vec<_>>()
+            .join("\n"))
+    }
 }
 
 #[tauri::command]

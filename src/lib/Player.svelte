@@ -273,7 +273,9 @@
           return;
         }
 
-        const cur = Math.floor((video.currentTime + global_offset + ts) * 1000);
+        const cur = Math.floor(
+          (video.currentTime + global_offset + ts + focus_start) * 1000
+        );
 
         let danmus = danmu_records.filter((v) => {
           return v.ts >= cur - 1000 && v.ts < cur;

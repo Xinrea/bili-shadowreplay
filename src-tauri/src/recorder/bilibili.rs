@@ -573,6 +573,13 @@ impl BiliRecorder {
                             .await
                         {
                             Ok(size) => {
+                                if size == 0 {
+                                    log::error!("Segment with size 0, stream might be corrupted");
+                                    return Err(super::errors::RecorderError::InvalidStream {
+                                        stream: current_stream,
+                                    });
+                                }
+
                                 self.entry_store
                                     .write()
                                     .await

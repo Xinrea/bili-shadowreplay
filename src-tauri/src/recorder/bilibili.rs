@@ -680,7 +680,7 @@ impl BiliRecorder {
         m3u8_content += "#EXT-X-PLAYLIST-TYPE:VOD\n";
         // add header, FMP4 need this
         // TODO handle StreamType::TS
-        let header_url = format!("/bilibili/{}/{}/h{}.m4s", self.room_id, live_id, live_id);
+        let header_url = format!("h{}.m4s", live_id);
         m3u8_content += &format!("#EXT-X-MAP:URI=\"{}\"\n", header_url);
         // add entries from read_dir
         let work_dir = self.get_work_dir(live_id).await;
@@ -718,7 +718,7 @@ impl BiliRecorder {
             let date_str = Utc.timestamp_opt(ts, 0).unwrap().to_rfc3339();
             m3u8_content += &format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", date_str);
             m3u8_content += &format!("#EXTINF:{:.2},\n", e.length);
-            m3u8_content += &format!("/bilibili/{}/{}/{}\n", self.room_id, live_id, e.url);
+            m3u8_content += &format!("{}\n", e.url);
 
             last_sequence = current_seq;
         }
@@ -750,8 +750,7 @@ impl BiliRecorder {
         // initial segment for fmp4, info from self.header
         if let Some(header) = self.entry_store.read().await.as_ref().unwrap().get_header() {
             let file_name = header.url.split('/').last().unwrap();
-            let local_url = format!("/bilibili/{}/{}/{}", self.room_id, live_id, file_name);
-            m3u8_content += &format!("#EXT-X-MAP:URI=\"{}\"\n", local_url);
+            m3u8_content += &format!("#EXT-X-MAP:URI=\"{}\"\n", file_name);
         }
         let entries = self
             .entry_store
@@ -792,8 +791,7 @@ impl BiliRecorder {
             m3u8_content += &format!("#EXTINF:{:.2},\n", entry.length);
             last_sequence = entry.sequence;
             let file_name = entry.url.split('/').last().unwrap();
-            let local_url = format!("/bilibili/{}/{}/{}", self.room_id, live_id, file_name);
-            m3u8_content += &format!("{}\n", local_url);
+            m3u8_content += &format!("{}\n", file_name);
         }
         // let player know stream is closed
         if !live_status || range_required {

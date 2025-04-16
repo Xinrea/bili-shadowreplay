@@ -447,7 +447,7 @@ impl DouyinRecorder {
             let date_str = Utc.timestamp_opt(entry.ts, 0).unwrap().to_rfc3339();
             m3u8_content += &format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", date_str);
             m3u8_content += &format!("#EXTINF:{:.2},\n", entry.length);
-            m3u8_content += &format!("/douyin/{}/{}/{}\n", self.room_id, live_id, entry.url);
+            m3u8_content += &format!("{}\n", entry.url);
         }
 
         if *self.live_status.read().await != LiveStatus::Live || range_required {

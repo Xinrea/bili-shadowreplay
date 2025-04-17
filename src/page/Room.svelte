@@ -45,10 +45,10 @@
     let new_summary = (await invoke("get_recorder_list")) as RecorderList;
     room_count = new_summary.count;
     room_active = new_summary.recorders.filter(
-      (room) => room.live_status,
+      (room) => room.live_status
     ).length;
     room_inactive = new_summary.recorders.filter(
-      (room) => !room.live_status,
+      (room) => !room.live_status
     ).length;
 
     // sort new_summary.recorders by live_status
@@ -242,6 +242,12 @@
                 class={"absolute bottom-2 right-2 p-1.5 px-2 rounded-full text-white text-xs flex items-center justify-center bg-gray-700"}
               >
                 <span>直播未开始</span>
+              </div>
+            {:else}
+              <div
+                class={"absolute bottom-2 right-2 p-1.5 px-2 rounded-full text-white text-xs flex items-center justify-center bg-green-500"}
+              >
+                <span>直播进行中</span>
               </div>
             {/if}
             <button

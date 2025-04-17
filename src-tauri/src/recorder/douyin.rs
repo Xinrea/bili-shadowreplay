@@ -7,6 +7,7 @@ use super::{
     UserInfo,
 };
 use crate::database::Database;
+use crate::recorder_manager::RecorderEvent;
 use crate::{config::Config, database::account::AccountRow};
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
@@ -16,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tauri::AppHandle;
 use tauri_plugin_notification::NotificationExt;
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum LiveStatus {
@@ -54,6 +55,7 @@ pub struct DouyinRecorder {
     last_update: Arc<RwLock<i64>>,
     m3u8_cache: DashMap<String, String>,
     config: Arc<RwLock<Config>>,
+    live_end_channel: broadcast::Sender<RecorderEvent>,
 }
 
 impl DouyinRecorder {
@@ -64,6 +66,7 @@ impl DouyinRecorder {
         douyin_account: &AccountRow,
         db: &Arc<Database>,
         auto_start: bool,
+        channel: broadcast::Sender<RecorderEvent>,
     ) -> Result<Self, super::errors::RecorderError> {
         let client = client::DouyinClient::new(douyin_account);
         let room_info = client.get_room_info(room_id).await?;
@@ -89,6 +92,7 @@ impl DouyinRecorder {
             last_update: Arc::new(RwLock::new(Utc::now().timestamp())),
             m3u8_cache: DashMap::new(),
             config,
+            live_end_channel: channel,
         })
     }
 
@@ -143,6 +147,12 @@ impl DouyinRecorder {
                             ))
                             .show()
                             .unwrap();
+
+                        let _ = self.live_end_channel.send(RecorderEvent::LiveEnd {
+                            platform: PlatformType::Douyin,
+                            room_id: self.room_id,
+                            live_id: self.live_id.read().await.clone(),
+                        });
                     }
                 }
 
@@ -518,6 +528,20 @@ impl Recorder for DouyinRecorder {
         let m3u8_content = self.generate_m3u8(live_id, start, end).await;
         self.m3u8_cache.insert(cache_key, m3u8_content.clone());
         m3u8_content
+    }
+
+    async fn first_segment_ts(&self, live_id: &str) -> i64 {
+        if *self.live_id.read().await == live_id {
+            let entry_store = self.entry_store.read().await;
+            if entry_store.is_some() {
+                entry_store.as_ref().unwrap().first_ts().unwrap_or(0)
+            } else {
+                0
+            }
+        } else {
+            let work_dir = self.get_work_dir(live_id).await;
+            EntryStore::new(&work_dir).await.first_ts().unwrap_or(0)
+        }
     }
 
     async fn info(&self) -> RecorderInfo {

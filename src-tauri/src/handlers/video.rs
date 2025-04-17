@@ -2,7 +2,6 @@ use crate::database::video::VideoRow;
 use crate::ffmpeg;
 use crate::progress_event::{cancel_progress, ProgressReporter, ProgressReporterTrait};
 use crate::recorder::bilibili::profile::Profile;
-use crate::recorder::PlatformType;
 use crate::recorder_manager::ClipRangeParams;
 use crate::state::State;
 use crate::subtitle_generator::whisper::{self};
@@ -43,30 +42,8 @@ async fn clip_range_inner(
         params.x,
         params.y
     );
-    let platform = PlatformType::from_str(&params.platform).unwrap();
 
-    // get format config
-    // filter special characters from title to make sure file name is valid
-    let title = params
-        .title
-        .chars()
-        .filter(|c| c.is_alphanumeric())
-        .collect::<String>();
-    let format_config = state.config.read().await.clip_name_format.clone();
-    let format_config = format_config.replace("{title}", &title);
-    let format_config = format_config.replace("{platform}", platform.as_str());
-    let format_config = format_config.replace("{room_id}", &params.room_id.to_string());
-    let format_config = format_config.replace("{live_id}", &params.live_id);
-    let format_config = format_config.replace("{x}", &params.x.to_string());
-    let format_config = format_config.replace("{y}", &params.y.to_string());
-    let format_config = format_config.replace(
-        "{created_at}",
-        &Utc::now().format("%Y-%m-%d_%H-%M-%S").to_string(),
-    );
-    let format_config = format_config.replace("{length}", &(params.y - params.x).to_string());
-
-    let output = state.config.read().await.output.clone();
-    let clip_file = Path::new(&output).join(&format_config);
+    let clip_file = state.config.read().await.generate_clip_name(&params);
 
     let file = state
         .recorder_manager

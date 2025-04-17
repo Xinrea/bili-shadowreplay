@@ -5,6 +5,7 @@ pub mod response;
 use super::entry::EntryStore;
 use super::PlatformType;
 use crate::database::account::AccountRow;
+use crate::recorder_manager::RecorderEvent;
 
 use super::danmu::{DanmuEntry, DanmuStorage};
 use super::entry::TsEntry;
@@ -23,7 +24,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Url};
 use tauri_plugin_notification::NotificationExt;
 use tokio::sync::mpsc::{self, UnboundedReceiver};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{broadcast, Mutex, RwLock};
 
 use crate::config::Config;
 use crate::database::{Database, DatabaseError};
@@ -58,6 +59,7 @@ pub struct BiliRecorder {
     pub live_stream: Arc<RwLock<Option<BiliStream>>>,
     danmu_storage: Arc<RwLock<Option<DanmuStorage>>>,
     m3u8_cache: DashMap<String, String>,
+    live_end_channel: broadcast::Sender<RecorderEvent>,
 }
 
 impl From<DatabaseError> for super::errors::RecorderError {
@@ -81,6 +83,7 @@ impl BiliRecorder {
         account: &AccountRow,
         config: Arc<RwLock<Config>>,
         auto_start: bool,
+        channel: broadcast::Sender<RecorderEvent>,
     ) -> Result<Self, super::errors::RecorderError> {
         let client = BiliClient::new()?;
         let room_info = client.get_room_info(account, room_id).await?;
@@ -120,6 +123,7 @@ impl BiliRecorder {
             live_stream: Arc::new(RwLock::new(None)),
             danmu_storage: Arc::new(RwLock::new(None)),
             m3u8_cache: DashMap::new(),
+            live_end_channel: channel,
         };
         log::info!("Recorder for room {} created.", room_id);
         Ok(recorder)
@@ -201,6 +205,11 @@ impl BiliRecorder {
                             ))
                             .show()
                             .unwrap();
+                        let _ = self.live_end_channel.send(RecorderEvent::LiveEnd {
+                            platform: PlatformType::BiliBili,
+                            room_id: self.room_id,
+                            live_id: self.live_id.read().await.clone(),
+                        });
                     }
                 }
 
@@ -870,6 +879,20 @@ impl super::Recorder for BiliRecorder {
             self.generate_live_m3u8(start, end).await
         } else {
             self.generate_archive_m3u8(live_id, start, end).await
+        }
+    }
+
+    async fn first_segment_ts(&self, live_id: &str) -> i64 {
+        if *self.live_id.read().await == live_id {
+            let entry_store = self.entry_store.read().await;
+            if entry_store.is_some() {
+                entry_store.as_ref().unwrap().first_ts().unwrap_or(0)
+            } else {
+                0
+            }
+        } else {
+            let work_dir = self.get_work_dir(live_id).await;
+            EntryStore::new(&work_dir).await.first_ts().unwrap_or(0)
         }
     }
 

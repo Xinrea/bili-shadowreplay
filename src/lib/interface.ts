@@ -99,6 +99,12 @@ export interface Config {
   whisper_model: string;
   whisper_prompt: string;
   clip_name_format: string;
+  auto_generate: AutoGenerateConfig;
+}
+
+export interface AutoGenerateConfig {
+  enabled: boolean;
+  encode_danmu: boolean;
 }
 
 export interface DiskInfo {

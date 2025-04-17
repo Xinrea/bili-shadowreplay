@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::danmu2ass;
+use crate::database::video::VideoRow;
 use crate::database::DatabaseError;
 use crate::database::{account::AccountRow, record::RecordRow, Database};
 use crate::ffmpeg::{clip_from_m3u8, encode_video_danmu};
@@ -11,6 +12,7 @@ use crate::recorder::errors::RecorderError;
 use crate::recorder::PlatformType;
 use crate::recorder::Recorder;
 use crate::recorder::RecorderInfo;
+use chrono::Utc;
 use custom_error::custom_error;
 use hyper::Uri;
 use serde::Deserialize;
@@ -20,6 +22,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tauri::AppHandle;
 use tokio::fs::{remove_file, write};
+use tokio::sync::broadcast;
 use tokio::sync::RwLock;
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
@@ -35,10 +38,23 @@ pub struct ClipRangeParams {
     pub platform: String,
     pub room_id: u64,
     pub live_id: String,
+    /// Clip range start in seconds
     pub x: i64,
+    /// Clip range end in seconds
     pub y: i64,
+    /// Timestamp of first stream segment in seconds
     pub offset: i64,
+    /// Encode danmu after clip
     pub danmu: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum RecorderEvent {
+    LiveEnd {
+        platform: PlatformType,
+        room_id: u64,
+        live_id: String,
+    },
 }
 
 pub struct RecorderManager {
@@ -46,6 +62,7 @@ pub struct RecorderManager {
     db: Arc<Database>,
     config: Arc<RwLock<Config>>,
     recorders: Arc<RwLock<HashMap<String, Box<dyn Recorder>>>>,
+    event_tx: broadcast::Sender<RecorderEvent>,
 }
 
 custom_error! {pub RecorderManagerError
@@ -90,11 +107,139 @@ impl RecorderManager {
         db: Arc<Database>,
         config: Arc<RwLock<Config>>,
     ) -> RecorderManager {
-        RecorderManager {
+        let (event_tx, _) = broadcast::channel(100);
+        let manager = RecorderManager {
             app_handle,
             db,
             config,
             recorders: Arc::new(RwLock::new(HashMap::new())),
+            event_tx,
+        };
+
+        // Start event listener
+        let manager_clone = manager.clone();
+        tokio::spawn(async move {
+            manager_clone.handle_events().await;
+        });
+
+        manager
+    }
+
+    pub fn clone(&self) -> Self {
+        RecorderManager {
+            app_handle: self.app_handle.clone(),
+            db: self.db.clone(),
+            config: self.config.clone(),
+            recorders: self.recorders.clone(),
+            event_tx: self.event_tx.clone(),
+        }
+    }
+
+    pub fn get_event_sender(&self) -> broadcast::Sender<RecorderEvent> {
+        self.event_tx.clone()
+    }
+
+    async fn handle_events(&self) {
+        let mut rx = self.event_tx.subscribe();
+        while let Ok(event) = rx.recv().await {
+            match event {
+                RecorderEvent::LiveEnd {
+                    platform,
+                    room_id,
+                    live_id,
+                } => {
+                    self.handle_live_end(platform, room_id, &live_id).await;
+                }
+            }
+        }
+    }
+
+    async fn handle_live_end(&self, platform: PlatformType, room_id: u64, live_id: &str) {
+        if !self.config.read().await.auto_generate.enabled {
+            return;
+        }
+
+        let recorder_id = format!("{}:{}", platform.as_str(), room_id);
+        log::info!("Start auto generate for {}", recorder_id);
+        let live_record = self.db.get_record(room_id, live_id).await;
+        if live_record.is_err() {
+            log::error!("Live not found in record: {} {}", room_id, live_id);
+            return;
+        }
+
+        let recorders = self.recorders.read().await;
+        let recorder = match recorders.get(&recorder_id) {
+            Some(recorder) => recorder,
+            None => {
+                log::error!("Recorder not found: {}", recorder_id);
+                return;
+            }
+        };
+
+        let live_record = live_record.unwrap();
+        let encode_danmu = self.config.read().await.auto_generate.encode_danmu;
+
+        let clip_config = ClipRangeParams {
+            title: live_record.title,
+            cover: "".into(),
+            platform: live_record.platform,
+            room_id,
+            live_id: live_id.to_string(),
+            x: 0,
+            y: 0,
+            offset: recorder.first_segment_ts(live_id).await,
+            danmu: encode_danmu,
+        };
+
+        let clip_filename = self.config.read().await.generate_clip_name(&clip_config);
+
+        // add prefix [full] for clip_filename
+        let name_with_prefix = format!(
+            "[full]{}",
+            clip_filename.file_name().unwrap().to_str().unwrap()
+        );
+        let _ = clip_filename.with_file_name(name_with_prefix);
+
+        match self
+            .clip_range_on_recorder(&**recorder, None, clip_filename, &clip_config)
+            .await
+        {
+            Ok(f) => {
+                let metadata = match std::fs::metadata(&f) {
+                    Ok(metadata) => metadata,
+                    Err(e) => {
+                        log::error!("Failed to detect auto generated clip: {}", e);
+                        return;
+                    }
+                };
+                match self
+                    .db
+                    .add_video(&VideoRow {
+                        id: 0,
+                        status: 0,
+                        room_id,
+                        created_at: Utc::now().to_rfc3339(),
+                        cover: "".into(),
+                        file: f.file_name().unwrap().to_str().unwrap().to_string(),
+                        length: live_record.length,
+                        size: metadata.len() as i64,
+                        bvid: "".into(),
+                        title: "".into(),
+                        desc: "".into(),
+                        tags: "".into(),
+                        area: 0,
+                    })
+                    .await
+                {
+                    Ok(_) => {}
+                    Err(e) => {
+                        log::error!("Add auto generate clip record failed: {}", e)
+                    }
+                };
+            }
+            Err(e) => {
+                log::error!("Auto generate clip failed: {}", e)
+            }
         }
     }
 
@@ -111,6 +256,7 @@ impl RecorderManager {
             return Err(RecorderManagerError::AlreadyExisted { room_id });
         }
 
+        let event_tx = self.get_event_sender();
         let recorder: Box<dyn Recorder + 'static> = match platform {
             PlatformType::BiliBili => Box::new(
                 BiliRecorder::new(
@@ -121,6 +267,7 @@ impl RecorderManager {
                     account,
                     self.config.clone(),
                     auto_start,
+                    event_tx,
                 )
                 .await?,
             ),
@@ -132,6 +279,7 @@ impl RecorderManager {
                     account,
                     &self.db,
                     auto_start,
+                    event_tx,
                 )
                 .await?,
             ),
@@ -206,6 +354,20 @@ impl RecorderManager {
                 room_id: params.room_id,
             });
         }
+
+        let recorder = recorders.get(&recorder_id).unwrap();
+
+        self.clip_range_on_recorder(&**recorder, Some(reporter), clip_file, params)
+            .await
+    }
+
+    pub async fn clip_range_on_recorder(
+        &self,
+        recorder: &dyn Recorder,
+        reporter: Option<&ProgressReporter>,
+        clip_file: PathBuf,
+        params: &ClipRangeParams,
+    ) -> Result<PathBuf, RecorderManagerError> {
         let range_m3u8 = format!(
             "http://127.0.0.1/{}/{}/{}/playlist.m3u8?start={}&end={}",
             params.platform, params.room_id, params.live_id, params.x, params.y
@@ -241,11 +403,9 @@ impl RecorderManager {
             return Ok(clip_file);
         }
 
-        // encode danmu into clip
-        let recorder = recorders.get(&recorder_id).unwrap();
         let danmus = recorder.comments(&params.live_id).await;
         if danmus.is_err() {
-            log::error!("Failed to get danmus from {}", recorder_id);
+            log::error!("Failed to get danmus");
             return Ok(clip_file);
         }
 

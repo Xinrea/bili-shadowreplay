@@ -7,7 +7,7 @@ use async_ffmpeg_sidecar::log_parser::FfmpegLogParser;
 use tokio::io::BufReader;
 
 pub async fn clip_from_m3u8(
-    reporter: &impl ProgressReporterTrait,
+    reporter: Option<&impl ProgressReporterTrait>,
     m3u8_index: &Path,
     output_path: &Path,
 ) -> Result<(), String> {
@@ -31,7 +31,14 @@ pub async fn clip_from_m3u8(
     let mut clip_error = None;
     while let Ok(event) = parser.parse_next_event().await {
         match event {
-            FfmpegEvent::Progress(p) => reporter.update(format!("编码中：{}", p.time).as_str()),
+            FfmpegEvent::Progress(p) => {
+                if reporter.is_none() {
+                    continue;
+                }
+                reporter
+                    .unwrap()
+                    .update(format!("编码中：{}", p.time).as_str())
+            }
             FfmpegEvent::LogEOF => break,
             FfmpegEvent::Error(e) => {
                 log::error!("Clip error: {}", e);
@@ -190,7 +197,7 @@ pub async fn encode_video_subtitle(
 }
 
 pub async fn encode_video_danmu(
-    reporter: &impl ProgressReporterTrait,
+    reporter: Option<&impl ProgressReporterTrait>,
     file: &Path,
     subtitle: &Path,
 ) -> Result<PathBuf, String> {
@@ -248,7 +255,12 @@ pub async fn encode_video_danmu(
             }
             FfmpegEvent::Progress(p) => {
                 log::info!("Encode video danmu progress: {}", p.time);
-                reporter.update(format!("压制中：{}", p.time).as_str());
+                if reporter.is_none() {
+                    continue;
+                }
+                reporter
+                    .unwrap()
+                    .update(format!("压制中：{}", p.time).as_str());
             }
             FfmpegEvent::LogEOF => break,
             _ => {}

@@ -146,4 +146,8 @@ impl EntryStore {
     pub fn last_ts(&self) -> Option<i64> {
         self.entries.last().map(|entry| entry.ts)
     }
+
+    pub fn first_ts(&self) -> Option<i64> {
+        self.entries.first().map(|e| e.ts)
+    }
 }

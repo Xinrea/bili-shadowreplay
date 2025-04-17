@@ -18,6 +18,10 @@
     whisper_model: "",
     whisper_prompt: "",
     clip_name_format: "",
+    auto_generate: {
+      enabled: false,
+      encode_danmu: false,
+    },
   };
 
   let showModal = false;
@@ -419,6 +423,79 @@
                     }}
                   />
                 </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Auto Clip Settings -->
+        <div class="space-y-4">
+          <h2
+            class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
+          >
+            <FileText class="w-5 h-5 dark:icon-white" />
+            <span>自动切片</span>
+          </h2>
+          <div
+            class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700"
+          >
+            <!-- Auto Clip Generation -->
+            <div class="p-4">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                    整场录播生成
+                  </h3>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    启用后，直播结束后会自动整场录播进入切片列表
+                  </p>
+                </div>
+                <label class="relative inline-block w-11 h-6">
+                  <input
+                    type="checkbox"
+                    class="peer opacity-0 w-0 h-0"
+                    bind:checked={setting_model.auto_generate.enabled}
+                    on:change={async () => {
+                      await invoke("update_auto_generate", {
+                        enabled: setting_model.auto_generate.enabled,
+                        encodeDanmu: setting_model.auto_generate.encode_danmu,
+                      });
+                    }}
+                  />
+                  <span
+                    class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
+                  ></span>
+                </label>
+              </div>
+            </div>
+            <!-- Auto Clip Encode Danmu -->
+            <div class="p-4">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                    自动切片压制弹幕（暂时禁止）
+                  </h3>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    启用后，自动切片时会同时压制弹幕
+                  </p>
+                </div>
+                <label class="relative inline-block w-11 h-6">
+                  <input
+                    type="checkbox"
+                    class="peer opacity-0 w-0 h-0"
+                    disabled
+                    bind:checked={setting_model.auto_generate.encode_danmu}
+                    on:change={async () => {
+                      await invoke("update_auto_generate", {
+                        enabled: setting_model.auto_generate.enabled,
+                        encodeDanmu: setting_model.auto_generate.encode_danmu,
+                      });
+                    }}
+                  />
+                  <span
+                    class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
+                  ></span>
+                </label>
               </div>
             </div>
           </div>

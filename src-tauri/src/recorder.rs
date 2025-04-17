@@ -68,6 +68,7 @@ pub struct UserInfo {
 pub trait Recorder: Send + Sync + 'static {
     async fn run(&self);
     async fn stop(&self);
+    async fn first_segment_ts(&self, live_id: &str) -> i64;
     async fn m3u8_content(&self, live_id: &str, start: i64, end: i64) -> String;
     async fn info(&self) -> RecorderInfo;
     async fn comments(&self, live_id: &str) -> Result<Vec<DanmuEntry>, errors::RecorderError>;

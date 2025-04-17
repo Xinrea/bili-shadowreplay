@@ -184,3 +184,16 @@ pub async fn update_whisper_prompt(
     state.config.write().await.save();
     Ok(())
 }
+
+#[tauri::command]
+pub async fn update_auto_generate(
+    state: tauri::State<'_, State>,
+    enabled: bool,
+    encode_danmu: bool,
+) -> Result<(), String> {
+    let mut config = state.config.write().await;
+    config.auto_generate.enabled = enabled;
+    config.auto_generate.encode_danmu = encode_danmu;
+    config.save();
+    Ok(())
+}

@@ -5,7 +5,6 @@ use tauri::State as TauriState;
 
 #[tauri::command]
 pub async fn get_accounts(state: TauriState<'_, State>) -> Result<super::AccountInfo, String> {
-    let config = state.config.read().await.clone();
     let account_info = super::AccountInfo {
         accounts: state.db.get_accounts().await?,
     };

@@ -944,7 +944,7 @@ impl super::Recorder for BiliRecorder {
                 live_id,
                 "danmu.txt"
             );
-            log::info!("loading danmu cache from {}", cache_file_path);
+            log::debug!("loading danmu cache from {}", cache_file_path);
             let storage = DanmuStorage::new(&cache_file_path).await;
             if storage.is_none() {
                 return Ok(Vec::new());

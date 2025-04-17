@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
 use client::DouyinClientError;
 use dashmap::DashMap;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::AppHandle;
@@ -238,6 +239,7 @@ impl DouyinRecorder {
         *self.entry_store.write().await = None;
         *self.live_id.write().await = String::new();
         *self.last_update.write().await = Utc::now().timestamp();
+        *self.stream_url.write().await = None;
     }
 
     async fn get_work_dir(&self, live_id: &str) -> String {
@@ -316,18 +318,10 @@ impl DouyinRecorder {
             .as_ref()
             .unwrap()
             .last_sequence();
-        let continue_sequence = self
-            .entry_store
-            .read()
-            .await
-            .as_ref()
-            .unwrap()
-            .continue_sequence;
-        let mut sequence = playlist.media_sequence + continue_sequence;
 
-        for segment in playlist.segments {
+        for (i, segment) in playlist.segments.iter().enumerate() {
+            let sequence = playlist.media_sequence + i as u64;
             if sequence <= last_sequence {
-                sequence += 1;
                 continue;
             }
 
@@ -382,8 +376,6 @@ impl DouyinRecorder {
                     log::error!("Failed to download segment: {}", e);
                 }
             }
-
-            sequence += 1;
         }
 
         if new_segment_fetched {
@@ -443,8 +435,27 @@ impl DouyinRecorder {
 
         m3u8_content += "#EXT-X-TARGETDURATION:6\n";
 
-        let mut previous_seq = entries.first().unwrap().sequence;
+        let first_sequence = entries.first().as_ref().unwrap().sequence;
         let first_entry_ts = entries.first().unwrap().ts;
+        let mut previous_seq = first_sequence;
+
+        let mut discontinue_entries = HashMap::<u64, bool>::new();
+        for entry in &entries {
+            if range_required
+                && (entry.ts - first_entry_ts < start || entry.ts - first_entry_ts > end)
+            {
+                continue;
+            }
+            if entry.sequence - previous_seq > 1 {
+                discontinue_entries.insert(entry.sequence, true);
+                discontinue_entries.insert(previous_seq, true);
+            }
+
+            previous_seq = entry.sequence;
+        }
+
+        // reset previous seq
+        previous_seq = first_sequence;
         for entry in entries {
             if range_required
                 && (entry.ts - first_entry_ts < start || entry.ts - first_entry_ts > end)
@@ -455,8 +466,10 @@ impl DouyinRecorder {
                 m3u8_content += "#EXT-X-DISCONTINUITY\n";
             }
             previous_seq = entry.sequence;
-            let date_str = Utc.timestamp_opt(entry.ts, 0).unwrap().to_rfc3339();
-            m3u8_content += &format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", date_str);
+            if *discontinue_entries.get(&entry.sequence).unwrap_or(&false) {
+                let date_str = Utc.timestamp_opt(entry.ts, 0).unwrap().to_rfc3339();
+                m3u8_content += &format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", date_str);
+            }
             m3u8_content += &format!("#EXTINF:{:.2},\n", entry.length);
             m3u8_content += &format!("{}\n", entry.url);
         }

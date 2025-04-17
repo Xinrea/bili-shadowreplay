@@ -166,8 +166,6 @@ impl BiliRecorder {
                         *self.current_record.read().await,
                         *self.auto_start.read().await
                     );
-                    // just doing reset
-                    self.reset().await;
 
                     if live_status {
                         if self.config.read().await.live_start_notify {
@@ -212,6 +210,9 @@ impl BiliRecorder {
                         });
                     }
                 }
+
+                // just doing reset
+                self.reset().await;
 
                 *self.live_status.write().await = live_status;
 

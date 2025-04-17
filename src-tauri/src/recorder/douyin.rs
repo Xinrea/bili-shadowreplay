@@ -115,7 +115,6 @@ impl DouyinRecorder {
                 if (*self.live_status.read().await == LiveStatus::Live) != live_status {
                     // live status changed, reset current record flag
                     *self.current_record.write().await = false;
-                    self.reset().await;
 
                     log::info!(
                         "[{}]Live status changed to {}, current_record: {}, auto_start: {}",
@@ -154,6 +153,8 @@ impl DouyinRecorder {
                             live_id: self.live_id.read().await.clone(),
                         });
                     }
+
+                    self.reset().await;
                 }
 
                 if live_status {

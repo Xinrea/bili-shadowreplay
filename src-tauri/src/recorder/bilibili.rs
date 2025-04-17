@@ -828,7 +828,8 @@ impl super::Recorder for BiliRecorder {
                                         thread::sleep(std::time::Duration::from_millis(
                                             (1000 - ms) as u64,
                                         ));
-                                    } else {
+                                    }
+                                    if ms >= 3000 {
                                         log::warn!(
                                             "[{}]Update entries cost too long: {}ms",
                                             self_clone.room_id,

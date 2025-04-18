@@ -209,10 +209,10 @@ impl BiliRecorder {
                             live_id: self.live_id.read().await.clone(),
                         });
                     }
-                }
 
-                // just doing reset
-                self.reset().await;
+                    // just doing reset
+                    self.reset().await;
+                }
 
                 *self.live_status.write().await = live_status;
 

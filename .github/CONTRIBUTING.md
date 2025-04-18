@@ -26,7 +26,11 @@ Windows 下分为两个版本，分别是 `cpu` 和 `cuda` 版本。区别在于
 
 #### 1. error C3688
 
-手动在 Whisper 的 CMakeLists.txt 中添加 `add_compile_options("$<$<CXX_COMPILER_ID:MSVC>:/utf-8>")`；或是直接更改 Windows 系统设置，全局启动 Unicode。
+构建前配置参数 `/utf-8`：
+
+```powershell
+$env:CMAKE_CXX_FLAGS="/utf-8"
+```
 
 #### 2. error: 'exists' is unavailable: introduced in macOS 10.15
 

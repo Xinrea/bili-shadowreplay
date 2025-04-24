@@ -91,6 +91,7 @@ fn get_migrations() -> Vec<Migration> {
 }
 
 async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::Error>> {
+    println!("Setting up app state...");
     let client = Arc::new(BiliClient::new()?);
     let config = Arc::new(RwLock::new(Config::load()));
     let config_clone = config.clone();
@@ -127,42 +128,50 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         });
     }
 
-    let bili_account = db_clone.get_account_by_platform("bilibili").await?;
+    let bili_account = db_clone.get_account_by_platform("bilibili").await;
 
-    let webid = client_clone.fetch_webid(&bili_account).await?;
-
-    // update account infos
-    for account in accounts {
-        // only update bilibili account
-        let platform = PlatformType::from_str(&account.platform).unwrap();
-        if platform != PlatformType::BiliBili {
-            continue;
+    if let Ok(bili_account) = bili_account {
+        let mut webid = client_clone.fetch_webid(&bili_account).await;
+        if webid.is_err() {
+            log::error!("Failed to fetch webid: {}", webid.err().unwrap());
+            webid = Ok("".to_string());
         }
 
-        match client_clone
-            .get_user_info(&webid, &account, account.uid)
-            .await
-        {
-            Ok(account_info) => {
-                if let Err(e) = db_clone
-                    .update_account(
-                        &account.platform,
-                        account_info.user_id,
-                        &account_info.user_name,
-                        &account_info.user_avatar_url,
-                    )
-                    .await
-                {
-                    log::error!("Error when updating account info {}", e);
+        let webid = webid.unwrap();
+
+        // update account infos
+        for account in accounts {
+            // only update bilibili account
+            let platform = PlatformType::from_str(&account.platform).unwrap();
+            if platform != PlatformType::BiliBili {
+                continue;
+            }
+
+            match client_clone
+                .get_user_info(&webid, &account, account.uid)
+                .await
+            {
+                Ok(account_info) => {
+                    if let Err(e) = db_clone
+                        .update_account(
+                            &account.platform,
+                            account_info.user_id,
+                            &account_info.user_name,
+                            &account_info.user_avatar_url,
+                        )
+                        .await
+                    {
+                        log::error!("Error when updating account info {}", e);
+                    }
+                }
+                Err(e) => {
+                    log::error!("Get user info failed {}", e);
                 }
             }
-            Err(e) => {
-                log::error!("Get user info failed {}", e);
-            }
         }
-    }
 
-    init_rooms(&db_clone, recorder_manager_clone, &bili_account, &webid).await;
+        init_rooms(&db_clone, recorder_manager_clone, &bili_account, &webid).await;
+    }
 
     // try to rebuild archive table
     let cache_path = config_clone.read().await.cache.clone();
@@ -229,11 +238,13 @@ async fn init_rooms(
             log::warn!("No available douyin account found: {}", e);
         }
     }
+
+    println!("Rooms initialized");
 }
 
 fn setup_plugins(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     let migrations = get_migrations();
-    builder
+    let builder = builder
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             let _ = app
                 .get_webview_window("main")
@@ -252,7 +263,11 @@ fn setup_plugins(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::W
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_dialog::init());
+
+    println!("Plugins initialized");
+
+    builder
 }
 
 fn setup_event_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {

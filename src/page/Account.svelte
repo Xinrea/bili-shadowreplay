@@ -95,7 +95,7 @@
       return;
     }
     try {
-      console.log("add_cookie", cookie_str, selectedPlatform);
+      console.log("add_cookie", selectedPlatform);
       await invoke("add_account", {
         cookies: cookie_str,
         platform: selectedPlatform,

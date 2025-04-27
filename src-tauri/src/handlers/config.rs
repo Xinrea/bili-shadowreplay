@@ -16,7 +16,8 @@ pub async fn set_cache_path(
     if old_cache_path == cache_path {
         return Ok(());
     }
-    // TODO only pause recorders
+
+    state.recorder_manager.set_migrating(true).await;
     // stop and clear all recorders
     state.recorder_manager.stop_all().await;
     // first switch to new cache
@@ -58,15 +59,8 @@ pub async fn set_cache_path(
 
     log::info!("Copy old cache to new cache done");
     state.db.new_message("缓存目录切换", "缓存切换完成").await?;
-    // start all recorders
-    let bili_account = state.db.get_account_by_platform("bilibili").await?;
-    crate::init_rooms(
-        &state.db,
-        state.recorder_manager.clone(),
-        &bili_account,
-        &state.config.read().await.webid,
-    )
-    .await;
+
+    state.recorder_manager.set_migrating(false).await;
 
     // remove all old cache entries
     for entry in old_cache_entries {

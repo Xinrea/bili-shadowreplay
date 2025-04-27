@@ -19,6 +19,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tauri::AppHandle;
 use tokio::fs::{remove_file, write};
@@ -63,6 +64,7 @@ pub struct RecorderManager {
     config: Arc<RwLock<Config>>,
     recorders: Arc<RwLock<HashMap<String, Box<dyn Recorder>>>>,
     event_tx: broadcast::Sender<RecorderEvent>,
+    is_migrating: Arc<AtomicBool>,
 }
 
 custom_error! {pub RecorderManagerError
@@ -114,12 +116,18 @@ impl RecorderManager {
             config,
             recorders: Arc::new(RwLock::new(HashMap::new())),
             event_tx,
+            is_migrating: Arc::new(AtomicBool::new(false)),
         };
 
         // Start event listener
         let manager_clone = manager.clone();
         tokio::spawn(async move {
             manager_clone.handle_events().await;
+        });
+
+        let manager_clone = manager.clone();
+        tokio::spawn(async move {
+            manager_clone.monitor_recorders().await;
         });
 
         manager
@@ -132,6 +140,7 @@ impl RecorderManager {
             config: self.config.clone(),
             recorders: self.recorders.clone(),
             event_tx: self.event_tx.clone(),
+            is_migrating: self.is_migrating.clone(),
         }
     }
 
@@ -240,6 +249,67 @@ impl RecorderManager {
             Err(e) => {
                 log::error!("Auto generate clip failed: {}", e)
             }
+        }
+    }
+
+    pub async fn set_migrating(&self, migrating: bool) {
+        self.is_migrating
+            .store(migrating, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    async fn monitor_recorders(&self) {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+        loop {
+            if self.is_migrating.load(std::sync::atomic::Ordering::Relaxed) {
+                interval.tick().await;
+                continue;
+            }
+            // get a list of recorders in db, if not created yet, create them
+            let recorders = self.db.get_recorders().await;
+            if recorders.is_err() {
+                log::error!(
+                    "Failed to get recorders from db: {}",
+                    recorders.err().unwrap()
+                );
+                return;
+            }
+            let recorders = recorders.unwrap();
+            let mut recorder_map = HashMap::new();
+            for recorder in recorders {
+                let platform = PlatformType::from_str(&recorder.platform).unwrap();
+                let room_id = recorder.room_id;
+                let auto_start = recorder.auto_start;
+                recorder_map.insert((platform, room_id), auto_start);
+            }
+            let mut recorders_to_add = Vec::new();
+            for (platform, room_id) in recorder_map.keys() {
+                let recorder_id = format!("{}:{}", platform.as_str(), room_id);
+                if !self.recorders.read().await.contains_key(&recorder_id) {
+                    recorders_to_add.push((*platform, *room_id));
+                }
+            }
+            for (platform, room_id) in recorders_to_add {
+                if self.is_migrating.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                let auto_start = recorder_map.get(&(platform, room_id)).unwrap();
+                let account = self
+                    .db
+                    .get_account_by_platform(platform.clone().as_str())
+                    .await;
+                if account.is_err() {
+                    log::error!("Failed to get account: {}", account.err().unwrap());
+                    continue;
+                }
+                let account = account.unwrap();
+                if let Err(e) = self
+                    .add_recorder("", &account, platform, room_id, *auto_start)
+                    .await
+                {
+                    log::error!("Failed to add recorder: {}", e);
+                }
+            }
+            interval.tick().await;
         }
     }
 

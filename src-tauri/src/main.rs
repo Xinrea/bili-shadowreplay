@@ -169,8 +169,6 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
                 }
             }
         }
-
-        init_rooms(&db_clone, recorder_manager_clone, &bili_account, &webid).await;
     }
 
     // try to rebuild archive table
@@ -186,60 +184,6 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         recorder_manager,
         app_handle: app.handle().clone(),
     })
-}
-
-async fn init_rooms(
-    db_clone: &Arc<Database>,
-    recorder_manager_clone: Arc<RecorderManager>,
-    primary_account: &database::account::AccountRow,
-    webid: &str,
-) {
-    let initial_rooms = db_clone.get_recorders().await.unwrap();
-    for room in &initial_rooms {
-        let platform = PlatformType::from_str(&room.platform).unwrap();
-        if platform != PlatformType::BiliBili {
-            continue;
-        }
-        if let Err(e) = recorder_manager_clone
-            .add_recorder(
-                webid,
-                primary_account,
-                platform,
-                room.room_id,
-                room.auto_start,
-            )
-            .await
-        {
-            log::error!("error when adding initial rooms: {}", e);
-        }
-    }
-
-    match db_clone.get_account_by_platform("douyin").await {
-        Ok(account) => {
-            for room in &initial_rooms {
-                if room.platform != "douyin" {
-                    continue;
-                }
-                if let Err(e) = recorder_manager_clone
-                    .add_recorder(
-                        webid,
-                        &account,
-                        PlatformType::Douyin,
-                        room.room_id,
-                        room.auto_start,
-                    )
-                    .await
-                {
-                    log::error!("error when adding initial rooms: {}", e);
-                }
-            }
-        }
-        Err(e) => {
-            log::warn!("No available douyin account found: {}", e);
-        }
-    }
-
-    println!("Rooms initialized");
 }
 
 fn setup_plugins(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {

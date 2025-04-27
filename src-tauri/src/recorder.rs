@@ -7,6 +7,7 @@ mod entry;
 
 use async_trait::async_trait;
 use danmu::DanmuEntry;
+use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlatformType {
@@ -34,6 +35,12 @@ impl PlatformType {
             "youtube" => Some(PlatformType::Youtube),
             _ => None,
         }
+    }
+}
+
+impl Hash for PlatformType {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
     }
 }
 

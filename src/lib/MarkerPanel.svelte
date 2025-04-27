@@ -8,7 +8,7 @@
   import type { Marker } from "./interface";
   import { createEventDispatcher } from "svelte";
   import { Tooltip } from "flowbite-svelte";
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke } from "../lib/invoker";
   import { save } from "@tauri-apps/plugin-dialog";
   import type { RecordItem } from "./db";
   const dispatch = createEventDispatcher();

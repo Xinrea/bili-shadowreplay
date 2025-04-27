@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke } from "../lib/invoker";
   import { scale, fade } from "svelte/transition";
   import { Textarea } from "flowbite-svelte";
   import Image from "../lib/Image.svelte";

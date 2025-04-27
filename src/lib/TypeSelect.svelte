@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke } from "../lib/invoker";
   import { Dropdown, DropdownItem, Select } from "flowbite-svelte";
   import { ChevronDownOutline } from "flowbite-svelte-icons";
   import type { Children, VideoType } from "./interface";

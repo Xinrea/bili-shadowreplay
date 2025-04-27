@@ -20,7 +20,7 @@
     type VideoItem,
   } from "./interface";
   import SubtitleStyleEditor from "./SubtitleStyleEditor.svelte";
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke } from "../lib/invoker";
   import { listen } from "@tauri-apps/api/event";
   import { onDestroy } from "svelte/internal";
 

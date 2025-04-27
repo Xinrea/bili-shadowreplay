@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke } from "../lib/invoker";
   import { open } from "@tauri-apps/plugin-dialog";
 
   import type { Config } from "../lib/interface";

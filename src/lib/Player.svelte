@@ -3,7 +3,7 @@
 </script>
 
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke } from "../lib/invoker";
   import { listen } from "@tauri-apps/api/event";
   import type { AccountInfo } from "./db";
   import type { Marker, RecorderList, RecorderInfo } from "./interface";

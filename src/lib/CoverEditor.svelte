@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Play, X, Type, Palette, Move, Plus, Trash2 } from "lucide-svelte";
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke } from "../lib/invoker";
   import { onMount, createEventDispatcher } from "svelte";
 
   const dispatch = createEventDispatcher();

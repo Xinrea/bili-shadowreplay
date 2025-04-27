@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+  import { convertFileSrc } from "@tauri-apps/api/core";
+  import { invoke } from "./lib/invoker";
   import Player from "./lib/Player.svelte";
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import type { AccountInfo, RecordItem } from "./lib/db";

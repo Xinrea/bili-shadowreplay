@@ -160,6 +160,7 @@
     const player = controls.getPlayer();
 
     const config = {
+      enableKeyboardPlaybackControls: false,
       seekBarColors: {
         base: "rgba(255,255,255,.2)",
         buffered: "rgba(255,255,255,.4)",
@@ -822,7 +823,8 @@
     style="width: 100%; height: 100vh;"
   >
     <!-- svelte-ignore a11y-media-has-caption -->
-    <video autoplay data-shaka-player id="video"></video>
+    <video autoplay data-shaka-player id="video" disablepictureinpicture
+    ></video>
   </div>
 </section>
 <div id="overlay">

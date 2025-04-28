@@ -806,14 +806,19 @@ async fn handler_hls(
         return Err(StatusCode::NOT_FOUND);
     }
 
-    let platform = path_segs[0];
-    let room_id = path_segs[1]
-        .parse::<u64>()
-        .map_err(|_| StatusCode::NOT_FOUND)?;
-    let live_id = path_segs[2];
     let filename = path_segs[3];
 
-    let hls = fetch_hls(state.0, uri.clone())
+    let query_str = query
+        .map(|q| {
+            q.0.iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect::<Vec<String>>()
+                .join("&")
+        })
+        .unwrap_or_default();
+    let uri_with_query = format!("{}?{}", uri, query_str);
+
+    let hls = fetch_hls(state.0, uri_with_query)
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
 

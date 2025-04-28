@@ -609,7 +609,8 @@ impl RecorderManager {
 
     pub async fn handle_hls_request(&self, uri: &str) -> Result<Vec<u8>, RecorderManagerError> {
         let cache_path = self.config.read().await.cache.clone();
-        let path = uri;
+        let path = uri.split('?').next().unwrap_or(uri);
+        let params = uri.split('?').nth(1).unwrap_or("");
         let path_segs: Vec<&str> = path.split('/').collect();
 
         if path_segs.len() != 4 {
@@ -625,7 +626,7 @@ impl RecorderManager {
         // parse live id
         let live_id = path_segs[2];
 
-        let params = Some("");
+        let params = Some(params);
 
         if path_segs[3] == "playlist.m3u8" {
             // get recorder

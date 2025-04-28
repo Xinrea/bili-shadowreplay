@@ -61,7 +61,7 @@ async function get(url: string) {
   if (TAURI_ENV) {
     return await tauri_fetch(url);
   }
-  return await fetch(`${API_BASE_URL}/fetch`, {
+  const response = await fetch(`${API_BASE_URL}/fetch`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -72,13 +72,8 @@ async function get(url: string) {
       headers: {},
       body: null,
     }),
-  }).then(async (response) => {
-    const result = await response.json();
-    if (result.code === 0) {
-      return JSON.parse(result.data);
-    }
-    throw new Error(result.message);
   });
+  return response;
 }
 
 async function set_title(title: string) {

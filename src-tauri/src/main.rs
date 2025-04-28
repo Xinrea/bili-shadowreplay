@@ -154,7 +154,7 @@ async fn setup_server_state() -> Result<State, Box<dyn std::error::Error>> {
 
     db.set(db_pool).await;
 
-    let recorder_manager = Arc::new(RecorderManager::new(None, db.clone(), config.clone()));
+    let recorder_manager = Arc::new(RecorderManager::new(db.clone(), config.clone()));
 
     let _ = try_rebuild_archives(&db, config.read().await.cache.clone().into()).await;
 

@@ -137,6 +137,7 @@ impl RecorderManager {
 
     pub fn clone(&self) -> Self {
         RecorderManager {
+            #[cfg(not(feature = "headless"))]
             app_handle: self.app_handle.clone(),
             db: self.db.clone(),
             config: self.config.clone(),

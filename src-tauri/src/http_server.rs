@@ -769,7 +769,7 @@ struct HttpProxyRequest {
 async fn handler_fetch(
     _state: axum::extract::State<State>,
     Json(param): Json<HttpProxyRequest>,
-) -> Result<Json<ApiResponse<String>>, String> {
+) -> Result<impl IntoResponse, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
@@ -798,49 +798,32 @@ async fn handler_fetch(
 
     let response = request.send().await.map_err(|e| e.to_string())?;
 
-    let status = response.status();
+    let status = axum::http::StatusCode::from_u16(response.status().as_u16())
+        .map_err(|_| "Invalid status code".to_string())?;
     let headers = response.headers().clone();
 
     // Get content type
     let content_type = headers
         .get("content-type")
         .and_then(|ct| ct.to_str().ok())
-        .unwrap_or("");
+        .unwrap_or("application/octet-stream");
 
-    // Handle binary data for images
-    let body = if content_type.starts_with("image/") {
-        let bytes = response.bytes().await.map_err(|e| e.to_string())?;
-        base64::encode(bytes)
-    } else {
-        response.text().await.map_err(|e| e.to_string())?
-    };
+    // Get response body
+    let body = response.bytes().await.map_err(|e| e.to_string())?;
 
-    // Create a response object that includes status and headers
-    #[derive(Debug, Serialize)]
-    struct ProxyResponse {
-        status: u16,
-        headers: std::collections::HashMap<String, String>,
-        body: String,
-        content_type: String,
-    }
-
-    let mut response_headers = std::collections::HashMap::new();
+    // Create response headers
+    let mut response_headers = axum::http::HeaderMap::new();
     for (key, value) in headers.iter() {
         if let Ok(value_str) = value.to_str() {
-            response_headers.insert(key.to_string(), value_str.to_string());
+            if let Ok(header_name) = axum::http::HeaderName::from_bytes(key.as_ref()) {
+                if let Ok(header_value) = axum::http::HeaderValue::from_str(value_str) {
+                    response_headers.insert(header_name, header_value);
+                }
+            }
         }
     }
 
-    let proxy_response = ProxyResponse {
-        status: status.as_u16(),
-        headers: response_headers,
-        body,
-        content_type: content_type.to_string(),
-    };
-
-    Ok(Json(ApiResponse::success(
-        serde_json::to_string(&proxy_response).map_err(|e| e.to_string())?,
-    )))
+    Ok((status, response_headers, body))
 }
 
 pub async fn start_api_server(state: State) {

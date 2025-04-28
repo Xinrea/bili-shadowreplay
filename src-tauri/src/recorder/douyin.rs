@@ -40,6 +40,7 @@ impl From<DouyinClientError> for RecorderError {
 
 #[derive(Clone)]
 pub struct DouyinRecorder {
+    #[cfg(not(feature = "headless"))]
     app_handle: AppHandle,
     client: client::DouyinClient,
     db: Arc<Database>,
@@ -61,7 +62,7 @@ pub struct DouyinRecorder {
 
 impl DouyinRecorder {
     pub async fn new(
-        app_handle: AppHandle,
+        #[cfg(not(feature = "headless"))] app_handle: AppHandle,
         room_id: u64,
         config: Arc<RwLock<Config>>,
         douyin_account: &AccountRow,
@@ -77,6 +78,7 @@ impl DouyinRecorder {
         }
 
         Ok(Self {
+            #[cfg(not(feature = "headless"))]
             app_handle,
             db: db.clone(),
             room_id,
@@ -126,6 +128,7 @@ impl DouyinRecorder {
                     );
 
                     if live_status {
+                        #[cfg(not(feature = "headless"))]
                         self.app_handle
                             .notification()
                             .builder()
@@ -137,6 +140,7 @@ impl DouyinRecorder {
                             .show()
                             .unwrap();
                     } else {
+                        #[cfg(not(feature = "headless"))]
                         self.app_handle
                             .notification()
                             .builder()
@@ -147,7 +151,6 @@ impl DouyinRecorder {
                             ))
                             .show()
                             .unwrap();
-
                         let _ = self.live_end_channel.send(RecorderEvent::LiveEnd {
                             platform: PlatformType::Douyin,
                             room_id: self.room_id,

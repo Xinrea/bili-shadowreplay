@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { fetch } from "@tauri-apps/plugin-http";
+  import { get } from "./invoker";
   export let src = "";
   export let iclass = "";
   let b = "";
@@ -7,9 +7,7 @@
     if (!url) {
       return "/imgs/douyin.png";
     }
-    const response = await fetch(url, {
-      method: "GET",
-    });
+    const response = await get(url);
     return URL.createObjectURL(await response.blob());
   }
   async function init() {

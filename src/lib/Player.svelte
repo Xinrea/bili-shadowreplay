@@ -3,7 +3,7 @@
 </script>
 
 <script lang="ts">
-  import { invoke } from "../lib/invoker";
+  import { invoke, TAURI_ENV } from "../lib/invoker";
   import { listen } from "@tauri-apps/api/event";
   import type { AccountInfo } from "./db";
   import type { Marker, RecorderList, RecorderInfo } from "./interface";
@@ -12,7 +12,6 @@
   import {
     GridOutline,
     SortHorizontalOutline,
-    DownloadOutline,
     FileExportOutline,
   } from "flowbite-svelte-icons";
   import { save } from "@tauri-apps/plugin-dialog";
@@ -71,7 +70,7 @@
           const arrayBuffer = uint8Array.buffer;
 
           if (requestType == 0) {
-            let m3u8Content = data.map((v) => String.fromCharCode(v)).join();
+            let m3u8Content = new TextDecoder().decode(uint8Array);
             const offsetRegex = /#EXT-X-OFFSET:(\d+)/;
             const match = m3u8Content.match(offsetRegex);
 
@@ -345,26 +344,28 @@
         shakaSpacer.appendChild(accountSelect);
         shakaSpacer.appendChild(danmakuInput);
 
-        // listen to danmaku event
-        const unlisten = await listen(
-          "danmu:" + room_id,
-          (event: { payload: DanmuEntry }) => {
-            // if not enabled or playback is not keep up with live, ignore the danmaku
-            if (!danmu_enabled || get_total() - video.currentTime > 5) {
+        if (TAURI_ENV) {
+          // listen to danmaku event
+          const unlisten = await listen(
+            "danmu:" + room_id,
+            (event: { payload: DanmuEntry }) => {
+              // if not enabled or playback is not keep up with live, ignore the danmaku
+              if (!danmu_enabled || get_total() - video.currentTime > 5) {
+                danmu_records.push(event.payload);
+                return;
+              }
+              if (Object.keys(danmu_displayed).length > 1000) {
+                danmu_displayed = {};
+              }
+              danmu_displayed[event.payload.ts] = true;
               danmu_records.push(event.payload);
-              return;
+              danmu_handler(event.payload.content);
             }
-            if (Object.keys(danmu_displayed).length > 1000) {
-              danmu_displayed = {};
-            }
-            danmu_displayed[event.payload.ts] = true;
-            danmu_records.push(event.payload);
-            danmu_handler(event.payload.content);
-          }
-        );
-        window.onbeforeunload = () => {
-          unlisten();
-        };
+          );
+          window.onbeforeunload = () => {
+            unlisten();
+          };
+        }
       }
 
       // create a danmaku toggle button

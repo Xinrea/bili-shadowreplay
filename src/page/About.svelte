@@ -1,23 +1,10 @@
 <script type="ts">
-  import { getVersion } from "@tauri-apps/api/app";
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import { open } from "@tauri-apps/plugin-shell";
   import { BookOpen, MessageCircle, Video, Heart } from "lucide-svelte";
-  import {
-    hasNewVersion,
-    currentVersion,
-    latestVersion,
-  } from "../lib/stores/version";
-  const appWindow = getCurrentWebviewWindow();
-  let version = "";
+  import { hasNewVersion, latestVersion } from "../lib/stores/version";
+  let version = `v${__APP_VERSION__}`;
   let showDonateModal = false;
-
-  getVersion().then((v) => {
-    version = "v" + v;
-    currentVersion.set(v);
-    appWindow.setTitle(`BiliBili ShadowReplay - ${version}`);
-    console.log(version);
-  });
   let releases = [];
 
   // get releases from github api

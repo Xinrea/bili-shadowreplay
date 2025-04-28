@@ -7,6 +7,8 @@ mod danmu2ass;
 mod database;
 mod ffmpeg;
 mod handlers;
+#[cfg(feature = "headless")]
+mod http_server;
 mod progress_event;
 mod recorder;
 mod recorder_manager;
@@ -17,16 +19,28 @@ mod tray;
 use archive_migration::try_rebuild_archives;
 use config::Config;
 use database::Database;
-use recorder::{bilibili::client::BiliClient, PlatformType};
+use futures_core::future::BoxFuture;
+use recorder::bilibili::client::BiliClient;
 use recorder_manager::RecorderManager;
 use simplelog::ConfigBuilder;
+use sqlx::error::BoxDynError;
+use sqlx::migrate::Migration as SqlxMigration;
+use sqlx::{
+    migrate::{MigrateDatabase, MigrationSource, Migrator},
+    Pool, Sqlite,
+};
 use state::State;
 use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
-use tauri::{Manager, WindowEvent};
 use tauri_plugin_sql::{Migration, MigrationKind};
 use tokio::sync::RwLock;
+
+#[cfg(not(feature = "headless"))]
+use {
+    recorder::PlatformType,
+    tauri::{Manager, WindowEvent},
+};
 
 async fn setup_logging(log_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     // mkdir if not exists
@@ -90,6 +104,69 @@ fn get_migrations() -> Vec<Migration> {
     ]
 }
 
+#[derive(Debug)]
+struct MigrationList(Vec<Migration>);
+
+impl MigrationSource<'static> for MigrationList {
+    fn resolve(self) -> BoxFuture<'static, std::result::Result<Vec<SqlxMigration>, BoxDynError>> {
+        Box::pin(async move {
+            let mut migrations = Vec::new();
+            for migration in self.0 {
+                if matches!(migration.kind, MigrationKind::Up) {
+                    migrations.push(SqlxMigration::new(
+                        migration.version,
+                        migration.description.into(),
+                        migration.kind.into(),
+                        migration.sql.into(),
+                        false,
+                    ));
+                }
+            }
+            Ok(migrations)
+        })
+    }
+}
+
+#[cfg(feature = "headless")]
+async fn setup_server_state() -> Result<State, Box<dyn std::error::Error>> {
+    setup_logging(Path::new("bsr.log")).await?;
+    println!("Setting up server state...");
+    let client = Arc::new(BiliClient::new()?);
+    let config = Arc::new(RwLock::new(Config::load()));
+    let db = Arc::new(Database::new());
+    // connect to sqlite database
+
+    let conn_url = "sqlite:data/data_v2.db";
+
+    if !Sqlite::database_exists(conn_url).await.unwrap_or(false) {
+        Sqlite::create_database(conn_url).await?;
+    }
+    let db_pool: Pool<Sqlite> = Pool::connect(conn_url).await?;
+    let migrations = get_migrations();
+
+    let migrator = Migrator::new(MigrationList(migrations))
+        .await
+        .expect("Failed to create migrator");
+    migrator
+        .run(&db_pool)
+        .await
+        .expect("Failed to run migrations");
+
+    db.set(db_pool).await;
+
+    let recorder_manager = Arc::new(RecorderManager::new(None, db.clone(), config.clone()));
+
+    let _ = try_rebuild_archives(&db, config.read().await.cache.clone().into()).await;
+
+    Ok(State {
+        db,
+        client,
+        config,
+        recorder_manager,
+    })
+}
+
+#[cfg(not(feature = "headless"))]
 async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::Error>> {
     println!("Setting up app state...");
     let client = Arc::new(BiliClient::new()?);
@@ -108,7 +185,6 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         db.clone(),
         config.clone(),
     ));
-    let recorder_manager_clone = recorder_manager.clone();
     let binding = dbs.0.read().await;
     let dbpool = binding.get("sqlite:data_v2.db").unwrap();
     let sqlite_pool = match dbpool {
@@ -186,6 +262,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     })
 }
 
+#[cfg(not(feature = "headless"))]
 fn setup_plugins(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     let migrations = get_migrations();
     let builder = builder
@@ -214,6 +291,7 @@ fn setup_plugins(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::W
     builder
 }
 
+#[cfg(not(feature = "headless"))]
 fn setup_event_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder.on_window_event(|window, event| {
         if let WindowEvent::CloseRequested { api, .. } = event {
@@ -225,6 +303,7 @@ fn setup_event_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<t
     })
 }
 
+#[cfg(not(feature = "headless"))]
 fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder.invoke_handler(tauri::generate_handler![
         crate::handlers::account::get_accounts,
@@ -282,9 +361,9 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
     ])
 }
 
+#[cfg(not(feature = "headless"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = fix_path_env::fix();
-
     let builder = tauri::Builder::default();
     let builder = setup_plugins(builder);
     let builder = setup_event_handlers(builder);
@@ -314,5 +393,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .run(tauri::generate_context!())?;
 
+    Ok(())
+}
+
+#[cfg(feature = "headless")]
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let state = setup_server_state()
+        .await
+        .expect("Failed to setup server state");
+    http_server::start_api_server(state).await;
     Ok(())
 }

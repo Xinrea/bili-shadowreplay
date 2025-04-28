@@ -59,6 +59,7 @@ pub enum RecorderEvent {
 }
 
 pub struct RecorderManager {
+    #[cfg(not(feature = "headless"))]
     app_handle: AppHandle,
     db: Arc<Database>,
     config: Arc<RwLock<Config>>,
@@ -105,12 +106,13 @@ impl From<RecorderManagerError> for String {
 
 impl RecorderManager {
     pub fn new(
-        app_handle: AppHandle,
+        #[cfg(not(feature = "headless"))] app_handle: AppHandle,
         db: Arc<Database>,
         config: Arc<RwLock<Config>>,
     ) -> RecorderManager {
         let (event_tx, _) = broadcast::channel(100);
         let manager = RecorderManager {
+            #[cfg(not(feature = "headless"))]
             app_handle,
             db,
             config,
@@ -330,6 +332,7 @@ impl RecorderManager {
         let recorder: Box<dyn Recorder + 'static> = match platform {
             PlatformType::BiliBili => Box::new(
                 BiliRecorder::new(
+                    #[cfg(not(feature = "headless"))]
                     self.app_handle.clone(),
                     webid,
                     &self.db,
@@ -343,6 +346,7 @@ impl RecorderManager {
             ),
             PlatformType::Douyin => Box::new(
                 DouyinRecorder::new(
+                    #[cfg(not(feature = "headless"))]
                     self.app_handle.clone(),
                     room_id,
                     self.config.clone(),

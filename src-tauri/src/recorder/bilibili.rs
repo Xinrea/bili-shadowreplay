@@ -38,6 +38,7 @@ use async_trait::async_trait;
 // TODO implement StreamType::TS
 #[derive(Clone)]
 pub struct BiliRecorder {
+    #[cfg(not(feature = "headless"))]
     app_handle: AppHandle,
     client: Arc<RwLock<BiliClient>>,
     db: Arc<Database>,
@@ -76,7 +77,7 @@ impl From<BiliClientError> for super::errors::RecorderError {
 
 impl BiliRecorder {
     pub async fn new(
-        app_handle: AppHandle,
+        #[cfg(not(feature = "headless"))] app_handle: AppHandle,
         webid: &str,
         db: &Arc<Database>,
         room_id: u64,
@@ -102,6 +103,7 @@ impl BiliRecorder {
         }
 
         let recorder = Self {
+            #[cfg(not(feature = "headless"))]
             app_handle,
             client: Arc::new(RwLock::new(client)),
             db: db.clone(),
@@ -169,6 +171,7 @@ impl BiliRecorder {
 
                     if live_status {
                         if self.config.read().await.live_start_notify {
+                            #[cfg(not(feature = "headless"))]
                             self.app_handle
                                 .notification()
                                 .builder()
@@ -193,6 +196,7 @@ impl BiliRecorder {
                             *self.cover.write().await = Some(cover_base64);
                         }
                     } else if self.config.read().await.live_end_notify {
+                        #[cfg(not(feature = "headless"))]
                         self.app_handle
                             .notification()
                             .builder()
@@ -315,6 +319,7 @@ impl BiliRecorder {
                 break;
             }
             if let WsStreamMessageType::DanmuMsg(msg) = msg {
+                #[cfg(not(feature = "headless"))]
                 let _ = self.app_handle.emit(
                     &format!("danmu:{}", room),
                     DanmuEntry {

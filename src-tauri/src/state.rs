@@ -19,5 +19,6 @@ pub struct State {
     pub client: Arc<BiliClient>,
     pub config: Arc<RwLock<Config>>,
     pub recorder_manager: Arc<RecorderManager>,
+    #[cfg(not(feature = "headless"))]
     pub app_handle: tauri::AppHandle,
 }

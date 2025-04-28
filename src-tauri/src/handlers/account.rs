@@ -1,19 +1,22 @@
 use crate::database::account::AccountRow;
 use crate::recorder::bilibili::client::{QrInfo, QrStatus};
 use crate::state::State;
+use crate::state_type;
+
+#[cfg(not(feature = "headless"))]
 use tauri::State as TauriState;
 
-#[tauri::command]
-pub async fn get_accounts(state: TauriState<'_, State>) -> Result<super::AccountInfo, String> {
+#[cfg_attr(not(feature = "headless"), tauri::command)]
+pub async fn get_accounts(state: state_type!()) -> Result<super::AccountInfo, String> {
     let account_info = super::AccountInfo {
         accounts: state.db.get_accounts().await?,
     };
     Ok(account_info)
 }
 
-#[tauri::command]
+#[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn add_account(
-    state: TauriState<'_, State>,
+    state: state_type!(),
     platform: String,
     cookies: &str,
 ) -> Result<AccountRow, String> {
@@ -38,9 +41,9 @@ pub async fn add_account(
     Ok(account)
 }
 
-#[tauri::command]
+#[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn remove_account(
-    state: TauriState<'_, State>,
+    state: state_type!(),
     platform: String,
     uid: u64,
 ) -> Result<(), String> {
@@ -51,24 +54,21 @@ pub async fn remove_account(
     Ok(state.db.remove_account(&platform, uid).await?)
 }
 
-#[tauri::command]
-pub async fn get_account_count(state: TauriState<'_, State>) -> Result<u64, String> {
+#[cfg_attr(not(feature = "headless"), tauri::command)]
+pub async fn get_account_count(state: state_type!()) -> Result<u64, String> {
     Ok(state.db.get_accounts().await?.len() as u64)
 }
 
-#[tauri::command]
-pub async fn get_qr_status(
-    state: tauri::State<'_, State>,
-    qrcode_key: &str,
-) -> Result<QrStatus, ()> {
+#[cfg_attr(not(feature = "headless"), tauri::command)]
+pub async fn get_qr_status(state: state_type!(), qrcode_key: &str) -> Result<QrStatus, ()> {
     match state.client.get_qr_status(qrcode_key).await {
         Ok(qr_status) => Ok(qr_status),
         Err(_e) => Err(()),
     }
 }
 
-#[tauri::command]
-pub async fn get_qr(state: tauri::State<'_, State>) -> Result<QrInfo, ()> {
+#[cfg_attr(not(feature = "headless"), tauri::command)]
+pub async fn get_qr(state: state_type!()) -> Result<QrInfo, ()> {
     match state.client.get_qr().await {
         Ok(qr_info) => Ok(qr_info),
         Err(_e) => Err(()),

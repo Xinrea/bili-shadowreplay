@@ -28,6 +28,7 @@ pub struct ProgressFinished<'a> {
 
 #[derive(Clone)]
 pub struct ProgressReporter {
+    #[cfg(not(feature = "headless"))]
     app_handle: AppHandle,
     event_id: String,
     pub cancel: Arc<AtomicBool>,
@@ -40,10 +41,14 @@ pub trait ProgressReporterTrait: Send + Sync + Clone {
 }
 
 impl ProgressReporter {
-    pub async fn new(app_handle: &AppHandle, event_id: &str) -> Result<Self, String> {
+    pub async fn new(
+        #[cfg(not(feature = "headless"))] app_handle: AppHandle,
+        event_id: &str,
+    ) -> Result<Self, String> {
         // if already exists, return
         if CANCEL_FLAG_MAP.read().await.get(event_id).is_some() {
             log::error!("Task already exists: {}", event_id);
+            #[cfg(not(feature = "headless"))]
             let _ = app_handle.emit(
                 "progress-finished",
                 ProgressFinished {
@@ -62,7 +67,8 @@ impl ProgressReporter {
             .insert(event_id.to_string(), cancel.clone());
 
         Ok(Self {
-            app_handle: app_handle.clone(),
+            #[cfg(not(feature = "headless"))]
+            app_handle,
             event_id: event_id.to_string(),
             cancel,
         })
@@ -72,6 +78,7 @@ impl ProgressReporter {
 #[async_trait]
 impl ProgressReporterTrait for ProgressReporter {
     fn update(&self, content: &str) {
+        #[cfg(not(feature = "headless"))]
         if let Err(e) = self.app_handle.emit(
             "progress-update",
             ProgressUpdate {
@@ -84,6 +91,7 @@ impl ProgressReporterTrait for ProgressReporter {
     }
 
     async fn finish(&self, success: bool, message: &str) {
+        #[cfg(not(feature = "headless"))]
         if let Err(e) = self.app_handle.emit(
             "progress-finished",
             ProgressFinished {

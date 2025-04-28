@@ -7,6 +7,10 @@ use tokio::io::AsyncWriteExt;
 
 use crate::recorder::PlatformType;
 use crate::state::State;
+use crate::state_type;
+
+#[cfg(not(feature = "headless"))]
+use tauri::State as TauriState;
 
 pub fn copy_dir_all(
     src: impl AsRef<std::path::Path>,
@@ -25,7 +29,7 @@ pub fn copy_dir_all(
     Ok(())
 }
 
-#[tauri::command]
+#[cfg_attr(not(feature = "headless"), tauri::command)]
 pub fn show_in_folder(path: String) {
     #[cfg(target_os = "windows")]
     {
@@ -84,8 +88,8 @@ pub struct DiskInfo {
     free: u64,
 }
 
-#[tauri::command]
-pub async fn get_disk_info(state: tauri::State<'_, State>) -> Result<DiskInfo, ()> {
+#[cfg_attr(not(feature = "headless"), tauri::command)]
+pub async fn get_disk_info(state: state_type!()) -> Result<DiskInfo, ()> {
     let cache = state.config.read().await.cache.clone();
     // check system disk info
     let disks = sysinfo::Disks::new_with_refreshed_list();
@@ -111,9 +115,9 @@ pub async fn get_disk_info(state: tauri::State<'_, State>) -> Result<DiskInfo, (
     Ok(disk_info)
 }
 
-#[tauri::command]
+#[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn export_to_file(
-    _state: tauri::State<'_, State>,
+    state: state_type!(),
     file_name: &str,
     content: &str,
 ) -> Result<(), String> {
@@ -136,59 +140,64 @@ pub async fn export_to_file(
     Ok(())
 }
 
-#[tauri::command]
-pub async fn open_log_folder(state: tauri::State<'_, State>) -> Result<(), String> {
-    let log_dir = state.app_handle.path().app_log_dir().unwrap();
-    show_in_folder(log_dir.to_str().unwrap().to_string());
+#[cfg_attr(not(feature = "headless"), tauri::command)]
+pub async fn open_log_folder(state: state_type!()) -> Result<(), String> {
+    #[cfg(not(feature = "headless"))]
+    {
+        let log_dir = state.app_handle.path().app_log_dir().unwrap();
+        show_in_folder(log_dir.to_str().unwrap().to_string());
+    }
     Ok(())
 }
 
-#[tauri::command]
+#[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn open_live(
-    state: tauri::State<'_, State>,
+    state: state_type!(),
     platform: String,
     room_id: u64,
     live_id: String,
 ) -> Result<(), String> {
     log::info!("Open player window: {} {}", room_id, live_id);
-    let platform = PlatformType::from_str(&platform).unwrap();
-    let recorder_info = state
-        .recorder_manager
-        .get_recorder_info(platform, room_id)
-        .await
-        .unwrap();
-    let handle = state.app_handle.clone();
-    let builder = tauri::WebviewWindowBuilder::new(
-        &handle,
-        format!("Live:{}:{}", room_id, live_id),
-        tauri::WebviewUrl::App(
-            format!(
-                "live_index.html?platform={}&room_id={}&live_id={}",
-                platform.as_str(),
-                room_id,
-                live_id
-            )
-            .into(),
-        ),
-    )
-    .title(format!(
-        "Live[{}] {}",
-        room_id, recorder_info.room_info.room_title
-    ))
-    .theme(Some(Theme::Light))
-    .inner_size(1200.0, 800.0)
-    .effects(WindowEffectsConfig {
-        effects: vec![
-            tauri_utils::WindowEffect::Tabbed,
-            tauri_utils::WindowEffect::Mica,
-        ],
-        state: None,
-        radius: None,
-        color: None,
-    });
+    #[cfg(not(feature = "headless"))]
+    {
+        let platform = PlatformType::from_str(&platform).unwrap();
+        let recorder_info = state
+            .recorder_manager
+            .get_recorder_info(platform, room_id)
+            .await
+            .unwrap();
+        let builder = tauri::WebviewWindowBuilder::new(
+            &state.app_handle,
+            format!("Live:{}:{}", room_id, live_id),
+            tauri::WebviewUrl::App(
+                format!(
+                    "live_index.html?platform={}&room_id={}&live_id={}",
+                    platform.as_str(),
+                    room_id,
+                    live_id
+                )
+                .into(),
+            ),
+        )
+        .title(format!(
+            "Live[{}] {}",
+            room_id, recorder_info.room_info.room_title
+        ))
+        .theme(Some(Theme::Light))
+        .inner_size(1200.0, 800.0)
+        .effects(WindowEffectsConfig {
+            effects: vec![
+                tauri_utils::WindowEffect::Tabbed,
+                tauri_utils::WindowEffect::Mica,
+            ],
+            state: None,
+            radius: None,
+            color: None,
+        });
 
-    if let Err(e) = builder.decorations(true).build() {
-        log::error!("live window build failed: {}", e);
+        if let Err(e) = builder.decorations(true).build() {
+            log::error!("live window build failed: {}", e);
+        }
     }
 
     Ok(())

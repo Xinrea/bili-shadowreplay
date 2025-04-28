@@ -6,16 +6,19 @@ use crate::recorder::PlatformType;
 use crate::recorder::RecorderInfo;
 use crate::recorder_manager::RecorderList;
 use crate::state::State;
+use crate::state_type;
+
+#[cfg(not(feature = "headless"))]
 use tauri::State as TauriState;
 
-#[tauri::command]
-pub async fn get_recorder_list(state: TauriState<'_, State>) -> Result<RecorderList, ()> {
+#[cfg_attr(not(feature = "headless"), tauri::command)]
+pub async fn get_recorder_list(state: state_type!()) -> Result<RecorderList, ()> {
     Ok(state.recorder_manager.get_recorder_list().await)
 }
 
-#[tauri::command]
+#[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn add_recorder(
-    state: TauriState<'_, State>,
+    state: state_type!(),
     platform: String,
     room_id: u64,
 ) -> Result<RecorderRow, String> {
@@ -70,9 +73,9 @@ pub async fn add_recorder(
     }
 }
 
-#[tauri::command]
+#[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn remove_recorder(
-    state: TauriState<'_, State>,
+    state: state_type!(),
     platform: String,
     room_id: u64,
 ) -> Result<(), String> {
@@ -93,9 +96,9 @@ pub async fn remove_recorder(
     }
 }
 
-#[tauri::command]
+#[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn get_room_info(
-    state: TauriState<'_, State>,
+    state: state_type!(),
     platform: String,
     room_id: u64,
 ) -> Result<RecorderInfo, String> {
@@ -111,17 +114,14 @@ pub async fn get_room_info(
     }
 }
 
-#[tauri::command]
-pub async fn get_archives(
-    state: TauriState<'_, State>,
-    room_id: u64,
-) -> Result<Vec<RecordRow>, String> {
+#[cfg_attr(not(feature = "headless"), tauri::command)]
+pub async fn get_archives(state: state_type!(), room_id: u64) -> Result<Vec<RecordRow>, String> {
     Ok(state.recorder_manager.get_archives(room_id).await?)
 }
 
-#[tauri::command]
+#[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn get_archive(
-    state: TauriState<'_, State>,
+    state: state_type!(),
     room_id: u64,
     live_id: String,
 ) -> Result<RecordRow, String> {
@@ -131,9 +131,9 @@ pub async fn get_archive(
         .await?)
 }
 
-#[tauri::command]
+#[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn delete_archive(
-    state: TauriState<'_, State>,
+    state: state_type!(),
     platform: String,
     room_id: u64,
     live_id: String,
@@ -153,9 +153,9 @@ pub async fn delete_archive(
     Ok(())
 }
 
-#[tauri::command]
+#[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn get_danmu_record(
-    state: TauriState<'_, State>,
+    state: state_type!(),
     platform: String,
     room_id: u64,
     live_id: String,
@@ -167,9 +167,9 @@ pub async fn get_danmu_record(
         .await?)
 }
 
-#[tauri::command]
+#[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn export_danmu(
-    state: TauriState<'_, State>,
+    state: state_type!(),
     platform: String,
     room_id: u64,
     live_id: String,
@@ -205,9 +205,9 @@ pub async fn export_danmu(
     }
 }
 
-#[tauri::command]
+#[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn send_danmaku(
-    state: TauriState<'_, State>,
+    state: state_type!(),
     uid: u64,
     room_id: u64,
     message: String,
@@ -220,25 +220,25 @@ pub async fn send_danmaku(
     Ok(())
 }
 
-#[tauri::command]
-pub async fn get_total_length(state: TauriState<'_, State>) -> Result<i64, String> {
+#[cfg_attr(not(feature = "headless"), tauri::command)]
+pub async fn get_total_length(state: state_type!()) -> Result<i64, String> {
     match state.db.get_total_length().await {
         Ok(total_length) => Ok(total_length),
         Err(e) => Err(format!("Failed to get total length: {}", e)),
     }
 }
 
-#[tauri::command]
-pub async fn get_today_record_count(state: TauriState<'_, State>) -> Result<i64, String> {
+#[cfg_attr(not(feature = "headless"), tauri::command)]
+pub async fn get_today_record_count(state: state_type!()) -> Result<i64, String> {
     match state.db.get_today_record_count().await {
         Ok(count) => Ok(count),
         Err(e) => Err(format!("Failed to get today record count: {}", e)),
     }
 }
 
-#[tauri::command]
+#[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn get_recent_record(
-    state: TauriState<'_, State>,
+    state: state_type!(),
     offset: u64,
     limit: u64,
 ) -> Result<Vec<RecordRow>, String> {
@@ -248,9 +248,9 @@ pub async fn get_recent_record(
     }
 }
 
-#[tauri::command]
+#[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn set_auto_start(
-    state: TauriState<'_, State>,
+    state: state_type!(),
     platform: String,
     room_id: u64,
     auto_start: bool,
@@ -263,9 +263,9 @@ pub async fn set_auto_start(
     Ok(())
 }
 
-#[tauri::command]
+#[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn force_start(
-    state: TauriState<'_, State>,
+    state: state_type!(),
     platform: String,
     room_id: u64,
 ) -> Result<(), String> {
@@ -274,9 +274,9 @@ pub async fn force_start(
     Ok(())
 }
 
-#[tauri::command]
+#[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn force_stop(
-    state: TauriState<'_, State>,
+    state: state_type!(),
     platform: String,
     room_id: u64,
 ) -> Result<(), String> {
@@ -285,8 +285,8 @@ pub async fn force_stop(
     Ok(())
 }
 
-#[tauri::command]
-pub async fn fetch_hls(state: TauriState<'_, State>, uri: String) -> Result<Vec<u8>, String> {
+#[cfg_attr(not(feature = "headless"), tauri::command)]
+pub async fn fetch_hls(state: state_type!(), uri: String) -> Result<Vec<u8>, String> {
     state
         .recorder_manager
         .handle_hls_request(&uri)

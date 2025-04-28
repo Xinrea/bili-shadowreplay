@@ -3,21 +3,30 @@ use crate::ffmpeg;
 use crate::progress_event::{cancel_progress, ProgressReporter, ProgressReporterTrait};
 use crate::recorder::bilibili::profile::Profile;
 use crate::recorder_manager::ClipRangeParams;
-use crate::state::State;
 use crate::subtitle_generator::whisper::{self};
 use crate::subtitle_generator::SubtitleGenerator;
 use chrono::Utc;
 use std::path::Path;
-use tauri::State as TauriState;
 use tauri_plugin_notification::NotificationExt;
 
-#[tauri::command]
+use crate::state::State;
+use crate::state_type;
+
+#[cfg(not(feature = "headless"))]
+use tauri::State as TauriState;
+
+#[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn clip_range(
-    state: TauriState<'_, State>,
+    state: state_type!(),
     event_id: String,
     params: ClipRangeParams,
 ) -> Result<VideoRow, String> {
-    let reporter = ProgressReporter::new(&state.app_handle, &event_id).await?;
+    let reporter = ProgressReporter::new(
+        #[cfg(not(feature = "headless"))]
+        state.app_handle.clone(),
+        &event_id,
+    )
+    .await?;
     match clip_range_inner(state, &reporter, params).await {
         Ok(video) => {
             reporter.finish(true, "切片完成").await;
@@ -31,7 +40,7 @@ pub async fn clip_range(
 }
 
 async fn clip_range_inner(
-    state: TauriState<'_, State>,
+    state: state_type!(),
     reporter: &ProgressReporter,
     params: ClipRangeParams,
 ) -> Result<VideoRow, String> {
@@ -112,6 +121,7 @@ async fn clip_range_inner(
         )
         .await?;
     if state.config.read().await.clip_notify {
+        #[cfg(not(feature = "headless"))]
         state
             .app_handle
             .notification()
@@ -130,9 +140,9 @@ async fn clip_range_inner(
     Ok(video)
 }
 
-#[tauri::command]
+#[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn upload_procedure(
-    state: TauriState<'_, State>,
+    state: state_type!(),
     event_id: String,
     uid: u64,
     room_id: u64,
@@ -140,7 +150,12 @@ pub async fn upload_procedure(
     cover: String,
     profile: Profile,
 ) -> Result<String, String> {
-    let reporter = ProgressReporter::new(&state.app_handle, &event_id).await?;
+    let reporter = ProgressReporter::new(
+        #[cfg(not(feature = "headless"))]
+        state.app_handle.clone(),
+        &event_id,
+    )
+    .await?;
     match upload_procedure_inner(state, &reporter, uid, room_id, video_id, cover, profile).await {
         Ok(bvid) => {
             reporter.finish(true, "投稿成功").await;
@@ -154,7 +169,7 @@ pub async fn upload_procedure(
 }
 
 async fn upload_procedure_inner(
-    state: TauriState<'_, State>,
+    state: state_type!(),
     reporter: &ProgressReporter,
     uid: u64,
     room_id: u64,
@@ -193,6 +208,7 @@ async fn upload_procedure_inner(
                     )
                     .await?;
                 if state.config.read().await.post_notify {
+                    #[cfg(not(feature = "headless"))]
                     state
                         .app_handle
                         .notification()
@@ -218,27 +234,24 @@ async fn upload_procedure_inner(
     }
 }
 
-#[tauri::command]
-pub async fn cancel(_state: TauriState<'_, State>, event_id: String) -> Result<(), String> {
+#[cfg_attr(not(feature = "headless"), tauri::command)]
+pub async fn cancel(_state: state_type!(), event_id: String) -> Result<(), String> {
     cancel_progress(&event_id).await;
     Ok(())
 }
 
-#[tauri::command]
-pub async fn get_video(state: TauriState<'_, State>, id: i64) -> Result<VideoRow, String> {
+#[cfg_attr(not(feature = "headless"), tauri::command)]
+pub async fn get_video(state: state_type!(), id: i64) -> Result<VideoRow, String> {
     Ok(state.db.get_video(id).await?)
 }
 
-#[tauri::command]
-pub async fn get_videos(
-    state: TauriState<'_, State>,
-    room_id: u64,
-) -> Result<Vec<VideoRow>, String> {
+#[cfg_attr(not(feature = "headless"), tauri::command)]
+pub async fn get_videos(state: state_type!(), room_id: u64) -> Result<Vec<VideoRow>, String> {
     Ok(state.db.get_videos(room_id).await?)
 }
 
-#[tauri::command]
-pub async fn delete_video(state: TauriState<'_, State>, id: i64) -> Result<(), String> {
+#[cfg_attr(not(feature = "headless"), tauri::command)]
+pub async fn delete_video(state: state_type!(), id: i64) -> Result<(), String> {
     // get video info from dbus
     let video = state.db.get_video(id).await?;
     // delete video from db
@@ -262,25 +275,25 @@ pub async fn delete_video(state: TauriState<'_, State>, id: i64) -> Result<(), S
     Ok(())
 }
 
-#[tauri::command]
+#[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn get_video_typelist(
-    state: TauriState<'_, State>,
+    state: state_type!(),
 ) -> Result<Vec<crate::recorder::bilibili::response::Typelist>, String> {
     let account = state.db.get_account_by_platform("bilibili").await?;
     Ok(state.client.get_video_typelist(&account).await?)
 }
 
-#[tauri::command]
+#[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn update_video_cover(
-    state: TauriState<'_, State>,
+    state: state_type!(),
     id: i64,
     cover: String,
 ) -> Result<(), String> {
     Ok(state.db.update_video_cover(id, cover).await?)
 }
 
-#[tauri::command]
-pub async fn get_video_subtitle(state: TauriState<'_, State>, id: i64) -> Result<String, String> {
+#[cfg_attr(not(feature = "headless"), tauri::command)]
+pub async fn get_video_subtitle(state: state_type!(), id: i64) -> Result<String, String> {
     let video = state.db.get_video(id).await?;
     let filepath = Path::new(state.config.read().await.output.as_str()).join(&video.file);
     let file = Path::new(&filepath);
@@ -292,13 +305,18 @@ pub async fn get_video_subtitle(state: TauriState<'_, State>, id: i64) -> Result
     }
 }
 
-#[tauri::command]
+#[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn generate_video_subtitle(
-    state: TauriState<'_, State>,
+    state: state_type!(),
     event_id: String,
     id: i64,
 ) -> Result<String, String> {
-    let reporter = ProgressReporter::new(&state.app_handle, &event_id).await?;
+    let reporter = ProgressReporter::new(
+        #[cfg(not(feature = "headless"))]
+        state.app_handle.clone(),
+        &event_id,
+    )
+    .await?;
     match generate_video_subtitle_inner(state, &reporter, id).await {
         Ok(subtitle) => {
             reporter.finish(true, "字幕生成完成").await;
@@ -314,7 +332,7 @@ pub async fn generate_video_subtitle(
 }
 
 async fn generate_video_subtitle_inner(
-    state: TauriState<'_, State>,
+    state: state_type!(),
     reporter: &ProgressReporter,
     id: i64,
 ) -> Result<String, String> {
@@ -339,9 +357,9 @@ async fn generate_video_subtitle_inner(
     }
 }
 
-#[tauri::command]
+#[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn update_video_subtitle(
-    state: TauriState<'_, State>,
+    state: state_type!(),
     id: i64,
     subtitle: String,
 ) -> Result<(), String> {
@@ -355,14 +373,19 @@ pub async fn update_video_subtitle(
     Ok(())
 }
 
-#[tauri::command]
+#[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn encode_video_subtitle(
-    state: TauriState<'_, State>,
+    state: state_type!(),
     event_id: String,
     id: i64,
     srt_style: String,
 ) -> Result<VideoRow, String> {
-    let reporter = ProgressReporter::new(&state.app_handle, &event_id).await?;
+    let reporter = ProgressReporter::new(
+        #[cfg(not(feature = "headless"))]
+        state.app_handle.clone(),
+        &event_id,
+    )
+    .await?;
     match encode_video_subtitle_inner(state, &reporter, id, srt_style).await {
         Ok(video) => {
             reporter.finish(true, "字幕编码完成").await;
@@ -378,7 +401,7 @@ pub async fn encode_video_subtitle(
 }
 
 async fn encode_video_subtitle_inner(
-    state: TauriState<'_, State>,
+    state: state_type!(),
     reporter: &ProgressReporter,
     id: i64,
     srt_style: String,

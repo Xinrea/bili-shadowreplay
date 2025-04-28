@@ -53,12 +53,16 @@ whisper-rs = "0.14.2"
 hound = "3.5.1"
 fix-path-env = { git = "https://github.com/tauri-apps/fix-path-env-rs" }
 uuid = { version = "1.4", features = ["v4"] }
+axum = { version = "0.7", features = ["macros"] }
+tower-http = { version = "0.5", features = ["cors", "fs"] }
+futures-core = "0.3"
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem
 # DO NOT REMOVE!!
 custom-protocol = ["tauri/custom-protocol"]
 cuda = ["whisper-rs/cuda"]
+headless = []
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"

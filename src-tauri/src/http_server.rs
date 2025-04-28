@@ -40,7 +40,13 @@ use crate::{
     recorder_manager::{ClipRangeParams, RecorderList},
     state::State,
 };
-use axum::{extract::Json, http::StatusCode, response::IntoResponse, routing::post, Router};
+use axum::{
+    extract::{Json, Path, Query},
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::{get, options, post},
+    Router,
+};
 use serde::{Deserialize, Serialize};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
@@ -537,37 +543,6 @@ async fn handler_force_stop(
     Ok(Json(ApiResponse::success(())))
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct FetchHlsRequest {
-    uri: String,
-}
-
-async fn handler_fetch_hls(
-    state: axum::extract::State<State>,
-    Json(param): Json<FetchHlsRequest>,
-) -> Result<impl IntoResponse, String> {
-    let hls = fetch_hls(state.0, param.uri.clone()).await?;
-
-    // Determine content type based on URI
-    let content_type = if let Some(path) = param.uri.split('?').next() {
-        if path.ends_with(".m3u8") {
-            log::info!("hls: {}", path);
-            "application/vnd.apple.mpegurl"
-        } else {
-            "application/octet-stream"
-        }
-    } else {
-        "application/octet-stream"
-    };
-
-    Ok((
-        StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, content_type)],
-        hls,
-    ))
-}
-
 async fn handler_clip_range(
     state: axum::extract::State<State>,
     Json(param): Json<ClipRangeParams>,
@@ -802,12 +777,6 @@ async fn handler_fetch(
         .map_err(|_| "Invalid status code".to_string())?;
     let headers = response.headers().clone();
 
-    // Get content type
-    let content_type = headers
-        .get("content-type")
-        .and_then(|ct| ct.to_str().ok())
-        .unwrap_or("application/octet-stream");
-
     // Get response body
     let body = response.bytes().await.map_err(|e| e.to_string())?;
 
@@ -824,6 +793,63 @@ async fn handler_fetch(
     }
 
     Ok((status, response_headers, body))
+}
+
+async fn handler_hls(
+    state: axum::extract::State<State>,
+    Path(uri): Path<String>,
+    query: Option<Query<std::collections::HashMap<String, String>>>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let path_segs: Vec<&str> = uri.split('/').collect();
+
+    if path_segs.len() < 4 {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let platform = path_segs[0];
+    let room_id = path_segs[1]
+        .parse::<u64>()
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let live_id = path_segs[2];
+    let filename = path_segs[3];
+
+    let hls = fetch_hls(state.0, uri.clone())
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+
+    // Set appropriate content type based on file extension
+    let content_type = match filename.split('.').last() {
+        Some("m3u8") => "application/vnd.apple.mpegurl",
+        Some("ts") => "video/mp2t",
+        Some("aac") => "audio/aac",
+        Some("mp4") => "video/mp4",
+        Some("webm") => "video/webm",
+        Some("m4s") => "video/iso.segment",
+        _ => "application/octet-stream",
+    };
+
+    // Create response with necessary headers
+    let mut response =
+        axum::response::Response::<axum::body::Body>::new(axum::body::Body::from(hls));
+    let headers = response.headers_mut();
+
+    // Set content type
+    headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        content_type.parse().unwrap(),
+    );
+
+    // Only set cache control for m3u8 files
+    if filename.ends_with(".m3u8") {
+        headers.insert(
+            axum::http::header::CACHE_CONTROL,
+            "no-cache, no-store, must-revalidate".parse().unwrap(),
+        );
+        headers.insert(axum::http::header::PRAGMA, "no-cache".parse().unwrap());
+        headers.insert(axum::http::header::EXPIRES, "0".parse().unwrap());
+    }
+
+    Ok(response)
 }
 
 pub async fn start_api_server(state: State) {
@@ -890,7 +916,6 @@ pub async fn start_api_server(state: State) {
         .route("/api/set_auto_start", post(handler_set_auto_start))
         .route("/api/force_start", post(handler_force_start))
         .route("/api/force_stop", post(handler_force_stop))
-        .route("/api/fetch_hls", post(handler_fetch_hls))
         // Video commands
         .route("/api/clip_range", post(handler_clip_range))
         .route("/api/upload_procedure", post(handler_upload_procedure))
@@ -916,10 +941,11 @@ pub async fn start_api_server(state: State) {
         // Utils commands
         .route("/api/get_disk_info", post(handler_get_disk_info))
         .route("/api/fetch", post(handler_fetch))
+        .route("/hls/*uri", get(handler_hls))
         .layer(cors)
         .with_state(state);
 
-    let addr = "127.0.0.1:3000";
+    let addr = "0.0.0.0:3000";
     println!("API server listening on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();

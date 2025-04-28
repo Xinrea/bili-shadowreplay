@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "headless-dev": "API_BASE_URL=http://localhost:3000/api vite",
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
@@ -21,7 +22,8 @@
     "@tauri-apps/plugin-sql": "~2",
     "html2canvas": "^1.4.1",
     "lucide-svelte": "^0.479.0",
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "shaka-player": "^4.14.9"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^2.0.0",

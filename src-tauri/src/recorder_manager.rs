@@ -609,25 +609,25 @@ impl RecorderManager {
 
     pub async fn handle_hls_request(&self, uri: &str) -> Result<Vec<u8>, RecorderManagerError> {
         let cache_path = self.config.read().await.cache.clone();
-        let uri = Uri::from_str(uri)
-            .map_err(|e| RecorderManagerError::HLSError { err: e.to_string() })?;
-        let path = uri.path();
+        let path = uri;
         let path_segs: Vec<&str> = path.split('/').collect();
 
-        if path_segs.len() != 5 {
+        if path_segs.len() != 4 {
             log::warn!("Invalid request path: {}", path);
             return Err(RecorderManagerError::HLSError {
                 err: "Invalid hls path".into(),
             });
         }
         // parse recorder type
-        let platform = path_segs[1];
+        let platform = path_segs[0];
         // parse room id
-        let room_id = path_segs[2].parse::<u64>().unwrap();
+        let room_id = path_segs[1].parse::<u64>().unwrap();
         // parse live id
-        let live_id = path_segs[3];
+        let live_id = path_segs[2];
 
-        if path_segs[4] == "playlist.m3u8" {
+        let params = Some("");
+
+        if path_segs[3] == "playlist.m3u8" {
             // get recorder
             let recorder_key = format!("{}:{}", platform, room_id);
             let recorders = self.recorders.read().await;
@@ -638,7 +638,7 @@ impl RecorderManager {
                 });
             }
             let recorder = recorder.unwrap();
-            let params = uri.query();
+
             // parse params, example: start=10&end=20
             // start and end are optional
             // split params by &, and then split each param by =

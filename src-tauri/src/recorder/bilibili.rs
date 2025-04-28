@@ -777,6 +777,7 @@ impl BiliRecorder {
             .clone();
         if entries.is_empty() {
             m3u8_content += "#EXT-X-OFFSET:0\n";
+            m3u8_content += "#EXT-X-ENDLIST\n";
             return m3u8_content;
         }
 

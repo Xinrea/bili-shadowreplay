@@ -7,6 +7,9 @@
     if (!url) {
       return "/imgs/douyin.png";
     }
+    if (url.startsWith("data")) {
+      return url;
+    }
     const response = await get(url);
     return URL.createObjectURL(await response.blob());
   }

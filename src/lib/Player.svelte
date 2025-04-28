@@ -55,10 +55,7 @@
     };
 
     const pendingRequest = new Promise((resolve, reject) => {
-      if (requestType == 0) {
-        console.log("fetch uri: ", uri);
-      }
-      invoke("fetch_hls", { uri })
+      invoke("fetch_hls", { uri: uri })
         .then((data: number[]) => {
           if (abortStatus.canceled) {
             reject(new Error("Request was aborted"));
@@ -69,7 +66,9 @@
           const uint8Array = new Uint8Array(data);
           const arrayBuffer = uint8Array.buffer;
 
-          if (requestType == 0) {
+          const is_m3u8 = uri.split("?")[0].endsWith(".m3u8");
+
+          if (is_m3u8) {
             let m3u8Content = new TextDecoder().decode(uint8Array);
             const offsetRegex = /#EXT-X-OFFSET:(\d+)/;
             const match = m3u8Content.match(offsetRegex);
@@ -81,10 +80,9 @@
             }
           }
           // Set content-type based on URI extension
-          let content_type =
-            requestType == 1
-              ? "application/octet-stream"
-              : "application/vnd.apple.mpegurl";
+          let content_type = is_m3u8
+            ? "application/vnd.apple.mpegurl"
+            : "application/octet-stream";
 
           // Create response object with byteLength for segment data
           const response = {
@@ -121,8 +119,10 @@
     });
   }
 
-  shaka.net.NetworkingEngine.registerScheme("http", tauriNetworkPlugin);
-  shaka.net.NetworkingEngine.registerScheme("https", tauriNetworkPlugin);
+  if (TAURI_ENV) {
+    shaka.net.NetworkingEngine.registerScheme("http", tauriNetworkPlugin);
+    shaka.net.NetworkingEngine.registerScheme("https", tauriNetworkPlugin);
+  }
 
   async function update_stream_list() {
     recorders = (
@@ -174,6 +174,7 @@
     player.configure({
       streaming: {
         lowLatencyMode: true,
+        useNativeHlsForFairPlay: false,
       },
       cmsd: {
         enabled: false,
@@ -190,7 +191,7 @@
 
     try {
       await player.load(
-        `http://127.0.0.1/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`
+        `http://127.0.0.1:3000/hls/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`
       );
       // This runs if the asynchronous load is successful.
       console.log("The video has now been loaded!");

@@ -287,7 +287,8 @@ pub async fn force_stop(
 
 #[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn fetch_hls(state: state_type!(), uri: String) -> Result<Vec<u8>, String> {
-    let uri = uri.trim_start_matches("http://127.0.0.1:3000/hls/");
+    // trim */hls/
+    let uri = uri.trim_start_matches("*/hls/");
     state
         .recorder_manager
         .handle_hls_request(uri)

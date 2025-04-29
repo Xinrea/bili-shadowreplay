@@ -18,6 +18,7 @@ mod subtitle_generator;
 mod tray;
 
 use archive_migration::try_rebuild_archives;
+use clap::{arg, command, Parser};
 use config::Config;
 use database::Database;
 use futures_core::future::BoxFuture;
@@ -129,23 +130,27 @@ impl MigrationSource<'static> for MigrationList {
 }
 
 #[cfg(feature = "headless")]
-async fn setup_server_state() -> Result<State, Box<dyn std::error::Error>> {
+async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Error>> {
     use progress_manager::ProgressManager;
     use progress_reporter::EventEmitter;
 
-    setup_logging(Path::new("bsr.log")).await?;
+    setup_logging(Path::new("./")).await?;
     println!("Setting up server state...");
     let client = Arc::new(BiliClient::new()?);
-    let config = Arc::new(RwLock::new(Config::load()));
+    let config = Arc::new(RwLock::new(Config::load(&args.config)));
     let db = Arc::new(Database::new());
     // connect to sqlite database
 
-    let conn_url = "sqlite:data/data_v2.db";
-
-    if !Sqlite::database_exists(conn_url).await.unwrap_or(false) {
-        Sqlite::create_database(conn_url).await?;
+    let conn_url = format!("sqlite:{}/data_v2.db", args.db);
+    // create db folder if not exists
+    if !Path::new(&args.db).exists() {
+        std::fs::create_dir_all(&args.db)?;
     }
-    let db_pool: Pool<Sqlite> = Pool::connect(conn_url).await?;
+
+    if !Sqlite::database_exists(&conn_url).await.unwrap_or(false) {
+        Sqlite::create_database(&conn_url).await?;
+    }
+    let db_pool: Pool<Sqlite> = Pool::connect(&conn_url).await?;
     let migrations = get_migrations();
 
     let migrator = Migrator::new(MigrationList(migrations))
@@ -174,11 +179,16 @@ async fn setup_server_state() -> Result<State, Box<dyn std::error::Error>> {
 
 #[cfg(not(feature = "headless"))]
 async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::Error>> {
+    use platform_dirs::AppDirs;
     use progress_manager::ProgressManager;
+    use progress_reporter::EventEmitter;
 
     println!("Setting up app state...");
+    let app_dirs = AppDirs::new(Some("cn.vjoi.bili-shadowreplay"), false).unwrap();
+    let config_path = app_dirs.config_dir.join("Conf.toml");
+
     let client = Arc::new(BiliClient::new()?);
-    let config = Arc::new(RwLock::new(Config::load()));
+    let config = Arc::new(RwLock::new(Config::load(config_path.to_str().unwrap())));
     let config_clone = config.clone();
     let dbs = app.state::<tauri_plugin_sql::DbInstances>().inner();
     let db = Arc::new(Database::new());
@@ -188,8 +198,11 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     let log_dir = app.path().app_log_dir()?;
     setup_logging(&log_dir).await?;
 
+    let emitter = EventEmitter::new(app.handle().clone());
+
     let recorder_manager = Arc::new(RecorderManager::new(
-        app.handle().clone(),
+        app.app_handle().clone(),
+        emitter,
         db.clone(),
         config.clone(),
     ));
@@ -408,9 +421,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(feature = "headless")]
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// Path to the config file
+    #[arg(short, long, default_value_t = String::from("config.toml"))]
+    config: String,
+
+    /// Path to the database folder
+    #[arg(short, long, default_value_t = String::from("./data"))]
+    db: String,
+}
+
+#[cfg(feature = "headless")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let state = setup_server_state()
+    // get params from command line
+    let args = Args::parse();
+    let state = setup_server_state(args)
         .await
         .expect("Failed to setup server state");
     http_server::start_api_server(state).await;

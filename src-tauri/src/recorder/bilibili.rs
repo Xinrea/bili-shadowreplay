@@ -403,7 +403,7 @@ impl BiliRecorder {
                 break;
             }
             if let WsStreamMessageType::DanmuMsg(msg) = msg {
-                self.emitter.emit(Event::DanmuReceived {
+                self.emitter.emit(&Event::DanmuReceived {
                     room: self.room_id,
                     ts: msg.timestamp as i64,
                     content: msg.msg.clone(),

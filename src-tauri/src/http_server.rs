@@ -1031,7 +1031,7 @@ pub async fn start_api_server(state: State) {
 
     let app = Router::new()
         // Serve static files from dist directory
-        .nest_service("/", ServeDir::new("../dist"))
+        .nest_service("/", ServeDir::new("./dist"))
         // Account commands
         .route("/api/get_accounts", post(handler_get_accounts))
         .route("/api/add_account", post(handler_add_account))

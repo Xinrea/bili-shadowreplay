@@ -10,7 +10,9 @@ use crate::{recorder::PlatformType, recorder_manager::ClipRangeParams};
 pub struct Config {
     pub cache: String,
     pub output: String,
+    #[serde(skip)]
     pub webid: String,
+    #[serde(skip)]
     pub webid_ts: i64,
     pub live_start_notify: bool,
     pub live_end_notify: bool,
@@ -26,6 +28,8 @@ pub struct Config {
     pub clip_name_format: String,
     #[serde(default = "default_auto_generate_config")]
     pub auto_generate: AutoGenerateConfig,
+    #[serde(skip)]
+    pub config_path: String,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -58,9 +62,7 @@ fn default_auto_generate_config() -> AutoGenerateConfig {
 }
 
 impl Config {
-    pub fn load() -> Self {
-        let app_dirs = AppDirs::new(Some("cn.vjoi.bili-shadowreplay"), false).unwrap();
-        let config_path = app_dirs.config_dir.join("Conf.toml");
+    pub fn load(config_path: &str) -> Self {
         if let Ok(content) = std::fs::read_to_string(config_path) {
             if let Ok(config) = toml::from_str(&content) {
                 return config;
@@ -69,18 +71,8 @@ impl Config {
         let config = Config {
             webid: "".to_string(),
             webid_ts: 0,
-            cache: app_dirs
-                .cache_dir
-                .join("cache")
-                .to_str()
-                .unwrap()
-                .to_string(),
-            output: app_dirs
-                .data_dir
-                .join("output")
-                .to_str()
-                .unwrap()
-                .to_string(),
+            cache: "./cache".to_string(),
+            output: "./output".to_string(),
             live_start_notify: true,
             live_end_notify: true,
             clip_notify: true,
@@ -90,6 +82,7 @@ impl Config {
             whisper_prompt: "这是一段中文 你们好".to_string(),
             clip_name_format: "[{room_id}][{live_id}][{title}][{created_at}].mp4".to_string(),
             auto_generate: default_auto_generate_config(),
+            config_path: config_path.to_string(),
         };
         config.save();
         config
@@ -97,11 +90,7 @@ impl Config {
 
     pub fn save(&self) {
         let content = toml::to_string(&self).unwrap();
-        let app_dirs = AppDirs::new(Some("cn.vjoi.bili-shadowreplay"), false).unwrap();
-        // Create app dirs if not exists
-        std::fs::create_dir_all(&app_dirs.config_dir).unwrap();
-        let config_path = app_dirs.config_dir.join("Conf.toml");
-        std::fs::write(config_path, content).unwrap();
+        std::fs::write(self.config_path.clone(), content).unwrap();
     }
 
     pub fn set_cache_path(&mut self, path: &str) {

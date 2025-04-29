@@ -2,6 +2,7 @@ import { invoke as tauri_invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { fetch as tauri_fetch } from "@tauri-apps/plugin-http";
 import { convertFileSrc as tauri_convert } from "@tauri-apps/api/core";
+import { listen as tauri_listen } from "@tauri-apps/api/event";
 
 declare global {
   interface Window {
@@ -87,4 +88,35 @@ function convertFileSrc(filePath: string) {
   return `${ENDPOINT}/output/${filePath.split("/").pop()}`;
 }
 
-export { invoke, get, set_title, TAURI_ENV, convertFileSrc, ENDPOINT };
+type EventSourceCallback = (data: any) => void;
+
+let event_source: EventSource | null = null;
+
+if (!TAURI_ENV) {
+  event_source = new EventSource(`${ENDPOINT}/api/sse`);
+
+  event_source.onopen = () => {
+    console.log("EventSource connection opened");
+  };
+
+  event_source.onerror = (error) => {
+    console.error("EventSource error:", error);
+  };
+}
+
+async function listen<T>(event: string, callback: (data: any) => void) {
+  if (TAURI_ENV) {
+    return await tauri_listen(event, callback);
+  }
+
+  event_source.addEventListener(event, (event_data) => {
+    const data = JSON.parse(event_data.data);
+    console.log("Parsed EventSource data:", data);
+    callback({
+      type: event,
+      payload: data,
+    });
+  });
+}
+
+export { invoke, get, set_title, TAURI_ENV, convertFileSrc, ENDPOINT, listen };

@@ -1,6 +1,8 @@
 use crate::database::video::VideoRow;
 use crate::ffmpeg;
-use crate::progress_event::{cancel_progress, ProgressReporter, ProgressReporterTrait};
+use crate::progress_reporter::{
+    cancel_progress, EventEmitter, ProgressReporter, ProgressReporterTrait,
+};
 use crate::recorder::bilibili::profile::Profile;
 use crate::recorder_manager::ClipRangeParams;
 use crate::subtitle_generator::whisper::{self};
@@ -21,12 +23,11 @@ pub async fn clip_range(
     event_id: String,
     params: ClipRangeParams,
 ) -> Result<VideoRow, String> {
-    let reporter = ProgressReporter::new(
-        #[cfg(not(feature = "headless"))]
-        state.app_handle.clone(),
-        &event_id,
-    )
-    .await?;
+    #[cfg(not(feature = "headless"))]
+    let emitter = EventEmitter::new(state.app_handle.clone());
+    #[cfg(feature = "headless")]
+    let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
+    let reporter = ProgressReporter::new(&emitter, &event_id).await?;
     match clip_range_inner(state, &reporter, params).await {
         Ok(video) => {
             reporter.finish(true, "切片完成").await;
@@ -150,12 +151,11 @@ pub async fn upload_procedure(
     cover: String,
     profile: Profile,
 ) -> Result<String, String> {
-    let reporter = ProgressReporter::new(
-        #[cfg(not(feature = "headless"))]
-        state.app_handle.clone(),
-        &event_id,
-    )
-    .await?;
+    #[cfg(not(feature = "headless"))]
+    let emitter = EventEmitter::new(state.app_handle.clone());
+    #[cfg(feature = "headless")]
+    let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
+    let reporter = ProgressReporter::new(&emitter, &event_id).await?;
     match upload_procedure_inner(state, &reporter, uid, room_id, video_id, cover, profile).await {
         Ok(bvid) => {
             reporter.finish(true, "投稿成功").await;
@@ -311,12 +311,11 @@ pub async fn generate_video_subtitle(
     event_id: String,
     id: i64,
 ) -> Result<String, String> {
-    let reporter = ProgressReporter::new(
-        #[cfg(not(feature = "headless"))]
-        state.app_handle.clone(),
-        &event_id,
-    )
-    .await?;
+    #[cfg(not(feature = "headless"))]
+    let emitter = EventEmitter::new(state.app_handle.clone());
+    #[cfg(feature = "headless")]
+    let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
+    let reporter = ProgressReporter::new(&emitter, &event_id).await?;
     match generate_video_subtitle_inner(state, &reporter, id).await {
         Ok(subtitle) => {
             reporter.finish(true, "字幕生成完成").await;
@@ -380,12 +379,11 @@ pub async fn encode_video_subtitle(
     id: i64,
     srt_style: String,
 ) -> Result<VideoRow, String> {
-    let reporter = ProgressReporter::new(
-        #[cfg(not(feature = "headless"))]
-        state.app_handle.clone(),
-        &event_id,
-    )
-    .await?;
+    #[cfg(not(feature = "headless"))]
+    let emitter = EventEmitter::new(state.app_handle.clone());
+    #[cfg(feature = "headless")]
+    let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
+    let reporter = ProgressReporter::new(&emitter, &event_id).await?;
     match encode_video_subtitle_inner(state, &reporter, id, srt_style).await {
         Ok(video) => {
             reporter.finish(true, "字幕编码完成").await;

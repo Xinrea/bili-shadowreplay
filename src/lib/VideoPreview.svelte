@@ -20,8 +20,7 @@
     type VideoItem,
   } from "./interface";
   import SubtitleStyleEditor from "./SubtitleStyleEditor.svelte";
-  import { invoke, TAURI_ENV } from "../lib/invoker";
-  import { listen } from "@tauri-apps/api/event";
+  import { invoke, TAURI_ENV, listen } from "../lib/invoker";
   import { onDestroy } from "svelte/internal";
 
   export let show = false;
@@ -77,46 +76,32 @@
   let current_encode_event_id = null;
   let current_generate_event_id = null;
 
-  if (TAURI_ENV) {
-    let progress_update_listener = listen<ProgressUpdate>(
-      `progress-update`,
-      (e) => {
-        let event_id = e.payload.id;
-        console.log(e.payload);
-        if (event_id == current_encode_event_id) {
-          update_encode_prompt(e.payload.content);
-        } else if (event_id == current_generate_event_id) {
-          update_generate_prompt(e.payload.content);
-        }
-      }
-    );
+  listen<ProgressUpdate>(`progress-update`, (e) => {
+    let event_id = e.payload.id;
+    console.log(e.payload);
+    if (event_id == current_encode_event_id) {
+      update_encode_prompt(e.payload.content);
+    } else if (event_id == current_generate_event_id) {
+      update_generate_prompt(e.payload.content);
+    }
+  });
 
-    let progress_finished_listener = listen<ProgressFinished>(
-      `progress-finished`,
-      (e) => {
-        let event_id = e.payload.id;
-        if (event_id == current_encode_event_id) {
-          update_encode_prompt(`压制字幕`);
-          if (!e.payload.success) {
-            alert("压制失败: " + e.payload.message);
-          }
-          current_encode_event_id = null;
-        } else if (event_id == current_generate_event_id) {
-          update_generate_prompt(`AI 生成字幕`);
-          if (!e.payload.success) {
-            alert("生成字幕失败: " + e.payload.message);
-          }
-          current_generate_event_id = null;
-        }
+  listen<ProgressFinished>(`progress-finished`, (e) => {
+    let event_id = e.payload.id;
+    if (event_id == current_encode_event_id) {
+      update_encode_prompt(`压制字幕`);
+      if (!e.payload.success) {
+        alert("压制失败: " + e.payload.message);
       }
-    );
-
-    // remove listeners when component is destroyed
-    onDestroy(() => {
-      progress_update_listener.then((fn) => fn());
-      progress_finished_listener.then((fn) => fn());
-    });
-  }
+      current_encode_event_id = null;
+    } else if (event_id == current_generate_event_id) {
+      update_generate_prompt(`AI 生成字幕`);
+      if (!e.payload.success) {
+        alert("生成字幕失败: " + e.payload.message);
+      }
+      current_generate_event_id = null;
+    }
+  });
 
   function update_encode_prompt(content: string) {
     const encode_prompt = document.getElementById("encode-prompt");

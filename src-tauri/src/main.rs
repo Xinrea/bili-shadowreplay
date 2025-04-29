@@ -9,7 +9,8 @@ mod ffmpeg;
 mod handlers;
 #[cfg(feature = "headless")]
 mod http_server;
-mod progress_event;
+mod progress_manager;
+mod progress_reporter;
 mod recorder;
 mod recorder_manager;
 mod state;
@@ -129,6 +130,9 @@ impl MigrationSource<'static> for MigrationList {
 
 #[cfg(feature = "headless")]
 async fn setup_server_state() -> Result<State, Box<dyn std::error::Error>> {
+    use progress_manager::ProgressManager;
+    use progress_reporter::EventEmitter;
+
     setup_logging(Path::new("bsr.log")).await?;
     println!("Setting up server state...");
     let client = Arc::new(BiliClient::new()?);
@@ -154,8 +158,9 @@ async fn setup_server_state() -> Result<State, Box<dyn std::error::Error>> {
 
     db.set(db_pool).await;
 
-    let recorder_manager = Arc::new(RecorderManager::new(db.clone(), config.clone()));
-
+    let progress_manager = Arc::new(ProgressManager::new());
+    let emitter = EventEmitter::new(progress_manager.get_event_sender());
+    let recorder_manager = Arc::new(RecorderManager::new(emitter, db.clone(), config.clone()));
     let _ = try_rebuild_archives(&db, config.read().await.cache.clone().into()).await;
 
     Ok(State {
@@ -163,11 +168,14 @@ async fn setup_server_state() -> Result<State, Box<dyn std::error::Error>> {
         client,
         config,
         recorder_manager,
+        progress_manager,
     })
 }
 
 #[cfg(not(feature = "headless"))]
 async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::Error>> {
+    use progress_manager::ProgressManager;
+
     println!("Setting up app state...");
     let client = Arc::new(BiliClient::new()?);
     let config = Arc::new(RwLock::new(Config::load()));
@@ -185,6 +193,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         db.clone(),
         config.clone(),
     ));
+    let progress_manager = Arc::new(ProgressManager::new());
     let binding = dbs.0.read().await;
     let dbpool = binding.get("sqlite:data_v2.db").unwrap();
     let sqlite_pool = match dbpool {
@@ -200,6 +209,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
             client,
             config,
             recorder_manager,
+            progress_manager,
             app_handle: app.handle().clone(),
         });
     }
@@ -258,6 +268,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         client,
         config,
         recorder_manager,
+        progress_manager,
         app_handle: app.handle().clone(),
     })
 }

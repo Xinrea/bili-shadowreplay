@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use std::path::Path;
 
-use crate::progress_event::ProgressReporterTrait;
+use crate::progress_reporter::ProgressReporterTrait;
 
 pub mod whisper;
 

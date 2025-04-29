@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use crate::progress_event::ProgressReporterTrait;
+use crate::progress_reporter::ProgressReporterTrait;
 use async_std::sync::{Arc, RwLock};
 use std::path::Path;
 use tokio::io::AsyncWriteExt;

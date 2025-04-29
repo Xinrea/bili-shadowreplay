@@ -54,8 +54,9 @@ hound = "3.5.1"
 fix-path-env = { git = "https://github.com/tauri-apps/fix-path-env-rs" }
 uuid = { version = "1.4", features = ["v4"] }
 axum = { version = "0.7", features = ["macros"] }
-tower-http = { version = "0.5", features = ["cors", "fs"] }
+tower-http = { version = "0.5", features = ["cors", "fs", "limit"] }
 futures-core = "0.3"
+futures = "0.3"
 tokio-util = { version = "0.7", features = ["io"] }
 
 [features]

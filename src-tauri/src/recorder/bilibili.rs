@@ -704,6 +704,13 @@ impl BiliRecorder {
         } else {
             m3u8_content += "#EXT-X-PLAYLIST-TYPE:VOD\n";
         }
+
+        if self.entry_store.read().await.is_none() {
+            m3u8_content += "#EXT-X-OFFSET:0\n";
+            m3u8_content += "#EXT-X-ENDLIST\n";
+            return m3u8_content;
+        }
+
         let live_id = self.live_stream.read().await.clone().unwrap().live_id;
         // initial segment for fmp4, info from self.header
         if let Some(header) = self.entry_store.read().await.as_ref().unwrap().get_header() {

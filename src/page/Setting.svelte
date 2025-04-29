@@ -26,11 +26,11 @@
   };
 
   let showModal = false;
-  let apiBaseUrl = localStorage.getItem("api_base_url") || "";
-  let apiBaseValue = apiBaseUrl;
+  let endpoint = localStorage.getItem("endpoint") || "";
+  let endpointValue = endpoint;
 
-  function handleApiBaseUrlChange() {
-    localStorage.setItem("api_base_url", apiBaseValue);
+  function handleEndpointChange() {
+    localStorage.setItem("endpoint", endpointValue);
     // reload page
     location.reload();
   }
@@ -155,8 +155,8 @@
                     <input
                       type="text"
                       class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
-                      bind:value={apiBaseValue}
-                      on:blur={handleApiBaseUrlChange}
+                      bind:value={endpointValue}
+                      on:blur={handleEndpointChange}
                       placeholder="http://localhost:3000"
                     />
                   </div>
@@ -166,7 +166,7 @@
           </div>
         {/if}
 
-        {#if TAURI_ENV || apiBaseUrl != ""}
+        {#if TAURI_ENV || endpoint != ""}
           <!-- Storage Settings -->
           {#if TAURI_ENV}
             <div class="space-y-4">

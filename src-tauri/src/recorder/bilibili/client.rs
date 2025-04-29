@@ -81,9 +81,11 @@ pub enum StreamType {
 
 #[derive(Clone, Debug)]
 pub struct BiliStream {
+    pub live_id: String,
     pub format: StreamType,
     pub host: String,
     pub path: String,
+    pub index: String,
     pub extra: String,
     pub expire: i64,
 }
@@ -99,18 +101,26 @@ impl fmt::Display for BiliStream {
 }
 
 impl BiliStream {
-    pub fn new(format: StreamType, base_url: &str, host: &str, extra: &str) -> BiliStream {
+    pub fn new(
+        live_id: &str,
+        format: StreamType,
+        base_url: &str,
+        host: &str,
+        extra: &str,
+    ) -> BiliStream {
         BiliStream {
+            live_id: live_id.into(),
             format,
             host: host.into(),
             path: BiliStream::get_path(base_url),
             extra: extra.into(),
+            index: BiliStream::get_index(base_url),
             expire: BiliStream::get_expire(extra).unwrap_or(600000),
         }
     }
 
     pub fn index(&self) -> String {
-        format!("{}{}{}?{}", self.host, self.path, "index.m3u8", self.extra)
+        format!("{}{}{}?{}", self.host, self.path, self.index, self.extra)
     }
 
     pub fn ts_url(&self, seg_name: &str) -> String {
@@ -122,6 +132,14 @@ impl BiliStream {
             Some(pos) => base_url[..pos + 1].to_string(),
             None => base_url.to_string(),
         }
+    }
+
+    pub fn get_index(base_url: &str) -> String {
+        base_url
+            .split('/')
+            .last()
+            .unwrap_or("index.m3u8?")
+            .replace("?", "")
     }
 
     pub fn get_expire(extra: &str) -> Option<i64> {
@@ -370,12 +388,13 @@ impl BiliClient {
             .json().await?;
         if res.code == 0 {
             if let response::Data::RoomPlayInfo(data) = res.data {
+                let live_time = data.live_time;
                 if let Some(stream) = data.playurl_info.playurl.stream.first() {
-                    // Get fmp4 format
-                    if let Some(f) = stream.format.iter().find(|f| f.format_name == "fmp4") {
-                        self.get_stream(f).await
+                    // Get ts format
+                    if let Some(f) = stream.format.iter().find(|f| f.format_name == "ts") {
+                        self.get_stream(f, &live_time.to_string()).await
                     } else {
-                        log::error!("No fmp4 stream found: {:?}", data);
+                        log::error!("No ts stream found: {:?}", data);
                         Err(BiliClientError::InvalidResponse)
                     }
                 } else {
@@ -392,11 +411,16 @@ impl BiliClient {
         }
     }
 
-    async fn get_stream(&self, format: &Format) -> Result<BiliStream, BiliClientError> {
+    async fn get_stream(
+        &self,
+        format: &Format,
+        live_id: &str,
+    ) -> Result<BiliStream, BiliClientError> {
         if let Some(codec) = format.codec.first() {
             if let Some(url_info) = codec.url_info.first() {
                 Ok(BiliStream::new(
-                    StreamType::FMP4,
+                    live_id,
+                    StreamType::TS,
                     &codec.base_url,
                     &url_info.host,
                     &url_info.extra,

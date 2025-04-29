@@ -16,7 +16,7 @@ use client::{BiliClient, BiliStream, RoomInfo, StreamType, UserInfo};
 use dashmap::DashMap;
 use errors::BiliClientError;
 use felgens::{ws_socket_object, FelgensError, WsStreamMessageType};
-use m3u8_rs::Playlist;
+use m3u8_rs::{MediaPlaylist, Playlist, QuotedOrUnquoted, VariantStream};
 use rand::Rng;
 use regex::Regex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -239,25 +239,74 @@ impl BiliRecorder {
 
                 // current_record => update stream
                 // auto_start+is_new_stream => update stream and current_record=true
-                let new_stream = match self
-                    .client
-                    .read()
-                    .await
-                    .get_play_url(&self.account, self.room_id)
-                    .await
-                {
-                    Ok(stream) => Some(stream),
-                    Err(e) => {
-                        log::error!("[{}]Fetch stream failed: {}", self.room_id, e);
+                let master_manifest = self.client.read().await.get_index_content(&format!("https://api.live.bilibili.com/xlive/play-gateway/master/url?cid={}&pt=h5&p2p_type=-1&net=0&free_type=0&build=0&feature=2&qn=10000", self.room_id)).await;
+                if master_manifest.is_err() {
+                    log::error!(
+                        "[{}]Fetch master manifest failed: {}",
+                        self.room_id,
+                        master_manifest.err().unwrap()
+                    );
+                    return true;
+                }
+
+                let master_manifest =
+                    m3u8_rs::parse_playlist_res(master_manifest.as_ref().unwrap().as_bytes())
+                        .map_err(|_| super::errors::RecorderError::M3u8ParseFailed {
+                            content: master_manifest.as_ref().unwrap().clone(),
+                        });
+                if master_manifest.is_err() {
+                    log::error!(
+                        "[{}]Parse master manifest failed: {}",
+                        self.room_id,
+                        master_manifest.err().unwrap()
+                    );
+                    return true;
+                }
+
+                let master_manifest = master_manifest.unwrap();
+                let variant = match master_manifest {
+                    Playlist::MasterPlaylist(playlist) => {
+                        let variants = playlist.variants.clone();
+                        variants.into_iter().find(|variant| {
+                            if let Some(other_attributes) = &variant.other_attributes {
+                                if let Some(QuotedOrUnquoted::Quoted(bili_display)) =
+                                    other_attributes.get("BILI-DISPLAY")
+                                {
+                                    bili_display == "原画"
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        })
+                    }
+                    _ => {
+                        log::error!("[{}]Master manifest is not a media playlist", self.room_id);
                         None
                     }
                 };
 
-                if new_stream.is_none() {
+                if variant.is_none() {
+                    log::error!("[{}]No variant found", self.room_id);
+                    return true;
+                }
+
+                let variant = variant.unwrap();
+
+                let new_stream = self.stream_from_variant(variant).await;
+                if new_stream.is_err() {
+                    log::error!(
+                        "[{}]Fetch stream failed: {}",
+                        self.room_id,
+                        new_stream.err().unwrap()
+                    );
                     return true;
                 }
 
                 let stream = new_stream.unwrap();
+
+                log::info!("[{}]New stream: {:?}", self.room_id, stream);
 
                 // auto start must be true here, if what fetched is a new stream, set current_record=true to auto start recording
                 if self.live_stream.read().await.is_none()
@@ -295,6 +344,36 @@ impl BiliRecorder {
                 *self.live_status.read().await
             }
         }
+    }
+
+    async fn stream_from_variant(
+        &self,
+        variant: VariantStream,
+    ) -> Result<BiliStream, super::errors::RecorderError> {
+        let url = variant.uri.clone();
+        // example url: https://cn-hnld-ct-01-47.bilivideo.com/live-bvc/931676/live_1789460279_3538985/index.m3u8?expires=1745927098&len=0&oi=3729149990&pt=h5&qn=10000&trid=10075ceab17d4c9498264eb76d572b6810ad&sigparams=cdn,expires,len,oi,pt,qn,trid&cdn=cn-gotcha01&sign=686434f3ad01d33e001c80bfb7e1713d&site=3124fc9e0fabc664ace3d1b33638f7f2&free_type=0&mid=0&sche=ban&bvchls=1&sid=cn-hnld-ct-01-47&chash=0&bmt=1&sg=lr&trace=25&isp=ct&rg=East&pv=Shanghai&sk=28cc07215ff940102a1d60dade11467e&codec=0&pp=rtmp&hdr_type=0&hot_cdn=57345&suffix=origin&flvsk=c9154f5b3c6b14808bc5569329cf7f94&origin_bitrate=1281767&score=1&source=puv3_master&p2p_type=-1&deploy_env=prod&sl=1&info_source=origin&vd=nc&zoneid_l=151355393&sid_l=stream_name_cold&src=puv3&order=1
+        // extract host: cn-hnld-ct-01-47.bilivideo.com
+        let host = url.split('/').nth(2).unwrap_or_default();
+        let extra = url.split('?').nth(1).unwrap_or_default();
+        // extract base url: live-bvc/931676/live_1789460279_3538985/
+        let base_url = url
+            .split('/')
+            .skip(3)
+            .take(3)
+            .collect::<Vec<&str>>()
+            .join("/")
+            + "/";
+        let stream = BiliStream::new(
+            StreamType::FMP4,
+            base_url.as_str(),
+            host,
+            extra,
+            variant
+                .codecs
+                .as_ref()
+                .map_or("avc1.64002a,mp4a.40.2", |s| s.as_str()),
+        );
+        Ok(stream)
     }
 
     async fn danmu(&self) {
@@ -394,19 +473,6 @@ impl BiliRecorder {
             return Err(super::errors::RecorderError::IndexNotFound {
                 url: stream.index(),
             });
-        }
-        if index_content.contains("BANDWIDTH") {
-            // this index content provides another m3u8 url
-            // example: https://765b047cec3b099771d4b1851136046f.v.smtcdns.net/d1--cn-gotcha204-3.bilivideo.com/live-bvc/246284/live_1323355750_55526594/index.m3u8?expires=1741318366&len=0&oi=1961017843&pt=h5&qn=10000&trid=1007049a5300422eeffd2d6995d67b67ca5a&sigparams=cdn,expires,len,oi,pt,qn,trid&cdn=cn-gotcha204&sign=7ef1241439467ef27d3c804c1eda8d4d&site=1c89ef99adec13fab3a3592ee4db26d3&free_type=0&mid=475210&sche=ban&bvchls=1&trace=16&isp=ct&rg=East&pv=Shanghai&source=puv3_onetier&p2p_type=-1&score=1&suffix=origin&deploy_env=prod&flvsk=e5c4d6fb512ed7832b706f0a92f7a8c8&sk=246b3930727a89629f17520b1b551a2f&pp=rtmp&hot_cdn=57345&origin_bitrate=657300&sl=1&info_source=cache&vd=bc&src=puv3&order=1&TxLiveCode=cold_stream&TxDispType=3&svr_type=live_oc&tencent_test_client_ip=116.226.193.243&dispatch_from=OC_MGR61.170.74.11&utime=1741314857497
-            let new_url = index_content.lines().last().unwrap();
-            let base_url = new_url.split('/').next().unwrap();
-            let host = base_url.split('/').next().unwrap();
-            // extra is params after index.m3u8
-            let extra = new_url.split(base_url).last().unwrap();
-            let stream = BiliStream::new(StreamType::FMP4, base_url, host, extra);
-            log::info!("Update stream: {}", stream);
-            *self.live_stream.write().await = Some(stream);
-            return Box::pin(self.get_header_url()).await;
         }
         let mut header_url = String::from("");
         let re = Regex::new(r"h.*\.m4s").unwrap();
@@ -890,6 +956,18 @@ impl super::Recorder for BiliRecorder {
         } else {
             self.generate_archive_m3u8(live_id, start, end).await
         }
+    }
+
+    async fn master_m3u8(&self, live_id: &str, start: i64, end: i64) -> String {
+        let mut m3u8_content = "#EXTM3U\n".to_string();
+        m3u8_content += "#EXT-X-VERSION:6\n";
+        m3u8_content += format!(
+            "#EXT-X-STREAM-INF:{}\n",
+            "BANDWIDTH=1280000,RESOLUTION=1920x1080,CODECS=\"avc1.64001F,mp4a.40.2\""
+        )
+        .as_str();
+        m3u8_content += &format!("playlist.m3u8?start={}&end={}\n", start, end);
+        m3u8_content
     }
 
     async fn first_segment_ts(&self, live_id: &str) -> i64 {

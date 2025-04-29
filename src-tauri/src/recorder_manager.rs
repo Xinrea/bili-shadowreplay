@@ -626,6 +626,38 @@ impl RecorderManager {
 
         let params = Some(params);
 
+        // parse params, example: start=10&end=20
+        // start and end are optional
+        // split params by &, and then split each param by =
+        let params = if let Some(params) = params {
+            let params = params
+                .split('&')
+                .map(|param| param.split('=').collect::<Vec<&str>>())
+                .collect::<Vec<Vec<&str>>>();
+            Some(params)
+        } else {
+            None
+        };
+
+        let start = if let Some(params) = &params {
+            params
+                .iter()
+                .find(|param| param[0] == "start")
+                .map(|param| param[1].parse::<i64>().unwrap())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let end = if let Some(params) = &params {
+            params
+                .iter()
+                .find(|param| param[0] == "end")
+                .map(|param| param[1].parse::<i64>().unwrap())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
         if path_segs[3] == "playlist.m3u8" {
             // get recorder
             let recorder_key = format!("{}:{}", platform, room_id);
@@ -638,41 +670,22 @@ impl RecorderManager {
             }
             let recorder = recorder.unwrap();
 
-            // parse params, example: start=10&end=20
-            // start and end are optional
-            // split params by &, and then split each param by =
-            let params = if let Some(params) = params {
-                let params = params
-                    .split('&')
-                    .map(|param| param.split('=').collect::<Vec<&str>>())
-                    .collect::<Vec<Vec<&str>>>();
-                Some(params)
-            } else {
-                None
-            };
-
-            let start = if let Some(params) = &params {
-                params
-                    .iter()
-                    .find(|param| param[0] == "start")
-                    .map(|param| param[1].parse::<i64>().unwrap())
-                    .unwrap_or(0)
-            } else {
-                0
-            };
-            let end = if let Some(params) = &params {
-                params
-                    .iter()
-                    .find(|param| param[0] == "end")
-                    .map(|param| param[1].parse::<i64>().unwrap())
-                    .unwrap_or(0)
-            } else {
-                0
-            };
-
             // response with recorder generated m3u8, which contains ts entries that cached in local
             let m3u8_content = recorder.m3u8_content(live_id, start, end).await;
 
+            Ok(m3u8_content.into())
+        } else if path_segs[3] == "master.m3u8" {
+            // get recorder
+            let recorder_key = format!("{}:{}", platform, room_id);
+            let recorders = self.recorders.read().await;
+            let recorder = recorders.get(&recorder_key);
+            if recorder.is_none() {
+                return Err(RecorderManagerError::HLSError {
+                    err: "Recorder not found".into(),
+                });
+            }
+            let recorder = recorder.unwrap();
+            let m3u8_content = recorder.master_m3u8(live_id, start, end).await;
             Ok(m3u8_content.into())
         } else {
             // try to find requested ts file in recorder's cache

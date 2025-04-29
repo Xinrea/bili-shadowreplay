@@ -48,13 +48,13 @@ WORKDIR /app/src-tauri
 RUN cargo build --features headless --release
 
 # Final stage
-FROM debian:bullseye-slim AS final
+FROM debian:bookworm-slim AS final
 
 WORKDIR /app
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
-    libssl1.1 \
+    libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy built frontend

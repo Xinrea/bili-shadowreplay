@@ -2,7 +2,9 @@
 
 ![icon](docs/header.png)
 
-![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/xinrea/bili-shadowreplay/main.yml)
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/xinrea/bili-shadowreplay/main.yml?label=Application%20Build)
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/Xinrea/bili-shadowreplay/package.yml?label=Docker%20Build)
+
 ![GitHub Release](https://img.shields.io/github/v/release/xinrea/bili-shadowreplay)
 ![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/xinrea/bili-shadowreplay/total)
 
@@ -11,6 +13,23 @@ BiliBili ShadowReplay 是一个缓存直播并进行实时编辑投稿的工具�
 目前仅支持 B 站和抖音平台的直播。
 
 ![rooms](docs/summary.png)
+
+## Headless
+
+BiliBili ShadowReplay 支持无界面模式，提供 Web 控制界面，可以用于在服务器等无图形界面环境下部署使用。
+
+使用方法：
+
+```bash
+sudo docker run -it -d\
+    -p 3000:3000 \
+    -v $DATA_DIR:/app/data \
+    -v $CACHE_DIR:/app/cache \
+    -v $OUTPUT_DIR:/app/output \
+    -v $CONFIG_FILE:/app/config.toml \
+    --name bili-shadowreplay \
+    ghcr.io/xinrea/bili-shadowreplay:latest
+```
 
 ## 参与开发
 

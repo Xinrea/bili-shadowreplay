@@ -104,7 +104,7 @@ impl EntryStore {
             .log_file
             .write_all(
                 format!(
-                    "{}|{}|{:.2}|{}|{}|{}\n",
+                    "{}|{}|{}|{}|{}|{}\n",
                     entry.url, entry.sequence, entry.length, entry.size, entry.ts, entry.is_header
                 )
                 .as_bytes(),

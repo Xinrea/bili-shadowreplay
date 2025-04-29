@@ -3,7 +3,7 @@
 </script>
 
 <script lang="ts">
-  import { invoke, TAURI_ENV } from "../lib/invoker";
+  import { invoke, TAURI_ENV, ENDPOINT } from "../lib/invoker";
   import { listen } from "@tauri-apps/api/event";
   import type { AccountInfo } from "./db";
   import type { Marker, RecorderList, RecorderInfo } from "./interface";
@@ -202,7 +202,7 @@
     });
 
     try {
-      const url = `http://127.0.0.1:3000/hls/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`;
+      const url = `${ENDPOINT}/hls/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`;
       if (!TAURI_ENV) {
         await loadGlobalOffset(url);
       }

@@ -87,4 +87,4 @@ function convertFileSrc(filePath: string) {
   return `${ENDPOINT}/output/${filePath.split("/").pop()}`;
 }
 
-export { invoke, get, set_title, TAURI_ENV, convertFileSrc };
+export { invoke, get, set_title, TAURI_ENV, convertFileSrc, ENDPOINT };

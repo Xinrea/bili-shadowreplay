@@ -2,8 +2,14 @@ import { invoke as tauri_invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { fetch as tauri_fetch } from "@tauri-apps/plugin-http";
 
-const API_BASE_URL = `${__API_BASE_URL__}`;
-const TAURI_ENV = API_BASE_URL === "";
+declare global {
+  interface Window {
+    __TAURI__?: any;
+  }
+}
+
+const API_BASE_URL = localStorage.getItem("api_base_url") || "";
+const TAURI_ENV = typeof window.__TAURI__ !== "undefined";
 
 async function invoke<T>(
   command: string,

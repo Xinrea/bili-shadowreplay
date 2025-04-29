@@ -3,8 +3,7 @@
 </script>
 
 <script lang="ts">
-  import { invoke, TAURI_ENV, ENDPOINT } from "../lib/invoker";
-  import { listen } from "@tauri-apps/api/event";
+  import { invoke, TAURI_ENV, ENDPOINT, listen } from "../lib/invoker";
   import type { AccountInfo } from "./db";
   import type { Marker, RecorderList, RecorderInfo } from "./interface";
 
@@ -186,7 +185,14 @@
     player.configure({
       streaming: {
         lowLatencyMode: true,
-        useNativeHlsForFairPlay: false,
+        liveSync: {
+          enabled: true,
+        },
+      },
+      manifest: {
+        hls: {
+          liveSegmentsDelay: 1, // 直播延迟设为 0.5 个片段（2 秒）
+        },
       },
       cmsd: {
         enabled: false,
@@ -291,6 +297,8 @@
           (video.currentTime + global_offset + ts + focus_start) * 1000
         );
 
+        console.log("cur:", new Date(cur), global_offset, ts);
+
         let danmus = danmu_records.filter((v) => {
           return v.ts >= cur - 1000 && v.ts < cur;
         });
@@ -358,28 +366,20 @@
         shakaSpacer.appendChild(accountSelect);
         shakaSpacer.appendChild(danmakuInput);
 
-        if (TAURI_ENV) {
-          // listen to danmaku event
-          const unlisten = await listen(
-            "danmu:" + room_id,
-            (event: { payload: DanmuEntry }) => {
-              // if not enabled or playback is not keep up with live, ignore the danmaku
-              if (!danmu_enabled || get_total() - video.currentTime > 5) {
-                danmu_records.push(event.payload);
-                return;
-              }
-              if (Object.keys(danmu_displayed).length > 1000) {
-                danmu_displayed = {};
-              }
-              danmu_displayed[event.payload.ts] = true;
-              danmu_records.push(event.payload);
-              danmu_handler(event.payload.content);
-            }
-          );
-          window.onbeforeunload = () => {
-            unlisten();
-          };
-        }
+        // listen to danmaku event
+        await listen("danmu:" + room_id, (event: { payload: DanmuEntry }) => {
+          // if not enabled or playback is not keep up with live, ignore the danmaku
+          if (!danmu_enabled || get_total() - video.currentTime > 5) {
+            danmu_records.push(event.payload);
+            return;
+          }
+          if (Object.keys(danmu_displayed).length > 1000) {
+            danmu_displayed = {};
+          }
+          danmu_displayed[event.payload.ts] = true;
+          danmu_records.push(event.payload);
+          danmu_handler(event.payload.content);
+        });
       }
 
       // create a danmaku toggle button

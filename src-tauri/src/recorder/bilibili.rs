@@ -5,6 +5,8 @@ pub mod response;
 use super::entry::EntryStore;
 use super::PlatformType;
 use crate::database::account::AccountRow;
+use crate::progress_manager::Event;
+use crate::progress_reporter::EventEmitter;
 use crate::recorder_manager::RecorderEvent;
 
 use super::danmu::{DanmuEntry, DanmuStorage};
@@ -40,6 +42,7 @@ use async_trait::async_trait;
 pub struct BiliRecorder {
     #[cfg(not(feature = "headless"))]
     app_handle: AppHandle,
+    emitter: EventEmitter,
     client: Arc<RwLock<BiliClient>>,
     db: Arc<Database>,
     account: AccountRow,
@@ -77,6 +80,7 @@ impl From<BiliClientError> for super::errors::RecorderError {
 impl BiliRecorder {
     pub async fn new(
         #[cfg(not(feature = "headless"))] app_handle: AppHandle,
+        emitter: EventEmitter,
         webid: &str,
         db: &Arc<Database>,
         room_id: u64,
@@ -104,6 +108,7 @@ impl BiliRecorder {
         let recorder = Self {
             #[cfg(not(feature = "headless"))]
             app_handle,
+            emitter,
             client: Arc::new(RwLock::new(client)),
             db: db.clone(),
             account: account.clone(),
@@ -325,14 +330,11 @@ impl BiliRecorder {
                 break;
             }
             if let WsStreamMessageType::DanmuMsg(msg) = msg {
-                #[cfg(not(feature = "headless"))]
-                let _ = self.app_handle.emit(
-                    &format!("danmu:{}", room),
-                    DanmuEntry {
-                        ts: msg.timestamp as i64,
-                        content: msg.msg.clone(),
-                    },
-                );
+                self.emitter.emit(Event::DanmuReceived {
+                    room: self.room_id,
+                    ts: msg.timestamp as i64,
+                    content: msg.msg.clone(),
+                });
                 if *self.live_status.read().await {
                     // save danmu
                     if let Some(storage) = self.danmu_storage.write().await.as_ref() {
@@ -507,6 +509,13 @@ impl BiliRecorder {
                     // encode segment offset into filename
                     let file_name = ts.uri.split('/').last().unwrap_or(&ts.uri);
 
+                    log::info!(
+                        "Download ts: {} {:?} {}",
+                        file_name,
+                        ts.program_date_time,
+                        ts.duration
+                    );
+
                     let client = self.client.clone();
                     let mut retry = 0;
                     loop {
@@ -629,7 +638,7 @@ impl BiliRecorder {
         }
         let mut m3u8_content = "#EXTM3U\n".to_string();
         m3u8_content += "#EXT-X-VERSION:6\n";
-        m3u8_content += "#EXT-X-TARGETDURATION:5\n";
+        m3u8_content += "#EXT-X-TARGETDURATION:4\n";
         m3u8_content += "#EXT-X-PLAYLIST-TYPE:VOD\n";
 
         // add entries from read_dir
@@ -696,8 +705,8 @@ impl BiliRecorder {
         let live_status = *self.live_status.read().await;
         let mut m3u8_content = "#EXTM3U\n".to_string();
         m3u8_content += "#EXT-X-VERSION:6\n";
-        m3u8_content += "#EXT-X-TARGETDURATION:5\n";
-        m3u8_content += "#EXT-X-SERVER-CONTROL:HOLD-BACK:3\n";
+        m3u8_content += "#EXT-X-TARGETDURATION:4\n";
+        m3u8_content += "#EXT-X-SERVER-CONTROL:HOLD-BACK:1\n";
         // if stream is closed, switch to VOD
         if live_status && !range_required {
             m3u8_content += "#EXT-X-PLAYLIST-TYPE:EVENT\n";

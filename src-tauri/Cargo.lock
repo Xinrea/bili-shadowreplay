@@ -492,6 +492,7 @@ dependencies = [
  "dashmap",
  "felgens",
  "fix-path-env",
+ "futures",
  "futures-core",
  "hound",
  "hyper 0.14.32",

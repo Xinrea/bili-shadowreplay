@@ -4,6 +4,7 @@ use tokio::sync::RwLock;
 
 use crate::config::Config;
 use crate::database::Database;
+use crate::progress_manager::ProgressManager;
 use crate::recorder::bilibili::client::BiliClient;
 use crate::recorder_manager::RecorderManager;
 
@@ -21,4 +22,5 @@ pub struct State {
     pub recorder_manager: Arc<RecorderManager>,
     #[cfg(not(feature = "headless"))]
     pub app_handle: tauri::AppHandle,
+    pub progress_manager: Arc<ProgressManager>,
 }

@@ -1,10 +1,10 @@
 use crate::config::Config;
-use crate::danmu2ass;
 use crate::database::video::VideoRow;
-use crate::database::DatabaseError;
-use crate::database::{account::AccountRow, record::RecordRow, Database};
+use crate::database::{account::AccountRow, record::RecordRow};
+use crate::database::{Database, DatabaseError};
 use crate::ffmpeg::{clip_from_m3u8, encode_video_danmu};
-use crate::progress_event::ProgressReporter;
+use crate::progress_manager::ProgressManager;
+use crate::progress_reporter::{EventEmitter, ProgressReporter};
 use crate::recorder::bilibili::BiliRecorder;
 use crate::recorder::danmu::DanmuEntry;
 use crate::recorder::douyin::DouyinRecorder;
@@ -12,16 +12,15 @@ use crate::recorder::errors::RecorderError;
 use crate::recorder::PlatformType;
 use crate::recorder::Recorder;
 use crate::recorder::RecorderInfo;
+use crate::state::State;
+use crate::{danmu2ass, state_type};
 use chrono::Utc;
 use custom_error::custom_error;
-use hyper::Uri;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use tauri::AppHandle;
 use tokio::fs::{remove_file, write};
 use tokio::sync::broadcast;
 use tokio::sync::RwLock;
@@ -59,8 +58,7 @@ pub enum RecorderEvent {
 }
 
 pub struct RecorderManager {
-    #[cfg(not(feature = "headless"))]
-    app_handle: AppHandle,
+    emitter: EventEmitter,
     db: Arc<Database>,
     config: Arc<RwLock<Config>>,
     recorders: Arc<RwLock<HashMap<String, Box<dyn Recorder>>>>,
@@ -106,14 +104,13 @@ impl From<RecorderManagerError> for String {
 
 impl RecorderManager {
     pub fn new(
-        #[cfg(not(feature = "headless"))] app_handle: AppHandle,
+        emitter: EventEmitter,
         db: Arc<Database>,
         config: Arc<RwLock<Config>>,
     ) -> RecorderManager {
         let (event_tx, _) = broadcast::channel(100);
         let manager = RecorderManager {
-            #[cfg(not(feature = "headless"))]
-            app_handle,
+            emitter,
             db,
             config,
             recorders: Arc::new(RwLock::new(HashMap::new())),
@@ -137,8 +134,7 @@ impl RecorderManager {
 
     pub fn clone(&self) -> Self {
         RecorderManager {
-            #[cfg(not(feature = "headless"))]
-            app_handle: self.app_handle.clone(),
+            emitter: self.emitter.clone(),
             db: self.db.clone(),
             config: self.config.clone(),
             recorders: self.recorders.clone(),
@@ -305,6 +301,7 @@ impl RecorderManager {
                     continue;
                 }
                 let account = account.unwrap();
+
                 if let Err(e) = self
                     .add_recorder("", &account, platform, room_id, *auto_start)
                     .await
@@ -335,6 +332,7 @@ impl RecorderManager {
                 BiliRecorder::new(
                     #[cfg(not(feature = "headless"))]
                     self.app_handle.clone(),
+                    self.emitter.clone(),
                     webid,
                     &self.db,
                     room_id,

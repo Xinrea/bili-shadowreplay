@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use crate::progress_event::ProgressReporterTrait;
+use crate::progress_reporter::ProgressReporterTrait;
 use async_ffmpeg_sidecar::event::FfmpegEvent;
 use async_ffmpeg_sidecar::log_parser::FfmpegLogParser;
 use tokio::io::BufReader;

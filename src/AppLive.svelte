@@ -1,5 +1,11 @@
 <script lang="ts">
-  import { invoke, set_title, TAURI_ENV, convertFileSrc } from "./lib/invoker";
+  import {
+    invoke,
+    set_title,
+    TAURI_ENV,
+    convertFileSrc,
+    listen,
+  } from "./lib/invoker";
   import Player from "./lib/Player.svelte";
   import type { AccountInfo, RecordItem } from "./lib/db";
   import { ChevronRight, ChevronLeft, Play, Pen } from "lucide-svelte";
@@ -17,7 +23,6 @@
   import MarkerPanel from "./lib/MarkerPanel.svelte";
   import CoverEditor from "./lib/CoverEditor.svelte";
   import VideoPreview from "./lib/VideoPreview.svelte";
-  import { listen } from "@tauri-apps/api/event";
   import { onDestroy, onMount } from "svelte";
 
   const urlParams = new URLSearchParams(window.location.search);
@@ -82,44 +87,30 @@
   let current_post_event_id = null;
   let danmu_enabled = false;
 
-  if (TAURI_ENV) {
-    let progress_update_listener = listen<ProgressUpdate>(
-      `progress-update`,
-      (e) => {
-        let event_id = e.payload.id;
-        if (event_id == current_clip_event_id) {
-          update_clip_prompt(e.payload.content);
-        } else if (event_id == current_post_event_id) {
-          update_post_prompt(e.payload.content);
-        }
+  listen<ProgressUpdate>(`progress-update`, (e) => {
+    let event_id = e.payload.id;
+    if (event_id == current_clip_event_id) {
+      update_clip_prompt(e.payload.content);
+    } else if (event_id == current_post_event_id) {
+      update_post_prompt(e.payload.content);
+    }
+  });
+  listen<ProgressFinished>(`progress-finished`, (e) => {
+    let event_id = e.payload.id;
+    if (event_id == current_clip_event_id) {
+      update_clip_prompt(`生成切片`);
+      if (!e.payload.success) {
+        alert("请检查 ffmpeg 是否配置正确：" + e.payload.message);
       }
-    );
-    let progress_finished_listener = listen<ProgressFinished>(
-      `progress-finished`,
-      (e) => {
-        let event_id = e.payload.id;
-        if (event_id == current_clip_event_id) {
-          update_clip_prompt(`生成切片`);
-          if (!e.payload.success) {
-            alert("请检查 ffmpeg 是否配置正确：" + e.payload.message);
-          }
-          current_clip_event_id = null;
-        } else if (event_id == current_post_event_id) {
-          update_post_prompt(`投稿`);
-          if (!e.payload.success) {
-            alert(e.payload.message);
-          }
-          current_post_event_id = null;
-        }
+      current_clip_event_id = null;
+    } else if (event_id == current_post_event_id) {
+      update_post_prompt(`投稿`);
+      if (!e.payload.success) {
+        alert(e.payload.message);
       }
-    );
-    // remove listeners when component is destroyed
-    onDestroy(() => {
-      progress_update_listener.then((fn) => fn());
-      progress_finished_listener.then((fn) => fn());
-    });
-  }
-
+      current_post_event_id = null;
+    }
+  });
   let archive: RecordItem = null;
 
   let start = 0.0;

@@ -28,6 +28,7 @@ use crate::{
         },
         AccountInfo,
     },
+    progress_manager::Event,
     recorder::{
         bilibili::{
             client::{QrInfo, QrStatus},
@@ -40,13 +41,15 @@ use crate::{
     recorder_manager::{ClipRangeParams, RecorderList},
     state::State,
 };
+use axum::response::sse;
 use axum::{
     extract::{Json, Path, Query},
     http::StatusCode,
-    response::{IntoResponse, Response},
-    routing::{get, options, post},
+    response::{IntoResponse, Sse},
+    routing::{get, post},
     Router,
 };
+use futures::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncSeekExt;
 use tower_http::cors::{Any, CorsLayer};
@@ -971,11 +974,60 @@ async fn handler_output(
     Ok(response)
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ServerEvent {
+    event: String,
+    data: String,
+}
+
+async fn handler_sse(
+    state: axum::extract::State<State>,
+) -> Sse<impl Stream<Item = Result<sse::Event, axum::Error>>> {
+    let rx = state.progress_manager.subscribe();
+
+    let stream = stream::unfold(rx, move |mut rx| async move {
+        match rx.recv().await {
+            Ok(event) => {
+                let event = match event {
+                    Event::ProgressUpdate { id, content } => sse::Event::default()
+                        .event("progress-update")
+                        .data(format!(r#"{{"id":"{}","content":"{}"}}"#, id, content)),
+                    Event::ProgressFinished {
+                        id,
+                        success,
+                        message,
+                    } => sse::Event::default()
+                        .event("progress-finished")
+                        .data(format!(
+                            r#"{{"id":"{}","success":{},"message":"{}"}}"#,
+                            id, success, message
+                        )),
+                    Event::DanmuReceived { room, ts, content } => sse::Event::default()
+                        .event(format!("danmu:{}", room))
+                        .data(format!(r#"{{"ts":"{}","content":"{}"}}"#, ts, content)),
+                };
+                Some((Ok(event), rx))
+            }
+            Err(_) => None,
+        }
+    });
+
+    Sse::new(stream).keep_alive(
+        sse::KeepAlive::new()
+            .interval(std::time::Duration::from_secs(1))
+            .text("keep-alive"),
+    )
+}
+
 pub async fn start_api_server(state: State) {
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
+
+    // Configure body size limit
+    let body_limit = tower_http::limit::RequestBodyLimitLayer::new(1024 * 1024 * 1024); // 1GB limit
 
     let app = Router::new()
         // Serve static files from dist directory
@@ -1062,7 +1114,9 @@ pub async fn start_api_server(state: State) {
         .route("/api/fetch", post(handler_fetch))
         .route("/hls/*uri", get(handler_hls))
         .route("/output/*uri", get(handler_output))
+        .route("/api/sse", get(handler_sse))
         .layer(cors)
+        .layer(body_limit)
         .with_state(state);
 
     let addr = "0.0.0.0:3000";

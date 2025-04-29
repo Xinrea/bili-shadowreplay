@@ -522,6 +522,7 @@ dependencies = [
  "tauri-plugin-sql",
  "tauri-utils",
  "tokio",
+ "tokio-util",
  "toml 0.7.8",
  "tower-http",
  "urlencoding",

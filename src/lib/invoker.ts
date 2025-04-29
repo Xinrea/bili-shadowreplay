@@ -1,6 +1,7 @@
 import { invoke as tauri_invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { fetch as tauri_fetch } from "@tauri-apps/plugin-http";
+import { convertFileSrc as tauri_convert } from "@tauri-apps/api/core";
 
 declare global {
   interface Window {
@@ -8,7 +9,7 @@ declare global {
   }
 }
 
-const API_BASE_URL = localStorage.getItem("api_base_url") || "";
+const ENDPOINT = localStorage.getItem("endpoint") || "";
 const TAURI_ENV = typeof window.__TAURI__ !== "undefined";
 
 async function invoke<T>(
@@ -31,7 +32,7 @@ async function invoke<T>(
       return;
     }
 
-    const response = await fetch(`${API_BASE_URL}/${command}`, {
+    const response = await fetch(`${ENDPOINT}/api/${command}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -56,7 +57,7 @@ async function get(url: string) {
   if (TAURI_ENV) {
     return await tauri_fetch(url);
   }
-  const response = await fetch(`${API_BASE_URL}/fetch`, {
+  const response = await fetch(`${ENDPOINT}/api/fetch`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -79,4 +80,11 @@ async function set_title(title: string) {
   document.title = title;
 }
 
-export { invoke, get, set_title, TAURI_ENV };
+function convertFileSrc(filePath: string) {
+  if (TAURI_ENV) {
+    return tauri_convert(filePath);
+  }
+  return `${ENDPOINT}/output/${filePath.split("/").pop()}`;
+}
+
+export { invoke, get, set_title, TAURI_ENV, convertFileSrc };

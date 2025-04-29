@@ -15,7 +15,7 @@ use crate::recorder::RecorderInfo;
 use chrono::Utc;
 use custom_error::custom_error;
 use hyper::Uri;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -32,7 +32,7 @@ pub struct RecorderList {
     pub recorders: Vec<RecorderInfo>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ClipRangeParams {
     pub title: String,
     pub cover: String,

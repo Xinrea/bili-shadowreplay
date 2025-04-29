@@ -1,6 +1,5 @@
 <script lang="ts">
-  import { convertFileSrc } from "@tauri-apps/api/core";
-  import { invoke, set_title, TAURI_ENV } from "./lib/invoker";
+  import { invoke, set_title, TAURI_ENV, convertFileSrc } from "./lib/invoker";
   import Player from "./lib/Player.svelte";
   import type { AccountInfo, RecordItem } from "./lib/db";
   import { ChevronRight, ChevronLeft, Play, Pen } from "lucide-svelte";
@@ -275,7 +274,9 @@
     selected_video = videos.find((v) => {
       return v.value == new_video.id;
     });
-    selected_video.cover = new_video.cover;
+    if (selected_video) {
+      selected_video.cover = new_video.cover;
+    }
   }
 
   async function do_post() {

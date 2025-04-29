@@ -47,6 +47,18 @@
     console.log("Saved start and end", start + focus_start, end + focus_start);
   }
 
+  async function loadGlobalOffset(url: string) {
+    const response = await fetch(url);
+    const text = await response.text();
+    const offsetRegex = /#EXT-X-OFFSET:(\d+)/;
+    const match = text.match(offsetRegex);
+    if (match && match[1]) {
+      global_offset = parseInt(match[1], 10);
+    } else {
+      console.warn("No #EXT-X-OFFSET found");
+    }
+  }
+
   function tauriNetworkPlugin(uri, requestType, progressUpdated) {
     const controller = new AbortController();
     const abortStatus = {
@@ -190,9 +202,11 @@
     });
 
     try {
-      await player.load(
-        `http://127.0.0.1:3000/hls/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`
-      );
+      const url = `http://127.0.0.1:3000/hls/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`;
+      if (!TAURI_ENV) {
+        await loadGlobalOffset(url);
+      }
+      await player.load(url);
       // This runs if the asynchronous load is successful.
       console.log("The video has now been loaded!");
     } catch (error) {
@@ -223,7 +237,6 @@
 
     video.addEventListener("volumechange", (event) => {
       localStorage.setItem(`volume:${room_id}`, video.volume.toString());
-      console.log("Update volume to", video.volume);
     });
 
     document.getElementsByClassName("shaka-overflow-menu-button")[0].remove();

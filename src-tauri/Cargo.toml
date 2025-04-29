@@ -63,7 +63,6 @@ futures-core = "0.3"
 custom-protocol = ["tauri/custom-protocol"]
 cuda = ["whisper-rs/cuda"]
 headless = []
-default = ["headless"]
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"

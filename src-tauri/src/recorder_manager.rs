@@ -444,7 +444,7 @@ impl RecorderManager {
         params: &ClipRangeParams,
     ) -> Result<PathBuf, RecorderManagerError> {
         let range_m3u8 = format!(
-            "http://127.0.0.1/{}/{}/{}/playlist.m3u8?start={}&end={}",
+            "{}/{}/{}/playlist.m3u8?start={}&end={}",
             params.platform, params.room_id, params.live_id, params.x, params.y
         );
 

@@ -2,13 +2,16 @@ use async_trait::async_trait;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::sync::LazyLock;
-use tauri::AppHandle;
-use tauri::Emitter;
 use tokio::sync::broadcast;
 use tokio::sync::RwLock;
 
 use crate::progress_manager::Event;
-use crate::recorder::danmu::DanmuEntry;
+
+#[cfg(not(feature = "headless"))]
+use {
+    crate::recorder::danmu::DanmuEntry,
+    tauri::{AppHandle, Emitter},
+};
 
 type CancelFlagMap = std::collections::HashMap<String, Arc<AtomicBool>>;
 
@@ -49,7 +52,7 @@ impl EventEmitter {
         }
     }
 
-    pub fn emit(&self, event: Event) {
+    pub fn emit(&self, event: &Event) {
         #[cfg(not(feature = "headless"))]
         {
             match event {
@@ -65,7 +68,13 @@ impl EventEmitter {
                 }
                 Event::DanmuReceived { room, ts, content } => {
                     self.app_handle
-                        .emit(&format!("danmu:{}", room), DanmuEntry { ts, content })
+                        .emit(
+                            &format!("danmu:{}", room),
+                            DanmuEntry {
+                                ts: *ts,
+                                content: content.clone(),
+                            },
+                        )
                         .unwrap();
                 }
                 _ => {}
@@ -73,7 +82,7 @@ impl EventEmitter {
         }
 
         #[cfg(feature = "headless")]
-        let _ = self.sender.send(event);
+        let _ = self.sender.send(event.clone());
     }
 }
 impl ProgressReporter {
@@ -81,7 +90,7 @@ impl ProgressReporter {
         // if already exists, return
         if CANCEL_FLAG_MAP.read().await.get(event_id).is_some() {
             log::error!("Task already exists: {}", event_id);
-            emitter.emit(Event::ProgressFinished {
+            emitter.emit(&Event::ProgressFinished {
                 id: event_id.to_string(),
                 success: false,
                 message: "任务已经存在".to_string(),
@@ -106,14 +115,14 @@ impl ProgressReporter {
 #[async_trait]
 impl ProgressReporterTrait for ProgressReporter {
     fn update(&self, content: &str) {
-        self.emitter.emit(Event::ProgressUpdate {
+        self.emitter.emit(&Event::ProgressUpdate {
             id: self.event_id.clone(),
             content: content.to_string(),
         });
     }
 
     async fn finish(&self, success: bool, message: &str) {
-        self.emitter.emit(Event::ProgressFinished {
+        self.emitter.emit(&Event::ProgressFinished {
             id: self.event_id.clone(),
             success,
             message: message.to_string(),

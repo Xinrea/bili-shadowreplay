@@ -21,6 +21,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use tauri::AppHandle;
 use tokio::fs::{remove_file, write};
 use tokio::sync::broadcast;
 use tokio::sync::RwLock;
@@ -58,6 +59,8 @@ pub enum RecorderEvent {
 }
 
 pub struct RecorderManager {
+    #[cfg(not(feature = "headless"))]
+    app_handle: AppHandle,
     emitter: EventEmitter,
     db: Arc<Database>,
     config: Arc<RwLock<Config>>,
@@ -104,12 +107,15 @@ impl From<RecorderManagerError> for String {
 
 impl RecorderManager {
     pub fn new(
+        #[cfg(not(feature = "headless"))] app_handle: AppHandle,
         emitter: EventEmitter,
         db: Arc<Database>,
         config: Arc<RwLock<Config>>,
     ) -> RecorderManager {
         let (event_tx, _) = broadcast::channel(100);
         let manager = RecorderManager {
+            #[cfg(not(feature = "headless"))]
+            app_handle,
             emitter,
             db,
             config,
@@ -134,6 +140,8 @@ impl RecorderManager {
 
     pub fn clone(&self) -> Self {
         RecorderManager {
+            #[cfg(not(feature = "headless"))]
+            app_handle: self.app_handle.clone(),
             emitter: self.emitter.clone(),
             db: self.db.clone(),
             config: self.config.clone(),

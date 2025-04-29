@@ -548,6 +548,18 @@ impl Recorder for DouyinRecorder {
         m3u8_content
     }
 
+    async fn master_m3u8(&self, live_id: &str, start: i64, end: i64) -> String {
+        let mut m3u8_content = "#EXTM3U\n".to_string();
+        m3u8_content += "#EXT-X-VERSION:6\n";
+        m3u8_content += format!(
+            "#EXT-X-STREAM-INF:{}\n",
+            "BANDWIDTH=1280000,RESOLUTION=1920x1080,CODECS=\"avc1.64001F,mp4a.40.2\""
+        )
+        .as_str();
+        m3u8_content += &format!("playlist.m3u8?start={}&end={}\n", start, end);
+        m3u8_content
+    }
+
     async fn first_segment_ts(&self, live_id: &str) -> i64 {
         if *self.live_id.read().await == live_id {
             let entry_store = self.entry_store.read().await;

@@ -86,6 +86,7 @@ pub struct BiliStream {
     pub path: String,
     pub extra: String,
     pub expire: i64,
+    pub codec: String,
 }
 
 impl fmt::Display for BiliStream {
@@ -99,22 +100,35 @@ impl fmt::Display for BiliStream {
 }
 
 impl BiliStream {
-    pub fn new(format: StreamType, base_url: &str, host: &str, extra: &str) -> BiliStream {
+    pub fn new(
+        format: StreamType,
+        base_url: &str,
+        host: &str,
+        extra: &str,
+        codec: &str,
+    ) -> BiliStream {
         BiliStream {
             format,
             host: host.into(),
             path: BiliStream::get_path(base_url),
             extra: extra.into(),
             expire: BiliStream::get_expire(extra).unwrap_or(600000),
+            codec: codec.into(),
         }
     }
 
     pub fn index(&self) -> String {
-        format!("{}{}{}?{}", self.host, self.path, "index.m3u8", self.extra)
+        format!(
+            "https://{}/{}/{}?{}",
+            self.host, self.path, "index.m3u8", self.extra
+        )
     }
 
     pub fn ts_url(&self, seg_name: &str) -> String {
-        format!("{}{}{}?{}", self.host, self.path, seg_name, self.extra)
+        format!(
+            "https://{}/{}/{}?{}",
+            self.host, self.path, seg_name, self.extra
+        )
     }
 
     pub fn get_path(base_url: &str) -> String {
@@ -350,63 +364,6 @@ impl BiliClient {
             .first_or_octet_stream()
             .to_string();
         Ok(format!("data:{};base64,{}", mime_type, base64))
-    }
-
-    pub async fn get_play_url(
-        &self,
-        account: &AccountRow,
-        room_id: u64,
-    ) -> Result<BiliStream, BiliClientError> {
-        let mut headers = self.headers.clone();
-        headers.insert("cookie", account.cookies.parse().unwrap());
-        let res: GeneralResponse = self
-            .client
-            .get(format!(
-                "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?room_id={}&protocol=1&format=0,1,2&codec=0&qn=10000&platform=h5",
-                room_id
-            ))
-            .headers(headers)
-            .send().await?
-            .json().await?;
-        if res.code == 0 {
-            if let response::Data::RoomPlayInfo(data) = res.data {
-                if let Some(stream) = data.playurl_info.playurl.stream.first() {
-                    // Get fmp4 format
-                    if let Some(f) = stream.format.iter().find(|f| f.format_name == "fmp4") {
-                        self.get_stream(f).await
-                    } else {
-                        log::error!("No fmp4 stream found: {:?}", data);
-                        Err(BiliClientError::InvalidResponse)
-                    }
-                } else {
-                    log::error!("No stream provided: {:#?}", data);
-                    Err(BiliClientError::InvalidResponse)
-                }
-            } else {
-                log::error!("Invalid response: {:#?}", res);
-                Err(BiliClientError::InvalidResponse)
-            }
-        } else {
-            log::error!("Invalid response: {:#?}", res);
-            Err(BiliClientError::InvalidResponse)
-        }
-    }
-
-    async fn get_stream(&self, format: &Format) -> Result<BiliStream, BiliClientError> {
-        if let Some(codec) = format.codec.first() {
-            if let Some(url_info) = codec.url_info.first() {
-                Ok(BiliStream::new(
-                    StreamType::FMP4,
-                    &codec.base_url,
-                    &url_info.host,
-                    &url_info.extra,
-                ))
-            } else {
-                Err(BiliClientError::InvalidFormat)
-            }
-        } else {
-            Err(BiliClientError::InvalidFormat)
-        }
     }
 
     pub async fn get_index_content(&self, url: &String) -> Result<String, BiliClientError> {

@@ -185,14 +185,6 @@
     player.configure({
       streaming: {
         lowLatencyMode: true,
-        liveSync: {
-          enabled: true,
-        },
-      },
-      manifest: {
-        hls: {
-          liveSegmentsDelay: 1, // 直播延迟设为 0.5 个片段（2 秒）
-        },
       },
       cmsd: {
         enabled: false,
@@ -208,7 +200,7 @@
     });
 
     try {
-      const url = `${ENDPOINT}/hls/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`;
+      const url = `${ENDPOINT}/hls/${platform}/${room_id}/${live_id}/master.m3u8?start=${focus_start}&end=${focus_end}`;
       if (!TAURI_ENV) {
         await loadGlobalOffset(url);
       }
@@ -296,8 +288,6 @@
         const cur = Math.floor(
           (video.currentTime + global_offset + ts + focus_start) * 1000
         );
-
-        console.log("cur:", new Date(cur), global_offset, ts);
 
         let danmus = danmu_records.filter((v) => {
           return v.ts >= cur - 1000 && v.ts < cur;

@@ -107,10 +107,8 @@ impl ProgressReporterTrait for ProgressReporter {
 }
 
 pub async fn cancel_progress(event_id: &str) {
-    CANCEL_FLAG_MAP
-        .write()
-        .await
-        .get_mut(event_id)
-        .unwrap()
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let mut cancel_flag_map = CANCEL_FLAG_MAP.write().await;
+    if let Some(cancel_flag) = cancel_flag_map.get_mut(event_id) {
+        cancel_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }

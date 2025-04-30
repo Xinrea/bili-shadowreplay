@@ -1033,9 +1033,13 @@ async fn handler_sse(
         match rx.recv().await {
             Ok(event) => {
                 let event = match event {
-                    Event::ProgressUpdate { id, content } => sse::Event::default()
-                        .event("progress-update")
-                        .data(format!(r#"{{"id":"{}","content":"{}"}}"#, id, content)),
+                    Event::ProgressUpdate { id, content } => {
+                        sse::Event::default().event("progress-update").data(format!(
+                            r#"{{"id":"{}","content":"{}"}}"#,
+                            id,
+                            content.replace('\n', "\\n").replace('\r', "\\r")
+                        ))
+                    }
                     Event::ProgressFinished {
                         id,
                         success,
@@ -1044,11 +1048,17 @@ async fn handler_sse(
                         .event("progress-finished")
                         .data(format!(
                             r#"{{"id":"{}","success":{},"message":"{}"}}"#,
-                            id, success, message
+                            id,
+                            success,
+                            message.replace('\n', "\\n").replace('\r', "\\r")
                         )),
                     Event::DanmuReceived { room, ts, content } => sse::Event::default()
                         .event(format!("danmu:{}", room))
-                        .data(format!(r#"{{"ts":"{}","content":"{}"}}"#, ts, content)),
+                        .data(format!(
+                            r#"{{"ts":"{}","content":"{}"}}"#,
+                            ts,
+                            content.replace('\n', "\\n").replace('\r', "\\r")
+                        )),
                 };
                 Some((Ok(event), rx))
             }

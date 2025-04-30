@@ -49,12 +49,13 @@
   async function loadGlobalOffset(url: string) {
     const response = await fetch(url);
     const text = await response.text();
-    const offsetRegex = /#EXT-X-OFFSET:(\d+)/;
+    const offsetRegex = /DANMU=(\d+)/;
     const match = text.match(offsetRegex);
     if (match && match[1]) {
       global_offset = parseInt(match[1], 10);
+      console.log("DANMU OFFSET found", global_offset);
     } else {
-      console.warn("No #EXT-X-OFFSET found");
+      console.warn("No DANMU OFFSET found");
     }
   }
 
@@ -81,13 +82,14 @@
 
           if (is_m3u8) {
             let m3u8Content = new TextDecoder().decode(uint8Array);
-            const offsetRegex = /#EXT-X-OFFSET:(\d+)/;
+            const offsetRegex = /DANMU=(\d+)/;
             const match = m3u8Content.match(offsetRegex);
 
             if (match && match[1]) {
               global_offset = parseInt(match[1], 10);
+              console.log("DANMU OFFSET found", global_offset);
             } else {
-              console.warn("No #EXT-X-OFFSET found");
+              console.warn("No DANMU OFFSET found");
             }
           }
           // Set content-type based on URI extension

@@ -57,7 +57,16 @@ RUN apt-get update && apt-get install -y \
     libssl3 \
     libgio-2.0 \
     libjavascriptcoregtk-4.1 \
+    wget \
+    xz-utils \
     && rm -rf /var/lib/apt/lists/*
+
+# Download and install FFmpeg static build
+RUN wget https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz \
+    && tar xf ffmpeg-release-amd64-static.tar.xz \
+    && mv ffmpeg-*-static/ffmpeg /usr/local/bin/ \
+    && mv ffmpeg-*-static/ffprobe /usr/local/bin/ \
+    && rm -rf ffmpeg-*-static ffmpeg-release-amd64-static.tar.xz
 
 # Copy built frontend
 COPY --from=frontend-builder /app/dist ./dist

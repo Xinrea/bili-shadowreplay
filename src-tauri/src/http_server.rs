@@ -17,10 +17,10 @@ use crate::{
         },
         message::{delete_message, get_messages, read_message},
         recorder::{
-            add_recorder, delete_archive, fetch_hls, force_start, force_stop, get_archive,
-            get_archives, get_danmu_record, get_recent_record, get_recorder_list, get_room_info,
-            get_today_record_count, get_total_length, remove_recorder, send_danmaku,
-            set_auto_start,
+            add_recorder, delete_archive, export_danmu, fetch_hls, force_start, force_stop,
+            get_archive, get_archives, get_danmu_record, get_recent_record, get_recorder_list,
+            get_room_info, get_today_record_count, get_total_length, remove_recorder, send_danmaku,
+            set_auto_start, ExportDanmuOptions,
         },
         utils::{get_disk_info, DiskInfo},
         video::{
@@ -43,9 +43,9 @@ use crate::{
     recorder_manager::{ClipRangeParams, RecorderList},
     state::State,
 };
-use axum::response::sse;
+use axum::{extract::Query, response::sse};
 use axum::{
-    extract::{Json, Path, Query},
+    extract::{Json, Path},
     http::StatusCode,
     response::{IntoResponse, Sse},
     routing::{get, post},
@@ -834,6 +834,20 @@ async fn handler_fetch(
     Ok((status, response_headers, body))
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportDanmuRequest {
+    options: ExportDanmuOptions,
+}
+
+async fn handler_export_danmu(
+    state: axum::extract::State<State>,
+    Json(params): Json<ExportDanmuRequest>,
+) -> Result<Json<ApiResponse<String>>, ApiError> {
+    let result = export_danmu(state.0, params.options).await?;
+    Ok(Json(ApiResponse::success(result)))
+}
+
 async fn handler_hls(
     state: axum::extract::State<State>,
     Path(uri): Path<String>,
@@ -1138,6 +1152,7 @@ pub async fn start_api_server(state: State) {
             "/api/encode_video_subtitle",
             post(handler_encode_video_subtitle),
         )
+        .route("/api/export_danmu", post(handler_export_danmu))
         // Utils commands
         .route("/api/get_disk_info", post(handler_get_disk_info))
         .route("/api/fetch", post(handler_fetch))

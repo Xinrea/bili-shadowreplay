@@ -8,7 +8,7 @@
   import type { Marker } from "./interface";
   import { createEventDispatcher } from "svelte";
   import { Tooltip } from "flowbite-svelte";
-  import { invoke } from "../lib/invoker";
+  import { invoke, TAURI_ENV } from "../lib/invoker";
   import { save } from "@tauri-apps/plugin-dialog";
   import type { RecordItem } from "./db";
   const dispatch = createEventDispatcher();
@@ -47,12 +47,19 @@
       .split(" ")[0]
       .replaceAll("/", "-")}]${archive.title}.txt`;
     console.log("export to file", file_name);
-    const path = await save({
-      title: "导出标记列表",
-      defaultPath: file_name,
-    });
-    if (!path) return;
-    await invoke("export_to_file", { fileName: path, content: r });
+    if (TAURI_ENV) {
+      const path = await save({
+        title: "导出标记列表",
+        defaultPath: file_name,
+      });
+      if (!path) return;
+      await invoke("export_to_file", { fileName: path, content: r });
+    } else {
+      const a = document.createElement("a");
+      a.href = "data:text/plain;charset=utf-8," + encodeURIComponent(r);
+      a.download = file_name;
+      a.click();
+    }
   }
 </script>
 

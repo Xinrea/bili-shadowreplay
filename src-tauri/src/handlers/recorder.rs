@@ -1,3 +1,4 @@
+use crate::danmu2ass;
 use crate::database::record::RecordRow;
 use crate::database::recorder::RecorderRow;
 use crate::recorder::danmu::DanmuEntry;
@@ -7,10 +8,11 @@ use crate::recorder_manager::RecorderList;
 use crate::state::State;
 use crate::state_type;
 
+#[cfg(not(feature = "headless"))]
+use auri::State as TauriState;
+
 use serde::Deserialize;
 use serde::Serialize;
-#[cfg(not(feature = "headless"))]
-use {crate::danmu2ass, tauri::State as TauriState};
 
 #[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn get_recorder_list(state: state_type!()) -> Result<RecorderList, ()> {
@@ -158,6 +160,7 @@ pub async fn get_danmu_record(
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExportDanmuOptions {
     platform: String,
     room_id: u64,
@@ -167,8 +170,7 @@ pub struct ExportDanmuOptions {
     ass: bool,
 }
 
-#[cfg(not(feature = "headless"))]
-#[tauri::command]
+#[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn export_danmu(
     state: state_type!(),
     options: ExportDanmuOptions,

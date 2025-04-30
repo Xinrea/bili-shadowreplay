@@ -54,6 +54,7 @@ url = "2.5.4"
 custom-protocol = ["tauri/custom-protocol"]
 cuda = ["whisper-rs/cuda"]
 headless = []
+default = ["headless"]
 
 [target.'cfg(windows)'.dependencies]
 whisper-rs = { version = "0.14.2", default-features = false }

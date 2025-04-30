@@ -38,7 +38,7 @@ fn default_auto_subtitle() -> bool {
 }
 
 fn default_whisper_model() -> String {
-    "".to_string()
+    "whisper_model.bin".to_string()
 }
 
 fn default_whisper_prompt() -> String {

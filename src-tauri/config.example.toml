@@ -5,7 +5,7 @@ live_end_notify = true
 clip_notify = true
 post_notify = true
 auto_subtitle = false
-whisper_model = ""
+whisper_model = "./whisper_model.bin"
 whisper_prompt = "这是一段中文 你们好"
 clip_name_format = "[{room_id}][{live_id}][{title}][{created_at}].mp4"
 

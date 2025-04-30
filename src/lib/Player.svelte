@@ -814,12 +814,20 @@
     })) as string;
 
     let file_name = `danmu_${room_id}_${live_id}.${ass ? "ass" : "txt"}`;
-    const path = await save({
-      title: "导出弹幕",
-      defaultPath: file_name,
-    });
-    if (!path) return;
-    await invoke("export_to_file", { fileName: path, content: assContent });
+    if (TAURI_ENV) {
+      const path = await save({
+        title: "导出弹幕",
+        defaultPath: file_name,
+      });
+      if (!path) return;
+      await invoke("export_to_file", { fileName: path, content: assContent });
+    } else {
+      const a = document.createElement("a");
+      a.href =
+        "data:text/plain;charset=utf-8," + encodeURIComponent(assContent);
+      a.download = file_name;
+      a.click();
+    }
   }
 </script>
 

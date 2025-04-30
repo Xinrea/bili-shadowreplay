@@ -9,13 +9,12 @@ use crate::subtitle_generator::whisper::{self};
 use crate::subtitle_generator::SubtitleGenerator;
 use chrono::Utc;
 use std::path::Path;
-use tauri_plugin_notification::NotificationExt;
 
 use crate::state::State;
 use crate::state_type;
 
 #[cfg(not(feature = "headless"))]
-use tauri::State as TauriState;
+use {tauri::State as TauriState, tauri_plugin_notification::NotificationExt};
 
 #[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn clip_range(

@@ -802,13 +802,15 @@
   async function exportDanmu(ass: boolean) {
     console.log("Export danmus");
     const assContent = (await invoke("export_danmu", {
-      platform: platform,
-      roomId: room_id,
-      liveId: live_id,
-      x: Math.floor(focus_start + start),
-      y: Math.floor(focus_start + end),
-      offset: global_offset + parseInt(live_id),
-      ass: ass,
+      options: {
+        platform: platform,
+        roomId: room_id,
+        liveId: live_id,
+        x: Math.floor(focus_start + start),
+        y: Math.floor(focus_start + end),
+        offset: global_offset + parseInt(live_id),
+        ass: ass,
+      },
     })) as string;
 
     let file_name = `danmu_${room_id}_${live_id}.${ass ? "ass" : "txt"}`;

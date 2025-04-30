@@ -2,7 +2,6 @@ use super::errors::BiliClientError;
 use super::profile;
 use super::profile::Profile;
 use super::response;
-use super::response::Format;
 use super::response::GeneralResponse;
 use super::response::PostVideoMetaResponse;
 use super::response::PreuploadResponse;
@@ -174,29 +173,6 @@ impl BiliClient {
         }
     }
 
-    pub async fn fetch_webid(&self, account: &AccountRow) -> Result<String, BiliClientError> {
-        // get webid from html content
-        // webid is in script tag <script id="__RENDER_DATA__" type="application/json">
-        // https://space.bilibili.com/{user_id}
-        // let url = format!("https://space.bilibili.com/{}", account.uid);
-        // let res = self.client.get(&url).send().await?;
-        // let content = res.text().await?;
-        // let re =
-        //     Regex::new(r#"<script id="__RENDER_DATA__" type="application/json">(.+?)</script>"#)
-        //         .unwrap();
-        // let cap = re.captures(&content).ok_or(BiliClientError::InvalidValue)?;
-        // let str = cap.get(1).ok_or(BiliClientError::InvalidValue)?.as_str();
-        // // str need url decode
-        // let json_str = urlencoding::decode(str).map_err(|_| BiliClientError::InvalidValue)?; // url decode
-        // let json: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-        // let webid = json["access_id"]
-        //     .as_str()
-        //     .ok_or(BiliClientError::InvalidValue)?;
-        // log::info!("webid: {}", webid);
-        // Ok(webid.into())
-        Ok("".into())
-    }
-
     pub async fn get_qr(&self) -> Result<QrInfo, BiliClientError> {
         let res: serde_json::Value = self
             .client
@@ -261,7 +237,6 @@ impl BiliClient {
 
     pub async fn get_user_info(
         &self,
-        webid: &str,
         account: &AccountRow,
         user_id: u64,
     ) -> Result<UserInfo, BiliClientError> {
@@ -270,7 +245,7 @@ impl BiliClient {
             "platform": "web",
             "web_location": "1550101",
             "token": "",
-            "w_webid": webid,
+            "w_webid": "",
         });
         let params = self.get_sign(params).await?;
         let mut headers = self.headers.clone();

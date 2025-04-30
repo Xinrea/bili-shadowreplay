@@ -1,3 +1,5 @@
+use std::fmt::{self, Display};
+
 use crate::{
     config::Config,
     database::{
@@ -82,9 +84,36 @@ impl<T> ApiResponse<T> {
     }
 }
 
+#[derive(Debug)]
+struct ApiError(String);
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> axum::response::Response {
+        Json(ApiResponse::<()>::error(self.0)).into_response()
+    }
+}
+
+impl From<String> for ApiError {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for ApiError {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
+impl Display for ApiError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 async fn handler_get_accounts(
     state: axum::extract::State<State>,
-) -> Result<Json<ApiResponse<AccountInfo>>, String> {
+) -> Result<Json<ApiResponse<AccountInfo>>, ApiError> {
     let mut accounts = get_accounts(state.0).await?;
     for account in accounts.accounts.iter_mut() {
         account.cookies = "".to_string();
@@ -102,7 +131,7 @@ struct AddAccountRequest {
 async fn handler_add_account(
     state: axum::extract::State<State>,
     Json(param): Json<AddAccountRequest>,
-) -> Result<Json<ApiResponse<AccountRow>>, String> {
+) -> Result<Json<ApiResponse<AccountRow>>, ApiError> {
     let mut account = add_account(state.0, param.platform, &param.cookies).await?;
     account.cookies = "".to_string();
     Ok(Json(ApiResponse::success(account)))
@@ -118,21 +147,21 @@ struct RemoveAccountRequest {
 async fn handler_remove_account(
     state: axum::extract::State<State>,
     Json(account): Json<RemoveAccountRequest>,
-) -> Result<Json<ApiResponse<()>>, String> {
+) -> Result<Json<ApiResponse<()>>, ApiError> {
     remove_account(state.0, account.platform, account.uid).await?;
     Ok(Json(ApiResponse::success(())))
 }
 
 async fn handler_get_account_count(
     state: axum::extract::State<State>,
-) -> Result<Json<ApiResponse<u64>>, String> {
+) -> Result<Json<ApiResponse<u64>>, ApiError> {
     let count = get_account_count(state.0).await?;
     Ok(Json(ApiResponse::success(count)))
 }
 
 async fn handler_get_qr(
     state: axum::extract::State<State>,
-) -> Result<Json<ApiResponse<QrInfo>>, String> {
+) -> Result<Json<ApiResponse<QrInfo>>, ApiError> {
     let qr = get_qr(state.0).await.expect("Failed to get QR code");
     Ok(Json(ApiResponse::success(qr)))
 }
@@ -146,7 +175,7 @@ struct GetQrStatusRequest {
 async fn handler_get_qr_status(
     state: axum::extract::State<State>,
     Json(qr_info): Json<GetQrStatusRequest>,
-) -> Result<Json<ApiResponse<QrStatus>>, String> {
+) -> Result<Json<ApiResponse<QrStatus>>, ApiError> {
     let qr_status = get_qr_status(state.0, &qr_info.qrcode_key)
         .await
         .expect("Failed to get QR status");
@@ -155,7 +184,7 @@ async fn handler_get_qr_status(
 
 async fn handler_get_config(
     state: axum::extract::State<State>,
-) -> Result<Json<ApiResponse<Config>>, String> {
+) -> Result<Json<ApiResponse<Config>>, ApiError> {
     let config = get_config(state.0).await.expect("Failed to get config");
     Ok(Json(ApiResponse::success(config)))
 }
@@ -169,7 +198,7 @@ struct SetCachePathRequest {
 async fn handler_set_cache_path(
     state: axum::extract::State<State>,
     Json(cache_path): Json<SetCachePathRequest>,
-) -> Result<Json<ApiResponse<()>>, String> {
+) -> Result<Json<ApiResponse<()>>, ApiError> {
     set_cache_path(state.0, cache_path.cache_path)
         .await
         .expect("Failed to set cache path");
@@ -185,7 +214,7 @@ struct SetOutputPathRequest {
 async fn handler_set_output_path(
     state: axum::extract::State<State>,
     Json(output_path): Json<SetOutputPathRequest>,
-) -> Result<Json<ApiResponse<()>>, String> {
+) -> Result<Json<ApiResponse<()>>, ApiError> {
     set_output_path(state.0, output_path.output_path)
         .await
         .expect("Failed to set output path");
@@ -204,7 +233,7 @@ struct UpdateNotifyRequest {
 async fn handler_update_notify(
     state: axum::extract::State<State>,
     Json(notify): Json<UpdateNotifyRequest>,
-) -> Result<Json<ApiResponse<()>>, String> {
+) -> Result<Json<ApiResponse<()>>, ApiError> {
     update_notify(
         state.0,
         notify.live_start_notify,
@@ -226,7 +255,7 @@ struct UpdateWhisperModelRequest {
 async fn handler_update_whisper_model(
     state: axum::extract::State<State>,
     Json(whisper_model): Json<UpdateWhisperModelRequest>,
-) -> Result<Json<ApiResponse<()>>, String> {
+) -> Result<Json<ApiResponse<()>>, ApiError> {
     update_whisper_model(state.0, whisper_model.whisper_model)
         .await
         .expect("Failed to update whisper model");
@@ -242,7 +271,7 @@ struct UpdateSubtitleSettingRequest {
 async fn handler_update_subtitle_setting(
     state: axum::extract::State<State>,
     Json(subtitle_setting): Json<UpdateSubtitleSettingRequest>,
-) -> Result<Json<ApiResponse<()>>, String> {
+) -> Result<Json<ApiResponse<()>>, ApiError> {
     update_subtitle_setting(state.0, subtitle_setting.auto_subtitle)
         .await
         .expect("Failed to update subtitle setting");
@@ -258,7 +287,7 @@ struct UpdateClipNameFormatRequest {
 async fn handler_update_clip_name_format(
     state: axum::extract::State<State>,
     Json(clip_name_format): Json<UpdateClipNameFormatRequest>,
-) -> Result<Json<ApiResponse<()>>, String> {
+) -> Result<Json<ApiResponse<()>>, ApiError> {
     update_clip_name_format(state.0, clip_name_format.clip_name_format)
         .await
         .expect("Failed to update clip name format");
@@ -274,7 +303,7 @@ struct UpdateWhisperPromptRequest {
 async fn handler_update_whisper_prompt(
     state: axum::extract::State<State>,
     Json(whisper_prompt): Json<UpdateWhisperPromptRequest>,
-) -> Result<Json<ApiResponse<()>>, String> {
+) -> Result<Json<ApiResponse<()>>, ApiError> {
     update_whisper_prompt(state.0, whisper_prompt.whisper_prompt)
         .await
         .expect("Failed to update whisper prompt");
@@ -291,7 +320,7 @@ struct UpdateAutoGenerateRequest {
 async fn handler_update_auto_generate(
     state: axum::extract::State<State>,
     Json(auto_generate): Json<UpdateAutoGenerateRequest>,
-) -> Result<Json<ApiResponse<()>>, String> {
+) -> Result<Json<ApiResponse<()>>, ApiError> {
     update_auto_generate(state.0, auto_generate.enable, auto_generate.encode_danmu)
         .await
         .expect("Failed to update auto generate");
@@ -300,7 +329,7 @@ async fn handler_update_auto_generate(
 
 async fn handler_get_messages(
     state: axum::extract::State<State>,
-) -> Result<Json<ApiResponse<Vec<MessageRow>>>, String> {
+) -> Result<Json<ApiResponse<Vec<MessageRow>>>, ApiError> {
     let messages = get_messages(state.0).await.expect("Failed to get messages");
     Ok(Json(ApiResponse::success(messages)))
 }
@@ -314,7 +343,7 @@ struct ReadMessageRequest {
 async fn handler_read_message(
     state: axum::extract::State<State>,
     Json(message): Json<ReadMessageRequest>,
-) -> Result<Json<ApiResponse<()>>, String> {
+) -> Result<Json<ApiResponse<()>>, ApiError> {
     read_message(state.0, message.message_id)
         .await
         .expect("Failed to read message");
@@ -330,7 +359,7 @@ struct DeleteMessageRequest {
 async fn handler_delete_message(
     state: axum::extract::State<State>,
     Json(message): Json<DeleteMessageRequest>,
-) -> Result<Json<ApiResponse<()>>, String> {
+) -> Result<Json<ApiResponse<()>>, ApiError> {
     delete_message(state.0, message.message_id)
         .await
         .expect("Failed to delete message");
@@ -339,7 +368,7 @@ async fn handler_delete_message(
 
 async fn handler_get_recorder_list(
     state: axum::extract::State<State>,
-) -> Result<Json<ApiResponse<RecorderList>>, String> {
+) -> Result<Json<ApiResponse<RecorderList>>, ApiError> {
     let recorders = get_recorder_list(state.0)
         .await
         .expect("Failed to get recorder list");
@@ -356,7 +385,7 @@ struct AddRecorderRequest {
 async fn handler_add_recorder(
     state: axum::extract::State<State>,
     Json(param): Json<AddRecorderRequest>,
-) -> Result<Json<ApiResponse<RecorderRow>>, String> {
+) -> Result<Json<ApiResponse<RecorderRow>>, ApiError> {
     let recorder = add_recorder(state.0, param.platform, param.room_id)
         .await
         .expect("Failed to add recorder");
@@ -373,7 +402,7 @@ struct RemoveRecorderRequest {
 async fn handler_remove_recorder(
     state: axum::extract::State<State>,
     Json(param): Json<RemoveRecorderRequest>,
-) -> Result<Json<ApiResponse<()>>, String> {
+) -> Result<Json<ApiResponse<()>>, ApiError> {
     remove_recorder(state.0, param.platform, param.room_id)
         .await
         .expect("Failed to remove recorder");
@@ -390,7 +419,7 @@ struct GetRoomInfoRequest {
 async fn handler_get_room_info(
     state: axum::extract::State<State>,
     Json(param): Json<GetRoomInfoRequest>,
-) -> Result<Json<ApiResponse<RecorderInfo>>, String> {
+) -> Result<Json<ApiResponse<RecorderInfo>>, ApiError> {
     let room_info = get_room_info(state.0, param.platform, param.room_id).await?;
     Ok(Json(ApiResponse::success(room_info)))
 }
@@ -404,7 +433,7 @@ struct GetArchivesRequest {
 async fn handler_get_archives(
     state: axum::extract::State<State>,
     Json(param): Json<GetArchivesRequest>,
-) -> Result<Json<ApiResponse<Vec<RecordRow>>>, String> {
+) -> Result<Json<ApiResponse<Vec<RecordRow>>>, ApiError> {
     let archives = get_archives(state.0, param.room_id).await?;
     Ok(Json(ApiResponse::success(archives)))
 }
@@ -419,7 +448,7 @@ struct GetArchiveRequest {
 async fn handler_get_archive(
     state: axum::extract::State<State>,
     Json(param): Json<GetArchiveRequest>,
-) -> Result<Json<ApiResponse<RecordRow>>, String> {
+) -> Result<Json<ApiResponse<RecordRow>>, ApiError> {
     let archive = get_archive(state.0, param.room_id, param.live_id).await?;
     Ok(Json(ApiResponse::success(archive)))
 }
@@ -435,7 +464,7 @@ struct DeleteArchiveRequest {
 async fn handler_delete_archive(
     state: axum::extract::State<State>,
     Json(param): Json<DeleteArchiveRequest>,
-) -> Result<Json<ApiResponse<()>>, String> {
+) -> Result<Json<ApiResponse<()>>, ApiError> {
     delete_archive(state.0, param.platform, param.room_id, param.archive_id).await?;
     Ok(Json(ApiResponse::success(())))
 }
@@ -451,7 +480,7 @@ struct GetDanmuRecordRequest {
 async fn handler_get_danmu_record(
     state: axum::extract::State<State>,
     Json(param): Json<GetDanmuRecordRequest>,
-) -> Result<Json<ApiResponse<Vec<DanmuEntry>>>, String> {
+) -> Result<Json<ApiResponse<Vec<DanmuEntry>>>, ApiError> {
     let danmu_record =
         get_danmu_record(state.0, param.platform, param.room_id, param.live_id).await?;
     Ok(Json(ApiResponse::success(danmu_record)))
@@ -468,21 +497,21 @@ struct SendDanmakuRequest {
 async fn handler_send_danmaku(
     state: axum::extract::State<State>,
     Json(param): Json<SendDanmakuRequest>,
-) -> Result<Json<ApiResponse<()>>, String> {
+) -> Result<Json<ApiResponse<()>>, ApiError> {
     send_danmaku(state.0, param.uid, param.room_id, param.message).await?;
     Ok(Json(ApiResponse::success(())))
 }
 
 async fn handler_get_total_length(
     state: axum::extract::State<State>,
-) -> Result<Json<ApiResponse<i64>>, String> {
+) -> Result<Json<ApiResponse<i64>>, ApiError> {
     let total_length = get_total_length(state.0).await?;
     Ok(Json(ApiResponse::success(total_length)))
 }
 
 async fn handler_get_today_record_count(
     state: axum::extract::State<State>,
-) -> Result<Json<ApiResponse<i64>>, String> {
+) -> Result<Json<ApiResponse<i64>>, ApiError> {
     let today_record_count = get_today_record_count(state.0).await?;
     Ok(Json(ApiResponse::success(today_record_count)))
 }
@@ -497,7 +526,7 @@ struct GetRecentRecordRequest {
 async fn handler_get_recent_record(
     state: axum::extract::State<State>,
     Json(param): Json<GetRecentRecordRequest>,
-) -> Result<Json<ApiResponse<Vec<RecordRow>>>, String> {
+) -> Result<Json<ApiResponse<Vec<RecordRow>>>, ApiError> {
     let recent_record = get_recent_record(state.0, param.offset, param.limit).await?;
     Ok(Json(ApiResponse::success(recent_record)))
 }
@@ -512,7 +541,7 @@ struct SetAutoStartRequest {
 async fn handler_set_auto_start(
     state: axum::extract::State<State>,
     Json(param): Json<SetAutoStartRequest>,
-) -> Result<Json<ApiResponse<()>>, String> {
+) -> Result<Json<ApiResponse<()>>, ApiError> {
     set_auto_start(state.0, param.platform, param.room_id, param.auto_start).await?;
     Ok(Json(ApiResponse::success(())))
 }
@@ -527,7 +556,7 @@ struct ForceStartRequest {
 async fn handler_force_start(
     state: axum::extract::State<State>,
     Json(param): Json<ForceStartRequest>,
-) -> Result<Json<ApiResponse<()>>, String> {
+) -> Result<Json<ApiResponse<()>>, ApiError> {
     force_start(state.0, param.platform, param.room_id).await?;
     Ok(Json(ApiResponse::success(())))
 }
@@ -542,7 +571,7 @@ struct ForceStopRequest {
 async fn handler_force_stop(
     state: axum::extract::State<State>,
     Json(param): Json<ForceStopRequest>,
-) -> Result<Json<ApiResponse<()>>, String> {
+) -> Result<Json<ApiResponse<()>>, ApiError> {
     force_stop(state.0, param.platform, param.room_id).await?;
     Ok(Json(ApiResponse::success(())))
 }
@@ -557,7 +586,7 @@ struct ClipRangeRequest {
 async fn handler_clip_range(
     state: axum::extract::State<State>,
     Json(param): Json<ClipRangeRequest>,
-) -> Result<Json<ApiResponse<String>>, String> {
+) -> Result<Json<ApiResponse<String>>, ApiError> {
     clip_range(state.0, param.event_id.clone(), param.params).await?;
     Ok(Json(ApiResponse::success(param.event_id)))
 }
@@ -575,7 +604,7 @@ struct UploadProcedureRequest {
 async fn handler_upload_procedure(
     state: axum::extract::State<State>,
     Json(param): Json<UploadProcedureRequest>,
-) -> Result<Json<ApiResponse<String>>, String> {
+) -> Result<Json<ApiResponse<String>>, ApiError> {
     let event_id = Uuid::new_v4().to_string();
     upload_procedure(
         state.0,
@@ -599,7 +628,7 @@ struct CancelRequest {
 async fn handler_cancel(
     state: axum::extract::State<State>,
     Json(param): Json<CancelRequest>,
-) -> Result<Json<ApiResponse<()>>, String> {
+) -> Result<Json<ApiResponse<()>>, ApiError> {
     cancel(state.0, param.event_id).await?;
     Ok(Json(ApiResponse::success(())))
 }
@@ -613,7 +642,7 @@ struct GetVideoRequest {
 async fn handler_get_video(
     state: axum::extract::State<State>,
     Json(param): Json<GetVideoRequest>,
-) -> Result<Json<ApiResponse<VideoRow>>, String> {
+) -> Result<Json<ApiResponse<VideoRow>>, ApiError> {
     let video = get_video(state.0, param.id).await?;
     Ok(Json(ApiResponse::success(video)))
 }
@@ -626,7 +655,7 @@ struct GetVideosRequest {
 async fn handler_get_videos(
     state: axum::extract::State<State>,
     Json(param): Json<GetVideosRequest>,
-) -> Result<Json<ApiResponse<Vec<VideoRow>>>, String> {
+) -> Result<Json<ApiResponse<Vec<VideoRow>>>, ApiError> {
     let videos = get_videos(state.0, param.room_id).await?;
     Ok(Json(ApiResponse::success(videos)))
 }
@@ -640,14 +669,14 @@ struct DeleteVideoRequest {
 async fn handler_delete_video(
     state: axum::extract::State<State>,
     Json(param): Json<DeleteVideoRequest>,
-) -> Result<Json<ApiResponse<()>>, String> {
+) -> Result<Json<ApiResponse<()>>, ApiError> {
     delete_video(state.0, param.id).await?;
     Ok(Json(ApiResponse::success(())))
 }
 
 async fn handler_get_video_typelist(
     state: axum::extract::State<State>,
-) -> Result<Json<ApiResponse<Vec<Typelist>>>, String> {
+) -> Result<Json<ApiResponse<Vec<Typelist>>>, ApiError> {
     let video_typelist = get_video_typelist(state.0).await?;
     Ok(Json(ApiResponse::success(video_typelist)))
 }
@@ -662,7 +691,7 @@ struct UpdateVideoCoverRequest {
 async fn handler_update_video_cover(
     state: axum::extract::State<State>,
     Json(param): Json<UpdateVideoCoverRequest>,
-) -> Result<Json<ApiResponse<()>>, String> {
+) -> Result<Json<ApiResponse<()>>, ApiError> {
     update_video_cover(state.0, param.id, param.cover).await?;
     Ok(Json(ApiResponse::success(())))
 }
@@ -676,7 +705,7 @@ struct GenerateVideoSubtitleRequest {
 async fn handler_generate_video_subtitle(
     state: axum::extract::State<State>,
     Json(param): Json<GenerateVideoSubtitleRequest>,
-) -> Result<Json<ApiResponse<String>>, String> {
+) -> Result<Json<ApiResponse<String>>, ApiError> {
     let uuid = Uuid::new_v4().to_string();
     generate_video_subtitle(state.0, uuid.clone(), param.id).await?;
     Ok(Json(ApiResponse::success(uuid)))
@@ -691,7 +720,7 @@ struct GetVideoSubtitleRequest {
 async fn handler_get_video_subtitle(
     state: axum::extract::State<State>,
     Json(param): Json<GetVideoSubtitleRequest>,
-) -> Result<Json<ApiResponse<String>>, String> {
+) -> Result<Json<ApiResponse<String>>, ApiError> {
     let video_subtitle = get_video_subtitle(state.0, param.id).await?;
     Ok(Json(ApiResponse::success(video_subtitle)))
 }
@@ -706,7 +735,7 @@ struct UpdateVideoSubtitleRequest {
 async fn handler_update_video_subtitle(
     state: axum::extract::State<State>,
     Json(param): Json<UpdateVideoSubtitleRequest>,
-) -> Result<Json<ApiResponse<()>>, String> {
+) -> Result<Json<ApiResponse<()>>, ApiError> {
     update_video_subtitle(state.0, param.id, param.subtitle).await?;
     Ok(Json(ApiResponse::success(())))
 }
@@ -721,7 +750,7 @@ struct EncodeVideoSubtitleRequest {
 async fn handler_encode_video_subtitle(
     state: axum::extract::State<State>,
     Json(encode_video_subtitle_param): Json<EncodeVideoSubtitleRequest>,
-) -> Result<Json<ApiResponse<String>>, String> {
+) -> Result<Json<ApiResponse<String>>, ApiError> {
     // generate uuid
     let uuid = Uuid::new_v4().to_string();
     encode_video_subtitle(
@@ -735,7 +764,7 @@ async fn handler_encode_video_subtitle(
 }
 async fn handler_get_disk_info(
     state: axum::extract::State<State>,
-) -> Result<Json<ApiResponse<DiskInfo>>, String> {
+) -> Result<Json<ApiResponse<DiskInfo>>, ApiError> {
     let disk_info = get_disk_info(state.0)
         .await
         .map_err(|_| "Failed to get disk info")?;
@@ -754,7 +783,7 @@ struct HttpProxyRequest {
 async fn handler_fetch(
     _state: axum::extract::State<State>,
     Json(param): Json<HttpProxyRequest>,
-) -> Result<impl IntoResponse, String> {
+) -> Result<impl IntoResponse, ApiError> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
@@ -766,7 +795,7 @@ async fn handler_fetch(
         "PUT" => client.put(&param.url),
         "DELETE" => client.delete(&param.url),
         "PATCH" => client.patch(&param.url),
-        _ => return Err("Unsupported HTTP method".to_string()),
+        _ => return Err(ApiError("Unsupported HTTP method".to_string())),
     };
 
     // Add headers if present

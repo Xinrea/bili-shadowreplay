@@ -48,6 +48,10 @@ async function invoke<T>(
     }
 
     const resp = await response.json();
+    if (resp.code !== 0) {
+      throw new Error(resp.message);
+    }
+
     return resp.data as T;
   } catch (error) {
     // 将 HTTP 错误转换为 Tauri 风格的错误
@@ -88,8 +92,6 @@ function convertFileSrc(filePath: string) {
   }
   return `${ENDPOINT}/output/${filePath.split("/").pop()}`;
 }
-
-type EventSourceCallback = (data: any) => void;
 
 let event_source: EventSource | null = null;
 

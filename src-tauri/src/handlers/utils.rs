@@ -1,16 +1,16 @@
-use std::process::Command;
-
-use tauri::{Manager, Theme};
-use tauri_utils::config::WindowEffectsConfig;
-use tokio::fs::OpenOptions;
-use tokio::io::AsyncWriteExt;
-
-use crate::recorder::PlatformType;
 use crate::state::State;
 use crate::state_type;
 
 #[cfg(not(feature = "headless"))]
-use tauri::State as TauriState;
+use {
+    crate::recorder::PlatformType,
+    std::process::Command,
+    tauri::State as TauriState,
+    tauri::{Manager, Theme},
+    tauri_utils::config::WindowEffectsConfig,
+    tokio::fs::OpenOptions,
+    tokio::io::AsyncWriteExt,
+};
 
 pub fn copy_dir_all(
     src: impl AsRef<std::path::Path>,
@@ -29,6 +29,7 @@ pub fn copy_dir_all(
     Ok(())
 }
 
+#[cfg(not(feature = "headless"))]
 #[cfg_attr(not(feature = "headless"), tauri::command)]
 pub fn show_in_folder(path: String) {
     #[cfg(target_os = "windows")]
@@ -115,9 +116,10 @@ pub async fn get_disk_info(state: state_type!()) -> Result<DiskInfo, ()> {
     Ok(disk_info)
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg(not(feature = "headless"))]
+#[tauri::command]
 pub async fn export_to_file(
-    state: state_type!(),
+    _state: state_type!(),
     file_name: &str,
     content: &str,
 ) -> Result<(), String> {
@@ -140,7 +142,8 @@ pub async fn export_to_file(
     Ok(())
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg(not(feature = "headless"))]
+#[tauri::command]
 pub async fn open_log_folder(state: state_type!()) -> Result<(), String> {
     #[cfg(not(feature = "headless"))]
     {
@@ -150,7 +153,8 @@ pub async fn open_log_folder(state: state_type!()) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg(not(feature = "headless"))]
+#[tauri::command]
 pub async fn open_live(
     state: state_type!(),
     platform: String,

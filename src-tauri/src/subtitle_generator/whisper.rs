@@ -140,6 +140,7 @@ mod tests {
     #[derive(Clone)]
     struct MockReporter {}
     impl MockReporter {
+        #[allow(dead_code)]
         fn update(&self, _message: &str) {
             // mock implementation
         }

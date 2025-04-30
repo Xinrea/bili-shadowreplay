@@ -2,7 +2,6 @@ use async_trait::async_trait;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::sync::LazyLock;
-use tokio::sync::broadcast;
 use tokio::sync::RwLock;
 
 use crate::progress_manager::Event;
@@ -12,6 +11,9 @@ use {
     crate::recorder::danmu::DanmuEntry,
     tauri::{AppHandle, Emitter},
 };
+
+#[cfg(feature = "headless")]
+use tokio::sync::broadcast;
 
 type CancelFlagMap = std::collections::HashMap<String, Arc<AtomicBool>>;
 
@@ -56,13 +58,13 @@ impl EventEmitter {
         #[cfg(not(feature = "headless"))]
         {
             match event {
-                Event::ProgressUpdate { id, content } => {
+                Event::ProgressUpdate { id: _, content: _ } => {
                     self.app_handle.emit("progress_event", event).unwrap();
                 }
                 Event::ProgressFinished {
-                    id,
-                    success,
-                    message,
+                    id: _,
+                    success: _,
+                    message: _,
                 } => {
                     self.app_handle.emit("progress_event", event).unwrap();
                 }
@@ -77,7 +79,6 @@ impl EventEmitter {
                         )
                         .unwrap();
                 }
-                _ => {}
             }
         }
 

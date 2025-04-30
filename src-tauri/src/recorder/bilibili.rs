@@ -16,22 +16,24 @@ use client::{BiliClient, BiliStream, RoomInfo, StreamType, UserInfo};
 use dashmap::DashMap;
 use errors::BiliClientError;
 use felgens::{ws_socket_object, FelgensError, WsStreamMessageType};
-use m3u8_rs::{MediaPlaylist, Playlist, QuotedOrUnquoted, VariantStream};
+use m3u8_rs::{Playlist, QuotedOrUnquoted, VariantStream};
 use rand::Rng;
 use regex::Regex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Url};
-use tauri_plugin_notification::NotificationExt;
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::sync::{broadcast, Mutex, RwLock};
+use url::Url;
 
 use crate::config::Config;
 use crate::database::{Database, DatabaseError};
 
 use async_trait::async_trait;
+
+#[cfg(not(feature = "headless"))]
+use {tauri::AppHandle, tauri_plugin_notification::NotificationExt};
 
 /// A recorder for BiliBili live streams
 ///
@@ -78,22 +80,26 @@ impl From<BiliClientError> for super::errors::RecorderError {
     }
 }
 
+pub struct BiliRecorderOptions {
+    #[cfg(not(feature = "headless"))]
+    pub app_handle: AppHandle,
+    pub emitter: EventEmitter,
+    pub db: Arc<Database>,
+    pub room_id: u64,
+    pub account: AccountRow,
+    pub config: Arc<RwLock<Config>>,
+    pub auto_start: bool,
+    pub channel: broadcast::Sender<RecorderEvent>,
+}
+
 impl BiliRecorder {
-    pub async fn new(
-        #[cfg(not(feature = "headless"))] app_handle: AppHandle,
-        emitter: EventEmitter,
-        webid: &str,
-        db: &Arc<Database>,
-        room_id: u64,
-        account: &AccountRow,
-        config: Arc<RwLock<Config>>,
-        auto_start: bool,
-        channel: broadcast::Sender<RecorderEvent>,
-    ) -> Result<Self, super::errors::RecorderError> {
+    pub async fn new(options: BiliRecorderOptions) -> Result<Self, super::errors::RecorderError> {
         let client = BiliClient::new()?;
-        let room_info = client.get_room_info(account, room_id).await?;
+        let room_info = client
+            .get_room_info(&options.account, options.room_id)
+            .await?;
         let user_info = client
-            .get_user_info(webid, account, room_info.user_id)
+            .get_user_info(&options.account, room_info.user_id)
             .await?;
         let mut live_status = false;
         let mut cover = None;
@@ -108,19 +114,19 @@ impl BiliRecorder {
 
         let recorder = Self {
             #[cfg(not(feature = "headless"))]
-            app_handle,
-            emitter,
+            app_handle: options.app_handle,
+            emitter: options.emitter,
             client: Arc::new(RwLock::new(client)),
-            db: db.clone(),
-            account: account.clone(),
-            config,
-            room_id,
+            db: options.db.clone(),
+            account: options.account.clone(),
+            config: options.config.clone(),
+            room_id: options.room_id,
             room_info: Arc::new(RwLock::new(room_info)),
             user_info: Arc::new(RwLock::new(user_info)),
             live_status: Arc::new(RwLock::new(live_status)),
             entry_store: Arc::new(RwLock::new(None)),
             is_recording: Arc::new(RwLock::new(false)),
-            auto_start: Arc::new(RwLock::new(auto_start)),
+            auto_start: Arc::new(RwLock::new(options.auto_start)),
             current_record: Arc::new(RwLock::new(false)),
             live_id: Arc::new(RwLock::new(String::new())),
             cover: Arc::new(RwLock::new(cover)),
@@ -130,9 +136,9 @@ impl BiliRecorder {
             live_stream: Arc::new(RwLock::new(None)),
             danmu_storage: Arc::new(RwLock::new(None)),
             m3u8_cache: DashMap::new(),
-            live_end_channel: channel,
+            live_end_channel: options.channel,
         };
-        log::info!("Recorder for room {} created.", room_id);
+        log::info!("Recorder for room {} created.", options.room_id);
         Ok(recorder)
     }
 
@@ -404,7 +410,7 @@ impl BiliRecorder {
             }
             if let WsStreamMessageType::DanmuMsg(msg) = msg {
                 self.emitter.emit(&Event::DanmuReceived {
-                    room: self.room_id,
+                    room,
                     ts: msg.timestamp as i64,
                     content: msg.msg.clone(),
                 });
@@ -958,7 +964,7 @@ impl super::Recorder for BiliRecorder {
         }
     }
 
-    async fn master_m3u8(&self, live_id: &str, start: i64, end: i64) -> String {
+    async fn master_m3u8(&self, _live_id: &str, start: i64, end: i64) -> String {
         let mut m3u8_content = "#EXTM3U\n".to_string();
         m3u8_content += "#EXT-X-VERSION:6\n";
         m3u8_content += format!(

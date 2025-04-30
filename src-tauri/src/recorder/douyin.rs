@@ -16,9 +16,10 @@ use dashmap::DashMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::AppHandle;
-use tauri_plugin_notification::NotificationExt;
 use tokio::sync::{broadcast, RwLock};
+
+#[cfg(not(feature = "headless"))]
+use {tauri::AppHandle, tauri_plugin_notification::NotificationExt};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum LiveStatus {
@@ -548,7 +549,7 @@ impl Recorder for DouyinRecorder {
         m3u8_content
     }
 
-    async fn master_m3u8(&self, live_id: &str, start: i64, end: i64) -> String {
+    async fn master_m3u8(&self, _live_id: &str, start: i64, end: i64) -> String {
         let mut m3u8_content = "#EXTM3U\n".to_string();
         m3u8_content += "#EXT-X-VERSION:6\n";
         m3u8_content += format!(

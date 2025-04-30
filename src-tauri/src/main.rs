@@ -15,22 +15,15 @@ mod recorder;
 mod recorder_manager;
 mod state;
 mod subtitle_generator;
+#[cfg(not(feature = "headless"))]
 mod tray;
 
 use archive_migration::try_rebuild_archives;
-use clap::{arg, command, Parser};
 use config::Config;
 use database::Database;
-use futures_core::future::BoxFuture;
 use recorder::bilibili::client::BiliClient;
 use recorder_manager::RecorderManager;
 use simplelog::ConfigBuilder;
-use sqlx::error::BoxDynError;
-use sqlx::migrate::Migration as SqlxMigration;
-use sqlx::{
-    migrate::{MigrateDatabase, MigrationSource, Migrator},
-    Pool, Sqlite,
-};
 use state::State;
 use std::fs::File;
 use std::path::Path;
@@ -42,6 +35,19 @@ use tokio::sync::RwLock;
 use {
     recorder::PlatformType,
     tauri::{Manager, WindowEvent},
+};
+
+#[cfg(feature = "headless")]
+use {
+    clap::{arg, command, Parser},
+    futures_core::future::BoxFuture,
+    sqlx::error::BoxDynError,
+    sqlx::migrate::Migration as SqlxMigration,
+    sqlx::migrate::MigrationSource,
+    sqlx::{
+        migrate::{MigrateDatabase, Migrator},
+        Pool, Sqlite,
+    },
 };
 
 async fn setup_logging(log_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -106,9 +112,11 @@ fn get_migrations() -> Vec<Migration> {
     ]
 }
 
+#[cfg(feature = "headless")]
 #[derive(Debug)]
 struct MigrationList(Vec<Migration>);
 
+#[cfg(feature = "headless")]
 impl MigrationSource<'static> for MigrationList {
     fn resolve(self) -> BoxFuture<'static, std::result::Result<Vec<SqlxMigration>, BoxDynError>> {
         Box::pin(async move {
@@ -180,7 +188,6 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
 #[cfg(not(feature = "headless"))]
 async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::Error>> {
     use platform_dirs::AppDirs;
-    use progress_manager::ProgressManager;
     use progress_reporter::EventEmitter;
 
     println!("Setting up app state...");
@@ -206,7 +213,6 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         db.clone(),
         config.clone(),
     ));
-    let progress_manager = Arc::new(ProgressManager::new());
     let binding = dbs.0.read().await;
     let dbpool = binding.get("sqlite:data_v2.db").unwrap();
     let sqlite_pool = match dbpool {
@@ -222,50 +228,34 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
             client,
             config,
             recorder_manager,
-            progress_manager,
             app_handle: app.handle().clone(),
         });
     }
 
-    let bili_account = db_clone.get_account_by_platform("bilibili").await;
-
-    if let Ok(bili_account) = bili_account {
-        let mut webid = client_clone.fetch_webid(&bili_account).await;
-        if webid.is_err() {
-            log::error!("Failed to fetch webid: {}", webid.err().unwrap());
-            webid = Ok("".to_string());
+    // update account infos
+    for account in accounts {
+        // only update bilibili account
+        let platform = PlatformType::from_str(&account.platform).unwrap();
+        if platform != PlatformType::BiliBili {
+            continue;
         }
 
-        let webid = webid.unwrap();
-
-        // update account infos
-        for account in accounts {
-            // only update bilibili account
-            let platform = PlatformType::from_str(&account.platform).unwrap();
-            if platform != PlatformType::BiliBili {
-                continue;
+        match client_clone.get_user_info(&account, account.uid).await {
+            Ok(account_info) => {
+                if let Err(e) = db_clone
+                    .update_account(
+                        &account.platform,
+                        account_info.user_id,
+                        &account_info.user_name,
+                        &account_info.user_avatar_url,
+                    )
+                    .await
+                {
+                    log::error!("Error when updating account info {}", e);
+                }
             }
-
-            match client_clone
-                .get_user_info(&webid, &account, account.uid)
-                .await
-            {
-                Ok(account_info) => {
-                    if let Err(e) = db_clone
-                        .update_account(
-                            &account.platform,
-                            account_info.user_id,
-                            &account_info.user_name,
-                            &account_info.user_avatar_url,
-                        )
-                        .await
-                    {
-                        log::error!("Error when updating account info {}", e);
-                    }
-                }
-                Err(e) => {
-                    log::error!("Get user info failed {}", e);
-                }
+            Err(e) => {
+                log::error!("Get user info failed {}", e);
             }
         }
     }
@@ -281,7 +271,6 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         client,
         config,
         recorder_manager,
-        progress_manager,
         app_handle: app.handle().clone(),
     })
 }

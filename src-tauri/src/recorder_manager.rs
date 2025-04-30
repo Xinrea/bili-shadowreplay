@@ -1,19 +1,17 @@
 use crate::config::Config;
+use crate::danmu2ass;
 use crate::database::video::VideoRow;
 use crate::database::{account::AccountRow, record::RecordRow};
 use crate::database::{Database, DatabaseError};
 use crate::ffmpeg::{clip_from_m3u8, encode_video_danmu};
-use crate::progress_manager::ProgressManager;
 use crate::progress_reporter::{EventEmitter, ProgressReporter};
-use crate::recorder::bilibili::BiliRecorder;
+use crate::recorder::bilibili::{BiliRecorder, BiliRecorderOptions};
 use crate::recorder::danmu::DanmuEntry;
 use crate::recorder::douyin::DouyinRecorder;
 use crate::recorder::errors::RecorderError;
 use crate::recorder::PlatformType;
 use crate::recorder::Recorder;
 use crate::recorder::RecorderInfo;
-use crate::state::State;
-use crate::{danmu2ass, state_type};
 use chrono::Utc;
 use custom_error::custom_error;
 use serde::{Deserialize, Serialize};
@@ -21,10 +19,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use tauri::AppHandle;
 use tokio::fs::{remove_file, write};
 use tokio::sync::broadcast;
 use tokio::sync::RwLock;
+
+#[cfg(not(feature = "headless"))]
+use tauri::AppHandle;
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
 pub struct RecorderList {
@@ -311,7 +311,7 @@ impl RecorderManager {
                 let account = account.unwrap();
 
                 if let Err(e) = self
-                    .add_recorder("", &account, platform, room_id, *auto_start)
+                    .add_recorder(&account, platform, room_id, *auto_start)
                     .await
                 {
                     log::error!("Failed to add recorder: {}", e);
@@ -323,7 +323,6 @@ impl RecorderManager {
 
     pub async fn add_recorder(
         &self,
-        webid: &str,
         account: &AccountRow,
         platform: PlatformType,
         room_id: u64,
@@ -337,18 +336,17 @@ impl RecorderManager {
         let event_tx = self.get_event_sender();
         let recorder: Box<dyn Recorder + 'static> = match platform {
             PlatformType::BiliBili => Box::new(
-                BiliRecorder::new(
+                BiliRecorder::new(BiliRecorderOptions {
                     #[cfg(not(feature = "headless"))]
-                    self.app_handle.clone(),
-                    self.emitter.clone(),
-                    webid,
-                    &self.db,
+                    app_handle: self.app_handle.clone(),
+                    emitter: self.emitter.clone(),
+                    db: self.db.clone(),
                     room_id,
-                    account,
-                    self.config.clone(),
+                    account: account.clone(),
+                    config: self.config.clone(),
                     auto_start,
-                    event_tx,
-                )
+                    channel: event_tx,
+                })
                 .await?,
             ),
             PlatformType::Douyin => Box::new(

@@ -1,4 +1,3 @@
-use crate::danmu2ass;
 use crate::database::record::RecordRow;
 use crate::database::recorder::RecorderRow;
 use crate::recorder::danmu::DanmuEntry;
@@ -8,8 +7,10 @@ use crate::recorder_manager::RecorderList;
 use crate::state::State;
 use crate::state_type;
 
+use serde::Deserialize;
+use serde::Serialize;
 #[cfg(not(feature = "headless"))]
-use tauri::State as TauriState;
+use {crate::danmu2ass, tauri::State as TauriState};
 
 #[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn get_recorder_list(state: state_type!()) -> Result<RecorderList, ()> {
@@ -27,11 +28,6 @@ pub async fn add_recorder(
     let account = match platform {
         PlatformType::BiliBili => {
             if let Ok(account) = state.db.get_account_by_platform("bilibili").await {
-                if state.config.read().await.webid_expired() {
-                    log::info!("Webid expired, refetching");
-                    state.config.write().await.webid = state.client.fetch_webid(&account).await?;
-                    state.config.write().await.webid_ts = chrono::Utc::now().timestamp();
-                }
                 Ok(account)
             } else {
                 Err("没有可用账号，请先添加账号".to_string())
@@ -50,13 +46,7 @@ pub async fn add_recorder(
     match account {
         Ok(account) => match state
             .recorder_manager
-            .add_recorder(
-                state.config.read().await.webid.as_str(),
-                &account,
-                platform,
-                room_id,
-                true,
-            )
+            .add_recorder(&account, platform, room_id, true)
             .await
         {
             Ok(()) => {
@@ -167,33 +157,38 @@ pub async fn get_danmu_record(
         .await?)
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
-pub async fn export_danmu(
-    state: state_type!(),
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExportDanmuOptions {
     platform: String,
     room_id: u64,
     live_id: String,
     x: i64,
     y: i64,
-    offset: i64,
     ass: bool,
+}
+
+#[cfg(not(feature = "headless"))]
+#[tauri::command]
+pub async fn export_danmu(
+    state: state_type!(),
+    options: ExportDanmuOptions,
 ) -> Result<String, String> {
-    let platform = PlatformType::from_str(&platform).unwrap();
+    let platform = PlatformType::from_str(&options.platform).unwrap();
     let mut danmus = state
         .recorder_manager
-        .get_danmu(platform, room_id, &live_id)
+        .get_danmu(platform, options.room_id, &options.live_id)
         .await?;
 
     log::debug!("First danmu entry: {:?}", danmus.first());
     // update entry ts to offset
     for d in &mut danmus {
-        d.ts -= (x + offset) * 1000;
+        d.ts -= (options.x + options.y) * 1000;
     }
-    if x != 0 || y != 0 {
-        danmus.retain(|e| e.ts >= 0 && e.ts <= (y - x) * 1000);
+    if options.x != 0 || options.y != 0 {
+        danmus.retain(|e| e.ts >= 0 && e.ts <= (options.y - options.x) * 1000);
     }
 
-    if ass {
+    if options.ass {
         Ok(danmu2ass::danmu_to_ass(danmus))
     } else {
         // map and join entries

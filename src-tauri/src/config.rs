@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
-use platform_dirs::AppDirs;
 use serde::{Deserialize, Serialize};
 
 use crate::{recorder::PlatformType, recorder_manager::ClipRangeParams};
@@ -10,10 +9,6 @@ use crate::{recorder::PlatformType, recorder_manager::ClipRangeParams};
 pub struct Config {
     pub cache: String,
     pub output: String,
-    #[serde(skip)]
-    pub webid: String,
-    #[serde(skip)]
-    pub webid_ts: i64,
     pub live_start_notify: bool,
     pub live_end_notify: bool,
     pub clip_notify: bool,
@@ -69,8 +64,6 @@ impl Config {
             }
         }
         let config = Config {
-            webid: "".to_string(),
-            webid_ts: 0,
             cache: "./cache".to_string(),
             output: "./output".to_string(),
             live_start_notify: true,
@@ -101,12 +94,6 @@ impl Config {
     pub fn set_output_path(&mut self, path: &str) {
         self.output = path.into();
         self.save();
-    }
-
-    pub fn webid_expired(&self) -> bool {
-        let now = chrono::Utc::now().timestamp();
-        // expire in 20 hours
-        now - self.webid_ts > 72000
     }
 
     pub fn generate_clip_name(&self, params: &ClipRangeParams) -> PathBuf {

@@ -22,12 +22,7 @@ pub async fn add_account(
 ) -> Result<AccountRow, String> {
     let account = state.db.add_account(&platform, cookies).await?;
     if platform == "bilibili" {
-        state.config.write().await.webid = state.client.fetch_webid(&account).await?;
-        state.config.write().await.webid_ts = chrono::Utc::now().timestamp();
-        let account_info = state
-            .client
-            .get_user_info(&state.config.read().await.webid, &account, account.uid)
-            .await?;
+        let account_info = state.client.get_user_info(&account, account.uid).await?;
         state
             .db
             .update_account(

@@ -9,6 +9,8 @@ mod ffmpeg;
 mod handlers;
 #[cfg(feature = "headless")]
 mod http_server;
+#[cfg(feature = "headless")]
+mod migration;
 mod progress_manager;
 mod progress_reporter;
 mod recorder;
@@ -28,19 +30,20 @@ use state::State;
 use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
-use tauri_plugin_sql::{Migration, MigrationKind};
 use tokio::sync::RwLock;
 
 #[cfg(not(feature = "headless"))]
 use {
     recorder::PlatformType,
     tauri::{Manager, WindowEvent},
+    tauri_plugin_sql::{Migration, MigrationKind},
 };
 
 #[cfg(feature = "headless")]
 use {
     clap::{arg, command, Parser},
     futures_core::future::BoxFuture,
+    migration::{Migration, MigrationKind},
     sqlx::error::BoxDynError,
     sqlx::migrate::Migration as SqlxMigration,
     sqlx::migrate::MigrationSource,

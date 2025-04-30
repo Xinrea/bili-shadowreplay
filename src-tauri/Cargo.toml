@@ -47,7 +47,6 @@ futures = "0.3"
 tokio-util = { version = "0.7", features = ["io"] }
 clap = { version = "4.5.37", features = ["derive"] }
 url = "2.5.4"
-tauri-plugin-sql = { version = "2", features = ["sqlite"] }
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem
@@ -63,6 +62,7 @@ gui = [
     "tauri-plugin-shell",
     "tauri-plugin-fs",
     "tauri-plugin-http",
+    "tauri-plugin-sql",
     "tauri-utils",
     "tauri-plugin-os",
     "tauri-plugin-notification",
@@ -93,6 +93,11 @@ optional = true
 [dependencies.tauri-plugin-http]
 version = "2"
 optional = true
+
+[dependencies.tauri-plugin-sql]
+version = "2"
+optional = true
+features = ["sqlite"]
 
 [dependencies.tauri-utils]
 version = "2"

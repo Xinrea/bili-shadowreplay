@@ -55,10 +55,8 @@ WORKDIR /app
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     libssl3 \
-    libwebkit2gtk-4.1-0 \
-    libgtk-3-0 \
-    libappindicator3-1 \
-    librsvg2-2 \
+    libgio-2.0 \
+    libjavascriptcoregtk-4.1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy built frontend

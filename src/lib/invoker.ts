@@ -7,12 +7,12 @@ import { open as tauri_open } from "@tauri-apps/plugin-shell";
 
 declare global {
   interface Window {
-    __TAURI__?: any;
+    __TAURI_INTERNALS__?: any;
   }
 }
 
 const ENDPOINT = localStorage.getItem("endpoint") || "";
-const TAURI_ENV = typeof window.__TAURI__ !== "undefined";
+const TAURI_ENV = typeof window.__TAURI_INTERNALS__ !== "undefined";
 
 async function invoke<T>(
   command: string,

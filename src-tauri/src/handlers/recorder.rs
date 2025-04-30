@@ -9,7 +9,7 @@ use crate::state::State;
 use crate::state_type;
 
 #[cfg(not(feature = "headless"))]
-use auri::State as TauriState;
+use tauri::State as TauriState;
 
 use serde::Deserialize;
 use serde::Serialize;

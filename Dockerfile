@@ -23,7 +23,7 @@ COPY . .
 RUN yarn build
 
 # Build Rust backend
-FROM rust:1.85-slim AS rust-builder
+FROM rust:1.86-slim AS rust-builder
 
 WORKDIR /app
 
@@ -34,6 +34,9 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     glib-2.0-dev \
     libclang-dev \
+    g++ \
+    wget \
+    xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy Rust project files
@@ -42,7 +45,14 @@ COPY src-tauri/src ./src-tauri/src
 
 # Build Rust backend
 WORKDIR /app/src-tauri
-RUN cargo build --features headless --release
+RUN rustup component add rustfmt
+RUN cargo build --no-default-features --features headless --release
+# Download and install FFmpeg static build
+RUN wget https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz \
+    && tar xf ffmpeg-release-amd64-static.tar.xz \
+    && mv ffmpeg-*-static/ffmpeg ./  \
+    && mv ffmpeg-*-static/ffprobe ./ \
+    && rm -rf ffmpeg-*-static ffmpeg-release-amd64-static.tar.xz
 
 # Final stage
 FROM debian:bookworm-slim AS final
@@ -52,23 +62,15 @@ WORKDIR /app
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     libssl3 \
-    libgio-2.0 \
-    wget \
-    xz-utils \
     && rm -rf /var/lib/apt/lists/*
-
-# Download and install FFmpeg static build
-RUN wget https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz \
-    && tar xf ffmpeg-release-amd64-static.tar.xz \
-    && mv ffmpeg-*-static/ffmpeg /usr/local/bin/ \
-    && mv ffmpeg-*-static/ffprobe /usr/local/bin/ \
-    && rm -rf ffmpeg-*-static ffmpeg-release-amd64-static.tar.xz
 
 # Copy built frontend
 COPY --from=frontend-builder /app/dist ./dist
 
 # Copy built Rust binary
 COPY --from=rust-builder /app/src-tauri/target/release/bili-shadowreplay .
+COPY --from=rust-builder /app/src-tauri/ffmpeg ./ffmpeg
+COPY --from=rust-builder /app/src-tauri/ffprobe ./ffprobe
 
 # Expose port
 EXPOSE 3000

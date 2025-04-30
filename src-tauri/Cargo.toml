@@ -54,7 +54,7 @@ url = "2.5.4"
 custom-protocol = ["tauri/custom-protocol"]
 cuda = ["whisper-rs/cuda"]
 headless = []
-default = ["headless"]
+default = ["gui"]
 gui = [
     "tauri",
     "tauri-plugin-single-instance",
@@ -67,6 +67,7 @@ gui = [
     "tauri-plugin-os",
     "tauri-plugin-notification",
     "fix-path-env",
+    "tauri-build",
 ]
 
 [dependencies.tauri]

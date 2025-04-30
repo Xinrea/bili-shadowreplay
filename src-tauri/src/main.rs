@@ -430,6 +430,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = setup_server_state(args)
         .await
         .expect("Failed to setup server state");
+
+    // only auto download ffmpeg if it's linux
+    if cfg!(target_os = "linux") {
+        if let Err(e) = async_ffmpeg_sidecar::download::auto_download().await {
+            log::error!("Error when auto downloading ffmpeg: {}", e);
+        }
+    }
+
     http_server::start_api_server(state).await;
     Ok(())
 }

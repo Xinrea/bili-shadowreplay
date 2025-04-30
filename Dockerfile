@@ -59,7 +59,6 @@ RUN apt-get update && apt-get install -y \
     libgtk-3-0 \
     libappindicator3-1 \
     librsvg2-2 \
-    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy built frontend

@@ -30,3 +30,6 @@ src-tauri/*.exe
 src-tauri/tests/audio/*.srt
 
 .env
+
+docs/.vitepress/cache
+docs/.vitepress/dist

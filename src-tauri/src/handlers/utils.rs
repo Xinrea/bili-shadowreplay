@@ -92,28 +92,55 @@ pub struct DiskInfo {
 #[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn get_disk_info(state: state_type!()) -> Result<DiskInfo, ()> {
     let cache = state.config.read().await.cache.clone();
-    // check system disk info
-    let disks = sysinfo::Disks::new_with_refreshed_list();
-    // get cache disk info
-    let mut disk_info = DiskInfo {
-        disk: "".into(),
-        total: 0,
-        free: 0,
-    };
-
-    // Find the disk with the longest matching mount point
-    let mut longest_match = 0;
-    for disk in disks.list() {
-        let mount_point = disk.mount_point().to_str().unwrap();
-        if cache.starts_with(mount_point) && mount_point.split("/").count() > longest_match {
-            disk_info.disk = mount_point.into();
-            disk_info.total = disk.total_space();
-            disk_info.free = disk.available_space();
-            longest_match = mount_point.split("/").count();
+    #[cfg(target_os = "linux")]
+    {
+        // get disk info from df command
+        let output = tokio::process::Command::new("df")
+            .arg(cache)
+            .output()
+            .await
+            .unwrap();
+        let output_str = String::from_utf8(output.stdout).unwrap();
+        // Filesystem     1K-blocks     Used Available Use% Mounted on
+        // /dev/nvme0n1p2 959218776 43826092 866593352   5% /app/cache
+        let lines = output_str.lines().collect::<Vec<&str>>();
+        if lines.len() < 2 {
+            log::error!("df command output is too short: {}", output_str);
+            return Err(());
         }
+        let parts = lines[1].split_whitespace().collect::<Vec<&str>>();
+        let disk = parts[0].to_string();
+        let total = parts[1].parse::<u64>().unwrap();
+        let free = parts[2].parse::<u64>().unwrap();
+
+        return Ok(DiskInfo { disk, total, free });
     }
 
-    Ok(disk_info)
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    {
+        // check system disk info
+        let disks = sysinfo::Disks::new_with_refreshed_list();
+        // get cache disk info
+        let mut disk_info = DiskInfo {
+            disk: "".into(),
+            total: 0,
+            free: 0,
+        };
+
+        // Find the disk with the longest matching mount point
+        let mut longest_match = 0;
+        for disk in disks.list() {
+            let mount_point = disk.mount_point().to_str().unwrap();
+            if cache.starts_with(mount_point) && mount_point.split("/").count() > longest_match {
+                disk_info.disk = mount_point.into();
+                disk_info.total = disk.total_space();
+                disk_info.free = disk.available_space();
+                longest_match = mount_point.split("/").count();
+            }
+        }
+
+        Ok(disk_info)
+    }
 }
 
 #[cfg(not(feature = "headless"))]

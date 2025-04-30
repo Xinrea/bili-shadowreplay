@@ -71,7 +71,7 @@ impl Config {
             clip_notify: true,
             post_notify: true,
             auto_subtitle: false,
-            whisper_model: "".to_string(),
+            whisper_model: "whisper_model.bin".to_string(),
             whisper_prompt: "这是一段中文 你们好".to_string(),
             clip_name_format: "[{room_id}][{live_id}][{title}][{created_at}].mp4".to_string(),
             auto_generate: default_auto_generate_config(),

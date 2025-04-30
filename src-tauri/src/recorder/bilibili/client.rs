@@ -85,7 +85,6 @@ pub struct BiliStream {
     pub path: String,
     pub extra: String,
     pub expire: i64,
-    pub codec: String,
 }
 
 impl fmt::Display for BiliStream {
@@ -99,20 +98,13 @@ impl fmt::Display for BiliStream {
 }
 
 impl BiliStream {
-    pub fn new(
-        format: StreamType,
-        base_url: &str,
-        host: &str,
-        extra: &str,
-        codec: &str,
-    ) -> BiliStream {
+    pub fn new(format: StreamType, base_url: &str, host: &str, extra: &str) -> BiliStream {
         BiliStream {
             format,
             host: host.into(),
             path: BiliStream::get_path(base_url),
             extra: extra.into(),
             expire: BiliStream::get_expire(extra).unwrap_or(600000),
-            codec: codec.into(),
         }
     }
 

@@ -336,7 +336,18 @@ impl BiliRecorder {
                 }
 
                 if *self.current_record.read().await {
-                    *self.live_stream.write().await = Some(stream);
+                    let new_stream = self.fetch_real_stream(stream).await;
+                    if new_stream.is_err() {
+                        log::error!(
+                            "[{}]Fetch real stream failed: {}",
+                            self.room_id,
+                            new_stream.err().unwrap()
+                        );
+                        return true;
+                    }
+
+                    let new_stream = new_stream.unwrap();
+                    *self.live_stream.write().await = Some(new_stream);
                     *self.last_update.write().await = Utc::now().timestamp();
 
                     return true;
@@ -369,16 +380,7 @@ impl BiliRecorder {
             .collect::<Vec<&str>>()
             .join("/")
             + "/";
-        let stream = BiliStream::new(
-            StreamType::FMP4,
-            base_url.as_str(),
-            host,
-            extra,
-            variant
-                .codecs
-                .as_ref()
-                .map_or("avc1.64002a,mp4a.40.2", |s| s.as_str()),
-        );
+        let stream = BiliStream::new(StreamType::FMP4, base_url.as_str(), host, extra);
         Ok(stream)
     }
 
@@ -489,6 +491,47 @@ impl BiliRecorder {
             log::warn!("Parse header url failed: {}", index_content);
         }
         Ok(header_url)
+    }
+
+    async fn fetch_real_stream(
+        &self,
+        stream: BiliStream,
+    ) -> Result<BiliStream, super::errors::RecorderError> {
+        let index_content = self
+            .client
+            .read()
+            .await
+            .get_index_content(&stream.index())
+            .await?;
+        if index_content.is_empty() {
+            return Err(super::errors::RecorderError::InvalidStream { stream });
+        }
+        let index_content = self
+            .client
+            .read()
+            .await
+            .get_index_content(&stream.index())
+            .await?;
+        if index_content.is_empty() {
+            return Err(super::errors::RecorderError::InvalidStream { stream });
+        }
+        if index_content.contains("Not Found") {
+            return Err(super::errors::RecorderError::IndexNotFound {
+                url: stream.index(),
+            });
+        }
+        if index_content.contains("BANDWIDTH") {
+            // this index content provides another m3u8 url
+            // example: https://765b047cec3b099771d4b1851136046f.v.smtcdns.net/d1--cn-gotcha204-3.bilivideo.com/live-bvc/246284/live_1323355750_55526594/index.m3u8?expires=1741318366&len=0&oi=1961017843&pt=h5&qn=10000&trid=1007049a5300422eeffd2d6995d67b67ca5a&sigparams=cdn,expires,len,oi,pt,qn,trid&cdn=cn-gotcha204&sign=7ef1241439467ef27d3c804c1eda8d4d&site=1c89ef99adec13fab3a3592ee4db26d3&free_type=0&mid=475210&sche=ban&bvchls=1&trace=16&isp=ct&rg=East&pv=Shanghai&source=puv3_onetier&p2p_type=-1&score=1&suffix=origin&deploy_env=prod&flvsk=e5c4d6fb512ed7832b706f0a92f7a8c8&sk=246b3930727a89629f17520b1b551a2f&pp=rtmp&hot_cdn=57345&origin_bitrate=657300&sl=1&info_source=cache&vd=bc&src=puv3&order=1&TxLiveCode=cold_stream&TxDispType=3&svr_type=live_oc&tencent_test_client_ip=116.226.193.243&dispatch_from=OC_MGR61.170.74.11&utime=1741314857497
+            let new_url = index_content.lines().last().unwrap();
+            let base_url = new_url.split('/').next().unwrap();
+            let host = base_url.split('/').next().unwrap();
+            // extra is params after index.m3u8
+            let extra = new_url.split(base_url).last().unwrap();
+            let new_stream = BiliStream::new(StreamType::FMP4, base_url, host, extra);
+            return Box::pin(self.fetch_real_stream(new_stream)).await;
+        }
+        Ok(stream)
     }
 
     async fn extract_liveid(&self, header_url: &str) -> i64 {

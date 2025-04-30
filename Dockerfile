@@ -32,10 +32,7 @@ RUN apt-get update && apt-get install -y \
     cmake \
     pkg-config \
     libssl-dev \
-    libwebkit2gtk-4.1-dev \
-    libappindicator3-dev \
-    librsvg2-dev \
-    patchelf \
+    glib-2.0-dev \
     libclang-dev \
     && rm -rf /var/lib/apt/lists/*
 
@@ -56,7 +53,6 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     libssl3 \
     libgio-2.0 \
-    libjavascriptcoregtk-4.1 \
     wget \
     xz-utils \
     && rm -rf /var/lib/apt/lists/*

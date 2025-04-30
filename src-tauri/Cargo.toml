@@ -47,6 +47,7 @@ futures = "0.3"
 tokio-util = { version = "0.7", features = ["io"] }
 clap = { version = "4.5.37", features = ["derive"] }
 url = "2.5.4"
+tauri-plugin-sql = { version = "2", features = ["sqlite"] }
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem
@@ -55,6 +56,64 @@ custom-protocol = ["tauri/custom-protocol"]
 cuda = ["whisper-rs/cuda"]
 headless = []
 default = ["headless"]
+gui = [
+    "tauri",
+    "tauri-plugin-single-instance",
+    "tauri-plugin-dialog",
+    "tauri-plugin-shell",
+    "tauri-plugin-fs",
+    "tauri-plugin-http",
+    "tauri-utils",
+    "tauri-plugin-os",
+    "tauri-plugin-notification",
+    "fix-path-env",
+]
+
+[dependencies.tauri]
+version = "2"
+features = ["protocol-asset", "tray-icon"]
+optional = true
+
+[dependencies.tauri-plugin-single-instance]
+version = "2"
+optional = true
+
+[dependencies.tauri-plugin-dialog]
+version = "2"
+optional = true
+
+[dependencies.tauri-plugin-shell]
+version = "2"
+optional = true
+
+[dependencies.tauri-plugin-fs]
+version = "2"
+optional = true
+
+[dependencies.tauri-plugin-http]
+version = "2"
+optional = true
+
+[dependencies.tauri-utils]
+version = "2"
+optional = true
+
+[dependencies.tauri-plugin-os]
+version = "2"
+optional = true
+
+[dependencies.tauri-plugin-notification]
+version = "2"
+optional = true
+
+[dependencies.fix-path-env]
+git = "https://github.com/tauri-apps/fix-path-env-rs"
+optional = true
+
+[build-dependencies.tauri-build]
+version = "2"
+features = []
+optional = true
 
 [target.'cfg(windows)'.dependencies]
 whisper-rs = { version = "0.14.2", default-features = false }
@@ -62,19 +121,3 @@ whisper-rs = { version = "0.14.2", default-features = false }
 [target.'cfg(darwin)'.dependencies.whisper-rs]
 version = "0.14.2"
 features = ["metal"]
-
-[target.'cfg(not(feature = "headless"))'.dependencies]
-tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
-tauri-plugin-single-instance = "2"
-tauri-plugin-dialog = "2"
-tauri-plugin-shell = "2"
-tauri-plugin-fs = "2"
-tauri-plugin-http = "2"
-tauri-utils = "2"
-tauri-plugin-sql = { version = "2", features = ["sqlite"] }
-tauri-plugin-os = "2"
-tauri-plugin-notification = "2"
-fix-path-env = { git = "https://github.com/tauri-apps/fix-path-env-rs" }
-
-[target.'cfg(not(feature = "headless"))'.build-dependencies]
-tauri-build = { version = "2", features = [] }

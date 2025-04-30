@@ -1,6 +1,5 @@
 <script type="ts">
-  import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-  import { open } from "@tauri-apps/plugin-shell";
+  import { open } from "../lib/invoker";
   import { BookOpen, MessageCircle, Video, Heart } from "lucide-svelte";
   import { hasNewVersion, latestVersion } from "../lib/stores/version";
   let version = `v${__APP_VERSION__}`;

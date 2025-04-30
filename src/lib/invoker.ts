@@ -3,6 +3,7 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { fetch as tauri_fetch } from "@tauri-apps/plugin-http";
 import { convertFileSrc as tauri_convert } from "@tauri-apps/api/core";
 import { listen as tauri_listen } from "@tauri-apps/api/event";
+import { open as tauri_open } from "@tauri-apps/plugin-shell";
 
 declare global {
   interface Window {
@@ -119,4 +120,20 @@ async function listen<T>(event: string, callback: (data: any) => void) {
   });
 }
 
-export { invoke, get, set_title, TAURI_ENV, convertFileSrc, ENDPOINT, listen };
+async function open(url: string) {
+  if (TAURI_ENV) {
+    return await tauri_open(url);
+  }
+  window.open(url, "_blank");
+}
+
+export {
+  invoke,
+  get,
+  set_title,
+  TAURI_ENV,
+  convertFileSrc,
+  ENDPOINT,
+  listen,
+  open,
+};

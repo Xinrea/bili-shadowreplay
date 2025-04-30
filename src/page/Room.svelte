@@ -1,9 +1,8 @@
 <script lang="ts">
-  import { invoke } from "../lib/invoker";
+  import { invoke, open } from "../lib/invoker";
   import { message } from "@tauri-apps/plugin-dialog";
   import { fade, scale } from "svelte/transition";
   import { Dropdown, DropdownItem } from "flowbite-svelte";
-  import { open } from "@tauri-apps/plugin-shell";
   import type { RecorderList, RecorderInfo } from "../lib/interface";
   import Image from "../lib/Image.svelte";
   import type { RecordItem } from "../lib/db";

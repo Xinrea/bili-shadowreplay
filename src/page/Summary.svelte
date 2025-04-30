@@ -2,7 +2,7 @@
   import { invoke } from "../lib/invoker";
   import type { RecorderList, DiskInfo } from "../lib/interface";
   import type { RecordItem } from "../lib/db";
-  const INTERVAL = 1000;
+  const INTERVAL = 5000;
   import { scale } from "svelte/transition";
   import {
     CalendarCheck,

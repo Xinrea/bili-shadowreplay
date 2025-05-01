@@ -59,9 +59,11 @@ FROM debian:bookworm-slim AS final
 
 WORKDIR /app
 
-# Install runtime dependencies
+# Install runtime dependencies and SSL certificates
 RUN apt-get update && apt-get install -y \
     libssl3 \
+    ca-certificates \
+    && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy built frontend

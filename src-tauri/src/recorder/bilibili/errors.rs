@@ -7,6 +7,7 @@ custom_error! {pub BiliClientError
     InvalidValue = "Invalid value",
     InvalidUrl = "Invalid url",
     InvalidFormat = "Invalid stream format",
+    InvalidStream = "Invalid stream",
     UploadError{err: String} = "Upload error: {err}",
     UploadCancelled = "Upload was cancelled by user",
     EmptyCache = "Empty cache",

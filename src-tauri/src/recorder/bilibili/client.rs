@@ -345,7 +345,7 @@ impl BiliClient {
             Ok(response.text().await?)
         } else {
             log::error!("get_index_content failed: {}", response.status());
-            Err(BiliClientError::InvalidCode)
+            Err(BiliClientError::InvalidStream)
         }
     }
 

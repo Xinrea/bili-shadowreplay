@@ -772,6 +772,7 @@ impl BiliRecorder {
                 }
             }
             Err(e) => {
+                self.force_update.store(true, Ordering::Relaxed);
                 return Err(e);
             }
         }

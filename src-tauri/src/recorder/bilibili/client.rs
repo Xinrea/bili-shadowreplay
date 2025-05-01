@@ -334,14 +334,19 @@ impl BiliClient {
     }
 
     pub async fn get_index_content(&self, url: &String) -> Result<String, BiliClientError> {
-        Ok(self
+        let response = self
             .client
             .get(url.to_owned())
             .headers(self.headers.clone())
             .send()
-            .await?
-            .text()
-            .await?)
+            .await?;
+
+        if response.status().is_success() {
+            Ok(response.text().await?)
+        } else {
+            log::error!("get_index_content failed: {}", response.status());
+            Err(BiliClientError::InvalidCode)
+        }
     }
 
     pub async fn download_ts(&self, url: &str, file_path: &str) -> Result<u64, BiliClientError> {

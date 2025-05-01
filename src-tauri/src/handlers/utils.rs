@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::state::State;
 use crate::state_type;
 
@@ -92,6 +94,13 @@ pub struct DiskInfo {
 #[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn get_disk_info(state: state_type!()) -> Result<DiskInfo, ()> {
     let cache = state.config.read().await.cache.clone();
+    // if cache is relative path, convert it to absolute path
+    let mut cache = PathBuf::from(&cache);
+    if cache.is_relative() {
+        // get current working directory
+        let cwd = std::env::current_dir().unwrap();
+        cache = cwd.join(cache);
+    }
     #[cfg(target_os = "linux")]
     {
         // get disk info from df command

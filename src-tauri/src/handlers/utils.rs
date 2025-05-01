@@ -119,8 +119,8 @@ pub async fn get_disk_info(state: state_type!()) -> Result<DiskInfo, ()> {
         }
         let parts = lines[1].split_whitespace().collect::<Vec<&str>>();
         let disk = parts[0].to_string();
-        let total = parts[1].parse::<u64>().unwrap();
-        let free = parts[2].parse::<u64>().unwrap();
+        let total = parts[1].parse::<u64>().unwrap() * 1024;
+        let free = parts[3].parse::<u64>().unwrap() * 1024;
 
         return Ok(DiskInfo { disk, total, free });
     }

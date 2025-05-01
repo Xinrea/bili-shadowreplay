@@ -11,6 +11,16 @@ pub async fn clip_from_m3u8(
     m3u8_index: &Path,
     output_path: &Path,
 ) -> Result<(), String> {
+    // first check output folder exists
+    let output_folder = output_path.parent().unwrap();
+    if !output_folder.exists() {
+        log::warn!(
+            "Output folder does not exist, creating: {}",
+            output_folder.display()
+        );
+        std::fs::create_dir_all(output_folder).unwrap();
+    }
+
     let child = tokio::process::Command::new("ffmpeg")
         .args(["-i", &format!("{}", m3u8_index.display())])
         .args(["-c", "copy"])
@@ -43,6 +53,9 @@ pub async fn clip_from_m3u8(
             FfmpegEvent::Error(e) => {
                 log::error!("Clip error: {}", e);
                 clip_error = Some(e.to_string());
+            }
+            FfmpegEvent::Log(_, message) => {
+                log::info!("FFmpeg Log: {}", message);
             }
             _ => {}
         }

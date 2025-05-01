@@ -66,6 +66,9 @@ RUN apt-get update && apt-get install -y \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# Add /app to PATH
+ENV PATH="/app:${PATH}"
+
 # Copy built frontend
 COPY --from=frontend-builder /app/dist ./dist
 

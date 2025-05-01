@@ -45,7 +45,7 @@ use crate::{
 };
 use axum::{extract::Query, response::sse};
 use axum::{
-    extract::{Json, Path},
+    extract::{DefaultBodyLimit, Json, Path},
     http::StatusCode,
     response::{IntoResponse, Sse},
     routing::{get, post},
@@ -1079,9 +1079,6 @@ pub async fn start_api_server(state: State) {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    // Configure body size limit
-    let body_limit = tower_http::limit::RequestBodyLimitLayer::new(1024 * 1024 * 1024); // 1GB limit
-
     let app = Router::new()
         // Serve static files from dist directory
         .nest_service("/", ServeDir::new("./dist"))
@@ -1170,7 +1167,7 @@ pub async fn start_api_server(state: State) {
         .route("/output/*uri", get(handler_output))
         .route("/api/sse", get(handler_sse))
         .layer(cors)
-        .layer(body_limit)
+        .layer(DefaultBodyLimit::max(20 * 1024 * 1024))
         .with_state(state);
 
     let addr = "0.0.0.0:3000";

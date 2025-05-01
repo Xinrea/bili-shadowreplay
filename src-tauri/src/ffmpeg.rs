@@ -54,9 +54,6 @@ pub async fn clip_from_m3u8(
                 log::error!("Clip error: {}", e);
                 clip_error = Some(e.to_string());
             }
-            FfmpegEvent::Log(_, message) => {
-                log::info!("FFmpeg Log: {}", message);
-            }
             _ => {}
         }
     }
@@ -274,6 +271,9 @@ pub async fn encode_video_danmu(
                 reporter
                     .unwrap()
                     .update(format!("压制中：{}", p.time).as_str());
+            }
+            FfmpegEvent::Log(_, message) => {
+                log::info!("Danmu Encode Log: {}", message);
             }
             FfmpegEvent::LogEOF => break,
             _ => {}

@@ -59,10 +59,11 @@ FROM debian:bookworm-slim AS final
 
 WORKDIR /app
 
-# Install runtime dependencies and SSL certificates
+# Install runtime dependencies, SSL certificates and Chinese fonts
 RUN apt-get update && apt-get install -y \
     libssl3 \
     ca-certificates \
+    fonts-wqy-microhei \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 

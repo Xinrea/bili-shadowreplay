@@ -20,6 +20,7 @@ export default defineConfig({
         items: [
           { text: "安装准备", link: "/getting-started/installation" },
           { text: "配置使用", link: "/getting-started/configuration" },
+          { text: "FFmpeg 配置", link: "/getting-started/ffmpeg" },
         ],
       },
       {
@@ -28,6 +29,10 @@ export default defineConfig({
           { text: "功能说明", link: "/usage/features" },
           { text: "常见问题", link: "/usage/faq" },
         ],
+      },
+      {
+        text: "开发文档",
+        items: [{ text: "架构设计", link: "/develop/architecture" }],
       },
     ],
 

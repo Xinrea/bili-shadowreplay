@@ -1,6 +1,6 @@
 # BiliBili ShadowReplay
 
-![icon](docs/header.png)
+![icon](docs/public/images/header.png)
 
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/xinrea/bili-shadowreplay/main.yml?label=Application%20Build)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/Xinrea/bili-shadowreplay/package.yml?label=Docker%20Build)

@@ -56,7 +56,6 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncSeekExt;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
-use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -594,6 +593,7 @@ async fn handler_clip_range(
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UploadProcedureRequest {
+    event_id: String,
     uid: u64,
     room_id: u64,
     video_id: i64,
@@ -605,10 +605,9 @@ async fn handler_upload_procedure(
     state: axum::extract::State<State>,
     Json(param): Json<UploadProcedureRequest>,
 ) -> Result<Json<ApiResponse<String>>, ApiError> {
-    let event_id = Uuid::new_v4().to_string();
     upload_procedure(
         state.0,
-        event_id.clone(),
+        param.event_id.clone(),
         param.uid,
         param.room_id,
         param.video_id,
@@ -616,7 +615,7 @@ async fn handler_upload_procedure(
         param.profile,
     )
     .await?;
-    Ok(Json(ApiResponse::success(event_id)))
+    Ok(Json(ApiResponse::success(param.event_id)))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -699,6 +698,7 @@ async fn handler_update_video_cover(
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GenerateVideoSubtitleRequest {
+    event_id: String,
     id: i64,
 }
 
@@ -706,9 +706,8 @@ async fn handler_generate_video_subtitle(
     state: axum::extract::State<State>,
     Json(param): Json<GenerateVideoSubtitleRequest>,
 ) -> Result<Json<ApiResponse<String>>, ApiError> {
-    let uuid = Uuid::new_v4().to_string();
-    generate_video_subtitle(state.0, uuid.clone(), param.id).await?;
-    Ok(Json(ApiResponse::success(uuid)))
+    generate_video_subtitle(state.0, param.event_id.clone(), param.id).await?;
+    Ok(Json(ApiResponse::success(param.event_id)))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -743,6 +742,7 @@ async fn handler_update_video_subtitle(
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct EncodeVideoSubtitleRequest {
+    event_id: String,
     id: i64,
     srt_style: String,
 }
@@ -751,16 +751,16 @@ async fn handler_encode_video_subtitle(
     state: axum::extract::State<State>,
     Json(encode_video_subtitle_param): Json<EncodeVideoSubtitleRequest>,
 ) -> Result<Json<ApiResponse<String>>, ApiError> {
-    // generate uuid
-    let uuid = Uuid::new_v4().to_string();
     encode_video_subtitle(
         state.0,
-        uuid.clone(),
+        encode_video_subtitle_param.event_id.clone(),
         encode_video_subtitle_param.id,
         encode_video_subtitle_param.srt_style,
     )
     .await?;
-    Ok(Json(ApiResponse::success(uuid)))
+    Ok(Json(ApiResponse::success(
+        encode_video_subtitle_param.event_id,
+    )))
 }
 async fn handler_get_disk_info(
     state: axum::extract::State<State>,

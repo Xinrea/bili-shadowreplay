@@ -76,7 +76,7 @@
         class="p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
         on:click={() => {
           // tauri open url
-          open("https://github.com/Xinrea/bili-shadowreplay/wiki");
+          open("https://bsr.xinrea.cn/");
         }}
       >
         <div class="flex flex-col items-center space-y-2">

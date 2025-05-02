@@ -332,6 +332,19 @@
       JSON.stringify(markers)
     );
   }
+
+  async function save_video() {
+    if (!selected_video) {
+      return;
+    }
+    // download video
+    const video_url = selected_video.file;
+    const video_name = selected_video.name;
+    const a = document.createElement("a");
+    a.href = video_url;
+    a.download = video_name;
+    a.click();
+  }
 </script>
 
 <main>
@@ -401,7 +414,6 @@
         }}
         onClose={() => {
           preview = false;
-          selected_video = null;
         }}
         onVideoListUpdate={get_video_list}
       />
@@ -485,21 +497,32 @@
                 </div>
               </div>
 
-              <select
-                bind:value={video_selected}
-                on:change={find_video}
-                class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg
+              <div class="flex flex-row items-center justify-between">
+                <select
+                  bind:value={video_selected}
+                  on:change={find_video}
+                  class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg
                        border border-gray-800/50 focus:border-[#0A84FF]
                        transition duration-200 outline-none appearance-none
                        hover:border-gray-700/50"
-              >
-                <option value={0}>选择切片</option>
-                {#each videos as video}
-                  <option value={video.value}>{video.name}</option>
-                {/each}
-              </select>
+                >
+                  <option value={0}>选择切片</option>
+                  {#each videos as video}
+                    <option value={video.value}>{video.name}</option>
+                  {/each}
+                </select>
+                {#if !TAURI_ENV && selected_video}
+                  <button
+                    on:click={save_video}
+                    class="w-24 ml-2 px-3 py-2 bg-[#0A84FF] text-white rounded-lg
+                     transition-all duration-200 hover:bg-[#0A84FF]/90
+                     disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    保存
+                  </button>
+                {/if}
+              </div>
             </section>
-
             <!-- 封面预览 -->
             {#if selected_video && selected_video.id != -1}
               <section>

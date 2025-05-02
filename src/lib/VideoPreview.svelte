@@ -10,6 +10,7 @@
     Trash2,
     BrainCircuit,
     Eraser,
+    Download,
   } from "lucide-svelte";
   import {
     generateEventId,
@@ -21,7 +22,6 @@
   } from "./interface";
   import SubtitleStyleEditor from "./SubtitleStyleEditor.svelte";
   import { invoke, TAURI_ENV, listen } from "../lib/invoker";
-  import { onDestroy } from "svelte/internal";
 
   export let show = false;
   export let video: VideoItem;
@@ -559,6 +559,16 @@
       onVideoChange?.(selectedVideo);
     }
   }
+
+  async function saveVideo() {
+    if (!video) return;
+    const video_url = video.file;
+    const video_name = video.file;
+    const a = document.createElement("a");
+    a.href = video_url;
+    a.download = video_name;
+    a.click();
+  }
 </script>
 
 {#if show}
@@ -590,6 +600,15 @@
               <option value={v.id}>{v.name}</option>
             {/each}
           </select>
+          <!-- 保存按钮 -->
+          {#if !TAURI_ENV}
+            <button
+              class="text-blue-500 hover:text-blue-400 transition-colors duration-200 px-2 py-1.5 rounded-md hover:bg-blue-500/10"
+              on:click={saveVideo}
+            >
+              <Download class="w-4 h-4" />
+            </button>
+          {/if}
           <!-- 删除按钮 -->
           <button
             class="text-red-500 hover:text-red-400 transition-colors duration-200 px-2 py-1.5 rounded-md hover:bg-red-500/10"

@@ -991,6 +991,15 @@ async fn handler_output(
             content_type.parse().unwrap(),
         );
 
+        // Add Content-Disposition header to force download
+        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+        headers.insert(
+            axum::http::header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}\"", filename)
+                .parse()
+                .unwrap(),
+        );
+
         let content_length = end - start + 1;
         headers.insert(
             axum::http::header::CONTENT_LENGTH,

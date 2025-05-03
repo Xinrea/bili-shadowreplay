@@ -284,11 +284,15 @@ pub async fn force_stop(
 
 #[cfg_attr(not(feature = "headless"), tauri::command)]
 pub async fn fetch_hls(state: state_type!(), uri: String) -> Result<Vec<u8>, String> {
-    // trim */hls/
-    let uri = uri.trim_start_matches("*/hls/");
+    // Handle wildcard pattern in the URI
+    let uri = if uri.contains("/hls/") {
+        uri.split("/hls/").last().unwrap_or(&uri).to_string()
+    } else {
+        uri
+    };
     state
         .recorder_manager
-        .handle_hls_request(uri)
+        .handle_hls_request(&uri)
         .await
         .map_err(|e| e.to_string())
 }

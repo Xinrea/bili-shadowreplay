@@ -1608,7 +1608,7 @@ dependencies = [
 [[package]]
 name = "felgens"
 version = "0.3.1"
-source = "git+https://github.com/Xinrea/felgens.git?tag=v0.4.2#02925575e6a723e3f26731f34ce903a3fe25f70a"
+source = "git+https://github.com/Xinrea/felgens.git?tag=v0.4.3#828432a7b43af714f1981fafd955cc37d1b42ec1"
 dependencies = [
  "brotli 3.5.0",
  "flate2",

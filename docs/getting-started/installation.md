@@ -52,3 +52,15 @@ sudo docker run -it -d\
     --name bili-shadowreplay \
     ghcr.io/xinrea/bili-shadowreplay:latest
 ```
+
+其中：
+
+- `$DATA_DIR`：为数据目录，对应于桌面版的数据目录，
+
+  Windows 下位于 `C:\Users\{用户名}\AppData\Roaming\cn.vjoi.bilishadowreplay`;
+
+  MacOS 下位于 `/Users/{user}/Library/Application Support/cn.vjoi.bilishadowreplay`
+
+- `$CACHE_DIR`：为缓存目录，对应于桌面版的缓存目录；
+- `$OUTPUT_DIR`：为输出目录，对应于桌面版的输出目录；
+- `$WHISPER_MODEL`：为 Whisper 模型文件路径，对应于桌面版的 Whisper 模型文件路径。

@@ -202,7 +202,7 @@
     });
 
     try {
-      const url = `${ENDPOINT ? ENDPOINT : "http://127.0.0.1:3000"}/hls/${platform}/${room_id}/${live_id}/master.m3u8?start=${focus_start}&end=${focus_end}`;
+      const url = `${ENDPOINT ? ENDPOINT : window.location.origin}/hls/${platform}/${room_id}/${live_id}/master.m3u8?start=${focus_start}&end=${focus_end}`;
       if (!TAURI_ENV) {
         await loadGlobalOffset(url);
       }

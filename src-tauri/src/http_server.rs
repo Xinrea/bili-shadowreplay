@@ -457,14 +457,14 @@ async fn handler_get_archive(
 struct DeleteArchiveRequest {
     platform: String,
     room_id: u64,
-    archive_id: String,
+    live_id: String,
 }
 
 async fn handler_delete_archive(
     state: axum::extract::State<State>,
     Json(param): Json<DeleteArchiveRequest>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
-    delete_archive(state.0, param.platform, param.room_id, param.archive_id).await?;
+    delete_archive(state.0, param.platform, param.room_id, param.live_id).await?;
     Ok(Json(ApiResponse::success(())))
 }
 

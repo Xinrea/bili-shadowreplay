@@ -333,11 +333,17 @@ impl BiliClient {
         Ok(format!("data:{};base64,{}", mime_type, base64))
     }
 
-    pub async fn get_index_content(&self, url: &String) -> Result<String, BiliClientError> {
+    pub async fn get_index_content(
+        &self,
+        account: &AccountRow,
+        url: &String,
+    ) -> Result<String, BiliClientError> {
+        let mut headers = self.headers.clone();
+        headers.insert("cookie", account.cookies.parse().unwrap());
         let response = self
             .client
             .get(url.to_owned())
-            .headers(self.headers.clone())
+            .headers(headers)
             .send()
             .await?;
 

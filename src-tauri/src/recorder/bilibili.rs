@@ -245,7 +245,7 @@ impl BiliRecorder {
 
                 // current_record => update stream
                 // auto_start+is_new_stream => update stream and current_record=true
-                let master_manifest = self.client.read().await.get_index_content(&format!("https://api.live.bilibili.com/xlive/play-gateway/master/url?cid={}&pt=h5&p2p_type=-1&net=0&free_type=0&build=0&feature=2&qn=10000", self.room_id)).await;
+                let master_manifest = self.client.read().await.get_index_content(&self.account, &format!("https://api.live.bilibili.com/xlive/play-gateway/master/url?cid={}&pt=h5&p2p_type=-1&net=0&free_type=0&build=0&feature=2&qn=10000", self.room_id)).await;
                 if master_manifest.is_err() {
                     log::error!(
                         "[{}]Fetch master manifest failed: {}",
@@ -437,7 +437,7 @@ impl BiliRecorder {
             .client
             .read()
             .await
-            .get_index_content(&stream.index())
+            .get_index_content(&self.account, &stream.index())
             .await
         {
             Ok(index_content) => {
@@ -472,7 +472,7 @@ impl BiliRecorder {
             .client
             .read()
             .await
-            .get_index_content(&stream.index())
+            .get_index_content(&self.account, &stream.index())
             .await?;
         if index_content.is_empty() {
             return Err(super::errors::RecorderError::InvalidStream { stream });
@@ -501,7 +501,7 @@ impl BiliRecorder {
             .client
             .read()
             .await
-            .get_index_content(&stream.index())
+            .get_index_content(&self.account, &stream.index())
             .await?;
         if index_content.is_empty() {
             return Err(super::errors::RecorderError::InvalidStream { stream });
@@ -510,7 +510,7 @@ impl BiliRecorder {
             .client
             .read()
             .await
-            .get_index_content(&stream.index())
+            .get_index_content(&self.account, &stream.index())
             .await?;
         if index_content.is_empty() {
             return Err(super::errors::RecorderError::InvalidStream { stream });
@@ -781,7 +781,7 @@ impl BiliRecorder {
         // WHY: when program started, all stream is fetched nearly at the same time, so they will expire toggether,
         // this might meet server rate limit. So we add a random offset to make request spread over time.
         let mut rng = rand::thread_rng();
-        let pre_offset = rng.gen_range(5..=120);
+        let pre_offset = rng.gen_range(120..=300);
         // no need to update stream as it's not expired yet
         let current_stream = self.live_stream.read().await.clone();
         if current_stream

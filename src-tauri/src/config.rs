@@ -63,6 +63,11 @@ impl Config {
                 return config;
             }
         }
+
+        if let Some(dir_path) = PathBuf::from(config_path).parent() {
+            let _ = std::fs::create_dir_all(dir_path);
+        }
+
         let config = Config {
             cache: "./cache".to_string(),
             output: "./output".to_string(),

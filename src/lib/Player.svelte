@@ -56,6 +56,7 @@
       console.log("DANMU OFFSET found", global_offset);
     } else {
       console.warn("No DANMU OFFSET found");
+      console.log(text);
     }
   }
 
@@ -80,7 +81,7 @@
 
           const is_m3u8 = uri.split("?")[0].endsWith(".m3u8");
 
-          if (is_m3u8) {
+          if (is_m3u8 && global_offset == 0) {
             let m3u8Content = new TextDecoder().decode(uint8Array);
             const offsetRegex = /DANMU=(\d+)/;
             const match = m3u8Content.match(offsetRegex);
@@ -90,6 +91,7 @@
               console.log("DANMU OFFSET found", global_offset);
             } else {
               console.warn("No DANMU OFFSET found");
+              console.log(m3u8Content);
             }
           }
           // Set content-type based on URI extension
@@ -119,8 +121,8 @@
               shaka.util.Error.Severity.CRITICAL,
               shaka.util.Error.Category.NETWORK,
               shaka.util.Error.Code.OPERATION_ABORTED,
-              error.message || "Network request failed"
-            )
+              error.message || "Network request failed",
+            ),
           );
         });
     });
@@ -223,7 +225,7 @@
             error.code +
             "\n" +
             "Error message: " +
-            error.message
+            error.message,
         );
       }
     }
@@ -243,7 +245,7 @@
     document.getElementsByClassName("shaka-fullscreen-button")[0].remove();
     // add self-defined element in shaka-bottom-controls.shaka-no-propagation (second seekbar)
     const shakaBottomControls = document.querySelector(
-      ".shaka-bottom-controls.shaka-no-propagation"
+      ".shaka-bottom-controls.shaka-no-propagation",
     );
     const selfSeekbar = document.createElement("div");
     selfSeekbar.className = "shaka-seek-bar shaka-no-propagation";
@@ -288,7 +290,7 @@
         }
 
         const cur = Math.floor(
-          (video.currentTime + global_offset + ts + focus_start) * 1000
+          (video.currentTime + global_offset + focus_start) * 1000,
         );
 
         let danmus = danmu_records.filter((v) => {
@@ -611,7 +613,7 @@
           // dispatch event
           dispatch("markerAdd", {
             offset: video.currentTime,
-            realtime: ts + video.currentTime,
+            realtime: global_offset + video.currentTime,
           });
           break;
         case "ArrowLeft":
@@ -658,11 +660,11 @@
     });
 
     const seekbarContainer = selfSeekbar.querySelector(
-      ".shaka-seek-bar-container.self-defined"
+      ".shaka-seek-bar-container.self-defined",
     ) as HTMLElement;
 
     const statisticGraph = document.createElement(
-      "canvas"
+      "canvas",
     ) as HTMLCanvasElement;
     statisticGraph.style.pointerEvents = "none";
     statisticGraph.style.position = "absolute";
@@ -755,7 +757,7 @@
       }%, rgba(255, 255, 255, 0.2) ${first_point * 100}%)`;
       // render markers in shaka-ad-markers
       const adMarkers = document.querySelector(
-        ".shaka-ad-markers"
+        ".shaka-ad-markers",
       ) as HTMLElement;
       if (adMarkers) {
         // clean previous markers
@@ -810,7 +812,7 @@
         liveId: live_id,
         x: Math.floor(focus_start + start),
         y: Math.floor(focus_start + end),
-        offset: global_offset + parseInt(live_id),
+        offset: global_offset,
         ass: ass,
       },
     })) as string;

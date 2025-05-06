@@ -322,8 +322,8 @@ impl BiliClient {
         })
     }
 
+    /// Get and encode response data into base64
     pub async fn get_cover_base64(&self, url: &str) -> Result<String, BiliClientError> {
-        log::info!("get_cover_base64: {}", url);
         let response = self.client.get(url).send().await?;
         let bytes = response.bytes().await?;
         let base64 = base64::engine::general_purpose::STANDARD.encode(bytes);

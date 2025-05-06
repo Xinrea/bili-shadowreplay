@@ -17,7 +17,7 @@ mod recorder;
 mod recorder_manager;
 mod state;
 mod subtitle_generator;
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "gui")]
 mod tray;
 
 use archive_migration::try_rebuild_archives;
@@ -32,7 +32,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "gui")]
 use {
     recorder::PlatformType,
     tauri::{Manager, WindowEvent},
@@ -188,7 +188,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     })
 }
 
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "gui")]
 async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::Error>> {
     use platform_dirs::AppDirs;
     use progress_reporter::EventEmitter;
@@ -278,7 +278,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     })
 }
 
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "gui")]
 fn setup_plugins(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     let migrations = get_migrations();
     let builder = builder
@@ -307,7 +307,7 @@ fn setup_plugins(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::W
     builder
 }
 
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "gui")]
 fn setup_event_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder.on_window_event(|window, event| {
         if let WindowEvent::CloseRequested { api, .. } = event {
@@ -319,7 +319,7 @@ fn setup_event_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<t
     })
 }
 
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "gui")]
 fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder.invoke_handler(tauri::generate_handler![
         crate::handlers::account::get_accounts,
@@ -377,7 +377,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
     ])
 }
 
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "gui")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = fix_path_env::fix();
     let builder = tauri::Builder::default();

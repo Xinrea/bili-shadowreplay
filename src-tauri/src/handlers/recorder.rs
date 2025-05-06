@@ -8,18 +8,18 @@ use crate::recorder_manager::RecorderList;
 use crate::state::State;
 use crate::state_type;
 
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "gui")]
 use tauri::State as TauriState;
 
 use serde::Deserialize;
 use serde::Serialize;
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_recorder_list(state: state_type!()) -> Result<RecorderList, ()> {
     Ok(state.recorder_manager.get_recorder_list().await)
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn add_recorder(
     state: state_type!(),
     platform: String,
@@ -65,7 +65,7 @@ pub async fn add_recorder(
     }
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn remove_recorder(
     state: state_type!(),
     platform: String,
@@ -88,7 +88,7 @@ pub async fn remove_recorder(
     }
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_room_info(
     state: state_type!(),
     platform: String,
@@ -106,12 +106,12 @@ pub async fn get_room_info(
     }
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_archives(state: state_type!(), room_id: u64) -> Result<Vec<RecordRow>, String> {
     Ok(state.recorder_manager.get_archives(room_id).await?)
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_archive(
     state: state_type!(),
     room_id: u64,
@@ -123,7 +123,7 @@ pub async fn get_archive(
         .await?)
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn delete_archive(
     state: state_type!(),
     platform: String,
@@ -145,7 +145,7 @@ pub async fn delete_archive(
     Ok(())
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_danmu_record(
     state: state_type!(),
     platform: String,
@@ -170,7 +170,7 @@ pub struct ExportDanmuOptions {
     ass: bool,
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn export_danmu(
     state: state_type!(),
     options: ExportDanmuOptions,
@@ -202,7 +202,7 @@ pub async fn export_danmu(
     }
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn send_danmaku(
     state: state_type!(),
     uid: u64,
@@ -217,7 +217,7 @@ pub async fn send_danmaku(
     Ok(())
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_total_length(state: state_type!()) -> Result<i64, String> {
     match state.db.get_total_length().await {
         Ok(total_length) => Ok(total_length),
@@ -225,7 +225,7 @@ pub async fn get_total_length(state: state_type!()) -> Result<i64, String> {
     }
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_today_record_count(state: state_type!()) -> Result<i64, String> {
     match state.db.get_today_record_count().await {
         Ok(count) => Ok(count),
@@ -233,7 +233,7 @@ pub async fn get_today_record_count(state: state_type!()) -> Result<i64, String>
     }
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_recent_record(
     state: state_type!(),
     offset: u64,
@@ -245,7 +245,7 @@ pub async fn get_recent_record(
     }
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn set_auto_start(
     state: state_type!(),
     platform: String,
@@ -260,7 +260,7 @@ pub async fn set_auto_start(
     Ok(())
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn force_start(
     state: state_type!(),
     platform: String,
@@ -271,7 +271,7 @@ pub async fn force_start(
     Ok(())
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn force_stop(
     state: state_type!(),
     platform: String,
@@ -282,7 +282,7 @@ pub async fn force_stop(
     Ok(())
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn fetch_hls(state: state_type!(), uri: String) -> Result<Vec<u8>, String> {
     // Handle wildcard pattern in the URI
     let uri = if uri.contains("/hls/") {

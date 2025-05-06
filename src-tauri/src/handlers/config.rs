@@ -2,15 +2,15 @@ use crate::config::Config;
 use crate::state::State;
 use crate::state_type;
 
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "gui")]
 use tauri::State as TauriState;
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_config(state: state_type!()) -> Result<Config, ()> {
     Ok(state.config.read().await.clone())
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn set_cache_path(state: state_type!(), cache_path: String) -> Result<(), String> {
     let old_cache_path = state.config.read().await.cache.clone();
     if old_cache_path == cache_path {
@@ -76,7 +76,7 @@ pub async fn set_cache_path(state: state_type!(), cache_path: String) -> Result<
     Ok(())
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn set_output_path(state: state_type!(), output_path: String) -> Result<(), ()> {
     let mut config = state.config.write().await;
     let old_output_path = config.output.clone();
@@ -123,7 +123,7 @@ pub async fn set_output_path(state: state_type!(), output_path: String) -> Resul
     Ok(())
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_notify(
     state: state_type!(),
     live_start_notify: bool,
@@ -139,21 +139,21 @@ pub async fn update_notify(
     Ok(())
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_whisper_model(state: state_type!(), whisper_model: String) -> Result<(), ()> {
     state.config.write().await.whisper_model = whisper_model;
     state.config.write().await.save();
     Ok(())
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_subtitle_setting(state: state_type!(), auto_subtitle: bool) -> Result<(), ()> {
     state.config.write().await.auto_subtitle = auto_subtitle;
     state.config.write().await.save();
     Ok(())
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_clip_name_format(
     state: state_type!(),
     clip_name_format: String,
@@ -163,14 +163,14 @@ pub async fn update_clip_name_format(
     Ok(())
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_whisper_prompt(state: state_type!(), whisper_prompt: String) -> Result<(), ()> {
     state.config.write().await.whisper_prompt = whisper_prompt;
     state.config.write().await.save();
     Ok(())
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_auto_generate(
     state: state_type!(),
     enabled: bool,

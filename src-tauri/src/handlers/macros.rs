@@ -1,4 +1,4 @@
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "gui")]
 #[macro_export]
 macro_rules! state_type {
     () => {

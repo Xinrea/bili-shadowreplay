@@ -13,16 +13,16 @@ use std::path::Path;
 use crate::state::State;
 use crate::state_type;
 
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "gui")]
 use {tauri::State as TauriState, tauri_plugin_notification::NotificationExt};
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn clip_range(
     state: state_type!(),
     event_id: String,
     params: ClipRangeParams,
 ) -> Result<VideoRow, String> {
-    #[cfg(not(feature = "headless"))]
+    #[cfg(feature = "gui")]
     let emitter = EventEmitter::new(state.app_handle.clone());
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
@@ -121,7 +121,7 @@ async fn clip_range_inner(
         )
         .await?;
     if state.config.read().await.clip_notify {
-        #[cfg(not(feature = "headless"))]
+        #[cfg(feature = "gui")]
         state
             .app_handle
             .notification()
@@ -140,7 +140,7 @@ async fn clip_range_inner(
     Ok(video)
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn upload_procedure(
     state: state_type!(),
     event_id: String,
@@ -150,7 +150,7 @@ pub async fn upload_procedure(
     cover: String,
     profile: Profile,
 ) -> Result<String, String> {
-    #[cfg(not(feature = "headless"))]
+    #[cfg(feature = "gui")]
     let emitter = EventEmitter::new(state.app_handle.clone());
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
@@ -207,7 +207,7 @@ async fn upload_procedure_inner(
                     )
                     .await?;
                 if state.config.read().await.post_notify {
-                    #[cfg(not(feature = "headless"))]
+                    #[cfg(feature = "gui")]
                     state
                         .app_handle
                         .notification()
@@ -233,23 +233,23 @@ async fn upload_procedure_inner(
     }
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn cancel(_state: state_type!(), event_id: String) -> Result<(), String> {
     cancel_progress(&event_id).await;
     Ok(())
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_video(state: state_type!(), id: i64) -> Result<VideoRow, String> {
     Ok(state.db.get_video(id).await?)
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_videos(state: state_type!(), room_id: u64) -> Result<Vec<VideoRow>, String> {
     Ok(state.db.get_videos(room_id).await?)
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn delete_video(state: state_type!(), id: i64) -> Result<(), String> {
     // get video info from dbus
     let video = state.db.get_video(id).await?;
@@ -274,7 +274,7 @@ pub async fn delete_video(state: state_type!(), id: i64) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_video_typelist(
     state: state_type!(),
 ) -> Result<Vec<crate::recorder::bilibili::response::Typelist>, String> {
@@ -282,7 +282,7 @@ pub async fn get_video_typelist(
     Ok(state.client.get_video_typelist(&account).await?)
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_video_cover(
     state: state_type!(),
     id: i64,
@@ -291,7 +291,7 @@ pub async fn update_video_cover(
     Ok(state.db.update_video_cover(id, cover).await?)
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_video_subtitle(state: state_type!(), id: i64) -> Result<String, String> {
     let video = state.db.get_video(id).await?;
     let filepath = Path::new(state.config.read().await.output.as_str()).join(&video.file);
@@ -304,13 +304,13 @@ pub async fn get_video_subtitle(state: state_type!(), id: i64) -> Result<String,
     }
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn generate_video_subtitle(
     state: state_type!(),
     event_id: String,
     id: i64,
 ) -> Result<String, String> {
-    #[cfg(not(feature = "headless"))]
+    #[cfg(feature = "gui")]
     let emitter = EventEmitter::new(state.app_handle.clone());
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
@@ -355,7 +355,7 @@ async fn generate_video_subtitle_inner(
     }
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_video_subtitle(
     state: state_type!(),
     id: i64,
@@ -371,14 +371,14 @@ pub async fn update_video_subtitle(
     Ok(())
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn encode_video_subtitle(
     state: state_type!(),
     event_id: String,
     id: i64,
     srt_style: String,
 ) -> Result<VideoRow, String> {
-    #[cfg(not(feature = "headless"))]
+    #[cfg(feature = "gui")]
     let emitter = EventEmitter::new(state.app_handle.clone());
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());

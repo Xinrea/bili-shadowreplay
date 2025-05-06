@@ -1,7 +1,7 @@
 pub mod client;
 mod response;
 mod stream_info;
-use super::entry::{EntryStore, TsEntry};
+use super::entry::{EntryStore, Range, TsEntry};
 use super::{
     danmu::DanmuEntry, errors::RecorderError, PlatformType, Recorder, RecorderInfo, RoomInfo,
     UserInfo,
@@ -410,79 +410,27 @@ impl DouyinRecorder {
     }
 
     async fn generate_m3u8(&self, live_id: &str, start: i64, end: i64) -> String {
-        let mut m3u8_content = "#EXTM3U\n".to_string();
-        let range_required = start != 0 || end != 0;
-        m3u8_content += "#EXT-X-VERSION:3\n";
+        let range = if start != 0 || end != 0 {
+            Some(Range {
+                x: start as f32,
+                y: end as f32,
+            })
+        } else {
+            None
+        };
 
         // if requires a range, we need to filter entries and only use entries in the range, so m3u8 type is VOD.
-        let entries = if !range_required && live_id == *self.live_id.read().await {
-            m3u8_content += "#EXT-X-PLAYLIST-TYPE:EVENT\n";
+        if live_id == *self.live_id.read().await {
             self.entry_store
                 .read()
                 .await
                 .as_ref()
                 .unwrap()
-                .get_entries()
-                .clone()
+                .manifest(false, range)
         } else {
-            m3u8_content += "#EXT-X-PLAYLIST-TYPE:VOD\n";
             let work_dir = self.get_work_dir(live_id).await;
-            let entry_store = EntryStore::new(&work_dir).await;
-            entry_store.get_entries().clone()
-        };
-
-        m3u8_content += "#EXT-X-OFFSET:0\n";
-
-        if entries.is_empty() {
-            return m3u8_content;
+            EntryStore::new(&work_dir).await.manifest(true, range)
         }
-
-        m3u8_content += "#EXT-X-TARGETDURATION:6\n";
-
-        let first_sequence = entries.first().as_ref().unwrap().sequence;
-        let first_entry_ts = entries.first().unwrap().ts;
-        let mut previous_seq = first_sequence;
-
-        let mut discontinue_entries = HashMap::<u64, bool>::new();
-        for entry in &entries {
-            if range_required
-                && (entry.ts - first_entry_ts < start || entry.ts - first_entry_ts > end)
-            {
-                continue;
-            }
-            if entry.sequence - previous_seq > 1 {
-                discontinue_entries.insert(entry.sequence, true);
-                discontinue_entries.insert(previous_seq, true);
-            }
-
-            previous_seq = entry.sequence;
-        }
-
-        // reset previous seq
-        previous_seq = first_sequence;
-        for entry in entries {
-            if range_required
-                && (entry.ts - first_entry_ts < start || entry.ts - first_entry_ts > end)
-            {
-                continue;
-            }
-            if entry.sequence - previous_seq > 1 {
-                m3u8_content += "#EXT-X-DISCONTINUITY\n";
-            }
-            previous_seq = entry.sequence;
-            if *discontinue_entries.get(&entry.sequence).unwrap_or(&false) {
-                let date_str = Utc.timestamp_opt(entry.ts, 0).unwrap().to_rfc3339();
-                m3u8_content += &format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", date_str);
-            }
-            m3u8_content += &format!("#EXTINF:{:.2},\n", entry.length);
-            m3u8_content += &format!("{}\n", entry.url);
-        }
-
-        if *self.live_status.read().await != LiveStatus::Live || range_required {
-            m3u8_content += "#EXT-X-ENDLIST\n";
-        }
-
-        m3u8_content
     }
 }
 

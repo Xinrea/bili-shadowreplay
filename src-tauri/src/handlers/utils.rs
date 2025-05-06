@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::state::State;
 use crate::state_type;
 
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "gui")]
 use {
     crate::recorder::PlatformType,
     std::process::Command,
@@ -31,8 +31,8 @@ pub fn copy_dir_all(
     Ok(())
 }
 
-#[cfg(not(feature = "headless"))]
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg(feature = "gui")]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub fn show_in_folder(path: String) {
     #[cfg(target_os = "windows")]
     {
@@ -91,7 +91,7 @@ pub struct DiskInfo {
     free: u64,
 }
 
-#[cfg_attr(not(feature = "headless"), tauri::command)]
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_disk_info(state: state_type!()) -> Result<DiskInfo, ()> {
     let cache = state.config.read().await.cache.clone();
     // if cache is relative path, convert it to absolute path
@@ -152,7 +152,7 @@ pub async fn get_disk_info(state: state_type!()) -> Result<DiskInfo, ()> {
     }
 }
 
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "gui")]
 #[tauri::command]
 pub async fn export_to_file(
     _state: state_type!(),
@@ -178,10 +178,10 @@ pub async fn export_to_file(
     Ok(())
 }
 
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "gui")]
 #[tauri::command]
 pub async fn open_log_folder(state: state_type!()) -> Result<(), String> {
-    #[cfg(not(feature = "headless"))]
+    #[cfg(feature = "gui")]
     {
         let log_dir = state.app_handle.path().app_log_dir().unwrap();
         show_in_folder(log_dir.to_str().unwrap().to_string());
@@ -189,7 +189,7 @@ pub async fn open_log_folder(state: state_type!()) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "gui")]
 #[tauri::command]
 pub async fn open_live(
     state: state_type!(),
@@ -198,7 +198,7 @@ pub async fn open_live(
     live_id: String,
 ) -> Result<(), String> {
     log::info!("Open player window: {} {}", room_id, live_id);
-    #[cfg(not(feature = "headless"))]
+    #[cfg(feature = "gui")]
     {
         let platform = PlatformType::from_str(&platform).unwrap();
         let recorder_info = state

@@ -2,7 +2,7 @@ pub mod client;
 pub mod errors;
 pub mod profile;
 pub mod response;
-use super::entry::EntryStore;
+use super::entry::{EntryStore, Range};
 use super::PlatformType;
 use crate::database::account::AccountRow;
 use crate::progress_manager::Event;
@@ -11,9 +11,8 @@ use crate::recorder_manager::RecorderEvent;
 
 use super::danmu::{DanmuEntry, DanmuStorage};
 use super::entry::TsEntry;
-use chrono::{TimeZone, Utc};
+use chrono::Utc;
 use client::{BiliClient, BiliStream, RoomInfo, StreamType, UserInfo};
-use dashmap::DashMap;
 use errors::BiliClientError;
 use felgens::{ws_socket_object, FelgensError, WsStreamMessageType};
 use m3u8_rs::{Playlist, QuotedOrUnquoted, VariantStream};
@@ -49,22 +48,21 @@ pub struct BiliRecorder {
     db: Arc<Database>,
     account: AccountRow,
     config: Arc<RwLock<Config>>,
-    pub room_id: u64,
-    pub room_info: Arc<RwLock<RoomInfo>>,
-    pub user_info: Arc<RwLock<UserInfo>>,
-    pub live_status: Arc<RwLock<bool>>,
-    pub live_id: Arc<RwLock<String>>,
-    pub cover: Arc<RwLock<Option<String>>>,
-    pub entry_store: Arc<RwLock<Option<EntryStore>>>,
-    pub is_recording: Arc<RwLock<bool>>,
-    pub auto_start: Arc<RwLock<bool>>,
-    pub current_record: Arc<RwLock<bool>>,
+    room_id: u64,
+    room_info: Arc<RwLock<RoomInfo>>,
+    user_info: Arc<RwLock<UserInfo>>,
+    live_status: Arc<RwLock<bool>>,
+    live_id: Arc<RwLock<String>>,
+    cover: Arc<RwLock<Option<String>>>,
+    entry_store: Arc<RwLock<Option<EntryStore>>>,
+    is_recording: Arc<RwLock<bool>>,
+    auto_start: Arc<RwLock<bool>>,
+    current_record: Arc<RwLock<bool>>,
     force_update: Arc<AtomicBool>,
     last_update: Arc<RwLock<i64>>,
     quit: Arc<Mutex<bool>>,
-    pub live_stream: Arc<RwLock<Option<BiliStream>>>,
+    live_stream: Arc<RwLock<Option<BiliStream>>>,
     danmu_storage: Arc<RwLock<Option<DanmuStorage>>>,
-    m3u8_cache: DashMap<String, String>,
     live_end_channel: broadcast::Sender<RecorderEvent>,
 }
 
@@ -135,7 +133,6 @@ impl BiliRecorder {
             quit: Arc::new(Mutex::new(false)),
             live_stream: Arc::new(RwLock::new(None)),
             danmu_storage: Arc::new(RwLock::new(None)),
-            m3u8_cache: DashMap::new(),
             live_end_channel: options.channel,
         };
         log::info!("Recorder for room {} created.", options.room_id);
@@ -799,139 +796,37 @@ impl BiliRecorder {
     }
 
     async fn generate_archive_m3u8(&self, live_id: &str, start: i64, end: i64) -> String {
-        let range_required = start != 0 || end != 0;
-        if range_required {
-            log::info!("Generate archive m3u8 for range [{}, {}]", start, end);
-        }
-        let cache_key = format!("{}:{}:{}", live_id, start, end);
-        if self.m3u8_cache.contains_key(&cache_key) {
-            return self.m3u8_cache.get(&cache_key).unwrap().clone();
-        }
-        let mut m3u8_content = "#EXTM3U\n".to_string();
-        m3u8_content += "#EXT-X-VERSION:6\n";
-        m3u8_content += "#EXT-X-TARGETDURATION:1\n";
-        m3u8_content += "#EXT-X-PLAYLIST-TYPE:VOD\n";
-        // add header, FMP4 need this
-        // TODO handle StreamType::TS
-        let header_url = format!("h{}.m4s", live_id);
-        m3u8_content += &format!("#EXT-X-MAP:URI=\"{}\"\n", header_url);
-        // add entries from read_dir
         let work_dir = self.get_work_dir(live_id).await;
-        let entries = EntryStore::new(&work_dir).await.get_entries().clone();
-        if entries.is_empty() {
-            return m3u8_content;
+        let entry_store = EntryStore::new(&work_dir).await;
+        let mut range = None;
+        if start != 0 || end != 0 {
+            range = Some(Range {
+                x: start as f32,
+                y: start as f32,
+            })
         }
-        let mut last_sequence = entries.first().unwrap().sequence;
 
-        let live_ts = live_id.parse::<i64>().unwrap();
-        m3u8_content += &format!(
-            "#EXT-X-OFFSET:{}\n",
-            (entries.first().unwrap().ts - live_ts * 1000) / 1000
-        );
-
-        let mut first_entry_ts = None;
-        for e in entries {
-            // ignore header, cause it's already in EXT-X-MAP
-            if e.is_header {
-                continue;
-            }
-            if first_entry_ts.is_none() {
-                first_entry_ts = Some(e.ts / 1000);
-            }
-            let entry_offset = e.ts / 1000 - first_entry_ts.unwrap();
-            if range_required && (entry_offset < start || entry_offset > end) {
-                continue;
-            }
-            let current_seq = e.sequence;
-            if current_seq - last_sequence > 1 {
-                m3u8_content += "#EXT-X-DISCONTINUITY\n"
-            }
-            // add #EXT-X-PROGRAM-DATE-TIME with ISO 8601 date
-            let ts = e.ts / 1000;
-            let date_str = Utc.timestamp_opt(ts, 0).unwrap().to_rfc3339();
-            m3u8_content += &format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", date_str);
-            m3u8_content += &format!("#EXTINF:{:.2},\n", e.length);
-            m3u8_content += &format!("{}\n", e.url);
-
-            last_sequence = current_seq;
-        }
-        m3u8_content += "#EXT-X-ENDLIST";
-        // cache this
-        self.m3u8_cache.insert(cache_key, m3u8_content.clone());
-        m3u8_content
+        return entry_store.manifest(true, range);
     }
 
     /// if fetching live/last stream m3u8, all entries are cached in memory, so it will be much faster than read_dir
     async fn generate_live_m3u8(&self, start: i64, end: i64) -> String {
-        let range_required = start != 0 || end != 0;
-        if range_required {
-            log::info!("Generate live m3u8 for range [{}, {}]", start, end);
-        }
-
         let live_status = *self.live_status.read().await;
-        let mut m3u8_content = "#EXTM3U\n".to_string();
-        m3u8_content += "#EXT-X-VERSION:6\n";
-        m3u8_content += "#EXT-X-TARGETDURATION:1\n";
-        m3u8_content += "#EXT-X-SERVER-CONTROL:HOLD-BACK:3\n";
-        // if stream is closed, switch to VOD
-        if live_status && !range_required {
-            m3u8_content += "#EXT-X-PLAYLIST-TYPE:EVENT\n";
+        let range = if start != 0 || end != 0 {
+            Some(Range {
+                x: start as f32,
+                y: end as f32,
+            })
         } else {
-            m3u8_content += "#EXT-X-PLAYLIST-TYPE:VOD\n";
-        }
-        let live_id = self.live_id.read().await.clone();
-        // initial segment for fmp4, info from self.header
-        if let Some(header) = self.entry_store.read().await.as_ref().unwrap().get_header() {
-            let file_name = header.url.split('/').last().unwrap();
-            m3u8_content += &format!("#EXT-X-MAP:URI=\"{}\"\n", file_name);
-        }
-        let entries = self
-            .entry_store
+            None
+        };
+
+        self.entry_store
             .read()
             .await
             .as_ref()
             .unwrap()
-            .get_entries()
-            .clone();
-        if entries.is_empty() {
-            m3u8_content += "#EXT-X-OFFSET:0\n";
-            m3u8_content += "#EXT-X-ENDLIST\n";
-            return m3u8_content;
-        }
-
-        let mut last_sequence = entries.first().unwrap().sequence;
-
-        // this does nothing, but privide first entry ts for player
-        let live_ts = live_id.parse::<i64>().unwrap();
-        m3u8_content += &format!(
-            "#EXT-X-OFFSET:{}\n",
-            (entries.first().unwrap().ts - live_ts * 1000) / 1000
-        );
-
-        let first_entry_ts = entries.first().unwrap().ts / 1000;
-        for entry in entries.iter() {
-            let entry_offset = entry.ts / 1000 - first_entry_ts;
-            if range_required && (entry_offset < start || entry_offset > end) {
-                continue;
-            }
-            if entry.sequence - last_sequence > 1 {
-                // discontinuity happens
-                m3u8_content += "#EXT-X-DISCONTINUITY\n"
-            }
-            // add #EXT-X-PROGRAM-DATE-TIME with ISO 8601 date
-            let ts = entry.ts / 1000;
-            let date_str = Utc.timestamp_opt(ts, 0).unwrap().to_rfc3339();
-            m3u8_content += &format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", date_str);
-            m3u8_content += &format!("#EXTINF:{:.2},\n", entry.length);
-            last_sequence = entry.sequence;
-            let file_name = entry.url.split('/').last().unwrap();
-            m3u8_content += &format!("{}\n", file_name);
-        }
-        // let player know stream is closed
-        if !live_status || range_required {
-            m3u8_content += "#EXT-X-ENDLIST";
-        }
-        m3u8_content
+            .manifest(!live_status || range.is_some(), range)
     }
 }
 
@@ -1010,13 +905,12 @@ impl super::Recorder for BiliRecorder {
 
     async fn master_m3u8(&self, _live_id: &str, start: i64, end: i64) -> String {
         let live_timestamp = _live_id.parse::<i64>().unwrap();
-        let offset = self.first_segment_ts(_live_id).await - live_timestamp * 1000;
+        let offset = self.first_segment_ts(_live_id).await / 1000;
         let mut m3u8_content = "#EXTM3U\n".to_string();
         m3u8_content += "#EXT-X-VERSION:6\n";
         m3u8_content += &format!(
             "#EXT-X-STREAM-INF:BANDWIDTH=1280000,RESOLUTION=1920x1080,CODECS={},DANMU={}\n",
-            "\"avc1.64001F,mp4a.40.2\"",
-            offset / 1000
+            "\"avc1.64001F,mp4a.40.2\"", offset
         );
         m3u8_content += &format!("playlist.m3u8?start={}&end={}\n", start, end);
         m3u8_content

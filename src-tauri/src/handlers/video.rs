@@ -45,7 +45,8 @@ async fn clip_range_inner(
     params: ClipRangeParams,
 ) -> Result<VideoRow, String> {
     log::info!(
-        "Clip room_id: {}, ts: {}, start: {}, end: {}",
+        "[{}]Clip room_id: {}, ts: {}, start: {}, end: {}",
+        reporter.event_id,
         params.room_id,
         params.live_id,
         params.x,

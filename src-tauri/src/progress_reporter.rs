@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use serde::Serialize;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -6,7 +7,7 @@ use tokio::sync::RwLock;
 
 use crate::progress_manager::Event;
 
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "gui")]
 use {
     crate::recorder::danmu::DanmuEntry,
     tauri::{AppHandle, Emitter},
@@ -23,7 +24,7 @@ static CANCEL_FLAG_MAP: LazyLock<Arc<RwLock<CancelFlagMap>>> =
 #[derive(Clone)]
 pub struct ProgressReporter {
     emitter: EventEmitter,
-    event_id: String,
+    pub event_id: String,
     pub cancel: Arc<AtomicBool>,
 }
 
@@ -35,19 +36,34 @@ pub trait ProgressReporterTrait: Send + Sync + Clone {
 
 #[derive(Clone)]
 pub struct EventEmitter {
-    #[cfg(not(feature = "headless"))]
+    #[cfg(feature = "gui")]
     app_handle: AppHandle,
     #[cfg(feature = "headless")]
     sender: broadcast::Sender<Event>,
 }
 
+#[cfg(feature = "gui")]
+#[derive(Clone, Serialize)]
+struct UpdateEvent<'a> {
+    id: &'a str,
+    content: &'a str,
+}
+
+#[cfg(feature = "gui")]
+#[derive(Clone, Serialize)]
+struct FinishEvent<'a> {
+    id: &'a str,
+    success: bool,
+    message: &'a str,
+}
+
 impl EventEmitter {
     pub fn new(
-        #[cfg(not(feature = "headless"))] app_handle: AppHandle,
+        #[cfg(feature = "gui")] app_handle: AppHandle,
         #[cfg(feature = "headless")] sender: broadcast::Sender<Event>,
     ) -> Self {
         Self {
-            #[cfg(not(feature = "headless"))]
+            #[cfg(feature = "gui")]
             app_handle,
             #[cfg(feature = "headless")]
             sender,
@@ -55,18 +71,29 @@ impl EventEmitter {
     }
 
     pub fn emit(&self, event: &Event) {
-        #[cfg(not(feature = "headless"))]
+        #[cfg(feature = "gui")]
         {
             match event {
-                Event::ProgressUpdate { id: _, content: _ } => {
-                    self.app_handle.emit("progress_event", event).unwrap();
+                Event::ProgressUpdate { id, content } => {
+                    self.app_handle
+                        .emit("progress-update", UpdateEvent { id, content })
+                        .unwrap();
                 }
                 Event::ProgressFinished {
-                    id: _,
-                    success: _,
-                    message: _,
+                    id,
+                    success,
+                    message,
                 } => {
-                    self.app_handle.emit("progress_event", event).unwrap();
+                    self.app_handle
+                        .emit(
+                            "progress-finished",
+                            FinishEvent {
+                                id,
+                                success: success.clone(),
+                                message,
+                            },
+                        )
+                        .unwrap();
                 }
                 Event::DanmuReceived { room, ts, content } => {
                     self.app_handle

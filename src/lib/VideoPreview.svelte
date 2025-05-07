@@ -22,6 +22,7 @@
   } from "./interface";
   import SubtitleStyleEditor from "./SubtitleStyleEditor.svelte";
   import { invoke, TAURI_ENV, listen } from "../lib/invoker";
+  import { onDestroy } from "svelte";
 
   export let show = false;
   export let video: VideoItem;
@@ -76,7 +77,7 @@
   let current_encode_event_id = null;
   let current_generate_event_id = null;
 
-  listen<ProgressUpdate>(`progress-update`, (e) => {
+  const update_listener = listen<ProgressUpdate>(`progress-update`, (e) => {
     let event_id = e.payload.id;
     console.log(e.payload);
     if (event_id == current_encode_event_id) {
@@ -86,7 +87,7 @@
     }
   });
 
-  listen<ProgressFinished>(`progress-finished`, (e) => {
+  const finish_listener = listen<ProgressFinished>(`progress-finished`, (e) => {
     let event_id = e.payload.id;
     if (event_id == current_encode_event_id) {
       update_encode_prompt(`压制字幕`);
@@ -101,6 +102,11 @@
       }
       current_generate_event_id = null;
     }
+  });
+
+  onDestroy(() => {
+    update_listener?.then((fn) => fn());
+    finish_listener?.then((fn) => fn());
   });
 
   function update_encode_prompt(content: string) {
@@ -283,7 +289,7 @@
 
     timeMarkers = Array.from(
       { length: Math.min(Math.ceil(duration / interval) + 1, maxMarkers) },
-      (_, i) => Math.min(i * interval, duration)
+      (_, i) => Math.min(i * interval, duration),
     );
   }
 
@@ -360,7 +366,7 @@
     subtitles = subtitles.map((s, i) =>
       i === index
         ? { ...s, startTime: newStartTimeFinal, endTime: newEndTime }
-        : s
+        : s,
     );
     subtitles = subtitles.sort((a, b) => a.startTime - b.startTime);
   }
@@ -385,7 +391,7 @@
       const newTime = Math.max(0, sub.startTime + delta);
       if (newTime < sub.endTime - 0.1) {
         subtitles = subtitles.map((s, i) =>
-          i === index ? { ...s, startTime: newTime } : s
+          i === index ? { ...s, startTime: newTime } : s,
         );
         subtitles = subtitles.sort((a, b) => a.startTime - b.startTime);
       }
@@ -393,7 +399,7 @@
       const newTime = Math.min(videoElement.duration, sub.endTime + delta);
       if (newTime > sub.startTime + 0.1) {
         subtitles = subtitles.map((s, i) =>
-          i === index ? { ...s, endTime: newTime } : s
+          i === index ? { ...s, endTime: newTime } : s,
         );
         subtitles = subtitles.sort((a, b) => a.startTime - b.startTime);
       }
@@ -403,7 +409,7 @@
   function handleTimelineMouseDown(
     e: MouseEvent,
     index: number,
-    isStart: boolean
+    isStart: boolean,
   ) {
     draggingSubtitle = { index, isStart };
     document.addEventListener("mousemove", handleTimelineMouseMove);
@@ -507,7 +513,7 @@
 
   function getCurrentSubtitleIndex(): number {
     return subtitles.findIndex(
-      (sub) => currentTime >= sub.startTime && currentTime < sub.endTime
+      (sub) => currentTime >= sub.startTime && currentTime < sub.endTime,
     );
   }
 
@@ -541,7 +547,7 @@
 
   function handleVideoSelect(e: Event) {
     const selectedVideo = videos.find(
-      (v) => v.id === Number((e.target as HTMLSelectElement).value)
+      (v) => v.id === Number((e.target as HTMLSelectElement).value),
     );
     if (selectedVideo) {
       // 清空字幕列表

@@ -87,30 +87,42 @@
   let current_post_event_id = null;
   let danmu_enabled = false;
 
-  listen<ProgressUpdate>(`progress-update`, (e) => {
+  const update_listener = listen<ProgressUpdate>(`progress-update`, (e) => {
+    console.log("progress-update event", e.payload.id);
     let event_id = e.payload.id;
-    if (event_id == current_clip_event_id) {
+    if (event_id === current_clip_event_id) {
       update_clip_prompt(e.payload.content);
-    } else if (event_id == current_post_event_id) {
+    } else if (event_id === current_post_event_id) {
       update_post_prompt(e.payload.content);
     }
   });
-  listen<ProgressFinished>(`progress-finished`, (e) => {
-    let event_id = e.payload.id;
-    if (event_id == current_clip_event_id) {
-      update_clip_prompt(`生成切片`);
-      if (!e.payload.success) {
-        alert("请检查 ffmpeg 是否配置正确：" + e.payload.message);
+  const finished_listener = listen<ProgressFinished>(
+    `progress-finished`,
+    (e) => {
+      console.log("progress-finished event", e.payload.id);
+      let event_id = e.payload.id;
+      if (event_id === current_clip_event_id) {
+        console.log("clip event finished", event_id);
+        update_clip_prompt(`生成切片`);
+        if (!e.payload.success) {
+          alert("请检查 ffmpeg 是否配置正确：" + e.payload.message);
+        }
+        current_clip_event_id = null;
+      } else if (event_id === current_post_event_id) {
+        update_post_prompt(`投稿`);
+        if (!e.payload.success) {
+          alert(e.payload.message);
+        }
+        current_post_event_id = null;
       }
-      current_clip_event_id = null;
-    } else if (event_id == current_post_event_id) {
-      update_post_prompt(`投稿`);
-      if (!e.payload.success) {
-        alert(e.payload.message);
-      }
-      current_post_event_id = null;
-    }
+    },
+  );
+
+  onDestroy(() => {
+    update_listener?.then((fn) => fn());
+    finished_listener?.then((fn) => fn());
   });
+
   let archive: RecordItem = null;
 
   let start = 0.0;
@@ -185,7 +197,7 @@
       console.log(a);
       archive = a;
       set_title(`[${room_id}]${archive.title}`);
-    }
+    },
   );
 
   function update_clip_prompt(str: string) {
@@ -323,13 +335,13 @@
   let markers: Marker[] = [];
   // load markers from local storage
   markers = JSON.parse(
-    window.localStorage.getItem(`markers:${room_id}:${live_id}`) || "[]"
+    window.localStorage.getItem(`markers:${room_id}:${live_id}`) || "[]",
   );
   $: {
     // makers changed, save to local storage
     window.localStorage.setItem(
       `markers:${room_id}:${live_id}`,
-      JSON.stringify(markers)
+      JSON.stringify(markers),
     );
   }
 

@@ -802,7 +802,7 @@ impl BiliRecorder {
         if start != 0 || end != 0 {
             range = Some(Range {
                 x: start as f32,
-                y: start as f32,
+                y: end as f32,
             })
         }
 

@@ -188,6 +188,9 @@ pub async fn encode_video_subtitle(
                 reporter.update(format!("压制中：{}", p.time).as_str());
             }
             FfmpegEvent::LogEOF => break,
+            FfmpegEvent::Log(_level, content) => {
+                log::debug!("{}", content);
+            }
             _ => {}
         }
     }
@@ -272,8 +275,8 @@ pub async fn encode_video_danmu(
                     .unwrap()
                     .update(format!("压制中：{}", p.time).as_str());
             }
-            FfmpegEvent::Log(_, message) => {
-                log::info!("Danmu Encode Log: {}", message);
+            FfmpegEvent::Log(_level, content) => {
+                log::debug!("{}", content);
             }
             FfmpegEvent::LogEOF => break,
             _ => {}

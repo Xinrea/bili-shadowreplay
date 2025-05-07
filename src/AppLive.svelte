@@ -269,7 +269,7 @@
       x: Math.floor(focus_start + start),
       y: Math.floor(focus_start + end),
       danmu: danmu_enabled,
-      offset: global_offset + parseInt(live_id),
+      offset: global_offset,
     });
     console.log("video file generatd:", new_video);
     await get_video_list();

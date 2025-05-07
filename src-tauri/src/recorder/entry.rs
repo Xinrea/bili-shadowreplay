@@ -236,11 +236,9 @@ impl EntryStore {
             previous_seq = e.sequence;
 
             let entry_offset = (e.ts / 1000 - first_entry_ts) as f32;
-            if range.is_some_and(|r| r.is_in(entry_offset)) {
-                continue;
+            if range.is_none_or(|r| r.is_in(entry_offset)) {
+                m3u8_content += &e.to_segment(!discontinuous);
             }
-
-            m3u8_content += &e.to_segment(!discontinuous);
         }
 
         m3u8_content += end_content;

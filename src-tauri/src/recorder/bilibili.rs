@@ -903,8 +903,9 @@ impl super::Recorder for BiliRecorder {
         }
     }
 
-    async fn master_m3u8(&self, _live_id: &str, start: i64, end: i64) -> String {
-        let offset = self.first_segment_ts(_live_id).await / 1000;
+    async fn master_m3u8(&self, live_id: &str, start: i64, end: i64) -> String {
+        log::info!("Master manifest for {live_id} {start}-{end}");
+        let offset = self.first_segment_ts(live_id).await / 1000;
         let mut m3u8_content = "#EXTM3U\n".to_string();
         m3u8_content += "#EXT-X-VERSION:6\n";
         m3u8_content += &format!(

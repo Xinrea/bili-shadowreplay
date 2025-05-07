@@ -205,7 +205,7 @@ impl BiliClient {
                 .as_str()
                 .ok_or(BiliClientError::InvalidValue)?
                 .to_string();
-            let query_str = url.split('?').last().unwrap();
+            let query_str = url.split('?').next_back().unwrap();
             cookies = query_str.replace('&', ";");
         }
         Ok(QrStatus { code, cookies })

@@ -55,12 +55,11 @@ impl TsEntry {
         let mut content = if continuous {
             String::new()
         } else {
-            let date_str = Utc.timestamp_opt(self.ts / 1000, 0).unwrap().to_rfc3339();
-            format!(
-                "#EXT-X-DISCONTINUITY\n#EXT-X-PROGRAM-DATE-TIME:{}\n",
-                date_str
-            )
+            "#EXT-X-DISCONTINUITY\n".into()
         };
+
+        let date_str = Utc.timestamp_opt(self.ts / 1000, 0).unwrap().to_rfc3339();
+        content += &format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", date_str);
         content += &format!("#EXTINF:{:.2},\n", self.length);
         content += &format!("{}\n", self.url);
 

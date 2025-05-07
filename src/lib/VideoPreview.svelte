@@ -189,6 +189,7 @@
   async function saveSubtitles() {
     if (video?.file) {
       try {
+        console.log("update video subtitle");
         await invoke("update_video_subtitle", {
           id: video.id,
           subtitle: subtitlesToSrt(subtitles),
@@ -533,6 +534,7 @@
   }
 
   async function encodeVideoSubtitle() {
+    await saveSubtitles();
     const event_id = generateEventId();
     current_encode_event_id = event_id;
     const result = await invoke("encode_video_subtitle", {

@@ -57,20 +57,27 @@ fn default_auto_generate_config() -> AutoGenerateConfig {
 }
 
 impl Config {
-    pub fn load(config_path: &str) -> Self {
+    pub fn load(
+        config_path: &PathBuf,
+        default_cache: &PathBuf,
+        default_output: &PathBuf,
+    ) -> Result<Self, String> {
         if let Ok(content) = std::fs::read_to_string(config_path) {
-            if let Ok(config) = toml::from_str(&content) {
-                return config;
+            if let Ok(mut config) = toml::from_str::<Config>(&content) {
+                config.config_path = config_path.to_str().unwrap().into();
+                return Ok(config);
             }
         }
 
         if let Some(dir_path) = PathBuf::from(config_path).parent() {
-            let _ = std::fs::create_dir_all(dir_path);
+            if let Err(e) = std::fs::create_dir_all(dir_path) {
+                return Err(format!("Failed to create config dir: {e}"));
+            }
         }
 
         let config = Config {
-            cache: "./cache".to_string(),
-            output: "./output".to_string(),
+            cache: default_cache.to_str().unwrap().into(),
+            output: default_output.to_str().unwrap().into(),
             live_start_notify: true,
             live_end_notify: true,
             clip_notify: true,
@@ -80,15 +87,17 @@ impl Config {
             whisper_prompt: "这是一段中文 你们好".to_string(),
             clip_name_format: "[{room_id}][{live_id}][{title}][{created_at}].mp4".to_string(),
             auto_generate: default_auto_generate_config(),
-            config_path: config_path.to_string(),
+            config_path: config_path.to_str().unwrap().into(),
         };
         config.save();
-        config
+        Ok(config)
     }
 
     pub fn save(&self) {
         let content = toml::to_string(&self).unwrap();
-        std::fs::write(self.config_path.clone(), content).unwrap();
+        if let Err(e) = std::fs::write(self.config_path.clone(), content) {
+            log::error!("Failed to save config: {} {}", e, self.config_path);
+        }
     }
 
     pub fn set_cache_path(&mut self, path: &str) {

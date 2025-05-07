@@ -142,13 +142,25 @@ impl MigrationSource<'static> for MigrationList {
 
 #[cfg(feature = "headless")]
 async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Error>> {
+    use std::path::PathBuf;
+
     use progress_manager::ProgressManager;
     use progress_reporter::EventEmitter;
 
     setup_logging(Path::new("./")).await?;
-    println!("Setting up server state...");
+    log::info!("Setting up server state...");
+    let config_path = PathBuf::from(&args.config);
+    let cache_path = PathBuf::from("./cache");
+    let output_path = PathBuf::from("./output");
+    let config = match Config::load(&config_path, &cache_path, &output_path) {
+        Ok(config) => config,
+        Err(e) => {
+            log::error!("Failed to load config: {e}");
+            return Err(e.into());
+        }
+    };
     let client = Arc::new(BiliClient::new()?);
-    let config = Arc::new(RwLock::new(Config::load(&args.config)));
+    let config = Arc::new(RwLock::new(config));
     let db = Arc::new(Database::new());
     // connect to sqlite database
 
@@ -193,21 +205,30 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     use platform_dirs::AppDirs;
     use progress_reporter::EventEmitter;
 
-    println!("Setting up app state...");
+    let log_dir = app.path().app_log_dir()?;
+    setup_logging(&log_dir).await?;
+
+    log::info!("Setting up app state...");
     let app_dirs = AppDirs::new(Some("cn.vjoi.bili-shadowreplay"), false).unwrap();
     let config_path = app_dirs.config_dir.join("Conf.toml");
+    let cache_path = app_dirs.cache_dir.join("cache");
+    let output_path = app_dirs.data_dir.join("output");
+    log::info!("Loading config from {:?}", config_path);
+    let config = match Config::load(&config_path, &cache_path, &output_path) {
+        Ok(config) => config,
+        Err(e) => {
+            log::error!("Failed to load config, exiting: {e}");
+            return Err(e.into());
+        }
+    };
 
     let client = Arc::new(BiliClient::new()?);
-    let config = Arc::new(RwLock::new(Config::load(config_path.to_str().unwrap())));
+    let config = Arc::new(RwLock::new(config));
     let config_clone = config.clone();
     let dbs = app.state::<tauri_plugin_sql::DbInstances>().inner();
     let db = Arc::new(Database::new());
     let db_clone = db.clone();
     let client_clone = client.clone();
-
-    let log_dir = app.path().app_log_dir()?;
-    setup_logging(&log_dir).await?;
-
     let emitter = EventEmitter::new(app.handle().clone());
 
     let recorder_manager = Arc::new(RecorderManager::new(

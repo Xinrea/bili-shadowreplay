@@ -1,3 +1,6 @@
+use core::fmt;
+use std::fmt::Display;
+
 use async_std::{
     fs::{File, OpenOptions},
     io::{prelude::BufReadExt, BufReader, WriteExt},
@@ -19,23 +22,29 @@ pub struct TsEntry {
 }
 
 impl TsEntry {
-    pub fn from(line: &str) -> Self {
+    pub fn from(line: &str) -> Result<Self, String> {
         let parts: Vec<&str> = line.split('|').collect();
-        TsEntry {
-            url: parts[0].to_string(),
-            sequence: parts[1].parse().unwrap(),
-            length: parts[2].parse().unwrap(),
-            size: parts[3].parse().unwrap(),
-            ts: parts[4].parse().unwrap(),
-            is_header: parts[5].parse().unwrap(),
+        if parts.len() != 6 {
+            return Err("Invalid input format: expected 6 fields separated by '|'".to_string());
         }
-    }
-
-    pub fn to_string(&self) -> String {
-        format!(
-            "{}|{}|{}|{}|{}|{}\n",
-            self.url, self.sequence, self.length, self.size, self.ts, self.is_header
-        )
+        Ok(TsEntry {
+            url: parts[0].to_string(),
+            sequence: parts[1]
+                .parse()
+                .map_err(|e| format!("Failed to parse sequence: {}", e))?,
+            length: parts[2]
+                .parse()
+                .map_err(|e| format!("Failed to parse length: {}", e))?,
+            size: parts[3]
+                .parse()
+                .map_err(|e| format!("Failed to parse size: {}", e))?,
+            ts: parts[4]
+                .parse()
+                .map_err(|e| format!("Failed to parse timestamp: {}", e))?,
+            is_header: parts[5]
+                .parse()
+                .map_err(|e| format!("Failed to parse is_header: {}", e))?,
+        })
     }
 
     pub fn to_segment(&self, continuous: bool) -> String {
@@ -56,6 +65,16 @@ impl TsEntry {
         content += &format!("{}\n", self.url);
 
         content
+    }
+}
+
+impl Display for TsEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(
+            f,
+            "{}|{}|{}|{}|{}|{}",
+            self.url, self.sequence, self.length, self.size, self.ts, self.is_header
+        )
     }
 }
 
@@ -111,6 +130,13 @@ impl EntryStore {
         let mut lines = BufReader::new(file).lines();
         while let Some(Ok(line)) = lines.next().await {
             let entry = TsEntry::from(&line);
+            if let Err(e) = entry {
+                log::error!("Failed to parse entry: {} {}", e, line);
+                continue;
+            }
+
+            let entry = entry.unwrap();
+
             if entry.sequence > self.last_sequence {
                 self.last_sequence = entry.sequence;
             }
@@ -151,10 +177,6 @@ impl EntryStore {
 
     pub fn get_header(&self) -> Option<&TsEntry> {
         self.header.as_ref()
-    }
-
-    pub fn get_entries(&self) -> &Vec<TsEntry> {
-        &self.entries
     }
 
     pub fn total_duration(&self) -> f64 {
@@ -235,6 +257,6 @@ pub struct Range {
 
 impl Range {
     pub fn is_in(&self, v: f32) -> bool {
-        return v >= self.x && v <= self.y;
+        v >= self.x && v <= self.y
     }
 }

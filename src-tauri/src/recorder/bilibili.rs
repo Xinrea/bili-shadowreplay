@@ -605,7 +605,7 @@ impl BiliRecorder {
             let danmu_file_path = format!("{}{}", work_dir, "danmu.txt");
             *self.danmu_storage.write().await = DanmuStorage::new(&danmu_file_path).await;
             let full_header_url = current_stream.ts_url(&header_url);
-            let file_name = header_url.split('/').last().unwrap();
+            let file_name = header_url.split('/').next_back().unwrap();
             let mut header = TsEntry {
                 url: file_name.to_string(),
                 sequence: 0,
@@ -675,7 +675,7 @@ impl BiliRecorder {
                         continue;
                     }
                     // encode segment offset into filename
-                    let file_name = ts.uri.split('/').last().unwrap_or(&ts.uri);
+                    let file_name = ts.uri.split('/').next_back().unwrap_or(&ts.uri);
                     let mut ts_length = pl.target_duration as f64;
                     let ts = timestamp * 1000 + seg_offset;
                     // calculate entry length using offset
@@ -806,7 +806,7 @@ impl BiliRecorder {
             })
         }
 
-        return entry_store.manifest(true, range);
+        entry_store.manifest(true, range)
     }
 
     /// if fetching live/last stream m3u8, all entries are cached in memory, so it will be much faster than read_dir
@@ -904,7 +904,6 @@ impl super::Recorder for BiliRecorder {
     }
 
     async fn master_m3u8(&self, _live_id: &str, start: i64, end: i64) -> String {
-        let live_timestamp = _live_id.parse::<i64>().unwrap();
         let offset = self.first_segment_ts(_live_id).await / 1000;
         let mut m3u8_content = "#EXTM3U\n".to_string();
         m3u8_content += "#EXT-X-VERSION:6\n";

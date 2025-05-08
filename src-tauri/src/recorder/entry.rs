@@ -47,7 +47,15 @@ impl TsEntry {
         })
     }
 
-    pub fn to_segment(&self, continuous: bool) -> String {
+    pub fn date_time(&self) -> String {
+        let date_str = Utc.timestamp_opt(self.ts / 1000, 0).unwrap().to_rfc3339();
+        format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", date_str)
+    }
+
+    /// Convert entry into a segment in HLS manifest.
+    /// If `continuous` is false, DISCONTINUITY and DATE-TIME will be added into tags, so that player can get precise video time for danmaku display.
+    /// If `force_time` is true, DATE-TIME will be added into tags which ignores `continuous`.
+    pub fn to_segment(&self, continuous: bool, force_time: bool) -> String {
         if self.is_header {
             return "".into();
         }
@@ -58,8 +66,9 @@ impl TsEntry {
             "#EXT-X-DISCONTINUITY\n".into()
         };
 
-        let date_str = Utc.timestamp_opt(self.ts / 1000, 0).unwrap().to_rfc3339();
-        content += &format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", date_str);
+        if !continuous || force_time {
+            content += &self.date_time();
+        }
         content += &format!("#EXTINF:{:.2},\n", self.length);
         content += &format!("{}\n", self.url);
 
@@ -198,8 +207,10 @@ impl EntryStore {
         self.entries.first().map(|e| e.ts)
     }
 
-    /// Generate a hls manifest for selected range
-    pub fn manifest(&self, vod: bool, range: Option<Range>) -> String {
+    /// Generate a hls manifest for selected range.
+    /// `vod` indicates the manifest is for stream or video.
+    /// `force_time` adds DATE-TIME tag for each entry.
+    pub fn manifest(&self, vod: bool, force_time: bool, range: Option<Range>) -> String {
         let mut m3u8_content = "#EXTM3U\n".to_string();
         m3u8_content += "#EXT-X-VERSION:6\n";
         m3u8_content += if vod {
@@ -237,7 +248,7 @@ impl EntryStore {
 
             let entry_offset = (e.ts / 1000 - first_entry_ts) as f32;
             if range.is_none_or(|r| r.is_in(entry_offset)) {
-                m3u8_content += &e.to_segment(!discontinuous);
+                m3u8_content += &e.to_segment(!discontinuous, force_time);
             }
         }
 

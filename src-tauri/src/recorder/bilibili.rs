@@ -806,7 +806,7 @@ impl BiliRecorder {
             })
         }
 
-        entry_store.manifest(true, range)
+        entry_store.manifest(true, true, range)
     }
 
     /// if fetching live/last stream m3u8, all entries are cached in memory, so it will be much faster than read_dir
@@ -821,12 +821,11 @@ impl BiliRecorder {
             None
         };
 
-        self.entry_store
-            .read()
-            .await
-            .as_ref()
-            .unwrap()
-            .manifest(!live_status || range.is_some(), range)
+        self.entry_store.read().await.as_ref().unwrap().manifest(
+            !live_status || range.is_some(),
+            true,
+            range,
+        )
     }
 }
 

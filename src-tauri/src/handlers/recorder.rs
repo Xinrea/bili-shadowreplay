@@ -32,6 +32,7 @@ pub async fn add_recorder(
             if let Ok(account) = state.db.get_account_by_platform("bilibili").await {
                 Ok(account)
             } else {
+                log::error!("No available bilibili account found");
                 Err("没有可用账号，请先添加账号".to_string())
             }
         }
@@ -39,6 +40,7 @@ pub async fn add_recorder(
             if let Ok(account) = state.db.get_account_by_platform("douyin").await {
                 Ok(account)
             } else {
+                log::error!("No available douyin account found");
                 Err("没有可用账号，请先添加账号".to_string())
             }
         }
@@ -59,9 +61,15 @@ pub async fn add_recorder(
                     .await?;
                 Ok(room)
             }
-            Err(e) => Err(format!("添加失败: {}", e)),
+            Err(e) => {
+                log::error!("Failed to add recorder: {}", e);
+                Err(format!("添加失败: {}", e))
+            }
         },
-        Err(e) => Err(format!("添加失败: {}", e)),
+        Err(e) => {
+            log::error!("Failed to add recorder: {}", e);
+            Err(format!("添加失败: {}", e))
+        }
     }
 }
 

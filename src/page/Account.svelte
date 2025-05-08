@@ -339,15 +339,27 @@
             </div>
           {:else}
             <div class="space-y-4">
-              <Textarea
-                bind:value={cookie_str}
-                rows={4}
-                class="w-full px-3 py-2 bg-[#f5f5f7] dark:bg-[#1c1c1e] border-0 rounded-lg resize-none focus:ring-2 focus:ring-blue-500"
-                placeholder={selectedPlatform === "bilibili"
-                  ? "请粘贴 BiliBili 账号的 Cookie"
-                  : "请粘贴抖音账号的 Cookie"}
-              />
-              <div class="flex justify-end">
+              <p class="text-sm text-gray-600 dark:text-gray-400">
+                <Textarea
+                  bind:value={cookie_str}
+                  rows={4}
+                  class="w-full px-3 py-2 bg-[#f5f5f7] dark:bg-[#1c1c1e] border-0 rounded-lg resize-none focus:ring-2 focus:ring-blue-500"
+                  placeholder={selectedPlatform === "bilibili"
+                    ? "请粘贴 BiliBili 账号的 Cookie"
+                    : "请粘贴抖音账号的 Cookie"}
+                />
+              </p>
+              <div class="flex justify-end items-center space-x-2">
+                {#if selectedPlatform === "douyin"}
+                  <a
+                    href="https://bsr.xinrea.cn/getting-started/configuration.html"
+                    class="text-blue-500 hover:underline text-sm"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Cookie 获取教程</a
+                  >
+                {/if}
                 <button
                   class="px-4 py-2 bg-[#0A84FF] hover:bg-[#0A84FF]/90 text-white text-sm font-medium rounded-lg transition-colors"
                   on:click={() => {

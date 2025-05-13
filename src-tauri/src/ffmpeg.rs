@@ -50,6 +50,9 @@ pub async fn clip_from_m3u8(
                     .update(format!("编码中：{}", p.time).as_str())
             }
             FfmpegEvent::LogEOF => break,
+            FfmpegEvent::Log(_level, content) => {
+                log::debug!("{}", content);
+            }
             FfmpegEvent::Error(e) => {
                 log::error!("Clip error: {}", e);
                 clip_error = Some(e.to_string());
@@ -103,6 +106,9 @@ pub async fn extract_audio(file: &Path) -> Result<(), String> {
                 extract_error = Some(e.to_string());
             }
             FfmpegEvent::LogEOF => break,
+            FfmpegEvent::Log(_level, content) => {
+                log::debug!("{}", content);
+            }
             _ => {}
         }
     }

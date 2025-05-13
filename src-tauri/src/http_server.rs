@@ -1180,7 +1180,7 @@ pub async fn start_api_server(state: State) {
         .with_state(state);
 
     let addr = "0.0.0.0:3000";
-    println!("API server listening on http://{}", addr);
+    log::info!("API server listening on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();

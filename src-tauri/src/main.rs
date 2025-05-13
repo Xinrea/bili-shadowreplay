@@ -401,6 +401,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
 #[cfg(feature = "gui")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = fix_path_env::fix();
+
     let builder = tauri::Builder::default();
     let builder = setup_plugins(builder);
     let builder = setup_event_handlers(builder);
@@ -411,6 +412,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             tauri::async_runtime::block_on(async {
                 let state = setup_app_state(app).await?;
                 let _ = tray::create_tray(app.handle());
+
+                // check ffmpeg status
+                match ffmpeg::check_ffmpeg().await {
+                    Err(e) => log::error!("Failed to check ffmpeg version: {e}"),
+                    Ok(v) => log::info!("Checked ffmpeg version: {v}"),
+                }
 
                 app.manage(state);
                 Ok(())
@@ -442,6 +449,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = setup_server_state(args)
         .await
         .expect("Failed to setup server state");
+
+    // check ffmpeg status
+    match ffmpeg::check_ffmpeg().await {
+        Err(e) => log::error!("Failed to check ffmpeg version: {e}"),
+        Ok(v) => log::info!("Checked ffmpeg version: {v}"),
+    }
 
     http_server::start_api_server(state).await;
     Ok(())

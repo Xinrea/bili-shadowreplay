@@ -21,7 +21,7 @@ pub async fn clip_from_m3u8(
         std::fs::create_dir_all(output_folder).unwrap();
     }
 
-    let child = tokio::process::Command::new("ffmpeg")
+    let child = tokio::process::Command::new(ffmpeg_path())
         .args(["-i", &format!("{}", m3u8_index.display())])
         .args(["-c", "copy"])
         .args(["-y", output_path.to_str().unwrap()])
@@ -81,7 +81,7 @@ pub async fn extract_audio(file: &Path) -> Result<(), String> {
     let output_path = file.with_extension("wav");
     let mut extract_error = None;
 
-    let child = tokio::process::Command::new("ffmpeg")
+    let child = tokio::process::Command::new(ffmpeg_path())
         .args(["-i", file.to_str().unwrap()])
         .args(["-ar", "16000"])
         .args([output_path.to_str().unwrap()])
@@ -163,7 +163,7 @@ pub async fn encode_video_subtitle(
     let vf = format!("subtitles={}:force_style='{}'", subtitle, srt_style);
     log::info!("vf: {}", vf);
 
-    let child = tokio::process::Command::new("ffmpeg")
+    let child = tokio::process::Command::new(ffmpeg_path())
         .args(["-i", file.to_str().unwrap()])
         .args(["-vf", vf.as_str()])
         .args(["-c:v", "libx264"])
@@ -246,7 +246,7 @@ pub async fn encode_video_danmu(
         format!("'{}'", subtitle.display())
     };
 
-    let child = tokio::process::Command::new("ffmpeg")
+    let child = tokio::process::Command::new(ffmpeg_path())
         .args(["-i", file.to_str().unwrap()])
         .args(["-vf", &format!("ass={}", subtitle)])
         .args(["-c:v", "libx264"])
@@ -301,4 +301,52 @@ pub async fn encode_video_danmu(
         log::info!("Encode video danmu task end: {}", output_path.display());
         Ok(output_path)
     }
+}
+
+/// Trying to run ffmpeg for version
+pub async fn check_ffmpeg() -> Result<String, String> {
+    let child = tokio::process::Command::new(ffmpeg_path())
+        .arg("-version")
+        .stdout(Stdio::piped())
+        .spawn();
+    if let Err(e) = child {
+        log::error!("Faild to spwan ffmpeg process: {e}");
+        return Err(e.to_string());
+    }
+
+    let mut child = child.unwrap();
+
+    let stdout = child.stdout.take();
+    if stdout.is_none() {
+        log::error!("Failed to take ffmpeg output");
+        return Err("Failed to take ffmpeg output".into());
+    }
+
+    let stdout = stdout.unwrap();
+    let reader = BufReader::new(stdout);
+    let mut parser = FfmpegLogParser::new(reader);
+
+    let mut version = None;
+    while let Ok(event) = parser.parse_next_event().await {
+        match event {
+            FfmpegEvent::ParsedVersion(v) => version = Some(v.version),
+            FfmpegEvent::LogEOF => break,
+            _ => {}
+        }
+    }
+
+    if version.is_none() {
+        Err("Failed to parse version from output".into())
+    } else {
+        Ok(version.unwrap())
+    }
+}
+
+fn ffmpeg_path() -> PathBuf {
+    let mut path = Path::new("ffmpeg").to_path_buf();
+    if cfg!(windows) {
+        path.set_extension("exe");
+    }
+
+    return path;
 }

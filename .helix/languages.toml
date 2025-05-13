@@ -1,6 +1,7 @@
 [[language]]
 name = "rust"
 auto-format = true
+rulers = []
 
 [[language]]
 name = "svelte"

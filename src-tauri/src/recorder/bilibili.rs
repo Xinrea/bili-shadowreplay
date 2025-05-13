@@ -14,8 +14,8 @@ use super::danmu::{DanmuEntry, DanmuStorage};
 use super::entry::TsEntry;
 use chrono::Utc;
 use client::{BiliClient, BiliStream, RoomInfo, StreamType, UserInfo};
+use danmu_stream::provider;
 use errors::BiliClientError;
-use felgens::{ws_socket_object, FelgensError, WsStreamMessageType};
 use m3u8_rs::{Playlist, QuotedOrUnquoted, VariantStream};
 use rand::Rng;
 use regex::Regex;
@@ -32,7 +32,7 @@ use crate::database::{Database, DatabaseError};
 
 use async_trait::async_trait;
 
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "gui")]
 use {tauri::AppHandle, tauri_plugin_notification::NotificationExt};
 
 /// A recorder for BiliBili live streams
@@ -42,7 +42,7 @@ use {tauri::AppHandle, tauri_plugin_notification::NotificationExt};
 // TODO implement StreamType::TS
 #[derive(Clone)]
 pub struct BiliRecorder {
-    #[cfg(not(feature = "headless"))]
+    #[cfg(feature = "gui")]
     app_handle: AppHandle,
     emitter: EventEmitter,
     client: Arc<RwLock<BiliClient>>,
@@ -79,7 +79,7 @@ impl From<BiliClientError> for super::errors::RecorderError {
 }
 
 pub struct BiliRecorderOptions {
-    #[cfg(not(feature = "headless"))]
+    #[cfg(feature = "gui")]
     pub app_handle: AppHandle,
     pub emitter: EventEmitter,
     pub db: Arc<Database>,
@@ -111,7 +111,7 @@ impl BiliRecorder {
         }
 
         let recorder = Self {
-            #[cfg(not(feature = "headless"))]
+            #[cfg(feature = "gui")]
             app_handle: options.app_handle,
             emitter: options.emitter,
             client: Arc::new(RwLock::new(client)),
@@ -177,7 +177,7 @@ impl BiliRecorder {
 
                     if live_status {
                         if self.config.read().await.live_start_notify {
-                            #[cfg(not(feature = "headless"))]
+                            #[cfg(feature = "gui")]
                             self.app_handle
                                 .notification()
                                 .builder()
@@ -202,7 +202,7 @@ impl BiliRecorder {
                             *self.cover.write().await = Some(cover_base64);
                         }
                     } else if self.config.read().await.live_end_notify {
-                        #[cfg(not(feature = "headless"))]
+                        #[cfg(feature = "gui")]
                         self.app_handle
                             .notification()
                             .builder()
@@ -375,14 +375,16 @@ impl BiliRecorder {
     async fn danmu(&self) {
         let cookies = self.account.cookies.clone();
         let uid: u64 = self.account.uid;
+        let room_id = self.room_id.to_string();
+        let identifier = format!("{uid}:{cookies}");
         while !*self.quit.lock().await {
             let (tx, rx) = mpsc::unbounded_channel();
-            let ws = ws_socket_object(tx, uid, self.room_id, cookies.as_str());
-            if let Err(e) = tokio::select! {v = ws => v, v = self.recv(self.room_id,rx) => v} {
-                log::error!("danmu error: {}", e);
+            let ws = provider::new(tx, provider::ProviderType::BiliBili, &identifier, &room_id);
+            if let Err(e) = tokio::select! {v = ws => v, v = self.recv(rx) => v} {
+                log::error!("Danmu provider error: {}", e);
             }
             // reconnect after 3s
-            log::warn!("danmu will reconnect after 3s");
+            log::warn!("Danmu provider will reconnect after 3s");
             tokio::time::sleep(Duration::from_secs(3)).await;
         }
 
@@ -391,23 +393,22 @@ impl BiliRecorder {
 
     async fn recv(
         &self,
-        room: u64,
-        mut rx: UnboundedReceiver<WsStreamMessageType>,
-    ) -> Result<(), FelgensError> {
+        mut rx: UnboundedReceiver<danmu_stream::DanmuMessageType>,
+    ) -> Result<(), danmu_stream::DanmmuStreamError> {
         while let Some(msg) = rx.recv().await {
             if *self.quit.lock().await {
                 break;
             }
-            if let WsStreamMessageType::DanmuMsg(msg) = msg {
+            if let danmu_stream::DanmuMessageType::DanmuMessage(msg) = msg {
                 self.emitter.emit(&Event::DanmuReceived {
-                    room,
-                    ts: msg.timestamp as i64,
-                    content: msg.msg.clone(),
+                    room: self.room_id,
+                    ts: msg.timestamp,
+                    content: msg.message.clone(),
                 });
                 if *self.live_status.read().await {
                     // save danmu
                     if let Some(storage) = self.danmu_storage.write().await.as_ref() {
-                        storage.add_line(msg.timestamp as i64, &msg.msg).await;
+                        storage.add_line(msg.timestamp, &msg.message).await;
                     }
                 }
             }

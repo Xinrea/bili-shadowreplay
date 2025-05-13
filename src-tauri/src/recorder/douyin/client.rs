@@ -1,9 +1,9 @@
+use crate::database::account::AccountRow;
 use base64::Engine;
+use m3u8_rs::{MediaPlaylist, Playlist};
 use reqwest::{Client, Error as ReqwestError};
-use m3u8_rs::{Playlist, MediaPlaylist};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
-use crate::database::account::AccountRow;
 
 use super::response::DouyinRoomInfoResponse;
 use std::fmt;
@@ -47,20 +47,25 @@ pub struct DouyinClient {
 
 impl DouyinClient {
     pub fn new(account: &AccountRow) -> Self {
-        let client = Client::builder()
-            .user_agent(USER_AGENT)
-            .build()
-            .unwrap();
-        Self { client, cookies: account.cookies.clone() }
+        let client = Client::builder().user_agent(USER_AGENT).build().unwrap();
+        Self {
+            client,
+            cookies: account.cookies.clone(),
+        }
     }
 
-    pub async fn get_room_info(&self, room_id: u64) -> Result<DouyinRoomInfoResponse, DouyinClientError> {
+    pub async fn get_room_info(
+        &self,
+        room_id: u64,
+    ) -> Result<DouyinRoomInfoResponse, DouyinClientError> {
         let url = format!(
             "https://live.douyin.com/webcast/room/web/enter/?aid=6383&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&enter_from=web_live&cookie_enabled=true&screen_width=1920&screen_height=1080&browser_language=zh-CN&browser_platform=MacIntel&browser_name=Chrome&browser_version=122.0.0.0&web_rid={}",
             room_id
         );
 
-        let resp = self.client.get(&url)
+        let resp = self
+            .client
+            .get(&url)
             .header("Referer", "https://live.douyin.com/")
             .header("User-Agent", USER_AGENT)
             .header("Cookie", self.cookies.clone())
@@ -77,16 +82,17 @@ impl DouyinClient {
         let response = self.client.get(url).send().await?;
         let bytes = response.bytes().await?;
         let base64 = base64::engine::general_purpose::STANDARD.encode(bytes);
-        let mime_type = mime_guess::from_path(url).first_or_octet_stream().to_string();
+        let mime_type = mime_guess::from_path(url)
+            .first_or_octet_stream()
+            .to_string();
         Ok(format!("data:{};base64,{}", mime_type, base64))
     }
 
-    pub async fn get_m3u8_content(&self, url: &str) -> Result<(MediaPlaylist, String), DouyinClientError> {
-        let content = self.client.get(url)
-            .send()
-            .await?
-            .text()
-            .await?;
+    pub async fn get_m3u8_content(
+        &self,
+        url: &str,
+    ) -> Result<(MediaPlaylist, String), DouyinClientError> {
+        let content = self.client.get(url).send().await?.text().await?;
         // m3u8 content: #EXTM3U
         // #EXT-X-VERSION:3
         // #EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=2560000
@@ -97,27 +103,27 @@ impl DouyinClient {
         }
 
         match m3u8_rs::parse_playlist_res(content.as_bytes()) {
-            Ok(Playlist::MasterPlaylist(_)) => {
-                Err(DouyinClientError::Playlist("Unexpected master playlist".to_string()))
-            }
+            Ok(Playlist::MasterPlaylist(_)) => Err(DouyinClientError::Playlist(
+                "Unexpected master playlist".to_string(),
+            )),
             Ok(Playlist::MediaPlaylist(pl)) => Ok((pl, url.to_string())),
             Err(e) => Err(DouyinClientError::Playlist(e.to_string())),
         }
     }
 
     pub async fn download_ts(&self, url: &str, path: &str) -> Result<u64, DouyinClientError> {
-        let response = self.client.get(url)
-            .send()
-            .await?;
+        let response = self.client.get(url).send().await?;
 
         if response.status() != reqwest::StatusCode::OK {
-            return Err(DouyinClientError::Network(response.error_for_status().unwrap_err()));
+            return Err(DouyinClientError::Network(
+                response.error_for_status().unwrap_err(),
+            ));
         }
-        
+
         let content = response.bytes().await?;
         let mut file = File::create(path).await?;
         file.write_all(&content).await?;
-        
+
         Ok(content.len() as u64)
     }
 }

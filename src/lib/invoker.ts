@@ -55,7 +55,7 @@ async function invoke<T>(
     return resp.data as T;
   } catch (error) {
     // 将 HTTP 错误转换为 Tauri 风格的错误
-    throw new Error(`Failed to invoke ${command}: ${error.message}`);
+    throw new Error(`Failed to invoke ${command}:\n${error}`);
   }
 }
 

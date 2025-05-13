@@ -1,0 +1,9 @@
+[package]
+name = "danmu_stream"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-trait = "0.1.88"
+custom_error = "1.9.2"
+tokio = "1.45.0"

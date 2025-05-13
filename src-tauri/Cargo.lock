@@ -541,6 +541,7 @@ dependencies = [
  "chrono",
  "clap",
  "custom_error",
+ "danmu_stream",
  "dashmap",
  "felgens",
  "fix-path-env",
@@ -1192,6 +1193,15 @@ name = "custom_error"
 version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4f8a51dd197fa6ba5b4dc98a990a43cc13693c23eb0089ebb0fcc1f04152bca6"
+
+[[package]]
+name = "danmu_stream"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "custom_error",
+ "tokio",
+]
 
 [[package]]
 name = "darling"
@@ -6236,9 +6246,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.44.2"
+version = "1.45.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6b88822cbe49de4185e3a4cbf8321dd487cf5fe0c5c65695fef6346371e9c48"
+checksum = "2513ca694ef9ede0fb23fe71a4ee4107cb102b9dc1930f6d0fd77aae068ae165"
 dependencies = [
  "backtrace",
  "bytes",

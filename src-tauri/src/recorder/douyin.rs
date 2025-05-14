@@ -425,7 +425,7 @@ impl DouyinRecorder {
                 .await
                 .as_ref()
                 .unwrap()
-                .manifest(false, false, range)
+                .manifest(range.is_some(), false, range)
         } else {
             let work_dir = self.get_work_dir(live_id).await;
             EntryStore::new(&work_dir)

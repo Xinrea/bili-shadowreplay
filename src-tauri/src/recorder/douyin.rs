@@ -374,6 +374,8 @@ impl DouyinRecorder {
                 }
                 Err(e) => {
                     log::error!("Failed to download segment: {}", e);
+                    *self.stream_url.write().await = None;
+                    return Err(e.into());
                 }
             }
         }

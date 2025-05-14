@@ -51,7 +51,7 @@ pub async fn clip_from_m3u8(
             }
             FfmpegEvent::LogEOF => break,
             FfmpegEvent::Log(_level, content) => {
-                log::debug!("{}", content);
+                log::info!("{}", content);
             }
             FfmpegEvent::Error(e) => {
                 log::error!("Clip error: {}", e);
@@ -107,7 +107,7 @@ pub async fn extract_audio(file: &Path) -> Result<(), String> {
             }
             FfmpegEvent::LogEOF => break,
             FfmpegEvent::Log(_level, content) => {
-                log::debug!("{}", content);
+                log::info!("{}", content);
             }
             _ => {}
         }
@@ -195,7 +195,7 @@ pub async fn encode_video_subtitle(
             }
             FfmpegEvent::LogEOF => break,
             FfmpegEvent::Log(_level, content) => {
-                log::debug!("{}", content);
+                log::info!("{}", content);
             }
             _ => {}
         }
@@ -282,7 +282,7 @@ pub async fn encode_video_danmu(
                     .update(format!("压制中：{}", p.time).as_str());
             }
             FfmpegEvent::Log(_level, content) => {
-                log::debug!("{}", content);
+                log::info!("{}", content);
             }
             FfmpegEvent::LogEOF => break,
             _ => {}

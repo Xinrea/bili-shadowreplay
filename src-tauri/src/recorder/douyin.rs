@@ -363,7 +363,7 @@ impl DouyinRecorder {
                         sequence,
                         length: segment.duration as f64,
                         size,
-                        ts: Utc::now().timestamp(),
+                        ts: Utc::now().timestamp_millis(),
                         is_header: false,
                     };
 

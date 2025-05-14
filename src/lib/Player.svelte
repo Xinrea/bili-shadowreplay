@@ -67,6 +67,8 @@
       timedOut: false,
     };
 
+    let manifestPrintCnt = 0;
+
     const pendingRequest = new Promise((resolve, reject) => {
       invoke("fetch_hls", { uri: uri })
         .then((data: number[]) => {
@@ -81,19 +83,28 @@
 
           const is_m3u8 = uri.split("?")[0].endsWith(".m3u8");
 
-          if (is_m3u8 && global_offset == 0) {
+          if (is_m3u8) {
             let m3u8Content = new TextDecoder().decode(uint8Array);
-            const offsetRegex = /DANMU=(\d+)/;
-            const match = m3u8Content.match(offsetRegex);
+            if (global_offset == 0) {
+              const offsetRegex = /DANMU=(\d+)/;
+              const match = m3u8Content.match(offsetRegex);
 
-            if (match && match[1]) {
-              global_offset = parseInt(match[1], 10);
-              console.log("DANMU OFFSET found", global_offset);
-            } else {
-              console.warn("No DANMU OFFSET found");
+              if (match && match[1]) {
+                global_offset = parseInt(match[1], 10);
+                console.log("DANMU OFFSET found", global_offset);
+              } else {
+                console.warn("No DANMU OFFSET found");
+              }
+            }
+
+            // Print manifest for debugging every 30 times.
+            if (manifestPrintCnt == 0) {
               console.log(m3u8Content);
+            } else {
+              manifestPrintCnt = (manifestPrintCnt + 1) % 30;
             }
           }
+
           // Set content-type based on URI extension
           let content_type = is_m3u8
             ? "application/vnd.apple.mpegurl"

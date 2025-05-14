@@ -230,6 +230,12 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     let db_clone = db.clone();
     let client_clone = client.clone();
     let emitter = EventEmitter::new(app.handle().clone());
+    let binding = dbs.0.read().await;
+    let dbpool = binding.get("sqlite:data_v2.db").unwrap();
+    let sqlite_pool = match dbpool {
+        tauri_plugin_sql::DbPool::Sqlite(pool) => Some(pool),
+    };
+    db_clone.set(sqlite_pool.unwrap().clone()).await;
 
     let recorder_manager = Arc::new(RecorderManager::new(
         app.app_handle().clone(),
@@ -237,12 +243,6 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         db.clone(),
         config.clone(),
     ));
-    let binding = dbs.0.read().await;
-    let dbpool = binding.get("sqlite:data_v2.db").unwrap();
-    let sqlite_pool = match dbpool {
-        tauri_plugin_sql::DbPool::Sqlite(pool) => Some(pool),
-    };
-    db_clone.set(sqlite_pool.unwrap().clone()).await;
 
     let accounts = db_clone.get_accounts().await?;
     if accounts.is_empty() {

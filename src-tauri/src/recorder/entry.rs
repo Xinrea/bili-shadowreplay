@@ -67,22 +67,13 @@ impl TsEntry {
     }
 
     /// Convert entry into a segment in HLS manifest.
-    /// If `continuous` is false, DISCONTINUITY and DATE-TIME will be added into tags, so that player can get precise video time for danmaku display.
-    /// If `force_time` is true, DATE-TIME will be added into tags which ignores `continuous`.
-    pub fn to_segment(&self, continuous: bool, force_time: bool) -> String {
+    pub fn to_segment(&self) -> String {
         if self.is_header {
             return "".into();
         }
 
-        let mut content = if continuous {
-            String::new()
-        } else {
-            "#EXT-X-DISCONTINUITY\n".into()
-        };
+        let mut content = String::new();
 
-        if !continuous || force_time {
-            content += &self.date_time();
-        }
         content += &format!("#EXTINF:{:.2},\n", self.length);
         content += &format!("{}\n", self.url);
 
@@ -249,21 +240,39 @@ impl EntryStore {
             m3u8_content += &format!("#EXT-X-MAP:URI=\"{}\"\n", header.url);
         }
 
+        // Collect entries in range
         let first_entry = self.entries.first().unwrap();
         let first_entry_ts = first_entry.ts_seconds();
-        let mut previous_seq = first_entry.sequence;
+        let mut entries_in_range = vec![];
         for e in &self.entries {
             // ignore header, cause it's already in EXT-X-MAP
             if e.is_header {
                 continue;
             }
-            let discontinuous = e.sequence < previous_seq || e.sequence - previous_seq > 1;
-            previous_seq = e.sequence;
-
             let entry_offset = (e.ts_seconds() - first_entry_ts) as f32;
             if range.is_none_or(|r| r.is_in(entry_offset)) {
-                m3u8_content += &e.to_segment(!discontinuous, force_time);
+                entries_in_range.push(e);
             }
+        }
+
+        if entries_in_range.is_empty() {
+            m3u8_content += end_content;
+            return m3u8_content;
+        }
+
+        let mut previous_seq = entries_in_range.first().unwrap().sequence;
+        for (i, e) in entries_in_range.iter().enumerate() {
+            let discontinuous = e.sequence < previous_seq || e.sequence - previous_seq > 1;
+            if discontinuous {
+                m3u8_content += "#EXT-X-DISCONTINUITY\n".into();
+            }
+            // Add date time under these situations.
+            if i == 0 || i == entries_in_range.len() - 1 || force_time || discontinuous {
+                m3u8_content += &e.date_time();
+            }
+            m3u8_content += &e.to_segment();
+
+            previous_seq = e.sequence;
         }
 
         m3u8_content += end_content;

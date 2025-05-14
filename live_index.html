@@ -1,53 +1,65 @@
 <!DOCTYPE html>
 <html lang="zh-cn" class="dark">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="stylesheet" href="shaka-player/controls.min.css" />
-    <link rel="stylesheet" href="shaka-player/youtube-theme.css" />
-    <script src="shaka-player/shaka-player.ui.js"></script>
-  </head>
-  <body>
-    <div id="app"></div>
-    <script type="module" src="src/live_main.ts"></script>
-    <style>
-      input[type="range"]::-webkit-slider-thumb {
-        width: 12px; /* 设置滑块按钮宽度 */
-        height: 12px; /* 设置滑块按钮高度 */
-        border-radius: 50%; /* 设置为圆形 */
-      }
-      html {
-        scrollbar-face-color: #646464;
-        scrollbar-base-color: #646464;
-        scrollbar-3dlight-color: #646464;
-        scrollbar-highlight-color: #646464;
-        scrollbar-track-color: #000;
-        scrollbar-arrow-color: #000;
-        scrollbar-shadow-color: #646464;
-      }
 
-      ::-webkit-scrollbar {
-        width: 8px;
-        height: 3px;
-      }
-      ::-webkit-scrollbar-button {
-        background-color: #666;
-      }
-      ::-webkit-scrollbar-track {
-        background-color: #646464;
-      }
-      ::-webkit-scrollbar-track-piece {
-        background-color: #000;
-      }
-      ::-webkit-scrollbar-thumb {
-        height: 50px;
-        background-color: #666;
-        border-radius: 3px;
-      }
-      ::-webkit-scrollbar-corner {
-        background-color: #646464;
-      }
-    </style>
-  </body>
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="shaka-player/controls.min.css" />
+  <link rel="stylesheet" href="shaka-player/youtube-theme.css" />
+  <script src="shaka-player/shaka-player.ui.debug.js"></script>
+</head>
+
+<body>
+  <div id="app"></div>
+  <script type="module" src="src/live_main.ts"></script>
+  <style>
+    input[type="range"]::-webkit-slider-thumb {
+      width: 12px;
+      /* 设置滑块按钮宽度 */
+      height: 12px;
+      /* 设置滑块按钮高度 */
+      border-radius: 50%;
+      /* 设置为圆形 */
+    }
+
+    html {
+      scrollbar-face-color: #646464;
+      scrollbar-base-color: #646464;
+      scrollbar-3dlight-color: #646464;
+      scrollbar-highlight-color: #646464;
+      scrollbar-track-color: #000;
+      scrollbar-arrow-color: #000;
+      scrollbar-shadow-color: #646464;
+    }
+
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 3px;
+    }
+
+    ::-webkit-scrollbar-button {
+      background-color: #666;
+    }
+
+    ::-webkit-scrollbar-track {
+      background-color: #646464;
+    }
+
+    ::-webkit-scrollbar-track-piece {
+      background-color: #000;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      height: 50px;
+      background-color: #666;
+      border-radius: 3px;
+    }
+
+    ::-webkit-scrollbar-corner {
+      background-color: #646464;
+    }
+  </style>
+</body>
+
 </html>

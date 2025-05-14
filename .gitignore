@@ -33,3 +33,6 @@ src-tauri/tests/audio/*.srt
 
 docs/.vitepress/cache
 docs/.vitepress/dist
+
+*.debug.js
+*.debug.map

@@ -12,7 +12,6 @@ use crate::{config::Config, database::account::AccountRow};
 use async_trait::async_trait;
 use chrono::Utc;
 use client::DouyinClientError;
-use dashmap::DashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, RwLock};
@@ -55,7 +54,6 @@ pub struct DouyinRecorder {
     current_record: Arc<RwLock<bool>>,
     running: Arc<RwLock<bool>>,
     last_update: Arc<RwLock<i64>>,
-    m3u8_cache: DashMap<String, String>,
     config: Arc<RwLock<Config>>,
     live_end_channel: broadcast::Sender<RecorderEvent>,
 }
@@ -93,7 +91,6 @@ impl DouyinRecorder {
             auto_start: Arc::new(RwLock::new(auto_start)),
             current_record: Arc::new(RwLock::new(false)),
             last_update: Arc::new(RwLock::new(Utc::now().timestamp())),
-            m3u8_cache: DashMap::new(),
             config,
             live_end_channel: channel,
         })
@@ -409,6 +406,7 @@ impl DouyinRecorder {
     }
 
     async fn generate_m3u8(&self, live_id: &str, start: i64, end: i64) -> String {
+        log::debug!("Generate m3u8 for {live_id}:{start}:{end}");
         let range = if start != 0 || end != 0 {
             Some(Range {
                 x: start as f32,
@@ -484,18 +482,7 @@ impl Recorder for DouyinRecorder {
     }
 
     async fn m3u8_content(&self, live_id: &str, start: i64, end: i64) -> String {
-        let cache_key = format!("{}:{}:{}", live_id, start, end);
-        let range_required = start != 0 || end != 0;
-        if !range_required {
-            return self.generate_m3u8(live_id, start, end).await;
-        }
-
-        if let Some(cached) = self.m3u8_cache.get(&cache_key) {
-            return cached.clone();
-        }
-        let m3u8_content = self.generate_m3u8(live_id, start, end).await;
-        self.m3u8_cache.insert(cache_key, m3u8_content.clone());
-        m3u8_content
+        self.generate_m3u8(live_id, start, end).await
     }
 
     async fn master_m3u8(&self, _live_id: &str, start: i64, end: i64) -> String {

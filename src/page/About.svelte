@@ -20,6 +20,7 @@
         version: release.tag_name,
         date: new Date(release.published_at).toLocaleDateString(),
         description: release.body,
+        url: release.html_url,
       }));
     });
 
@@ -28,7 +29,7 @@
     return notes
       .split("\n")
       .filter(
-        (line) => line.trim().startsWith("*") || line.trim().startsWith("-")
+        (line) => line.trim().startsWith("*") || line.trim().startsWith("-"),
       )
       .map((line) => {
         line = line.trim().replace(/^[*-]\s*/, "");
@@ -134,10 +135,14 @@
         class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700"
       >
         {#each releases as release}
+          <!-- svelte-ignore a11y-click-events-have-key-events -->
           <div
-            class="p-4 {release !== releases[releases.length - 1]
+            class="p-4 cursor-pointer {release !== releases[releases.length - 1]
               ? 'border-b border-gray-200 dark:border-gray-700'
               : ''}"
+            on:click={() => {
+              open(release.url);
+            }}
           >
             <div class="flex items-center justify-between">
               <h3 class="text-sm font-medium text-gray-900 dark:text-white">

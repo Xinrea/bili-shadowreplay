@@ -21,15 +21,17 @@ mod subtitle_generator;
 mod tray;
 
 use archive_migration::try_rebuild_archives;
+use async_std::fs;
+use chrono::Utc;
 use config::Config;
 use database::Database;
 use recorder::bilibili::client::BiliClient;
 use recorder_manager::RecorderManager;
 use simplelog::ConfigBuilder;
 use state::State;
-use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
+use std::{fs::File, os::unix::fs::MetadataExt};
 use tokio::sync::RwLock;
 
 #[cfg(feature = "gui")]
@@ -53,16 +55,32 @@ use {
     },
 };
 
+/// open a log file, if file size exceeds 1MB, backup log file and create a new one.
+async fn open_log_file(log_dir: &Path) -> Result<File, Box<dyn std::error::Error>> {
+    let log_filename = log_dir.join("bsr.log");
+
+    if let Ok(meta) = fs::metadata(&log_filename).await {
+        if meta.size() > 1024 * 1024 {
+            // move original file to backup
+            let date_str = Utc::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+            let backup_filename = log_dir.join(&format!("bsr-{date_str}.log"));
+            let _ = fs::rename(&log_filename, backup_filename).await?;
+        }
+    }
+
+    Ok(File::options()
+        .create(true)
+        .append(true)
+        .open(&log_filename)?)
+}
+
 async fn setup_logging(log_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     // mkdir if not exists
     if !log_dir.exists() {
         std::fs::create_dir_all(log_dir)?;
     }
 
-    let log_file = log_dir.join("bsr.log");
-
-    // open file with append mode
-    let file = File::options().create(true).append(true).open(&log_file)?;
+    let file = open_log_file(log_dir).await?;
 
     let config = ConfigBuilder::new()
         .set_target_level(simplelog::LevelFilter::Debug)

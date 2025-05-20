@@ -5,29 +5,33 @@
   import Setting from "./page/Setting.svelte";
   import Account from "./page/Account.svelte";
   import About from "./page/About.svelte";
-  let active = "#总览";
+  let active = "总览";
 </script>
 
 <main>
   <div class="wrap">
     <div class="sidebar">
-      <BSidebar bind:activeUrl={active} />
+      <BSidebar
+        bind:activeUrl={active}
+        on:activeChange={(e) => {
+          active = e.detail;
+        }}
+      />
     </div>
     <div class="content bg-white dark:bg-[#2c2c2e]">
-      <!-- switch component by active -->
-      <div class="page" class:visible={active == "#总览"}>
+      <div class="page" class:visible={active == "总览"}>
         <Summary />
       </div>
-      <div class="page" class:visible={active == "#直播间"}>
+      <div class="page" class:visible={active == "直播间"}>
         <Room />
       </div>
-      <div class="page" class:visible={active == "#账号"}>
+      <div class="page" class:visible={active == "账号"}>
         <Account />
       </div>
-      <div class="page" class:visible={active == "#设置"}>
+      <div class="page" class:visible={active == "设置"}>
         <Setting />
       </div>
-      <div class="page" class:visible={active == "#关于"}>
+      <div class="page" class:visible={active == "关于"}>
         <About />
       </div>
     </div>

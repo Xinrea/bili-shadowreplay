@@ -54,11 +54,11 @@ pub struct BiliRecorder {
     user_info: Arc<RwLock<UserInfo>>,
     live_status: Arc<RwLock<bool>>,
     live_id: Arc<RwLock<String>>,
+    manual_stop_id: Arc<RwLock<Option<String>>>,
     cover: Arc<RwLock<Option<String>>>,
     entry_store: Arc<RwLock<Option<EntryStore>>>,
     is_recording: Arc<RwLock<bool>>,
     auto_start: Arc<RwLock<bool>>,
-    current_record: Arc<RwLock<bool>>,
     force_update: Arc<AtomicBool>,
     last_update: Arc<RwLock<i64>>,
     quit: Arc<Mutex<bool>>,
@@ -126,8 +126,8 @@ impl BiliRecorder {
             entry_store: Arc::new(RwLock::new(None)),
             is_recording: Arc::new(RwLock::new(false)),
             auto_start: Arc::new(RwLock::new(options.auto_start)),
-            current_record: Arc::new(RwLock::new(false)),
             live_id: Arc::new(RwLock::new(String::new())),
+            manual_stop_id: Arc::new(RwLock::new(None)),
             cover: Arc::new(RwLock::new(cover)),
             last_update: Arc::new(RwLock::new(Utc::now().timestamp())),
             force_update: Arc::new(AtomicBool::new(false)),
@@ -153,7 +153,13 @@ impl BiliRecorder {
             return false;
         }
 
-        *self.current_record.read().await
+        let live_id = self.live_id.read().await.clone();
+
+        self.manual_stop_id
+            .read()
+            .await
+            .as_ref()
+            .is_none_or(|v| v != &live_id)
     }
 
     async fn check_status(&self) -> bool {
@@ -172,10 +178,9 @@ impl BiliRecorder {
                 // handle live notification
                 if *self.live_status.read().await != live_status {
                     log::info!(
-                        "[{}]Live status changed to {}, current_record: {}, auto_start: {}",
+                        "[{}]Live status changed to {}, auto_start: {}",
                         self.room_id,
                         live_status,
-                        *self.current_record.read().await,
                         *self.auto_start.read().await
                     );
 
@@ -232,13 +237,12 @@ impl BiliRecorder {
 
                 if !live_status {
                     self.reset().await;
-                    *self.current_record.write().await = false;
 
                     return false;
                 }
 
-                // no need to check stream if current_record is false and auto_start is false
-                if !*self.current_record.read().await && !*self.auto_start.read().await {
+                // no need to check stream if should not record and auto_start is false
+                if !self.should_record().await && !*self.auto_start.read().await {
                     return true;
                 }
 
@@ -329,7 +333,6 @@ impl BiliRecorder {
                         stream
                     );
 
-                    *self.current_record.write().await = true;
                     self.force_update.store(false, Ordering::Relaxed);
 
                     let new_stream = self.fetch_real_stream(stream).await;
@@ -901,7 +904,7 @@ impl super::Recorder for BiliRecorder {
 
     /// timestamp is the id of live stream
     async fn m3u8_content(&self, live_id: &str, start: i64, end: i64) -> String {
-        if *self.live_id.read().await == live_id && *self.current_record.read().await {
+        if *self.live_id.read().await == live_id && self.should_record().await {
             self.generate_live_m3u8(start, end).await
         } else {
             self.generate_archive_m3u8(live_id, start, end).await
@@ -997,11 +1000,11 @@ impl super::Recorder for BiliRecorder {
     }
 
     async fn force_start(&self) {
-        *self.current_record.write().await = true;
+        *self.manual_stop_id.write().await = None;
     }
 
     async fn force_stop(&self) {
-        *self.current_record.write().await = false;
+        *self.manual_stop_id.write().await = Some(self.live_id.read().await.clone());
     }
 
     async fn set_auto_start(&self, auto_start: bool) {

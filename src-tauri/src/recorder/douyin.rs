@@ -50,9 +50,9 @@ pub struct DouyinRecorder {
     pub entry_store: Arc<RwLock<Option<EntryStore>>>,
     pub live_id: Arc<RwLock<String>>,
     pub live_status: Arc<RwLock<LiveStatus>>,
+    manual_stop_id: Arc<RwLock<Option<String>>>,
     is_recording: Arc<RwLock<bool>>,
     auto_start: Arc<RwLock<bool>>,
-    current_record: Arc<RwLock<bool>>,
     running: Arc<RwLock<bool>>,
     last_update: Arc<RwLock<i64>>,
     config: Arc<RwLock<Config>>,
@@ -87,10 +87,10 @@ impl DouyinRecorder {
             room_info: Arc::new(RwLock::new(Some(room_info))),
             stream_url: Arc::new(RwLock::new(None)),
             live_status: Arc::new(RwLock::new(live_status)),
+            manual_stop_id: Arc::new(RwLock::new(None)),
             running: Arc::new(RwLock::new(false)),
             is_recording: Arc::new(RwLock::new(false)),
             auto_start: Arc::new(RwLock::new(auto_start)),
-            current_record: Arc::new(RwLock::new(false)),
             last_update: Arc::new(RwLock::new(Utc::now().timestamp())),
             config,
             live_end_channel: channel,
@@ -102,26 +102,28 @@ impl DouyinRecorder {
             return false;
         }
 
-        *self.current_record.read().await
+        let live_id = self.live_id.read().await.clone();
+
+        self.manual_stop_id
+            .read()
+            .await
+            .as_ref()
+            .is_none_or(|v| v != &live_id)
     }
 
     async fn check_status(&self) -> bool {
         match self.client.get_room_info(self.room_id).await {
             Ok(info) => {
                 let live_status = info.data.room_status == 0; // room_status == 0 表示正在直播
-                let previous_liveid = self.live_id.read().await.clone();
 
                 *self.room_info.write().await = Some(info.clone());
 
                 if (*self.live_status.read().await == LiveStatus::Live) != live_status {
                     // live status changed, reset current record flag
-                    *self.current_record.write().await = false;
-
                     log::info!(
-                        "[{}]Live status changed to {}, current_record: {}, auto_start: {}",
+                        "[{}]Live status changed to {}, auto_start: {}",
                         self.room_id,
                         live_status,
-                        *self.current_record.read().await,
                         *self.auto_start.read().await
                     );
 
@@ -166,23 +168,18 @@ impl DouyinRecorder {
                 }
 
                 if !live_status {
-                    *self.current_record.write().await = false;
                     self.reset().await;
 
                     return false;
                 }
 
-                if !*self.current_record.read().await && !*self.auto_start.read().await {
+                let should_record = self.should_record().await;
+
+                if !should_record && !*self.auto_start.read().await {
                     return true;
                 }
 
-                if *self.auto_start.read().await
-                    && previous_liveid != info.data.data[0].id_str.clone()
-                {
-                    *self.current_record.write().await = true;
-                }
-
-                if *self.current_record.read().await {
+                if should_record {
                     // Get stream URL when live starts
                     if !info.data.data[0]
                         .stream_url
@@ -583,11 +580,11 @@ impl Recorder for DouyinRecorder {
     }
 
     async fn force_start(&self) {
-        *self.current_record.write().await = true;
+        *self.manual_stop_id.write().await = None;
     }
 
     async fn force_stop(&self) {
-        *self.current_record.write().await = false;
+        *self.manual_stop_id.write().await = Some(self.live_id.read().await.clone());
     }
 
     async fn set_auto_start(&self, auto_start: bool) {

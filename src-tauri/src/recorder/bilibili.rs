@@ -310,8 +310,7 @@ impl BiliRecorder {
 
                 let stream = new_stream.unwrap();
 
-                // auto start must be true here, if what fetched is a new stream, set current_record=true to auto start recording
-                if self.live_stream.read().await.is_none()
+                let should_update_stream = self.live_stream.read().await.is_none()
                     || !self
                         .live_stream
                         .read()
@@ -319,19 +318,19 @@ impl BiliRecorder {
                         .as_ref()
                         .unwrap()
                         .is_same(&stream)
-                    || self.force_update.load(Ordering::Relaxed)
-                {
+                    || self.force_update.load(Ordering::Relaxed);
+
+                if should_update_stream {
                     log::info!(
-                        "[{}]Fetched a new stream: {:?} => {}",
+                        "[{}]Update to a new stream: {:?} => {}",
                         self.room_id,
                         self.live_stream.read().await.clone(),
                         stream
                     );
+
                     *self.current_record.write().await = true;
                     self.force_update.store(false, Ordering::Relaxed);
-                }
 
-                if *self.current_record.read().await {
                     let new_stream = self.fetch_real_stream(stream).await;
                     if new_stream.is_err() {
                         log::error!(
@@ -345,8 +344,6 @@ impl BiliRecorder {
                     let new_stream = new_stream.unwrap();
                     *self.live_stream.write().await = Some(new_stream);
                     *self.last_update.write().await = Utc::now().timestamp();
-
-                    return true;
                 }
 
                 true

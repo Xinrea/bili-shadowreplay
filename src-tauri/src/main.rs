@@ -66,7 +66,11 @@ async fn open_log_file(log_dir: &Path) -> Result<File, Box<dyn std::error::Error
     let log_filename = log_dir.join("bsr.log");
 
     if let Ok(meta) = fs::metadata(&log_filename).await {
-        if meta.size() > 1024 * 1024 {
+        #[cfg(target_os = "windows")]
+        let file_size = meta.file_size();
+        #[cfg(not(target_os = "windows"))]
+        let file_size = meta.size();
+        if file_size > 1024 * 1024 {
             // move original file to backup
             let date_str = Utc::now().format("%Y-%m-%d_%H-%M-%S").to_string();
             let backup_filename = log_dir.join(&format!("bsr-{date_str}.log"));

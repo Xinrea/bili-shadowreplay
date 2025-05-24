@@ -6,4 +6,7 @@ edition = "2024"
 [dependencies]
 async-trait = "0.1.88"
 custom_error = "1.9.2"
+reqwest = { version = "0.12.15", features = ["json"] }
+serde = "1.0.219"
 tokio = "1.45.0"
+url = "2.5.4"

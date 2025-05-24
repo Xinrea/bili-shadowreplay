@@ -1,9 +1,18 @@
-use async_trait::async_trait;
+mod bilibili;
+
+use super::http_client;
 use custom_error::custom_error;
 use tokio::sync::mpsc;
 
 custom_error! {pub DanmuProviderError
-    ConnectionError = "Failed to establish a connection"
+    InvalidIdentifier {err: String} = "Invalid identifier: {err}",
+    ApiError { err: http_client::ApiError } = "Failed to fetch api: {err}"
+}
+
+impl From<http_client::ApiError> for DanmuProviderError {
+    fn from(value: http_client::ApiError) -> Self {
+        Self::ApiError { err: value }
+    }
 }
 
 pub enum DanmuMessageType {}

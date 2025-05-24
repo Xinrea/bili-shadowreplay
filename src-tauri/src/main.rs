@@ -29,10 +29,16 @@ use recorder::bilibili::client::BiliClient;
 use recorder_manager::RecorderManager;
 use simplelog::ConfigBuilder;
 use state::State;
+use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
-use std::{fs::File, os::unix::fs::MetadataExt};
 use tokio::sync::RwLock;
+
+#[cfg(not(target_os = "windows"))]
+use std::os::unix::fs::MetadataExt;
+
+#[cfg(target_os = "windows")]
+use std::os::windows::fs::MetadataExt;
 
 #[cfg(feature = "gui")]
 use {

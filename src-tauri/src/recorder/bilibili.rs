@@ -3,6 +3,7 @@ pub mod errors;
 pub mod profile;
 pub mod response;
 use super::entry::{EntryStore, Range};
+use super::errors::RecorderError;
 use super::PlatformType;
 use crate::database::account::AccountRow;
 use crate::progress_manager::Event;
@@ -833,6 +834,8 @@ impl super::Recorder for BiliRecorder {
             let runtime = tokio::runtime::Runtime::new().unwrap();
             runtime.block_on(async move {
                 while !*self_clone.quit.lock().await {
+                    let mut connection_fail_count = 0;
+                    let mut rng = rand::thread_rng();
                     if self_clone.check_status().await {
                         // Live status is ok, start recording.
                         while self_clone.should_record().await {
@@ -851,6 +854,7 @@ impl super::Recorder for BiliRecorder {
                                         );
                                     }
                                     *self_clone.is_recording.write().await = true;
+                                    connection_fail_count = 0;
                                 }
                                 Err(e) => {
                                     log::error!(
@@ -858,15 +862,21 @@ impl super::Recorder for BiliRecorder {
                                         self_clone.room_id,
                                         e
                                     );
+                                    if let RecorderError::BiliClientError { err: _ } = e {
+                                        connection_fail_count =
+                                            std::cmp::min(5, connection_fail_count + 1);
+                                    }
                                     break;
                                 }
                             }
                         }
                         *self_clone.is_recording.write().await = false;
                         // go check status again after random 2-5 secs
-                        let mut rng = rand::thread_rng();
                         let secs = rng.gen_range(2..=5);
-                        thread::sleep(std::time::Duration::from_secs(secs));
+                        tokio::time::sleep(Duration::from_secs(
+                            secs + 2_u64.pow(connection_fail_count),
+                        ))
+                        .await;
                         continue;
                     }
                     // Every 10s check live status.

@@ -12,6 +12,7 @@ use crate::{config::Config, database::account::AccountRow};
 use async_trait::async_trait;
 use chrono::Utc;
 use client::DouyinClientError;
+use rand::random;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, RwLock};
@@ -443,6 +444,7 @@ impl Recorder for DouyinRecorder {
         let self_clone = self.clone();
         tokio::spawn(async move {
             while *self_clone.running.read().await {
+                let mut connection_fail_count = 0;
                 if self_clone.check_status().await {
                     // Live status is ok, start recording
                     while self_clone.should_record().await {
@@ -460,16 +462,25 @@ impl Recorder for DouyinRecorder {
                                     );
                                 }
                                 *self_clone.is_recording.write().await = true;
+                                connection_fail_count = 0;
                             }
                             Err(e) => {
                                 log::error!("[{}]Update entries error: {}", self_clone.room_id, e);
+                                if let RecorderError::DouyinClientError { err: _e } = e {
+                                    connection_fail_count =
+                                        std::cmp::min(5, connection_fail_count + 1);
+                                }
                                 break;
                             }
                         }
                     }
                     *self_clone.is_recording.write().await = false;
-                    // Check status again after 2-5 seconds
-                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    // Check status again after some seconds
+                    let secs = random::<u64>() % 5;
+                    tokio::time::sleep(Duration::from_secs(
+                        secs + 2_u64.pow(connection_fail_count),
+                    ))
+                    .await;
                     continue;
                 }
                 // Check live status every 10s

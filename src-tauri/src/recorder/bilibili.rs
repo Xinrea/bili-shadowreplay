@@ -156,6 +156,7 @@ impl BiliRecorder {
     }
 
     async fn check_status(&self) -> bool {
+        log::info!("[{}]Check room status", self.room_id);
         match self
             .client
             .read()
@@ -308,8 +309,6 @@ impl BiliRecorder {
                 }
 
                 let stream = new_stream.unwrap();
-
-                log::info!("[{}]New stream: {:?}", self.room_id, stream);
 
                 // auto start must be true here, if what fetched is a new stream, set current_record=true to auto start recording
                 if self.live_stream.read().await.is_none()

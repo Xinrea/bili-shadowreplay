@@ -552,7 +552,7 @@ dependencies = [
  "m3u8-rs",
  "md5",
  "mime_guess",
- "pct-str",
+ "pct-str 1.2.0",
  "platform-dirs",
  "rand 0.8.5",
  "regex",
@@ -1608,12 +1608,15 @@ dependencies = [
 [[package]]
 name = "felgens"
 version = "0.3.1"
-source = "git+https://github.com/Xinrea/felgens.git?tag=v0.4.3#828432a7b43af714f1981fafd955cc37d1b42ec1"
+source = "git+https://github.com/Xinrea/felgens.git?tag=v0.4.5#9dbb64172f7d06f590a750e7e7cfa3a8e2e224ea"
 dependencies = [
  "brotli 3.5.0",
  "flate2",
  "futures-util",
  "log",
+ "md5",
+ "pct-str 2.0.0",
+ "regex",
  "reqwest 0.11.27",
  "scroll",
  "scroll_derive",
@@ -3805,6 +3808,16 @@ version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77d207ec8d182c2fef45f028b9b9507770df19e89b3e14827ccd95d4a23f6003"
 dependencies = [
+ "utf8-decode",
+]
+
+[[package]]
+name = "pct-str"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf1bdcc492c285a50bed60860dfa00b50baf1f60c73c7d6b435b01a2a11fd6ff"
+dependencies = [
+ "thiserror 1.0.69",
  "utf8-decode",
 ]
 

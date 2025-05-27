@@ -21,7 +21,7 @@ async-ffmpeg-sidecar = "0.0.1"
 chrono = { version = "0.4.24", features = ["serde"] }
 toml = "0.7.3"
 custom_error = "1.9.2"
-felgens = { git = "https://github.com/Xinrea/felgens.git", tag = "v0.4.5" }
+felgens = { git = "https://github.com/Xinrea/felgens.git", tag = "v0.4.6" }
 regex = "1.7.3"
 tokio = { version = "1.27.0", features = ["process"] }
 platform-dirs = "0.3.0"

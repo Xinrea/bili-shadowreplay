@@ -59,8 +59,8 @@ fn default_auto_generate_config() -> AutoGenerateConfig {
 impl Config {
     pub fn load(
         config_path: &PathBuf,
-        default_cache: &PathBuf,
-        default_output: &PathBuf,
+        default_cache: &Path,
+        default_output: &Path,
     ) -> Result<Self, String> {
         if let Ok(content) = std::fs::read_to_string(config_path) {
             if let Ok(mut config) = toml::from_str::<Config>(&content) {

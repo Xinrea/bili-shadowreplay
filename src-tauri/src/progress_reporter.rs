@@ -89,7 +89,7 @@ impl EventEmitter {
                             "progress-finished",
                             FinishEvent {
                                 id,
-                                success: success.clone(),
+                                success: *success,
                                 message,
                             },
                         )

@@ -264,7 +264,7 @@ impl EntryStore {
         for (i, e) in entries_in_range.iter().enumerate() {
             let discontinuous = e.sequence < previous_seq || e.sequence - previous_seq > 1;
             if discontinuous {
-                m3u8_content += "#EXT-X-DISCONTINUITY\n".into();
+                m3u8_content += "#EXT-X-DISCONTINUITY\n";
             }
             // Add date time under these situations.
             if i == 0 || i == entries_in_range.len() - 1 || force_time || discontinuous {

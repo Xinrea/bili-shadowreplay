@@ -51,7 +51,7 @@ pub async fn clip_from_m3u8(
             }
             FfmpegEvent::LogEOF => break,
             FfmpegEvent::Log(_level, content) => {
-                log::info!("{}", content);
+                log::debug!("{}", content);
             }
             FfmpegEvent::Error(e) => {
                 log::error!("Clip error: {}", e);
@@ -107,7 +107,7 @@ pub async fn extract_audio(file: &Path) -> Result<(), String> {
             }
             FfmpegEvent::LogEOF => break,
             FfmpegEvent::Log(_level, content) => {
-                log::info!("{}", content);
+                log::debug!("{}", content);
             }
             _ => {}
         }
@@ -195,7 +195,7 @@ pub async fn encode_video_subtitle(
             }
             FfmpegEvent::LogEOF => break,
             FfmpegEvent::Log(_level, content) => {
-                log::info!("{}", content);
+                log::debug!("{}", content);
             }
             _ => {}
         }
@@ -282,7 +282,7 @@ pub async fn encode_video_danmu(
                     .update(format!("压制中：{}", p.time).as_str());
             }
             FfmpegEvent::Log(_level, content) => {
-                log::info!("{}", content);
+                log::debug!("{}", content);
             }
             FfmpegEvent::LogEOF => break,
             _ => {}
@@ -335,10 +335,10 @@ pub async fn check_ffmpeg() -> Result<String, String> {
         }
     }
 
-    if version.is_none() {
-        Err("Failed to parse version from output".into())
+    if let Some(version) = version {
+        Ok(version)
     } else {
-        Ok(version.unwrap())
+        Err("Failed to parse version from output".into())
     }
 }
 
@@ -348,5 +348,5 @@ fn ffmpeg_path() -> PathBuf {
         path.set_extension("exe");
     }
 
-    return path;
+    path
 }

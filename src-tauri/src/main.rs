@@ -73,8 +73,8 @@ async fn open_log_file(log_dir: &Path) -> Result<File, Box<dyn std::error::Error
         if file_size > 1024 * 1024 {
             // move original file to backup
             let date_str = Utc::now().format("%Y-%m-%d_%H-%M-%S").to_string();
-            let backup_filename = log_dir.join(&format!("bsr-{date_str}.log"));
-            let _ = fs::rename(&log_filename, backup_filename).await?;
+            let backup_filename = log_dir.join(format!("bsr-{date_str}.log"));
+            fs::rename(&log_filename, backup_filename).await?;
         }
     }
 

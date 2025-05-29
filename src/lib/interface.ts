@@ -100,6 +100,7 @@ export interface Config {
   whisper_prompt: string;
   clip_name_format: string;
   auto_generate: AutoGenerateConfig;
+  status_check_interval: number;
 }
 
 export interface AutoGenerateConfig {

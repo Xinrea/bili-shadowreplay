@@ -882,8 +882,9 @@ impl super::Recorder for BiliRecorder {
                         .await;
                         continue;
                     }
-                    // Every 10s check live status.
-                    thread::sleep(std::time::Duration::from_secs(10));
+                    thread::sleep(std::time::Duration::from_secs(
+                        self_clone.config.read().await.status_check_interval,
+                    ));
                 }
                 log::info!("recording thread {} quit.", self_clone.room_id);
             });

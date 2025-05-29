@@ -480,8 +480,10 @@ impl Recorder for DouyinRecorder {
                     .await;
                     continue;
                 }
-                // Check live status every 10s
-                tokio::time::sleep(Duration::from_secs(10)).await;
+                tokio::time::sleep(Duration::from_secs(
+                    self_clone.config.read().await.status_check_interval,
+                ))
+                .await;
             }
             log::info!("recording thread {} quit.", self_clone.room_id);
         });

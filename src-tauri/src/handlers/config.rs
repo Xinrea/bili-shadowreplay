@@ -182,3 +182,17 @@ pub async fn update_auto_generate(
     config.save();
     Ok(())
 }
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn update_status_check_interval(
+    state: state_type!(),
+    mut interval: u64,
+) -> Result<(), ()> {
+    if interval < 10 {
+        interval = 10; // Minimum interval of 10 seconds
+    }
+    log::info!("Updating status check interval to {} seconds", interval);
+    state.config.write().await.status_check_interval = interval;
+    state.config.write().await.save();
+    Ok(())
+}

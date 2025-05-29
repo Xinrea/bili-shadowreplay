@@ -23,6 +23,8 @@ pub struct Config {
     pub clip_name_format: String,
     #[serde(default = "default_auto_generate_config")]
     pub auto_generate: AutoGenerateConfig,
+    #[serde(default = "default_status_check_interval")]
+    pub status_check_interval: u64,
     #[serde(skip)]
     pub config_path: String,
 }
@@ -56,6 +58,10 @@ fn default_auto_generate_config() -> AutoGenerateConfig {
     }
 }
 
+fn default_status_check_interval() -> u64 {
+    30
+}
+
 impl Config {
     pub fn load(
         config_path: &PathBuf,
@@ -83,13 +89,16 @@ impl Config {
             clip_notify: true,
             post_notify: true,
             auto_subtitle: false,
-            whisper_model: "whisper_model.bin".to_string(),
-            whisper_prompt: "这是一段中文 你们好".to_string(),
-            clip_name_format: "[{room_id}][{live_id}][{title}][{created_at}].mp4".to_string(),
+            whisper_model: default_whisper_model(),
+            whisper_prompt: default_whisper_prompt(),
+            clip_name_format: default_clip_name_format(),
             auto_generate: default_auto_generate_config(),
+            status_check_interval: default_status_check_interval(),
             config_path: config_path.to_str().unwrap().into(),
         };
+
         config.save();
+
         Ok(config)
     }
 

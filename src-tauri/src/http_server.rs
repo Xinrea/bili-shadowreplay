@@ -11,8 +11,8 @@ use crate::{
             add_account, get_account_count, get_accounts, get_qr, get_qr_status, remove_account,
         },
         config::{
-            get_config, set_cache_path, set_output_path, update_auto_generate,
-            update_clip_name_format, update_notify, update_subtitle_setting, update_whisper_model,
+            get_config, update_auto_generate, update_clip_name_format, update_notify,
+            update_status_check_interval, update_subtitle_setting, update_whisper_model,
             update_whisper_prompt,
         },
         message::{delete_message, get_messages, read_message},
@@ -190,33 +190,17 @@ async fn handler_get_config(
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SetCachePathRequest {
-    cache_path: String,
+struct UpdateStatusCheckIntervalRequest {
+    interval: u64,
 }
 
-async fn handler_set_cache_path(
+async fn handler_update_status_check_interval(
     state: axum::extract::State<State>,
-    Json(cache_path): Json<SetCachePathRequest>,
+    Json(request): Json<UpdateStatusCheckIntervalRequest>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
-    set_cache_path(state.0, cache_path.cache_path)
+    update_status_check_interval(state.0, request.interval)
         .await
-        .expect("Failed to set cache path");
-    Ok(Json(ApiResponse::success(())))
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SetOutputPathRequest {
-    output_path: String,
-}
-
-async fn handler_set_output_path(
-    state: axum::extract::State<State>,
-    Json(output_path): Json<SetOutputPathRequest>,
-) -> Result<Json<ApiResponse<()>>, ApiError> {
-    set_output_path(state.0, output_path.output_path)
-        .await
-        .expect("Failed to set output path");
+        .expect("Failed to update status check interval");
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -1100,9 +1084,11 @@ pub async fn start_api_server(state: State) {
         .route("/api/get_qr_status", post(handler_get_qr_status))
         // Config commands
         .route("/api/get_config", post(handler_get_config))
-        .route("/api/set_cache_path", post(handler_set_cache_path))
-        .route("/api/set_output_path", post(handler_set_output_path))
         .route("/api/update_notify", post(handler_update_notify))
+        .route(
+            "/api/update_status_check_interval",
+            post(handler_update_status_check_interval),
+        )
         .route(
             "/api/update_whisper_model",
             post(handler_update_whisper_model),

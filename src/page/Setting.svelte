@@ -4,7 +4,15 @@
   import { TAURI_ENV } from "../lib/invoker";
 
   import type { Config } from "../lib/interface";
-  import { Bell, HardDrive, AlertTriangle, FileText } from "lucide-svelte";
+  import {
+    Bell,
+    HardDrive,
+    AlertTriangle,
+    FileText,
+    Captions,
+    DiscAlbum,
+    SquareBottomDashedScissors,
+  } from "lucide-svelte";
 
   let setting_model: Config = {
     cache: "",
@@ -23,6 +31,7 @@
       enabled: false,
       encode_danmu: false,
     },
+    status_check_interval: 30, // 默认30秒
   };
 
   let showModal = false;
@@ -110,6 +119,15 @@
     });
   }
 
+  async function update_status_check_interval() {
+    if (setting_model.status_check_interval < 10) {
+      setting_model.status_check_interval = 10; // 最小值为10秒
+    }
+    await invoke("update_status_check_interval", {
+      interval: setting_model.status_check_interval,
+    });
+  }
+
   get_config();
 </script>
 
@@ -127,6 +145,38 @@
 
       <!-- Settings Sections -->
       <div class="space-y-6 pb-6">
+        <div class="space-y-4">
+          <h2
+            class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
+          >
+            <FileText class="w-5 h-5 dark:icon-white" />
+            <span>基础设置</span>
+          </h2>
+          <div
+            class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700"
+          >
+            <div class="p-4">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                    直播间状态检查间隔
+                  </h3>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    设置直播间状态检查的时间间隔，单位为秒，过于频繁可能会触发风控
+                  </p>
+                </div>
+                <div class="flex items-center space-x-2">
+                  <input
+                    type="number"
+                    class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-24"
+                    bind:value={setting_model.status_check_interval}
+                    on:blur={update_status_check_interval}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
         <!-- API Server Settings -->
         {#if !TAURI_ENV}
           <div class="space-y-4">
@@ -364,7 +414,7 @@
             <h2
               class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
             >
-              <FileText class="w-5 h-5 dark:icon-white" />
+              <Captions class="w-5 h-5 dark:icon-white" />
               <span>字幕生成</span>
             </h2>
             <div
@@ -461,7 +511,7 @@
             <h2
               class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
             >
-              <FileText class="w-5 h-5 dark:icon-white" />
+              <DiscAlbum class="w-5 h-5 dark:icon-white" />
               <span>切片文件名格式</span>
             </h2>
             <div
@@ -508,7 +558,7 @@
             <h2
               class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
             >
-              <FileText class="w-5 h-5 dark:icon-white" />
+              <SquareBottomDashedScissors class="w-5 h-5 dark:icon-white" />
               <span>自动切片</span>
             </h2>
             <div

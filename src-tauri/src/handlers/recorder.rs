@@ -254,42 +254,18 @@ pub async fn get_recent_record(
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn set_auto_start(
+pub async fn set_enable(
     state: state_type!(),
     platform: String,
     room_id: u64,
-    auto_start: bool,
+    enabled: bool,
 ) -> Result<(), String> {
-    log::info!("Set auto-start for recorder {platform} {room_id} {auto_start}");
+    log::info!("Set enable for recorder {platform} {room_id} {enabled}");
     let platform = PlatformType::from_str(&platform).unwrap();
     state
         .recorder_manager
-        .set_auto_start(platform, room_id, auto_start)
+        .set_enable(platform, room_id, enabled)
         .await;
-    Ok(())
-}
-
-#[cfg_attr(feature = "gui", tauri::command)]
-pub async fn force_start(
-    state: state_type!(),
-    platform: String,
-    room_id: u64,
-) -> Result<(), String> {
-    log::info!("Force start recorder {platform} {room_id}");
-    let platform = PlatformType::from_str(&platform).unwrap();
-    state.recorder_manager.force_start(platform, room_id).await;
-    Ok(())
-}
-
-#[cfg_attr(feature = "gui", tauri::command)]
-pub async fn force_stop(
-    state: state_type!(),
-    platform: String,
-    room_id: u64,
-) -> Result<(), String> {
-    log::info!("Force stop recorder {platform} {room_id}");
-    let platform = PlatformType::from_str(&platform).unwrap();
-    state.recorder_manager.force_stop(platform, room_id).await;
     Ok(())
 }
 

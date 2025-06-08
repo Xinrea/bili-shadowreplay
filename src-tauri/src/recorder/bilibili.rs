@@ -54,17 +54,16 @@ pub struct BiliRecorder {
     user_info: Arc<RwLock<UserInfo>>,
     live_status: Arc<RwLock<bool>>,
     live_id: Arc<RwLock<String>>,
-    manual_stop_id: Arc<RwLock<Option<String>>>,
     cover: Arc<RwLock<Option<String>>>,
     entry_store: Arc<RwLock<Option<EntryStore>>>,
     is_recording: Arc<RwLock<bool>>,
-    auto_start: Arc<RwLock<bool>>,
     force_update: Arc<AtomicBool>,
     last_update: Arc<RwLock<i64>>,
     quit: Arc<Mutex<bool>>,
     live_stream: Arc<RwLock<Option<BiliStream>>>,
     danmu_storage: Arc<RwLock<Option<DanmuStorage>>>,
     live_end_channel: broadcast::Sender<RecorderEvent>,
+    enabled: Arc<RwLock<bool>>,
 }
 
 impl From<DatabaseError> for super::errors::RecorderError {
@@ -125,9 +124,7 @@ impl BiliRecorder {
             live_status: Arc::new(RwLock::new(live_status)),
             entry_store: Arc::new(RwLock::new(None)),
             is_recording: Arc::new(RwLock::new(false)),
-            auto_start: Arc::new(RwLock::new(options.auto_start)),
             live_id: Arc::new(RwLock::new(String::new())),
-            manual_stop_id: Arc::new(RwLock::new(None)),
             cover: Arc::new(RwLock::new(cover)),
             last_update: Arc::new(RwLock::new(Utc::now().timestamp())),
             force_update: Arc::new(AtomicBool::new(false)),
@@ -135,6 +132,7 @@ impl BiliRecorder {
             live_stream: Arc::new(RwLock::new(None)),
             danmu_storage: Arc::new(RwLock::new(None)),
             live_end_channel: options.channel,
+            enabled: Arc::new(RwLock::new(options.auto_start)),
         };
         log::info!("Recorder for room {} created.", options.room_id);
         Ok(recorder)
@@ -153,17 +151,10 @@ impl BiliRecorder {
             return false;
         }
 
-        let live_id = self.live_id.read().await.clone();
-
-        self.manual_stop_id
-            .read()
-            .await
-            .as_ref()
-            .is_none_or(|v| v != &live_id)
+        *self.enabled.read().await
     }
 
     async fn check_status(&self) -> bool {
-        log::info!("[{}]Check room status", self.room_id);
         match self
             .client
             .read()
@@ -178,10 +169,10 @@ impl BiliRecorder {
                 // handle live notification
                 if *self.live_status.read().await != live_status {
                     log::info!(
-                        "[{}]Live status changed to {}, auto_start: {}",
+                        "[{}]Live status changed to {}, enabled: {}",
                         self.room_id,
                         live_status,
-                        *self.auto_start.read().await
+                        *self.enabled.read().await
                     );
 
                     if live_status {
@@ -241,8 +232,8 @@ impl BiliRecorder {
                     return false;
                 }
 
-                // no need to check stream if should not record and auto_start is false
-                if !self.should_record().await && !*self.auto_start.read().await {
+                // no need to check stream if should not record
+                if !self.should_record().await {
                     return true;
                 }
 
@@ -962,7 +953,7 @@ impl super::Recorder for BiliRecorder {
             current_live_id: self.live_id.read().await.clone(),
             live_status: *self.live_status.read().await,
             is_recording: *self.is_recording.read().await,
-            auto_start: *self.auto_start.read().await,
+            auto_start: *self.enabled.read().await,
             platform: PlatformType::BiliBili.as_str().to_string(),
         }
     }
@@ -1000,15 +991,11 @@ impl super::Recorder for BiliRecorder {
         *self.live_id.read().await == live_id && *self.live_status.read().await
     }
 
-    async fn force_start(&self) {
-        *self.manual_stop_id.write().await = None;
+    async fn enable(&self) {
+        *self.enabled.write().await = true;
     }
 
-    async fn force_stop(&self) {
-        *self.manual_stop_id.write().await = Some(self.live_id.read().await.clone());
-    }
-
-    async fn set_auto_start(&self, auto_start: bool) {
-        *self.auto_start.write().await = auto_start;
+    async fn disable(&self) {
+        *self.enabled.write().await = false;
     }
 }

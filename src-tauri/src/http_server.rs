@@ -17,10 +17,10 @@ use crate::{
         },
         message::{delete_message, get_messages, read_message},
         recorder::{
-            add_recorder, delete_archive, export_danmu, fetch_hls, force_start, force_stop,
-            get_archive, get_archives, get_danmu_record, get_recent_record, get_recorder_list,
-            get_room_info, get_today_record_count, get_total_length, remove_recorder, send_danmaku,
-            set_auto_start, ExportDanmuOptions,
+            add_recorder, delete_archive, export_danmu, fetch_hls, get_archive, get_archives,
+            get_danmu_record, get_recent_record, get_recorder_list, get_room_info,
+            get_today_record_count, get_total_length, remove_recorder, send_danmaku, set_enable,
+            ExportDanmuOptions,
         },
         utils::{get_disk_info, DiskInfo},
         video::{
@@ -516,46 +516,17 @@ async fn handler_get_recent_record(
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SetAutoStartRequest {
+struct SetEnableRequest {
     platform: String,
     room_id: u64,
-    auto_start: bool,
+    enabled: bool,
 }
-async fn handler_set_auto_start(
+
+async fn handler_set_enable(
     state: axum::extract::State<State>,
-    Json(param): Json<SetAutoStartRequest>,
+    Json(param): Json<SetEnableRequest>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
-    set_auto_start(state.0, param.platform, param.room_id, param.auto_start).await?;
-    Ok(Json(ApiResponse::success(())))
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ForceStartRequest {
-    platform: String,
-    room_id: u64,
-}
-
-async fn handler_force_start(
-    state: axum::extract::State<State>,
-    Json(param): Json<ForceStartRequest>,
-) -> Result<Json<ApiResponse<()>>, ApiError> {
-    force_start(state.0, param.platform, param.room_id).await?;
-    Ok(Json(ApiResponse::success(())))
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ForceStopRequest {
-    platform: String,
-    room_id: u64,
-}
-
-async fn handler_force_stop(
-    state: axum::extract::State<State>,
-    Json(param): Json<ForceStopRequest>,
-) -> Result<Json<ApiResponse<()>>, ApiError> {
-    force_stop(state.0, param.platform, param.room_id).await?;
+    set_enable(state.0, param.platform, param.room_id, param.enabled).await?;
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -1129,9 +1100,7 @@ pub async fn start_api_server(state: State) {
             post(handler_get_today_record_count),
         )
         .route("/api/get_recent_record", post(handler_get_recent_record))
-        .route("/api/set_auto_start", post(handler_set_auto_start))
-        .route("/api/force_start", post(handler_force_start))
-        .route("/api/force_stop", post(handler_force_stop))
+        .route("/api/set_enable", post(handler_set_enable))
         // Video commands
         .route("/api/clip_range", post(handler_clip_range))
         .route("/api/upload_procedure", post(handler_upload_procedure))

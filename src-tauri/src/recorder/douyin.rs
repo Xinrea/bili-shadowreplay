@@ -50,13 +50,12 @@ pub struct DouyinRecorder {
     pub entry_store: Arc<RwLock<Option<EntryStore>>>,
     pub live_id: Arc<RwLock<String>>,
     pub live_status: Arc<RwLock<LiveStatus>>,
-    manual_stop_id: Arc<RwLock<Option<String>>>,
     is_recording: Arc<RwLock<bool>>,
-    auto_start: Arc<RwLock<bool>>,
     running: Arc<RwLock<bool>>,
     last_update: Arc<RwLock<i64>>,
     config: Arc<RwLock<Config>>,
     live_end_channel: broadcast::Sender<RecorderEvent>,
+    enabled: Arc<RwLock<bool>>,
 }
 
 impl DouyinRecorder {
@@ -66,7 +65,7 @@ impl DouyinRecorder {
         config: Arc<RwLock<Config>>,
         douyin_account: &AccountRow,
         db: &Arc<Database>,
-        auto_start: bool,
+        enabled: bool,
         channel: broadcast::Sender<RecorderEvent>,
     ) -> Result<Self, super::errors::RecorderError> {
         let client = client::DouyinClient::new(douyin_account);
@@ -87,10 +86,9 @@ impl DouyinRecorder {
             room_info: Arc::new(RwLock::new(Some(room_info))),
             stream_url: Arc::new(RwLock::new(None)),
             live_status: Arc::new(RwLock::new(live_status)),
-            manual_stop_id: Arc::new(RwLock::new(None)),
             running: Arc::new(RwLock::new(false)),
             is_recording: Arc::new(RwLock::new(false)),
-            auto_start: Arc::new(RwLock::new(auto_start)),
+            enabled: Arc::new(RwLock::new(enabled)),
             last_update: Arc::new(RwLock::new(Utc::now().timestamp())),
             config,
             live_end_channel: channel,
@@ -102,13 +100,7 @@ impl DouyinRecorder {
             return false;
         }
 
-        let live_id = self.live_id.read().await.clone();
-
-        self.manual_stop_id
-            .read()
-            .await
-            .as_ref()
-            .is_none_or(|v| v != &live_id)
+        *self.enabled.read().await
     }
 
     async fn check_status(&self) -> bool {
@@ -124,7 +116,7 @@ impl DouyinRecorder {
                         "[{}]Live status changed to {}, auto_start: {}",
                         self.room_id,
                         live_status,
-                        *self.auto_start.read().await
+                        *self.enabled.read().await
                     );
 
                     if live_status {
@@ -175,53 +167,49 @@ impl DouyinRecorder {
 
                 let should_record = self.should_record().await;
 
-                if !should_record && !*self.auto_start.read().await {
+                if !should_record {
                     return true;
                 }
 
-                if should_record {
-                    // Get stream URL when live starts
-                    if !info.data.data[0]
-                        .stream_url
+                // Get stream URL when live starts
+                if !info.data.data[0]
+                    .stream_url
+                    .as_ref()
+                    .unwrap()
+                    .hls_pull_url
+                    .is_empty()
+                {
+                    *self.live_id.write().await = info.data.data[0].id_str.clone();
+                    // create a new record
+                    let cover_url = info.data.data[0]
+                        .cover
                         .as_ref()
-                        .unwrap()
-                        .hls_pull_url
-                        .is_empty()
+                        .map(|cover| cover.url_list[0].clone());
+                    let cover = if let Some(url) = cover_url {
+                        Some(self.client.get_cover_base64(&url).await.unwrap())
+                    } else {
+                        None
+                    };
+
+                    if let Err(e) = self
+                        .db
+                        .add_record(
+                            PlatformType::Douyin,
+                            self.live_id.read().await.as_str(),
+                            self.room_id,
+                            &info.data.data[0].title,
+                            cover,
+                            None,
+                        )
+                        .await
                     {
-                        *self.live_id.write().await = info.data.data[0].id_str.clone();
-                        // create a new record
-                        let cover_url = info.data.data[0]
-                            .cover
-                            .as_ref()
-                            .map(|cover| cover.url_list[0].clone());
-                        let cover = if let Some(url) = cover_url {
-                            Some(self.client.get_cover_base64(&url).await.unwrap())
-                        } else {
-                            None
-                        };
-
-                        if let Err(e) = self
-                            .db
-                            .add_record(
-                                PlatformType::Douyin,
-                                self.live_id.read().await.as_str(),
-                                self.room_id,
-                                &info.data.data[0].title,
-                                cover,
-                                None,
-                            )
-                            .await
-                        {
-                            log::error!("Failed to add record: {}", e);
-                        }
-
-                        // setup entry store
-                        let work_dir = self.get_work_dir(self.live_id.read().await.as_str()).await;
-                        let entry_store = EntryStore::new(&work_dir).await;
-                        *self.entry_store.write().await = Some(entry_store);
+                        log::error!("Failed to add record: {}", e);
                     }
 
-                    return true;
+                    // setup entry store
+                    let work_dir = self.get_work_dir(self.live_id.read().await.as_str()).await;
+                    let entry_store = EntryStore::new(&work_dir).await;
+                    *self.entry_store.write().await = Some(entry_store);
                 }
 
                 true
@@ -568,7 +556,7 @@ impl Recorder for DouyinRecorder {
             current_live_id: self.live_id.read().await.clone(),
             live_status: *self.live_status.read().await == LiveStatus::Live,
             is_recording: *self.is_recording.read().await,
-            auto_start: *self.auto_start.read().await,
+            auto_start: *self.enabled.read().await,
             platform: PlatformType::Douyin.as_str().to_string(),
         }
     }
@@ -581,15 +569,11 @@ impl Recorder for DouyinRecorder {
         *self.live_id.read().await == live_id && *self.live_status.read().await == LiveStatus::Live
     }
 
-    async fn force_start(&self) {
-        *self.manual_stop_id.write().await = None;
+    async fn enable(&self) {
+        *self.enabled.write().await = true;
     }
 
-    async fn force_stop(&self) {
-        *self.manual_stop_id.write().await = Some(self.live_id.read().await.clone());
-    }
-
-    async fn set_auto_start(&self, auto_start: bool) {
-        *self.auto_start.write().await = auto_start;
+    async fn disable(&self) {
+        *self.enabled.write().await = false;
     }
 }

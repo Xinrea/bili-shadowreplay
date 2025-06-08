@@ -139,11 +139,11 @@
   let autoRecordStates = new Map<string, boolean>();
 
   // Function to toggle auto-record state
-  function toggleAutoRecord(room: RecorderInfo) {
-    invoke("set_auto_start", {
+  function toggleEnabled(room: RecorderInfo) {
+    invoke("set_enable", {
       roomId: room.room_id,
       platform: room.platform,
-      autoStart: !room.auto_start,
+      enabled: !room.auto_start,
     });
   }
 
@@ -223,19 +223,17 @@
               iclass={"w-full h-40 object-cover rounded-lg " +
                 (room.live_status ? "" : "brightness-75")}
             />
-            <div
-              class={"absolute top-2 left-2 p-1.5 px-2 rounded-full text-white text-xs flex items-center justify-center " +
-                (room.is_recording ? "bg-red-500" : "bg-gray-700/90")}
-            >
-              {#if room.auto_start}
+            {#if room.auto_start}
+              <div
+                class={"absolute top-2 left-2 p-1.5 px-2 rounded-full text-white text-xs flex items-center justify-center " +
+                  (room.is_recording ? "bg-red-500" : "bg-gray-700/90")}
+              >
                 <AutoRecordIcon class="w-4 h-4 text-white" />
-              {:else}
-                <Activity class="w-4 h-4 text-white" />
-              {/if}
-              {#if room.is_recording}
-                <span class="text-white ml-1">录制中</span>
-              {/if}
-            </div>
+                {#if room.is_recording}
+                  <span class="text-white ml-1">录制中</span>
+                {/if}
+              </div>
+            {/if}
             {#if !room.live_status}
               <div
                 class={"absolute bottom-2 right-2 p-1.5 px-2 rounded-full text-white text-xs flex items-center justify-center bg-gray-700"}
@@ -255,33 +253,13 @@
               <Ellipsis class="w-5 h-5 icon-white" />
             </button>
             <Dropdown class="whitespace-nowrap">
-              {#if room.is_recording}
-                <DropdownItem
-                  on:click={() => {
-                    invoke("force_stop", {
-                      platform: room.platform,
-                      roomId: room.room_id,
-                    });
-                  }}>暂停本次录制</DropdownItem
-                >
-              {/if}
-              {#if !room.is_recording && room.live_status}
-                <DropdownItem
-                  on:click={() => {
-                    invoke("force_start", {
-                      platform: room.platform,
-                      roomId: room.room_id,
-                    });
-                  }}>开始录制</DropdownItem
-                >
-              {/if}
               <button
                 class="px-4 py-2 flex items-center justify-between hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"
-                on:click={() => toggleAutoRecord(room)}
+                on:click={() => toggleEnabled(room)}
               >
                 <span
                   class="text-sm text-gray-700 dark:text-gray-200 font-medium"
-                  >自动开始录制</span
+                  >启用直播间</span
                 >
                 <label class="toggle-switch ml-1">
                   <input type="checkbox" checked={room.auto_start} />

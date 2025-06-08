@@ -81,7 +81,6 @@ pub trait Recorder: Send + Sync + 'static {
     async fn info(&self) -> RecorderInfo;
     async fn comments(&self, live_id: &str) -> Result<Vec<DanmuEntry>, errors::RecorderError>;
     async fn is_recording(&self, live_id: &str) -> bool;
-    async fn force_start(&self);
-    async fn force_stop(&self);
-    async fn set_auto_start(&self, auto_start: bool);
+    async fn enable(&self);
+    async fn disable(&self);
 }

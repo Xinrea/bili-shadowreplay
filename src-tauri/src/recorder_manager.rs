@@ -718,29 +718,19 @@ impl RecorderManager {
         }
     }
 
-    pub async fn set_auto_start(&self, platform: PlatformType, room_id: u64, auto_start: bool) {
+    pub async fn set_enable(&self, platform: PlatformType, room_id: u64, enabled: bool) {
         // update RecordRow auto_start field
-        if let Err(e) = self.db.update_recorder(platform, room_id, auto_start).await {
+        if let Err(e) = self.db.update_recorder(platform, room_id, enabled).await {
             log::error!("Failed to update recorder auto_start: {}", e);
         }
 
         let recorder_id = format!("{}:{}", platform.as_str(), room_id);
         if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
-            recorder_ref.set_auto_start(auto_start).await;
-        }
-    }
-
-    pub async fn force_start(&self, platform: PlatformType, room_id: u64) {
-        let recorder_id = format!("{}:{}", platform.as_str(), room_id);
-        if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
-            recorder_ref.force_start().await;
-        }
-    }
-
-    pub async fn force_stop(&self, platform: PlatformType, room_id: u64) {
-        let recorder_id = format!("{}:{}", platform.as_str(), room_id);
-        if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
-            recorder_ref.force_stop().await;
+            if enabled {
+                recorder_ref.enable().await;
+            } else {
+                recorder_ref.disable().await;
+            }
         }
     }
 }

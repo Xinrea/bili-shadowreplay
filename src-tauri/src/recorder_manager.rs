@@ -15,7 +15,7 @@ use crate::recorder::RecorderInfo;
 use chrono::Utc;
 use custom_error::custom_error;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -65,6 +65,7 @@ pub struct RecorderManager {
     db: Arc<Database>,
     config: Arc<RwLock<Config>>,
     recorders: Arc<RwLock<HashMap<String, Box<dyn Recorder>>>>,
+    to_remove: Arc<RwLock<HashSet<String>>>,
     event_tx: broadcast::Sender<RecorderEvent>,
     is_migrating: Arc<AtomicBool>,
 }
@@ -120,6 +121,7 @@ impl RecorderManager {
             db,
             config,
             recorders: Arc::new(RwLock::new(HashMap::new())),
+            to_remove: Arc::new(RwLock::new(HashSet::new())),
             event_tx,
             is_migrating: Arc::new(AtomicBool::new(false)),
         };
@@ -146,6 +148,7 @@ impl RecorderManager {
             db: self.db.clone(),
             config: self.config.clone(),
             recorders: self.recorders.clone(),
+            to_remove: self.to_remove.clone(),
             event_tx: self.event_tx.clone(),
             is_migrating: self.is_migrating.clone(),
         }
@@ -291,7 +294,9 @@ impl RecorderManager {
             let mut recorders_to_add = Vec::new();
             for (platform, room_id) in recorder_map.keys() {
                 let recorder_id = format!("{}:{}", platform.as_str(), room_id);
-                if !self.recorders.read().await.contains_key(&recorder_id) {
+                if !self.recorders.read().await.contains_key(&recorder_id)
+                    && !self.to_remove.read().await.contains(&recorder_id)
+                {
                     recorders_to_add.push((*platform, *room_id));
                 }
             }
@@ -387,6 +392,10 @@ impl RecorderManager {
         self.recorders.write().await.clear();
     }
 
+    /// Remove a recorder from the manager
+    ///
+    /// This will stop the recorder and remove it from the manager
+    /// and remove the related cache folder
     pub async fn remove_recorder(
         &self,
         platform: PlatformType,
@@ -398,6 +407,9 @@ impl RecorderManager {
             return Err(RecorderManagerError::NotFound { room_id });
         }
 
+        // add to to_remove
+        self.to_remove.write().await.insert(recorder_id.clone());
+
         // stop recorder
         if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
             recorder_ref.stop().await;
@@ -405,6 +417,9 @@ impl RecorderManager {
 
         // remove recorder
         self.recorders.write().await.remove(&recorder_id);
+
+        // remove from to_remove
+        self.to_remove.write().await.remove(&recorder_id);
 
         // remove related cache folder
         let cache_folder = format!(

@@ -1,8 +1,9 @@
 use serde::Deserialize;
 
-use crate::{DanmmuStreamError, provider::bilibili::stream::WsStreamCtx};
+use crate::{provider::bilibili::stream::WsStreamCtx, DanmmuStreamError};
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct SendGift {
     pub action: String,
     pub gift_name: String,
@@ -14,6 +15,7 @@ pub struct SendGift {
     pub price: u32,
 }
 
+#[allow(dead_code)]
 impl SendGift {
     pub fn new_from_ctx(ctx: &WsStreamCtx) -> Result<Self, DanmmuStreamError> {
         let data = ctx

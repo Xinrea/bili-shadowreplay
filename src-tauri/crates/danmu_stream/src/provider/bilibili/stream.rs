@@ -2,8 +2,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
+    provider::{bilibili::dannmu_msg::BiliDanmuMessage, DanmuMessageType},
     DanmmuStreamError, DanmuMessage,
-    provider::{DanmuMessageType, bilibili::dannmu_msg::BiliDanmuMessage},
 };
 
 #[derive(Debug, Deserialize, Clone)]
@@ -16,6 +16,7 @@ pub struct WsStreamCtx {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[allow(dead_code)]
 pub struct WsStreamCtxData {
     pub message: Option<String>,
     pub price: Option<u32>,
@@ -42,6 +43,7 @@ pub struct WsStreamCtxDataMedalInfo {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[allow(dead_code)]
 pub struct WsStreamCtxDataUser {
     pub face: String,
     pub uname: String,
@@ -64,7 +66,7 @@ impl WsStreamCtx {
 
         if let Some(danmu_msg) = danmu_msg {
             Ok(DanmuMessageType::DanmuMessage(DanmuMessage {
-                room_id: danmu_msg.uid,
+                room_id: 0,
                 user_id: danmu_msg.uid,
                 user_name: danmu_msg.username,
                 message: danmu_msg.msg,

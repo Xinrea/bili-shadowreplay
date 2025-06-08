@@ -1,8 +1,9 @@
 use serde::Deserialize;
 
-use crate::{DanmmuStreamError, provider::bilibili::stream::WsStreamCtx};
+use crate::{provider::bilibili::stream::WsStreamCtx, DanmmuStreamError};
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct SuperChatMessage {
     pub uname: String,
     pub uid: u64,
@@ -15,6 +16,7 @@ pub struct SuperChatMessage {
     pub madel_level: Option<u32>,
 }
 
+#[allow(dead_code)]
 impl SuperChatMessage {
     pub fn new_from_ctx(ctx: &WsStreamCtx) -> Result<Self, DanmmuStreamError> {
         let data = ctx

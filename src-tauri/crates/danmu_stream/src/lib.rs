@@ -1,3 +1,4 @@
+pub mod danmu_stream;
 mod http_client;
 pub mod provider;
 
@@ -17,6 +18,7 @@ pub enum DanmuMessageType {
     DanmuMessage(DanmuMessage),
 }
 
+#[derive(Debug, Clone)]
 pub struct DanmuMessage {
     pub room_id: u64,
     pub user_id: u64,

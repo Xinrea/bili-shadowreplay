@@ -5,20 +5,25 @@ mod send_gift;
 mod stream;
 mod super_chat;
 
-use std::time::SystemTime;
+use std::{sync::Arc, time::SystemTime};
 
+use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt, TryStreamExt};
-use log;
+use log::{error, info};
 use pct_str::{PctString, URIReserved};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tokio::{
-    sync::mpsc,
-    time::{Duration, sleep},
+    sync::{mpsc, RwLock},
+    time::{sleep, Duration},
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use crate::{DanmmuStreamError, http_client::ApiClient, provider::DanmuMessageType};
+use crate::{
+    http_client::ApiClient,
+    provider::{DanmuMessageType, DanmuProvider},
+    DanmmuStreamError,
+};
 
 type WsReadType = futures_util::stream::SplitStream<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
@@ -33,10 +38,13 @@ pub struct BiliDanmu {
     client: ApiClient,
     room_id: u64,
     user_id: u64,
+    stop: Arc<RwLock<bool>>,
+    write: Arc<RwLock<Option<WsWriteType>>>,
 }
 
-impl BiliDanmu {
-    pub async fn new(cookie: &str, room_id: u64) -> Result<Self, DanmmuStreamError> {
+#[async_trait]
+impl DanmuProvider for BiliDanmu {
+    async fn new(cookie: &str, room_id: u64) -> Result<Self, DanmmuStreamError> {
         // find DedeUserID=<user_id> in cookie str
         let user_id = BiliDanmu::parse_user_id(cookie)?;
         let client = ApiClient::new(cookie);
@@ -45,10 +53,70 @@ impl BiliDanmu {
             client,
             user_id,
             room_id,
+            stop: Arc::new(RwLock::new(false)),
+            write: Arc::new(RwLock::new(None)),
         })
     }
 
-    pub async fn start(
+    async fn start(
+        &self,
+        tx: mpsc::UnboundedSender<DanmuMessageType>,
+    ) -> Result<(), DanmmuStreamError> {
+        let mut retry_count = 0;
+        const MAX_RETRIES: u32 = 5;
+        const RETRY_DELAY: Duration = Duration::from_secs(5);
+        info!(
+            "Bilibili WebSocket connection started, room_id: {}",
+            self.room_id
+        );
+
+        loop {
+            if *self.stop.read().await {
+                break;
+            }
+
+            match self.connect_and_handle(tx.clone()).await {
+                Ok(_) => {
+                    info!("Bilibili WebSocket connection closed normally");
+                    break;
+                }
+                Err(e) => {
+                    error!("Bilibili WebSocket connection error: {}", e);
+                    retry_count += 1;
+
+                    if retry_count >= MAX_RETRIES {
+                        return Err(DanmmuStreamError::WebsocketError {
+                            err: format!("Failed to connect after {} retries", MAX_RETRIES),
+                        });
+                    }
+
+                    info!(
+                        "Retrying connection in {} seconds... (Attempt {}/{})",
+                        RETRY_DELAY.as_secs(),
+                        retry_count,
+                        MAX_RETRIES
+                    );
+                    tokio::time::sleep(RETRY_DELAY).await;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn stop(&self) -> Result<(), DanmmuStreamError> {
+        *self.stop.write().await = true;
+        if let Some(mut write) = self.write.write().await.take() {
+            if let Err(e) = write.close().await {
+                error!("Failed to close WebSocket connection: {}", e);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl BiliDanmu {
+    async fn connect_and_handle(
         &self,
         tx: mpsc::UnboundedSender<DanmuMessageType>,
     ) -> Result<(), DanmmuStreamError> {
@@ -77,7 +145,8 @@ impl BiliDanmu {
             err: "Failed to connect to ws host".into(),
         })?;
 
-        let (mut write, read) = conn.split();
+        let (write, read) = conn.split();
+        *self.write.write().await = Some(write);
 
         let json = serde_json::to_string(&WsSend {
             roomid: self.room_id,
@@ -90,22 +159,31 @@ impl BiliDanmu {
         .map_err(|e| DanmmuStreamError::WebsocketError { err: e.to_string() })?;
 
         let json = pack::encode(&json, 7);
-        write
-            .send(Message::binary(json))
-            .await
-            .map_err(|e| DanmmuStreamError::WebsocketError { err: e.to_string() })?;
+        if let Some(write) = self.write.write().await.as_mut() {
+            write
+                .send(Message::binary(json))
+                .await
+                .map_err(|e| DanmmuStreamError::WebsocketError { err: e.to_string() })?;
+        }
 
-        tokio::select!(v = BiliDanmu::send_heartbeat_packets(write) => v, v = BiliDanmu::recv(read, tx) => v)?;
+        tokio::select! {
+            v = BiliDanmu::send_heartbeat_packets(Arc::clone(&self.write)) => v,
+            v = BiliDanmu::recv(read, tx, Arc::clone(&self.stop)) => v
+        }?;
 
         Ok(())
     }
 
-    async fn send_heartbeat_packets(mut write: WsWriteType) -> Result<(), DanmmuStreamError> {
+    async fn send_heartbeat_packets(
+        write: Arc<RwLock<Option<WsWriteType>>>,
+    ) -> Result<(), DanmmuStreamError> {
         loop {
-            write
-                .send(Message::binary(pack::encode("", 2)))
-                .await
-                .map_err(|e| DanmmuStreamError::WebsocketError { err: e.to_string() })?;
+            if let Some(write) = write.write().await.as_mut() {
+                write
+                    .send(Message::binary(pack::encode("", 2)))
+                    .await
+                    .map_err(|e| DanmmuStreamError::WebsocketError { err: e.to_string() })?;
+            }
             sleep(Duration::from_secs(30)).await;
         }
     }
@@ -113,8 +191,13 @@ impl BiliDanmu {
     async fn recv(
         mut read: WsReadType,
         tx: mpsc::UnboundedSender<DanmuMessageType>,
+        stop: Arc<RwLock<bool>>,
     ) -> Result<(), DanmmuStreamError> {
         while let Ok(Some(msg)) = read.try_next().await {
+            if *stop.read().await {
+                log::info!("Stopping bilibili danmu stream");
+                break;
+            }
             let data = msg.into_data();
 
             if !data.is_empty() {

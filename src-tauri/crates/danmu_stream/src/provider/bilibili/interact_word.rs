@@ -1,6 +1,7 @@
-use crate::{DanmmuStreamError, provider::bilibili::stream::WsStreamCtx};
+use crate::{provider::bilibili::stream::WsStreamCtx, DanmmuStreamError};
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct InteractWord {
     pub uid: u64,
     pub uname: String,
@@ -8,6 +9,7 @@ pub struct InteractWord {
     pub fan_level: Option<u32>,
 }
 
+#[allow(dead_code)]
 impl InteractWord {
     pub fn new_from_ctx(ctx: &WsStreamCtx) -> Result<Self, DanmmuStreamError> {
         let data = ctx

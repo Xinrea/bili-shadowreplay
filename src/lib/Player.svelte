@@ -132,8 +132,8 @@
               shaka.util.Error.Severity.CRITICAL,
               shaka.util.Error.Category.NETWORK,
               shaka.util.Error.Code.OPERATION_ABORTED,
-              error.message || "Network request failed",
-            ),
+              error.message || "Network request failed"
+            )
           );
         });
     });
@@ -236,7 +236,7 @@
             error.code +
             "\n" +
             "Error message: " +
-            error.message,
+            error.message
         );
       }
     }
@@ -256,7 +256,7 @@
     document.getElementsByClassName("shaka-fullscreen-button")[0].remove();
     // add self-defined element in shaka-bottom-controls.shaka-no-propagation (second seekbar)
     const shakaBottomControls = document.querySelector(
-      ".shaka-bottom-controls.shaka-no-propagation",
+      ".shaka-bottom-controls.shaka-no-propagation"
     );
     const selfSeekbar = document.createElement("div");
     selfSeekbar.className = "shaka-seek-bar shaka-no-propagation";
@@ -287,36 +287,36 @@
 
     let ts = parseInt(live_id);
 
-    if (platform == "bilibili") {
-      let danmu_displayed = {};
-      // history danmaku sender
-      setInterval(() => {
-        if (video.paused || !danmu_enabled || danmu_records.length == 0) {
+    let danmu_displayed = {};
+    // history danmaku sender
+    setInterval(() => {
+      if (video.paused || !danmu_enabled || danmu_records.length == 0) {
+        return;
+      }
+
+      // using live source
+      if (isLive() && get_total() - video.currentTime <= 5) {
+        return;
+      }
+
+      const cur = Math.floor(
+        (video.currentTime + global_offset + focus_start) * 1000
+      );
+
+      let danmus = danmu_records.filter((v) => {
+        return v.ts >= cur - 1000 && v.ts < cur;
+      });
+      danmus.forEach((v) => {
+        if (danmu_displayed[v.ts]) {
+          delete danmu_displayed[v.ts];
           return;
         }
+        danmu_handler(v.content);
+      });
+    }, 1000);
 
-        // using live source
-        if (isLive() && get_total() - video.currentTime <= 5) {
-          return;
-        }
-
-        const cur = Math.floor(
-          (video.currentTime + global_offset + focus_start) * 1000,
-        );
-
-        let danmus = danmu_records.filter((v) => {
-          return v.ts >= cur - 1000 && v.ts < cur;
-        });
-        danmus.forEach((v) => {
-          if (danmu_displayed[v.ts]) {
-            delete danmu_displayed[v.ts];
-            return;
-          }
-          danmu_handler(v.content);
-        });
-      }, 1000);
-
-      if (isLive()) {
+    if (isLive()) {
+      if (platform == "bilibili") {
         // add a account select
         const accountSelect = document.createElement("select");
         accountSelect.style.height = "30px";
@@ -327,7 +327,6 @@
         accountSelect.style.padding = "0 10px";
         accountSelect.style.boxSizing = "border-box";
         accountSelect.style.fontSize = "1em";
-
         // get accounts from tauri
         const account_info = (await invoke("get_accounts")) as AccountInfo;
         account_info.accounts.forEach((account) => {
@@ -370,106 +369,106 @@
 
         shakaSpacer.appendChild(accountSelect);
         shakaSpacer.appendChild(danmakuInput);
+      }
 
-        // listen to danmaku event
-        await listen("danmu:" + room_id, (event: { payload: DanmuEntry }) => {
-          // if not enabled or playback is not keep up with live, ignore the danmaku
-          if (!danmu_enabled || get_total() - video.currentTime > 5) {
-            danmu_records.push(event.payload);
-            return;
-          }
-          if (Object.keys(danmu_displayed).length > 1000) {
-            danmu_displayed = {};
-          }
-          danmu_displayed[event.payload.ts] = true;
+      // listen to danmaku event
+      await listen("danmu:" + room_id, (event: { payload: DanmuEntry }) => {
+        // if not enabled or playback is not keep up with live, ignore the danmaku
+        if (!danmu_enabled || get_total() - video.currentTime > 5) {
           danmu_records.push(event.payload);
-          danmu_handler(event.payload.content);
-        });
-      }
-
-      // create a danmaku toggle button
-      const danmakuToggle = document.createElement("button");
-      danmakuToggle.innerText = "弹幕已开启";
-      danmakuToggle.style.height = "30px";
-      danmakuToggle.style.backgroundColor = "rgba(0, 128, 255, 0.5)";
-      danmakuToggle.style.color = "white";
-      danmakuToggle.style.border = "1px solid gray";
-      danmakuToggle.style.padding = "0 10px";
-      danmakuToggle.style.boxSizing = "border-box";
-      danmakuToggle.style.fontSize = "1em";
-      danmakuToggle.addEventListener("click", async () => {
-        danmu_enabled = !danmu_enabled;
-        danmakuToggle.innerText = danmu_enabled ? "弹幕已开启" : "弹幕已关闭";
-        // clear background color
-        danmakuToggle.style.backgroundColor = danmu_enabled
-          ? "rgba(0, 128, 255, 0.5)"
-          : "rgba(255, 0, 0, 0.5)";
-      });
-
-      // create a area that overlay half top of the video, which shows danmakus floating from right to left
-      const overlay = document.createElement("div");
-      overlay.style.width = "100%";
-      overlay.style.height = "100%";
-      overlay.style.position = "absolute";
-      overlay.style.top = "0";
-      overlay.style.left = "0";
-      overlay.style.pointerEvents = "none";
-      overlay.style.zIndex = "30";
-      overlay.style.display = "flex";
-      overlay.style.alignItems = "center";
-      overlay.style.flexDirection = "column";
-      overlay.style.paddingTop = "10%";
-      // place overlay to the top of the video
-      video.parentElement.appendChild(overlay);
-
-      // Store the positions of the last few danmakus to avoid overlap
-      const danmakuPositions = [];
-
-      function danmu_handler(content: string) {
-        const danmaku = document.createElement("p");
-        danmaku.style.position = "absolute";
-
-        // Calculate a random position for the danmaku
-        let topPosition = 0;
-        let attempts = 0;
-        do {
-          topPosition = Math.random() * 30;
-          attempts++;
-        } while (
-          danmakuPositions.some((pos) => Math.abs(pos - topPosition) < 5) &&
-          attempts < 10
-        );
-
-        // Record the position
-        danmakuPositions.push(topPosition);
-        if (danmakuPositions.length > 10) {
-          danmakuPositions.shift(); // Keep the last 10 positions
+          return;
         }
+        if (Object.keys(danmu_displayed).length > 1000) {
+          danmu_displayed = {};
+        }
+        danmu_displayed[event.payload.ts] = true;
+        danmu_records.push(event.payload);
+        danmu_handler(event.payload.content);
+      });
+    }
 
-        danmaku.style.top = `${topPosition}%`;
-        danmaku.style.right = "0";
-        danmaku.style.color = "white";
-        danmaku.style.fontSize = "1.2em";
-        danmaku.style.whiteSpace = "nowrap";
-        danmaku.style.transform = "translateX(100%)";
-        danmaku.style.transition = "transform 10s linear";
-        danmaku.style.pointerEvents = "none";
-        danmaku.style.margin = "0";
-        danmaku.style.padding = "0";
-        danmaku.style.zIndex = "500";
-        danmaku.style.textShadow = "1px 1px 2px rgba(0, 0, 0, 0.6)";
-        danmaku.innerText = content;
-        overlay.appendChild(danmaku);
-        requestAnimationFrame(() => {
-          danmaku.style.transform = `translateX(-${overlay.clientWidth + danmaku.clientWidth}px)`;
-        });
-        danmaku.addEventListener("transitionend", () => {
-          overlay.removeChild(danmaku);
-        });
+    // create a danmaku toggle button
+    const danmakuToggle = document.createElement("button");
+    danmakuToggle.innerText = "弹幕已开启";
+    danmakuToggle.style.height = "30px";
+    danmakuToggle.style.backgroundColor = "rgba(0, 128, 255, 0.5)";
+    danmakuToggle.style.color = "white";
+    danmakuToggle.style.border = "1px solid gray";
+    danmakuToggle.style.padding = "0 10px";
+    danmakuToggle.style.boxSizing = "border-box";
+    danmakuToggle.style.fontSize = "1em";
+    danmakuToggle.addEventListener("click", async () => {
+      danmu_enabled = !danmu_enabled;
+      danmakuToggle.innerText = danmu_enabled ? "弹幕已开启" : "弹幕已关闭";
+      // clear background color
+      danmakuToggle.style.backgroundColor = danmu_enabled
+        ? "rgba(0, 128, 255, 0.5)"
+        : "rgba(255, 0, 0, 0.5)";
+    });
+
+    // create a area that overlay half top of the video, which shows danmakus floating from right to left
+    const overlay = document.createElement("div");
+    overlay.style.width = "100%";
+    overlay.style.height = "100%";
+    overlay.style.position = "absolute";
+    overlay.style.top = "0";
+    overlay.style.left = "0";
+    overlay.style.pointerEvents = "none";
+    overlay.style.zIndex = "30";
+    overlay.style.display = "flex";
+    overlay.style.alignItems = "center";
+    overlay.style.flexDirection = "column";
+    overlay.style.paddingTop = "10%";
+    // place overlay to the top of the video
+    video.parentElement.appendChild(overlay);
+
+    // Store the positions of the last few danmakus to avoid overlap
+    const danmakuPositions = [];
+
+    function danmu_handler(content: string) {
+      const danmaku = document.createElement("p");
+      danmaku.style.position = "absolute";
+
+      // Calculate a random position for the danmaku
+      let topPosition = 0;
+      let attempts = 0;
+      do {
+        topPosition = Math.random() * 30;
+        attempts++;
+      } while (
+        danmakuPositions.some((pos) => Math.abs(pos - topPosition) < 5) &&
+        attempts < 10
+      );
+
+      // Record the position
+      danmakuPositions.push(topPosition);
+      if (danmakuPositions.length > 10) {
+        danmakuPositions.shift(); // Keep the last 10 positions
       }
 
-      shakaSpacer.appendChild(danmakuToggle);
+      danmaku.style.top = `${topPosition}%`;
+      danmaku.style.right = "0";
+      danmaku.style.color = "white";
+      danmaku.style.fontSize = "1.2em";
+      danmaku.style.whiteSpace = "nowrap";
+      danmaku.style.transform = "translateX(100%)";
+      danmaku.style.transition = "transform 10s linear";
+      danmaku.style.pointerEvents = "none";
+      danmaku.style.margin = "0";
+      danmaku.style.padding = "0";
+      danmaku.style.zIndex = "500";
+      danmaku.style.textShadow = "1px 1px 2px rgba(0, 0, 0, 0.6)";
+      danmaku.innerText = content;
+      overlay.appendChild(danmaku);
+      requestAnimationFrame(() => {
+        danmaku.style.transform = `translateX(-${overlay.clientWidth + danmaku.clientWidth}px)`;
+      });
+      danmaku.addEventListener("transitionend", () => {
+        overlay.removeChild(danmaku);
+      });
     }
+
+    shakaSpacer.appendChild(danmakuToggle);
 
     // create a playback rate select to of shaka-spacer
     const playbackRateSelect = document.createElement("select");
@@ -501,52 +500,50 @@
 
     let danmu_statistics: { ts: number; count: number }[] = [];
 
-    if (platform == "bilibili") {
-      // create a danmu statistics select into shaka-spacer
-      let statisticKey = "";
-      const statisticKeyInput = document.createElement("input");
-      statisticKeyInput.style.height = "30px";
-      statisticKeyInput.style.width = "100px";
-      statisticKeyInput.style.backgroundColor = "rgba(0, 0, 0, 0.5)";
-      statisticKeyInput.style.color = "white";
-      statisticKeyInput.style.border = "1px solid gray";
-      statisticKeyInput.style.padding = "0 10px";
-      statisticKeyInput.style.boxSizing = "border-box";
-      statisticKeyInput.style.fontSize = "1em";
-      statisticKeyInput.style.right = "75px";
-      statisticKeyInput.placeholder = "弹幕统计过滤";
-      statisticKeyInput.style.position = "absolute";
+    // create a danmu statistics select into shaka-spacer
+    let statisticKey = "";
+    const statisticKeyInput = document.createElement("input");
+    statisticKeyInput.style.height = "30px";
+    statisticKeyInput.style.width = "100px";
+    statisticKeyInput.style.backgroundColor = "rgba(0, 0, 0, 0.5)";
+    statisticKeyInput.style.color = "white";
+    statisticKeyInput.style.border = "1px solid gray";
+    statisticKeyInput.style.padding = "0 10px";
+    statisticKeyInput.style.boxSizing = "border-box";
+    statisticKeyInput.style.fontSize = "1em";
+    statisticKeyInput.style.right = "75px";
+    statisticKeyInput.placeholder = "弹幕统计过滤";
+    statisticKeyInput.style.position = "absolute";
 
-      function update_statistics() {
-        let counts = {};
-        danmu_records.forEach((e) => {
-          if (statisticKey != "" && !e.content.includes(statisticKey)) {
-            return;
-          }
-          const timeSlot = Math.floor(e.ts / 10000) * 10000; // 将时间戳向下取整到10秒
-          counts[timeSlot] = (counts[timeSlot] || 0) + 1;
-        });
-        danmu_statistics = [];
-        for (let ts in counts) {
-          danmu_statistics.push({ ts: parseInt(ts), count: counts[ts] });
+    function update_statistics() {
+      let counts = {};
+      danmu_records.forEach((e) => {
+        if (statisticKey != "" && !e.content.includes(statisticKey)) {
+          return;
         }
-      }
-
-      update_statistics();
-
-      if (isLive()) {
-        setInterval(async () => {
-          update_statistics();
-        }, 10 * 1000);
-      }
-
-      statisticKeyInput.addEventListener("change", () => {
-        statisticKey = statisticKeyInput.value;
-        update_statistics();
+        const timeSlot = Math.floor(e.ts / 10000) * 10000; // 将时间戳向下取整到10秒
+        counts[timeSlot] = (counts[timeSlot] || 0) + 1;
       });
-
-      shakaSpacer.appendChild(statisticKeyInput);
+      danmu_statistics = [];
+      for (let ts in counts) {
+        danmu_statistics.push({ ts: parseInt(ts), count: counts[ts] });
+      }
     }
+
+    update_statistics();
+
+    if (isLive()) {
+      setInterval(async () => {
+        update_statistics();
+      }, 10 * 1000);
+    }
+
+    statisticKeyInput.addEventListener("change", () => {
+      statisticKey = statisticKeyInput.value;
+      update_statistics();
+    });
+
+    shakaSpacer.appendChild(statisticKeyInput);
 
     // shaka-spacer should be flex-direction: column
     shakaSpacer.style.flexDirection = "column";
@@ -671,11 +668,11 @@
     });
 
     const seekbarContainer = selfSeekbar.querySelector(
-      ".shaka-seek-bar-container.self-defined",
+      ".shaka-seek-bar-container.self-defined"
     ) as HTMLElement;
 
     const statisticGraph = document.createElement(
-      "canvas",
+      "canvas"
     ) as HTMLCanvasElement;
     statisticGraph.style.pointerEvents = "none";
     statisticGraph.style.position = "absolute";
@@ -768,7 +765,7 @@
       }%, rgba(255, 255, 255, 0.2) ${first_point * 100}%)`;
       // render markers in shaka-ad-markers
       const adMarkers = document.querySelector(
-        ".shaka-ad-markers",
+        ".shaka-ad-markers"
       ) as HTMLElement;
       if (adMarkers) {
         // clean previous markers

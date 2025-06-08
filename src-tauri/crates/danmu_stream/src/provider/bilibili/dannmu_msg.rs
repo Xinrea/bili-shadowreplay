@@ -1,8 +1,9 @@
 use serde::Deserialize;
 
-use crate::{DanmmuStreamError, provider::bilibili::stream::WsStreamCtx};
+use crate::{provider::bilibili::stream::WsStreamCtx, DanmmuStreamError};
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct BiliDanmuMessage {
     pub uid: u64,
     pub username: String,
@@ -29,7 +30,7 @@ impl BiliDanmuMessage {
             })?
             .to_owned();
 
-        let uid = array_2.get(0).and_then(|x| x.as_u64()).ok_or_else(|| {
+        let uid = array_2.first().and_then(|x| x.as_u64()).ok_or_else(|| {
             DanmmuStreamError::MessageParseError {
                 err: "uid is None".to_string(),
             }
@@ -64,10 +65,10 @@ impl BiliDanmuMessage {
             .and_then(|x| x.as_str())
             .map(|x| x.to_owned());
 
-        let fan_level = array_3.get(0).and_then(|x| x.as_u64());
+        let fan_level = array_3.first().and_then(|x| x.as_u64());
 
         let timestamp = info
-            .get(0)
+            .first()
             .and_then(|x| x.as_array())
             .and_then(|x| x.get(4))
             .and_then(|x| x.as_i64())

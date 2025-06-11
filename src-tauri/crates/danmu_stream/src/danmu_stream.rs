@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     provider::{new, DanmuProvider, ProviderType},
-    DanmmuStreamError, DanmuMessageType,
+    DanmuMessageType, DanmuStreamError,
 };
 use tokio::sync::{mpsc, RwLock};
 
@@ -20,7 +20,7 @@ impl DanmuStream {
         provider_type: ProviderType,
         identifier: &str,
         room_id: u64,
-    ) -> Result<Self, DanmmuStreamError> {
+    ) -> Result<Self, DanmuStreamError> {
         let (tx, rx) = mpsc::unbounded_channel();
         let provider = new(provider_type, identifier, room_id).await?;
         Ok(Self {
@@ -33,18 +33,18 @@ impl DanmuStream {
         })
     }
 
-    pub async fn start(&self) -> Result<(), DanmmuStreamError> {
+    pub async fn start(&self) -> Result<(), DanmuStreamError> {
         self.provider.write().await.start(self.tx.clone()).await
     }
 
-    pub async fn stop(&self) -> Result<(), DanmmuStreamError> {
+    pub async fn stop(&self) -> Result<(), DanmuStreamError> {
         self.provider.write().await.stop().await?;
         // close channel
         self.rx.write().await.close();
         Ok(())
     }
 
-    pub async fn recv(&self) -> Result<Option<DanmuMessageType>, DanmmuStreamError> {
+    pub async fn recv(&self) -> Result<Option<DanmuMessageType>, DanmuStreamError> {
         Ok(self.rx.write().await.recv().await)
     }
 }

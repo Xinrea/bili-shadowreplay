@@ -424,7 +424,7 @@ impl BiliRecorder {
             } else {
                 log::error!("Failed to receive danmu message");
                 return Err(super::errors::RecorderError::DanmuStreamError {
-                    err: danmu_stream::DanmmuStreamError::WebsocketError {
+                    err: danmu_stream::DanmuStreamError::WebsocketError {
                         err: "Failed to receive danmu message".to_string(),
                     },
                 });

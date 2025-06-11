@@ -19,5 +19,5 @@ custom_error! {pub RecorderError
     BiliClientError {err: super::bilibili::errors::BiliClientError} = "BiliClient error: {err}",
     DouyinClientError {err: DouyinClientError} = "DouyinClient error: {err}",
     IoError {err: std::io::Error} = "IO error: {err}",
-    DanmuStreamError {err: danmu_stream::DanmmuStreamError} = "Danmu stream error: {err}",
+    DanmuStreamError {err: danmu_stream::DanmuStreamError} = "Danmu stream error: {err}",
 }

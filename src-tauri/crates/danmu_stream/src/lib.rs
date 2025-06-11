@@ -4,7 +4,7 @@ pub mod provider;
 
 use custom_error::custom_error;
 
-custom_error! {pub DanmmuStreamError
+custom_error! {pub DanmuStreamError
     HttpError {err: reqwest::Error} = "HttpError {err}",
     ParseError {err: url::ParseError} = "ParseError {err}",
     WebsocketError {err: String } = "WebsocketError {err}",

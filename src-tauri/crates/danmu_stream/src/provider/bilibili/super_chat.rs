@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::{provider::bilibili::stream::WsStreamCtx, DanmmuStreamError};
+use crate::{provider::bilibili::stream::WsStreamCtx, DanmuStreamError};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -18,25 +18,25 @@ pub struct SuperChatMessage {
 
 #[allow(dead_code)]
 impl SuperChatMessage {
-    pub fn new_from_ctx(ctx: &WsStreamCtx) -> Result<Self, DanmmuStreamError> {
+    pub fn new_from_ctx(ctx: &WsStreamCtx) -> Result<Self, DanmuStreamError> {
         let data = ctx
             .data
             .as_ref()
-            .ok_or_else(|| DanmmuStreamError::MessageParseError {
+            .ok_or_else(|| DanmuStreamError::MessageParseError {
                 err: "data is None".to_string(),
             })?;
 
         let user_info =
             data.user_info
                 .as_ref()
-                .ok_or_else(|| DanmmuStreamError::MessageParseError {
+                .ok_or_else(|| DanmuStreamError::MessageParseError {
                     err: "user_info is None".to_string(),
                 })?;
 
         let uname = user_info.uname.to_owned();
 
         let uid = data.uid.as_ref().and_then(|x| x.as_u64()).ok_or_else(|| {
-            DanmmuStreamError::MessageParseError {
+            DanmuStreamError::MessageParseError {
                 err: "uid is None".to_string(),
             }
         })?;
@@ -45,26 +45,26 @@ impl SuperChatMessage {
 
         let price = data
             .price
-            .ok_or_else(|| DanmmuStreamError::MessageParseError {
+            .ok_or_else(|| DanmuStreamError::MessageParseError {
                 err: "price is None".to_string(),
             })?;
 
         let start_time = data
             .start_time
-            .ok_or_else(|| DanmmuStreamError::MessageParseError {
+            .ok_or_else(|| DanmuStreamError::MessageParseError {
                 err: "start_time is None".to_string(),
             })?;
 
         let time = data
             .time
-            .ok_or_else(|| DanmmuStreamError::MessageParseError {
+            .ok_or_else(|| DanmuStreamError::MessageParseError {
                 err: "time is None".to_string(),
             })?;
 
         let msg = data
             .message
             .as_ref()
-            .ok_or_else(|| DanmmuStreamError::MessageParseError {
+            .ok_or_else(|| DanmuStreamError::MessageParseError {
                 err: "message is None".to_string(),
             })?
             .to_owned();

@@ -1,4 +1,4 @@
-use crate::{provider::bilibili::stream::WsStreamCtx, DanmmuStreamError};
+use crate::{provider::bilibili::stream::WsStreamCtx, DanmuStreamError};
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -11,18 +11,18 @@ pub struct InteractWord {
 
 #[allow(dead_code)]
 impl InteractWord {
-    pub fn new_from_ctx(ctx: &WsStreamCtx) -> Result<Self, DanmmuStreamError> {
+    pub fn new_from_ctx(ctx: &WsStreamCtx) -> Result<Self, DanmuStreamError> {
         let data = ctx
             .data
             .as_ref()
-            .ok_or_else(|| DanmmuStreamError::MessageParseError {
+            .ok_or_else(|| DanmuStreamError::MessageParseError {
                 err: "data is None".to_string(),
             })?;
 
         let uname = data
             .uname
             .as_ref()
-            .ok_or_else(|| DanmmuStreamError::MessageParseError {
+            .ok_or_else(|| DanmuStreamError::MessageParseError {
                 err: "uname is None".to_string(),
             })?
             .to_string();
@@ -30,11 +30,11 @@ impl InteractWord {
         let uid = data
             .uid
             .as_ref()
-            .ok_or_else(|| DanmmuStreamError::MessageParseError {
+            .ok_or_else(|| DanmuStreamError::MessageParseError {
                 err: "uid is None".to_string(),
             })?
             .as_u64()
-            .ok_or_else(|| DanmmuStreamError::MessageParseError {
+            .ok_or_else(|| DanmuStreamError::MessageParseError {
                 err: "uid is None".to_string(),
             })?;
 

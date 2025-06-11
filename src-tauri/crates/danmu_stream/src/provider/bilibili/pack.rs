@@ -6,7 +6,7 @@ use flate2::read::ZlibDecoder;
 use scroll::Pread;
 use scroll_derive::Pread;
 
-use crate::DanmmuStreamError;
+use crate::DanmuStreamError;
 
 #[derive(Debug, Pread, Clone)]
 struct BilibiliPackHeader {
@@ -24,10 +24,10 @@ struct PackHotCount {
 
 type BilibiliPackCtx<'a> = (BilibiliPackHeader, &'a [u8]);
 
-fn pack(buffer: &[u8]) -> Result<BilibiliPackCtx, DanmmuStreamError> {
+fn pack(buffer: &[u8]) -> Result<BilibiliPackCtx, DanmuStreamError> {
     let data = buffer
         .pread_with(0, scroll::BE)
-        .map_err(|e: scroll::Error| DanmmuStreamError::PackError { err: e.to_string() })?;
+        .map_err(|e: scroll::Error| DanmuStreamError::PackError { err: e.to_string() })?;
 
     let buf = &buffer[16..];
 
@@ -56,27 +56,27 @@ pub fn encode(s: &str, op: u8) -> Vec<u8> {
     [&header, data].concat()
 }
 
-pub fn build_pack(buf: &[u8]) -> Result<Vec<String>, DanmmuStreamError> {
+pub fn build_pack(buf: &[u8]) -> Result<Vec<String>, DanmuStreamError> {
     let ctx = pack(buf)?;
     let msgs = decode(ctx)?;
 
     Ok(msgs)
 }
 
-fn get_hot_count(body: &[u8]) -> Result<u32, DanmmuStreamError> {
+fn get_hot_count(body: &[u8]) -> Result<u32, DanmuStreamError> {
     let count = body
         .pread_with::<PackHotCount>(0, scroll::BE)
-        .map_err(|e| DanmmuStreamError::PackError { err: e.to_string() })?
+        .map_err(|e| DanmuStreamError::PackError { err: e.to_string() })?
         .count;
 
     Ok(count)
 }
 
-fn zlib_decode(body: &[u8]) -> Result<(BilibiliPackHeader, Vec<u8>), DanmmuStreamError> {
+fn zlib_decode(body: &[u8]) -> Result<(BilibiliPackHeader, Vec<u8>), DanmuStreamError> {
     let mut buf = vec![];
     let mut z = ZlibDecoder::new(body);
     z.read_to_end(&mut buf)
-        .map_err(|e| DanmmuStreamError::PackError { err: e.to_string() })?;
+        .map_err(|e| DanmuStreamError::PackError { err: e.to_string() })?;
 
     let ctx = pack(&buf)?;
     let header = ctx.0;
@@ -85,7 +85,7 @@ fn zlib_decode(body: &[u8]) -> Result<(BilibiliPackHeader, Vec<u8>), DanmmuStrea
     Ok((header, buf))
 }
 
-fn decode(ctx: BilibiliPackCtx) -> Result<Vec<String>, DanmmuStreamError> {
+fn decode(ctx: BilibiliPackCtx) -> Result<Vec<String>, DanmuStreamError> {
     let (mut header, body) = ctx;
 
     let mut buf = body.to_vec();
@@ -102,13 +102,13 @@ fn decode(ctx: BilibiliPackCtx) -> Result<Vec<String>, DanmmuStreamError> {
     let msgs = match header.ver {
         0 => split_msgs(buf, header)?,
         1 => vec![format!("{{\"count\": {}}}", get_hot_count(&buf)?)],
-        x => return Err(DanmmuStreamError::UnsupportProto { proto: x }),
+        x => return Err(DanmuStreamError::UnsupportProto { proto: x }),
     };
 
     Ok(msgs)
 }
 
-fn split_msgs(buf: Vec<u8>, header: BilibiliPackHeader) -> Result<Vec<String>, DanmmuStreamError> {
+fn split_msgs(buf: Vec<u8>, header: BilibiliPackHeader) -> Result<Vec<String>, DanmuStreamError> {
     let mut buf = buf;
     let mut header = header;
     let mut msgs = vec![];
@@ -117,21 +117,21 @@ fn split_msgs(buf: Vec<u8>, header: BilibiliPackHeader) -> Result<Vec<String>, D
 
     msgs.push(
         std::str::from_utf8(&buf[..(header.pack_len - 16) as usize])
-            .map_err(|e| DanmmuStreamError::PackError { err: e.to_string() })?
+            .map_err(|e| DanmuStreamError::PackError { err: e.to_string() })?
             .to_string(),
     );
     buf = buf[(header.pack_len - 16) as usize..].to_vec();
     offset += header.pack_len - 16;
 
     while offset != buf_len as u32 {
-        let ctx = pack(&buf).map_err(|e| DanmmuStreamError::PackError { err: e.to_string() })?;
+        let ctx = pack(&buf).map_err(|e| DanmuStreamError::PackError { err: e.to_string() })?;
 
         header = ctx.0;
         buf = ctx.1.to_vec();
 
         msgs.push(
             std::str::from_utf8(&buf[..(header.pack_len - 16) as usize])
-                .map_err(|e| DanmmuStreamError::PackError { err: e.to_string() })?
+                .map_err(|e| DanmuStreamError::PackError { err: e.to_string() })?
                 .to_string(),
         );
 
@@ -143,16 +143,16 @@ fn split_msgs(buf: Vec<u8>, header: BilibiliPackHeader) -> Result<Vec<String>, D
     Ok(msgs)
 }
 
-fn brotli_decode(body: &[u8]) -> Result<(BilibiliPackHeader, Vec<u8>), DanmmuStreamError> {
+fn brotli_decode(body: &[u8]) -> Result<(BilibiliPackHeader, Vec<u8>), DanmuStreamError> {
     let mut reader = brotli::Decompressor::new(body, 4096);
 
     let mut buf = Vec::new();
 
     reader
         .read_to_end(&mut buf)
-        .map_err(|e| DanmmuStreamError::PackError { err: e.to_string() })?;
+        .map_err(|e| DanmuStreamError::PackError { err: e.to_string() })?;
 
-    let ctx = pack(&buf).map_err(|e| DanmmuStreamError::PackError { err: e.to_string() })?;
+    let ctx = pack(&buf).map_err(|e| DanmuStreamError::PackError { err: e.to_string() })?;
 
     let header = ctx.0;
     let buf = ctx.1.to_vec();

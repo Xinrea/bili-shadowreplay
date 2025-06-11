@@ -3,7 +3,7 @@ use serde_json::Value;
 
 use crate::{
     provider::{bilibili::dannmu_msg::BiliDanmuMessage, DanmuMessageType},
-    DanmmuStreamError, DanmuMessage,
+    DanmuStreamError, DanmuMessage,
 };
 
 #[derive(Debug, Deserialize, Clone)]
@@ -50,13 +50,13 @@ pub struct WsStreamCtxDataUser {
 }
 
 impl WsStreamCtx {
-    pub fn new(s: &str) -> Result<Self, DanmmuStreamError> {
-        serde_json::from_str(s).map_err(|_| DanmmuStreamError::MessageParseError {
+    pub fn new(s: &str) -> Result<Self, DanmuStreamError> {
+        serde_json::from_str(s).map_err(|_| DanmuStreamError::MessageParseError {
             err: "Failed to parse message".to_string(),
         })
     }
 
-    pub fn match_msg(&self) -> Result<DanmuMessageType, DanmmuStreamError> {
+    pub fn match_msg(&self) -> Result<DanmuMessageType, DanmuStreamError> {
         let cmd = self.handle_cmd();
 
         let danmu_msg = match cmd {
@@ -74,7 +74,7 @@ impl WsStreamCtx {
                 timestamp: danmu_msg.timestamp,
             }))
         } else {
-            Err(DanmmuStreamError::MessageParseError {
+            Err(DanmuStreamError::MessageParseError {
                 err: "Unknown message".to_string(),
             })
         }

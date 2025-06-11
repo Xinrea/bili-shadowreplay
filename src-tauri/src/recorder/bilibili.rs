@@ -14,16 +14,15 @@ use super::danmu::{DanmuEntry, DanmuStorage};
 use super::entry::TsEntry;
 use chrono::Utc;
 use client::{BiliClient, BiliStream, RoomInfo, StreamType, UserInfo};
+use danmu_stream::danmu_stream::DanmuStream;
+use danmu_stream::provider::ProviderType;
+use danmu_stream::DanmuMessageType;
 use errors::BiliClientError;
-use felgens::{ws_socket_object, FelgensError, WsStreamMessageType};
 use m3u8_rs::{Playlist, QuotedOrUnquoted, VariantStream};
-use rand::Rng;
 use regex::Regex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread;
 use std::time::Duration;
-use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio::sync::{broadcast, Mutex, RwLock};
 use url::Url;
 
@@ -32,7 +31,7 @@ use crate::database::{Database, DatabaseError};
 
 use async_trait::async_trait;
 
-#[cfg(not(feature = "headless"))]
+#[cfg(feature = "gui")]
 use {tauri::AppHandle, tauri_plugin_notification::NotificationExt};
 
 /// A recorder for BiliBili live streams
@@ -42,7 +41,7 @@ use {tauri::AppHandle, tauri_plugin_notification::NotificationExt};
 // TODO implement StreamType::TS
 #[derive(Clone)]
 pub struct BiliRecorder {
-    #[cfg(not(feature = "headless"))]
+    #[cfg(feature = "gui")]
     app_handle: AppHandle,
     emitter: EventEmitter,
     client: Arc<RwLock<BiliClient>>,
@@ -64,6 +63,8 @@ pub struct BiliRecorder {
     danmu_storage: Arc<RwLock<Option<DanmuStorage>>>,
     live_end_channel: broadcast::Sender<RecorderEvent>,
     enabled: Arc<RwLock<bool>>,
+
+    danmu_stream: Arc<RwLock<Option<DanmuStream>>>,
 }
 
 impl From<DatabaseError> for super::errors::RecorderError {
@@ -79,7 +80,7 @@ impl From<BiliClientError> for super::errors::RecorderError {
 }
 
 pub struct BiliRecorderOptions {
-    #[cfg(not(feature = "headless"))]
+    #[cfg(feature = "gui")]
     pub app_handle: AppHandle,
     pub emitter: EventEmitter,
     pub db: Arc<Database>,
@@ -111,7 +112,7 @@ impl BiliRecorder {
         }
 
         let recorder = Self {
-            #[cfg(not(feature = "headless"))]
+            #[cfg(feature = "gui")]
             app_handle: options.app_handle,
             emitter: options.emitter,
             client: Arc::new(RwLock::new(client)),
@@ -133,6 +134,7 @@ impl BiliRecorder {
             danmu_storage: Arc::new(RwLock::new(None)),
             live_end_channel: options.channel,
             enabled: Arc::new(RwLock::new(options.auto_start)),
+            danmu_stream: Arc::new(RwLock::new(None)),
         };
         log::info!("Recorder for room {} created.", options.room_id);
         Ok(recorder)
@@ -177,7 +179,7 @@ impl BiliRecorder {
 
                     if live_status {
                         if self.config.read().await.live_start_notify {
-                            #[cfg(not(feature = "headless"))]
+                            #[cfg(feature = "gui")]
                             self.app_handle
                                 .notification()
                                 .builder()
@@ -202,7 +204,7 @@ impl BiliRecorder {
                             *self.cover.write().await = Some(cover_base64);
                         }
                     } else if self.config.read().await.live_end_notify {
-                        #[cfg(not(feature = "headless"))]
+                        #[cfg(feature = "gui")]
                         self.app_handle
                             .notification()
                             .builder()
@@ -372,47 +374,62 @@ impl BiliRecorder {
         Ok(stream)
     }
 
-    async fn danmu(&self) {
+    async fn danmu(&self) -> Result<(), super::errors::RecorderError> {
         let cookies = self.account.cookies.clone();
-        let uid: u64 = self.account.uid;
-        while !*self.quit.lock().await {
-            let (tx, rx) = mpsc::unbounded_channel();
-            let ws = ws_socket_object(tx, uid, self.room_id, cookies.as_str());
-            if let Err(e) = tokio::select! {v = ws => v, v = self.recv(self.room_id,rx) => v} {
-                log::error!("danmu error: {}", e);
-            }
-            // reconnect after 3s
-            log::warn!("danmu will reconnect after 3s");
-            tokio::time::sleep(Duration::from_secs(3)).await;
+        let room_id = self.room_id;
+        let danmu_stream = DanmuStream::new(ProviderType::BiliBili, &cookies, room_id).await;
+        if danmu_stream.is_err() {
+            let err = danmu_stream.err().unwrap();
+            log::error!("Failed to create danmu stream: {}", err);
+            return Err(super::errors::RecorderError::DanmuStreamError { err });
         }
+        let danmu_stream = danmu_stream.unwrap();
+        *self.danmu_stream.write().await = Some(danmu_stream);
 
-        log::info!("danmu thread {} quit.", self.room_id);
-    }
+        // create a task to receive danmu message
+        let self_clone = self.clone();
+        tokio::spawn(async move {
+            let _ = self_clone
+                .danmu_stream
+                .read()
+                .await
+                .as_ref()
+                .unwrap()
+                .start()
+                .await;
+        });
 
-    async fn recv(
-        &self,
-        room: u64,
-        mut rx: UnboundedReceiver<WsStreamMessageType>,
-    ) -> Result<(), FelgensError> {
-        while let Some(msg) = rx.recv().await {
-            if *self.quit.lock().await {
-                break;
-            }
-            if let WsStreamMessageType::DanmuMsg(msg) = msg {
-                self.emitter.emit(&Event::DanmuReceived {
-                    room,
-                    ts: msg.timestamp as i64,
-                    content: msg.msg.clone(),
-                });
-                if *self.live_status.read().await {
-                    // save danmu
-                    if let Some(storage) = self.danmu_storage.write().await.as_ref() {
-                        storage.add_line(msg.timestamp as i64, &msg.msg).await;
+        loop {
+            if let Ok(Some(msg)) = self
+                .danmu_stream
+                .read()
+                .await
+                .as_ref()
+                .unwrap()
+                .recv()
+                .await
+            {
+                match msg {
+                    DanmuMessageType::DanmuMessage(danmu) => {
+                        self.emitter.emit(&Event::DanmuReceived {
+                            room: self.room_id,
+                            ts: danmu.timestamp,
+                            content: danmu.message.clone(),
+                        });
+                        if let Some(storage) = self.danmu_storage.write().await.as_ref() {
+                            storage.add_line(danmu.timestamp, &danmu.message).await;
+                        }
                     }
                 }
+            } else {
+                log::error!("Failed to receive danmu message");
+                return Err(super::errors::RecorderError::DanmuStreamError {
+                    err: danmu_stream::DanmuStreamError::WebsocketError {
+                        err: "Failed to receive danmu message".to_string(),
+                    },
+                });
             }
         }
-        Ok(())
     }
 
     async fn get_playlist(&self) -> Result<Playlist, super::errors::RecorderError> {
@@ -768,13 +785,12 @@ impl BiliRecorder {
         // check stream is nearly expired
         // WHY: when program started, all stream is fetched nearly at the same time, so they will expire toggether,
         // this might meet server rate limit. So we add a random offset to make request spread over time.
-        let mut rng = rand::thread_rng();
-        let pre_offset = rng.gen_range(120..=300);
-        // no need to update stream as it's not expired yet
+        let pre_offset = rand::random::<u64>() % 181 + 120; // Random number between 120 and 300
+                                                            // no need to update stream as it's not expired yet
         let current_stream = self.live_stream.read().await.clone();
         if current_stream
             .as_ref()
-            .is_some_and(|s| s.expire - Utc::now().timestamp() < pre_offset)
+            .is_some_and(|s| s.expire - Utc::now().timestamp() < pre_offset as i64)
         {
             log::info!("Stream is nearly expired, force update");
             self.force_update.store(true, Ordering::Relaxed);
@@ -824,74 +840,64 @@ impl BiliRecorder {
 impl super::Recorder for BiliRecorder {
     async fn run(&self) {
         let self_clone = self.clone();
-        thread::spawn(move || {
-            let runtime = tokio::runtime::Runtime::new().unwrap();
-            runtime.block_on(async move {
-                while !*self_clone.quit.lock().await {
-                    let mut connection_fail_count = 0;
-                    let mut rng = rand::thread_rng();
-                    if self_clone.check_status().await {
-                        // Live status is ok, start recording.
-                        while self_clone.should_record().await {
-                            match self_clone.update_entries().await {
-                                Ok(ms) => {
-                                    if ms < 1000 {
-                                        thread::sleep(std::time::Duration::from_millis(
-                                            (1000 - ms) as u64,
-                                        ));
-                                    }
-                                    if ms >= 3000 {
-                                        log::warn!(
-                                            "[{}]Update entries cost too long: {}ms",
-                                            self_clone.room_id,
-                                            ms
-                                        );
-                                    }
-                                    *self_clone.is_recording.write().await = true;
-                                    connection_fail_count = 0;
+        tokio::spawn(async move {
+            log::info!("Start fetching danmu for room {}", self_clone.room_id);
+            let _ = self_clone.danmu().await;
+        });
+
+        let self_clone = self.clone();
+        tokio::spawn(async move {
+            log::info!("Start running recorder for room {}", self_clone.room_id);
+            while !*self_clone.quit.lock().await {
+                let mut connection_fail_count = 0;
+                if self_clone.check_status().await {
+                    // Live status is ok, start recording.
+                    while self_clone.should_record().await {
+                        match self_clone.update_entries().await {
+                            Ok(ms) => {
+                                if ms < 1000 {
+                                    tokio::time::sleep(Duration::from_millis((1000 - ms) as u64))
+                                        .await;
                                 }
-                                Err(e) => {
-                                    log::error!(
-                                        "[{}]Update entries error: {}",
+                                if ms >= 3000 {
+                                    log::warn!(
+                                        "[{}]Update entries cost too long: {}ms",
                                         self_clone.room_id,
-                                        e
+                                        ms
                                     );
-                                    if let RecorderError::BiliClientError { err: _ } = e {
-                                        connection_fail_count =
-                                            std::cmp::min(5, connection_fail_count + 1);
-                                    }
-                                    break;
                                 }
+                                *self_clone.is_recording.write().await = true;
+                                connection_fail_count = 0;
+                            }
+                            Err(e) => {
+                                log::error!("[{}]Update entries error: {}", self_clone.room_id, e);
+                                if let RecorderError::BiliClientError { err: _ } = e {
+                                    connection_fail_count =
+                                        std::cmp::min(5, connection_fail_count + 1);
+                                }
+                                break;
                             }
                         }
-                        *self_clone.is_recording.write().await = false;
-                        // go check status again after random 2-5 secs
-                        let secs = rng.gen_range(2..=5);
-                        tokio::time::sleep(Duration::from_secs(
-                            secs + 2_u64.pow(connection_fail_count),
-                        ))
-                        .await;
-                        continue;
                     }
-                    thread::sleep(std::time::Duration::from_secs(
-                        self_clone.config.read().await.status_check_interval,
-                    ));
+                    *self_clone.is_recording.write().await = false;
+                    // go check status again after random 2-5 secs
+                    let secs = rand::random::<u64>() % 4 + 2;
+                    tokio::time::sleep(Duration::from_secs(
+                        secs + 2_u64.pow(connection_fail_count),
+                    ))
+                    .await;
+                    continue;
                 }
-                log::info!("recording thread {} quit.", self_clone.room_id);
-            });
-        });
-        // Thread for danmaku
-        let self_clone = self.clone();
-        thread::spawn(move || {
-            let runtime = tokio::runtime::Runtime::new().unwrap();
-            runtime.block_on(async move {
-                self_clone.danmu().await;
-            });
+            }
         });
     }
 
     async fn stop(&self) {
         *self.quit.lock().await = true;
+        if let Some(danmu_stream) = self.danmu_stream.write().await.take() {
+            let _ = danmu_stream.stop().await;
+        }
+        log::info!("Recorder for room {} quit.", self.room_id);
     }
 
     /// timestamp is the id of live stream

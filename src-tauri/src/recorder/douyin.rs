@@ -7,15 +7,22 @@ use super::{
     UserInfo,
 };
 use crate::database::Database;
+use crate::progress_manager::Event;
+use crate::progress_reporter::EventEmitter;
 use crate::recorder_manager::RecorderEvent;
 use crate::{config::Config, database::account::AccountRow};
 use async_trait::async_trait;
 use chrono::Utc;
 use client::DouyinClientError;
+use danmu_stream::danmu_stream::DanmuStream;
+use danmu_stream::provider::ProviderType;
+use danmu_stream::DanmuMessageType;
 use rand::random;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, RwLock};
+
+use super::danmu::DanmuStorage;
 
 #[cfg(not(feature = "headless"))]
 use {tauri::AppHandle, tauri_plugin_notification::NotificationExt};
@@ -42,33 +49,40 @@ impl From<DouyinClientError> for RecorderError {
 pub struct DouyinRecorder {
     #[cfg(not(feature = "headless"))]
     app_handle: AppHandle,
+    emitter: EventEmitter,
     client: client::DouyinClient,
     db: Arc<Database>,
-    pub room_id: u64,
-    pub room_info: Arc<RwLock<Option<response::DouyinRoomInfoResponse>>>,
-    pub stream_url: Arc<RwLock<Option<String>>>,
-    pub entry_store: Arc<RwLock<Option<EntryStore>>>,
-    pub live_id: Arc<RwLock<String>>,
-    pub live_status: Arc<RwLock<LiveStatus>>,
+    account: AccountRow,
+    room_id: u64,
+    room_info: Arc<RwLock<Option<response::DouyinRoomInfoResponse>>>,
+    stream_url: Arc<RwLock<Option<String>>>,
+    entry_store: Arc<RwLock<Option<EntryStore>>>,
+    danmu_store: Arc<RwLock<Option<DanmuStorage>>>,
+    live_id: Arc<RwLock<String>>,
+    live_status: Arc<RwLock<LiveStatus>>,
     is_recording: Arc<RwLock<bool>>,
     running: Arc<RwLock<bool>>,
     last_update: Arc<RwLock<i64>>,
     config: Arc<RwLock<Config>>,
     live_end_channel: broadcast::Sender<RecorderEvent>,
     enabled: Arc<RwLock<bool>>,
+
+    danmu_stream: Arc<RwLock<Option<DanmuStream>>>,
 }
 
 impl DouyinRecorder {
+    #[allow(clippy::too_many_arguments)]
     pub async fn new(
         #[cfg(not(feature = "headless"))] app_handle: AppHandle,
+        emitter: EventEmitter,
         room_id: u64,
         config: Arc<RwLock<Config>>,
-        douyin_account: &AccountRow,
+        account: &AccountRow,
         db: &Arc<Database>,
         enabled: bool,
         channel: broadcast::Sender<RecorderEvent>,
     ) -> Result<Self, super::errors::RecorderError> {
-        let client = client::DouyinClient::new(douyin_account);
+        let client = client::DouyinClient::new(account);
         let room_info = client.get_room_info(room_id).await?;
         let mut live_status = LiveStatus::Offline;
         if room_info.data.room_status == 0 {
@@ -78,10 +92,13 @@ impl DouyinRecorder {
         Ok(Self {
             #[cfg(not(feature = "headless"))]
             app_handle,
+            emitter,
             db: db.clone(),
+            account: account.clone(),
             room_id,
             live_id: Arc::new(RwLock::new(String::new())),
             entry_store: Arc::new(RwLock::new(None)),
+            danmu_store: Arc::new(RwLock::new(None)),
             client,
             room_info: Arc::new(RwLock::new(Some(room_info))),
             stream_url: Arc::new(RwLock::new(None)),
@@ -92,6 +109,7 @@ impl DouyinRecorder {
             last_update: Arc::new(RwLock::new(Utc::now().timestamp())),
             config,
             live_end_channel: channel,
+            danmu_stream: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -210,6 +228,22 @@ impl DouyinRecorder {
                     let work_dir = self.get_work_dir(self.live_id.read().await.as_str()).await;
                     let entry_store = EntryStore::new(&work_dir).await;
                     *self.entry_store.write().await = Some(entry_store);
+
+                    // setup danmu store
+                    let danmu_file_path = format!("{}{}", work_dir, "danmu.txt");
+                    let danmu_store = DanmuStorage::new(&danmu_file_path).await;
+                    *self.danmu_store.write().await = danmu_store;
+
+                    // start danmu task
+                    if let Some(danmu_stream) = self.danmu_stream.write().await.take() {
+                        let _ = danmu_stream.stop().await;
+                    }
+                    let live_id = self.live_id.read().await.clone();
+                    let self_clone = self.clone();
+                    tokio::spawn(async move {
+                        log::info!("Start fetching danmu for live {}", live_id);
+                        let _ = self_clone.danmu().await;
+                    });
                 }
 
                 true
@@ -217,6 +251,69 @@ impl DouyinRecorder {
             Err(e) => {
                 log::error!("[{}]Update room status failed: {}", self.room_id, e);
                 *self.live_status.read().await == LiveStatus::Live
+            }
+        }
+    }
+
+    async fn danmu(&self) -> Result<(), super::errors::RecorderError> {
+        let cookies = self.account.cookies.clone();
+        let live_id = self
+            .live_id
+            .read()
+            .await
+            .clone()
+            .parse::<u64>()
+            .unwrap_or(0);
+        let danmu_stream = DanmuStream::new(ProviderType::Douyin, &cookies, live_id).await;
+        if danmu_stream.is_err() {
+            let err = danmu_stream.err().unwrap();
+            log::error!("Failed to create danmu stream: {}", err);
+            return Err(super::errors::RecorderError::DanmuStreamError { err });
+        }
+        let danmu_stream = danmu_stream.unwrap();
+        *self.danmu_stream.write().await = Some(danmu_stream);
+
+        let self_clone = self.clone();
+        tokio::spawn(async move {
+            let _ = self_clone
+                .danmu_stream
+                .read()
+                .await
+                .as_ref()
+                .unwrap()
+                .start()
+                .await;
+        });
+
+        loop {
+            if let Ok(Some(msg)) = self
+                .danmu_stream
+                .read()
+                .await
+                .as_ref()
+                .unwrap()
+                .recv()
+                .await
+            {
+                match msg {
+                    DanmuMessageType::DanmuMessage(danmu) => {
+                        self.emitter.emit(&Event::DanmuReceived {
+                            room: self.room_id,
+                            ts: danmu.timestamp,
+                            content: danmu.message.clone(),
+                        });
+                        if let Some(storage) = self.danmu_store.read().await.as_ref() {
+                            storage.add_line(danmu.timestamp, &danmu.message).await;
+                        }
+                    }
+                }
+            } else {
+                log::error!("Failed to receive danmu message");
+                return Err(super::errors::RecorderError::DanmuStreamError {
+                    err: danmu_stream::DanmuStreamError::WebsocketError {
+                        err: "Failed to receive danmu message".to_string(),
+                    },
+                });
             }
         }
     }

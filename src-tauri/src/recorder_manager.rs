@@ -358,6 +358,7 @@ impl RecorderManager {
                 DouyinRecorder::new(
                     #[cfg(not(feature = "headless"))]
                     self.app_handle.clone(),
+                    self.emitter.clone(),
                     room_id,
                     self.config.clone(),
                     account,

@@ -12,6 +12,7 @@ pub struct GeneralResponse {
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(untagged)]
+#[allow(clippy::large_enum_variant)]
 pub enum Data {
     VideoSubmit(VideoSubmitData),
     Cover(CoverData),

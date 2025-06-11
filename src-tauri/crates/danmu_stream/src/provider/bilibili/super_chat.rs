@@ -12,8 +12,8 @@ pub struct SuperChatMessage {
     pub start_time: u64,
     pub time: u32,
     pub msg: String,
-    pub madel_name: Option<String>,
-    pub madel_level: Option<u32>,
+    pub medal_name: Option<String>,
+    pub medal_level: Option<u32>,
 }
 
 #[allow(dead_code)]
@@ -69,14 +69,14 @@ impl SuperChatMessage {
             })?
             .to_owned();
 
-        let madel = data
+        let medal = data
             .medal_info
             .as_ref()
             .map(|x| (x.medal_name.to_owned(), x.medal_level.to_owned()));
 
-        let madel_name = madel.as_ref().and_then(|(name, _)| name.to_owned());
+        let medal_name = medal.as_ref().and_then(|(name, _)| name.to_owned());
 
-        let madel_level = madel.and_then(|(_, level)| level);
+        let medal_level = medal.and_then(|(_, level)| level);
 
         Ok(Self {
             uname,
@@ -86,8 +86,8 @@ impl SuperChatMessage {
             start_time,
             time,
             msg,
-            madel_name,
-            madel_level,
+            medal_name,
+            medal_level,
         })
     }
 }

@@ -92,8 +92,8 @@ fn decode(ctx: BilibiliPackCtx) -> Result<Vec<String>, DanmuStreamError> {
 
     loop {
         (header, buf) = match header.ver {
-            2 => zlib_decode(body)?,
-            3 => brotli_decode(body)?,
+            2 => zlib_decode(&buf)?,
+            3 => brotli_decode(&buf)?,
             0 | 1 => break,
             _ => break,
         }

@@ -242,7 +242,7 @@ impl BiliClient {
         let params = self.get_sign(params).await?;
         let mut headers = self.headers.clone();
         headers.insert("cookie", account.cookies.parse().unwrap());
-        let res: serde_json::Value = self
+        let resp = self
             .client
             .get(format!(
                 "https://api.bilibili.com/x/space/wbi/acc/info?{}",
@@ -250,15 +250,24 @@ impl BiliClient {
             ))
             .headers(headers)
             .send()
-            .await?
-            .json()
             .await?;
-        if res["code"].as_i64().unwrap_or(-1) != 0 {
-            log::error!(
-                "Get user info failed {}",
-                res["code"].as_i64().unwrap_or(-1)
-            );
-            return Err(BiliClientError::InvalidCode);
+
+        if !resp.status().is_success() {
+            if resp.status() == reqwest::StatusCode::PRECONDITION_FAILED {
+                return Err(BiliClientError::SecurityControlError);
+            }
+            return Err(BiliClientError::InvalidResponseStatus {
+                status: resp.status(),
+            });
+        }
+
+        let res: serde_json::Value = resp.json().await?;
+        let code = res["code"]
+            .as_u64()
+            .ok_or(BiliClientError::InvalidResponseJson { resp: res.clone() })?;
+        if code != 0 {
+            log::error!("Get user info failed {}", code);
+            return Err(BiliClientError::InvalidMessageCode { code });
         }
         Ok(UserInfo {
             user_id,
@@ -275,7 +284,7 @@ impl BiliClient {
     ) -> Result<RoomInfo, BiliClientError> {
         let mut headers = self.headers.clone();
         headers.insert("cookie", account.cookies.parse().unwrap());
-        let res: serde_json::Value = self
+        let response = self
             .client
             .get(format!(
                 "https://api.live.bilibili.com/room/v1/Room/get_info?room_id={}",
@@ -283,12 +292,23 @@ impl BiliClient {
             ))
             .headers(headers)
             .send()
-            .await?
-            .json()
             .await?;
-        let code = res["code"].as_u64().ok_or(BiliClientError::InvalidValue)?;
+
+        if !response.status().is_success() {
+            if response.status() == reqwest::StatusCode::PRECONDITION_FAILED {
+                return Err(BiliClientError::SecurityControlError);
+            }
+            return Err(BiliClientError::InvalidResponseStatus {
+                status: response.status(),
+            });
+        }
+
+        let res: serde_json::Value = response.json().await?;
+        let code = res["code"]
+            .as_u64()
+            .ok_or(BiliClientError::InvalidResponseJson { resp: res.clone() })?;
         if code != 0 {
-            return Err(BiliClientError::InvalidCode);
+            return Err(BiliClientError::InvalidMessageCode { code });
         }
 
         let room_id = res["data"]["room_id"]

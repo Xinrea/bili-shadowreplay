@@ -3,7 +3,9 @@ use custom_error::custom_error;
 custom_error! {pub BiliClientError
     InvalidResponse = "Invalid response",
     InitClientError = "Client init error",
-    InvalidCode = "Invalid Code",
+    InvalidResponseStatus{ status: reqwest::StatusCode } = "Invalid response status: {status}",
+    InvalidResponseJson{ resp: serde_json::Value } = "Invalid response json: {resp}",
+    InvalidMessageCode{ code: u64 } = "Invalid message code: {code}",
     InvalidValue = "Invalid value",
     InvalidUrl = "Invalid url",
     InvalidFormat = "Invalid stream format",
@@ -13,6 +15,7 @@ custom_error! {pub BiliClientError
     EmptyCache = "Empty cache",
     ClientError{err: reqwest::Error} = "Client error: {err}",
     IOError{err: std::io::Error} = "IO error: {err}",
+    SecurityControlError = "Security control error",
 }
 
 impl From<reqwest::Error> for BiliClientError {

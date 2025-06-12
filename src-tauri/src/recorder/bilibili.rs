@@ -888,6 +888,11 @@ impl super::Recorder for BiliRecorder {
                     .await;
                     continue;
                 }
+
+                tokio::time::sleep(Duration::from_secs(
+                    self_clone.config.read().await.status_check_interval,
+                ))
+                .await;
             }
         });
     }

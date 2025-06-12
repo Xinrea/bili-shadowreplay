@@ -6,6 +6,7 @@ use crate::{
 };
 use tokio::sync::{mpsc, RwLock};
 
+#[derive(Clone)]
 pub struct DanmuStream {
     pub provider_type: ProviderType,
     pub identifier: String,

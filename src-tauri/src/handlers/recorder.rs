@@ -79,6 +79,7 @@ pub async fn remove_recorder(
     platform: String,
     room_id: u64,
 ) -> Result<(), String> {
+    log::info!("Remove recorder: {} {}", platform, room_id);
     let platform = PlatformType::from_str(&platform).unwrap();
     match state
         .recorder_manager
@@ -90,9 +91,13 @@ pub async fn remove_recorder(
                 .db
                 .new_message("移除直播间", &format!("移除了直播间 {}", room_id))
                 .await?;
+            log::info!("Removed recorder: {} {}", platform.as_str(), room_id);
             Ok(state.db.remove_recorder(room_id).await?)
         }
-        Err(e) => Err(e.to_string()),
+        Err(e) => {
+            log::error!("Failed to remove recorder: {}", e);
+            Err(e.to_string())
+        }
     }
 }
 

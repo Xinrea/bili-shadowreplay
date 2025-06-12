@@ -16,7 +16,6 @@
   async function init() {
     try {
       b = await getImage(src);
-      console.log(b);
     } catch (e) {
       console.error(e);
     }

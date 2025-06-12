@@ -409,17 +409,21 @@ impl RecorderManager {
         }
 
         // add to to_remove
+        log::debug!("Add to to_remove: {}", recorder_id);
         self.to_remove.write().await.insert(recorder_id.clone());
 
         // stop recorder
+        log::debug!("Stop recorder: {}", recorder_id);
         if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
             recorder_ref.stop().await;
         }
 
         // remove recorder
+        log::debug!("Remove recorder from manager: {}", recorder_id);
         self.recorders.write().await.remove(&recorder_id);
 
         // remove from to_remove
+        log::debug!("Remove from to_remove: {}", recorder_id);
         self.to_remove.write().await.remove(&recorder_id);
 
         // remove related cache folder
@@ -429,6 +433,7 @@ impl RecorderManager {
             platform.as_str(),
             room_id
         );
+        log::debug!("Remove cache folder: {}", cache_folder);
         let _ = tokio::fs::remove_dir_all(cache_folder).await;
         log::info!("Recorder {} cache folder removed", room_id);
 

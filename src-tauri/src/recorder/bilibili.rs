@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::task::JoinHandle;
 use url::Url;
 
 use crate::config::Config;
@@ -64,7 +65,8 @@ pub struct BiliRecorder {
     live_end_channel: broadcast::Sender<RecorderEvent>,
     enabled: Arc<RwLock<bool>>,
 
-    danmu_stream: Arc<RwLock<Option<DanmuStream>>>,
+    danmu_task: Arc<Mutex<Option<JoinHandle<()>>>>,
+    record_task: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl From<DatabaseError> for super::errors::RecorderError {
@@ -134,7 +136,9 @@ impl BiliRecorder {
             danmu_storage: Arc::new(RwLock::new(None)),
             live_end_channel: options.channel,
             enabled: Arc::new(RwLock::new(options.auto_start)),
-            danmu_stream: Arc::new(RwLock::new(None)),
+
+            danmu_task: Arc::new(Mutex::new(None)),
+            record_task: Arc::new(Mutex::new(None)),
         };
         log::info!("Recorder for room {} created.", options.room_id);
         Ok(recorder)
@@ -384,31 +388,15 @@ impl BiliRecorder {
             return Err(super::errors::RecorderError::DanmuStreamError { err });
         }
         let danmu_stream = danmu_stream.unwrap();
-        *self.danmu_stream.write().await = Some(danmu_stream);
 
         // create a task to receive danmu message
-        let self_clone = self.clone();
+        let danmu_stream_clone = danmu_stream.clone();
         tokio::spawn(async move {
-            let _ = self_clone
-                .danmu_stream
-                .read()
-                .await
-                .as_ref()
-                .unwrap()
-                .start()
-                .await;
+            let _ = danmu_stream_clone.start().await;
         });
 
         loop {
-            if let Ok(Some(msg)) = self
-                .danmu_stream
-                .read()
-                .await
-                .as_ref()
-                .unwrap()
-                .recv()
-                .await
-            {
+            if let Ok(Some(msg)) = danmu_stream.recv().await {
                 match msg {
                     DanmuMessageType::DanmuMessage(danmu) => {
                         self.emitter.emit(&Event::DanmuReceived {
@@ -840,13 +828,13 @@ impl BiliRecorder {
 impl super::Recorder for BiliRecorder {
     async fn run(&self) {
         let self_clone = self.clone();
-        tokio::spawn(async move {
+        *self.danmu_task.lock().await = Some(tokio::spawn(async move {
             log::info!("Start fetching danmu for room {}", self_clone.room_id);
             let _ = self_clone.danmu().await;
-        });
+        }));
 
         let self_clone = self.clone();
-        tokio::spawn(async move {
+        *self.record_task.lock().await = Some(tokio::spawn(async move {
             log::info!("Start running recorder for room {}", self_clone.room_id);
             while !*self_clone.quit.lock().await {
                 let mut connection_fail_count = 0;
@@ -894,13 +882,17 @@ impl super::Recorder for BiliRecorder {
                 ))
                 .await;
             }
-        });
+        }));
     }
 
     async fn stop(&self) {
+        log::debug!("Stop recorder for room {}", self.room_id);
         *self.quit.lock().await = true;
-        if let Some(danmu_stream) = self.danmu_stream.write().await.take() {
-            let _ = danmu_stream.stop().await;
+        if let Some(danmu_task) = self.danmu_task.lock().await.as_mut() {
+            let _ = danmu_task.abort();
+        }
+        if let Some(record_task) = self.record_task.lock().await.as_mut() {
+            let _ = record_task.abort();
         }
         log::info!("Recorder for room {} quit.", self.room_id);
     }

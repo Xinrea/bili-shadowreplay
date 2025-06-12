@@ -20,7 +20,8 @@ use danmu_stream::DanmuMessageType;
 use rand::random;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::task::JoinHandle;
 
 use super::danmu::DanmuStorage;
 
@@ -67,7 +68,9 @@ pub struct DouyinRecorder {
     live_end_channel: broadcast::Sender<RecorderEvent>,
     enabled: Arc<RwLock<bool>>,
 
-    danmu_stream: Arc<RwLock<Option<DanmuStream>>>,
+    danmu_stream_task: Arc<Mutex<Option<JoinHandle<()>>>>,
+    danmu_task: Arc<Mutex<Option<JoinHandle<()>>>>,
+    record_task: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl DouyinRecorder {
@@ -109,7 +112,10 @@ impl DouyinRecorder {
             last_update: Arc::new(RwLock::new(Utc::now().timestamp())),
             config,
             live_end_channel: channel,
-            danmu_stream: Arc::new(RwLock::new(None)),
+
+            danmu_stream_task: Arc::new(Mutex::new(None)),
+            danmu_task: Arc::new(Mutex::new(None)),
+            record_task: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -235,15 +241,18 @@ impl DouyinRecorder {
                     *self.danmu_store.write().await = danmu_store;
 
                     // start danmu task
-                    if let Some(danmu_stream) = self.danmu_stream.write().await.take() {
-                        let _ = danmu_stream.stop().await;
+                    if let Some(danmu_task) = self.danmu_task.lock().await.as_mut() {
+                        danmu_task.abort();
+                    }
+                    if let Some(danmu_stream_task) = self.danmu_stream_task.lock().await.as_mut() {
+                        danmu_stream_task.abort();
                     }
                     let live_id = self.live_id.read().await.clone();
                     let self_clone = self.clone();
-                    tokio::spawn(async move {
+                    *self.danmu_task.lock().await = Some(tokio::spawn(async move {
                         log::info!("Start fetching danmu for live {}", live_id);
                         let _ = self_clone.danmu().await;
-                    });
+                    }));
                 }
 
                 true
@@ -271,30 +280,14 @@ impl DouyinRecorder {
             return Err(super::errors::RecorderError::DanmuStreamError { err });
         }
         let danmu_stream = danmu_stream.unwrap();
-        *self.danmu_stream.write().await = Some(danmu_stream);
 
-        let self_clone = self.clone();
-        tokio::spawn(async move {
-            let _ = self_clone
-                .danmu_stream
-                .read()
-                .await
-                .as_ref()
-                .unwrap()
-                .start()
-                .await;
-        });
+        let danmu_stream_clone = danmu_stream.clone();
+        *self.danmu_stream_task.lock().await = Some(tokio::spawn(async move {
+            let _ = danmu_stream_clone.start().await;
+        }));
 
         loop {
-            if let Ok(Some(msg)) = self
-                .danmu_stream
-                .read()
-                .await
-                .as_ref()
-                .unwrap()
-                .recv()
-                .await
-            {
+            if let Ok(Some(msg)) = danmu_stream.recv().await {
                 match msg {
                     DanmuMessageType::DanmuMessage(danmu) => {
                         self.emitter.emit(&Event::DanmuReceived {
@@ -524,7 +517,7 @@ impl Recorder for DouyinRecorder {
         *self.running.write().await = true;
 
         let self_clone = self.clone();
-        tokio::spawn(async move {
+        *self.record_task.lock().await = Some(tokio::spawn(async move {
             while *self_clone.running.read().await {
                 let mut connection_fail_count = 0;
                 if self_clone.check_status().await {
@@ -571,11 +564,22 @@ impl Recorder for DouyinRecorder {
                 .await;
             }
             log::info!("recording thread {} quit.", self_clone.room_id);
-        });
+        }));
     }
 
     async fn stop(&self) {
         *self.running.write().await = false;
+        // stop 3 tasks
+        if let Some(danmu_task) = self.danmu_task.lock().await.as_mut() {
+            let _ = danmu_task.abort();
+        }
+        if let Some(danmu_stream_task) = self.danmu_stream_task.lock().await.as_mut() {
+            let _ = danmu_stream_task.abort();
+        }
+        if let Some(record_task) = self.record_task.lock().await.as_mut() {
+            let _ = record_task.abort();
+        }
+        log::info!("Recorder for room {} quit.", self.room_id);
     }
 
     async fn m3u8_content(&self, live_id: &str, start: i64, end: i64) -> String {

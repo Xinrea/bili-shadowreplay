@@ -39,6 +39,10 @@
   let show_export = false;
   let recorders: RecorderInfo[] = [];
 
+  // local setting of danmu offset
+  let local_offset: number =
+    parseInt(localStorage.getItem(`local_offset:${live_id}`) || "0", 10) || 0;
+
   // save start and end to localStorage
   function saveStartEnd() {
     localStorage.setItem(`${live_id}_start`, (start + focus_start).toString());
@@ -67,8 +71,6 @@
       timedOut: false,
     };
 
-    let manifestPrintCnt = 0;
-
     const pendingRequest = new Promise((resolve, reject) => {
       invoke("fetch_hls", { uri: uri })
         .then((data: number[]) => {
@@ -95,13 +97,6 @@
               } else {
                 console.warn("No DANMU OFFSET found");
               }
-            }
-
-            // Print manifest for debugging every 30 times.
-            if (manifestPrintCnt == 0) {
-              console.log(m3u8Content);
-            } else {
-              manifestPrintCnt = (manifestPrintCnt + 1) % 30;
             }
           }
 
@@ -300,7 +295,7 @@
       }
 
       const cur = Math.floor(
-        (video.currentTime + global_offset + focus_start) * 1000
+        (video.currentTime + global_offset + focus_start + local_offset) * 1000
       );
 
       let danmus = danmu_records.filter((v) => {
@@ -470,33 +465,129 @@
 
     shakaSpacer.appendChild(danmakuToggle);
 
-    // create a playback rate select to of shaka-spacer
-    const playbackRateSelect = document.createElement("select");
-    playbackRateSelect.style.height = "30px";
-    playbackRateSelect.style.minWidth = "60px";
-    playbackRateSelect.style.backgroundColor = "rgba(0, 0, 0, 0.5)";
-    playbackRateSelect.style.color = "white";
-    playbackRateSelect.style.border = "1px solid gray";
-    playbackRateSelect.style.padding = "0 10px";
-    playbackRateSelect.style.boxSizing = "border-box";
-    playbackRateSelect.style.fontSize = "1em";
-    playbackRateSelect.style.right = "10px";
-    playbackRateSelect.style.position = "absolute";
-    playbackRateSelect.innerHTML = `
-      <option value="0.5">0.5x</option>
-      <option value="1">1x</option>
-      <option value="1.5">1.5x</option>
-      <option value="2">2x</option>
-      <option value="5">5x</option>
-    `;
-    // default playback rate is 1
-    playbackRateSelect.value = "1";
-    playbackRateSelect.addEventListener("change", () => {
-      const rate = parseFloat(playbackRateSelect.value);
-      video.playbackRate = rate;
+    // create a playback rate button and menu
+    const playbackRateButton = document.createElement("button");
+    playbackRateButton.style.height = "30px";
+    playbackRateButton.style.minWidth = "30px";
+    playbackRateButton.style.backgroundColor = "rgba(0, 0, 0, 0.5)";
+    playbackRateButton.style.color = "white";
+    playbackRateButton.style.border = "1px solid gray";
+    playbackRateButton.style.padding = "0 10px";
+    playbackRateButton.style.boxSizing = "border-box";
+    playbackRateButton.style.fontSize = "1em";
+    playbackRateButton.style.right = "10px";
+    playbackRateButton.style.position = "absolute";
+    playbackRateButton.innerText = "⚙️";
+
+    const SettingMenu = document.createElement("div");
+    SettingMenu.style.position = "absolute";
+    SettingMenu.style.bottom = "40px";
+    SettingMenu.style.right = "10px";
+    SettingMenu.style.backgroundColor = "rgba(0, 0, 0, 0.8)";
+    SettingMenu.style.border = "1px solid gray";
+    SettingMenu.style.padding = "8px";
+    SettingMenu.style.display = "none";
+    SettingMenu.style.zIndex = "1000";
+
+    // Add danmaku offset input
+    const offsetContainer = document.createElement("div");
+    offsetContainer.style.marginBottom = "8px";
+
+    const offsetLabel = document.createElement("label");
+    offsetLabel.innerText = "弹幕偏移(秒):";
+    offsetLabel.style.color = "white";
+    offsetLabel.style.marginRight = "8px";
+
+    const offsetInput = document.createElement("input");
+    offsetInput.type = "number";
+    offsetInput.value = "0";
+    offsetInput.style.width = "60px";
+    offsetInput.style.backgroundColor = "rgba(0, 0, 0, 0.5)";
+    offsetInput.style.color = "white";
+    offsetInput.style.border = "1px solid gray";
+    offsetInput.style.padding = "2px 4px";
+    offsetInput.style.boxSizing = "border-box";
+
+    offsetContainer.appendChild(offsetLabel);
+    offsetContainer.appendChild(offsetInput);
+    SettingMenu.appendChild(offsetContainer);
+
+    // Add divider
+    const divider = document.createElement("hr");
+    divider.style.border = "none";
+    divider.style.borderTop = "1px solid gray";
+    divider.style.margin = "8px 0";
+    SettingMenu.appendChild(divider);
+
+    // Add playback rate options
+    const rates = [0.5, 1, 1.5, 2, 5];
+    rates.forEach((rate) => {
+      const rateButton = document.createElement("button");
+      rateButton.innerText = `${rate}x`;
+      rateButton.style.display = "block";
+      rateButton.style.width = "100%";
+      rateButton.style.padding = "4px 8px";
+      rateButton.style.margin = "2px 0";
+      rateButton.style.backgroundColor = "rgba(0, 0, 0, 0.5)";
+      rateButton.style.color = "white";
+      rateButton.style.border = "1px solid gray";
+      rateButton.style.cursor = "pointer";
+      rateButton.style.textAlign = "left";
+
+      if (rate === 1) {
+        rateButton.style.backgroundColor = "rgba(0, 128, 255, 0.5)";
+      }
+
+      rateButton.addEventListener("click", () => {
+        video.playbackRate = rate;
+        // Update active state
+        rates.forEach((r) => {
+          const btn = SettingMenu.querySelector(
+            `button[data-rate="${r}"]`
+          ) as HTMLButtonElement;
+          if (btn) {
+            btn.style.backgroundColor =
+              r === rate ? "rgba(0, 128, 255, 0.5)" : "rgba(0, 0, 0, 0.5)";
+          }
+        });
+      });
+      rateButton.setAttribute("data-rate", rate.toString());
+      SettingMenu.appendChild(rateButton);
     });
 
-    shakaSpacer.appendChild(playbackRateSelect);
+    // Handle offset input changes
+    offsetInput.addEventListener("change", () => {
+      const offset = parseFloat(offsetInput.value);
+      if (!isNaN(offset)) {
+        local_offset = offset;
+        localStorage.setItem(`local_offset:${live_id}`, offset.toString());
+      }
+    });
+
+    // Toggle menu visibility
+    playbackRateButton.addEventListener("click", () => {
+      SettingMenu.style.display =
+        SettingMenu.style.display === "none" ? "block" : "none";
+      // if display is block, button background color should be red
+      if (SettingMenu.style.display === "block") {
+        playbackRateButton.style.backgroundColor = "rgba(0, 128, 255, 0.5)";
+      } else {
+        playbackRateButton.style.backgroundColor = "rgba(0, 0, 0, 0.5)";
+      }
+    });
+
+    // Close menu when clicking outside
+    document.addEventListener("click", (e) => {
+      if (
+        !playbackRateButton.contains(e.target as Node) &&
+        !SettingMenu.contains(e.target as Node)
+      ) {
+        SettingMenu.style.display = "none";
+      }
+    });
+
+    shakaSpacer.appendChild(playbackRateButton);
+    shakaSpacer.appendChild(SettingMenu);
 
     let danmu_statistics: { ts: number; count: number }[] = [];
 
@@ -511,7 +602,7 @@
     statisticKeyInput.style.padding = "0 10px";
     statisticKeyInput.style.boxSizing = "border-box";
     statisticKeyInput.style.fontSize = "1em";
-    statisticKeyInput.style.right = "75px";
+    statisticKeyInput.style.right = "55px";
     statisticKeyInput.placeholder = "弹幕统计过滤";
     statisticKeyInput.style.position = "absolute";
 
@@ -521,7 +612,8 @@
         if (statisticKey != "" && !e.content.includes(statisticKey)) {
           return;
         }
-        const timeSlot = Math.floor(e.ts / 10000) * 10000; // 将时间戳向下取整到10秒
+        const timeSlot =
+          Math.floor((e.ts + local_offset * 1000) / 10000) * 10000; // 将时间戳向下取整到10秒
         counts[timeSlot] = (counts[timeSlot] || 0) + 1;
       });
       danmu_statistics = [];

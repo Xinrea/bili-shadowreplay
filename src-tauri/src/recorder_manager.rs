@@ -47,6 +47,7 @@ pub struct ClipRangeParams {
     pub offset: i64,
     /// Encode danmu after clip
     pub danmu: bool,
+    pub local_offset: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -208,6 +209,7 @@ impl RecorderManager {
             y: 0,
             offset: recorder.first_segment_ts(live_id).await,
             danmu: encode_danmu,
+            local_offset: 0,
         };
 
         let clip_filename = self.config.read().await.generate_clip_name(&clip_config);
@@ -510,16 +512,17 @@ impl RecorderManager {
         }
 
         log::info!(
-            "Filter danmus in range [{}, {}] with offset {}",
+            "Filter danmus in range [{}, {}] with global offset {} and local offset {}",
             params.x,
             params.y,
-            params.offset
+            params.offset,
+            params.local_offset
         );
         let mut danmus = danmus.unwrap();
         log::debug!("First danmu entry: {:?}", danmus.first());
         // update entry ts to offset
         for d in &mut danmus {
-            d.ts -= (params.x + params.offset) * 1000;
+            d.ts -= (params.x + params.offset + params.local_offset) * 1000;
         }
         if params.x != 0 || params.y != 0 {
             danmus.retain(|x| x.ts >= 0 && x.ts <= (params.y - params.x) * 1000);

@@ -26,4 +26,6 @@ pub struct State {
     pub app_handle: tauri::AppHandle,
     #[cfg(feature = "headless")]
     pub progress_manager: Arc<ProgressManager>,
+    #[cfg(feature = "headless")]
+    pub readonly: bool,
 }

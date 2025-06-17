@@ -533,7 +533,7 @@
                      transition-all duration-200 hover:bg-[#0A84FF]/90
                      disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    保存
+                    下载
                   </button>
                 {/if}
               </div>

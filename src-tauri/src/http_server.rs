@@ -831,7 +831,7 @@ async fn handler_hls(
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
     // Set appropriate content type based on file extension
-    let content_type = match filename.split('.').last() {
+    let content_type = match filename.split('.').next_back() {
         Some("m3u8") => "application/vnd.apple.mpegurl",
         Some("ts") => "video/mp2t",
         Some("aac") => "audio/aac",
@@ -1043,93 +1043,104 @@ pub async fn start_api_server(state: State) {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let app = Router::new()
+    let mut app = Router::new()
         // Serve static files from dist directory
         .nest_service("/", ServeDir::new("./dist"))
         // Account commands
         .route("/api/get_accounts", post(handler_get_accounts))
-        .route("/api/add_account", post(handler_add_account))
-        .route("/api/remove_account", post(handler_remove_account))
-        .route("/api/get_account_count", post(handler_get_account_count))
-        .route("/api/get_qr", post(handler_get_qr))
-        .route("/api/get_qr_status", post(handler_get_qr_status))
+        .route("/api/get_account_count", post(handler_get_account_count));
+
+    // Only add add/remove routes if not in readonly mode
+    if !state.readonly {
+        app = app
+            .route("/api/get_qr", post(handler_get_qr))
+            .route("/api/get_qr_status", post(handler_get_qr_status))
+            .route("/api/add_account", post(handler_add_account))
+            .route("/api/remove_account", post(handler_remove_account))
+            .route(
+                "/api/update_whisper_model",
+                post(handler_update_whisper_model),
+            )
+            .route(
+                "/api/update_subtitle_setting",
+                post(handler_update_subtitle_setting),
+            )
+            .route(
+                "/api/update_clip_name_format",
+                post(handler_update_clip_name_format),
+            )
+            .route("/api/add_recorder", post(handler_add_recorder))
+            .route("/api/remove_recorder", post(handler_remove_recorder))
+            .route("/api/delete_archive", post(handler_delete_archive))
+            .route("/api/send_danmaku", post(handler_send_danmaku))
+            .route("/api/set_enable", post(handler_set_enable))
+            .route("/api/upload_procedure", post(handler_upload_procedure))
+            .route("/api/cancel", post(handler_cancel))
+            .route("/api/delete_video", post(handler_delete_video))
+            .route(
+                "/api/generate_video_subtitle",
+                post(handler_generate_video_subtitle),
+            )
+            .route(
+                "/api/update_video_subtitle",
+                post(handler_update_video_subtitle),
+            )
+            .route("/api/update_video_cover", post(handler_update_video_cover))
+            .route(
+                "/api/encode_video_subtitle",
+                post(handler_encode_video_subtitle),
+            )
+            .route("/api/update_notify", post(handler_update_notify))
+            .route(
+                "/api/update_status_check_interval",
+                post(handler_update_status_check_interval),
+            )
+            .route(
+                "/api/update_whisper_prompt",
+                post(handler_update_whisper_prompt),
+            )
+            .route(
+                "/api/update_auto_generate",
+                post(handler_update_auto_generate),
+            );
+    } else {
+        log::info!("Running in readonly mode, some api routes are disabled");
+    }
+
+    app = app
         // Config commands
         .route("/api/get_config", post(handler_get_config))
-        .route("/api/update_notify", post(handler_update_notify))
-        .route(
-            "/api/update_status_check_interval",
-            post(handler_update_status_check_interval),
-        )
-        .route(
-            "/api/update_whisper_model",
-            post(handler_update_whisper_model),
-        )
-        .route(
-            "/api/update_subtitle_setting",
-            post(handler_update_subtitle_setting),
-        )
-        .route(
-            "/api/update_clip_name_format",
-            post(handler_update_clip_name_format),
-        )
-        .route(
-            "/api/update_whisper_prompt",
-            post(handler_update_whisper_prompt),
-        )
-        .route(
-            "/api/update_auto_generate",
-            post(handler_update_auto_generate),
-        )
         // Message commands
         .route("/api/get_messages", post(handler_get_messages))
         .route("/api/read_message", post(handler_read_message))
         .route("/api/delete_message", post(handler_delete_message))
         // Recorder commands
         .route("/api/get_recorder_list", post(handler_get_recorder_list))
-        .route("/api/add_recorder", post(handler_add_recorder))
-        .route("/api/remove_recorder", post(handler_remove_recorder))
         .route("/api/get_room_info", post(handler_get_room_info))
         .route("/api/get_archives", post(handler_get_archives))
         .route("/api/get_archive", post(handler_get_archive))
-        .route("/api/delete_archive", post(handler_delete_archive))
         .route("/api/get_danmu_record", post(handler_get_danmu_record))
-        .route("/api/send_danmaku", post(handler_send_danmaku))
         .route("/api/get_total_length", post(handler_get_total_length))
         .route(
             "/api/get_today_record_count",
             post(handler_get_today_record_count),
         )
         .route("/api/get_recent_record", post(handler_get_recent_record))
-        .route("/api/set_enable", post(handler_set_enable))
         // Video commands
         .route("/api/clip_range", post(handler_clip_range))
-        .route("/api/upload_procedure", post(handler_upload_procedure))
-        .route("/api/cancel", post(handler_cancel))
         .route("/api/get_video", post(handler_get_video))
         .route("/api/get_videos", post(handler_get_videos))
-        .route("/api/delete_video", post(handler_delete_video))
         .route("/api/get_video_typelist", post(handler_get_video_typelist))
-        .route("/api/update_video_cover", post(handler_update_video_cover))
-        .route(
-            "/api/generate_video_subtitle",
-            post(handler_generate_video_subtitle),
-        )
         .route("/api/get_video_subtitle", post(handler_get_video_subtitle))
-        .route(
-            "/api/update_video_subtitle",
-            post(handler_update_video_subtitle),
-        )
-        .route(
-            "/api/encode_video_subtitle",
-            post(handler_encode_video_subtitle),
-        )
         .route("/api/export_danmu", post(handler_export_danmu))
         // Utils commands
         .route("/api/get_disk_info", post(handler_get_disk_info))
         .route("/api/fetch", post(handler_fetch))
         .route("/hls/*uri", get(handler_hls))
         .route("/output/*uri", get(handler_output))
-        .route("/api/sse", get(handler_sse))
+        .route("/api/sse", get(handler_sse));
+
+    let router = app
         .layer(cors)
         .layer(DefaultBodyLimit::max(20 * 1024 * 1024))
         .with_state(state);
@@ -1138,5 +1149,5 @@ pub async fn start_api_server(state: State) {
     log::info!("API server listening on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(listener, router).await.unwrap();
 }

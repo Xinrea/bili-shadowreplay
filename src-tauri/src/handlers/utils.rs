@@ -89,7 +89,7 @@ pub fn show_in_folder(path: String) {
 pub struct DiskInfo {
     disk: String,
     total: u64,
-    free: u64,
+    pub free: u64,
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -102,11 +102,16 @@ pub async fn get_disk_info(state: state_type!()) -> Result<DiskInfo, ()> {
         let cwd = std::env::current_dir().unwrap();
         cache = cwd.join(cache);
     }
+
+    get_disk_info_inner(cache).await
+}
+
+pub async fn get_disk_info_inner(target: PathBuf) -> Result<DiskInfo, ()> {
     #[cfg(target_os = "linux")]
     {
         // get disk info from df command
         let output = tokio::process::Command::new("df")
-            .arg(cache)
+            .arg(target)
             .output()
             .await
             .unwrap();
@@ -130,7 +135,7 @@ pub async fn get_disk_info(state: state_type!()) -> Result<DiskInfo, ()> {
     {
         // check system disk info
         let disks = sysinfo::Disks::new_with_refreshed_list();
-        // get cache disk info
+        // get target disk info
         let mut disk_info = DiskInfo {
             disk: "".into(),
             total: 0,
@@ -141,7 +146,7 @@ pub async fn get_disk_info(state: state_type!()) -> Result<DiskInfo, ()> {
         let mut longest_match = 0;
         for disk in disks.list() {
             let mount_point = disk.mount_point().to_str().unwrap();
-            if cache.starts_with(mount_point) && mount_point.split("/").count() > longest_match {
+            if target.starts_with(mount_point) && mount_point.split("/").count() > longest_match {
                 disk_info.disk = mount_point.into();
                 disk_info.total = disk.total_space();
                 disk_info.free = disk.available_space();

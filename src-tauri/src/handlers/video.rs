@@ -1,5 +1,6 @@
 use crate::database::video::VideoRow;
 use crate::ffmpeg;
+use crate::handlers::utils::get_disk_info_inner;
 use crate::progress_reporter::{
     cancel_progress, EventEmitter, ProgressReporter, ProgressReporterTrait,
 };
@@ -8,7 +9,7 @@ use crate::recorder_manager::ClipRangeParams;
 use crate::subtitle_generator::whisper::{self};
 use crate::subtitle_generator::SubtitleGenerator;
 use chrono::Utc;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::state::State;
 use crate::state_type;
@@ -22,6 +23,20 @@ pub async fn clip_range(
     event_id: String,
     params: ClipRangeParams,
 ) -> Result<VideoRow, String> {
+    // check storage space, preserve 1GB for other usage
+    let output = state.config.read().await.output.clone();
+    let mut output = PathBuf::from(&output);
+    if output.is_relative() {
+        // get current working directory
+        let cwd = std::env::current_dir().unwrap();
+        output = cwd.join(output);
+    }
+    if let Ok(disk_info) = get_disk_info_inner(output).await {
+        // if free space is less than 1GB, return error
+        if disk_info.free < 1024 * 1024 * 1024 {
+            return Err("Storage space is not enough, clip canceled".to_string());
+        }
+    }
     #[cfg(feature = "gui")]
     let emitter = EventEmitter::new(state.app_handle.clone());
     #[cfg(feature = "headless")]

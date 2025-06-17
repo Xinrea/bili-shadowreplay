@@ -11,6 +11,7 @@ pub async fn get_config(state: state_type!()) -> Result<Config, ()> {
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
+#[allow(dead_code)]
 pub async fn set_cache_path(state: state_type!(), cache_path: String) -> Result<(), String> {
     let old_cache_path = state.config.read().await.cache.clone();
     if old_cache_path == cache_path {
@@ -77,6 +78,7 @@ pub async fn set_cache_path(state: state_type!(), cache_path: String) -> Result<
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
+#[allow(dead_code)]
 pub async fn set_output_path(state: state_type!(), output_path: String) -> Result<(), ()> {
     let mut config = state.config.write().await;
     let old_output_path = config.output.clone();

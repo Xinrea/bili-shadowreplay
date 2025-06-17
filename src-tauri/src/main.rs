@@ -226,6 +226,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
         config,
         recorder_manager,
         progress_manager,
+        readonly: args.readonly,
     })
 }
 
@@ -467,6 +468,10 @@ struct Args {
     /// Path to the database folder
     #[arg(short, long, default_value_t = String::from("./data"))]
     db: String,
+
+    /// ReadOnly mode
+    #[arg(short, long, default_value_t = false)]
+    readonly: bool,
 }
 
 #[cfg(feature = "headless")]

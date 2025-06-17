@@ -109,11 +109,13 @@ impl Config {
         }
     }
 
+    #[allow(dead_code)]
     pub fn set_cache_path(&mut self, path: &str) {
         self.cache = path.to_string();
         self.save();
     }
 
+    #[allow(dead_code)]
     pub fn set_output_path(&mut self, path: &str) {
         self.output = path.into();
         self.save();

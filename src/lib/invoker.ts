@@ -41,7 +41,12 @@ async function invoke<T>(
       },
       body: JSON.stringify(args || {}),
     });
-
+    // if status is 405, it means the command is not allowed
+    if (response.status === 405) {
+      throw new Error(
+        `Command ${command} is not allowed, maybe bili-shadowreplay is running in readonly mode`
+      );
+    }
     if (!response.ok) {
       const error = await response.json();
       throw new Error(error.message || `HTTP error: ${response.status}`);

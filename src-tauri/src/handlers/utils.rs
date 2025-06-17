@@ -14,6 +14,7 @@ use {
     tokio::io::AsyncWriteExt,
 };
 
+#[allow(dead_code)]
 pub fn copy_dir_all(
     src: impl AsRef<std::path::Path>,
     dst: impl AsRef<std::path::Path>,

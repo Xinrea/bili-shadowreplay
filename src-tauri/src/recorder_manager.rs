@@ -344,7 +344,7 @@ impl RecorderManager {
         let recorder: Box<dyn Recorder + 'static> = match platform {
             PlatformType::BiliBili => Box::new(
                 BiliRecorder::new(BiliRecorderOptions {
-                    #[cfg(not(feature = "headless"))]
+                    #[cfg(feature = "gui")]
                     app_handle: self.app_handle.clone(),
                     emitter: self.emitter.clone(),
                     db: self.db.clone(),
@@ -358,7 +358,7 @@ impl RecorderManager {
             ),
             PlatformType::Douyin => Box::new(
                 DouyinRecorder::new(
-                    #[cfg(not(feature = "headless"))]
+                    #[cfg(feature = "gui")]
                     self.app_handle.clone(),
                     self.emitter.clone(),
                     room_id,

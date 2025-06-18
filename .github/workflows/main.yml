@@ -57,7 +57,7 @@ jobs:
 
       - name: Install CUDA toolkit (Windows CUDA only)
         if: matrix.platform == 'windows-latest' && matrix.features == 'cuda'
-        uses: Jimver/cuda-toolkit@master
+        uses: Jimver/cuda-toolkit@v0.2.24
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2

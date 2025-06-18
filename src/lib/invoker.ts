@@ -14,6 +14,29 @@ declare global {
 const ENDPOINT = localStorage.getItem("endpoint") || "";
 const TAURI_ENV = typeof window.__TAURI_INTERNALS__ !== "undefined";
 
+const log = {
+  error: (...args: any[]) => {
+    const message = args.map((arg) => JSON.stringify(arg)).join(" ");
+    invoke("console_log", { level: "error", message });
+    console.error(message);
+  },
+  warn: (...args: any[]) => {
+    const message = args.map((arg) => JSON.stringify(arg)).join(" ");
+    invoke("console_log", { level: "warn", message });
+    console.warn(message);
+  },
+  info: (...args: any[]) => {
+    const message = args.map((arg) => JSON.stringify(arg)).join(" ");
+    invoke("console_log", { level: "info", message });
+    console.info(message);
+  },
+  debug: (...args: any[]) => {
+    const message = args.map((arg) => JSON.stringify(arg)).join(" ");
+    invoke("console_log", { level: "debug", message });
+    console.debug(message);
+  },
+};
+
 async function invoke<T>(
   command: string,
   args?: Record<string, any>
@@ -143,4 +166,5 @@ export {
   ENDPOINT,
   listen,
   open,
+  log,
 };

@@ -5,6 +5,7 @@
     TAURI_ENV,
     convertFileSrc,
     listen,
+    log,
   } from "./lib/invoker";
   import Player from "./lib/Player.svelte";
   import type { AccountInfo, RecordItem } from "./lib/db";
@@ -31,6 +32,8 @@
   const live_id = urlParams.get("live_id");
   const focus_start = parseInt(urlParams.get("start") || "0");
   const focus_end = parseInt(urlParams.get("end") || "0");
+
+  log.info("AppLive loaded", room_id, platform, live_id);
 
   // get profile in local storage with a default value
   let profile: Profile = get_profile();

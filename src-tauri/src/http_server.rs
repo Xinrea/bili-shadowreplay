@@ -22,7 +22,7 @@ use crate::{
             get_today_record_count, get_total_length, remove_recorder, send_danmaku, set_enable,
             ExportDanmuOptions,
         },
-        utils::{get_disk_info, DiskInfo},
+        utils::{console_log, get_disk_info, DiskInfo},
         video::{
             cancel, clip_range, delete_video, encode_video_subtitle, generate_video_subtitle,
             get_video, get_video_subtitle, get_video_typelist, get_videos, update_video_cover,
@@ -717,6 +717,14 @@ async fn handler_encode_video_subtitle(
         encode_video_subtitle_param.event_id,
     )))
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConsoleLogRequest {
+    level: String,
+    message: String,
+}
+
 async fn handler_get_disk_info(
     state: axum::extract::State<State>,
 ) -> Result<Json<ApiResponse<DiskInfo>>, ApiError> {
@@ -724,6 +732,14 @@ async fn handler_get_disk_info(
         .await
         .map_err(|_| "Failed to get disk info")?;
     Ok(Json(ApiResponse::success(disk_info)))
+}
+
+async fn handler_console_log(
+    state: axum::extract::State<State>,
+    Json(param): Json<ConsoleLogRequest>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    let _ = console_log(state.0, &param.level, &param.message).await;
+    Ok(Json(ApiResponse::success(())))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1135,6 +1151,7 @@ pub async fn start_api_server(state: State) {
         .route("/api/export_danmu", post(handler_export_danmu))
         // Utils commands
         .route("/api/get_disk_info", post(handler_get_disk_info))
+        .route("/api/console_log", post(handler_console_log))
         .route("/api/fetch", post(handler_fetch))
         .route("/hls/*uri", get(handler_hls))
         .route("/output/*uri", get(handler_output))

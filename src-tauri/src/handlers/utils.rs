@@ -106,6 +106,17 @@ pub async fn get_disk_info(state: state_type!()) -> Result<DiskInfo, ()> {
     get_disk_info_inner(cache).await
 }
 
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn console_log(_state: state_type!(), level: &str, message: &str) -> Result<(), ()> {
+    match level {
+        "error" => log::error!("[frontend] {}", message),
+        "warn" => log::warn!("[frontend] {}", message),
+        "info" => log::info!("[frontend] {}", message),
+        _ => log::debug!("[frontend] {}", message),
+    }
+    Ok(())
+}
+
 pub async fn get_disk_info_inner(target: PathBuf) -> Result<DiskInfo, ()> {
     #[cfg(target_os = "linux")]
     {

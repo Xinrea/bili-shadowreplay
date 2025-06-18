@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Play, X, Type, Palette, Move, Plus, Trash2 } from "lucide-svelte";
-  import { invoke } from "../lib/invoker";
+  import { invoke, log } from "../lib/invoker";
   import { onMount, createEventDispatcher } from "svelte";
 
   const dispatch = createEventDispatcher();
@@ -83,7 +83,7 @@
       scheduleRedraw();
     };
     backgroundImage.onerror = (e) => {
-      console.error("Failed to load image:", e);
+      log.error("Failed to load image:", e);
     };
     backgroundImage.src = videoFrame;
   }

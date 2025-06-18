@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { get } from "./invoker";
+  import { get, log } from "./invoker";
   export let src = "";
   export let iclass = "";
   let b = "";
@@ -17,7 +17,7 @@
     try {
       b = await getImage(src);
     } catch (e) {
-      console.error(e);
+      log.error("Failed to get image:", e);
     }
   }
   init();

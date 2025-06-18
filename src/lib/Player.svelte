@@ -3,7 +3,7 @@
 </script>
 
 <script lang="ts">
-  import { invoke, TAURI_ENV, ENDPOINT, listen } from "../lib/invoker";
+  import { invoke, TAURI_ENV, ENDPOINT, listen, log } from "../lib/invoker";
   import type { AccountInfo } from "./db";
   import type { Marker, RecorderList, RecorderInfo } from "./interface";
 
@@ -121,7 +121,7 @@
           resolve(response);
         })
         .catch((error) => {
-          console.error("Network error:", error);
+          log.error("Network error:", error);
           reject(
             new shaka.util.Error(
               shaka.util.Error.Severity.CRITICAL,
@@ -218,7 +218,7 @@
       // This runs if the asynchronous load is successful.
       console.log("The video has now been loaded!");
     } catch (error) {
-      console.error("Error code", error.code, "object", error);
+      log.error("Error code", error.code, "object", error);
       if (error.code == 3000) {
         // reload
         setTimeout(() => {
@@ -233,6 +233,7 @@
             "Error message: " +
             error.message
         );
+        log.error("Error code", error.code, "object", error);
       }
     }
 

@@ -5,7 +5,10 @@
   import Setting from "./page/Setting.svelte";
   import Account from "./page/Account.svelte";
   import About from "./page/About.svelte";
+  import { log } from "./lib/invoker";
   let active = "总览";
+
+  log.info("App loaded");
 </script>
 
 <main>

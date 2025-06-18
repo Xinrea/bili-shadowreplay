@@ -42,6 +42,7 @@ RUN apt-get update && apt-get install -y \
 # Copy Rust project files
 COPY src-tauri/Cargo.toml src-tauri/Cargo.lock ./src-tauri/
 COPY src-tauri/src ./src-tauri/src
+COPY src-tauri/crates ./src-tauri/crates
 
 # Build Rust backend
 WORKDIR /app/src-tauri

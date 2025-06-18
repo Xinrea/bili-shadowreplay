@@ -410,6 +410,9 @@ impl RecorderManager {
             return Err(RecorderManagerError::NotFound { room_id });
         }
 
+        // remove from db
+        self.db.remove_recorder(room_id).await?;
+
         // add to to_remove
         log::debug!("Add to to_remove: {}", recorder_id);
         self.to_remove.write().await.insert(recorder_id.clone());

@@ -92,7 +92,7 @@ pub async fn remove_recorder(
                 .new_message("移除直播间", &format!("移除了直播间 {}", room_id))
                 .await?;
             log::info!("Removed recorder: {} {}", platform.as_str(), room_id);
-            Ok(state.db.remove_recorder(room_id).await?)
+            Ok(())
         }
         Err(e) => {
             log::error!("Failed to remove recorder: {}", e);

@@ -3,6 +3,7 @@ use crate::recorder::PlatformType;
 use super::Database;
 use super::DatabaseError;
 use chrono::Utc;
+use rand::seq::SliceRandom;
 use rand::Rng;
 
 #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
@@ -19,7 +20,11 @@ pub struct AccountRow {
 // accounts
 impl Database {
     // CREATE TABLE accounts (uid INTEGER PRIMARY KEY, name TEXT, avatar TEXT, csrf TEXT, cookies TEXT, created_at TEXT);
-    pub async fn add_account(&self, platform: &str, cookies: &str) -> Result<AccountRow, DatabaseError> {
+    pub async fn add_account(
+        &self,
+        platform: &str,
+        cookies: &str,
+    ) -> Result<AccountRow, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         let platform = PlatformType::from_str(platform).unwrap();
 
@@ -100,13 +105,15 @@ impl Database {
         avatar: &str,
     ) -> Result<(), DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
-        let sql = sqlx::query("UPDATE accounts SET name = $1, avatar = $2 WHERE uid = $3 and platform = $4")
-            .bind(name)
-            .bind(avatar)
-            .bind(uid as i64)
-            .bind(platform)
-            .execute(&lock)
-            .await?;
+        let sql = sqlx::query(
+            "UPDATE accounts SET name = $1, avatar = $2 WHERE uid = $3 and platform = $4",
+        )
+        .bind(name)
+        .bind(avatar)
+        .bind(uid as i64)
+        .bind(platform)
+        .execute(&lock)
+        .await?;
         if sql.rows_affected() != 1 {
             return Err(DatabaseError::NotFoundError);
         }
@@ -122,20 +129,30 @@ impl Database {
 
     pub async fn get_account(&self, platform: &str, uid: u64) -> Result<AccountRow, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
-        Ok(
-            sqlx::query_as::<_, AccountRow>("SELECT * FROM accounts WHERE uid = $1 and platform = $2")
-                .bind(uid as i64)
-                .bind(platform)
-                .fetch_one(&lock)
-                .await?,
+        Ok(sqlx::query_as::<_, AccountRow>(
+            "SELECT * FROM accounts WHERE uid = $1 and platform = $2",
         )
+        .bind(uid as i64)
+        .bind(platform)
+        .fetch_one(&lock)
+        .await?)
     }
 
-    pub async fn get_account_by_platform(&self, platform: &str) -> Result<AccountRow, DatabaseError> {
+    pub async fn get_account_by_platform(
+        &self,
+        platform: &str,
+    ) -> Result<AccountRow, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
-        Ok(sqlx::query_as::<_, AccountRow>("SELECT * FROM accounts WHERE platform = $1")
-            .bind(platform)
-            .fetch_one(&lock)
-            .await?)
+        let accounts =
+            sqlx::query_as::<_, AccountRow>("SELECT * FROM accounts WHERE platform = $1")
+                .bind(platform)
+                .fetch_all(&lock)
+                .await?;
+        if accounts.is_empty() {
+            return Err(DatabaseError::NotFoundError);
+        }
+        // randomly select one account
+        let account = accounts.choose(&mut rand::thread_rng()).unwrap();
+        Ok(account.clone())
     }
 }

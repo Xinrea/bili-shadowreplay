@@ -25,5 +25,6 @@ pub struct DanmuMessage {
     pub user_name: String,
     pub message: String,
     pub color: u32,
+    /// timestamp in milliseconds
     pub timestamp: i64,
 }

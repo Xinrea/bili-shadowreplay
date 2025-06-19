@@ -1,4 +1,4 @@
-use crate::{provider::DanmuProvider, DanmuStreamError, DanmuMessage, DanmuMessageType};
+use crate::{provider::DanmuProvider, DanmuMessage, DanmuMessageType, DanmuStreamError};
 use async_trait::async_trait;
 use chrono;
 use deno_core::v8;
@@ -335,7 +335,7 @@ async fn handle_binary_message(
                         user_name: user.nick_name,
                         message: chat_msg.content,
                         color: 0xffffff,
-                        timestamp: chrono::Utc::now().timestamp(),
+                        timestamp: chat_msg.event_time as i64 * 1000,
                     };
                     debug!("Received danmu message: {:?}", danmu_msg);
                     tx.send(DanmuMessageType::DanmuMessage(danmu_msg))

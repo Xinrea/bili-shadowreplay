@@ -586,12 +586,12 @@ impl Recorder for DouyinRecorder {
         self.generate_m3u8(live_id, start, end).await
     }
 
-    async fn master_m3u8(&self, _live_id: &str, start: i64, end: i64) -> String {
+    async fn master_m3u8(&self, live_id: &str, start: i64, end: i64) -> String {
         let mut m3u8_content = "#EXTM3U\n".to_string();
         m3u8_content += "#EXT-X-VERSION:6\n";
         m3u8_content += format!(
-            "#EXT-X-STREAM-INF:{}\n",
-            "BANDWIDTH=1280000,RESOLUTION=1920x1080,CODECS=\"avc1.64001F,mp4a.40.2\""
+            "#EXT-X-STREAM-INF:BANDWIDTH=1280000,RESOLUTION=1920x1080,CODECS=\"avc1.64001F,mp4a.40.2\",DANMU={}\n",
+            self.first_segment_ts(live_id).await / 1000
         )
         .as_str();
         m3u8_content += &format!("playlist.m3u8?start={}&end={}\n", start, end);
@@ -662,8 +662,30 @@ impl Recorder for DouyinRecorder {
         }
     }
 
-    async fn comments(&self, _live_id: &str) -> Result<Vec<DanmuEntry>, RecorderError> {
-        Ok(vec![])
+    async fn comments(&self, live_id: &str) -> Result<Vec<DanmuEntry>, RecorderError> {
+        Ok(if live_id == *self.live_id.read().await {
+            // just return current cache content
+            match self.danmu_store.read().await.as_ref() {
+                Some(storage) => storage.get_entries().await,
+                None => Vec::new(),
+            }
+        } else {
+            // load disk cache
+            let cache_file_path = format!(
+                "{}/douyin/{}/{}/{}",
+                self.config.read().await.cache,
+                self.room_id,
+                live_id,
+                "danmu.txt"
+            );
+            log::debug!("loading danmu cache from {}", cache_file_path);
+            let storage = DanmuStorage::new(&cache_file_path).await;
+            if storage.is_none() {
+                return Ok(Vec::new());
+            }
+            let storage = storage.unwrap();
+            storage.get_entries().await
+        })
     }
 
     async fn is_recording(&self, live_id: &str) -> bool {

@@ -236,7 +236,10 @@
   function handleVideoLoaded() {
     isVideoLoaded = true;
     duration = videoElement.duration;
-    updateCoverFromVideo();
+    // 延迟一点时间确保视频完全准备好
+    setTimeout(() => {
+      updateCoverFromVideo();
+    }, 100);
   }
 
   function handleTimeUpdate() {
@@ -248,8 +251,11 @@
     const time = parseFloat(target.value);
     if (videoElement) {
       videoElement.currentTime = time;
-      updateCoverFromVideo();
     }
+  }
+
+  function handleVideoSeeked() {
+    updateCoverFromVideo();
   }
 
   function formatTime(seconds: number): string {
@@ -259,15 +265,46 @@
   }
 
   function updateCoverFromVideo() {
-    if (!videoElement) return;
+    if (!videoElement || !isVideoLoaded) return;
 
-    const tempCanvas = document.createElement("canvas");
-    tempCanvas.width = videoElement.videoWidth;
-    tempCanvas.height = videoElement.videoHeight;
-    const tempCtx = tempCanvas.getContext("2d");
-    tempCtx.drawImage(videoElement, 0, 0, tempCanvas.width, tempCanvas.height);
-    videoFrame = tempCanvas.toDataURL("image/jpeg");
-    loadBackgroundImage();
+    // 确保视频已经准备好并且有有效的尺寸
+    if (videoElement.videoWidth === 0 || videoElement.videoHeight === 0) {
+      // 如果视频尺寸无效，等待一下再重试
+      setTimeout(() => {
+        if (
+          videoElement &&
+          videoElement.videoWidth > 0 &&
+          videoElement.videoHeight > 0
+        ) {
+          updateCoverFromVideo();
+        }
+      }, 100);
+      return;
+    }
+
+    try {
+      const tempCanvas = document.createElement("canvas");
+      tempCanvas.width = videoElement.videoWidth;
+      tempCanvas.height = videoElement.videoHeight;
+      const tempCtx = tempCanvas.getContext("2d");
+
+      if (!tempCtx) {
+        log.error("Failed to get canvas context");
+        return;
+      }
+
+      tempCtx.drawImage(
+        videoElement,
+        0,
+        0,
+        tempCanvas.width,
+        tempCanvas.height
+      );
+      videoFrame = tempCanvas.toDataURL("image/jpeg");
+      loadBackgroundImage();
+    } catch (error) {
+      log.error("Failed to capture video frame:", error);
+    }
   }
 
   function handleClose() {
@@ -333,6 +370,10 @@
   // 监听 show 变化，当模态框显示时重新绘制
   $: if (show && ctx) {
     setTimeout(() => {
+      if (isVideoLoaded && videoElement) {
+        // 如果视频已加载，更新封面
+        updateCoverFromVideo();
+      }
       loadBackgroundImage();
       resizeCanvas();
     }, 50);
@@ -402,6 +443,7 @@
           crossorigin="anonymous"
           on:loadedmetadata={handleVideoLoaded}
           on:timeupdate={handleTimeUpdate}
+          on:seeked={handleVideoSeeked}
         />
 
         <!-- Video Controls -->

@@ -103,6 +103,7 @@ async fn clip_range_inner(
             desc: "".into(),
             tags: "".into(),
             area: 0,
+            platform: params.platform.clone(),
         })
         .await?;
     if state.config.read().await.auto_subtitle
@@ -262,7 +263,16 @@ pub async fn get_video(state: state_type!(), id: i64) -> Result<VideoRow, String
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_videos(state: state_type!(), room_id: u64) -> Result<Vec<VideoRow>, String> {
-    Ok(state.db.get_videos(room_id).await?)
+    state
+        .db
+        .get_videos(room_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_all_videos(state: state_type!()) -> Result<Vec<VideoRow>, String> {
+    state.db.get_all_videos().await.map_err(|e| e.to_string())
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -442,6 +452,7 @@ async fn encode_video_subtitle_inner(
             desc: video.desc.clone(),
             tags: video.tags.clone(),
             area: video.area,
+            platform: video.platform,
         })
         .await?;
 

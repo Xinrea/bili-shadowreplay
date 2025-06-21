@@ -733,19 +733,19 @@ impl BiliClient {
             .await
         {
             Ok(raw_resp) => {
-                let json = raw_resp.json().await?;
-                if let Ok(resp) = serde_json::from_value::<GeneralResponse>(json) {
+                let json: Value = raw_resp.json().await?;
+                if let Ok(resp) = serde_json::from_value::<GeneralResponse>(json.clone()) {
                     match resp.data {
                         response::Data::VideoSubmit(data) => Ok(data),
                         _ => Err(BiliClientError::InvalidResponse),
                     }
                 } else {
-                    println!("Parse response failed");
+                    log::error!("Parse response failed: {}", json);
                     Err(BiliClientError::InvalidResponse)
                 }
             }
             Err(e) => {
-                println!("Send failed {}", e);
+                log::error!("Send failed {}", e);
                 Err(BiliClientError::InvalidResponse)
             }
         }
@@ -773,19 +773,19 @@ impl BiliClient {
             .await
         {
             Ok(raw_resp) => {
-                let json = raw_resp.json().await?;
-                if let Ok(resp) = serde_json::from_value::<GeneralResponse>(json) {
+                let json: Value = raw_resp.json().await?;
+                if let Ok(resp) = serde_json::from_value::<GeneralResponse>(json.clone()) {
                     match resp.data {
                         response::Data::Cover(data) => Ok(data.url),
                         _ => Err(BiliClientError::InvalidResponse),
                     }
                 } else {
-                    println!("Parse response failed");
+                    log::error!("Parse response failed: {}", json);
                     Err(BiliClientError::InvalidResponse)
                 }
             }
             Err(e) => {
-                println!("Send failed {}", e);
+                log::error!("Send failed {}", e);
                 Err(BiliClientError::InvalidResponse)
             }
         }

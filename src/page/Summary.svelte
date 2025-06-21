@@ -232,7 +232,10 @@
 
 <svelte:window on:click={handleClickOutside} />
 
-<div class="flex-1 p-6 overflow-y-auto" on:scroll={handleScroll}>
+<div
+  class="flex-1 p-6 overflow-y-auto summary-scrollbar bg-gray-50"
+  on:scroll={handleScroll}
+>
   <div class="space-y-6">
     <!-- Header -->
     <div class="flex justify-between items-center">

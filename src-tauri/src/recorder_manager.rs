@@ -202,7 +202,7 @@ impl RecorderManager {
         let clip_config = ClipRangeParams {
             title: live_record.title,
             cover: "".into(),
-            platform: live_record.platform,
+            platform: live_record.platform.clone(),
             room_id,
             live_id: live_id.to_string(),
             x: 0,
@@ -249,6 +249,7 @@ impl RecorderManager {
                         desc: "".into(),
                         tags: "".into(),
                         area: 0,
+                        platform: live_record.platform.clone(),
                     })
                     .await
                 {

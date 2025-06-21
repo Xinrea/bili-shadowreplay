@@ -11,13 +11,130 @@ body {
 }
 
 .icon-white {
-    color: white;
+  color: white;
 }
 
 .icon-primary {
-    color: #007bff;
+  color: #007bff;
 }
 
 .icon-danger {
-    color: #dc3545;
+  color: #dc3545;
+}
+
+/* 自定义滚动条样式 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1c1c1e;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #3c3c3e;
+  border-radius: 4px;
+  transition: background-color 0.2s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #4c4c4e;
+}
+
+::-webkit-scrollbar-corner {
+  background: #1c1c1e;
+}
+
+/* 针对侧边栏的特殊滚动条样式 */
+.sidebar-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.sidebar-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar-scrollbar::-webkit-scrollbar-thumb {
+  background: #4c4c4e;
+  border-radius: 3px;
+  transition: background-color 0.2s ease;
+}
+
+.sidebar-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #5c5c5e;
+}
+
+.sidebar-scrollbar::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* 针对表格的水平滚动条样式 */
+.sidebar-scrollbar::-webkit-scrollbar:horizontal {
+  height: 6px;
+}
+
+.sidebar-scrollbar::-webkit-scrollbar-thumb:horizontal {
+  background: #4c4c4e;
+  border-radius: 3px;
+}
+
+.sidebar-scrollbar::-webkit-scrollbar-thumb:horizontal:hover {
+  background: #5c5c5e;
+}
+
+/* 针对深色主题的滚动条样式 */
+.dark .sidebar-scrollbar::-webkit-scrollbar-thumb {
+  background: #4c4c4e;
+}
+
+.dark .sidebar-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #5c5c5e;
+}
+
+.dark .sidebar-scrollbar::-webkit-scrollbar-thumb:horizontal {
+  background: #4c4c4e;
+}
+
+.dark .sidebar-scrollbar::-webkit-scrollbar-thumb:horizontal:hover {
+  background: #5c5c5e;
+}
+
+/* 针对 Summary 页面的浅色滚动条样式 */
+.summary-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.summary-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.summary-scrollbar::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 3px;
+  transition: background-color 0.2s ease;
+}
+
+.summary-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
+
+.summary-scrollbar::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.summary-scrollbar::-webkit-scrollbar:horizontal {
+  height: 6px;
+}
+
+.summary-scrollbar::-webkit-scrollbar-thumb:horizontal {
+  background: #d1d5db;
+  border-radius: 3px;
+}
+
+.summary-scrollbar::-webkit-scrollbar-thumb:horizontal:hover {
+  background: #9ca3af;
 }

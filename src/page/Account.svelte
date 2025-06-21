@@ -114,7 +114,7 @@
   on:mousedown={handleModalClickOutside}
 />
 
-<div class="flex-1 p-6 overflow-auto summary-scrollbar bg-gray-50">
+<div class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50">
   <div class="space-y-6">
     <!-- Header -->
     <div class="flex justify-between items-center">

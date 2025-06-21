@@ -247,7 +247,7 @@
 </script>
 
 <!-- svelte-ignore a11y-click-events-have-key-events -->
-<div class="flex-1 p-6 overflow-auto summary-scrollbar bg-gray-50">
+<div class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50">
   <div class="space-y-6">
     <!-- Header -->
     <div class="flex justify-between items-center">
@@ -439,7 +439,7 @@
           </p>
         </div>
       {:else}
-        <div class="overflow-x-auto summary-scrollbar">
+        <div class="overflow-x-auto custom-scrollbar-light">
           <table class="w-full table-fixed">
             <thead>
               <tr class="border-b border-gray-200 dark:border-gray-700/50">

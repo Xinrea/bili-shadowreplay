@@ -167,7 +167,7 @@
   }
 </script>
 
-<div class="flex-1 p-6 overflow-auto summary-scrollbar bg-gray-50">
+<div class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50">
   <div class="space-y-6">
     <!-- Header -->
     <div class="flex justify-between items-center">
@@ -566,9 +566,9 @@
         </button>
       </div>
 
-      <div class="flex-1 overflow-auto summary-scrollbar">
+      <div class="flex-1 overflow-auto custom-scrollbar-light">
         <div class="p-6">
-          <div class="overflow-x-auto summary-scrollbar">
+          <div class="overflow-x-auto custom-scrollbar-light">
             <table class="w-full">
               <thead>
                 <tr class="border-b border-gray-200 dark:border-gray-700/50">

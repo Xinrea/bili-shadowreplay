@@ -103,38 +103,38 @@ body {
 }
 
 /* 针对 Summary 页面的浅色滚动条样式 */
-.summary-scrollbar::-webkit-scrollbar {
+.custom-scrollbar-light::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 
-.summary-scrollbar::-webkit-scrollbar-track {
+.custom-scrollbar-light::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.summary-scrollbar::-webkit-scrollbar-thumb {
+.custom-scrollbar-light::-webkit-scrollbar-thumb {
   background: #d1d5db;
   border-radius: 3px;
   transition: background-color 0.2s ease;
 }
 
-.summary-scrollbar::-webkit-scrollbar-thumb:hover {
+.custom-scrollbar-light::-webkit-scrollbar-thumb:hover {
   background: #9ca3af;
 }
 
-.summary-scrollbar::-webkit-scrollbar-corner {
+.custom-scrollbar-light::-webkit-scrollbar-corner {
   background: transparent;
 }
 
-.summary-scrollbar::-webkit-scrollbar:horizontal {
+.custom-scrollbar-light::-webkit-scrollbar:horizontal {
   height: 6px;
 }
 
-.summary-scrollbar::-webkit-scrollbar-thumb:horizontal {
+.custom-scrollbar-light::-webkit-scrollbar-thumb:horizontal {
   background: #d1d5db;
   border-radius: 3px;
 }
 
-.summary-scrollbar::-webkit-scrollbar-thumb:horizontal:hover {
+.custom-scrollbar-light::-webkit-scrollbar-thumb:horizontal:hover {
   background: #9ca3af;
 }

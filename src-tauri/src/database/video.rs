@@ -17,6 +17,7 @@ pub struct VideoRow {
     pub tags: String,
     pub area: i64,
     pub created_at: String,
+    pub platform: String,
 }
 
 impl Database {
@@ -66,7 +67,7 @@ impl Database {
 
     pub async fn add_video(&self, video: &VideoRow) -> Result<VideoRow, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
-        let sql = sqlx::query("INSERT INTO videos (room_id, cover, file, length, size, status, bvid, title, desc, tags, area, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)")
+        let sql = sqlx::query("INSERT INTO videos (room_id, cover, file, length, size, status, bvid, title, desc, tags, area, created_at, platform) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)")
             .bind(video.room_id as i64)
             .bind(&video.cover)
             .bind(&video.file)
@@ -79,6 +80,7 @@ impl Database {
             .bind(&video.tags)
             .bind(video.area)
             .bind(&video.created_at)
+            .bind(&video.platform)
             .execute(&lock)
             .await?;
         let video = VideoRow {
@@ -96,5 +98,14 @@ impl Database {
             .execute(&lock)
             .await?;
         Ok(())
+    }
+
+    pub async fn get_all_videos(&self) -> Result<Vec<VideoRow>, DatabaseError> {
+        let lock = self.db.read().await.clone().unwrap();
+        Ok(
+            sqlx::query_as::<_, VideoRow>("SELECT * FROM videos ORDER BY created_at DESC;")
+                .fetch_all(&lock)
+                .await?,
+        )
     }
 }

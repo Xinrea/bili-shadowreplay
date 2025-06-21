@@ -6,6 +6,7 @@
   import Account from "./page/Account.svelte";
   import About from "./page/About.svelte";
   import { log } from "./lib/invoker";
+  import Clip from "./page/Clip.svelte";
   let active = "总览";
 
   log.info("App loaded");
@@ -27,6 +28,9 @@
       </div>
       <div class="page" class:visible={active == "直播间"}>
         <Room />
+      </div>
+      <div class="page" class:visible={active == "切片"}>
+        <Clip />
       </div>
       <div class="page" class:visible={active == "账号"}>
         <Account />

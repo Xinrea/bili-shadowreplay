@@ -141,6 +141,13 @@ fn get_migrations() -> Vec<Migration> {
             sql: r#"ALTER TABLE recorders ADD COLUMN auto_start INTEGER NOT NULL DEFAULT 1;"#,
             kind: MigrationKind::Up,
         },
+        // add platform column to videos table
+        Migration {
+            version: 3,
+            description: "add_platform_column",
+            sql: r#"ALTER TABLE videos ADD COLUMN platform TEXT;"#,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -362,7 +369,8 @@ fn setup_plugins(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::W
 fn setup_event_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder.on_window_event(|window, event| {
         if let WindowEvent::CloseRequested { api, .. } = event {
-            if !window.label().starts_with("Live") {
+            // main window is not closable
+            if window.label() == "main" {
                 window.hide().unwrap();
                 api.prevent_close();
             }
@@ -412,6 +420,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::video::cancel,
         crate::handlers::video::get_video,
         crate::handlers::video::get_videos,
+        crate::handlers::video::get_all_videos,
         crate::handlers::video::delete_video,
         crate::handlers::video::get_video_typelist,
         crate::handlers::video::update_video_cover,
@@ -423,6 +432,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::utils::export_to_file,
         crate::handlers::utils::get_disk_info,
         crate::handlers::utils::open_live,
+        crate::handlers::utils::open_clip,
         crate::handlers::utils::open_log_folder,
         crate::handlers::utils::console_log,
     ])

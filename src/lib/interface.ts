@@ -59,6 +59,7 @@ export interface VideoItem {
   tags: string;
   area: number;
   created_at: string;
+  platform?: string;
 }
 
 export interface Profile {
@@ -217,8 +218,10 @@ export function generateEventId() {
 }
 
 export async function clipRange(eventId: string, params: ClipRangeParams) {
-  return (await invoke("clip_range", {
-    eventId: eventId,
-    params,
-  })) as VideoItem;
+  return await invoke("clip_range", { eventId, params });
+}
+
+export interface DanmuEntry {
+  ts: number;
+  content: string;
 }

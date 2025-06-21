@@ -49,7 +49,8 @@ export default defineConfig(async ({ mode }) => {
       rollupOptions: {
         input: {
           main: resolve(__dirname, "index.html"),
-          live: resolve(__dirname, "live_index.html"),
+          live: resolve(__dirname, "index_live.html"),
+          clip: resolve(__dirname, "index_clip.html"),
         },
       },
       // Tauri supports es2021

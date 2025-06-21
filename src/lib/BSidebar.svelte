@@ -1,5 +1,12 @@
 <script>
-  import { Info, LayoutDashboard, Settings, Users, Video } from "lucide-svelte";
+  import {
+    FileVideo,
+    Info,
+    LayoutDashboard,
+    Settings,
+    Users,
+    Video,
+  } from "lucide-svelte";
   import { hasNewVersion } from "./stores/version";
   import SidebarItem from "./SidebarItem.svelte";
   import { createEventDispatcher } from "svelte";
@@ -28,6 +35,11 @@
     <SidebarItem label="直播间" {activeUrl} on:activeChange={navigate}>
       <div slot="icon">
         <Video class="w-5 h-5" />
+      </div>
+    </SidebarItem>
+    <SidebarItem label="切片" {activeUrl} on:activeChange={navigate}>
+      <div slot="icon">
+        <FileVideo class="w-5 h-5" />
       </div>
     </SidebarItem>
     <SidebarItem label="账号" {activeUrl} on:activeChange={navigate}>

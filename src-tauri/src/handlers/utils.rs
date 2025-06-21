@@ -228,7 +228,7 @@ pub async fn open_live(
             format!("Live:{}:{}", room_id, live_id),
             tauri::WebviewUrl::App(
                 format!(
-                    "live_index.html?platform={}&room_id={}&live_id={}",
+                    "index_live.html?platform={}&room_id={}&live_id={}",
                     platform.as_str(),
                     room_id,
                     live_id
@@ -255,6 +255,35 @@ pub async fn open_live(
         if let Err(e) = builder.decorations(true).build() {
             log::error!("live window build failed: {}", e);
         }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "gui")]
+#[tauri::command]
+pub async fn open_clip(state: state_type!(), video_id: i64) -> Result<(), String> {
+    log::info!("Open clip window: {}", video_id);
+    let builder = tauri::WebviewWindowBuilder::new(
+        &state.app_handle,
+        format!("Clip:{}", video_id),
+        tauri::WebviewUrl::App(format!("index_clip.html?id={}", video_id).into()),
+    )
+    .title(format!("Clip window:{}", video_id))
+    .theme(Some(Theme::Light))
+    .inner_size(1200.0, 800.0)
+    .effects(WindowEffectsConfig {
+        effects: vec![
+            tauri_utils::WindowEffect::Tabbed,
+            tauri_utils::WindowEffect::Mica,
+        ],
+        state: None,
+        radius: None,
+        color: None,
+    });
+
+    if let Err(e) = builder.decorations(true).build() {
+        log::error!("clip window build failed: {}", e);
     }
 
     Ok(())

@@ -8,22 +8,19 @@
     log,
   } from "./lib/invoker";
   import Player from "./lib/Player.svelte";
-  import type { AccountInfo, RecordItem } from "./lib/db";
+  import type { RecordItem } from "./lib/db";
   import { ChevronRight, ChevronLeft, Play, Pen } from "lucide-svelte";
   import {
-    type Profile,
     type VideoItem,
     type Config,
     type Marker,
     type ProgressUpdate,
     type ProgressFinished,
+    type DanmuEntry,
     clipRange,
     generateEventId,
   } from "./lib/interface";
-  import TypeSelect from "./lib/TypeSelect.svelte";
   import MarkerPanel from "./lib/MarkerPanel.svelte";
-  import CoverEditor from "./lib/CoverEditor.svelte";
-  import VideoPreview from "./lib/VideoPreview.svelte";
   import { onDestroy, onMount } from "svelte";
 
   const urlParams = new URLSearchParams(window.location.search);
@@ -35,8 +32,6 @@
 
   log.info("AppLive loaded", room_id, platform, live_id);
 
-  // get profile in local storage with a default value
-  let profile: Profile = get_profile();
   let config: Config = null;
 
   invoke("get_config").then((c) => {
@@ -44,59 +39,73 @@
     console.log(config);
   });
 
-  function get_profile(): Profile {
-    const profile_str = window.localStorage.getItem("profile-" + room_id);
-    if (profile_str && profile_str.includes("videos")) {
-      return JSON.parse(profile_str);
-    }
-    return default_profile();
-  }
-
-  $: {
-    window.localStorage.setItem("profile-" + room_id, JSON.stringify(profile));
-  }
-
-  function default_profile(): Profile {
-    return {
-      videos: [],
-      cover: "",
-      cover43: null,
-      title: "",
-      copyright: 1,
-      tid: 27,
-      tag: "",
-      desc_format_id: 9999,
-      desc: "",
-      recreate: -1,
-      dynamic: "",
-      interactive: 0,
-      act_reserve_create: 0,
-      no_disturbance: 0,
-      no_reprint: 0,
-      subtitle: {
-        open: 0,
-        lan: "",
-      },
-      dolby: 0,
-      lossless_music: 0,
-      up_selection_reply: false,
-      up_close_danmu: false,
-      up_close_reply: false,
-      web_os: 0,
-    };
-  }
-
   let current_clip_event_id = null;
-  let current_post_event_id = null;
   let danmu_enabled = false;
+
+  // 弹幕相关变量
+  let danmu_records: DanmuEntry[] = [];
+  let filtered_danmu: DanmuEntry[] = [];
+  let danmu_search_text = "";
+
+  // 过滤弹幕
+  function filter_danmu() {
+    filtered_danmu = danmu_records.filter((danmu) => {
+      // 只按内容过滤
+      if (
+        danmu_search_text &&
+        !danmu.content.toLowerCase().includes(danmu_search_text.toLowerCase())
+      ) {
+        return false;
+      }
+      return true;
+    });
+  }
+
+  // 监听弹幕搜索变化
+  $: {
+    if (danmu_search_text !== undefined && danmu_records) {
+      filter_danmu();
+    }
+  }
+
+  // 监听弹幕数据变化，更新过滤结果
+  $: {
+    if (danmu_records) {
+      // 如果当前有搜索文本，重新过滤
+      if (danmu_search_text) {
+        filter_danmu();
+      } else {
+        // 否则直接复制所有弹幕
+        filtered_danmu = [...danmu_records];
+      }
+    }
+  }
+
+  // 格式化时间
+  function format_time(ts: number): string {
+    const date = new Date(ts);
+    const year = date.getFullYear();
+    const month = (date.getMonth() + 1).toString().padStart(2, "0");
+    const day = date.getDate().toString().padStart(2, "0");
+    const hours = date.getHours().toString().padStart(2, "0");
+    const minutes = date.getMinutes().toString().padStart(2, "0");
+    const seconds = date.getSeconds().toString().padStart(2, "0");
+    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+  }
+
+  // 跳转到弹幕时间点
+  function seek_to_danmu(danmu: DanmuEntry) {
+    if (player) {
+      const time_in_seconds = danmu.ts / 1000 - global_offset;
+      player.seek(time_in_seconds);
+    }
+  }
 
   const update_listener = listen<ProgressUpdate>(`progress-update`, (e) => {
     console.log("progress-update event", e.payload.id);
     let event_id = e.payload.id;
     if (event_id === current_clip_event_id) {
       update_clip_prompt(e.payload.content);
-    } else if (event_id === current_post_event_id) {
-      update_post_prompt(e.payload.content);
     }
   });
   const finished_listener = listen<ProgressFinished>(
@@ -111,12 +120,6 @@
           alert("请检查 ffmpeg 是否配置正确：" + e.payload.message);
         }
         current_clip_event_id = null;
-      } else if (event_id === current_post_event_id) {
-        update_post_prompt(`投稿`);
-        if (!e.payload.success) {
-          alert(e.payload.message);
-        }
-        current_post_event_id = null;
       }
     }
   );
@@ -154,17 +157,13 @@
     return canvas.toDataURL();
   }
 
-  let preview = false;
-  let show_cover_editor = false;
   let show_clip_confirm = false;
   let text_style = {
     position: { x: 8, y: 8 },
     fontSize: 24,
     color: "#FF7F00",
   };
-  let uid_selected = 0;
   let video_selected = 0;
-  let accounts = [];
   let videos = [];
 
   let selected_video = null;
@@ -182,17 +181,6 @@
     video = document.getElementById("video") as HTMLVideoElement;
   });
 
-  invoke("get_accounts").then((account_info: AccountInfo) => {
-    accounts = account_info.accounts.map((a) => {
-      return {
-        value: a.uid,
-        name: a.name,
-        platform: a.platform,
-      };
-    });
-    accounts = accounts.filter((a) => a.platform === "bilibili");
-  });
-
   get_video_list();
 
   invoke("get_archive", { roomId: room_id, liveId: live_id }).then(
@@ -206,13 +194,6 @@
   function update_clip_prompt(str: string) {
     // update button text
     const span = document.getElementById("generate-clip-prompt");
-    if (span) {
-      span.textContent = str;
-    }
-  }
-
-  function update_post_prompt(str: string) {
-    const span = document.getElementById("post-prompt");
     if (span) {
       span.textContent = str;
     }
@@ -263,7 +244,7 @@
     update_clip_prompt(`切片生成中`);
     let event_id = generateEventId();
     current_clip_event_id = event_id;
-    let new_video = await clipRange(event_id, {
+    let new_video = (await clipRange(event_id, {
       title: archive.title,
       room_id: room_id,
       platform: platform,
@@ -276,7 +257,7 @@
       local_offset:
         parseInt(localStorage.getItem(`local_offset:${live_id}`) || "0", 10) ||
         0,
-    });
+    })) as VideoItem;
     console.log("video file generatd:", new_video);
     await get_video_list();
     video_selected = new_video.id;
@@ -288,42 +269,11 @@
     }
   }
 
-  async function do_post() {
-    if (!selected_video) {
-      return;
-    }
-
-    let event_id = generateEventId();
-    current_post_event_id = event_id;
-
-    update_post_prompt(`投稿上传中`);
-    // update profile in local storage
-    window.localStorage.setItem("profile-" + room_id, JSON.stringify(profile));
-    invoke("upload_procedure", {
-      uid: uid_selected,
-      eventId: event_id,
-      roomId: room_id,
-      videoId: video_selected,
-      cover: selected_video.cover,
-      profile: profile,
-    }).then(async () => {
-      video_selected = 0;
-      await get_video_list();
-    });
-  }
-
   async function cancel_clip() {
     if (!current_clip_event_id) {
       return;
     }
     invoke("cancel", { eventId: current_clip_event_id });
-  }
-
-  async function cancel_post() {
-    if (!current_post_event_id) {
-      return;
-    }
-    invoke("cancel", { eventId: current_post_event_id });
   }
 
   async function delete_video() {
@@ -362,6 +312,10 @@
     a.href = video_url;
     a.download = video_name;
     a.click();
+  }
+
+  async function open_clip(video_id: number) {
+    await invoke("open_clip", { videoId: video_id });
   }
 </script>
 
@@ -407,6 +361,7 @@
         bind:end
         bind:global_offset
         bind:this={player}
+        bind:danmu_records
         {focus_start}
         {focus_end}
         {platform}
@@ -421,19 +376,6 @@
           });
           markers = markers.sort((a, b) => a.offset - b.offset);
         }}
-      />
-      <VideoPreview
-        bind:show={preview}
-        video={selected_video}
-        roomId={room_id}
-        {videos}
-        onVideoChange={(video) => {
-          selected_video = video;
-        }}
-        onClose={() => {
-          preview = false;
-        }}
-        onVideoListUpdate={get_video_list}
       />
     </div>
     <div
@@ -462,18 +404,11 @@
         class:opacity-100={!rpanel_collapsed}
         class:invisible={rpanel_collapsed}
       >
-        <!-- 顶部标题栏 -->
-        <div
-          class="flex-none sticky top-0 z-10 backdrop-blur-xl bg-[#1c1c1e]/80 px-6 py-4 border-b border-gray-800/50"
-        >
-          <h2 class="text-lg font-medium">视频投稿</h2>
-        </div>
-
         <!-- 内容区域 -->
-        <div class="flex-1 overflow-y-auto">
-          <div class="px-6 py-4 space-y-8">
+        <div class="flex-1 overflow-hidden flex flex-col">
+          <div class="px-6 py-4 space-y-8 flex flex-col h-full">
             <!-- 切片操作区 -->
-            <section class="space-y-3">
+            <section class="space-y-3 flex-shrink-0">
               <div class="flex items-center justify-between">
                 <h3 class="text-sm font-medium text-gray-300">切片列表</h3>
                 <div class="flex space-x-2">
@@ -541,29 +476,18 @@
                 {/if}
               </div>
             </section>
+
             <!-- 封面预览 -->
             {#if selected_video && selected_video.id != -1}
-              <section>
+              <section class="flex-shrink-0">
                 <div class="group">
-                  <div
-                    class="text-sm text-gray-400 mb-2 flex items-center justify-between"
-                  >
-                    <span>视频封面</span>
-                    <button
-                      class="text-[#0A84FF] hover:text-[#0A84FF]/80 transition-colors duration-200 flex items-center space-x-1"
-                      on:click={() => (show_cover_editor = true)}
-                    >
-                      <Pen class="w-4 h-4" />
-                      <span class="text-xs">创建新封面</span>
-                    </button>
-                  </div>
                   <!-- svelte-ignore a11y-click-events-have-key-events -->
                   <div
                     id="capture"
                     class="relative rounded-xl overflow-hidden bg-black/20 border border-gray-800/50 cursor-pointer group"
-                    on:click={() => {
+                    on:click={async () => {
                       pauseVideo();
-                      preview = true;
+                      await open_clip(selected_video.id);
                     }}
                   >
                     <div
@@ -586,160 +510,76 @@
               </section>
             {/if}
 
-            <!-- 表单区域 -->
-            <section class="space-y-8">
-              <!-- 基本信息 -->
-              <div class="space-y-4">
-                <h3 class="text-sm font-medium text-gray-400">基本信息</h3>
-                <!-- 标题 -->
-                <div class="space-y-2">
-                  <label
-                    for="title"
-                    class="block text-sm font-medium text-gray-300">标题</label
-                  >
-                  <input
-                    id="title"
-                    type="text"
-                    bind:value={profile.title}
-                    placeholder="输入视频标题"
-                    class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg
-                           border border-gray-800/50 focus:border-[#0A84FF]
-                           transition duration-200 outline-none
-                           hover:border-gray-700/50"
-                  />
-                </div>
-
-                <!-- 视频分区 -->
-                <div class="space-y-2">
-                  <label
-                    for="tid"
-                    class="block text-sm font-medium text-gray-300"
-                    >视频分区</label
-                  >
-                  <div class="w-full" id="tid">
-                    <TypeSelect bind:value={profile.tid} />
-                  </div>
-                </div>
-
-                <!-- 投稿账号 -->
-                <div id="uid" class="space-y-2">
-                  <label
-                    for="uid"
-                    class="block text-sm font-medium text-gray-300"
-                    >投稿账号</label
-                  >
-                  <select
-                    bind:value={uid_selected}
-                    class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg
-                           border border-gray-800/50 focus:border-[#0A84FF]
-                           transition duration-200 outline-none appearance-none
-                           hover:border-gray-700/50"
-                  >
-                    {#each accounts as account}
-                      <option value={account.value}>{account.name}</option>
-                    {/each}
-                  </select>
-                </div>
+            <!-- 弹幕列表区 -->
+            <section class="space-y-3 flex flex-col flex-1 min-h-0">
+              <div class="flex items-center justify-between flex-shrink-0">
+                <h3 class="text-sm font-medium text-gray-300">弹幕列表</h3>
               </div>
 
-              <!-- 详细信息 -->
-              <div class="space-y-4">
-                <h3 class="text-sm font-medium text-gray-400">详细信息</h3>
-                <!-- 描述 -->
-                <div class="space-y-2">
-                  <label
-                    for="desc"
-                    class="block text-sm font-medium text-gray-300">描述</label
-                  >
-                  <textarea
-                    id="desc"
-                    bind:value={profile.desc}
-                    placeholder="输入视频描述"
-                    class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg
-                           border border-gray-800/50 focus:border-[#0A84FF]
-                           transition duration-200 outline-none resize-none h-32
-                           hover:border-gray-700/50"
-                  />
-                </div>
-
-                <!-- 标签 -->
-                <div class="space-y-2">
-                  <label
-                    for="tag"
-                    class="block text-sm font-medium text-gray-300">标签</label
-                  >
+              <div class="space-y-3 flex flex-col flex-1 min-h-0">
+                <!-- 搜索 -->
+                <div class="space-y-2 flex-shrink-0">
                   <input
-                    id="tag"
                     type="text"
-                    bind:value={profile.tag}
-                    placeholder="输入视频标签，用逗号分隔"
+                    bind:value={danmu_search_text}
+                    placeholder="搜索弹幕内容..."
                     class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg
                            border border-gray-800/50 focus:border-[#0A84FF]
                            transition duration-200 outline-none
-                           hover:border-gray-700/50"
+                           placeholder-gray-500"
                   />
                 </div>
 
-                <!-- 动态 -->
-                <div class="space-y-2">
-                  <label
-                    for="dynamic"
-                    class="block text-sm font-medium text-gray-300">动态</label
-                  >
-                  <textarea
-                    id="dynamic"
-                    bind:value={profile.dynamic}
-                    placeholder="输入动态内容"
-                    class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg
-                           border border-gray-800/50 focus:border-[#0A84FF]
-                           transition duration-200 outline-none resize-none h-32
-                           hover:border-gray-700/50"
-                  />
+                <!-- 弹幕统计 -->
+                <div class="text-xs text-gray-400 flex-shrink-0">
+                  共 {danmu_records.length} 条弹幕，显示 {filtered_danmu.length}
+                  条
+                </div>
+
+                <!-- 弹幕列表 -->
+                <div
+                  class="flex-1 overflow-y-auto space-y-2 sidebar-scrollbar min-h-0"
+                >
+                  {#each filtered_danmu as danmu, index (index)}
+                    <!-- svelte-ignore a11y-click-events-have-key-events -->
+                    <div
+                      class="p-3 bg-[#2c2c2e] rounded-lg border border-gray-800/50
+                             hover:border-[#0A84FF]/50 transition-all duration-200
+                             cursor-pointer group"
+                      on:click={() => seek_to_danmu(danmu)}
+                    >
+                      <div class="flex items-start justify-between">
+                        <div class="flex-1 min-w-0">
+                          <p
+                            class="text-sm text-white break-words leading-relaxed"
+                          >
+                            {danmu.content}
+                          </p>
+                        </div>
+                        <div class="ml-3 flex-shrink-0">
+                          <span
+                            class="text-xs text-gray-400 bg-[#1c1c1e] px-2 py-1 rounded
+                                     group-hover:text-[#0A84FF] transition-colors duration-200"
+                          >
+                            {format_time(danmu.ts)}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  {/each}
+
+                  {#if filtered_danmu.length === 0}
+                    <div class="text-center py-8 text-gray-500">
+                      {danmu_records.length === 0
+                        ? "暂无弹幕数据"
+                        : "没有匹配的弹幕"}
+                    </div>
+                  {/if}
                 </div>
               </div>
             </section>
-
-            <!-- 投稿按钮 -->
-            {#if selected_video}
-              <div class="h-10" />
-            {/if}
           </div>
         </div>
-
-        <!-- 底部按钮 -->
-        {#if selected_video}
-          <div
-            class="flex-none sticky bottom-0 px-6 py-4 bg-gradient-to-t from-[#1c1c1e] via-[#1c1c1e] to-transparent"
-          >
-            <div class="flex gap-3">
-              <button
-                on:click={do_post}
-                disabled={current_post_event_id != null}
-                class="flex-1 px-4 py-2.5 bg-[#0A84FF] text-white rounded-lg
-                       transition-all duration-200 hover:bg-[#0A84FF]/90
-                       disabled:opacity-50 disabled:cursor-not-allowed
-                       flex items-center justify-center space-x-2"
-              >
-                {#if current_post_event_id != null}
-                  <div
-                    class="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin"
-                  />
-                {/if}
-                <span id="post-prompt">投稿</span>
-              </button>
-              {#if current_post_event_id != null}
-                <button
-                  on:click={() => cancel_post()}
-                  class="w-24 px-3 py-2 bg-red-500 text-white rounded-lg
-                         transition-all duration-200 hover:bg-red-500/90
-                         flex items-center justify-center"
-                >
-                  取消
-                </button>
-              {/if}
-            </div>
-          </div>
-        {/if}
       </div>
     </div>
   </div>
@@ -786,17 +626,6 @@
   </div>
 {/if}
 
-<CoverEditor
-  bind:show={show_cover_editor}
-  video={selected_video}
-  on:coverUpdate={(event) => {
-    selected_video = {
-      ...selected_video,
-      cover: event.detail.cover,
-    };
-  }}
-/>
-
 <style>
   main {
     width: 100vw;
@@ -825,5 +654,24 @@
     border-left: none;
     background-color: rgb(3 7 18 / var(--tw-bg-opacity));
     transform: translateY(-50%);
+  }
+
+  /* 弹幕列表滚动条样式 */
+  .sidebar-scrollbar::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .sidebar-scrollbar::-webkit-scrollbar-track {
+    background: rgba(44, 44, 46, 0.3);
+    border-radius: 3px;
+  }
+
+  .sidebar-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(10, 132, 255, 0.5);
+    border-radius: 3px;
+  }
+
+  .sidebar-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(10, 132, 255, 0.7);
   }
 </style>

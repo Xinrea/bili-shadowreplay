@@ -86,7 +86,7 @@
     <Tooltip>清空</Tooltip>
   </div>
 
-  <div class="overflow-y-auto">
+  <div class="overflow-y-auto sidebar-scrollbar">
     {#each markers as marker, i}
       <div class="marker-entry">
         <div class="marker-control">

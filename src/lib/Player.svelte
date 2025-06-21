@@ -30,6 +30,7 @@
   export let focus_start = 0;
   export let focus_end = 0;
   export let markers: Marker[] = [];
+  export let danmu_records: DanmuEntry[] = [];
   export function seek(offset: number) {
     video.currentTime = offset;
   }
@@ -273,7 +274,7 @@
 
     let danmu_enabled = true;
     // get danmaku record
-    let danmu_records: DanmuEntry[] = (await invoke("get_danmu_record", {
+    danmu_records = (await invoke("get_danmu_record", {
       roomId: room_id,
       liveId: live_id,
       platform: platform,
@@ -371,14 +372,14 @@
       await listen("danmu:" + room_id, (event: { payload: DanmuEntry }) => {
         // if not enabled or playback is not keep up with live, ignore the danmaku
         if (!danmu_enabled || get_total() - video.currentTime > 5) {
-          danmu_records.push(event.payload);
+          danmu_records = [...danmu_records, event.payload];
           return;
         }
         if (Object.keys(danmu_displayed).length > 1000) {
           danmu_displayed = {};
         }
         danmu_displayed[event.payload.ts] = true;
-        danmu_records.push(event.payload);
+        danmu_records = [...danmu_records, event.payload];
         danmu_handler(event.payload.content);
       });
     }

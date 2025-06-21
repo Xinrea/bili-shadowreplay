@@ -1,7 +1,7 @@
 <script lang="ts">
   import { invoke } from "../lib/invoker";
-  import { Dropdown, DropdownItem, Select } from "flowbite-svelte";
   import { ChevronDownOutline } from "flowbite-svelte-icons";
+  import { scale } from "svelte/transition";
   import type { Children, VideoType } from "./interface";
   export let value = 0;
   let parentSelected: VideoType;
@@ -9,6 +9,7 @@
   let parentOpen = false;
   let areaOpen = false;
   let items: VideoType[] = [];
+
   async function get_video_typelist() {
     items = (await invoke("get_video_typelist")) as VideoType[];
     // find parentSelected by value
@@ -29,58 +30,143 @@
       value = areaSelected.id;
     }
   }
+
+  function handleParentClick() {
+    parentOpen = !parentOpen;
+    areaOpen = false;
+  }
+
+  function handleAreaClick() {
+    areaOpen = !areaOpen;
+    parentOpen = false;
+  }
+
+  function selectParent(item: VideoType) {
+    parentSelected = item;
+    areaSelected = parentSelected.children[0];
+    value = areaSelected.id;
+    parentOpen = false;
+  }
+
+  function selectArea(child: Children) {
+    areaSelected = child;
+    value = child.id;
+    areaOpen = false;
+  }
+
+  // Close dropdowns when clicking outside
+  function handleClickOutside(event: MouseEvent) {
+    const target = event.target as HTMLElement;
+    if (!target.closest(".type-select-container")) {
+      parentOpen = false;
+      areaOpen = false;
+    }
+  }
+
   get_video_typelist();
 </script>
 
-<div class="flex">
-  <button
-    class="z-10 w-2/5 inline-flex justify-between items-center py-2.5 px-4 text-sm font-medium text-center rounded-s-lg focus:border-primary-500 focus:ring-primary-500 bg-gray-700 text-white placeholder-gray-400 border border-gray-600"
-    type="button"
-  >
-    {parentSelected ? parentSelected.name : ""}
-    <ChevronDownOutline class="w-6 h-6 ms-2" />
-  </button>
-  <Dropdown
-    bind:open={parentOpen}
-    containerClass="divide-y z-50 h-48 overflow-y-auto w-24"
-  >
-    {#each items as item}
-      <DropdownItem
-        on:click={() => {
-          parentOpen = false;
-          areaOpen = false;
-          parentSelected = item;
-          areaSelected = parentSelected.children[0];
-          value = areaSelected.id;
-        }}
-        class="flex items-center">{item.name}</DropdownItem
+<svelte:window on:click={handleClickOutside} />
+
+<div class="type-select-container flex w-full max-w-md">
+  <!-- Parent Select -->
+  <div class="relative flex-1">
+    <button
+      class="w-full inline-flex justify-between items-center px-3 py-2 text-sm font-medium text-left bg-[#1c1c1e] text-white border border-gray-600 rounded-l-lg hover:bg-[#2c2c2e] focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors duration-200"
+      type="button"
+      on:click={handleParentClick}
+    >
+      <span class="truncate">{parentSelected ? parentSelected.name : ""}</span>
+      <ChevronDownOutline
+        class="w-4 h-4 ml-2 flex-shrink-0 transition-transform duration-200 {parentOpen
+          ? 'rotate-180'
+          : ''}"
+      />
+    </button>
+
+    {#if parentOpen}
+      <div
+        class="absolute top-full left-0 mt-1 w-full bg-[#1c1c1e] border border-gray-600 rounded-lg shadow-lg z-50 max-h-48 overflow-y-auto"
+        transition:scale={{ duration: 150, start: 0.95 }}
       >
-    {/each}
-  </Dropdown>
-  <button
-    class="z-10 w-3/5 inline-flex justify-between items-center py-2.5 px-4 text-sm font-medium text-center rounded-e-lg focus:border-primary-500 focus:ring-primary-500 bg-gray-700 text-white placeholder-gray-400 border border-gray-600"
-    type="button"
-  >
-    {areaSelected ? areaSelected.name : ""}
-    <ChevronDownOutline class="w-6 h-6 ms-2" />
-  </button>
-  <Dropdown
-    bind:open={areaOpen}
-    containerClass="divide-y z-50 h-48 overflow-y-auto min-w-32 bg-gray-700 text-gray-200 rounded-lg border-gray-100 border-gray-600 divide-gray-100 divide-gray-600 shadow-md"
-  >
-    {#each parentSelected.children as child}
-      <DropdownItem
-        on:click={() => {
-          areaOpen = false;
-          parentOpen = false;
-          areaSelected = child;
-          value = child.id;
-        }}
-        class="flex items-center">{child.name}</DropdownItem
+        {#each items as item}
+          <button
+            class="w-full px-3 py-2 text-sm text-left text-white hover:bg-[#2c2c2e] first:rounded-t-lg last:rounded-b-lg transition-colors duration-150 {parentSelected?.id ===
+            item.id
+              ? 'bg-blue-900/20 text-blue-400'
+              : ''}"
+            on:click={() => selectParent(item)}
+          >
+            {item.name}
+          </button>
+        {/each}
+      </div>
+    {/if}
+  </div>
+
+  <!-- Area Select -->
+  <div class="relative flex-1">
+    <button
+      class="w-full inline-flex justify-between items-center px-3 py-2 text-sm font-medium text-left bg-[#1c1c1e] text-white border border-l-0 border-gray-600 rounded-r-lg hover:bg-[#2c2c2e] focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors duration-200"
+      type="button"
+      on:click={handleAreaClick}
+    >
+      <span class="truncate">{areaSelected ? areaSelected.name : ""}</span>
+      <ChevronDownOutline
+        class="w-4 h-4 ml-2 flex-shrink-0 transition-transform duration-200 {areaOpen
+          ? 'rotate-180'
+          : ''}"
+      />
+    </button>
+
+    {#if areaOpen}
+      <div
+        class="absolute top-full right-0 mt-1 w-full bg-[#1c1c1e] border border-gray-600 rounded-lg shadow-lg z-50 max-h-48 overflow-y-auto"
+        transition:scale={{ duration: 150, start: 0.95 }}
       >
-    {/each}
-  </Dropdown>
+        {#each parentSelected?.children || [] as child}
+          <button
+            class="w-full px-3 py-2 text-sm text-left text-white hover:bg-[#2c2c2e] first:rounded-t-lg last:rounded-b-lg transition-colors duration-150 {areaSelected?.id ===
+            child.id
+              ? 'bg-blue-900/20 text-blue-400'
+              : ''}"
+            on:click={() => selectArea(child)}
+          >
+            {child.name}
+          </button>
+        {/each}
+      </div>
+    {/if}
+  </div>
 </div>
 
 <style>
+  /* Custom scrollbar for dropdowns */
+  :global(
+      .type-select-container div[class*="overflow-y-auto"]::-webkit-scrollbar
+    ) {
+    width: 6px;
+  }
+
+  :global(
+      .type-select-container
+        div[class*="overflow-y-auto"]::-webkit-scrollbar-track
+    ) {
+    background: transparent;
+  }
+
+  :global(
+      .type-select-container
+        div[class*="overflow-y-auto"]::-webkit-scrollbar-thumb
+    ) {
+    background: rgba(75, 85, 99, 0.5);
+    border-radius: 3px;
+  }
+
+  :global(
+      .type-select-container
+        div[class*="overflow-y-auto"]::-webkit-scrollbar-thumb:hover
+    ) {
+    background: rgba(75, 85, 99, 0.7);
+  }
 </style>

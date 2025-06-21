@@ -81,11 +81,14 @@
 </script>
 
 {#if show}
+  <!-- svelte-ignore a11y-click-events-have-key-events -->
   <div
     class="fixed inset-0 bg-black/50 z-[1100] flex items-center justify-center"
     on:click|self={handleClose}
   >
-    <div class="bg-[#1c1c1e] rounded-lg w-[600px] max-h-[80vh] overflow-y-auto">
+    <div
+      class="bg-[#1c1c1e] rounded-lg w-[600px] max-h-[80vh] overflow-y-auto sidebar-scrollbar"
+    >
       <!-- 顶部标题栏 -->
       <div
         class="flex items-center justify-between p-4 border-b border-gray-800/50"
@@ -113,7 +116,7 @@
                 bind:value={style.fontName}
                 class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg
                        border border-gray-800/50 focus:border-[#0A84FF]
-                       transition duration-200 outline-none"
+                       transition duration-200 outline-none hover:border-gray-700/50"
               />
             </div>
             <div class="space-y-2">
@@ -124,7 +127,7 @@
                 bind:value={style.fontSize}
                 class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg
                        border border-gray-800/50 focus:border-[#0A84FF]
-                       transition duration-200 outline-none"
+                       transition duration-200 outline-none hover:border-gray-700/50"
               />
             </div>
           </div>
@@ -135,23 +138,25 @@
           <h3 class="text-sm font-medium text-gray-300">颜色设置</h3>
           <div class="grid grid-cols-2 gap-4">
             <div class="space-y-2">
+              <!-- svelte-ignore a11y-label-has-associated-control -->
               <label class="block text-sm text-gray-400">字体颜色</label>
               <input
                 type="color"
                 bind:value={style.fontColor}
                 class="w-full h-10 bg-[#2c2c2e] rounded-lg
                        border border-gray-800/50 focus:border-[#0A84FF]
-                       transition duration-200 outline-none"
+                       transition duration-200 outline-none hover:border-gray-700/50"
               />
             </div>
             <div class="space-y-2">
+              <!-- svelte-ignore a11y-label-has-associated-control -->
               <label class="block text-sm text-gray-400">描边颜色</label>
               <input
                 type="color"
                 bind:value={style.outlineColor}
                 class="w-full h-10 bg-[#2c2c2e] rounded-lg
                        border border-gray-800/50 focus:border-[#0A84FF]
-                       transition duration-200 outline-none"
+                       transition duration-200 outline-none hover:border-gray-700/50"
               />
             </div>
           </div>
@@ -161,6 +166,7 @@
         <div class="space-y-4">
           <h3 class="text-sm font-medium text-gray-300">描边设置</h3>
           <div class="space-y-2">
+            <!-- svelte-ignore a11y-label-has-associated-control -->
             <label class="block text-sm text-gray-400">描边宽度</label>
             <input
               type="range"
@@ -182,7 +188,7 @@
                 bind:value={style.alignment}
                 class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg
                        border border-gray-800/50 focus:border-[#0A84FF]
-                       transition duration-200 outline-none"
+                       transition duration-200 outline-none hover:border-gray-700/50"
               >
                 {#each alignmentOptions as option}
                   <option value={option.value} title={option.description}>
@@ -198,7 +204,7 @@
                 bind:value={style.marginV}
                 class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg
                        border border-gray-800/50 focus:border-[#0A84FF]
-                       transition duration-200 outline-none"
+                       transition duration-200 outline-none hover:border-gray-700/50"
               />
             </div>
           </div>
@@ -210,7 +216,7 @@
                 bind:value={style.marginL}
                 class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg
                        border border-gray-800/50 focus:border-[#0A84FF]
-                       transition duration-200 outline-none"
+                       transition duration-200 outline-none hover:border-gray-700/50"
               />
             </div>
             <div class="space-y-2">
@@ -220,7 +226,7 @@
                 bind:value={style.marginR}
                 class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg
                        border border-gray-800/50 focus:border-[#0A84FF]
-                       transition duration-200 outline-none"
+                       transition duration-200 outline-none hover:border-gray-700/50"
               />
             </div>
           </div>

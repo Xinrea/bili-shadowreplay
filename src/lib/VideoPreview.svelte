@@ -11,6 +11,7 @@
     BrainCircuit,
     Eraser,
     Download,
+    Pen,
   } from "lucide-svelte";
   import {
     generateEventId,
@@ -19,14 +20,20 @@
     type ProgressUpdate,
     type SubtitleStyle,
     type VideoItem,
+    type Profile,
+    type Config,
   } from "./interface";
   import SubtitleStyleEditor from "./SubtitleStyleEditor.svelte";
-  import { invoke, TAURI_ENV, listen } from "../lib/invoker";
-  import { onDestroy } from "svelte";
+  import CoverEditor from "./CoverEditor.svelte";
+  import TypeSelect from "./TypeSelect.svelte";
+  import { invoke, TAURI_ENV, listen, log } from "../lib/invoker";
+  import { onDestroy, onMount } from "svelte";
+  import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+  import { listen as tauriListen } from "@tauri-apps/api/event";
+  import type { AccountInfo } from "./db";
 
   export let show = false;
   export let video: VideoItem;
-  export let onClose: () => void;
   export let roomId: number;
   export let videos: any[] = [];
   export let onVideoChange: ((video: VideoItem) => void) | undefined =
@@ -76,6 +83,100 @@
 
   let current_encode_event_id = null;
   let current_generate_event_id = null;
+  let windowCloseUnlisten: (() => void) | null = null;
+  let activeTab = "subtitle"; // 添加当前激活的 tab
+
+  // 投稿相关变量
+  let current_post_event_id = null;
+  let config: Config = null;
+  let accounts: any[] = [];
+  let uid_selected = 0;
+  let show_cover_editor = false;
+
+  // 获取 profile 从 localStorage
+  function get_profile(): Profile {
+    const profile_str = window.localStorage.getItem("profile-" + roomId);
+    if (profile_str && profile_str.includes("videos")) {
+      return JSON.parse(profile_str);
+    }
+    return default_profile();
+  }
+
+  let profile: Profile = get_profile();
+
+  $: {
+    window.localStorage.setItem("profile-" + roomId, JSON.stringify(profile));
+  }
+
+  function default_profile(): Profile {
+    return {
+      videos: [],
+      cover: "",
+      cover43: null,
+      title: "",
+      copyright: 1,
+      tid: 27,
+      tag: "",
+      desc_format_id: 9999,
+      desc: "",
+      recreate: -1,
+      dynamic: "",
+      interactive: 0,
+      act_reserve_create: 0,
+      no_disturbance: 0,
+      no_reprint: 0,
+      subtitle: {
+        open: 0,
+        lan: "",
+      },
+      dolby: 0,
+      lossless_music: 0,
+      up_selection_reply: false,
+      up_close_danmu: false,
+      up_close_reply: false,
+      web_os: 0,
+    };
+  }
+
+  // on window close, save subtitles
+  onMount(async () => {
+    if (TAURI_ENV) {
+      // 使用 Tauri 的全局事件监听器
+      try {
+        windowCloseUnlisten = await tauriListen(
+          "tauri://close-requested",
+          async () => {
+            await saveSubtitles();
+          }
+        );
+      } catch (error) {
+        log.warn("Failed to listen to window close event:", error);
+      }
+    } else {
+      // 在非 Tauri 环境中使用 beforeunload
+      window.addEventListener("beforeunload", async () => {
+        await saveSubtitles();
+      });
+    }
+
+    // 初始化投稿相关数据
+    try {
+      // 获取配置
+      config = (await invoke("get_config")) as Config;
+
+      // 获取账号列表
+      const account_info: AccountInfo = await invoke("get_accounts");
+      accounts = account_info.accounts
+        .filter((a) => a.platform === "bilibili")
+        .map((a) => ({
+          value: a.uid,
+          name: a.name,
+          platform: a.platform,
+        }));
+    } catch (error) {
+      console.error("Failed to initialize upload data:", error);
+    }
+  });
 
   const update_listener = listen<ProgressUpdate>(`progress-update`, (e) => {
     let event_id = e.payload.id;
@@ -84,6 +185,8 @@
       update_encode_prompt(e.payload.content);
     } else if (event_id == current_generate_event_id) {
       update_generate_prompt(e.payload.content);
+    } else if (event_id === current_post_event_id) {
+      update_post_prompt(e.payload.content);
     }
   });
 
@@ -101,12 +204,22 @@
         alert("生成字幕失败: " + e.payload.message);
       }
       current_generate_event_id = null;
+    } else if (event_id === current_post_event_id) {
+      update_post_prompt(`投稿`);
+      if (!e.payload.success) {
+        alert(e.payload.message);
+      }
+      current_post_event_id = null;
     }
   });
 
   onDestroy(() => {
     update_listener?.then((fn) => fn());
     finish_listener?.then((fn) => fn());
+    // 清理窗口关闭事件监听器
+    if (windowCloseUnlisten) {
+      windowCloseUnlisten();
+    }
   });
 
   function update_encode_prompt(content: string) {
@@ -120,6 +233,51 @@
     const generate_prompt = document.getElementById("generate-prompt");
     if (generate_prompt) {
       generate_prompt.textContent = content;
+    }
+  }
+
+  function update_post_prompt(str: string) {
+    const span = document.getElementById("post-prompt");
+    if (span) {
+      span.textContent = str;
+    }
+  }
+
+  // 投稿相关函数
+  async function do_post() {
+    if (!video) {
+      return;
+    }
+
+    let event_id = generateEventId();
+    current_post_event_id = event_id;
+
+    update_post_prompt(`投稿上传中`);
+    // update profile in local storage
+    window.localStorage.setItem("profile-" + roomId, JSON.stringify(profile));
+    invoke("upload_procedure", {
+      uid: uid_selected,
+      eventId: event_id,
+      roomId: roomId,
+      videoId: video.id,
+      cover: video.cover,
+      profile: profile,
+    }).then(async () => {
+      uid_selected = 0;
+      await onVideoListUpdate?.();
+    });
+  }
+
+  async function cancel_post() {
+    if (!current_post_event_id) {
+      return;
+    }
+    invoke("cancel", { eventId: current_post_event_id });
+  }
+
+  function pauseVideo() {
+    if (videoElement) {
+      videoElement.pause();
     }
   }
 
@@ -244,22 +402,6 @@
     loadSubtitleStyle();
   }
 
-  async function handleClose() {
-    if (videoElement) {
-      videoElement.pause();
-      videoElement.currentTime = 0;
-    }
-    isPlaying = false;
-    currentTime = 0;
-    currentSubtitle = "";
-    currentSubtitleIndex = -1;
-    subtitleElements = [];
-    isVideoLoaded = false;
-    await saveSubtitles(); // 保存字幕
-    subtitles = []; // 清空字幕列表
-    onClose();
-  }
-
   async function handleVideoLoaded() {
     isVideoLoaded = true;
     if (videoElement) {
@@ -290,7 +432,7 @@
 
     timeMarkers = Array.from(
       { length: Math.min(Math.ceil(duration / interval) + 1, maxMarkers) },
-      (_, i) => Math.min(i * interval, duration),
+      (_, i) => Math.min(i * interval, duration)
     );
   }
 
@@ -367,7 +509,7 @@
     subtitles = subtitles.map((s, i) =>
       i === index
         ? { ...s, startTime: newStartTimeFinal, endTime: newEndTime }
-        : s,
+        : s
     );
     subtitles = subtitles.sort((a, b) => a.startTime - b.startTime);
   }
@@ -392,7 +534,7 @@
       const newTime = Math.max(0, sub.startTime + delta);
       if (newTime < sub.endTime - 0.1) {
         subtitles = subtitles.map((s, i) =>
-          i === index ? { ...s, startTime: newTime } : s,
+          i === index ? { ...s, startTime: newTime } : s
         );
         subtitles = subtitles.sort((a, b) => a.startTime - b.startTime);
       }
@@ -400,7 +542,7 @@
       const newTime = Math.min(videoElement.duration, sub.endTime + delta);
       if (newTime > sub.startTime + 0.1) {
         subtitles = subtitles.map((s, i) =>
-          i === index ? { ...s, endTime: newTime } : s,
+          i === index ? { ...s, endTime: newTime } : s
         );
         subtitles = subtitles.sort((a, b) => a.startTime - b.startTime);
       }
@@ -410,7 +552,7 @@
   function handleTimelineMouseDown(
     e: MouseEvent,
     index: number,
-    isStart: boolean,
+    isStart: boolean
   ) {
     draggingSubtitle = { index, isStart };
     document.addEventListener("mousemove", handleTimelineMouseMove);
@@ -514,7 +656,7 @@
 
   function getCurrentSubtitleIndex(): number {
     return subtitles.findIndex(
-      (sub) => currentTime >= sub.startTime && currentTime < sub.endTime,
+      (sub) => currentTime >= sub.startTime && currentTime < sub.endTime
     );
   }
 
@@ -549,7 +691,7 @@
 
   function handleVideoSelect(e: Event) {
     const selectedVideo = videos.find(
-      (v) => v.id === Number((e.target as HTMLSelectElement).value),
+      (v) => v.id === Number((e.target as HTMLSelectElement).value)
     );
     if (selectedVideo) {
       // 清空字幕列表
@@ -590,13 +732,6 @@
       class="h-14 border-b border-gray-800/50 bg-[#2c2c2e] flex items-center px-4 justify-between"
     >
       <div class="flex items-center space-x-4">
-        <button
-          class="flex items-center space-x-2 text-gray-300 hover:text-white transition-colors duration-200 px-3 py-1.5 rounded-md hover:bg-gray-700/50"
-          on:click={handleClose}
-        >
-          <ArrowLeft class="w-4 h-4" />
-          <span class="text-sm">返回</span>
-        </button>
         <!-- 视频选择器 -->
         <div class="relative flex items-center space-x-2">
           <select
@@ -631,8 +766,8 @@
                   const newVideo = videos[0];
                   onVideoChange?.(newVideo);
                 } else {
-                  // 如果列表为空，关闭预览
-                  await handleClose();
+                  // 如果列表为空，关闭窗口
+                  window.close();
                 }
               } catch (error) {
                 console.error(error);
@@ -883,7 +1018,7 @@
 
           <!-- 时间轴容器 -->
           <div
-            class="h-24 overflow-x-auto overflow-y-hidden"
+            class="h-24 overflow-x-auto overflow-y-hidden sidebar-scrollbar"
             bind:this={timelineContainer}
             on:wheel|preventDefault={handleWheel}
           >
@@ -958,141 +1093,326 @@
 
       <!-- 字幕编辑面板 -->
       <div
-        class="w-80 border-l border-gray-800/50 bg-[#2c2c2e] overflow-y-auto"
+        class="w-80 border-l border-gray-800/50 bg-[#2c2c2e] overflow-y-auto sidebar-scrollbar"
       >
-        <div class="p-4 space-y-4">
-          <div class="w-full sticky top-0 bg-[#2c2c2e] z-10 pb-4">
-            <div class="flex flex-col space-y-2">
-              <div class="flex space-x-2">
-                <button
-                  class="flex-1 px-3 py-1.5 text-sm bg-[#1c1c1e] text-gray-300 rounded-lg hover:bg-[#2c2c2e] transition-colors duration-200 flex items-center justify-center space-x-1 border border-gray-700"
-                  on:click={() => (showStyleEditor = true)}
-                >
-                  <Settings class="w-4 h-4" />
-                  <span>字幕样式</span>
-                </button>
-                <button
-                  class="flex-1 px-3 py-1.5 text-sm bg-[#1c1c1e] text-gray-300 rounded-lg hover:bg-[#2c2c2e] transition-colors duration-200 flex items-center justify-center space-x-1 border border-gray-700"
-                  on:click={clearSubtitles}
-                >
-                  <Eraser class="w-4 h-4" />
-                  <span>清空列表</span>
-                </button>
-              </div>
-              <div class="flex space-x-2">
-                <button
-                  class="flex-1 px-3 py-1.5 text-sm bg-[#1c1c1e] text-gray-300 rounded-lg hover:bg-[#2c2c2e] transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-1 border border-gray-700"
-                  on:click={generateSubtitles}
-                  disabled={current_generate_event_id !== null}
-                >
-                  {#if current_generate_event_id !== null}
-                    <svg
-                      class="animate-spin h-4 w-4"
-                      xmlns="http://www.w3.org/2000/svg"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                    >
-                      <circle
-                        class="opacity-25"
-                        cx="12"
-                        cy="12"
-                        r="10"
-                        stroke="currentColor"
-                        stroke-width="4"
-                      ></circle>
-                      <path
-                        class="opacity-75"
-                        fill="currentColor"
-                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                      ></path>
-                    </svg>
-                  {:else}
-                    <BrainCircuit class="w-4 h-4" />
-                  {/if}
-                  <span id="generate-prompt">AI 生成字幕</span>
-                </button>
-                <button
-                  class="flex-1 px-3 py-1.5 text-sm bg-[#1c1c1e] text-gray-300 rounded-lg hover:bg-[#2c2c2e] transition-colors duration-200 flex items-center justify-center space-x-1 border border-gray-700"
-                  on:click={addSubtitle}
-                >
-                  <Plus class="w-4 h-4" />
-                  <span>手动添加</span>
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <!-- 字幕列表 -->
-          <div class="space-y-2">
-            {#each subtitles as subtitle, index}
+        <!-- Tab 导航 -->
+        <div class="flex border-b border-gray-800/50 bg-[#1c1c1e]">
+          <button
+            class="px-6 py-3 text-sm font-medium transition-all duration-200 relative"
+            class:text-white={activeTab === "subtitle"}
+            class:text-gray-400={activeTab !== "subtitle"}
+            class:bg-[#2c2c2e]={activeTab === "subtitle"}
+            class:bg-transparent={activeTab !== "subtitle"}
+            on:click={() => (activeTab = "subtitle")}
+          >
+            字幕
+            {#if activeTab === "subtitle"}
               <div
-                bind:this={subtitleElements[index]}
-                class="p-3 bg-[#1c1c1e] rounded-lg space-y-2 transition-colors duration-200"
-                class:bg-[#2c2c2e]={currentSubtitleIndex === index}
-                class:border={currentSubtitleIndex === index}
-                class:border-[#0A84FF]={currentSubtitleIndex === index}
-              >
-                <div class="flex justify-between items-center">
-                  <div class="flex items-center space-x-4">
-                    <div class="flex items-center space-x-1">
-                      <button
-                        class="text-sm text-[#0A84FF] hover:text-[#0A84FF]/80"
-                        on:click={() => seekToTime(subtitle.startTime)}
-                      >
-                        {formatTime(subtitle.startTime)}
-                      </button>
-                      <button
-                        class="p-0.5 text-gray-400 hover:text-white"
-                        on:click={() => adjustTime(index, true, -0.1)}
-                      >
-                        <Minus class="w-3 h-3" />
-                      </button>
-                      <button
-                        class="p-0.5 text-gray-400 hover:text-white"
-                        on:click={() => adjustTime(index, true, 0.1)}
-                      >
-                        <Plus class="w-3 h-3" />
-                      </button>
-                    </div>
-                    <span class="text-gray-400">→</span>
-                    <div class="flex items-center space-x-1">
-                      <button
-                        class="text-sm text-[#0A84FF] hover:text-[#0A84FF]/80"
-                        on:click={() => seekToTime(subtitle.endTime)}
-                      >
-                        {formatTime(subtitle.endTime)}
-                      </button>
-                      <button
-                        class="p-0.5 text-gray-400 hover:text-white"
-                        on:click={() => adjustTime(index, false, -0.1)}
-                      >
-                        <Minus class="w-3 h-3" />
-                      </button>
-                      <button
-                        class="p-0.5 text-gray-400 hover:text-white"
-                        on:click={() => adjustTime(index, false, 0.1)}
-                      >
-                        <Plus class="w-3 h-3" />
-                      </button>
-                    </div>
-                  </div>
+                class="absolute bottom-0 left-0 right-0 h-0.5 bg-[#0A84FF]"
+              ></div>
+            {/if}
+          </button>
+          <button
+            class="px-6 py-3 text-sm font-medium transition-all duration-200 relative"
+            class:text-white={activeTab === "upload"}
+            class:text-gray-400={activeTab !== "upload"}
+            class:bg-[#2c2c2e]={activeTab === "upload"}
+            class:bg-transparent={activeTab !== "upload"}
+            on:click={() => (activeTab = "upload")}
+          >
+            快速投稿
+            {#if activeTab === "upload"}
+              <div
+                class="absolute bottom-0 left-0 right-0 h-0.5 bg-[#0A84FF]"
+              ></div>
+            {/if}
+          </button>
+        </div>
+
+        <!-- Tab 内容 -->
+        {#if activeTab === "subtitle"}
+          <!-- 字幕 Tab 内容 -->
+          <div class="p-4 space-y-4">
+            <div class="w-full sticky top-0 bg-[#2c2c2e] z-10 pb-4">
+              <div class="flex flex-col space-y-2">
+                <div class="flex space-x-2">
                   <button
-                    class="text-sm text-red-500 hover:text-red-400"
-                    on:click={async () => await removeSubtitle(index)}
+                    class="flex-1 px-3 py-1.5 text-sm bg-[#1c1c1e] text-gray-300 rounded-lg hover:bg-[#2c2c2e] transition-colors duration-200 flex items-center justify-center space-x-1 border border-gray-700"
+                    on:click={() => (showStyleEditor = true)}
                   >
-                    删除
+                    <Settings class="w-4 h-4" />
+                    <span>字幕样式</span>
+                  </button>
+                  <button
+                    class="flex-1 px-3 py-1.5 text-sm bg-[#1c1c1e] text-gray-300 rounded-lg hover:bg-[#2c2c2e] transition-colors duration-200 flex items-center justify-center space-x-1 border border-gray-700"
+                    on:click={clearSubtitles}
+                  >
+                    <Eraser class="w-4 h-4" />
+                    <span>清空列表</span>
                   </button>
                 </div>
+                <div class="flex space-x-2">
+                  <button
+                    class="flex-1 px-3 py-1.5 text-sm bg-[#1c1c1e] text-gray-300 rounded-lg hover:bg-[#2c2c2e] transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-1 border border-gray-700"
+                    on:click={generateSubtitles}
+                    disabled={current_generate_event_id !== null}
+                  >
+                    {#if current_generate_event_id !== null}
+                      <svg
+                        class="animate-spin h-4 w-4"
+                        xmlns="http://www.w3.org/2000/svg"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                      >
+                        <circle
+                          class="opacity-25"
+                          cx="12"
+                          cy="12"
+                          r="10"
+                          stroke="currentColor"
+                          stroke-width="4"
+                        ></circle>
+                        <path
+                          class="opacity-75"
+                          fill="currentColor"
+                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                        ></path>
+                      </svg>
+                    {:else}
+                      <BrainCircuit class="w-4 h-4" />
+                    {/if}
+                    <span id="generate-prompt">AI 生成字幕</span>
+                  </button>
+                  <button
+                    class="flex-1 px-3 py-1.5 text-sm bg-[#1c1c1e] text-gray-300 rounded-lg hover:bg-[#2c2c2e] transition-colors duration-200 flex items-center justify-center space-x-1 border border-gray-700"
+                    on:click={addSubtitle}
+                  >
+                    <Plus class="w-4 h-4" />
+                    <span>手动添加</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 字幕列表 -->
+            <div class="space-y-2">
+              {#each subtitles as subtitle, index}
+                <div
+                  bind:this={subtitleElements[index]}
+                  class="p-3 bg-[#1c1c1e] rounded-lg space-y-2 transition-colors duration-200"
+                  class:bg-[#2c2c2e]={currentSubtitleIndex === index}
+                  class:border={currentSubtitleIndex === index}
+                  class:border-[#0A84FF]={currentSubtitleIndex === index}
+                >
+                  <div class="flex justify-between items-center">
+                    <div class="flex items-center space-x-4">
+                      <div class="flex items-center space-x-1">
+                        <button
+                          class="text-sm text-[#0A84FF] hover:text-[#0A84FF]/80"
+                          on:click={() => seekToTime(subtitle.startTime)}
+                        >
+                          {formatTime(subtitle.startTime)}
+                        </button>
+                        <button
+                          class="p-0.5 text-gray-400 hover:text-white"
+                          on:click={() => adjustTime(index, true, -0.1)}
+                        >
+                          <Minus class="w-3 h-3" />
+                        </button>
+                        <button
+                          class="p-0.5 text-gray-400 hover:text-white"
+                          on:click={() => adjustTime(index, true, 0.1)}
+                        >
+                          <Plus class="w-3 h-3" />
+                        </button>
+                      </div>
+                      <span class="text-gray-400">→</span>
+                      <div class="flex items-center space-x-1">
+                        <button
+                          class="text-sm text-[#0A84FF] hover:text-[#0A84FF]/80"
+                          on:click={() => seekToTime(subtitle.endTime)}
+                        >
+                          {formatTime(subtitle.endTime)}
+                        </button>
+                        <button
+                          class="p-0.5 text-gray-400 hover:text-white"
+                          on:click={() => adjustTime(index, false, -0.1)}
+                        >
+                          <Minus class="w-3 h-3" />
+                        </button>
+                        <button
+                          class="p-0.5 text-gray-400 hover:text-white"
+                          on:click={() => adjustTime(index, false, 0.1)}
+                        >
+                          <Plus class="w-3 h-3" />
+                        </button>
+                      </div>
+                    </div>
+                    <button
+                      class="text-sm text-red-500 hover:text-red-400"
+                      on:click={async () => await removeSubtitle(index)}
+                    >
+                      删除
+                    </button>
+                  </div>
+                  <input
+                    type="text"
+                    bind:value={subtitle.text}
+                    class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg border border-gray-800/50 focus:border-[#0A84FF] transition duration-200 outline-none hover:border-gray-700/50"
+                    placeholder="输入字幕文本"
+                  />
+                </div>
+              {/each}
+            </div>
+          </div>
+        {:else if activeTab === "upload"}
+          <!-- 投稿 Tab 内容 -->
+          <div class="p-4 space-y-6">
+            <!-- 封面预览 -->
+            {#if video && video.id != -1}
+              <section>
+                <div class="group">
+                  <div
+                    class="text-sm text-gray-400 mb-2 flex items-center justify-between"
+                  >
+                    <span>视频封面</span>
+                    <button
+                      class="text-[#0A84FF] hover:text-[#0A84FF]/80 transition-colors duration-200 flex items-center space-x-1"
+                      on:click={() => (show_cover_editor = true)}
+                    >
+                      <Pen class="w-4 h-4" />
+                      <span class="text-xs">创建新封面</span>
+                    </button>
+                  </div>
+                  <div
+                    class="relative rounded-xl overflow-hidden bg-black/20 border border-gray-800/50"
+                  >
+                    <img src={video.cover} alt="视频封面" class="w-full" />
+                  </div>
+                </div>
+              </section>
+            {/if}
+
+            <!-- 基本信息 -->
+            <div class="space-y-4">
+              <h3 class="text-sm font-medium text-gray-400">基本信息</h3>
+              <!-- 标题 -->
+              <div class="space-y-2">
+                <label
+                  for="title"
+                  class="block text-sm font-medium text-gray-300">标题</label
+                >
                 <input
+                  id="title"
                   type="text"
-                  bind:value={subtitle.text}
-                  class="w-full px-2 py-1 bg-[#2c2c2e] text-white rounded border border-gray-700 focus:border-[#0A84FF] outline-none"
-                  placeholder="输入字幕文本"
+                  bind:value={profile.title}
+                  placeholder="输入视频标题"
+                  class="w-full px-3 py-2 bg-[#1c1c1e] text-white rounded-lg border border-gray-800/50 focus:border-[#0A84FF] transition duration-200 outline-none hover:border-gray-700/50"
                 />
               </div>
-            {/each}
+
+              <!-- 视频分区 -->
+              <div class="space-y-2">
+                <label for="tid" class="block text-sm font-medium text-gray-300"
+                  >视频分区</label
+                >
+                <div class="w-full" id="tid">
+                  <TypeSelect bind:value={profile.tid} />
+                </div>
+              </div>
+
+              <!-- 投稿账号 -->
+              <div class="space-y-2">
+                <label for="uid" class="block text-sm font-medium text-gray-300"
+                  >投稿账号</label
+                >
+                <select
+                  bind:value={uid_selected}
+                  class="w-full px-3 py-2 bg-[#1c1c1e] text-white rounded-lg border border-gray-800/50 focus:border-[#0A84FF] transition duration-200 outline-none appearance-none hover:border-gray-700/50"
+                >
+                  <option value={0}>选择账号</option>
+                  {#each accounts as account}
+                    <option value={account.value}>{account.name}</option>
+                  {/each}
+                </select>
+              </div>
+            </div>
+
+            <!-- 详细信息 -->
+            <div class="space-y-4">
+              <h3 class="text-sm font-medium text-gray-400">详细信息</h3>
+              <!-- 描述 -->
+              <div class="space-y-2">
+                <label
+                  for="desc"
+                  class="block text-sm font-medium text-gray-300">描述</label
+                >
+                <textarea
+                  id="desc"
+                  bind:value={profile.desc}
+                  placeholder="输入视频描述"
+                  class="w-full px-3 py-2 bg-[#1c1c1e] text-white rounded-lg border border-gray-800/50 focus:border-[#0A84FF] transition duration-200 outline-none resize-none h-24 hover:border-gray-700/50"
+                />
+              </div>
+
+              <!-- 标签 -->
+              <div class="space-y-2">
+                <label for="tag" class="block text-sm font-medium text-gray-300"
+                  >标签</label
+                >
+                <input
+                  id="tag"
+                  type="text"
+                  bind:value={profile.tag}
+                  placeholder="输入视频标签，用逗号分隔"
+                  class="w-full px-3 py-2 bg-[#1c1c1e] text-white rounded-lg border border-gray-800/50 focus:border-[#0A84FF] transition duration-200 outline-none hover:border-gray-700/50"
+                />
+              </div>
+
+              <!-- 动态 -->
+              <div class="space-y-2">
+                <label
+                  for="dynamic"
+                  class="block text-sm font-medium text-gray-300">动态</label
+                >
+                <textarea
+                  id="dynamic"
+                  bind:value={profile.dynamic}
+                  placeholder="输入动态内容"
+                  class="w-full px-3 py-2 bg-[#1c1c1e] text-white rounded-lg border border-gray-800/50 focus:border-[#0A84FF] transition duration-200 outline-none resize-none h-24 hover:border-gray-700/50"
+                />
+              </div>
+            </div>
+
+            <!-- 投稿按钮 -->
+            {#if video}
+              <div class="pt-4">
+                <div class="flex gap-2">
+                  <button
+                    on:click={do_post}
+                    disabled={current_post_event_id != null || !uid_selected}
+                    class="flex-1 px-3 py-2 bg-[#0A84FF] text-white rounded-lg transition-all duration-200 hover:bg-[#0A84FF]/90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2 text-sm"
+                  >
+                    {#if current_post_event_id != null}
+                      <div
+                        class="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin"
+                      />
+                    {/if}
+                    <span id="post-prompt">投稿</span>
+                  </button>
+                  {#if current_post_event_id != null}
+                    <button
+                      on:click={() => cancel_post()}
+                      class="px-3 py-2 bg-red-500 text-white rounded-lg transition-all duration-200 hover:bg-red-500/90 flex items-center justify-center text-sm"
+                    >
+                      取消
+                    </button>
+                  {/if}
+                </div>
+              </div>
+            {/if}
           </div>
-        </div>
+        {/if}
       </div>
     </div>
   </div>
@@ -1102,4 +1422,15 @@
   bind:show={showStyleEditor}
   {roomId}
   onClose={() => (showStyleEditor = false)}
+/>
+
+<CoverEditor
+  bind:show={show_cover_editor}
+  {video}
+  on:coverUpdate={(event) => {
+    video = {
+      ...video,
+      cover: event.detail.cover,
+    };
+  }}
 />

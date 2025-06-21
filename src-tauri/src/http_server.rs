@@ -25,8 +25,8 @@ use crate::{
         utils::{console_log, get_disk_info, DiskInfo},
         video::{
             cancel, clip_range, delete_video, encode_video_subtitle, generate_video_subtitle,
-            get_video, get_video_subtitle, get_video_typelist, get_videos, update_video_cover,
-            update_video_subtitle, upload_procedure,
+            get_all_videos, get_video, get_video_subtitle, get_video_typelist, get_videos,
+            update_video_cover, update_video_subtitle, upload_procedure,
         },
         AccountInfo,
     },
@@ -614,6 +614,13 @@ async fn handler_get_videos(
     Ok(Json(ApiResponse::success(videos)))
 }
 
+async fn handler_get_all_videos(
+    state: axum::extract::State<State>,
+) -> Result<Json<ApiResponse<Vec<VideoRow>>>, ApiError> {
+    let videos = get_all_videos(state.0).await?;
+    Ok(Json(ApiResponse::success(videos)))
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DeleteVideoRequest {
@@ -1146,6 +1153,7 @@ pub async fn start_api_server(state: State) {
         .route("/api/clip_range", post(handler_clip_range))
         .route("/api/get_video", post(handler_get_video))
         .route("/api/get_videos", post(handler_get_videos))
+        .route("/api/get_all_videos", post(handler_get_all_videos))
         .route("/api/get_video_typelist", post(handler_get_video_typelist))
         .route("/api/get_video_subtitle", post(handler_get_video_subtitle))
         .route("/api/export_danmu", post(handler_export_danmu))

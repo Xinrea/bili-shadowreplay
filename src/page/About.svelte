@@ -10,13 +10,15 @@
   fetch("https://api.github.com/repos/Xinrea/bili-shadowreplay/releases")
     .then((response) => response.json())
     .then((data) => {
-      const latest = data[0].tag_name;
+      // Filter out prerelease versions
+      const stableReleases = data.filter((release) => !release.prerelease);
+      const latest = stableReleases[0]?.tag_name;
       latestVersion.set(latest);
       // Compare versions and set hasNewVersion
       if (version && latest !== version) {
         hasNewVersion.set(true);
       }
-      releases = data.slice(0, 3).map((release) => ({
+      releases = stableReleases.slice(0, 3).map((release) => ({
         version: release.tag_name,
         date: new Date(release.published_at).toLocaleDateString(),
         description: release.body,
@@ -29,7 +31,7 @@
     return notes
       .split("\n")
       .filter(
-        (line) => line.trim().startsWith("*") || line.trim().startsWith("-"),
+        (line) => line.trim().startsWith("*") || line.trim().startsWith("-")
       )
       .map((line) => {
         line = line.trim().replace(/^[*-]\s*/, "");
@@ -54,7 +56,7 @@
   }
 </script>
 
-<div class="flex-1 p-6 overflow-auto">
+<div class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50">
   <div class="max-w-2xl mx-auto space-y-8">
     <!-- App Info -->
     <div class="text-center space-y-4">

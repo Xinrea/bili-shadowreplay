@@ -167,7 +167,7 @@
   }
 </script>
 
-<div class="flex-1 p-6 overflow-auto">
+<div class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50">
   <div class="space-y-6">
     <!-- Header -->
     <div class="flex justify-between items-center">
@@ -223,9 +223,17 @@
               iclass={"w-full h-40 object-cover rounded-lg " +
                 (room.live_status ? "" : "brightness-75")}
             />
+            <!-- Room ID watermark -->
+            <div
+              class="absolute bottom-2 left-2 px-2 py-1 rounded-md bg-black/30 backdrop-blur-sm flex items-center"
+            >
+              <span class="text-xs text-white/80 font-mono"
+                >{room.platform.toUpperCase()}#{room.room_id}</span
+              >
+            </div>
             {#if room.auto_start}
               <div
-                class={"absolute top-2 left-2 p-1.5 px-2 rounded-full text-white text-xs flex items-center justify-center " +
+                class={"absolute top-2 left-2 p-1.5 px-2 rounded-md text-white text-xs flex items-center justify-center " +
                   (room.is_recording ? "bg-red-500" : "bg-gray-700/90")}
               >
                 <AutoRecordIcon class="w-4 h-4 text-white" />
@@ -236,13 +244,13 @@
             {/if}
             {#if !room.live_status}
               <div
-                class={"absolute bottom-2 right-2 p-1.5 px-2 rounded-full text-white text-xs flex items-center justify-center bg-gray-700"}
+                class={"absolute bottom-2 right-2 p-1.5 px-2 rounded-md text-white text-xs flex items-center justify-center bg-gray-700"}
               >
                 <span>直播未开始</span>
               </div>
             {:else}
               <div
-                class={"absolute bottom-2 right-2 p-1.5 px-2 rounded-full text-white text-xs flex items-center justify-center bg-green-500"}
+                class={"absolute bottom-2 right-2 p-1.5 px-2 rounded-md text-white text-xs flex items-center justify-center bg-green-500"}
               >
                 <span>直播进行中</span>
               </div>
@@ -558,9 +566,9 @@
         </button>
       </div>
 
-      <div class="flex-1 overflow-auto">
+      <div class="flex-1 overflow-auto custom-scrollbar-light">
         <div class="p-6">
-          <div class="overflow-x-auto">
+          <div class="overflow-x-auto custom-scrollbar-light">
             <table class="w-full">
               <thead>
                 <tr class="border-b border-gray-200 dark:border-gray-700/50">

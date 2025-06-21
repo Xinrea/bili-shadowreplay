@@ -51,9 +51,14 @@ async function invoke<T>(
       console.log(args);
       // open new page to live_index.html
       window.open(
-        `live_index.html?platform=${args.platform}&room_id=${args.roomId}&live_id=${args.liveId}`,
+        `index_live.html?platform=${args.platform}&room_id=${args.roomId}&live_id=${args.liveId}`,
         "_blank"
       );
+      return;
+    }
+
+    if (command === "open_clip") {
+      window.open(`index_clip.html?id=${args.videoId}`, "_blank");
       return;
     }
 

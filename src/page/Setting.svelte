@@ -131,7 +131,7 @@
   get_config();
 </script>
 
-<div class="flex-1 overflow-auto">
+<div class="flex-1 overflow-auto custom-scrollbar-light bg-gray-50">
   <div class="h-screen">
     <div class="p-6 space-y-6">
       <!-- Header -->

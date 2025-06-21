@@ -2,10 +2,7 @@
   "identifier": "migrated",
   "description": "permissions that were migrated from v1",
   "local": true,
-  "windows": [
-    "main",
-    "Live*"
-  ],
+  "windows": ["main", "Live*", "Clip*"],
   "permissions": [
     "core:default",
     "fs:allow-read-file",
@@ -19,9 +16,7 @@
     "fs:allow-exists",
     {
       "identifier": "fs:scope",
-      "allow": [
-        "**"
-      ]
+      "allow": ["**"]
     },
     "core:window:default",
     "core:window:allow-start-dragging",

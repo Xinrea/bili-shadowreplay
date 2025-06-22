@@ -382,11 +382,11 @@ impl BiliClient {
             .headers(self.headers.clone())
             .send()
             .await?;
-        let mut file = std::fs::File::create(file_path)?;
+        let mut file = tokio::fs::File::create(file_path).await?;
         let bytes = res.bytes().await?;
         let size = bytes.len() as u64;
         let mut content = std::io::Cursor::new(bytes);
-        std::io::copy(&mut content, &mut file)?;
+        tokio::io::copy(&mut content, &mut file).await?;
         Ok(size)
     }
 

@@ -124,6 +124,7 @@ impl Config {
     }
 
     pub fn save(&self) {
+        log::info!("Start saving config to {}", self.config_path);
         let content = toml::to_string(&self).unwrap();
         if let Err(e) = std::fs::write(self.config_path.clone(), content) {
             log::error!("Failed to save config: {} {}", e, self.config_path);

@@ -37,15 +37,6 @@ impl Database {
         Ok(tasks)
     }
 
-    pub async fn get_task(&self, id: &str) -> Result<TaskRow, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
-        let task = sqlx::query_as::<_, TaskRow>("SELECT * FROM tasks WHERE id = $1")
-            .bind(id)
-            .fetch_one(&lock)
-            .await?;
-        Ok(task)
-    }
-
     pub async fn update_task(
         &self,
         id: &str,

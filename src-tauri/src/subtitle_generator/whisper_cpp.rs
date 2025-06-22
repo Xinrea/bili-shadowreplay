@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 
-use crate::progress_reporter::ProgressReporterTrait;
+use crate::{
+    progress_reporter::ProgressReporterTrait,
+    subtitle_generator::{GenerateResult, SubtitleGeneratorType},
+};
 use async_std::sync::{Arc, RwLock};
 use std::path::Path;
 use tokio::io::AsyncWriteExt;
@@ -37,7 +40,7 @@ impl SubtitleGenerator for WhisperCPP {
         reporter: &impl ProgressReporterTrait,
         audio_path: &Path,
         output_path: &Path,
-    ) -> Result<String, String> {
+    ) -> Result<GenerateResult, String> {
         log::info!("Generating subtitle for {:?}", audio_path);
         let start_time = std::time::Instant::now();
         let audio = hound::WavReader::open(audio_path).map_err(|e| e.to_string())?;
@@ -128,7 +131,11 @@ impl SubtitleGenerator for WhisperCPP {
         log::info!("Subtitle generated: {:?}", output_path);
         log::info!("Time taken: {} seconds", start_time.elapsed().as_secs_f64());
 
-        Ok(subtitle)
+        Ok(GenerateResult {
+            generator_type: SubtitleGeneratorType::Whisper,
+            subtitle_id: "".to_string(),
+            subtitle_content: subtitle,
+        })
     }
 }
 

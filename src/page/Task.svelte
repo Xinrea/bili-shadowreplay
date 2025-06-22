@@ -29,7 +29,6 @@
         (a, b) =>
           new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       );
-      console.log(tasks);
     } catch (error) {
       console.error("获取任务列表失败:", error);
     } finally {
@@ -253,11 +252,7 @@
                     <span
                       class="text-sm font-medium text-gray-900 dark:text-white"
                     >
-                      {task.message == ""
-                        ? get_task_type_name(task.task_type)
-                        : get_task_type_name(task.task_type) +
-                          ": " +
-                          task.message}
+                      {get_task_type_name(task.task_type)}
                     </span>
                   </div>
                   <div class="flex items-center space-x-2">
@@ -278,6 +273,12 @@
                     </div>
                   </div>
                 </div>
+
+                {#if task.message}
+                  <div class="text-xs text-gray-400 dark:text-gray-500 my-2">
+                    {task.message}
+                  </div>
+                {/if}
 
                 {#if task.metadata}
                   {@const metadata = parse_metadata(task.metadata)}

@@ -13,6 +13,7 @@
     DiscAlbum,
     SquareBottomDashedScissors,
   } from "lucide-svelte";
+  import { onMount } from "svelte";
 
   let setting_model: Config = {
     cache: "",
@@ -24,6 +25,9 @@
     post_notify: true,
     auto_cleanup: true,
     auto_subtitle: false,
+    subtitle_generator_type: "whisper",
+    openai_api_endpoint: "",
+    openai_api_key: "",
     whisper_model: "",
     whisper_prompt: "",
     clip_name_format: "",
@@ -128,7 +132,9 @@
     });
   }
 
-  get_config();
+  onMount(async () => {
+    await get_config();
+  });
 </script>
 
 <div class="flex-1 overflow-auto custom-scrollbar-light bg-gray-50">
@@ -446,8 +452,42 @@
                   </label>
                 </div>
               </div>
+              <!-- Subtitle Generator Type -->
+              <div class="p-4">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <h3
+                      class="text-sm font-medium text-gray-900 dark:text-white"
+                    >
+                      字幕生成器类型
+                    </h3>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                      选择字幕生成的方式：本地Whisper模型或在线API服务
+                    </p>
+                  </div>
+                  <div class="flex items-center space-x-2">
+                    <select
+                      class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white"
+                      bind:value={setting_model.subtitle_generator_type}
+                      on:change={async () => {
+                        try {
+                          await invoke("update_subtitle_generator_type", {
+                            subtitleGeneratorType:
+                              setting_model.subtitle_generator_type,
+                          });
+                        } catch (error) {
+                          console.error(error);
+                        }
+                      }}
+                    >
+                      <option value="whisper">本地 Whisper</option>
+                      <option value="whisper_online">在线 Whisper API</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
               <!-- Whisper Model Path -->
-              {#if TAURI_ENV}
+              {#if TAURI_ENV && setting_model.subtitle_generator_type === "whisper"}
                 <div class="p-4">
                   <div class="flex items-center justify-between">
                     <div>
@@ -474,6 +514,64 @@
                     >
                       变更
                     </button>
+                  </div>
+                </div>
+              {/if}
+              <!-- OpenAI API Settings -->
+              {#if setting_model.subtitle_generator_type === "whisper_online"}
+                <div class="p-4">
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <h3
+                        class="text-sm font-medium text-gray-900 dark:text-white"
+                      >
+                        OpenAI API 端点
+                      </h3>
+                      <p class="text-sm text-gray-500 dark:text-gray-400">
+                        设置 OpenAI API 的端点地址，默认为官方地址
+                      </p>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                      <input
+                        type="text"
+                        class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
+                        bind:value={setting_model.openai_api_endpoint}
+                        on:change={async () => {
+                          await invoke("update_openai_api_endpoint", {
+                            openaiApiEndpoint:
+                              setting_model.openai_api_endpoint,
+                          });
+                        }}
+                        placeholder="https://api.openai.com/v1"
+                      />
+                    </div>
+                  </div>
+                </div>
+                <div class="p-4">
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <h3
+                        class="text-sm font-medium text-gray-900 dark:text-white"
+                      >
+                        OpenAI API 密钥
+                      </h3>
+                      <p class="text-sm text-gray-500 dark:text-gray-400">
+                        设置 OpenAI API 的访问密钥
+                      </p>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                      <input
+                        type="password"
+                        class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
+                        bind:value={setting_model.openai_api_key}
+                        on:change={async () => {
+                          await invoke("update_openai_api_key", {
+                            openaiApiKey: setting_model.openai_api_key,
+                          });
+                        }}
+                        placeholder="sk-..."
+                      />
+                    </div>
                   </div>
                 </div>
               {/if}

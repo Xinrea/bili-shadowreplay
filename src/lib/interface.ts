@@ -97,8 +97,11 @@ export interface Config {
   post_notify: boolean;
   auto_cleanup: boolean;
   auto_subtitle: boolean;
+  subtitle_generator_type: string;
   whisper_model: string;
   whisper_prompt: string;
+  openai_api_endpoint: string;
+  openai_api_key: string;
   clip_name_format: string;
   auto_generate: AutoGenerateConfig;
   status_check_interval: number;

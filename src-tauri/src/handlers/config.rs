@@ -173,6 +173,42 @@ pub async fn update_whisper_prompt(state: state_type!(), whisper_prompt: String)
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
+pub async fn update_subtitle_generator_type(
+    state: state_type!(),
+    subtitle_generator_type: String,
+) -> Result<(), ()> {
+    log::info!(
+        "Updating subtitle generator type to {}",
+        subtitle_generator_type
+    );
+    let mut config = state.config.write().await;
+    config.subtitle_generator_type = subtitle_generator_type;
+    config.save();
+    Ok(())
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn update_openai_api_key(state: state_type!(), openai_api_key: String) -> Result<(), ()> {
+    log::info!("Updating openai api key");
+    let mut config = state.config.write().await;
+    config.openai_api_key = openai_api_key;
+    config.save();
+    Ok(())
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn update_openai_api_endpoint(
+    state: state_type!(),
+    openai_api_endpoint: String,
+) -> Result<(), ()> {
+    log::info!("Updating openai api endpoint to {}", openai_api_endpoint);
+    let mut config = state.config.write().await;
+    config.openai_api_endpoint = openai_api_endpoint;
+    config.save();
+    Ok(())
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_auto_generate(
     state: state_type!(),
     enabled: bool,

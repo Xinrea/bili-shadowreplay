@@ -4,7 +4,7 @@ use crate::{
     config::Config,
     database::{
         account::AccountRow, message::MessageRow, record::RecordRow, recorder::RecorderRow,
-        video::VideoRow,
+        task::TaskRow, video::VideoRow,
     },
     handlers::{
         account::{
@@ -12,7 +12,8 @@ use crate::{
         },
         config::{
             get_config, update_auto_generate, update_clip_name_format, update_notify,
-            update_status_check_interval, update_subtitle_setting, update_whisper_model,
+            update_openai_api_endpoint, update_openai_api_key, update_status_check_interval,
+            update_subtitle_generator_type, update_subtitle_setting, update_whisper_model,
             update_whisper_prompt,
         },
         message::{delete_message, get_messages, read_message},
@@ -22,6 +23,7 @@ use crate::{
             get_today_record_count, get_total_length, remove_recorder, send_danmaku, set_enable,
             ExportDanmuOptions,
         },
+        task::{delete_task, get_tasks},
         utils::{console_log, get_disk_info, DiskInfo},
         video::{
             cancel, clip_range, delete_video, encode_video_subtitle, generate_video_subtitle,
@@ -290,6 +292,54 @@ async fn handler_update_whisper_prompt(
     update_whisper_prompt(state.0, whisper_prompt.whisper_prompt)
         .await
         .expect("Failed to update whisper prompt");
+    Ok(Json(ApiResponse::success(())))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateSubtitleGeneratorTypeRequest {
+    subtitle_generator_type: String,
+}
+
+async fn handler_update_subtitle_generator_type(
+    state: axum::extract::State<State>,
+    Json(param): Json<UpdateSubtitleGeneratorTypeRequest>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    update_subtitle_generator_type(state.0, param.subtitle_generator_type)
+        .await
+        .expect("Failed to update subtitle generator type");
+    Ok(Json(ApiResponse::success(())))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateOpenaiApiEndpointRequest {
+    openai_api_endpoint: String,
+}
+
+async fn handler_update_openai_api_endpoint(
+    state: axum::extract::State<State>,
+    Json(param): Json<UpdateOpenaiApiEndpointRequest>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    update_openai_api_endpoint(state.0, param.openai_api_endpoint)
+        .await
+        .expect("Failed to update openai api endpoint");
+    Ok(Json(ApiResponse::success(())))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateOpenaiApiKeyRequest {
+    openai_api_key: String,
+}
+
+async fn handler_update_openai_api_key(
+    state: axum::extract::State<State>,
+    Json(param): Json<UpdateOpenaiApiKeyRequest>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    update_openai_api_key(state.0, param.openai_api_key)
+        .await
+        .expect("Failed to update openai api key");
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -826,6 +876,27 @@ async fn handler_export_danmu(
     Ok(Json(ApiResponse::success(result)))
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteTaskRequest {
+    id: String,
+}
+
+async fn handler_delete_task(
+    state: axum::extract::State<State>,
+    Json(params): Json<DeleteTaskRequest>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    delete_task(state.0, &params.id).await?;
+    Ok(Json(ApiResponse::success(())))
+}
+
+async fn handler_get_tasks(
+    state: axum::extract::State<State>,
+) -> Result<Json<ApiResponse<Vec<TaskRow>>>, ApiError> {
+    let tasks = get_tasks(state.0).await?;
+    Ok(Json(ApiResponse::success(tasks)))
+}
+
 async fn handler_hls(
     state: axum::extract::State<State>,
     Path(uri): Path<String>,
@@ -1123,6 +1194,18 @@ pub async fn start_api_server(state: State) {
                 post(handler_update_whisper_prompt),
             )
             .route(
+                "/api/update_subtitle_generator_type",
+                post(handler_update_subtitle_generator_type),
+            )
+            .route(
+                "/api/update_openai_api_endpoint",
+                post(handler_update_openai_api_endpoint),
+            )
+            .route(
+                "/api/update_openai_api_key",
+                post(handler_update_openai_api_key),
+            )
+            .route(
                 "/api/update_auto_generate",
                 post(handler_update_auto_generate),
             );
@@ -1156,6 +1239,8 @@ pub async fn start_api_server(state: State) {
         .route("/api/get_all_videos", post(handler_get_all_videos))
         .route("/api/get_video_typelist", post(handler_get_video_typelist))
         .route("/api/get_video_subtitle", post(handler_get_video_subtitle))
+        .route("/api/delete_task", post(handler_delete_task))
+        .route("/api/get_tasks", post(handler_get_tasks))
         .route("/api/export_danmu", post(handler_export_danmu))
         // Utils commands
         .route("/api/get_disk_info", post(handler_get_disk_info))

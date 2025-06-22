@@ -258,7 +258,6 @@
         parseInt(localStorage.getItem(`local_offset:${live_id}`) || "0", 10) ||
         0,
     })) as VideoItem;
-    console.log("video file generatd:", new_video);
     await get_video_list();
     video_selected = new_video.id;
     selected_video = videos.find((v) => {

@@ -7,6 +7,7 @@
   import About from "./page/About.svelte";
   import { log } from "./lib/invoker";
   import Clip from "./page/Clip.svelte";
+  import Task from "./page/Task.svelte";
   let active = "总览";
 
   log.info("App loaded");
@@ -31,6 +32,9 @@
       </div>
       <div class="page" class:visible={active == "切片"}>
         <Clip />
+      </div>
+      <div class="page" class:visible={active == "任务"}>
+        <Task />
       </div>
       <div class="page" class:visible={active == "账号"}>
         <Account />

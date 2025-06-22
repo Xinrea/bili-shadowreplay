@@ -3,6 +3,7 @@
     FileVideo,
     Info,
     LayoutDashboard,
+    List,
     Settings,
     Users,
     Video,
@@ -40,6 +41,11 @@
     <SidebarItem label="切片" {activeUrl} on:activeChange={navigate}>
       <div slot="icon">
         <FileVideo class="w-5 h-5" />
+      </div>
+    </SidebarItem>
+    <SidebarItem label="任务" {activeUrl} on:activeChange={navigate}>
+      <div slot="icon">
+        <List class="w-5 h-5" />
       </div>
     </SidebarItem>
     <SidebarItem label="账号" {activeUrl} on:activeChange={navigate}>

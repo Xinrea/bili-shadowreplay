@@ -3,6 +3,7 @@ pub mod config;
 pub mod macros;
 pub mod message;
 pub mod recorder;
+pub mod task;
 pub mod utils;
 pub mod video;
 

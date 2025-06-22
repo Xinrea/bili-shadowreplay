@@ -32,7 +32,7 @@ pub struct RecorderList {
     pub recorders: Vec<RecorderInfo>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ClipRangeParams {
     pub title: String,
     pub cover: String,

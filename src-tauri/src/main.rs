@@ -148,6 +148,13 @@ fn get_migrations() -> Vec<Migration> {
             sql: r#"ALTER TABLE videos ADD COLUMN platform TEXT;"#,
             kind: MigrationKind::Up,
         },
+        // add task table to record encode/upload task
+        Migration {
+            version: 4,
+            description: "add_task_table",
+            sql: r#"CREATE TABLE tasks (id TEXT PRIMARY KEY, type TEXT, status TEXT, message TEXT, metadata TEXT, created_at TEXT);"#,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -221,6 +228,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
         .expect("Failed to run migrations");
 
     db.set(db_pool).await;
+    db.finish_pending_tasks().await?;
 
     let progress_manager = Arc::new(ProgressManager::new());
     let emitter = EventEmitter::new(progress_manager.get_event_sender());
@@ -273,6 +281,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         tauri_plugin_sql::DbPool::Sqlite(pool) => Some(pool),
     };
     db_clone.set(sqlite_pool.unwrap().clone()).await;
+    db_clone.finish_pending_tasks().await?;
 
     let recorder_manager = Arc::new(RecorderManager::new(
         app.app_handle().clone(),
@@ -428,6 +437,8 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::video::get_video_subtitle,
         crate::handlers::video::update_video_subtitle,
         crate::handlers::video::encode_video_subtitle,
+        crate::handlers::task::get_tasks,
+        crate::handlers::task::delete_task,
         crate::handlers::utils::show_in_folder,
         crate::handlers::utils::export_to_file,
         crate::handlers::utils::get_disk_info,

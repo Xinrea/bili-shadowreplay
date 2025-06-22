@@ -1,3 +1,4 @@
+use crate::database::task::TaskRow;
 use crate::database::video::VideoRow;
 use crate::ffmpeg;
 use crate::handlers::utils::get_disk_info_inner;
@@ -9,6 +10,7 @@ use crate::recorder_manager::ClipRangeParams;
 use crate::subtitle_generator::whisper::{self};
 use crate::subtitle_generator::SubtitleGenerator;
 use chrono::Utc;
+use serde_json::json;
 use std::path::{Path, PathBuf};
 
 use crate::state::State;
@@ -42,20 +44,43 @@ pub async fn clip_range(
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
     let reporter = ProgressReporter::new(&emitter, &event_id).await?;
-    match clip_range_inner(state, &reporter, params).await {
+    let mut params_without_cover = params.clone();
+    params_without_cover.cover = "".to_string();
+    let task = TaskRow {
+        id: event_id.clone(),
+        task_type: "clip_range".to_string(),
+        status: "pending".to_string(),
+        message: "".to_string(),
+        metadata: json!({
+            "params": params_without_cover,
+        })
+        .to_string(),
+        created_at: Utc::now().to_rfc3339(),
+    };
+    state.db.add_task(&task).await?;
+    log::info!("Create task: {} {}", task.id, task.task_type);
+    match clip_range_inner(&state, &reporter, params).await {
         Ok(video) => {
             reporter.finish(true, "切片完成").await;
+            state
+                .db
+                .update_task(&event_id, "success", "切片完成", None)
+                .await?;
             Ok(video)
         }
         Err(e) => {
             reporter.finish(false, &format!("切片失败: {}", e)).await;
+            state
+                .db
+                .update_task(&event_id, "failed", &format!("切片失败: {}", e), None)
+                .await?;
             Err(e)
         }
     }
 }
 
 async fn clip_range_inner(
-    state: state_type!(),
+    state: &state_type!(),
     reporter: &ProgressReporter,
     params: ClipRangeParams,
 ) -> Result<VideoRow, String> {
@@ -172,20 +197,44 @@ pub async fn upload_procedure(
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
     let reporter = ProgressReporter::new(&emitter, &event_id).await?;
-    match upload_procedure_inner(state, &reporter, uid, room_id, video_id, cover, profile).await {
+    let task = TaskRow {
+        id: event_id.clone(),
+        task_type: "upload_procedure".to_string(),
+        status: "pending".to_string(),
+        message: "".to_string(),
+        metadata: json!({
+            "uid": uid,
+            "room_id": room_id,
+            "video_id": video_id,
+            "profile": profile,
+        })
+        .to_string(),
+        created_at: Utc::now().to_rfc3339(),
+    };
+    state.db.add_task(&task).await?;
+    log::info!("Create task: {:?}", task);
+    match upload_procedure_inner(&state, &reporter, uid, room_id, video_id, cover, profile).await {
         Ok(bvid) => {
             reporter.finish(true, "投稿成功").await;
+            state
+                .db
+                .update_task(&event_id, "success", "投稿成功", None)
+                .await?;
             Ok(bvid)
         }
         Err(e) => {
             reporter.finish(false, &format!("投稿失败: {}", e)).await;
+            state
+                .db
+                .update_task(&event_id, "failed", &format!("投稿失败: {}", e), None)
+                .await?;
             Err(e)
         }
     }
 }
 
 async fn upload_procedure_inner(
-    state: state_type!(),
+    state: &state_type!(),
     reporter: &ProgressReporter,
     uid: u64,
     room_id: u64,
@@ -341,22 +390,43 @@ pub async fn generate_video_subtitle(
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
     let reporter = ProgressReporter::new(&emitter, &event_id).await?;
-    match generate_video_subtitle_inner(state, &reporter, id).await {
+    let task = TaskRow {
+        id: event_id.clone(),
+        task_type: "generate_video_subtitle".to_string(),
+        status: "pending".to_string(),
+        message: "".to_string(),
+        metadata: json!({
+            "video_id": id,
+        })
+        .to_string(),
+        created_at: Utc::now().to_rfc3339(),
+    };
+    state.db.add_task(&task).await?;
+    log::info!("Create task: {:?}", task);
+    match generate_video_subtitle_inner(&state, &reporter, id).await {
         Ok(subtitle) => {
             reporter.finish(true, "字幕生成完成").await;
+            state
+                .db
+                .update_task(&event_id, "success", "字幕生成完成", None)
+                .await?;
             Ok(subtitle)
         }
         Err(e) => {
             reporter
                 .finish(false, &format!("字幕生成失败: {}", e))
                 .await;
+            state
+                .db
+                .update_task(&event_id, "failed", &format!("字幕生成失败: {}", e), None)
+                .await?;
             Err(e)
         }
     }
 }
 
 async fn generate_video_subtitle_inner(
-    state: state_type!(),
+    state: &state_type!(),
     reporter: &ProgressReporter,
     id: i64,
 ) -> Result<String, String> {
@@ -409,22 +479,44 @@ pub async fn encode_video_subtitle(
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
     let reporter = ProgressReporter::new(&emitter, &event_id).await?;
-    match encode_video_subtitle_inner(state, &reporter, id, srt_style).await {
+    let task = TaskRow {
+        id: event_id.clone(),
+        task_type: "encode_video_subtitle".to_string(),
+        status: "pending".to_string(),
+        message: "".to_string(),
+        metadata: json!({
+            "video_id": id,
+            "srt_style": srt_style,
+        })
+        .to_string(),
+        created_at: Utc::now().to_rfc3339(),
+    };
+    state.db.add_task(&task).await?;
+    log::info!("Create task: {:?}", task);
+    match encode_video_subtitle_inner(&state, &reporter, id, srt_style).await {
         Ok(video) => {
             reporter.finish(true, "字幕编码完成").await;
+            state
+                .db
+                .update_task(&event_id, "success", "字幕编码完成", None)
+                .await?;
             Ok(video)
         }
         Err(e) => {
             reporter
                 .finish(false, &format!("字幕编码失败: {}", e))
                 .await;
+            state
+                .db
+                .update_task(&event_id, "failed", &format!("字幕编码失败: {}", e), None)
+                .await?;
             Err(e)
         }
     }
 }
 
 async fn encode_video_subtitle_inner(
-    state: state_type!(),
+    state: &state_type!(),
     reporter: &ProgressReporter,
     id: i64,
     srt_style: String,

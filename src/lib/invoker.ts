@@ -162,6 +162,13 @@ async function open(url: string) {
   window.open(url, "_blank");
 }
 
+async function close_window() {
+  if (TAURI_ENV) {
+    return await getCurrentWebviewWindow().close();
+  }
+  window.close();
+}
+
 export {
   invoke,
   get,
@@ -172,4 +179,5 @@ export {
   listen,
   open,
   log,
+  close_window,
 };

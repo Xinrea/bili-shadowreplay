@@ -26,7 +26,7 @@
   import SubtitleStyleEditor from "./SubtitleStyleEditor.svelte";
   import CoverEditor from "./CoverEditor.svelte";
   import TypeSelect from "./TypeSelect.svelte";
-  import { invoke, TAURI_ENV, listen, log } from "../lib/invoker";
+  import { invoke, TAURI_ENV, listen, log, close_window } from "../lib/invoker";
   import { onDestroy, onMount } from "svelte";
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import { listen as tauriListen } from "@tauri-apps/api/event";
@@ -767,7 +767,7 @@
                   onVideoChange?.(newVideo);
                 } else {
                   // 如果列表为空，关闭窗口
-                  window.close();
+                  close_window();
                 }
               } catch (error) {
                 console.error(error);

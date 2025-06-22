@@ -2,8 +2,6 @@ use crate::database::account::AccountRow;
 use base64::Engine;
 use m3u8_rs::{MediaPlaylist, Playlist};
 use reqwest::{Client, Error as ReqwestError};
-use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
 
 use super::response::DouyinRoomInfoResponse;
 use std::fmt;
@@ -120,10 +118,11 @@ impl DouyinClient {
             ));
         }
 
-        let content = response.bytes().await?;
-        let mut file = File::create(path).await?;
-        file.write_all(&content).await?;
-
-        Ok(content.len() as u64)
+        let mut file = tokio::fs::File::create(path).await?;
+        let bytes = response.bytes().await?;
+        let size = bytes.len() as u64;
+        let mut content = std::io::Cursor::new(bytes);
+        tokio::io::copy(&mut content, &mut file).await?;
+        Ok(size)
     }
 }

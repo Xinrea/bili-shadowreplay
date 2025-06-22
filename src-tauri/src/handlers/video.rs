@@ -1,3 +1,4 @@
+use crate::database::task::TaskRow;
 use crate::database::video::VideoRow;
 use crate::ffmpeg;
 use crate::handlers::utils::get_disk_info_inner;
@@ -6,9 +7,11 @@ use crate::progress_reporter::{
 };
 use crate::recorder::bilibili::profile::Profile;
 use crate::recorder_manager::ClipRangeParams;
-use crate::subtitle_generator::whisper::{self};
-use crate::subtitle_generator::SubtitleGenerator;
+use crate::subtitle_generator::whisper_cpp;
+use crate::subtitle_generator::whisper_online;
+use crate::subtitle_generator::{GenerateResult, SubtitleGenerator};
 use chrono::Utc;
+use serde_json::json;
 use std::path::{Path, PathBuf};
 
 use crate::state::State;
@@ -42,20 +45,51 @@ pub async fn clip_range(
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
     let reporter = ProgressReporter::new(&emitter, &event_id).await?;
-    match clip_range_inner(state, &reporter, params).await {
+    let mut params_without_cover = params.clone();
+    params_without_cover.cover = "".to_string();
+    let task = TaskRow {
+        id: event_id.clone(),
+        task_type: "clip_range".to_string(),
+        status: "pending".to_string(),
+        message: "".to_string(),
+        metadata: json!({
+            "params": params_without_cover,
+        })
+        .to_string(),
+        created_at: Utc::now().to_rfc3339(),
+    };
+    state.db.add_task(&task).await?;
+    log::info!("Create task: {} {}", task.id, task.task_type);
+    match clip_range_inner(&state, &reporter, params).await {
         Ok(video) => {
             reporter.finish(true, "切片完成").await;
+            state
+                .db
+                .update_task(&event_id, "success", "切片完成", None)
+                .await?;
+            if state.config.read().await.auto_subtitle {
+                // generate a subtitle task event id
+                let subtitle_event_id = format!("{}_subtitle", event_id);
+                let result = generate_video_subtitle(state, subtitle_event_id, video.id).await;
+                if let Err(e) = result {
+                    log::error!("Generate video subtitle error: {}", e);
+                }
+            }
             Ok(video)
         }
         Err(e) => {
             reporter.finish(false, &format!("切片失败: {}", e)).await;
+            state
+                .db
+                .update_task(&event_id, "failed", &format!("切片失败: {}", e), None)
+                .await?;
             Err(e)
         }
     }
 }
 
 async fn clip_range_inner(
-    state: state_type!(),
+    state: &state_type!(),
     reporter: &ProgressReporter,
     params: ClipRangeParams,
 ) -> Result<VideoRow, String> {
@@ -106,25 +140,6 @@ async fn clip_range_inner(
             platform: params.platform.clone(),
         })
         .await?;
-    if state.config.read().await.auto_subtitle
-        && !state.config.read().await.whisper_model.is_empty()
-    {
-        log::info!("Auto subtitle enabled");
-        if let Ok(generator) = whisper::new(
-            Path::new(&state.config.read().await.whisper_model),
-            &state.config.read().await.whisper_prompt,
-        )
-        .await
-        {
-            reporter.update("提取音频中");
-            let audio_path = file.with_extension("wav");
-            ffmpeg::extract_audio(&file).await?;
-            reporter.update("生成字幕中");
-            generator
-                .generate_subtitle(reporter, &audio_path, &file.with_extension("srt"))
-                .await?;
-        }
-    }
     state
         .db
         .new_message(
@@ -172,20 +187,44 @@ pub async fn upload_procedure(
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
     let reporter = ProgressReporter::new(&emitter, &event_id).await?;
-    match upload_procedure_inner(state, &reporter, uid, room_id, video_id, cover, profile).await {
+    let task = TaskRow {
+        id: event_id.clone(),
+        task_type: "upload_procedure".to_string(),
+        status: "pending".to_string(),
+        message: "".to_string(),
+        metadata: json!({
+            "uid": uid,
+            "room_id": room_id,
+            "video_id": video_id,
+            "profile": profile,
+        })
+        .to_string(),
+        created_at: Utc::now().to_rfc3339(),
+    };
+    state.db.add_task(&task).await?;
+    log::info!("Create task: {:?}", task);
+    match upload_procedure_inner(&state, &reporter, uid, room_id, video_id, cover, profile).await {
         Ok(bvid) => {
             reporter.finish(true, "投稿成功").await;
+            state
+                .db
+                .update_task(&event_id, "success", "投稿成功", None)
+                .await?;
             Ok(bvid)
         }
         Err(e) => {
             reporter.finish(false, &format!("投稿失败: {}", e)).await;
+            state
+                .db
+                .update_task(&event_id, "failed", &format!("投稿失败: {}", e), None)
+                .await?;
             Err(e)
         }
     }
 }
 
 async fn upload_procedure_inner(
-    state: state_type!(),
+    state: &state_type!(),
     reporter: &ProgressReporter,
     uid: u64,
     room_id: u64,
@@ -341,43 +380,109 @@ pub async fn generate_video_subtitle(
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
     let reporter = ProgressReporter::new(&emitter, &event_id).await?;
-    match generate_video_subtitle_inner(state, &reporter, id).await {
-        Ok(subtitle) => {
+    let task = TaskRow {
+        id: event_id.clone(),
+        task_type: "generate_video_subtitle".to_string(),
+        status: "pending".to_string(),
+        message: "".to_string(),
+        metadata: json!({
+            "video_id": id,
+        })
+        .to_string(),
+        created_at: Utc::now().to_rfc3339(),
+    };
+    state.db.add_task(&task).await?;
+    log::info!("Create task: {:?}", task);
+    match generate_video_subtitle_inner(&state, &reporter, id).await {
+        Ok(result) => {
             reporter.finish(true, "字幕生成完成").await;
-            Ok(subtitle)
+            // for local whisper, we need to update the task status to success
+            state
+                .db
+                .update_task(
+                    &event_id,
+                    "success",
+                    "字幕生成完成",
+                    Some(
+                        json!({
+                            "task_id": result.subtitle_id,
+                            "service": result.generator_type.as_str(),
+                        })
+                        .to_string()
+                        .as_str(),
+                    ),
+                )
+                .await?;
+            Ok(result.subtitle_content)
         }
         Err(e) => {
             reporter
                 .finish(false, &format!("字幕生成失败: {}", e))
                 .await;
+            state
+                .db
+                .update_task(&event_id, "failed", &format!("字幕生成失败: {}", e), None)
+                .await?;
             Err(e)
         }
     }
 }
 
 async fn generate_video_subtitle_inner(
-    state: state_type!(),
+    state: &state_type!(),
     reporter: &ProgressReporter,
     id: i64,
-) -> Result<String, String> {
+) -> Result<GenerateResult, String> {
     let video = state.db.get_video(id).await?;
     let filepath = Path::new(state.config.read().await.output.as_str()).join(&video.file);
     let file = Path::new(&filepath);
-    if let Ok(generator) = whisper::new(
-        Path::new(&state.config.read().await.whisper_model),
-        &state.config.read().await.whisper_prompt,
-    )
-    .await
-    {
-        let audio_path = file.with_extension("wav");
-        ffmpeg::extract_audio(file).await?;
+    let config = state.config.read().await;
+    let generator_type = config.subtitle_generator_type.as_str();
 
-        let subtitle = generator
-            .generate_subtitle(reporter, &audio_path, &file.with_extension("srt"))
-            .await?;
-        Ok(subtitle)
-    } else {
-        Err("Whisper model not found".to_string())
+    match generator_type {
+        "whisper" => {
+            if config.whisper_model.is_empty() {
+                return Err("Whisper model not configured".to_string());
+            }
+            if let Ok(generator) =
+                whisper_cpp::new(Path::new(&config.whisper_model), &config.whisper_prompt).await
+            {
+                let audio_path = file.with_extension("wav");
+                ffmpeg::extract_audio(file).await?;
+
+                let result = generator
+                    .generate_subtitle(reporter, &audio_path, &file.with_extension("srt"))
+                    .await?;
+                Ok(result)
+            } else {
+                Err("Failed to initialize Whisper model".to_string())
+            }
+        }
+        "whisper_online" => {
+            if config.openai_api_key.is_empty() {
+                return Err("API key not configured".to_string());
+            }
+            if let Ok(generator) = whisper_online::new(
+                Some(&config.openai_api_endpoint),
+                Some(&config.openai_api_key),
+            )
+            .await
+            {
+                let audio_path = file.with_extension("wav");
+                ffmpeg::extract_audio(file).await?;
+
+                let result = generator
+                    .generate_subtitle(reporter, &audio_path, &file.with_extension("srt"))
+                    .await?;
+                Ok(result)
+            } else {
+                Err("Failed to initialize Whisper Online".to_string())
+            }
+        }
+        _ => Err(format!(
+            "Unknown subtitle generator type: {}",
+            generator_type
+        )),
     }
 }
 
@@ -409,22 +514,44 @@ pub async fn encode_video_subtitle(
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
     let reporter = ProgressReporter::new(&emitter, &event_id).await?;
-    match encode_video_subtitle_inner(state, &reporter, id, srt_style).await {
+    let task = TaskRow {
+        id: event_id.clone(),
+        task_type: "encode_video_subtitle".to_string(),
+        status: "pending".to_string(),
+        message: "".to_string(),
+        metadata: json!({
+            "video_id": id,
+            "srt_style": srt_style,
+        })
+        .to_string(),
+        created_at: Utc::now().to_rfc3339(),
+    };
+    state.db.add_task(&task).await?;
+    log::info!("Create task: {:?}", task);
+    match encode_video_subtitle_inner(&state, &reporter, id, srt_style).await {
         Ok(video) => {
             reporter.finish(true, "字幕编码完成").await;
+            state
+                .db
+                .update_task(&event_id, "success", "字幕编码完成", None)
+                .await?;
             Ok(video)
         }
         Err(e) => {
             reporter
                 .finish(false, &format!("字幕编码失败: {}", e))
                 .await;
+            state
+                .db
+                .update_task(&event_id, "failed", &format!("字幕编码失败: {}", e), None)
+                .await?;
             Err(e)
         }
     }
 }
 
 async fn encode_video_subtitle_inner(
-    state: state_type!(),
+    state: &state_type!(),
     reporter: &ProgressReporter,
     id: i64,
     srt_style: String,

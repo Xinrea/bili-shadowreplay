@@ -48,3 +48,12 @@ export interface RecordItem {
 export interface AccountInfo {
   accounts: AccountItem[];
 }
+
+export interface TaskRow {
+  id: string;
+  task_type: string;
+  status: string;
+  message: string;
+  metadata: string;
+  created_at: string;
+}

@@ -60,7 +60,7 @@
     summary = new_summary;
   }
   update_summary();
-  setInterval(update_summary, 1000);
+  setInterval(update_summary, 5000);
 
   function format_time(time: number) {
     let hours = Math.floor(time / 3600);

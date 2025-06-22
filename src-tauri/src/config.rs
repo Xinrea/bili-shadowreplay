@@ -15,10 +15,16 @@ pub struct Config {
     pub post_notify: bool,
     #[serde(default = "default_auto_subtitle")]
     pub auto_subtitle: bool,
+    #[serde(default = "default_subtitle_generator_type")]
+    pub subtitle_generator_type: String,
     #[serde(default = "default_whisper_model")]
     pub whisper_model: String,
     #[serde(default = "default_whisper_prompt")]
     pub whisper_prompt: String,
+    #[serde(default = "default_openai_api_endpoint")]
+    pub openai_api_endpoint: String,
+    #[serde(default = "default_openai_api_key")]
+    pub openai_api_key: String,
     #[serde(default = "default_clip_name_format")]
     pub clip_name_format: String,
     #[serde(default = "default_auto_generate_config")]
@@ -39,12 +45,24 @@ fn default_auto_subtitle() -> bool {
     false
 }
 
+fn default_subtitle_generator_type() -> String {
+    "whisper".to_string()
+}
+
 fn default_whisper_model() -> String {
     "whisper_model.bin".to_string()
 }
 
 fn default_whisper_prompt() -> String {
     "这是一段中文 你们好".to_string()
+}
+
+fn default_openai_api_endpoint() -> String {
+    "https://api.openai.com/v1".to_string()
+}
+
+fn default_openai_api_key() -> String {
+    "".to_string()
 }
 
 fn default_clip_name_format() -> String {
@@ -89,8 +107,11 @@ impl Config {
             clip_notify: true,
             post_notify: true,
             auto_subtitle: false,
+            subtitle_generator_type: default_subtitle_generator_type(),
             whisper_model: default_whisper_model(),
             whisper_prompt: default_whisper_prompt(),
+            openai_api_endpoint: default_openai_api_endpoint(),
+            openai_api_key: default_openai_api_key(),
             clip_name_format: default_clip_name_format(),
             auto_generate: default_auto_generate_config(),
             status_check_interval: default_status_check_interval(),
@@ -103,10 +124,12 @@ impl Config {
     }
 
     pub fn save(&self) {
+        log::info!("Start saving config to {}", self.config_path);
         let content = toml::to_string(&self).unwrap();
         if let Err(e) = std::fs::write(self.config_path.clone(), content) {
             log::error!("Failed to save config: {} {}", e, self.config_path);
         }
+        log::info!("Config saved to {}", self.config_path);
     }
 
     #[allow(dead_code)]

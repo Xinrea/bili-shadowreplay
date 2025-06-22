@@ -7,6 +7,7 @@ pub mod account;
 pub mod message;
 pub mod record;
 pub mod recorder;
+pub mod task;
 pub mod video;
 
 pub struct Database {

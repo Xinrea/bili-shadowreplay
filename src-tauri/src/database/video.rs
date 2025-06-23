@@ -20,15 +20,31 @@ pub struct VideoRow {
     pub platform: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+pub struct VideoNoCover {
+    pub id: i64,
+    pub room_id: u64,
+    pub file: String,
+    pub length: i64,
+    pub size: i64,
+    pub status: i64,
+    pub bvid: String,
+    pub title: String,
+    pub desc: String,
+    pub tags: String,
+    pub area: i64,
+    pub created_at: String,
+    pub platform: String,
+}
+
 impl Database {
-    pub async fn get_videos(&self, room_id: u64) -> Result<Vec<VideoRow>, DatabaseError> {
+    pub async fn get_videos(&self, room_id: u64) -> Result<Vec<VideoNoCover>, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
-        Ok(
-            sqlx::query_as::<_, VideoRow>("SELECT * FROM videos WHERE room_id = $1;")
-                .bind(room_id as i64)
-                .fetch_all(&lock)
-                .await?,
-        )
+        let videos = sqlx::query_as::<_, VideoNoCover>("SELECT * FROM videos WHERE room_id = $1;")
+            .bind(room_id as i64)
+            .fetch_all(&lock)
+            .await?;
+        Ok(videos)
     }
 
     pub async fn get_video(&self, id: i64) -> Result<VideoRow, DatabaseError> {
@@ -100,12 +116,21 @@ impl Database {
         Ok(())
     }
 
-    pub async fn get_all_videos(&self) -> Result<Vec<VideoRow>, DatabaseError> {
+    pub async fn get_all_videos(&self) -> Result<Vec<VideoNoCover>, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
-        Ok(
-            sqlx::query_as::<_, VideoRow>("SELECT * FROM videos ORDER BY created_at DESC;")
+        let videos =
+            sqlx::query_as::<_, VideoNoCover>("SELECT * FROM videos ORDER BY created_at DESC;")
                 .fetch_all(&lock)
-                .await?,
-        )
+                .await?;
+        Ok(videos)
+    }
+
+    pub async fn get_video_cover(&self, id: i64) -> Result<String, DatabaseError> {
+        let lock = self.db.read().await.clone().unwrap();
+        let video = sqlx::query_as::<_, VideoRow>("SELECT * FROM videos WHERE id = $1")
+            .bind(id)
+            .fetch_one(&lock)
+            .await?;
+        Ok(video.cover)
     }
 }

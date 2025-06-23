@@ -1,5 +1,5 @@
 use crate::database::task::TaskRow;
-use crate::database::video::VideoRow;
+use crate::database::video::{VideoNoCover, VideoRow};
 use crate::ffmpeg;
 use crate::handlers::utils::get_disk_info_inner;
 use crate::progress_reporter::{
@@ -301,7 +301,7 @@ pub async fn get_video(state: state_type!(), id: i64) -> Result<VideoRow, String
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn get_videos(state: state_type!(), room_id: u64) -> Result<Vec<VideoRow>, String> {
+pub async fn get_videos(state: state_type!(), room_id: u64) -> Result<Vec<VideoNoCover>, String> {
     state
         .db
         .get_videos(room_id)
@@ -310,8 +310,17 @@ pub async fn get_videos(state: state_type!(), room_id: u64) -> Result<Vec<VideoR
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn get_all_videos(state: state_type!()) -> Result<Vec<VideoRow>, String> {
+pub async fn get_all_videos(state: state_type!()) -> Result<Vec<VideoNoCover>, String> {
     state.db.get_all_videos().await.map_err(|e| e.to_string())
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_video_cover(state: state_type!(), id: i64) -> Result<String, String> {
+    state
+        .db
+        .get_video_cover(id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]

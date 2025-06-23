@@ -34,6 +34,8 @@
     await loadVideos();
   });
 
+  let cover_cache: Map<number, string> = new Map();
+
   async function loadVideos() {
     loading = true;
     try {
@@ -44,6 +46,16 @@
       const roomIdsSet = new Set<number>();
       const platformsSet = new Set<string>();
       const tempVideos = await invoke<VideoItem[]>("get_all_videos");
+      for (const video of tempVideos) {
+        if (cover_cache.has(video.id)) {
+          video.cover = cover_cache.get(video.id) || "";
+        } else {
+          video.cover = await invoke<string>("get_video_cover", {
+            id: video.id,
+          });
+          cover_cache.set(video.id, video.cover);
+        }
+      }
 
       for (const video of tempVideos) {
         roomIdsSet.add(video.room_id);
@@ -536,15 +548,11 @@
                       <div
                         class="w-12 h-8 rounded-lg overflow-hidden bg-gray-100 dark:bg-gray-700 flex items-center justify-center flex-shrink-0"
                       >
-                        {#if video.cover}
-                          <img
-                            src={video.cover}
-                            alt="封面"
-                            class="w-full h-full object-cover"
-                          />
-                        {:else}
-                          <Video class="w-4 h-4 text-gray-400" />
-                        {/if}
+                        <img
+                          src={video.cover}
+                          alt="封面"
+                          class="w-full h-full object-cover"
+                        />
                       </div>
                       <div class="min-w-0 flex-1 w-64">
                         <p

@@ -213,15 +213,19 @@
     });
   }
 
-  function find_video(e) {
+  async function find_video(e) {
     if (!e.target) {
       selected_video = null;
       return;
     }
     const id = parseInt(e.target.value);
-    selected_video = videos.find((v) => {
+    let target_video = videos.find((v) => {
       return v.value == id;
     });
+    if (target_video) {
+      target_video.cover = await invoke("get_video_cover", { id: id });
+    }
+    selected_video = target_video;
     console.log("video selected", videos, selected_video, e, id);
   }
 

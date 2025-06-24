@@ -47,6 +47,76 @@
   let filtered_danmu: DanmuEntry[] = [];
   let danmu_search_text = "";
 
+  // 虚拟滚动相关变量
+  let danmu_container_height = 0;
+  let danmu_item_height = 80; // 预估每个弹幕项的高度
+  let visible_start_index = 0;
+  let visible_end_index = 0;
+  let scroll_top = 0;
+  let container_ref: HTMLElement;
+  let scroll_timeout: ReturnType<typeof setTimeout>;
+
+  // 计算可见区域的弹幕
+  function calculate_visible_danmu() {
+    if (!container_ref || filtered_danmu.length === 0) return;
+
+    const container_height = container_ref.clientHeight;
+    const buffer = 10; // 缓冲区，多渲染几个项目
+
+    visible_start_index = Math.max(
+      0,
+      Math.floor(scroll_top / danmu_item_height) - buffer
+    );
+    visible_end_index = Math.min(
+      filtered_danmu.length,
+      Math.ceil((scroll_top + container_height) / danmu_item_height) + buffer
+    );
+  }
+
+  // 处理滚动事件（带防抖）
+  function handle_scroll(event: Event) {
+    const target = event.target as HTMLElement;
+    scroll_top = target.scrollTop;
+
+    // 清除之前的定时器
+    if (scroll_timeout) {
+      clearTimeout(scroll_timeout);
+    }
+
+    // 防抖处理，避免频繁计算
+    scroll_timeout = setTimeout(() => {
+      calculate_visible_danmu();
+    }, 16); // 约60fps
+  }
+
+  // 监听容器大小变化
+  function handle_resize() {
+    if (container_ref) {
+      danmu_container_height = container_ref.clientHeight;
+      calculate_visible_danmu();
+    }
+  }
+
+  // 监听弹幕数据变化，更新过滤结果
+  $: {
+    if (danmu_records) {
+      // 如果当前有搜索文本，重新过滤
+      if (danmu_search_text) {
+        filter_danmu();
+      } else {
+        // 否则直接复制所有弹幕
+        filtered_danmu = [...danmu_records];
+      }
+      // 重新计算可见区域
+      calculate_visible_danmu();
+    }
+  }
+
+  // 监听容器引用变化
+  $: if (container_ref) {
+    handle_resize();
+  }
+
   // 过滤弹幕
   function filter_danmu() {
     filtered_danmu = danmu_records.filter((danmu) => {
@@ -65,19 +135,6 @@
   $: {
     if (danmu_search_text !== undefined && danmu_records) {
       filter_danmu();
-    }
-  }
-
-  // 监听弹幕数据变化，更新过滤结果
-  $: {
-    if (danmu_records) {
-      // 如果当前有搜索文本，重新过滤
-      if (danmu_search_text) {
-        filter_danmu();
-      } else {
-        // 否则直接复制所有弹幕
-        filtered_danmu = [...danmu_records];
-      }
     }
   }
 
@@ -127,6 +184,11 @@
   onDestroy(() => {
     update_listener?.then((fn) => fn());
     finished_listener?.then((fn) => fn());
+
+    // 清理滚动定时器
+    if (scroll_timeout) {
+      clearTimeout(scroll_timeout);
+    }
   });
 
   let archive: RecordItem = null;
@@ -179,6 +241,13 @@
   // Initialize video element when component is mounted
   onMount(() => {
     video = document.getElementById("video") as HTMLVideoElement;
+
+    // 初始化虚拟滚动
+    setTimeout(() => {
+      if (container_ref) {
+        handle_resize();
+      }
+    }, 100);
   });
 
   get_video_list();
@@ -541,14 +610,23 @@
 
                 <!-- 弹幕列表 -->
                 <div
-                  class="flex-1 overflow-y-auto space-y-2 sidebar-scrollbar min-h-0"
+                  bind:this={container_ref}
+                  on:scroll={handle_scroll}
+                  class="flex-1 overflow-y-auto space-y-2 sidebar-scrollbar min-h-0 danmu-container"
                 >
-                  {#each filtered_danmu as danmu, index (index)}
+                  <!-- 顶部占位符 -->
+                  <div
+                    style="height: {visible_start_index * danmu_item_height}px;"
+                  />
+
+                  <!-- 可见的弹幕项 -->
+                  {#each filtered_danmu.slice(visible_start_index, visible_end_index) as danmu, index (visible_start_index + index)}
                     <!-- svelte-ignore a11y-click-events-have-key-events -->
                     <div
                       class="p-3 bg-[#2c2c2e] rounded-lg border border-gray-800/50
                              hover:border-[#0A84FF]/50 transition-all duration-200
-                             cursor-pointer group"
+                             cursor-pointer group danmu-item"
+                      style="content-visibility: auto; contain-intrinsic-size: {danmu_item_height}px;"
                       on:click={() => seek_to_danmu(danmu)}
                     >
                       <div class="flex items-start justify-between">
@@ -570,6 +648,13 @@
                       </div>
                     </div>
                   {/each}
+
+                  <!-- 底部占位符 -->
+                  <div
+                    style="height: {(filtered_danmu.length -
+                      visible_end_index) *
+                      danmu_item_height}px;"
+                  />
 
                   {#if filtered_danmu.length === 0}
                     <div class="text-center py-8 text-gray-500">
@@ -676,5 +761,16 @@
 
   .sidebar-scrollbar::-webkit-scrollbar-thumb:hover {
     background: rgba(10, 132, 255, 0.7);
+  }
+
+  /* 虚拟滚动优化 */
+  .danmu-container {
+    will-change: scroll-position;
+    contain: layout style paint;
+  }
+
+  .danmu-item {
+    contain: layout style paint;
+    will-change: transform;
   }
 </style>

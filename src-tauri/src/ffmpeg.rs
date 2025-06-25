@@ -75,15 +75,17 @@ pub async fn clip_from_m3u8(
     }
 }
 
-pub async fn extract_audio(file: &Path) -> Result<(), String> {
+pub async fn extract_audio(file: &Path, format: &str) -> Result<(), String> {
     // ffmpeg -i fixed_\[30655190\]1742887114_0325084106_81.5.mp4 -ar 16000 test.wav
     log::info!("Extract audio task start: {}", file.display());
-    let output_path = file.with_extension("wav");
+    let output_path = file.with_extension(format);
     let mut extract_error = None;
+
+    let sample_rate = if format == "mp3" { "32000" } else { "16000" };
 
     let child = tokio::process::Command::new(ffmpeg_path())
         .args(["-i", file.to_str().unwrap()])
-        .args(["-ar", "16000"])
+        .args(["-ar", sample_rate])
         .args([output_path.to_str().unwrap()])
         .args(["-y"])
         .args(["-progress", "pipe:2"])

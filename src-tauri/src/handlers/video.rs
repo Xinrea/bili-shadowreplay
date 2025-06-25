@@ -332,19 +332,17 @@ pub async fn delete_video(state: state_type!(), id: i64) -> Result<(), String> {
     // delete video files
     let filepath = Path::new(state.config.read().await.output.as_str()).join(&video.file);
     let file = Path::new(&filepath);
-    if let Err(e) = std::fs::remove_file(file) {
-        log::warn!("Delete video file error: {}", e);
-    }
+    let _ = std::fs::remove_file(file);
+
     // delete srt file
     let srt_path = file.with_extension("srt");
-    if let Err(e) = std::fs::remove_file(srt_path) {
-        log::warn!("Delete srt file error: {}", e);
-    }
+    let _ = std::fs::remove_file(srt_path);
     // delete wav file
     let wav_path = file.with_extension("wav");
-    if let Err(e) = std::fs::remove_file(wav_path) {
-        log::warn!("Delete wav file error: {}", e);
-    }
+    let _ = std::fs::remove_file(wav_path);
+    // delete mp3 file
+    let mp3_path = file.with_extension("mp3");
+    let _ = std::fs::remove_file(mp3_path);
     Ok(())
 }
 
@@ -457,7 +455,7 @@ async fn generate_video_subtitle_inner(
                 whisper_cpp::new(Path::new(&config.whisper_model), &config.whisper_prompt).await
             {
                 let audio_path = file.with_extension("wav");
-                ffmpeg::extract_audio(file).await?;
+                ffmpeg::extract_audio(file, "wav").await?;
 
                 let result = generator
                     .generate_subtitle(reporter, &audio_path, &file.with_extension("srt"))
@@ -478,8 +476,8 @@ async fn generate_video_subtitle_inner(
             )
             .await
             {
-                let audio_path = file.with_extension("wav");
-                ffmpeg::extract_audio(file).await?;
+                let audio_path = file.with_extension("mp3");
+                ffmpeg::extract_audio(file, "mp3").await?;
 
                 let result = generator
                     .generate_subtitle(reporter, &audio_path, &file.with_extension("srt"))

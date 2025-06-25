@@ -113,6 +113,7 @@ impl SubtitleGenerator for WhisperOnline {
 
         reporter.update("上传音频中");
         let response = req_builder
+            .timeout(std::time::Duration::from_secs(30 * 60)) // 30 minutes timeout
             .multipart(form)
             .send()
             .await

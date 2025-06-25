@@ -474,6 +474,7 @@ async fn generate_video_subtitle_inner(
             if let Ok(generator) = whisper_online::new(
                 Some(&config.openai_api_endpoint),
                 Some(&config.openai_api_key),
+                Some(&config.whisper_prompt),
             )
             .await
             {

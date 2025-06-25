@@ -15,6 +15,7 @@ pub struct WhisperOnline {
     client: Client,
     api_url: String,
     api_key: Option<String>,
+    prompt: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -29,7 +30,11 @@ struct WhisperSegment {
     text: String,
 }
 
-pub async fn new(api_url: Option<&str>, api_key: Option<&str>) -> Result<WhisperOnline, String> {
+pub async fn new(
+    api_url: Option<&str>,
+    api_key: Option<&str>,
+    prompt: Option<&str>,
+) -> Result<WhisperOnline, String> {
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(300)) // 5 minutes timeout
         .build()
@@ -42,6 +47,7 @@ pub async fn new(api_url: Option<&str>, api_key: Option<&str>) -> Result<Whisper
         client,
         api_url: api_url.to_string(),
         api_key: api_key.map(|k| k.to_string()),
+        prompt: prompt.map(|p| p.to_string()),
     })
 }
 
@@ -88,11 +94,15 @@ impl SubtitleGenerator for WhisperOnline {
                     .to_string(),
             );
 
-        let form = reqwest::multipart::Form::new()
+        let mut form = reqwest::multipart::Form::new()
             .part("file", file_part)
             .text("model", "whisper-1")
             .text("response_format", "verbose_json")
             .text("temperature", "0.0");
+
+        if let Some(prompt) = self.prompt.clone() {
+            form = form.text("prompt", prompt);
+        }
 
         // Build HTTP request
         let mut req_builder = self.client.post(&self.api_url);
@@ -208,13 +218,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_whisper_online() {
-        let result = new(Some("https://api.openai.com/v1"), Some("test-key")).await;
+        let result = new(Some("https://api.openai.com/v1"), Some("test-key"), None).await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     async fn test_generate_subtitle() {
-        let result = new(Some("https://api.openai.com/v1"), Some("sk-****")).await;
+        let result = new(Some("https://api.openai.com/v1"), Some("sk-****"), None).await;
         assert!(result.is_ok());
         let result = result.unwrap();
         let result = result

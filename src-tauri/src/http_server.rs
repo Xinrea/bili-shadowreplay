@@ -737,8 +737,8 @@ async fn handler_generate_video_subtitle(
     state: axum::extract::State<State>,
     Json(param): Json<GenerateVideoSubtitleRequest>,
 ) -> Result<Json<ApiResponse<String>>, ApiError> {
-    generate_video_subtitle(state.0, param.event_id.clone(), param.id).await?;
-    Ok(Json(ApiResponse::success(param.event_id)))
+    let result = generate_video_subtitle(state.0, param.event_id.clone(), param.id).await?;
+    Ok(Json(ApiResponse::success(result)))
 }
 
 #[derive(Debug, Serialize, Deserialize)]

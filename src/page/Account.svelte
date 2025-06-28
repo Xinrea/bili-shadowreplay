@@ -81,6 +81,9 @@
     );
     if (qr_status.code == 0) {
       clearInterval(check_interval);
+      // generate a random uuid
+      const uuid = Math.random().toString(36).substring(2, 15);
+      qr_status.cookies = qr_status.cookies + `; buvid3=${uuid}`;
       await invoke("add_account", {
         cookies: qr_status.cookies,
         platform: selectedPlatform,

@@ -3,6 +3,7 @@ use crate::recorder::bilibili::client::{QrInfo, QrStatus};
 use crate::state::State;
 use crate::state_type;
 
+use hyper::header::HeaderValue;
 #[cfg(feature = "gui")]
 use tauri::State as TauriState;
 
@@ -20,6 +21,10 @@ pub async fn add_account(
     platform: String,
     cookies: &str,
 ) -> Result<AccountRow, String> {
+    // check if cookies is valid
+    if let Err(e) = cookies.parse::<HeaderValue>() {
+        return Err(format!("Invalid cookies: {}", e));
+    }
     let account = state.db.add_account(&platform, cookies).await?;
     if platform == "bilibili" {
         let account_info = state.client.get_user_info(&account, account.uid).await?;

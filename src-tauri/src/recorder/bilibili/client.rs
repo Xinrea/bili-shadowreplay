@@ -214,7 +214,11 @@ impl BiliClient {
     pub async fn logout(&self, account: &AccountRow) -> Result<(), BiliClientError> {
         let url = "https://passport.bilibili.com/login/exit/v2";
         let mut headers = self.headers.clone();
-        headers.insert("cookie", account.cookies.parse().unwrap());
+        if let Ok(cookies) = account.cookies.parse() {
+            headers.insert("cookie", cookies);
+        } else {
+            return Err(BiliClientError::InvalidCookie);
+        }
         let params = [("csrf", account.csrf.clone())];
         let _ = self
             .client
@@ -241,7 +245,11 @@ impl BiliClient {
         });
         let params = self.get_sign(params).await?;
         let mut headers = self.headers.clone();
-        headers.insert("cookie", account.cookies.parse().unwrap());
+        if let Ok(cookies) = account.cookies.parse() {
+            headers.insert("cookie", cookies);
+        } else {
+            return Err(BiliClientError::InvalidCookie);
+        }
         let resp = self
             .client
             .get(format!(
@@ -283,7 +291,11 @@ impl BiliClient {
         room_id: u64,
     ) -> Result<RoomInfo, BiliClientError> {
         let mut headers = self.headers.clone();
-        headers.insert("cookie", account.cookies.parse().unwrap());
+        if let Ok(cookies) = account.cookies.parse() {
+            headers.insert("cookie", cookies);
+        } else {
+            return Err(BiliClientError::InvalidCookie);
+        }
         let response = self
             .client
             .get(format!(
@@ -359,7 +371,11 @@ impl BiliClient {
         url: &String,
     ) -> Result<String, BiliClientError> {
         let mut headers = self.headers.clone();
-        headers.insert("cookie", account.cookies.parse().unwrap());
+        if let Ok(cookies) = account.cookies.parse() {
+            headers.insert("cookie", cookies);
+        } else {
+            return Err(BiliClientError::InvalidCookie);
+        }
         let response = self
             .client
             .get(url.to_owned())
@@ -476,7 +492,11 @@ impl BiliClient {
         video_file: &Path,
     ) -> Result<PreuploadResponse, BiliClientError> {
         let mut headers = self.headers.clone();
-        headers.insert("cookie", account.cookies.parse().unwrap());
+        if let Ok(cookies) = account.cookies.parse() {
+            headers.insert("cookie", cookies);
+        } else {
+            return Err(BiliClientError::InvalidCookie);
+        }
         let url = format!(
             "https://member.bilibili.com/preupload?name={}&r=upos&profile=ugcfx/bup",
             video_file.file_name().unwrap().to_str().unwrap()
@@ -715,7 +735,11 @@ impl BiliClient {
         video: &profile::Video,
     ) -> Result<VideoSubmitData, BiliClientError> {
         let mut headers = self.headers.clone();
-        headers.insert("cookie", account.cookies.parse().unwrap());
+        if let Ok(cookies) = account.cookies.parse() {
+            headers.insert("cookie", cookies);
+        } else {
+            return Err(BiliClientError::InvalidCookie);
+        }
         let url = format!(
             "https://member.bilibili.com/x/vu/web/add/v3?ts={}&csrf={}",
             chrono::Local::now().timestamp(),
@@ -761,7 +785,11 @@ impl BiliClient {
             chrono::Local::now().timestamp(),
         );
         let mut headers = self.headers.clone();
-        headers.insert("cookie", account.cookies.parse().unwrap());
+        if let Ok(cookies) = account.cookies.parse() {
+            headers.insert("cookie", cookies);
+        } else {
+            return Err(BiliClientError::InvalidCookie);
+        }
         let params = [("csrf", account.csrf.clone()), ("cover", cover.to_string())];
         match self
             .client
@@ -799,7 +827,11 @@ impl BiliClient {
     ) -> Result<(), BiliClientError> {
         let url = "https://api.live.bilibili.com/msg/send".to_string();
         let mut headers = self.headers.clone();
-        headers.insert("cookie", account.cookies.parse().unwrap());
+        if let Ok(cookies) = account.cookies.parse() {
+            headers.insert("cookie", cookies);
+        } else {
+            return Err(BiliClientError::InvalidCookie);
+        }
         let params = [
             ("bubble", "0"),
             ("msg", message),
@@ -829,7 +861,11 @@ impl BiliClient {
     ) -> Result<Vec<response::Typelist>, BiliClientError> {
         let url = "https://member.bilibili.com/x/vupre/web/archive/pre?lang=cn";
         let mut headers = self.headers.clone();
-        headers.insert("cookie", account.cookies.parse().unwrap());
+        if let Ok(cookies) = account.cookies.parse() {
+            headers.insert("cookie", cookies);
+        } else {
+            return Err(BiliClientError::InvalidCookie);
+        }
         let resp: GeneralResponse = self
             .client
             .get(url)

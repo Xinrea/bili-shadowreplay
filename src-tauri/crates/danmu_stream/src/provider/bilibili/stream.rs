@@ -3,7 +3,7 @@ use serde_json::Value;
 
 use crate::{
     provider::{bilibili::dannmu_msg::BiliDanmuMessage, DanmuMessageType},
-    DanmuStreamError, DanmuMessage,
+    DanmuMessage, DanmuStreamError,
 };
 
 #[derive(Debug, Deserialize, Clone)]
@@ -83,7 +83,7 @@ impl WsStreamCtx {
     fn handle_cmd(&self) -> Option<&str> {
         // handle DANMU_MSG:4:0:2:2:2:0
         let cmd = if let Some(c) = self.cmd.as_deref() {
-            if c.starts_with("DANMU_MSG") {
+            if c.starts_with("DM_INTERACTION") {
                 Some("DANMU_MSG")
             } else {
                 Some(c)

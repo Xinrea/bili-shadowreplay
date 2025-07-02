@@ -14,6 +14,7 @@ custom_error! {pub DanmuStreamError
     InvalidIdentifier {err: String} = "InvalidIdentifier {err}"
 }
 
+#[derive(Debug)]
 pub enum DanmuMessageType {
     DanmuMessage(DanmuMessage),
 }

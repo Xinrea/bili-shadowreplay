@@ -124,6 +124,7 @@ impl BiliDanmu {
         let danmu_info = self.get_danmu_info(&wbi_key, self.room_id).await?;
         let ws_hosts = danmu_info.data.host_list.clone();
         let mut conn = None;
+        log::debug!("ws_hosts: {:?}", ws_hosts);
         // try to connect to ws_hsots, once success, send the token to the tx
         for i in ws_hosts {
             let host = format!("wss://{}/sub", i.host);
@@ -209,6 +210,7 @@ impl BiliDanmu {
                         if let Ok(ws) = ws {
                             match ws.match_msg() {
                                 Ok(v) => {
+                                    log::debug!("Received message: {:?}", v);
                                     tx.send(v).map_err(|e| DanmuStreamError::WebsocketError {
                                         err: e.to_string(),
                                     })?;

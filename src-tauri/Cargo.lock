@@ -566,6 +566,7 @@ dependencies = [
  "serde_json",
  "simplelog",
  "sqlx",
+ "srtparse",
  "sysinfo",
  "tauri",
  "tauri-build",
@@ -5864,6 +5865,12 @@ dependencies = [
  "tracing",
  "url",
 ]
+
+[[package]]
+name = "srtparse"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47df29f8d00075baa5eb3174fa870b43d7eacc7e95c22796f8c362f64e01f47c"
 
 [[package]]
 name = "stable_deref_trait"

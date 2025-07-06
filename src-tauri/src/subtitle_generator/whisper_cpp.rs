@@ -6,7 +6,6 @@ use crate::{
 };
 use async_std::sync::{Arc, RwLock};
 use std::path::Path;
-use tokio::io::AsyncWriteExt;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 use super::SubtitleGenerator;
@@ -39,7 +38,6 @@ impl SubtitleGenerator for WhisperCPP {
         &self,
         reporter: &impl ProgressReporterTrait,
         audio_path: &Path,
-        output_path: &Path,
     ) -> Result<GenerateResult, String> {
         log::info!("Generating subtitle for {:?}", audio_path);
         let start_time = std::time::Instant::now();
@@ -89,11 +87,6 @@ impl SubtitleGenerator for WhisperCPP {
             return Err(e.to_string());
         }
 
-        // open the output file
-        let mut output_file = tokio::fs::File::create(output_path).await.map_err(|e| {
-            log::error!("failed to create output file: {}", e);
-            e.to_string()
-        })?;
         // fetch the results
         let num_segments = state.full_n_segments().map_err(|e| e.to_string())?;
         let mut subtitle = String::new();
@@ -106,7 +99,7 @@ impl SubtitleGenerator for WhisperCPP {
                 let hours = (timestamp / 3600.0).floor();
                 let minutes = ((timestamp - hours * 3600.0) / 60.0).floor();
                 let seconds = timestamp - hours * 3600.0 - minutes * 60.0;
-                format!("{:02}:{:02}:{:06.3}", hours, minutes, seconds).replace(".", ",")
+                format!("{:02}:{:02}:{:02},{:03}", hours, minutes, seconds, 0)
             };
 
             let line = format!(
@@ -120,21 +113,15 @@ impl SubtitleGenerator for WhisperCPP {
             subtitle.push_str(&line);
         }
 
-        output_file
-            .write_all(subtitle.as_bytes())
-            .await
-            .map_err(|e| {
-                log::error!("failed to write to output file: {}", e);
-                e.to_string()
-            })?;
-
-        log::info!("Subtitle generated: {:?}", output_path);
         log::info!("Time taken: {} seconds", start_time.elapsed().as_secs_f64());
+
+        let subtitle_content = srtparse::from_str(&subtitle)
+            .map_err(|e| format!("Failed to parse subtitle: {}", e))?;
 
         Ok(GenerateResult {
             generator_type: SubtitleGeneratorType::Whisper,
             subtitle_id: "".to_string(),
-            subtitle_content: subtitle,
+            subtitle_content,
         })
     }
 }
@@ -185,11 +172,8 @@ mod tests {
             .await
             .unwrap();
         let audio_path = Path::new("tests/audio/test.wav");
-        let output_path = Path::new("tests/audio/test.srt");
         let reporter = MockReporter::new();
-        let result = whisper
-            .generate_subtitle(&reporter, audio_path, output_path)
-            .await;
+        let result = whisper.generate_subtitle(&reporter, audio_path).await;
         if let Err(e) = result {
             println!("Error: {}", e);
             panic!("Failed to generate subtitle");

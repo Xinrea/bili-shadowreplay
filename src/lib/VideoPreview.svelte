@@ -291,9 +291,43 @@
 
   function parseSrtTime(time: string): number {
     // hours:minutes:seconds,milliseconds
-    time = time.replace(",", ".");
-    const [hours, minutes, seconds] = time.split(":").map(Number);
-    return hours * 3600 + minutes * 60 + seconds;
+    // Only replace the comma that separates seconds and milliseconds, not the arrow separator
+    const timeParts = time.split(",");
+    if (timeParts.length !== 2) {
+      console.warn("Invalid time format (missing comma):", time);
+      return 0;
+    }
+
+    const timeWithoutMs = timeParts[0];
+    const millisecondsStr = timeParts[1];
+
+    const parts = timeWithoutMs.split(":");
+    if (parts.length !== 3) {
+      console.warn("Invalid time format:", time);
+      return 0;
+    }
+
+    const [hours, minutes, seconds] = parts;
+    const hoursNum = parseInt(hours, 10);
+    const minutesNum = parseInt(minutes, 10);
+    const secondsNum = parseInt(seconds, 10);
+
+    // Pad milliseconds to 3 digits if needed
+    const millisecondsNum = parseInt(millisecondsStr.padEnd(3, "0"), 10);
+
+    if (
+      isNaN(hoursNum) ||
+      isNaN(minutesNum) ||
+      isNaN(secondsNum) ||
+      isNaN(millisecondsNum)
+    ) {
+      console.warn("Invalid time values:", time);
+      return 0;
+    }
+
+    return (
+      hoursNum * 3600 + minutesNum * 60 + secondsNum + millisecondsNum / 1000
+    );
   }
 
   function formatSrtTime(time: number): string {
@@ -322,8 +356,20 @@
         const timeLine = lines[1];
         const text = lines.slice(2).join("\n");
 
-        // Parse time line (format: "00:00:00,000 --> 00:00:00,000")
-        const [startTime, endTime] = timeLine.split(" --> ").map(parseSrtTime);
+        // Parse time line (format: "00:00:00,000 --> 00:00:00,000" or "00:00:00,000-->00:00:00,000")
+        const timeParts = timeLine.split(/\s*-->\s*/);
+        if (timeParts.length !== 2) {
+          console.warn("Invalid time line format:", timeLine);
+          return null;
+        }
+
+        const startTime = parseSrtTime(timeParts[0].trim());
+        const endTime = parseSrtTime(timeParts[1].trim());
+
+        if (isNaN(startTime) || isNaN(endTime)) {
+          console.warn("Failed to parse time values:", timeLine);
+          return null;
+        }
 
         return {
           startTime,

@@ -3,7 +3,6 @@ use reqwest::Client;
 use serde::Deserialize;
 use std::path::Path;
 use tokio::fs;
-use tokio::io::AsyncWriteExt;
 
 use crate::{
     progress_reporter::ProgressReporterTrait,
@@ -57,7 +56,6 @@ impl SubtitleGenerator for WhisperOnline {
         &self,
         reporter: &impl ProgressReporterTrait,
         audio_path: &Path,
-        output_path: &Path,
     ) -> Result<GenerateResult, String> {
         log::info!("Generating subtitle online for {:?}", audio_path);
         let start_time = std::time::Instant::now();
@@ -166,23 +164,15 @@ impl SubtitleGenerator for WhisperOnline {
             subtitle.push_str(&line);
         }
 
-        // Write subtitle to file
-        let mut output_file = fs::File::create(output_path)
-            .await
-            .map_err(|e| format!("Failed to create output file: {}", e))?;
-
-        output_file
-            .write_all(subtitle.as_bytes())
-            .await
-            .map_err(|e| format!("Failed to write subtitle file: {}", e))?;
-
-        log::info!("Online subtitle generated: {:?}", output_path);
         log::info!("Time taken: {} seconds", start_time.elapsed().as_secs_f64());
+
+        let subtitle_content = srtparse::from_str(&subtitle)
+            .map_err(|e| format!("Failed to parse subtitle: {}", e))?;
 
         Ok(GenerateResult {
             generator_type: SubtitleGeneratorType::WhisperOnline,
             subtitle_id: "".to_string(),
-            subtitle_content: subtitle,
+            subtitle_content,
         })
     }
 }
@@ -229,15 +219,11 @@ mod tests {
         assert!(result.is_ok());
         let result = result.unwrap();
         let result = result
-            .generate_subtitle(
-                &MockReporter::new(),
-                Path::new("tests/audio/test.wav"),
-                Path::new("tests/audio/test.srt"),
-            )
+            .generate_subtitle(&MockReporter::new(), Path::new("tests/audio/test.wav"))
             .await;
         println!("{:?}", result);
         assert!(result.is_ok());
         let result = result.unwrap();
-        println!("{}", result.subtitle_content);
+        println!("{:?}", result.subtitle_content);
     }
 }

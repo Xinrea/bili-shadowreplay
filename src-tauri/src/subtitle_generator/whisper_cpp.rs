@@ -98,8 +98,14 @@ impl SubtitleGenerator for WhisperCPP {
             let format_time = |timestamp: f64| {
                 let hours = (timestamp / 3600.0).floor();
                 let minutes = ((timestamp - hours * 3600.0) / 60.0).floor();
-                let seconds = timestamp - hours * 3600.0 - minutes * 60.0;
-                format!("{:02}:{:02}:{:02},{:03}", hours, minutes, seconds, 0)
+                let seconds = (timestamp - hours * 3600.0 - minutes * 60.0).floor();
+                let milliseconds = ((timestamp - hours * 3600.0 - minutes * 60.0 - seconds)
+                    * 1000.0)
+                    .floor() as u32;
+                format!(
+                    "{:02}:{:02}:{:02},{:03}",
+                    hours, minutes, seconds, milliseconds
+                )
             };
 
             let line = format!(

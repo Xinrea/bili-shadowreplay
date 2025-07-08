@@ -111,7 +111,7 @@ impl SubtitleGenerator for WhisperOnline {
 
         reporter.update("上传音频中");
         let response = req_builder
-            .timeout(std::time::Duration::from_secs(30 * 60)) // 30 minutes timeout
+            .timeout(std::time::Duration::from_secs(3 * 60)) // 3 minutes timeout
             .multipart(form)
             .send()
             .await
@@ -120,6 +120,7 @@ impl SubtitleGenerator for WhisperOnline {
         let status = response.status();
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
+            log::error!("API request failed with status {}: {}", status, error_text);
             return Err(format!(
                 "API request failed with status {}: {}",
                 status, error_text
@@ -149,8 +150,14 @@ impl SubtitleGenerator for WhisperOnline {
             let format_time = |timestamp: f64| {
                 let hours = (timestamp / 3600.0).floor();
                 let minutes = ((timestamp - hours * 3600.0) / 60.0).floor();
-                let seconds = timestamp - hours * 3600.0 - minutes * 60.0;
-                format!("{:02}:{:02}:{:06.3}", hours, minutes, seconds).replace(".", ",")
+                let seconds = (timestamp - hours * 3600.0 - minutes * 60.0).floor();
+                let milliseconds = ((timestamp - hours * 3600.0 - minutes * 60.0 - seconds)
+                    * 1000.0)
+                    .floor() as u32;
+                format!(
+                    "{:02}:{:02}:{:02},{:03}",
+                    hours, minutes, seconds, milliseconds
+                )
             };
 
             let line = format!(

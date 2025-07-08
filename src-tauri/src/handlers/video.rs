@@ -468,14 +468,23 @@ async fn generate_video_subtitle_inner(
                     generator_type: SubtitleGeneratorType::Whisper,
                 };
 
-                for (i, entry) in std::fs::read_dir(&chunk_dir).unwrap().enumerate() {
+                let mut chunk_paths = vec![];
+                for entry in std::fs::read_dir(&chunk_dir).unwrap() {
                     if let Err(e) = entry {
                         log::error!("Error reading chunk directory: {}", e);
                         continue;
                     }
                     let entry = entry.unwrap();
                     let path = entry.path();
-                    let result = generator.generate_subtitle(reporter, &path).await?;
+                    chunk_paths.push(path);
+                }
+
+                // sort chunk paths by name
+                chunk_paths
+                    .sort_by_key(|path| path.file_name().unwrap().to_str().unwrap().to_string());
+
+                for (i, path) in chunk_paths.iter().enumerate() {
+                    let result = generator.generate_subtitle(reporter, path).await?;
                     full_result.subtitle_id = result.subtitle_id.clone();
                     full_result.concat(&result, 30 * i as u64);
                 }

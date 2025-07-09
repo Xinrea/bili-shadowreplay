@@ -424,9 +424,9 @@ pub async fn generate_video_subtitle(
             Ok(result
                 .subtitle_content
                 .iter()
-                .map(|item| item.to_string())
+                .map(item_to_srt)
                 .collect::<Vec<String>>()
-                .join("\n\n"))
+                .join(""))
         }
         Err(e) => {
             reporter

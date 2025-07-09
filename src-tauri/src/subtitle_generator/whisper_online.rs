@@ -3,7 +3,6 @@ use reqwest::Client;
 use serde::Deserialize;
 use std::path::Path;
 use tokio::fs;
-use tokio::io::AsyncWriteExt;
 
 use crate::{
     progress_reporter::ProgressReporterTrait,
@@ -57,7 +56,6 @@ impl SubtitleGenerator for WhisperOnline {
         &self,
         reporter: &impl ProgressReporterTrait,
         audio_path: &Path,
-        output_path: &Path,
     ) -> Result<GenerateResult, String> {
         log::info!("Generating subtitle online for {:?}", audio_path);
         let start_time = std::time::Instant::now();
@@ -113,7 +111,7 @@ impl SubtitleGenerator for WhisperOnline {
 
         reporter.update("上传音频中");
         let response = req_builder
-            .timeout(std::time::Duration::from_secs(30 * 60)) // 30 minutes timeout
+            .timeout(std::time::Duration::from_secs(3 * 60)) // 3 minutes timeout
             .multipart(form)
             .send()
             .await
@@ -122,6 +120,7 @@ impl SubtitleGenerator for WhisperOnline {
         let status = response.status();
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
+            log::error!("API request failed with status {}: {}", status, error_text);
             return Err(format!(
                 "API request failed with status {}: {}",
                 status, error_text
@@ -151,8 +150,14 @@ impl SubtitleGenerator for WhisperOnline {
             let format_time = |timestamp: f64| {
                 let hours = (timestamp / 3600.0).floor();
                 let minutes = ((timestamp - hours * 3600.0) / 60.0).floor();
-                let seconds = timestamp - hours * 3600.0 - minutes * 60.0;
-                format!("{:02}:{:02}:{:06.3}", hours, minutes, seconds).replace(".", ",")
+                let seconds = (timestamp - hours * 3600.0 - minutes * 60.0).floor();
+                let milliseconds = ((timestamp - hours * 3600.0 - minutes * 60.0 - seconds)
+                    * 1000.0)
+                    .floor() as u32;
+                format!(
+                    "{:02}:{:02}:{:02},{:03}",
+                    hours, minutes, seconds, milliseconds
+                )
             };
 
             let line = format!(
@@ -166,23 +171,15 @@ impl SubtitleGenerator for WhisperOnline {
             subtitle.push_str(&line);
         }
 
-        // Write subtitle to file
-        let mut output_file = fs::File::create(output_path)
-            .await
-            .map_err(|e| format!("Failed to create output file: {}", e))?;
-
-        output_file
-            .write_all(subtitle.as_bytes())
-            .await
-            .map_err(|e| format!("Failed to write subtitle file: {}", e))?;
-
-        log::info!("Online subtitle generated: {:?}", output_path);
         log::info!("Time taken: {} seconds", start_time.elapsed().as_secs_f64());
+
+        let subtitle_content = srtparse::from_str(&subtitle)
+            .map_err(|e| format!("Failed to parse subtitle: {}", e))?;
 
         Ok(GenerateResult {
             generator_type: SubtitleGeneratorType::WhisperOnline,
             subtitle_id: "".to_string(),
-            subtitle_content: subtitle,
+            subtitle_content,
         })
     }
 }
@@ -229,15 +226,11 @@ mod tests {
         assert!(result.is_ok());
         let result = result.unwrap();
         let result = result
-            .generate_subtitle(
-                &MockReporter::new(),
-                Path::new("tests/audio/test.wav"),
-                Path::new("tests/audio/test.srt"),
-            )
+            .generate_subtitle(&MockReporter::new(), Path::new("tests/audio/test.wav"))
             .await;
         println!("{:?}", result);
         assert!(result.is_ok());
         let result = result.unwrap();
-        println!("{}", result.subtitle_content);
+        println!("{:?}", result.subtitle_content);
     }
 }

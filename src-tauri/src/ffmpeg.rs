@@ -50,9 +50,7 @@ pub async fn clip_from_m3u8(
                     .update(format!("编码中：{}", p.time).as_str())
             }
             FfmpegEvent::LogEOF => break,
-            FfmpegEvent::Log(_level, content) => {
-                log::debug!("{}", content);
-            }
+            FfmpegEvent::Log(_level, _content) => {}
             FfmpegEvent::Error(e) => {
                 log::error!("Clip error: {}", e);
                 clip_error = Some(e.to_string());
@@ -75,20 +73,89 @@ pub async fn clip_from_m3u8(
     }
 }
 
-pub async fn extract_audio(file: &Path, format: &str) -> Result<(), String> {
+pub async fn extract_audio_chunks(file: &Path, format: &str) -> Result<PathBuf, String> {
     // ffmpeg -i fixed_\[30655190\]1742887114_0325084106_81.5.mp4 -ar 16000 test.wav
     log::info!("Extract audio task start: {}", file.display());
     let output_path = file.with_extension(format);
     let mut extract_error = None;
 
-    let sample_rate = if format == "mp3" { "32000" } else { "16000" };
+    // 降低采样率以提高处理速度，同时保持足够的音质用于语音识别
+    let sample_rate = if format == "mp3" { "22050" } else { "16000" };
+
+    // First, get the duration of the input file
+    let duration = get_audio_duration(file).await?;
+    log::info!("Audio duration: {} seconds", duration);
+
+    // Split into chunks of 30 seconds
+    let chunk_duration = 30;
+    let chunk_count = (duration as f64 / chunk_duration as f64).ceil() as usize;
+    log::info!(
+        "Splitting into {} chunks of {} seconds each",
+        chunk_count,
+        chunk_duration
+    );
+
+    // Create output directory for chunks
+    let output_dir = output_path.parent().unwrap();
+    let base_name = output_path.file_stem().unwrap().to_str().unwrap();
+    let chunk_dir = output_dir.join(format!("{}_chunks", base_name));
+
+    if !chunk_dir.exists() {
+        std::fs::create_dir_all(&chunk_dir)
+            .map_err(|e| format!("Failed to create chunk directory: {}", e))?;
+    }
+
+    // Use ffmpeg segment feature to split audio into chunks
+    let segment_pattern = chunk_dir.join(format!("{}_%03d.{}", base_name, format));
+
+    // 构建优化的ffmpeg命令参数
+    let file_str = file.to_str().unwrap();
+    let chunk_duration_str = chunk_duration.to_string();
+    let segment_pattern_str = segment_pattern.to_str().unwrap();
+
+    let mut args = vec![
+        "-i",
+        file_str,
+        "-ar",
+        sample_rate,
+        "-vn",
+        "-f",
+        "segment",
+        "-segment_time",
+        &chunk_duration_str,
+        "-reset_timestamps",
+        "1",
+        "-y",
+        "-progress",
+        "pipe:2",
+    ];
+
+    // 根据格式添加优化的编码参数
+    if format == "mp3" {
+        args.extend_from_slice(&[
+            "-c:a",
+            "mp3",
+            "-b:a",
+            "64k", // 降低比特率以提高速度
+            "-compression_level",
+            "0", // 最快压缩
+        ]);
+    } else {
+        args.extend_from_slice(&[
+            "-c:a",
+            "pcm_s16le", // 使用PCM编码，速度更快
+        ]);
+    }
+
+    // 添加性能优化参数
+    args.extend_from_slice(&[
+        "-threads", "0", // 使用所有可用CPU核心
+    ]);
+
+    args.push(segment_pattern_str);
 
     let child = tokio::process::Command::new(ffmpeg_path())
-        .args(["-i", file.to_str().unwrap()])
-        .args(["-ar", sample_rate])
-        .args([output_path.to_str().unwrap()])
-        .args(["-y"])
-        .args(["-progress", "pipe:2"])
+        .args(&args)
         .stderr(Stdio::piped())
         .spawn();
 
@@ -108,9 +175,7 @@ pub async fn extract_audio(file: &Path, format: &str) -> Result<(), String> {
                 extract_error = Some(e.to_string());
             }
             FfmpegEvent::LogEOF => break,
-            FfmpegEvent::Log(_level, content) => {
-                log::debug!("{}", content);
-            }
+            FfmpegEvent::Log(_level, _content) => {}
             _ => {}
         }
     }
@@ -124,9 +189,57 @@ pub async fn extract_audio(file: &Path, format: &str) -> Result<(), String> {
         log::error!("Extract audio error: {}", error);
         Err(error)
     } else {
-        log::info!("Extract audio task end: {}", output_path.display());
-        Ok(())
+        log::info!(
+            "Extract audio task end: {} chunks created in {}",
+            chunk_count,
+            chunk_dir.display()
+        );
+        Ok(chunk_dir)
     }
+}
+
+/// Get the duration of an audio/video file in seconds
+async fn get_audio_duration(file: &Path) -> Result<u64, String> {
+    // Use ffprobe with format option to get duration
+    let child = tokio::process::Command::new(ffprobe_path())
+        .args(["-v", "quiet"])
+        .args(["-show_entries", "format=duration"])
+        .args(["-of", "csv=p=0"])
+        .args(["-i", file.to_str().unwrap()])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+
+    if let Err(e) = child {
+        return Err(format!("Failed to spawn ffprobe process: {}", e));
+    }
+
+    let mut child = child.unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let reader = BufReader::new(stdout);
+    let mut parser = FfmpegLogParser::new(reader);
+
+    let mut duration = None;
+    while let Ok(event) = parser.parse_next_event().await {
+        match event {
+            FfmpegEvent::LogEOF => break,
+            FfmpegEvent::Log(_level, content) => {
+                // The new command outputs duration directly as a float
+                if let Ok(seconds_f64) = content.trim().parse::<f64>() {
+                    duration = Some(seconds_f64.ceil() as u64);
+                    log::debug!("Parsed duration: {} seconds", seconds_f64);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if let Err(e) = child.wait().await {
+        log::error!("Failed to get duration: {}", e);
+        return Err(e.to_string());
+    }
+
+    duration.ok_or_else(|| "Failed to parse duration".to_string())
 }
 
 pub async fn encode_video_subtitle(
@@ -196,9 +309,7 @@ pub async fn encode_video_subtitle(
                 reporter.update(format!("压制中：{}", p.time).as_str());
             }
             FfmpegEvent::LogEOF => break,
-            FfmpegEvent::Log(_level, content) => {
-                log::debug!("{}", content);
-            }
+            FfmpegEvent::Log(_level, _content) => {}
             _ => {}
         }
     }
@@ -283,9 +394,7 @@ pub async fn encode_video_danmu(
                     .unwrap()
                     .update(format!("压制中：{}", p.time).as_str());
             }
-            FfmpegEvent::Log(_level, content) => {
-                log::debug!("{}", content);
-            }
+            FfmpegEvent::Log(_level, _content) => {}
             FfmpegEvent::LogEOF => break,
             _ => {}
         }
@@ -346,6 +455,15 @@ pub async fn check_ffmpeg() -> Result<String, String> {
 
 fn ffmpeg_path() -> PathBuf {
     let mut path = Path::new("ffmpeg").to_path_buf();
+    if cfg!(windows) {
+        path.set_extension("exe");
+    }
+
+    path
+}
+
+fn ffprobe_path() -> PathBuf {
+    let mut path = Path::new("ffprobe").to_path_buf();
     if cfg!(windows) {
         path.set_extension("exe");
     }

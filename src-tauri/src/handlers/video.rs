@@ -482,11 +482,19 @@ async fn generate_video_subtitle_inner(
                 chunk_paths
                     .sort_by_key(|path| path.file_name().unwrap().to_str().unwrap().to_string());
 
-                for (i, path) in chunk_paths.iter().enumerate() {
-                    let result = generator.generate_subtitle(reporter, path).await?;
-                    full_result.subtitle_id = result.subtitle_id.clone();
-                    full_result.concat(&result, 30 * i as u64);
+                let mut results = Vec::new();
+                for path in chunk_paths {
+                    let result = generator.generate_subtitle(reporter, &path).await;
+                    results.push(result);
                 }
+
+                for (i, result) in results.iter().enumerate() {
+                    if let Ok(result) = result {
+                        full_result.subtitle_id = result.subtitle_id.clone();
+                        full_result.concat(result, 30 * i as u64);
+                    }
+                }
+
                 // delete chunk directory
                 let _ = tokio::fs::remove_dir_all(chunk_dir).await;
                 let subtitle_content = full_result

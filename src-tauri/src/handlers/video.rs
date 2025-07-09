@@ -469,12 +469,11 @@ async fn generate_video_subtitle_inner(
                 };
 
                 let mut chunk_paths = vec![];
-                for entry in std::fs::read_dir(&chunk_dir).unwrap() {
-                    if let Err(e) = entry {
-                        log::error!("Error reading chunk directory: {}", e);
-                        continue;
-                    }
-                    let entry = entry.unwrap();
+                for entry in std::fs::read_dir(&chunk_dir)
+                    .map_err(|e| format!("Failed to read chunk directory: {}", e))?
+                {
+                    let entry =
+                        entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
                     let path = entry.path();
                     chunk_paths.push(path);
                 }
@@ -527,12 +526,11 @@ async fn generate_video_subtitle_inner(
                 };
 
                 let mut chunk_paths = vec![];
-                for entry in std::fs::read_dir(&chunk_dir).unwrap() {
-                    if let Err(e) = entry {
-                        log::error!("Error reading chunk directory: {}", e);
-                        continue;
-                    }
-                    let entry = entry.unwrap();
+                for entry in std::fs::read_dir(&chunk_dir)
+                    .map_err(|e| format!("Failed to read chunk directory: {}", e))?
+                {
+                    let entry =
+                        entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
                     let path = entry.path();
                     chunk_paths.push(path);
                 }

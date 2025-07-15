@@ -38,7 +38,7 @@ impl SubtitleGenerator for WhisperCPP {
         &self,
         reporter: &impl ProgressReporterTrait,
         audio_path: &Path,
-        language_hint: Option<&str>,
+        language_hint: &str,
     ) -> Result<GenerateResult, String> {
         log::info!("Generating subtitle for {:?}", audio_path);
         let start_time = std::time::Instant::now();
@@ -55,7 +55,7 @@ impl SubtitleGenerator for WhisperCPP {
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
 
         // and set the language
-        params.set_language(language_hint);
+        params.set_language(Some(language_hint));
         params.set_initial_prompt(self.prompt.as_str());
 
         // we also explicitly disable anything that prints to stdout
@@ -180,7 +180,9 @@ mod tests {
             .unwrap();
         let audio_path = Path::new("tests/audio/test.wav");
         let reporter = MockReporter::new();
-        let result = whisper.generate_subtitle(&reporter, audio_path, None).await;
+        let result = whisper
+            .generate_subtitle(&reporter, audio_path, "auto")
+            .await;
         if let Err(e) = result {
             println!("Error: {}", e);
             panic!("Failed to generate subtitle");

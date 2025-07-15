@@ -108,6 +108,6 @@ pub trait SubtitleGenerator {
         &self,
         reporter: &impl ProgressReporterTrait,
         audio_path: &Path,
-        language_hint: Option<&str>,
+        language_hint: &str,
     ) -> Result<GenerateResult, String>;
 }

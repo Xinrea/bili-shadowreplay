@@ -401,7 +401,7 @@ pub async fn generate_video_subtitle(
     state.db.add_task(&task).await?;
     log::info!("Create task: {:?}", task);
     let language_hint = state.config.read().await.whisper_language.clone();
-    let language_hint = language_hint.as_deref();
+    let language_hint = language_hint.as_str();
     match generate_video_subtitle_inner(&state, &reporter, id, language_hint).await {
         Ok(result) => {
             reporter.finish(true, "字幕生成完成").await;
@@ -447,7 +447,7 @@ async fn generate_video_subtitle_inner(
     state: &state_type!(),
     reporter: &ProgressReporter,
     id: i64,
-    language_hint: Option<&str>,
+    language_hint: &str,
 ) -> Result<GenerateResult, String> {
     let video = state.db.get_video(id).await?;
     let filepath = Path::new(state.config.read().await.output.as_str()).join(&video.file);

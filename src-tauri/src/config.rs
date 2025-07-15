@@ -34,7 +34,7 @@ pub struct Config {
     #[serde(skip)]
     pub config_path: String,
     #[serde(default = "default_whisper_language")]
-    pub whisper_language: Option<String>,
+    pub whisper_language: String,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -82,8 +82,8 @@ fn default_status_check_interval() -> u64 {
     30
 }
 
-fn default_whisper_language() -> Option<String> {
-    None
+fn default_whisper_language() -> String {
+    "auto".to_string()
 }
 
 impl Config {
@@ -122,7 +122,7 @@ impl Config {
             auto_generate: default_auto_generate_config(),
             status_check_interval: default_status_check_interval(),
             config_path: config_path.to_str().unwrap().into(),
-            whisper_language: None,
+            whisper_language: default_whisper_language(),
         };
 
         config.save();
@@ -150,8 +150,8 @@ impl Config {
     }
 
     #[allow(dead_code)]
-    pub fn set_whisper_language(&mut self, language: Option<&str>) {
-        self.whisper_language = language.map(|s| s.to_string());
+    pub fn set_whisper_language(&mut self, language: &str) {
+        self.whisper_language = language.to_string();
         self.save();
     }
 

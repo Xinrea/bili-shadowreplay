@@ -254,7 +254,7 @@ async fn handler_update_whisper_model(
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UpdateWhisperLanguageRequest {
-    whisper_language: Option<String>,
+    whisper_language: String,
 }
 
 async fn handler_update_whisper_language(

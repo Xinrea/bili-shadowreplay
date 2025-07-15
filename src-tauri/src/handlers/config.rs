@@ -234,3 +234,14 @@ pub async fn update_status_check_interval(
     state.config.write().await.save();
     Ok(())
 }
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn update_whisper_language(
+    state: state_type!(),
+    whisper_language: Option<String>,
+) -> Result<(), ()> {
+    log::info!("Updating whisper language to {:?}", whisper_language);
+    state.config.write().await.whisper_language = whisper_language;
+    state.config.write().await.save();
+    Ok(())
+}

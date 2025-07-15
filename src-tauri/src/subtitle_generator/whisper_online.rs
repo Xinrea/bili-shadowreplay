@@ -56,6 +56,7 @@ impl SubtitleGenerator for WhisperOnline {
         &self,
         reporter: &impl ProgressReporterTrait,
         audio_path: &Path,
+        language_hint: Option<&str>,
     ) -> Result<GenerateResult, String> {
         log::info!("Generating subtitle online for {:?}", audio_path);
         let start_time = std::time::Instant::now();
@@ -97,6 +98,10 @@ impl SubtitleGenerator for WhisperOnline {
             .text("model", "whisper-1")
             .text("response_format", "verbose_json")
             .text("temperature", "0.0");
+
+        if let Some(language_hint) = language_hint {
+            form = form.text("language", language_hint.to_string());
+        }
 
         if let Some(prompt) = self.prompt.clone() {
             form = form.text("prompt", prompt);
@@ -226,7 +231,11 @@ mod tests {
         assert!(result.is_ok());
         let result = result.unwrap();
         let result = result
-            .generate_subtitle(&MockReporter::new(), Path::new("tests/audio/test.wav"))
+            .generate_subtitle(
+                &MockReporter::new(),
+                Path::new("tests/audio/test.wav"),
+                None,
+            )
             .await;
         println!("{:?}", result);
         assert!(result.is_ok());

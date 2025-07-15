@@ -17,8 +17,8 @@ use crate::{
         config::{
             get_config, update_auto_generate, update_clip_name_format, update_notify,
             update_openai_api_endpoint, update_openai_api_key, update_status_check_interval,
-            update_subtitle_generator_type, update_subtitle_setting, update_whisper_model,
-            update_whisper_prompt,
+            update_subtitle_generator_type, update_subtitle_setting, update_whisper_language,
+            update_whisper_model, update_whisper_prompt,
         },
         message::{delete_message, get_messages, read_message},
         recorder::{
@@ -248,6 +248,22 @@ async fn handler_update_whisper_model(
     update_whisper_model(state.0, whisper_model.whisper_model)
         .await
         .expect("Failed to update whisper model");
+    Ok(Json(ApiResponse::success(())))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateWhisperLanguageRequest {
+    whisper_language: Option<String>,
+}
+
+async fn handler_update_whisper_language(
+    state: axum::extract::State<State>,
+    Json(whisper_language): Json<UpdateWhisperLanguageRequest>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    update_whisper_language(state.0, whisper_language.whisper_language)
+        .await
+        .expect("Failed to update whisper language");
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -1227,6 +1243,10 @@ pub async fn start_api_server(state: State) {
             .route(
                 "/api/update_auto_generate",
                 post(handler_update_auto_generate),
+            )
+            .route(
+                "/api/update_whisper_language",
+                post(handler_update_whisper_language),
             );
     } else {
         log::info!("Running in readonly mode, some api routes are disabled");

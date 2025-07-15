@@ -400,7 +400,9 @@ pub async fn generate_video_subtitle(
     };
     state.db.add_task(&task).await?;
     log::info!("Create task: {:?}", task);
-    match generate_video_subtitle_inner(&state, &reporter, id).await {
+    let language_hint = state.config.read().await.whisper_language.clone();
+    let language_hint = language_hint.as_deref();
+    match generate_video_subtitle_inner(&state, &reporter, id, language_hint).await {
         Ok(result) => {
             reporter.finish(true, "字幕生成完成").await;
             // for local whisper, we need to update the task status to success
@@ -445,6 +447,7 @@ async fn generate_video_subtitle_inner(
     state: &state_type!(),
     reporter: &ProgressReporter,
     id: i64,
+    language_hint: Option<&str>,
 ) -> Result<GenerateResult, String> {
     let video = state.db.get_video(id).await?;
     let filepath = Path::new(state.config.read().await.output.as_str()).join(&video.file);
@@ -484,7 +487,9 @@ async fn generate_video_subtitle_inner(
 
                 let mut results = Vec::new();
                 for path in chunk_paths {
-                    let result = generator.generate_subtitle(reporter, &path).await;
+                    let result = generator
+                        .generate_subtitle(reporter, &path, language_hint)
+                        .await;
                     results.push(result);
                 }
 
@@ -548,7 +553,9 @@ async fn generate_video_subtitle_inner(
 
                 let mut results = Vec::new();
                 for path in chunk_paths {
-                    let result = generator.generate_subtitle(reporter, &path).await;
+                    let result = generator
+                        .generate_subtitle(reporter, &path, language_hint)
+                        .await;
                     results.push(result);
                 }
 

@@ -36,6 +36,7 @@
       encode_danmu: false,
     },
     status_check_interval: 30, // 默认30秒
+    whisper_language: "",
   };
 
   let showModal = false;
@@ -575,6 +576,33 @@
                   </div>
                 </div>
               {/if}
+              <!-- Whisper Language -->
+              <div class="p-4">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <h3
+                      class="text-sm font-medium text-gray-900 dark:text-white"
+                    >
+                      Whisper 语言
+                    </h3>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                      （测试）生成字幕时使用的语言，默认自动识别
+                    </p>
+                  </div>
+                  <div class="flex items-center space-x-2">
+                    <input
+                      type="text"
+                      class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
+                      bind:value={setting_model.whisper_language}
+                      on:change={async () => {
+                        await invoke("update_whisper_language", {
+                          whisperLanguage: setting_model.whisper_language,
+                        });
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
               <div class="p-4">
                 <div class="flex items-center justify-between">
                   <div>

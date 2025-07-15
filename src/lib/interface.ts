@@ -105,6 +105,7 @@ export interface Config {
   clip_name_format: string;
   auto_generate: AutoGenerateConfig;
   status_check_interval: number;
+  whisper_language: string;
 }
 
 export interface AutoGenerateConfig {

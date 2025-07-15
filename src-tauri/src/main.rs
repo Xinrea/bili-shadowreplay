@@ -408,6 +408,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::config::update_openai_api_endpoint,
         crate::handlers::config::update_auto_generate,
         crate::handlers::config::update_status_check_interval,
+        crate::handlers::config::update_whisper_language,
         crate::handlers::message::get_messages,
         crate::handlers::message::read_message,
         crate::handlers::message::delete_message,

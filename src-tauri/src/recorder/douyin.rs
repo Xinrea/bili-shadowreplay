@@ -397,8 +397,16 @@ impl DouyinRecorder {
 
         for segment in playlist.segments.iter() {
             let formated_ts_name = segment.uri.clone();
-            let timestamp_mili = extract_timestamp_from(&formated_ts_name)
-                .expect("No timestamp found in ts filename");
+            let timestamp_mili_result = extract_timestamp_from(&formated_ts_name);
+            if timestamp_mili_result.is_none() {
+                log::error!(
+                    "No timestamp extracted from douyin ts name: {}",
+                    formated_ts_name
+                );
+                continue;
+            }
+
+            let timestamp_mili = timestamp_mili_result.unwrap();
 
             if timestamp_mili <= last_timestamp_mili {
                 continue;

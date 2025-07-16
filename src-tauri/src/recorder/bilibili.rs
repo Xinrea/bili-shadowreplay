@@ -637,20 +637,15 @@ impl BiliRecorder {
             Ok(Playlist::MasterPlaylist(pl)) => log::debug!("Master playlist:\n{:?}", pl),
             Ok(Playlist::MediaPlaylist(pl)) => {
                 let mut new_segment_fetched = false;
-                let mut sequence = pl.media_sequence;
-                let last_sequence = self
+                let last_timestamp_mili = self
                     .entry_store
                     .read()
                     .await
                     .as_ref()
                     .unwrap()
-                    .last_sequence();
+                    .last_timestamp_mili;
+
                 for ts in pl.segments {
-                    if sequence <= last_sequence {
-                        sequence += 1;
-                        continue;
-                    }
-                    new_segment_fetched = true;
                     let mut seg_offset: i64 = 0;
                     for tag in ts.unknown_tags {
                         if tag.tag == "BILI-AUX" {
@@ -665,6 +660,13 @@ impl BiliRecorder {
                             break;
                         }
                     }
+
+                    let ts_mili = timestamp * 1000 + seg_offset;
+                    if ts_mili as u64 <= last_timestamp_mili {
+                        continue;
+                    }
+
+                    new_segment_fetched = true;
                     let ts_url = current_stream.ts_url(&ts.uri);
                     if Url::parse(&ts_url).is_err() {
                         log::error!("Ts url is invalid. ts_url={} original={}", ts_url, ts.uri);
@@ -673,15 +675,14 @@ impl BiliRecorder {
                     // encode segment offset into filename
                     let file_name = ts.uri.split('/').next_back().unwrap_or(&ts.uri);
                     let mut ts_length = pl.target_duration as f64;
-                    let ts = timestamp * 1000 + seg_offset;
                     // calculate entry length using offset
                     // the default #EXTINF is 1.0, which is not accurate
                     if let Some(last) = self.entry_store.read().await.as_ref().unwrap().last_ts() {
                         // skip this entry as it is already in cache or stream changed
-                        if ts <= last {
+                        if ts_mili <= last {
                             continue;
                         }
-                        ts_length = (ts - last) as f64 / 1000.0;
+                        ts_length = (ts_mili - last) as f64 / 1000.0;
                     }
 
                     let client = self.client.clone();
@@ -712,10 +713,10 @@ impl BiliRecorder {
                                     .unwrap()
                                     .add_entry(TsEntry {
                                         url: file_name.into(),
-                                        sequence,
+                                        sequence: ts_mili as u64,
                                         length: ts_length,
                                         size,
-                                        ts,
+                                        ts: ts_mili,
                                         is_header: false,
                                     })
                                     .await;
@@ -727,8 +728,6 @@ impl BiliRecorder {
                             }
                         }
                     }
-
-                    sequence += 1;
                 }
 
                 if new_segment_fetched {

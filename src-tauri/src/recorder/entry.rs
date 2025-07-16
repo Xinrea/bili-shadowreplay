@@ -58,6 +58,14 @@ impl TsEntry {
         }
     }
 
+    pub fn ts_mili(&self) -> u64 {
+        if self.ts > 1619884800000 {
+            self.ts as u64
+        } else {
+            (self.ts * 1000) as u64
+        }
+    }
+
     pub fn date_time(&self) -> String {
         let date_str = Utc
             .timestamp_opt(self.ts_seconds(), 0)
@@ -100,9 +108,7 @@ pub struct EntryStore {
     entries: Vec<TsEntry>,
     total_duration: f64,
     total_size: u64,
-    last_sequence: u64,
-
-    pub continue_sequence: u64,
+    pub last_timestamp_mili: u64,
 }
 
 impl EntryStore {
@@ -124,8 +130,7 @@ impl EntryStore {
             entries: vec![],
             total_duration: 0.0,
             total_size: 0,
-            last_sequence: 0,
-            continue_sequence: 0,
+            last_timestamp_mili: 0,
         };
 
         entry_store.load(work_dir).await;
@@ -150,9 +155,7 @@ impl EntryStore {
 
             let entry = entry.unwrap();
 
-            if entry.sequence > self.last_sequence {
-                self.last_sequence = entry.sequence;
-            }
+            self.last_timestamp_mili = std::cmp::max(self.last_timestamp_mili, entry.ts_mili());
 
             if entry.is_header {
                 self.header = Some(entry.clone());
@@ -163,8 +166,6 @@ impl EntryStore {
             self.total_duration += entry.length;
             self.total_size += entry.size;
         }
-
-        self.continue_sequence = self.last_sequence + 100;
     }
 
     pub async fn add_entry(&mut self, entry: TsEntry) {
@@ -180,9 +181,7 @@ impl EntryStore {
 
         self.log_file.flush().await.unwrap();
 
-        if self.last_sequence < entry.sequence {
-            self.last_sequence = entry.sequence;
-        }
+        self.last_timestamp_mili = std::cmp::max(self.last_timestamp_mili, entry.ts_mili());
 
         self.total_duration += entry.length;
         self.total_size += entry.size;
@@ -200,16 +199,12 @@ impl EntryStore {
         self.total_size
     }
 
-    pub fn last_sequence(&self) -> u64 {
-        self.last_sequence
+    pub fn first_ts(&self) -> Option<i64> {
+        self.entries.first().map(|x| x.ts_mili() as i64)
     }
 
     pub fn last_ts(&self) -> Option<i64> {
-        self.entries.last().map(|entry| entry.ts)
-    }
-
-    pub fn first_ts(&self) -> Option<i64> {
-        self.entries.first().map(|e| e.ts)
+        self.entries.last().map(|x| x.ts_mili() as i64)
     }
 
     /// Generate a hls manifest for selected range.

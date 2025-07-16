@@ -387,21 +387,36 @@ impl DouyinRecorder {
         // Create work directory if not exists
         tokio::fs::create_dir_all(&work_dir).await?;
 
-        let last_sequence = self
+        let last_timestamp_mili = self
             .entry_store
             .read()
             .await
             .as_ref()
             .unwrap()
-            .last_sequence();
+            .last_timestamp_mili;
 
-        for (i, segment) in playlist.segments.iter().enumerate() {
-            let sequence = playlist.media_sequence + i as u64;
-            if sequence <= last_sequence {
+        for segment in playlist.segments.iter() {
+            let formated_ts_name = segment.uri.clone();
+            let timestamp_mili_result = extract_timestamp_from(&formated_ts_name);
+            if timestamp_mili_result.is_none() {
+                log::error!(
+                    "No timestamp extracted from douyin ts name: {}",
+                    formated_ts_name
+                );
                 continue;
             }
 
+            let timestamp_mili = timestamp_mili_result.unwrap();
+
+            if timestamp_mili <= last_timestamp_mili {
+                continue;
+            }
+
+            // using timetamp_mili as sequence
+            let sequence = timestamp_mili;
+
             new_segment_fetched = true;
+            // example: pull-l3.douyincdn.com_stream-405850027547689439_or4-1752675567719.ts
             let mut uri = segment.uri.clone();
             // if uri contains ?params, remove it
             if let Some(pos) = uri.find('?') {
@@ -436,7 +451,7 @@ impl DouyinRecorder {
                         sequence,
                         length: segment.duration as f64,
                         size,
-                        ts: Utc::now().timestamp_millis(),
+                        ts: timestamp_mili as i64,
                         is_header: false,
                     };
 
@@ -509,6 +524,13 @@ impl DouyinRecorder {
                 .manifest(true, false, range)
         }
     }
+}
+
+fn extract_timestamp_from(name: &str) -> Option<u64> {
+    use regex::Regex;
+    let re = Regex::new(r"-(\d+)\.ts$").ok()?;
+    let captures = re.captures(name)?;
+    captures.get(1)?.as_str().parse().ok()
 }
 
 #[async_trait]

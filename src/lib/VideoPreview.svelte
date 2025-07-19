@@ -22,6 +22,7 @@
     type VideoItem,
     type Profile,
     type Config,
+    default_profile,
   } from "./interface";
   import SubtitleStyleEditor from "./SubtitleStyleEditor.svelte";
   import CoverEditor from "./CoverEditor.svelte";
@@ -106,36 +107,6 @@
 
   $: {
     window.localStorage.setItem("profile-" + roomId, JSON.stringify(profile));
-  }
-
-  function default_profile(): Profile {
-    return {
-      videos: [],
-      cover: "",
-      cover43: null,
-      title: "",
-      copyright: 1,
-      tid: 27,
-      tag: "",
-      desc_format_id: 9999,
-      desc: "",
-      recreate: -1,
-      dynamic: "",
-      interactive: 0,
-      act_reserve_create: 0,
-      no_disturbance: 0,
-      no_reprint: 0,
-      subtitle: {
-        open: 0,
-        lan: "",
-      },
-      dolby: 0,
-      lossless_music: 0,
-      up_selection_reply: false,
-      up_close_danmu: false,
-      up_close_reply: false,
-      web_os: 0,
-    };
   }
 
   // on window close, save subtitles

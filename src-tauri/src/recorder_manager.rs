@@ -505,8 +505,21 @@ impl RecorderManager {
         // remove temp file
         let _ = tokio::fs::remove_file(tmp_manifest_file_path).await;
 
+        // check clip_file exists
+        if !clip_file.exists() {
+            log::error!("Clip file not found: {}", clip_file.display());
+            return Err(RecorderManagerError::ClipError {
+                err: "Clip file not found".into(),
+            });
+        }
+
         if !params.danmu {
             return Ok(clip_file);
+        }
+
+        let mut clip_offset = params.offset;
+        if clip_offset > 0 {
+            clip_offset -= recorder.first_segment_ts(&params.live_id).await;
         }
 
         let danmus = recorder.comments(&params.live_id).await;
@@ -519,14 +532,14 @@ impl RecorderManager {
             "Filter danmus in range [{}, {}] with global offset {} and local offset {}",
             params.x,
             params.y,
-            params.offset,
+            clip_offset,
             params.local_offset
         );
         let mut danmus = danmus.unwrap();
         log::debug!("First danmu entry: {:?}", danmus.first());
         // update entry ts to offset
         for d in &mut danmus {
-            d.ts -= (params.x + params.offset + params.local_offset) * 1000;
+            d.ts -= (params.x + clip_offset + params.local_offset) * 1000;
         }
         if params.x != 0 || params.y != 0 {
             danmus.retain(|x| x.ts >= 0 && x.ts <= (params.y - params.x) * 1000);

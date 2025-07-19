@@ -965,7 +965,7 @@ impl super::Recorder for BiliRecorder {
         Ok(if live_id == *self.live_id.read().await {
             // just return current cache content
             match self.danmu_storage.read().await.as_ref() {
-                Some(storage) => storage.get_entries().await,
+                Some(storage) => storage.get_entries(self.first_segment_ts(live_id).await).await,
                 None => Vec::new(),
             }
         } else {
@@ -983,7 +983,7 @@ impl super::Recorder for BiliRecorder {
                 return Ok(Vec::new());
             }
             let storage = storage.unwrap();
-            storage.get_entries().await
+            storage.get_entries(self.first_segment_ts(live_id).await).await
         })
     }
 

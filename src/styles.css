@@ -138,3 +138,74 @@ body {
 .custom-scrollbar-light::-webkit-scrollbar-thumb:horizontal:hover {
   background: #9ca3af;
 }
+
+/* Marked 表格样式 */
+.prose table {
+  width: 100%;
+  min-width: 600px; /* 设置最小宽度 */
+  border-collapse: collapse;
+  margin: 1rem 0;
+  font-size: 0.875rem;
+  table-layout: auto; /* 允许表格根据内容自动调整列宽 */
+}
+
+.prose table th,
+.prose table td {
+  border: 1px solid #e5e7eb;
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  word-wrap: break-word; /* 允许长单词换行 */
+  white-space: normal; /* 允许文本换行 */
+  min-width: 120px; /* 设置最小列宽 */
+  max-width: 300px; /* 设置最大列宽 */
+}
+
+.prose table th {
+  background-color: #f9fafb;
+  font-weight: 600;
+  color: #374151;
+  white-space: nowrap; /* 表头不换行 */
+}
+
+.prose table tr:nth-child(even) {
+  background-color: #f9fafb;
+}
+
+.prose table tr:hover {
+  background-color: #f3f4f6;
+}
+
+/* 表格容器样式，支持水平滚动 */
+.prose {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+/* 深色主题下的表格样式 */
+.dark .prose table th,
+.dark .prose table td {
+  border-color: #4b5563;
+}
+
+.dark .prose table th {
+  background-color: #374151;
+  color: #f9fafb;
+}
+
+.dark .prose table tr:nth-child(even) {
+  background-color: #374151;
+}
+
+.dark .prose table tr:hover {
+  background-color: #4b5563;
+}
+
+/* 表格容器样式 */
+.table-container {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.table-container .prose {
+  min-width: 100%;
+}

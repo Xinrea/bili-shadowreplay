@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use crate::progress_reporter::ProgressReporterTrait;
-use async_ffmpeg_sidecar::event::FfmpegEvent;
+use async_ffmpeg_sidecar::event::{FfmpegEvent, LogLevel};
 use async_ffmpeg_sidecar::log_parser::FfmpegLogParser;
 use tokio::io::BufReader;
 
@@ -50,7 +50,12 @@ pub async fn clip_from_m3u8(
                     .update(format!("编码中：{}", p.time).as_str())
             }
             FfmpegEvent::LogEOF => break,
-            FfmpegEvent::Log(_level, _content) => {}
+            FfmpegEvent::Log(level, content) => {
+                // log error if content contains error
+                if content.contains("error") || level == LogLevel::Error {
+                    log::error!("Clip error: {}", content);
+                }
+            }
             FfmpegEvent::Error(e) => {
                 log::error!("Clip error: {}", e);
                 clip_error = Some(e.to_string());

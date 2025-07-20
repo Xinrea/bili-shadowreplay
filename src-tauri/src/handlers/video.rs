@@ -7,9 +7,7 @@ use crate::progress_reporter::{
 };
 use crate::recorder::bilibili::profile::Profile;
 use crate::recorder_manager::ClipRangeParams;
-use crate::subtitle_generator::{item_to_srt, whisper_online};
-use crate::subtitle_generator::{whisper_cpp, SubtitleGeneratorType};
-use crate::subtitle_generator::{GenerateResult, SubtitleGenerator};
+use crate::subtitle_generator::item_to_srt;
 use chrono::Utc;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -400,9 +398,20 @@ pub async fn generate_video_subtitle(
     };
     state.db.add_task(&task).await?;
     log::info!("Create task: {:?}", task);
+    let config = state.config.read().await;
+    let generator_type = config.subtitle_generator_type.as_str();
+    let whisper_model = config.whisper_model.clone();
+    let whisper_prompt = config.whisper_prompt.clone();
+    let openai_api_key = config.openai_api_key.clone();
+    let openai_api_endpoint = config.openai_api_endpoint.clone();
     let language_hint = state.config.read().await.whisper_language.clone();
     let language_hint = language_hint.as_str();
-    match generate_video_subtitle_inner(&state, &reporter, id, language_hint).await {
+
+    let video = state.db.get_video(id).await?;
+    let filepath = Path::new(state.config.read().await.output.as_str()).join(&video.file);
+    let file = Path::new(&filepath);
+
+    match ffmpeg::generate_video_subtitle(Some(&reporter), file, generator_type, &whisper_model, &whisper_prompt, &openai_api_key, &openai_api_endpoint, language_hint).await {
         Ok(result) => {
             reporter.finish(true, "字幕生成完成").await;
             // for local whisper, we need to update the task status to success
@@ -440,154 +449,6 @@ pub async fn generate_video_subtitle(
                 .await?;
             Err(e)
         }
-    }
-}
-
-async fn generate_video_subtitle_inner(
-    state: &state_type!(),
-    reporter: &ProgressReporter,
-    id: i64,
-    language_hint: &str,
-) -> Result<GenerateResult, String> {
-    let video = state.db.get_video(id).await?;
-    let filepath = Path::new(state.config.read().await.output.as_str()).join(&video.file);
-    let file = Path::new(&filepath);
-    let config = state.config.read().await;
-    let generator_type = config.subtitle_generator_type.as_str();
-
-    match generator_type {
-        "whisper" => {
-            if config.whisper_model.is_empty() {
-                return Err("Whisper model not configured".to_string());
-            }
-            if let Ok(generator) =
-                whisper_cpp::new(Path::new(&config.whisper_model), &config.whisper_prompt).await
-            {
-                let chunk_dir = ffmpeg::extract_audio_chunks(file, "wav").await?;
-
-                let mut full_result = GenerateResult {
-                    subtitle_id: "".to_string(),
-                    subtitle_content: vec![],
-                    generator_type: SubtitleGeneratorType::Whisper,
-                };
-
-                let mut chunk_paths = vec![];
-                for entry in std::fs::read_dir(&chunk_dir)
-                    .map_err(|e| format!("Failed to read chunk directory: {}", e))?
-                {
-                    let entry =
-                        entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
-                    let path = entry.path();
-                    chunk_paths.push(path);
-                }
-
-                // sort chunk paths by name
-                chunk_paths
-                    .sort_by_key(|path| path.file_name().unwrap().to_str().unwrap().to_string());
-
-                let mut results = Vec::new();
-                for path in chunk_paths {
-                    let result = generator
-                        .generate_subtitle(reporter, &path, language_hint)
-                        .await;
-                    results.push(result);
-                }
-
-                for (i, result) in results.iter().enumerate() {
-                    if let Ok(result) = result {
-                        full_result.subtitle_id = result.subtitle_id.clone();
-                        full_result.concat(result, 30 * i as u64);
-                    }
-                }
-
-                // delete chunk directory
-                let _ = tokio::fs::remove_dir_all(chunk_dir).await;
-                let subtitle_content = full_result
-                    .subtitle_content
-                    .iter()
-                    .map(item_to_srt)
-                    .collect::<Vec<String>>()
-                    .join("");
-
-                // save to file
-                let subtitle_path = file.with_extension("srt");
-                if let Err(e) = std::fs::write(subtitle_path, &subtitle_content) {
-                    log::warn!("Save subtitle to file error: {}", e);
-                }
-                Ok(full_result)
-            } else {
-                Err("Failed to initialize Whisper model".to_string())
-            }
-        }
-        "whisper_online" => {
-            if config.openai_api_key.is_empty() {
-                return Err("API key not configured".to_string());
-            }
-            if let Ok(generator) = whisper_online::new(
-                Some(&config.openai_api_endpoint),
-                Some(&config.openai_api_key),
-                Some(&config.whisper_prompt),
-            )
-            .await
-            {
-                let chunk_dir = ffmpeg::extract_audio_chunks(file, "mp3").await?;
-
-                let mut full_result = GenerateResult {
-                    subtitle_id: "".to_string(),
-                    subtitle_content: vec![],
-                    generator_type: SubtitleGeneratorType::WhisperOnline,
-                };
-
-                let mut chunk_paths = vec![];
-                for entry in std::fs::read_dir(&chunk_dir)
-                    .map_err(|e| format!("Failed to read chunk directory: {}", e))?
-                {
-                    let entry =
-                        entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
-                    let path = entry.path();
-                    chunk_paths.push(path);
-                }
-                // sort chunk paths by name
-                chunk_paths
-                    .sort_by_key(|path| path.file_name().unwrap().to_str().unwrap().to_string());
-
-                let mut results = Vec::new();
-                for path in chunk_paths {
-                    let result = generator
-                        .generate_subtitle(reporter, &path, language_hint)
-                        .await;
-                    results.push(result);
-                }
-
-                for (i, result) in results.iter().enumerate() {
-                    if let Ok(result) = result {
-                        full_result.subtitle_id = result.subtitle_id.clone();
-                        full_result.concat(result, 30 * i as u64);
-                    }
-                }
-
-                // delete chunk directory
-                let _ = tokio::fs::remove_dir_all(chunk_dir).await;
-                let subtitle_content = full_result
-                    .subtitle_content
-                    .iter()
-                    .map(item_to_srt)
-                    .collect::<Vec<String>>()
-                    .join("");
-                // save to file
-                let subtitle_path = file.with_extension("srt");
-                if let Err(e) = std::fs::write(subtitle_path, &subtitle_content) {
-                    log::warn!("Save subtitle to file error: {}", e);
-                }
-                Ok(full_result)
-            } else {
-                Err("Failed to initialize Whisper Online".to_string())
-            }
-        }
-        _ => Err(format!(
-            "Unknown subtitle generator type: {}",
-            generator_type
-        )),
     }
 }
 

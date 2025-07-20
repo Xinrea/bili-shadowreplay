@@ -612,6 +612,26 @@ impl RecorderManager {
         Ok(self.db.get_record(room_id, live_id).await?)
     }
 
+    pub async fn get_archive_subtitle(&self, platform: PlatformType, room_id: u64, live_id: &str) -> Result<String, RecorderManagerError> {
+        let recorder_id = format!("{}:{}", platform.as_str(), room_id);
+        if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
+            let recorder = recorder_ref.as_ref();
+            Ok(recorder.get_archive_subtitle(live_id).await?)
+        } else {
+            Err(RecorderManagerError::NotFound { room_id })
+        }
+    }
+
+    pub async fn generate_archive_subtitle(&self, platform: PlatformType, room_id: u64, live_id: &str) -> Result<String, RecorderManagerError> {
+        let recorder_id = format!("{}:{}", platform.as_str(), room_id);
+        if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
+            let recorder = recorder_ref.as_ref();
+            Ok(recorder.generate_archive_subtitle(live_id).await?)
+        } else {
+            Err(RecorderManagerError::NotFound { room_id })
+        }
+    }
+
     pub async fn delete_archive(
         &self,
         platform: PlatformType,

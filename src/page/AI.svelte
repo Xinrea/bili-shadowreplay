@@ -310,11 +310,13 @@
     });
   }
 
-  function handleToolCallConfirm(toolCall: any) {
+  async function handleToolCallConfirm(toolCall: any) {
     console.log("handleToolCallConfirm", toolCall);
     toolCallStates.set(toolCall.id, 'confirmed');
+    // update messages to trigger re-render
+    messages = [...messages];
     // Execute the tool and resume the flow
-    executeToolAndResume(toolCall);
+    await executeToolAndResume(toolCall);
   }
 
   async function executeToolAndResume(toolCall: any) {

@@ -136,6 +136,7 @@ const get_archives = tool(
         return {
           ...a,
           cover: null,
+          created_at: new Date(a.created_at).toLocaleString(),
         };
       }),
     };
@@ -156,10 +157,11 @@ const get_archive = tool(
       roomId: room_id,
       liveId: live_id,
     })) as any;
-    // hide cover in result
+    // hide cover in result, convert utc datetime to local datetime
     return {
       ...result,
       cover: null,
+      created_at: new Date(result.created_at).toLocaleString(),
     };
   },
   {
@@ -208,9 +210,14 @@ const delete_archive = tool(
 // @ts-ignore
 const get_background_tasks = tool(
   async () => {
-    const result = await invoke("get_tasks");
+    const result = (await invoke("get_tasks")) as any[];
     return {
-      tasks: result,
+      tasks: result.map((t: any) => {
+        return {
+          ...t,
+          created_at: new Date(t.created_at).toLocaleString(),
+        };
+      }),
     };
   },
   {
@@ -238,9 +245,14 @@ const delete_background_task = tool(
 // @ts-ignore
 const get_videos = tool(
   async ({ room_id }: { room_id: number }) => {
-    const result = await invoke("get_videos", { roomId: room_id });
+    const result = (await invoke("get_videos", { roomId: room_id })) as any[];
     return {
-      videos: result,
+      videos: result.map((v: any) => {
+        return {
+          ...v,
+          created_at: new Date(v.created_at).toLocaleString(),
+        };
+      }),
     };
   },
   {
@@ -255,8 +267,15 @@ const get_videos = tool(
 // @ts-ignore
 const get_all_videos = tool(
   async () => {
-    const result = await invoke("get_all_videos");
-    return result;
+    const result = (await invoke("get_all_videos")) as any[];
+    return {
+      videos: result.map((v: any) => {
+        return {
+          ...v,
+          created_at: new Date(v.created_at).toLocaleString(),
+        };
+      }),
+    };
   },
   {
     name: "get_all_videos",
@@ -268,9 +287,12 @@ const get_all_videos = tool(
 // @ts-ignore
 const get_video = tool(
   async ({ id }: { id: number }) => {
-    const result = await invoke("get_video", { id });
+    const result = (await invoke("get_video", { id })) as any;
     return {
-      video: result,
+      video: {
+        ...result,
+        created_at: new Date(result.created_at).toLocaleString(),
+      },
     };
   },
   {
@@ -449,7 +471,7 @@ const clip_range = tool(
   },
   {
     name: "clip_range",
-    description: "Clip a range of a live, it will be used to generate a video. If user want you to decide the clip range, you can use get_danmu_record to get the danmu record of the live or get_video_subtitle to get the subtitle of the video, analyze the danmu record or subtitle and decide the clip range. You must provide a reason for your decision on params",
+    description: "Clip a range of a live, it will be used to generate a video. You must provide a reason for your decision on params",
     schema: z.object({
       reason: z.string().describe("The reason for the clip range, it will be shown to the user. You must offer a summary of the clip range content and why you choose this clip range."),
       clip_range_params: z.object({
@@ -478,7 +500,7 @@ const get_recent_record = tool(
     })) as any[];
     return {
       records: records.map((r: any) => {
-        return { ...r, cover: null };
+        return { ...r, cover: null, created_at: new Date(r.created_at).toLocaleString() };
       }),
     };
   },
@@ -538,6 +560,40 @@ const list_folder = tool(
   }
 );
 
+// @ts-ignore
+const get_archive_subtitle = tool(
+  async ({ platform, room_id, live_id }: { platform: string; room_id: number; live_id: string }) => {
+    const result = await invoke("get_archive_subtitle", { platform, roomId: room_id, liveId: live_id });
+    return result;
+  },
+  {
+    name: "get_archive_subtitle",
+    description: "Get the subtitle of a archive, it may not be generated yet, you can use generate_archive_subtitle to generate the subtitle",
+    schema: z.object({
+      platform: z.string().describe("The platform of the archive"),
+      room_id: z.number().describe("The room id of the archive"),
+      live_id: z.string().describe("The live id of the archive"),
+    }),
+  }
+);
+
+// @ts-ignore
+const generate_archive_subtitle = tool(
+  async ({ platform, room_id, live_id }: { platform: string; room_id: number; live_id: string }) => {
+    const result = await invoke("generate_archive_subtitle", { platform, roomId: room_id, liveId: live_id });
+    return result;
+  },
+  {
+    name: "generate_archive_subtitle",
+    description: "Generate the subtitle of a archive, it may take a long time, you should not call this tool unless user ask you to generate the subtitle. It can be used to overwrite the subtitle of a archive",
+    schema: z.object({
+      platform: z.string().describe("The platform of the archive"),
+      room_id: z.number().describe("The room id of the archive"),
+      live_id: z.string().describe("The live id of the archive"),
+    }),
+  }
+);
+
 const tools = [
   get_accounts,
   remove_account,
@@ -566,6 +622,8 @@ const tools = [
   generic_ffmpeg_command,
   open_clip,
   list_folder,
+  get_archive_subtitle,
+  generate_archive_subtitle,
 ];
 
 export { tools };

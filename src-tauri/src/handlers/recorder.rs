@@ -137,6 +137,28 @@ pub async fn get_archive(
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_archive_subtitle(
+    state: state_type!(),
+    platform: String,
+    room_id: u64,
+    live_id: String,
+) -> Result<String, String> {
+    let platform = PlatformType::from_str(&platform).unwrap();
+    Ok(state.recorder_manager.get_archive_subtitle(platform, room_id, &live_id).await?)
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn generate_archive_subtitle(
+    state: state_type!(),
+    platform: String,
+    room_id: u64,
+    live_id: String,
+) -> Result<String, String> {
+    let platform = PlatformType::from_str(&platform).unwrap();
+    Ok(state.recorder_manager.generate_archive_subtitle(platform, room_id, &live_id).await?)
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn delete_archive(
     state: state_type!(),
     platform: String,

@@ -10,6 +10,7 @@ use crate::database::Database;
 use crate::progress_manager::Event;
 use crate::progress_reporter::EventEmitter;
 use crate::recorder_manager::RecorderEvent;
+use crate::subtitle_generator::item_to_srt;
 use crate::{config::Config, database::account::AccountRow};
 use async_trait::async_trait;
 use chrono::Utc;
@@ -18,6 +19,9 @@ use danmu_stream::danmu_stream::DanmuStream;
 use danmu_stream::provider::ProviderType;
 use danmu_stream::DanmuMessageType;
 use rand::random;
+use tokio::fs::File;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, Mutex, RwLock};
@@ -617,6 +621,58 @@ impl Recorder for DouyinRecorder {
         .as_str();
         m3u8_content += &format!("playlist.m3u8?start={}&end={}\n", start, end);
         m3u8_content
+    }
+
+    async fn get_archive_subtitle(&self, live_id: &str) -> Result<String, super::errors::RecorderError> {
+        let work_dir = self.get_work_dir(live_id).await;
+        let subtitle_file_path = format!("{}/{}", work_dir, "subtitle.srt");
+        let subtitle_file = File::open(subtitle_file_path).await;
+        if subtitle_file.is_err() {
+            return Err(super::errors::RecorderError::SubtitleNotFound {
+                live_id: live_id.to_string(),
+            });
+        }
+        let subtitle_file = subtitle_file.unwrap();
+        let mut subtitle_file = BufReader::new(subtitle_file);
+        let mut subtitle_content = String::new();
+        subtitle_file.read_to_string(&mut subtitle_content).await?;
+        Ok(subtitle_content)
+    }
+
+    async fn generate_archive_subtitle(&self, live_id: &str) -> Result<String, super::errors::RecorderError> {
+        // generate subtitle file under work_dir
+        let work_dir = self.get_work_dir(live_id).await;
+        let subtitle_file_path = format!("{}/{}", work_dir, "subtitle.srt");
+        let mut subtitle_file = File::create(subtitle_file_path).await?;
+        // first generate a tmp clip file
+        // generate a tmp m3u8 index file
+        let m3u8_index_file_path = format!("{}/{}", work_dir, "tmp.m3u8");
+        let m3u8_content = self.m3u8_content(live_id, 0, 0).await;
+        tokio::fs::write(&m3u8_index_file_path, m3u8_content).await?;
+        // generate a tmp clip file
+        let clip_file_path = format!("{}/{}", work_dir, "tmp.mp4");
+        if let Err(e) = crate::ffmpeg::clip_from_m3u8(None::<&crate::progress_reporter::ProgressReporter>, Path::new(&m3u8_index_file_path), Path::new(&clip_file_path)).await {
+            return Err(super::errors::RecorderError::SubtitleGenerationFailed {
+                error: e.to_string(),
+            });
+        }
+        // generate subtitle file
+        let config = self.config.read().await;
+        let result = crate::ffmpeg::generate_video_subtitle(None, Path::new(&clip_file_path), "whisper", &config.whisper_model, &config.whisper_prompt, &config.openai_api_key, &config.openai_api_endpoint, &config.whisper_language).await;
+        // write subtitle file
+        if let Err(e) = result {
+            return Err(super::errors::RecorderError::SubtitleGenerationFailed {
+                error: e.to_string(),
+            });
+        }   
+        let result = result.unwrap();
+        let subtitle_content = result.subtitle_content.iter().map(item_to_srt).collect::<Vec<String>>().join("");
+        subtitle_file.write_all(subtitle_content.as_bytes()).await?;
+
+        // remove tmp file
+        tokio::fs::remove_file(&m3u8_index_file_path).await?;
+        tokio::fs::remove_file(&clip_file_path).await?;
+        Ok(subtitle_content)
     }
 
     async fn first_segment_ts(&self, live_id: &str) -> i64 {

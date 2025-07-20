@@ -20,4 +20,6 @@ custom_error! {pub RecorderError
     DouyinClientError {err: DouyinClientError} = "DouyinClient error: {err}",
     IoError {err: std::io::Error} = "IO error: {err}",
     DanmuStreamError {err: danmu_stream::DanmuStreamError} = "Danmu stream error: {err}",
+    SubtitleNotFound {live_id: String} = "Subtitle not found: {live_id}",
+    SubtitleGenerationFailed {error: String} = "Subtitle generation failed: {error}",
 }

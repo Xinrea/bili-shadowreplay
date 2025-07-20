@@ -419,6 +419,8 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::recorder::get_room_info,
         crate::handlers::recorder::get_archives,
         crate::handlers::recorder::get_archive,
+        crate::handlers::recorder::get_archive_subtitle,
+        crate::handlers::recorder::generate_archive_subtitle,
         crate::handlers::recorder::delete_archive,
         crate::handlers::recorder::get_danmu_record,
         crate::handlers::recorder::export_danmu,

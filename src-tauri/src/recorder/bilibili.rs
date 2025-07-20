@@ -9,9 +9,11 @@ use crate::database::account::AccountRow;
 use crate::progress_manager::Event;
 use crate::progress_reporter::EventEmitter;
 use crate::recorder_manager::RecorderEvent;
+use crate::subtitle_generator::item_to_srt;
 
 use super::danmu::{DanmuEntry, DanmuStorage};
 use super::entry::TsEntry;
+use std::path::Path;
 use chrono::Utc;
 use client::{BiliClient, BiliStream, RoomInfo, StreamType, UserInfo};
 use danmu_stream::danmu_stream::DanmuStream;
@@ -20,6 +22,8 @@ use danmu_stream::DanmuMessageType;
 use errors::BiliClientError;
 use m3u8_rs::{Playlist, QuotedOrUnquoted, VariantStream};
 use regex::Regex;
+use tokio::fs::File;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -989,6 +993,63 @@ impl super::Recorder for BiliRecorder {
 
     async fn is_recording(&self, live_id: &str) -> bool {
         *self.live_id.read().await == live_id && *self.live_status.read().await
+    }
+
+    async fn get_archive_subtitle(&self, live_id: &str) -> Result<String, super::errors::RecorderError> {
+        // read subtitle file under work_dir
+        let work_dir = self.get_work_dir(live_id).await;
+        let subtitle_file_path = format!("{}/{}", work_dir, "subtitle.srt");
+        let subtitle_file = File::open(subtitle_file_path).await;
+        if subtitle_file.is_err() {
+            return Err(super::errors::RecorderError::SubtitleNotFound {
+                live_id: live_id.to_string(),
+            });
+        }
+        let subtitle_file = subtitle_file.unwrap();
+        let mut subtitle_file = BufReader::new(subtitle_file);
+        let mut subtitle_content = String::new();
+        subtitle_file.read_to_string(&mut subtitle_content).await?;
+        Ok(subtitle_content)
+    }
+
+    async fn generate_archive_subtitle(&self, live_id: &str) -> Result<String, super::errors::RecorderError> {
+        // generate subtitle file under work_dir
+        let work_dir = self.get_work_dir(live_id).await;
+        let subtitle_file_path = format!("{}/{}", work_dir, "subtitle.srt");
+        let mut subtitle_file = File::create(subtitle_file_path).await?;
+        // first generate a tmp clip file
+        // generate a tmp m3u8 index file
+        let m3u8_index_file_path = format!("{}/{}", work_dir, "tmp.m3u8");
+        let m3u8_content = self.m3u8_content(live_id, 0, 0).await;
+        tokio::fs::write(&m3u8_index_file_path, m3u8_content).await?;
+        log::info!("M3U8 index file generated: {}", m3u8_index_file_path);
+        // generate a tmp clip file
+        let clip_file_path = format!("{}/{}", work_dir, "tmp.mp4");
+        if let Err(e) = crate::ffmpeg::clip_from_m3u8(None::<&crate::progress_reporter::ProgressReporter>, Path::new(&m3u8_index_file_path), Path::new(&clip_file_path)).await {
+            return Err(super::errors::RecorderError::SubtitleGenerationFailed {
+                error: e.to_string(),
+            });
+        }
+        log::info!("Temp clip file generated: {}", clip_file_path);
+        // generate subtitle file
+        let config = self.config.read().await;
+        let result = crate::ffmpeg::generate_video_subtitle(None, Path::new(&clip_file_path), "whisper", &config.whisper_model, &config.whisper_prompt, &config.openai_api_key, &config.openai_api_endpoint, &config.whisper_language).await;
+        // write subtitle file
+        if let Err(e) = result {
+            return Err(super::errors::RecorderError::SubtitleGenerationFailed {
+                error: e.to_string(),
+            });
+        }
+        log::info!("Subtitle generated");
+        let result = result.unwrap();
+        let subtitle_content = result.subtitle_content.iter().map(item_to_srt).collect::<Vec<String>>().join("");
+        subtitle_file.write_all(subtitle_content.as_bytes()).await?;
+        log::info!("Subtitle file written");
+        // remove tmp file
+        tokio::fs::remove_file(&m3u8_index_file_path).await?;
+        tokio::fs::remove_file(&clip_file_path).await?;
+        log::info!("Tmp file removed");
+        Ok(subtitle_content)
     }
 
     async fn enable(&self) {

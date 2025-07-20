@@ -54,7 +54,7 @@ pub async fn new(
 impl SubtitleGenerator for WhisperOnline {
     async fn generate_subtitle(
         &self,
-        reporter: &impl ProgressReporterTrait,
+        reporter: Option<&impl ProgressReporterTrait>,
         audio_path: &Path,
         language_hint: &str,
     ) -> Result<GenerateResult, String> {
@@ -62,7 +62,9 @@ impl SubtitleGenerator for WhisperOnline {
         let start_time = std::time::Instant::now();
 
         // Read audio file
-        reporter.update("读取音频文件中");
+        if let Some(reporter) = reporter {
+            reporter.update("读取音频文件中");
+        }
         let audio_data = fs::read(audio_path)
             .await
             .map_err(|e| format!("Failed to read audio file: {}", e))?;
@@ -112,7 +114,9 @@ impl SubtitleGenerator for WhisperOnline {
             req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
         }
 
-        reporter.update("上传音频中");
+        if let Some(reporter) = reporter {
+            reporter.update("上传音频中");
+        }
         let response = req_builder
             .timeout(std::time::Duration::from_secs(3 * 60)) // 3 minutes timeout
             .multipart(form)
@@ -230,7 +234,7 @@ mod tests {
         let result = result.unwrap();
         let result = result
             .generate_subtitle(
-                &MockReporter::new(),
+                Some(&MockReporter::new()),
                 Path::new("tests/audio/test.wav"),
                 "auto",
             )

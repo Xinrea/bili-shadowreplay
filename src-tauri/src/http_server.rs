@@ -22,10 +22,10 @@ use crate::{
         },
         message::{delete_message, get_messages, read_message},
         recorder::{
-            add_recorder, delete_archive, export_danmu, fetch_hls, get_archive, get_archives,
+            add_recorder, delete_archive, export_danmu, fetch_hls, get_archive, get_archive_subtitle, get_archives,
             get_danmu_record, get_recent_record, get_recorder_list, get_room_info,
             get_today_record_count, get_total_length, remove_recorder, send_danmaku, set_enable,
-            ExportDanmuOptions,
+            ExportDanmuOptions, generate_archive_subtitle,
         },
         task::{delete_task, get_tasks},
         utils::{console_log, get_disk_info, list_folder, DiskInfo},
@@ -504,6 +504,38 @@ async fn handler_get_archive(
 ) -> Result<Json<ApiResponse<RecordRow>>, ApiError> {
     let archive = get_archive(state.0, param.room_id, param.live_id).await?;
     Ok(Json(ApiResponse::success(archive)))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GetArchiveSubtitleRequest {
+    platform: String,
+    room_id: u64,
+    live_id: String,
+}
+
+async fn handler_get_archive_subtitle(
+    state: axum::extract::State<State>,
+    Json(param): Json<GetArchiveSubtitleRequest>,
+) -> Result<Json<ApiResponse<String>>, ApiError> {
+    let subtitle = get_archive_subtitle(state.0, param.platform, param.room_id, param.live_id).await?;
+    Ok(Json(ApiResponse::success(subtitle)))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerateArchiveSubtitleRequest {
+    platform: String,
+    room_id: u64,
+    live_id: String,
+}
+
+async fn handler_generate_archive_subtitle(
+    state: axum::extract::State<State>,
+    Json(param): Json<GenerateArchiveSubtitleRequest>,
+) -> Result<Json<ApiResponse<String>>, ApiError> {
+    let subtitle = generate_archive_subtitle(state.0, param.platform, param.room_id, param.live_id).await?;
+    Ok(Json(ApiResponse::success(subtitle)))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1240,6 +1272,10 @@ pub async fn start_api_server(state: State) {
                 post(handler_generate_video_subtitle),
             )
             .route(
+                "/api/generate_archive_subtitle",
+                post(handler_generate_archive_subtitle),
+            )
+            .route(
                 "/api/generic_ffmpeg_command",
                 post(handler_generic_ffmpeg_command),
             )
@@ -1297,6 +1333,7 @@ pub async fn start_api_server(state: State) {
         .route("/api/get_room_info", post(handler_get_room_info))
         .route("/api/get_archives", post(handler_get_archives))
         .route("/api/get_archive", post(handler_get_archive))
+        .route("/api/get_archive_subtitle", post(handler_get_archive_subtitle))
         .route("/api/get_danmu_record", post(handler_get_danmu_record))
         .route("/api/get_total_length", post(handler_get_total_length))
         .route(

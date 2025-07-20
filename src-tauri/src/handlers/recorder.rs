@@ -143,8 +143,11 @@ pub async fn get_archive_subtitle(
     room_id: u64,
     live_id: String,
 ) -> Result<String, String> {
-    let platform = PlatformType::from_str(&platform).unwrap();
-    Ok(state.recorder_manager.get_archive_subtitle(platform, room_id, &live_id).await?)
+    let platform = PlatformType::from_str(&platform);
+    if platform.is_none() {
+        return Err("Unsupported platform".to_string());
+    }
+    Ok(state.recorder_manager.get_archive_subtitle(platform.unwrap(), room_id, &live_id).await?)
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -154,8 +157,11 @@ pub async fn generate_archive_subtitle(
     room_id: u64,
     live_id: String,
 ) -> Result<String, String> {
-    let platform = PlatformType::from_str(&platform).unwrap();
-    Ok(state.recorder_manager.generate_archive_subtitle(platform, room_id, &live_id).await?)
+    let platform = PlatformType::from_str(&platform);
+    if platform.is_none() {
+        return Err("Unsupported platform".to_string());
+    }
+    Ok(state.recorder_manager.generate_archive_subtitle(platform.unwrap(), room_id, &live_id).await?)
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -165,10 +171,13 @@ pub async fn delete_archive(
     room_id: u64,
     live_id: String,
 ) -> Result<(), String> {
-    let platform = PlatformType::from_str(&platform).unwrap();
+    let platform = PlatformType::from_str(&platform);
+    if platform.is_none() {
+        return Err("Unsupported platform".to_string());
+    }
     state
         .recorder_manager
-        .delete_archive(platform, room_id, &live_id)
+        .delete_archive(platform.unwrap(), room_id, &live_id)
         .await?;
     state
         .db
@@ -187,10 +196,13 @@ pub async fn get_danmu_record(
     room_id: u64,
     live_id: String,
 ) -> Result<Vec<DanmuEntry>, String> {
-    let platform = PlatformType::from_str(&platform).unwrap();
+    let platform = PlatformType::from_str(&platform);
+    if platform.is_none() {
+        return Err("Unsupported platform".to_string());
+    }
     Ok(state
         .recorder_manager
-        .get_danmu(platform, room_id, &live_id)
+        .get_danmu(platform.unwrap(), room_id, &live_id)
         .await?)
 }
 
@@ -210,10 +222,13 @@ pub async fn export_danmu(
     state: state_type!(),
     options: ExportDanmuOptions,
 ) -> Result<String, String> {
-    let platform = PlatformType::from_str(&options.platform).unwrap();
+    let platform = PlatformType::from_str(&options.platform);
+    if platform.is_none() {
+        return Err("Unsupported platform".to_string());
+    }
     let mut danmus = state
         .recorder_manager
-        .get_danmu(platform, options.room_id, &options.live_id)
+        .get_danmu(platform.unwrap(), options.room_id, &options.live_id)
         .await?;
 
     log::debug!("First danmu entry: {:?}", danmus.first());
@@ -289,10 +304,13 @@ pub async fn set_enable(
     enabled: bool,
 ) -> Result<(), String> {
     log::info!("Set enable for recorder {platform} {room_id} {enabled}");
-    let platform = PlatformType::from_str(&platform).unwrap();
+    let platform = PlatformType::from_str(&platform);
+    if platform.is_none() {
+        return Err("Unsupported platform".to_string());
+    }
     state
         .recorder_manager
-        .set_enable(platform, room_id, enabled)
+        .set_enable(platform.unwrap(), room_id, enabled)
         .await;
     Ok(())
 }

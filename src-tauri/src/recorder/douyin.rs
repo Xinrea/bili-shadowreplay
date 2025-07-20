@@ -64,6 +64,7 @@ pub struct DouyinRecorder {
     entry_store: Arc<RwLock<Option<EntryStore>>>,
     danmu_store: Arc<RwLock<Option<DanmuStorage>>>,
     live_id: Arc<RwLock<String>>,
+    danmu_room_id: Arc<RwLock<String>>,
     live_status: Arc<RwLock<LiveStatus>>,
     is_recording: Arc<RwLock<bool>>,
     running: Arc<RwLock<bool>>,
@@ -104,6 +105,7 @@ impl DouyinRecorder {
             account: account.clone(),
             room_id,
             live_id: Arc::new(RwLock::new(String::new())),
+            danmu_room_id: Arc::new(RwLock::new(String::new())),
             entry_store: Arc::new(RwLock::new(None)),
             danmu_store: Arc::new(RwLock::new(None)),
             client,
@@ -207,7 +209,8 @@ impl DouyinRecorder {
                     .hls_pull_url
                     .is_empty()
                 {
-                    *self.live_id.write().await = info.data.data[0].id_str.clone();
+                    *self.live_id.write().await = Utc::now().timestamp_millis().to_string();
+                    *self.danmu_room_id.write().await = info.data.data[0].id_str.clone();
                     // create a new record
                     let cover_url = info.data.data[0]
                         .cover
@@ -257,6 +260,16 @@ impl DouyinRecorder {
                         log::info!("Start fetching danmu for live {}", live_id);
                         let _ = self_clone.danmu().await;
                     }));
+
+                    // setup stream url
+                    let new_stream_url = self.get_best_stream_url(&info).await;
+                    if new_stream_url.is_none() {
+                        log::error!("No stream url found in room_info: {:#?}", info);
+                        return false;
+                    }
+
+                    log::info!("New douyin stream URL: {}", new_stream_url.clone().unwrap());
+                    *self.stream_url.write().await = Some(new_stream_url.unwrap());
                 }
 
                 true
@@ -270,14 +283,8 @@ impl DouyinRecorder {
 
     async fn danmu(&self) -> Result<(), super::errors::RecorderError> {
         let cookies = self.account.cookies.clone();
-        let live_id = self
-            .live_id
-            .read()
-            .await
-            .clone()
-            .parse::<u64>()
-            .unwrap_or(0);
-        let danmu_stream = DanmuStream::new(ProviderType::Douyin, &cookies, live_id).await;
+        let danmu_room_id = self.danmu_room_id.read().await.clone().parse::<u64>().unwrap_or(0);
+        let danmu_stream = DanmuStream::new(ProviderType::Douyin, &cookies, danmu_room_id).await;
         if danmu_stream.is_err() {
             let err = danmu_stream.err().unwrap();
             log::error!("Failed to create danmu stream: {}", err);
@@ -294,13 +301,14 @@ impl DouyinRecorder {
             if let Ok(Some(msg)) = danmu_stream.recv().await {
                 match msg {
                     DanmuMessageType::DanmuMessage(danmu) => {
+                        let ts = Utc::now().timestamp_millis();
                         self.emitter.emit(&Event::DanmuReceived {
                             room: self.room_id,
-                            ts: danmu.timestamp,
+                            ts,
                             content: danmu.message.clone(),
                         });
                         if let Some(storage) = self.danmu_store.read().await.as_ref() {
-                            storage.add_line(danmu.timestamp, &danmu.message).await;
+                            storage.add_line(ts, &danmu.message).await;
                         }
                     }
                 }
@@ -318,6 +326,7 @@ impl DouyinRecorder {
     async fn reset(&self) {
         *self.entry_store.write().await = None;
         *self.live_id.write().await = String::new();
+        *self.danmu_room_id.write().await = String::new();
         *self.last_update.write().await = Utc::now().timestamp();
         *self.stream_url.write().await = None;
     }
@@ -371,13 +380,9 @@ impl DouyinRecorder {
         }
 
         if self.stream_url.read().await.is_none() {
-            let new_stream_url = self.get_best_stream_url(room_info.as_ref().unwrap()).await;
-            if new_stream_url.is_none() {
-                return Err(RecorderError::NoStreamAvailable);
-            }
-            log::info!("New douyin stream URL: {}", new_stream_url.clone().unwrap());
-            *self.stream_url.write().await = Some(new_stream_url.unwrap());
+            return Err(RecorderError::NoStreamAvailable);
         }
+
         let stream_url = self.stream_url.read().await.as_ref().unwrap().clone();
 
         // Get m3u8 playlist
@@ -391,18 +396,18 @@ impl DouyinRecorder {
         // Create work directory if not exists
         tokio::fs::create_dir_all(&work_dir).await?;
 
-        let last_timestamp_mili = self
+        let last_sequence = self
             .entry_store
             .read()
             .await
             .as_ref()
             .unwrap()
-            .last_timestamp_mili;
+            .last_sequence;
 
         for segment in playlist.segments.iter() {
             let formated_ts_name = segment.uri.clone();
-            let timestamp_mili_result = extract_timestamp_from(&formated_ts_name);
-            if timestamp_mili_result.is_none() {
+            let sequence = extract_sequence_from(&formated_ts_name);
+            if sequence.is_none() {
                 log::error!(
                     "No timestamp extracted from douyin ts name: {}",
                     formated_ts_name
@@ -410,16 +415,11 @@ impl DouyinRecorder {
                 continue;
             }
 
-            let timestamp_mili = timestamp_mili_result.unwrap();
-
-            if timestamp_mili <= last_timestamp_mili {
+            let sequence = sequence.unwrap();
+            if sequence <= last_sequence {
                 continue;
             }
 
-            // using timetamp_mili as sequence
-            let sequence = timestamp_mili;
-
-            new_segment_fetched = true;
             // example: pull-l3.douyincdn.com_stream-405850027547689439_or4-1752675567719.ts
             let mut uri = segment.uri.clone();
             // if uri contains ?params, remove it
@@ -450,12 +450,16 @@ impl DouyinRecorder {
                 .await
             {
                 Ok(size) => {
+                    if size == 0 {
+                        log::error!("Download segment failed: {}", ts_url);
+                        continue;
+                    }
                     let ts_entry = TsEntry {
                         url: file_name,
                         sequence,
                         length: segment.duration as f64,
                         size,
-                        ts: timestamp_mili as i64,
+                        ts: Utc::now().timestamp_millis(),
                         is_header: false,
                     };
 
@@ -466,6 +470,8 @@ impl DouyinRecorder {
                         .unwrap()
                         .add_entry(ts_entry)
                         .await;
+
+                    new_segment_fetched = true;
                 }
                 Err(e) => {
                     log::error!("Failed to download segment: {}", e);
@@ -478,6 +484,14 @@ impl DouyinRecorder {
         if new_segment_fetched {
             *self.last_update.write().await = Utc::now().timestamp();
             self.update_record().await;
+        }
+
+        // if no new segment fetched for 10 seconds
+        if *self.last_update.read().await + 10 < Utc::now().timestamp() {
+            log::warn!("No new segment fetched for 10 seconds");
+            *self.stream_url.write().await = None;
+            *self.last_update.write().await = Utc::now().timestamp();
+            return Err(RecorderError::NoStreamAvailable);
         }
 
         Ok(task_begin_time.elapsed().as_millis())
@@ -530,9 +544,9 @@ impl DouyinRecorder {
     }
 }
 
-fn extract_timestamp_from(name: &str) -> Option<u64> {
+fn extract_sequence_from(name: &str) -> Option<u64> {
     use regex::Regex;
-    let re = Regex::new(r"-(\d+)\.ts$").ok()?;
+    let re = Regex::new(r"(\d+)\.ts").ok()?;
     let captures = re.captures(name)?;
     captures.get(1)?.as_str().parse().ok()
 }

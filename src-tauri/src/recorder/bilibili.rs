@@ -403,13 +403,14 @@ impl BiliRecorder {
             if let Ok(Some(msg)) = danmu_stream.recv().await {
                 match msg {
                     DanmuMessageType::DanmuMessage(danmu) => {
+                        let ts = Utc::now().timestamp_millis();
                         self.emitter.emit(&Event::DanmuReceived {
                             room: self.room_id,
-                            ts: danmu.timestamp,
+                            ts,
                             content: danmu.message.clone(),
                         });
                         if let Some(storage) = self.danmu_storage.write().await.as_ref() {
-                            storage.add_line(danmu.timestamp, &danmu.message).await;
+                            storage.add_line(ts, &danmu.message).await;
                         }
                     }
                 }
@@ -531,19 +532,6 @@ impl BiliRecorder {
         Ok(stream)
     }
 
-    async fn extract_liveid(&self, header_url: &str) -> i64 {
-        log::debug!("[{}]Extract liveid from {}", self.room_id, header_url);
-        let re = Regex::new(r"h(\d+).m4s").unwrap();
-        if let Some(cap) = re.captures(header_url) {
-            let liveid: i64 = cap.get(1).unwrap().as_str().parse().unwrap();
-            *self.live_id.write().await = liveid.to_string();
-            liveid
-        } else {
-            log::error!("Extract liveid failed: {}", header_url);
-            0
-        }
-    }
-
     async fn get_work_dir(&self, live_id: &str) -> String {
         format!(
             "{}/bilibili/{}/{}/",
@@ -580,11 +568,9 @@ impl BiliRecorder {
             if header_url.is_empty() {
                 return Err(super::errors::RecorderError::EmptyHeader);
             }
-            timestamp = self.extract_liveid(&header_url).await;
-            if timestamp == 0 {
-                log::error!("[{}]Parse timestamp failed: {}", self.room_id, header_url);
-                return Err(super::errors::RecorderError::InvalidTimestamp);
-            }
+            timestamp = Utc::now().timestamp_millis();
+            *self.live_id.write().await = timestamp.to_string();
+
             self.db
                 .add_record(
                     PlatformType::BiliBili,
@@ -623,6 +609,12 @@ impl BiliRecorder {
                 .await
             {
                 Ok(size) => {
+                    if size == 0 {
+                        log::error!("Download header failed: {}", full_header_url);
+                        return Err(super::errors::RecorderError::InvalidStream {
+                            stream: current_stream,
+                        });
+                    }
                     header.size = size;
                     self.entry_store
                         .write()
@@ -641,54 +633,30 @@ impl BiliRecorder {
             Ok(Playlist::MasterPlaylist(pl)) => log::debug!("Master playlist:\n{:?}", pl),
             Ok(Playlist::MediaPlaylist(pl)) => {
                 let mut new_segment_fetched = false;
-                let last_timestamp_mili = self
+                let last_sequence = self
                     .entry_store
                     .read()
                     .await
                     .as_ref()
                     .unwrap()
-                    .last_timestamp_mili;
+                    .last_sequence;
 
-                for ts in pl.segments {
-                    let mut seg_offset: i64 = 0;
-                    for tag in ts.unknown_tags {
-                        if tag.tag == "BILI-AUX" {
-                            if let Some(rest) = tag.rest {
-                                let parts: Vec<&str> = rest.split('|').collect();
-                                if parts.is_empty() {
-                                    continue;
-                                }
-                                let offset_hex = parts.first().unwrap().to_string();
-                                seg_offset = i64::from_str_radix(&offset_hex, 16).unwrap();
-                            }
-                            break;
-                        }
-                    }
-
-                    let ts_mili = timestamp * 1000 + seg_offset;
-                    if ts_mili as u64 <= last_timestamp_mili {
+                for (i, ts) in pl.segments.iter().enumerate() {
+                    let sequence = pl.media_sequence + i as u64;
+                    if sequence <= last_sequence {
                         continue;
                     }
 
-                    new_segment_fetched = true;
                     let ts_url = current_stream.ts_url(&ts.uri);
                     if Url::parse(&ts_url).is_err() {
                         log::error!("Ts url is invalid. ts_url={} original={}", ts_url, ts.uri);
                         continue;
                     }
+
+                    let ts_mili = Utc::now().timestamp_millis();
                     // encode segment offset into filename
                     let file_name = ts.uri.split('/').next_back().unwrap_or(&ts.uri);
-                    let mut ts_length = pl.target_duration as f64;
-                    // calculate entry length using offset
-                    // the default #EXTINF is 1.0, which is not accurate
-                    if let Some(last) = self.entry_store.read().await.as_ref().unwrap().last_ts() {
-                        // skip this entry as it is already in cache or stream changed
-                        if ts_mili <= last {
-                            continue;
-                        }
-                        ts_length = (ts_mili - last) as f64 / 1000.0;
-                    }
-
+                    let ts_length = pl.target_duration as f64;
                     let client = self.client.clone();
                     let mut retry = 0;
                     loop {
@@ -717,13 +685,14 @@ impl BiliRecorder {
                                     .unwrap()
                                     .add_entry(TsEntry {
                                         url: file_name.into(),
-                                        sequence: ts_mili as u64,
+                                        sequence,
                                         length: ts_length,
                                         size,
                                         ts: ts_mili,
                                         is_header: false,
                                     })
                                     .await;
+                                new_segment_fetched = true;
                                 break;
                             }
                             Err(e) => {

@@ -375,9 +375,9 @@
         }
 
         let danmu_record = {
-            ...event.payload,
-            ts: event.payload.ts - global_offset * 1000,
-          };
+          ...event.payload,
+          ts: event.payload.ts - global_offset * 1000,
+        };
         // if not enabled or playback is not keep up with live, ignore the danmaku
         if (!danmu_enabled || get_total() - video.currentTime > 5) {
           danmu_records = [...danmu_records, danmu_record];

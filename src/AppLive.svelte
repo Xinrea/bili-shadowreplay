@@ -142,9 +142,9 @@
   function format_time(milliseconds: number): string {
     const seconds = Math.floor(milliseconds / 1000);
     const minutes = Math.floor(seconds / 60);
-    const hours = Math.floor(minutes / 60);
-    const remaining_seconds = seconds % 60;
-    const remaining_minutes = minutes % 60;
+    const hours = Math.floor(minutes / 60).toString().padStart(2, "0");
+    const remaining_seconds = (seconds % 60).toString().padStart(2, "0");
+    const remaining_minutes = (minutes % 60).toString().padStart(2, "0");
     return `${hours}:${remaining_minutes}:${remaining_seconds}`;
   }
 

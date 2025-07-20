@@ -370,17 +370,25 @@
 
       // listen to danmaku event
       await listen("danmu:" + room_id, (event: { payload: DanmuEntry }) => {
+        if (global_offset == 0) {
+          return;
+        }
+
+        let danmu_record = {
+            ...event.payload,
+            ts: event.payload.ts - global_offset * 1000,
+          };
         // if not enabled or playback is not keep up with live, ignore the danmaku
         if (!danmu_enabled || get_total() - video.currentTime > 5) {
-          danmu_records = [...danmu_records, event.payload];
+          danmu_records = [...danmu_records, danmu_record];
           return;
         }
         if (Object.keys(danmu_displayed).length > 1000) {
           danmu_displayed = {};
         }
         danmu_displayed[event.payload.ts] = true;
-        danmu_records = [...danmu_records, event.payload];
-        danmu_handler(event.payload.content);
+        danmu_records = [...danmu_records, danmu_record];
+        danmu_handler(danmu_record.content);
       });
     }
 

@@ -288,3 +288,15 @@ pub async fn open_clip(state: state_type!(), video_id: i64) -> Result<(), String
 
     Ok(())
 }
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn list_folder(_state: state_type!(), path: String) -> Result<Vec<String>, String> {
+    let path = PathBuf::from(path);
+    let entries = std::fs::read_dir(path).unwrap();
+    let mut files = Vec::new();
+    for entry in entries {
+        let entry = entry.unwrap();
+        files.push(entry.path().to_str().unwrap().to_string());
+    }
+    Ok(files)
+}

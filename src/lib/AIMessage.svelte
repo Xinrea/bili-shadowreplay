@@ -38,7 +38,8 @@
 
   // 检查消息是否包含表格
   $: hasTable = message.content && typeof message.content === 'string' && 
-    (message.content.includes('|') || message.content.includes('---'));
+    (message.content.includes('|') || message.content.includes('---') || 
+     message.content.includes('|--') || message.content.includes('| -'));
 
   // 处理工具调用确认
   function handleToolCallConfirm(toolCall: any) {
@@ -93,9 +94,14 @@
 
         <div
           class="text-gray-900 dark:text-white text-sm leading-relaxed prose prose-sm max-w-none"
-          class:table-container={hasTable}
         >
-          {@html htmlContent}
+          {#if hasTable}
+            <div class="table-container">
+              {@html htmlContent}
+            </div>
+          {:else}
+            {@html htmlContent}
+          {/if}
           {#if message.tool_calls && message.tool_calls.length > 0}
             <div class="space-y-2">
               {#each message.tool_calls as tool_call}

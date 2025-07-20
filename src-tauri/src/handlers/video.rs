@@ -690,3 +690,13 @@ async fn encode_video_subtitle_inner(
 
     Ok(new_video)
 }
+
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn generic_ffmpeg_command(
+    _state: state_type!(),
+    args: Vec<String>,
+) -> Result<String, String> {
+    let args_str: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    ffmpeg::generic_ffmpeg_command(&args_str).await
+}

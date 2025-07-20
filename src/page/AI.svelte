@@ -55,6 +55,16 @@
       title: "切片生成",
       description: "根据录播弹幕分析，生成切片",
       prompt: "分析最新录制的录播有哪些精彩部分，选择一段生成切片"
+    },
+    {
+      title: "视频转码",
+      description: "将视频转码为指定格式",
+      prompt: "帮我将视频转码为mp4格式"
+    },
+    {
+      title: "音频提取",
+      description: "提取视频中的音频",
+      prompt: "帮我提取视频中的音频"
     }
   ];
 
@@ -266,7 +276,8 @@
       tool_call.name.includes("remove") || 
       tool_call.name.includes("post") || 
       tool_call.name.includes("clip") || 
-      tool_call.name.includes("generate"));
+      tool_call.name.includes("generate") ||
+      tool_call.name.includes("generic_ffmpeg_command"));
   }
 
   function isToolCall(message: any) {
@@ -462,7 +473,7 @@
     {:else if messages.length === 0}
       <div class="text-center py-10">
         <p class="text-gray-500 dark:text-gray-400 text-lg mb-8">
-          欢迎使用助手小轴！你可以点击下方预设提示词发送第一条消息，或是直接输入你想要执行的操作。
+          我是助手小轴，你可以点击下方预设提示词发送第一条消息，或是直接输入你想要执行的操作。
         </p>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-2xl mx-auto">
           {#each presetPrompts as prompt}

@@ -419,6 +419,43 @@ pub async fn encode_video_danmu(
     }
 }
 
+
+pub async fn generic_ffmpeg_command(
+    args: &[&str],
+) -> Result<String, String> {
+    let child = tokio::process::Command::new(ffmpeg_path())
+        .args(args)
+        .stderr(Stdio::piped())
+        .spawn();
+    if let Err(e) = child {
+        return Err(e.to_string());
+    }
+
+    let mut child = child.unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let reader = BufReader::new(stderr);
+    let mut parser = FfmpegLogParser::new(reader);
+
+    let mut logs = Vec::new();
+
+    while let Ok(event) = parser.parse_next_event().await {
+        match event {
+            FfmpegEvent::Log(_level, content) => {
+                logs.push(content);
+            }
+            FfmpegEvent::LogEOF => break,
+            _ => {}
+        }
+    }
+
+    if let Err(e) = child.wait().await {
+        log::error!("Generic ffmpeg command error: {}", e);
+        return Err(e.to_string());
+    }
+
+    Ok(logs.join("\n"))
+}
+
 /// Trying to run ffmpeg for version
 pub async fn check_ffmpeg() -> Result<String, String> {
     let child = tokio::process::Command::new(ffmpeg_path())

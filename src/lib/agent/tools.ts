@@ -470,8 +470,9 @@ const clip_range = tool(
 
 // @ts-ignore
 const get_recent_record = tool(
-  async ({ offset, limit }: { offset: number; limit: number }) => {
+  async ({ room_id, offset, limit }: { room_id: number; offset: number; limit: number }) => {
     const records = (await invoke("get_recent_record", {
+      roomId: room_id,
       offset,
       limit,
     })) as any[];
@@ -485,8 +486,54 @@ const get_recent_record = tool(
     name: "get_recent_record",
     description: "Get the list of recent records that bsr has recorded",
     schema: z.object({
+      room_id: z.number().describe("The room id of the room"),
       offset: z.number().describe("The offset of the records"),
       limit: z.number().describe("The limit of the records"),
+    }),
+  }
+);
+
+// @ts-ignore
+const generic_ffmpeg_command = tool(
+  async ({ args }: { args: string[] }) => {
+    const result = await invoke("generic_ffmpeg_command", { args });
+    return result;
+  },
+  {
+    name: "generic_ffmpeg_command",
+    description: "Run a generic ffmpeg command",
+    schema: z.object({
+      args: z.array(z.string()).describe("The arguments of the ffmpeg command"),
+    }),
+  }
+);
+
+// @ts-ignore
+const open_clip = tool(
+  async ({ video_id }: { video_id: number }) => {
+    const result = await invoke("open_clip", { videoId: video_id });
+    return result;
+  },
+  {
+    name: "open_clip",
+    description: "Open a video preview window",
+    schema: z.object({
+      video_id: z.number().describe("The id of the video"),
+    }),
+  }
+);
+
+// @ts-ignore
+const list_folder = tool(
+  async ({ path }: { path: string }) => {
+    const result = await invoke("list_folder", { path });
+    return result;
+  },
+  {
+    name: "list_folder",
+    description: "List the files in a folder",
+    schema: z.object({
+      path: z.string().describe("The path of the folder"),
     }),
   }
 );
@@ -516,6 +563,9 @@ const tools = [
   clip_range,
   get_danmu_record,
   get_recent_record,
+  generic_ffmpeg_command,
+  open_clip,
+  list_folder,
 ];
 
 export { tools };

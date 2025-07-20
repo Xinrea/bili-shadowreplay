@@ -28,11 +28,11 @@ use crate::{
             ExportDanmuOptions,
         },
         task::{delete_task, get_tasks},
-        utils::{console_log, get_disk_info, DiskInfo},
+        utils::{console_log, get_disk_info, list_folder, DiskInfo},
         video::{
             cancel, clip_range, delete_video, encode_video_subtitle, generate_video_subtitle,
             get_all_videos, get_video, get_video_cover, get_video_subtitle, get_video_typelist,
-            get_videos, update_video_cover, update_video_subtitle, upload_procedure,
+            get_videos, update_video_cover, update_video_subtitle, upload_procedure, generic_ffmpeg_command,
         },
         AccountInfo,
     },
@@ -572,6 +572,7 @@ async fn handler_get_today_record_count(
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GetRecentRecordRequest {
+    room_id: u64,
     offset: u64,
     limit: u64,
 }
@@ -580,7 +581,7 @@ async fn handler_get_recent_record(
     state: axum::extract::State<State>,
     Json(param): Json<GetRecentRecordRequest>,
 ) -> Result<Json<ApiResponse<Vec<RecordRow>>>, ApiError> {
-    let recent_record = get_recent_record(state.0, param.offset, param.limit).await?;
+    let recent_record = get_recent_record(state.0, param.room_id, param.offset, param.limit).await?;
     Ok(Json(ApiResponse::success(recent_record)))
 }
 
@@ -932,6 +933,34 @@ async fn handler_get_tasks(
     Ok(Json(ApiResponse::success(tasks)))
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GenericFfmpegCommandRequest {
+    args: Vec<String>,
+}
+
+async fn handler_generic_ffmpeg_command(
+    state: axum::extract::State<State>,
+    Json(params): Json<GenericFfmpegCommandRequest>,
+) -> Result<Json<ApiResponse<String>>, ApiError> {
+    let result = generic_ffmpeg_command(state.0, params.args).await?;
+    Ok(Json(ApiResponse::success(result)))
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ListFolderRequest {
+    path: String,
+}
+
+async fn handler_list_folder(
+    state: axum::extract::State<State>,
+    Json(params): Json<ListFolderRequest>,
+) -> Result<Json<ApiResponse<Vec<String>>>, ApiError> {
+    let result = list_folder(state.0, params.path).await?;
+    Ok(Json(ApiResponse::success(result)))
+}
+
 async fn handler_hls(
     state: axum::extract::State<State>,
     Path(uri): Path<String>,
@@ -1211,6 +1240,10 @@ pub async fn start_api_server(state: State) {
                 post(handler_generate_video_subtitle),
             )
             .route(
+                "/api/generic_ffmpeg_command",
+                post(handler_generic_ffmpeg_command),
+            )
+            .route(
                 "/api/update_video_subtitle",
                 post(handler_update_video_subtitle),
             )
@@ -1285,6 +1318,7 @@ pub async fn start_api_server(state: State) {
         // Utils commands
         .route("/api/get_disk_info", post(handler_get_disk_info))
         .route("/api/console_log", post(handler_console_log))
+        .route("/api/list_folder", post(handler_list_folder))
         .route("/api/fetch", post(handler_fetch))
         .route("/hls/*uri", get(handler_hls))
         .route("/output/*uri", get(handler_output))

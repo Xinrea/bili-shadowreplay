@@ -442,6 +442,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::video::get_video_subtitle,
         crate::handlers::video::update_video_subtitle,
         crate::handlers::video::encode_video_subtitle,
+        crate::handlers::video::generic_ffmpeg_command,
         crate::handlers::task::get_tasks,
         crate::handlers::task::delete_task,
         crate::handlers::utils::show_in_folder,
@@ -451,6 +452,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::utils::open_clip,
         crate::handlers::utils::open_log_folder,
         crate::handlers::utils::console_log,
+        crate::handlers::utils::list_folder,
     ])
 }
 

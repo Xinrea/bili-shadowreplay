@@ -249,10 +249,11 @@ pub async fn get_today_record_count(state: state_type!()) -> Result<i64, String>
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_recent_record(
     state: state_type!(),
+    room_id: u64,
     offset: u64,
     limit: u64,
 ) -> Result<Vec<RecordRow>, String> {
-    match state.db.get_recent_record(offset, limit).await {
+    match state.db.get_recent_record(room_id, offset, limit).await {
         Ok(records) => Ok(records),
         Err(e) => Err(format!("Failed to get recent record: {}", e)),
     }

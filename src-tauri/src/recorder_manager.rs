@@ -520,6 +520,7 @@ impl RecorderManager {
         let mut clip_offset = params.offset;
         if clip_offset > 0 {
             clip_offset -= recorder.first_segment_ts(&params.live_id).await;
+            clip_offset = clip_offset.max(0);
         }
 
         let danmus = recorder.comments(&params.live_id).await;

@@ -1,8 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use crate::progress_reporter::ProgressReporterTrait;
-use async_ffmpeg_sidecar::event::FfmpegEvent;
+use crate::progress_reporter::{ProgressReporter, ProgressReporterTrait};
+use crate::subtitle_generator::{whisper_cpp, GenerateResult, SubtitleGenerator, SubtitleGeneratorType};
+use crate::subtitle_generator::whisper_online;
+use async_ffmpeg_sidecar::event::{FfmpegEvent, LogLevel};
 use async_ffmpeg_sidecar::log_parser::FfmpegLogParser;
 use tokio::io::BufReader;
 
@@ -50,7 +52,12 @@ pub async fn clip_from_m3u8(
                     .update(format!("编码中：{}", p.time).as_str())
             }
             FfmpegEvent::LogEOF => break,
-            FfmpegEvent::Log(_level, _content) => {}
+            FfmpegEvent::Log(level, content) => {
+                // log error if content contains error
+                if content.contains("error") || level == LogLevel::Error {
+                    log::error!("Clip error: {}", content);
+                }
+            }
             FfmpegEvent::Error(e) => {
                 log::error!("Clip error: {}", e);
                 clip_error = Some(e.to_string());
@@ -413,6 +420,170 @@ pub async fn encode_video_danmu(
         Ok(output_path)
     }
 }
+
+
+pub async fn generic_ffmpeg_command(
+    args: &[&str],
+) -> Result<String, String> {
+    let child = tokio::process::Command::new(ffmpeg_path())
+        .args(args)
+        .stderr(Stdio::piped())
+        .spawn();
+    if let Err(e) = child {
+        return Err(e.to_string());
+    }
+
+    let mut child = child.unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let reader = BufReader::new(stderr);
+    let mut parser = FfmpegLogParser::new(reader);
+
+    let mut logs = Vec::new();
+
+    while let Ok(event) = parser.parse_next_event().await {
+        match event {
+            FfmpegEvent::Log(_level, content) => {
+                logs.push(content);
+            }
+            FfmpegEvent::LogEOF => break,
+            _ => {}
+        }
+    }
+
+    if let Err(e) = child.wait().await {
+        log::error!("Generic ffmpeg command error: {}", e);
+        return Err(e.to_string());
+    }
+
+    Ok(logs.join("\n"))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn generate_video_subtitle(
+    reporter: Option<&ProgressReporter>,
+    file: &Path,
+    generator_type: &str,
+    whisper_model: &str,
+    whisper_prompt: &str,
+    openai_api_key: &str,
+    openai_api_endpoint: &str,
+    language_hint: &str,
+) -> Result<GenerateResult, String> {
+    match generator_type {
+        "whisper" => {
+            if whisper_model.is_empty() {
+                return Err("Whisper model not configured".to_string());
+            }
+            if let Ok(generator) =
+                whisper_cpp::new(Path::new(&whisper_model), whisper_prompt).await
+            {
+                let chunk_dir = extract_audio_chunks(file, "wav").await?;
+
+                let mut full_result = GenerateResult {
+                    subtitle_id: "".to_string(),
+                    subtitle_content: vec![],
+                    generator_type: SubtitleGeneratorType::Whisper,
+                };
+
+                let mut chunk_paths = vec![];
+                for entry in std::fs::read_dir(&chunk_dir)
+                    .map_err(|e| format!("Failed to read chunk directory: {}", e))?
+                {
+                    let entry =
+                        entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
+                    let path = entry.path();
+                    chunk_paths.push(path);
+                }
+
+                // sort chunk paths by name
+                chunk_paths
+                    .sort_by_key(|path| path.file_name().unwrap().to_str().unwrap().to_string());
+
+                let mut results = Vec::new();
+                for path in chunk_paths {
+                    let result = generator
+                        .generate_subtitle(reporter, &path, language_hint)
+                        .await;
+                    results.push(result);
+                }
+
+                for (i, result) in results.iter().enumerate() {
+                    if let Ok(result) = result {
+                        full_result.subtitle_id = result.subtitle_id.clone();
+                        full_result.concat(result, 30 * i as u64);
+                    }
+                }
+
+                // delete chunk directory
+                let _ = tokio::fs::remove_dir_all(chunk_dir).await;
+
+                Ok(full_result)
+            } else {
+                Err("Failed to initialize Whisper model".to_string())
+            }
+        }
+        "whisper_online" => {
+            if openai_api_key.is_empty() {
+                return Err("API key not configured".to_string());
+            }
+            if let Ok(generator) = whisper_online::new(
+                Some(openai_api_endpoint),
+                Some(openai_api_key),
+                Some(whisper_prompt),
+            )
+            .await
+            {
+                let chunk_dir = extract_audio_chunks(file, "mp3").await?;
+
+                let mut full_result = GenerateResult {
+                    subtitle_id: "".to_string(),
+                    subtitle_content: vec![],
+                    generator_type: SubtitleGeneratorType::WhisperOnline,
+                };
+
+                let mut chunk_paths = vec![];
+                for entry in std::fs::read_dir(&chunk_dir)
+                    .map_err(|e| format!("Failed to read chunk directory: {}", e))?
+                {
+                    let entry =
+                        entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
+                    let path = entry.path();
+                    chunk_paths.push(path);
+                }
+                // sort chunk paths by name
+                chunk_paths
+                    .sort_by_key(|path| path.file_name().unwrap().to_str().unwrap().to_string());
+
+                let mut results = Vec::new();
+                for path in chunk_paths {
+                    let result = generator
+                        .generate_subtitle(reporter, &path, language_hint)
+                        .await;
+                    results.push(result);
+                }
+
+                for (i, result) in results.iter().enumerate() {
+                    if let Ok(result) = result {
+                        full_result.subtitle_id = result.subtitle_id.clone();
+                        full_result.concat(result, 30 * i as u64);
+                    }
+                }
+
+                // delete chunk directory
+                let _ = tokio::fs::remove_dir_all(chunk_dir).await;
+
+                Ok(full_result)
+            } else {
+                Err("Failed to initialize Whisper Online".to_string())
+            }
+        }
+        _ => Err(format!(
+            "Unknown subtitle generator type: {}",
+            generator_type
+        )),
+    }
+}
+
 
 /// Trying to run ffmpeg for version
 pub async fn check_ffmpeg() -> Result<String, String> {

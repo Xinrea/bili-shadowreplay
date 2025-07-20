@@ -7,6 +7,7 @@
     Settings,
     Users,
     Video,
+    Brain,
   } from "lucide-svelte";
   import { hasNewVersion } from "./stores/version";
   import SidebarItem from "./SidebarItem.svelte";
@@ -46,6 +47,11 @@
     <SidebarItem label="任务" {activeUrl} on:activeChange={navigate}>
       <div slot="icon">
         <List class="w-5 h-5" />
+      </div>
+    </SidebarItem>
+    <SidebarItem label="助手" {activeUrl} on:activeChange={navigate}>
+      <div slot="icon">
+        <Brain class="w-5 h-5" />
       </div>
     </SidebarItem>
     <SidebarItem label="账号" {activeUrl} on:activeChange={navigate}>

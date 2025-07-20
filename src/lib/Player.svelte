@@ -297,7 +297,7 @@
       }
 
       const cur = Math.floor(
-        (video.currentTime + global_offset + focus_start + local_offset) * 1000
+        (video.currentTime + focus_start + local_offset) * 1000
       );
 
       let danmus = danmu_records.filter((v) => {
@@ -370,17 +370,25 @@
 
       // listen to danmaku event
       await listen("danmu:" + room_id, (event: { payload: DanmuEntry }) => {
+        if (global_offset == 0) {
+          return;
+        }
+
+        let danmu_record = {
+            ...event.payload,
+            ts: event.payload.ts - global_offset * 1000,
+          };
         // if not enabled or playback is not keep up with live, ignore the danmaku
         if (!danmu_enabled || get_total() - video.currentTime > 5) {
-          danmu_records = [...danmu_records, event.payload];
+          danmu_records = [...danmu_records, danmu_record];
           return;
         }
         if (Object.keys(danmu_displayed).length > 1000) {
           danmu_displayed = {};
         }
         danmu_displayed[event.payload.ts] = true;
-        danmu_records = [...danmu_records, event.payload];
-        danmu_handler(event.payload.content);
+        danmu_records = [...danmu_records, danmu_record];
+        danmu_handler(danmu_record.content);
       });
     }
 
@@ -777,9 +785,6 @@
 
     // draw statistics
     function drawStatistics(points: { ts: number; count: number }[]) {
-      if (player.getPresentationStartTimeAsDate() == null) {
-        return;
-      }
       if (points == undefined) {
         points = [];
       }
@@ -813,19 +818,25 @@
       const canvasWidth = statisticGraph.width;
       // find value range
       const minValue = 0;
-      const maxValue = Math.max(...preprocessed.map((v) => v.count));
-      const beginTime = player.getPresentationStartTimeAsDate().getTime();
+      let maxValue = 0;
+      if (preprocessed.length > 0) {
+        const counts = preprocessed.map((v) => v.count).filter(c => isFinite(c));
+        if (counts.length > 0) {
+          // Use reduce instead of spread operator to avoid stack overflow
+          maxValue = counts.reduce((max, current) => Math.max(max, current), 0);
+        }
+      }
       const duration = get_total() * 1000;
       canvas.clearRect(0, 0, canvasWidth, canvasHeight);
       if (preprocessed.length > 0) {
         canvas.beginPath();
-        const x = ((preprocessed[0].ts - beginTime) / duration) * canvasWidth;
+        const x = ((preprocessed[0].ts) / duration) * canvasWidth;
         const y =
           (1 - (preprocessed[0].count - minValue) / (maxValue - minValue)) *
           canvasHeight;
         canvas.moveTo(x, y);
         for (let i = 0; i < preprocessed.length; i++) {
-          const x = ((preprocessed[i].ts - beginTime) / duration) * canvasWidth;
+          const x = ((preprocessed[i].ts) / duration) * canvasWidth;
           const y =
             (1 - (preprocessed[i].count - minValue) / (maxValue - minValue)) *
             canvasHeight;

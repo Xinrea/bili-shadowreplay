@@ -138,22 +138,20 @@
     }
   }
 
-  // 格式化时间
-  function format_time(ts: number): string {
-    const date = new Date(ts);
-    const year = date.getFullYear();
-    const month = (date.getMonth() + 1).toString().padStart(2, "0");
-    const day = date.getDate().toString().padStart(2, "0");
-    const hours = date.getHours().toString().padStart(2, "0");
-    const minutes = date.getMinutes().toString().padStart(2, "0");
-    const seconds = date.getSeconds().toString().padStart(2, "0");
-    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+  // 格式化时间(ts 为毫秒)
+  function format_time(milliseconds: number): string {
+    const seconds = Math.floor(milliseconds / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60).toString().padStart(2, "0");
+    const remaining_seconds = (seconds % 60).toString().padStart(2, "0");
+    const remaining_minutes = (minutes % 60).toString().padStart(2, "0");
+    return `${hours}:${remaining_minutes}:${remaining_seconds}`;
   }
 
   // 跳转到弹幕时间点
   function seek_to_danmu(danmu: DanmuEntry) {
     if (player) {
-      const time_in_seconds = danmu.ts / 1000 - global_offset;
+      const time_in_seconds = danmu.ts / 1000;
       player.seek(time_in_seconds);
     }
   }

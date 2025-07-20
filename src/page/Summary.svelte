@@ -64,6 +64,7 @@
     // check for new records
     if (recent_records.length > 0) {
       const latestRecords = (await invoke("get_recent_record", {
+        roomId: 0,
         offset: 0,
         limit: 1,
       })) as RecordItem[];
@@ -86,6 +87,7 @@
 
     loading = true;
     const newRecords = (await invoke("get_recent_record", {
+      roomId: 0,
       offset: hasNewRecords ? 0 : offset,
       limit: RECORDS_PER_PAGE,
     })) as RecordItem[];

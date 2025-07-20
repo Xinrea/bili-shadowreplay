@@ -36,7 +36,7 @@ pub async fn new(model: &Path, prompt: &str) -> Result<WhisperCPP, String> {
 impl SubtitleGenerator for WhisperCPP {
     async fn generate_subtitle(
         &self,
-        reporter: &impl ProgressReporterTrait,
+        reporter: Option<&impl ProgressReporterTrait>,
         audio_path: &Path,
         language_hint: &str,
     ) -> Result<GenerateResult, String> {
@@ -70,7 +70,9 @@ impl SubtitleGenerator for WhisperCPP {
 
         let mut inter_samples = vec![Default::default(); samples.len()];
 
-        reporter.update("处理音频中");
+        if let Some(reporter) = reporter {
+            reporter.update("处理音频中");
+        }
         if let Err(e) = whisper_rs::convert_integer_to_float_audio(&samples, &mut inter_samples) {
             return Err(e.to_string());
         }
@@ -82,7 +84,9 @@ impl SubtitleGenerator for WhisperCPP {
 
         let samples = samples.unwrap();
 
-        reporter.update("生成字幕中");
+        if let Some(reporter) = reporter {
+            reporter.update("生成字幕中");
+        }
         if let Err(e) = state.full(params, &samples[..]) {
             log::error!("failed to run model: {}", e);
             return Err(e.to_string());
@@ -181,7 +185,7 @@ mod tests {
         let audio_path = Path::new("tests/audio/test.wav");
         let reporter = MockReporter::new();
         let result = whisper
-            .generate_subtitle(&reporter, audio_path, "auto")
+            .generate_subtitle(Some(&reporter), audio_path, "auto")
             .await;
         if let Err(e) = result {
             println!("Error: {}", e);

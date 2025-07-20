@@ -8,6 +8,7 @@
   import { log } from "./lib/invoker";
   import Clip from "./page/Clip.svelte";
   import Task from "./page/Task.svelte";
+  import AI from "./page/AI.svelte";
   let active = "总览";
 
   log.info("App loaded");
@@ -35,6 +36,9 @@
       </div>
       <div class="page" class:visible={active == "任务"}>
         <Task />
+      </div>
+      <div class="page" class:visible={active == "助手"}>
+        <AI />
       </div>
       <div class="page" class:visible={active == "账号"}>
         <Account />

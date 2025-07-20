@@ -505,8 +505,22 @@ impl RecorderManager {
         // remove temp file
         let _ = tokio::fs::remove_file(tmp_manifest_file_path).await;
 
+        // check clip_file exists
+        if !clip_file.exists() {
+            log::error!("Clip file not found: {}", clip_file.display());
+            return Err(RecorderManagerError::ClipError {
+                err: "Clip file not found".into(),
+            });
+        }
+
         if !params.danmu {
             return Ok(clip_file);
+        }
+
+        let mut clip_offset = params.offset;
+        if clip_offset > 0 {
+            clip_offset -= recorder.first_segment_ts(&params.live_id).await;
+            clip_offset = clip_offset.max(0);
         }
 
         let danmus = recorder.comments(&params.live_id).await;
@@ -519,14 +533,14 @@ impl RecorderManager {
             "Filter danmus in range [{}, {}] with global offset {} and local offset {}",
             params.x,
             params.y,
-            params.offset,
+            clip_offset,
             params.local_offset
         );
         let mut danmus = danmus.unwrap();
         log::debug!("First danmu entry: {:?}", danmus.first());
         // update entry ts to offset
         for d in &mut danmus {
-            d.ts -= (params.x + params.offset + params.local_offset) * 1000;
+            d.ts -= (params.x + clip_offset + params.local_offset) * 1000;
         }
         if params.x != 0 || params.y != 0 {
             danmus.retain(|x| x.ts >= 0 && x.ts <= (params.y - params.x) * 1000);
@@ -597,6 +611,26 @@ impl RecorderManager {
         live_id: &str,
     ) -> Result<RecordRow, RecorderManagerError> {
         Ok(self.db.get_record(room_id, live_id).await?)
+    }
+
+    pub async fn get_archive_subtitle(&self, platform: PlatformType, room_id: u64, live_id: &str) -> Result<String, RecorderManagerError> {
+        let recorder_id = format!("{}:{}", platform.as_str(), room_id);
+        if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
+            let recorder = recorder_ref.as_ref();
+            Ok(recorder.get_archive_subtitle(live_id).await?)
+        } else {
+            Err(RecorderManagerError::NotFound { room_id })
+        }
+    }
+
+    pub async fn generate_archive_subtitle(&self, platform: PlatformType, room_id: u64, live_id: &str) -> Result<String, RecorderManagerError> {
+        let recorder_id = format!("{}:{}", platform.as_str(), room_id);
+        if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
+            let recorder = recorder_ref.as_ref();
+            Ok(recorder.generate_archive_subtitle(live_id).await?)
+        } else {
+            Err(RecorderManagerError::NotFound { room_id })
+        }
     }
 
     pub async fn delete_archive(

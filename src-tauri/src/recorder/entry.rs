@@ -239,12 +239,12 @@ impl EntryStore {
         // Collect entries in range
         let first_entry = self.entries.first().unwrap();
         let first_entry_ts = first_entry.ts_seconds();
-        log::info!("First entry ts: {}", first_entry_ts);
+        log::debug!("First entry ts: {}", first_entry_ts);
         let last_entry = self.entries.last().unwrap();
         let last_entry_ts = last_entry.ts_seconds();
-        log::info!("Last entry ts: {}", last_entry_ts);
-        log::info!("Full length: {}", last_entry_ts - first_entry_ts);
-        log::info!("Range: {:?}", range);
+        log::debug!("Last entry ts: {}", last_entry_ts);
+        log::debug!("Full length: {}", last_entry_ts - first_entry_ts);
+        log::debug!("Range: {:?}", range);
         let mut entries_in_range = vec![];
         for e in &self.entries {
             // ignore header, cause it's already in EXT-X-MAP

@@ -468,6 +468,29 @@ const clip_range = tool(
   }
 );
 
+// @ts-ignore
+const get_recent_record = tool(
+  async ({ offset, limit }: { offset: number; limit: number }) => {
+    const records = (await invoke("get_recent_record", {
+      offset,
+      limit,
+    })) as any[];
+    return {
+      records: records.map((r: any) => {
+        return { ...r, cover: null };
+      }),
+    };
+  },
+  {
+    name: "get_recent_record",
+    description: "Get the list of recent records that bsr has recorded",
+    schema: z.object({
+      offset: z.number().describe("The offset of the records"),
+      limit: z.number().describe("The limit of the records"),
+    }),
+  }
+);
+
 const tools = [
   get_accounts,
   remove_account,
@@ -492,6 +515,7 @@ const tools = [
   post_video_to_bilibili,
   clip_range,
   get_danmu_record,
+  get_recent_record,
 ];
 
 export { tools };

@@ -52,9 +52,9 @@
       prompt: "显示可用的账号信息"
     },
     {
-      title: "查看录制历史",
-      description: "浏览已完成的录制文件和记录",
-      prompt: "显示最近的录播记录"
+      title: "切片生成",
+      description: "根据录播弹幕分析，生成切片",
+      prompt: "分析最新录制的录播有哪些精彩部分，选择一段生成切片"
     }
   ];
 
@@ -69,14 +69,18 @@
 
   async function saveSettings() {
     localStorage.setItem('ai_settings', JSON.stringify(settings));
-    // 重新创建agent以使用新的设置
-    agent = createAgent({
-      apiKey: settings.api_key || undefined,
-      baseURL: settings.endpoint || undefined,
-      model: settings.model || undefined,
-    });
-    // 重新加载模型列表
-    await loadModels();
+    // 只有当有必要的设置时才创建agent
+    if (settings.api_key && settings.endpoint) {
+      agent = createAgent({
+        apiKey: settings.api_key || undefined,
+        baseURL: settings.endpoint || undefined,
+        model: settings.model || undefined,
+      });
+      // 重新加载模型列表
+      await loadModels();
+    } else {
+      agent = null;
+    }
     closeSettings();
   }
 
@@ -127,14 +131,20 @@
     const savedSettings = localStorage.getItem('ai_settings');
     if (savedSettings) {
       settings = { ...settings, ...JSON.parse(savedSettings) };
-      // 使用保存的设置创建agent
-      agent = createAgent({
-        apiKey: settings.api_key || undefined,
-        baseURL: settings.endpoint || undefined,
-        model: settings.model || undefined,
-      });
-      // 加载模型列表
-      loadModels();
+      // 只有当有必要的设置时才创建agent
+      if (settings.api_key && settings.endpoint) {
+        agent = createAgent({
+          apiKey: settings.api_key || undefined,
+          baseURL: settings.endpoint || undefined,
+          model: settings.model || undefined,
+        });
+        // 加载模型列表
+        loadModels();
+      } else {
+        agent = null;
+      }
+    } else {
+      agent = null;
     }
   }
 
@@ -270,12 +280,14 @@
     toolCallStates.clear();
     localStorage.removeItem('messages');
     localStorage.removeItem('toolCallStates');
-    // 使用当前设置重新创建agent
-    agent = createAgent({
-      apiKey: settings.api_key || undefined,
-      baseURL: settings.endpoint || undefined,
-      model: settings.model || undefined,
-    });
+    // 只有当有必要的设置时才重新创建agent
+    if (settings.api_key && settings.endpoint) {
+      agent = createAgent({
+        apiKey: settings.api_key || undefined,
+        baseURL: settings.endpoint || undefined,
+        model: settings.model || undefined,
+      });
+    }
     scrollToBottom();
   }
 
@@ -424,7 +436,30 @@
     class="flex-1 overflow-y-auto p-6 space-y-4 custom-scrollbar-light min-h-0"
     bind:this={messageContainer}
   >
-    {#if messages.length === 0}
+    {#if !agent}
+      <div class="flex items-center justify-center min-h-[400px] px-6">
+        <div class="max-w-sm w-full">
+          <div class="text-center">
+            <div class="w-20 h-20 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-8 shadow-lg shadow-blue-500/20">
+              <Settings class="w-10 h-10 text-white" />
+            </div>
+            <h3 class="text-2xl font-semibold text-gray-900 dark:text-white mb-4 tracking-tight">
+              配置 AI 模型
+            </h3>
+            <p class="text-gray-500 dark:text-gray-400 mb-8 leading-relaxed text-base">
+              在使用 AI 助手之前，请先配置您的 OpenAI 兼容 API 设置。
+            </p>
+            <button
+              class="inline-flex items-center justify-center space-x-2 px-8 py-4 bg-blue-500 hover:bg-blue-600 active:bg-blue-700 text-white rounded-xl transition-all duration-200 font-medium text-base shadow-sm hover:shadow-md active:shadow-inner disabled:opacity-50 disabled:cursor-not-allowed"
+              on:click={openSettings}
+            >
+              <Settings class="w-5 h-5" />
+              <span>模型设置</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    {:else if messages.length === 0}
       <div class="text-center py-10">
         <p class="text-gray-500 dark:text-gray-400 text-lg mb-8">
           欢迎使用助手小轴！你可以点击下方预设提示词发送第一条消息，或是直接输入你想要执行的操作。
@@ -483,16 +518,16 @@
         <textarea
           bind:value={inputMessage}
           on:keypress={handleKeyPress}
-          placeholder="输入您的消息..."
+          placeholder={!agent ? "请先配置 AI 模型..." : "输入您的消息..."}
           class="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none min-h-[44px] max-h-[120px] text-sm"
           rows="1"
-          disabled={isProcessing}
+          disabled={isProcessing || !agent}
         ></textarea>
       </div>
 
       <button
         class="px-4 py-3 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2 text-sm font-medium"
-        disabled={!inputMessage.trim() || isProcessing}
+        disabled={!inputMessage.trim() || isProcessing || !agent}
         on:click={sendMessage}
       >
         <Send class="w-4 h-4" />
@@ -504,6 +539,7 @@
       <button
         class="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg border border-gray-300 dark:border-gray-600 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
         on:click={clearConversation}
+        disabled={!agent}
       >
         清空对话
       </button>
@@ -520,90 +556,92 @@
 
   <!-- Settings Modal -->
   {#if showSettings}
-    <div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div class="bg-white dark:bg-gray-800 rounded-xl p-6 w-full max-w-md mx-4">
-        <div class="flex items-center justify-between mb-6">
-          <h3 class="text-lg font-semibold text-gray-900 dark:text-white">模型设置</h3>
-          <button
-            class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-            on:click={closeSettings}
-          >
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-            </svg>
-          </button>
-        </div>
-        
-        <div class="space-y-4">
-          <div>
-            <label for="endpoint" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              OpenAI Compatible API Endpoint
-            </label>
-            <input
-              id="endpoint"
-              type="text"
-              bind:value={settings.endpoint}
-              placeholder="https://api.openai.com/v1"
-              class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
+    <div class="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <div class="bg-white/95 dark:bg-gray-800/95 backdrop-blur-xl rounded-2xl shadow-2xl border border-gray-200/50 dark:border-gray-700/50 w-full max-w-md mx-auto">
+        <div class="p-6">
+          <div class="flex items-center justify-between mb-6">
+            <h3 class="text-xl font-semibold text-gray-900 dark:text-white tracking-tight">模型设置</h3>
+            <button
+              class="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl transition-all duration-200"
+              on:click={closeSettings}
+            >
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+              </svg>
+            </button>
           </div>
           
-          <div>
-            <label for="api_key" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              API Key
-            </label>
-            <input
-              id="api_key"
-              type="password"
-              bind:value={settings.api_key}
-              placeholder="sk-..."
-              class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
-          </div>
-
-          <div>
-            <div class="flex items-center justify-between mb-2">
-              <label for="model" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                模型选择
+          <div class="space-y-5">
+            <div>
+              <label for="endpoint" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                OpenAI Compatible API Endpoint
               </label>
-              <button
-                type="button"
-                class="text-xs text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 disabled:opacity-50 disabled:cursor-not-allowed"
-                on:click={loadModels}
-                disabled={!settings.endpoint || !settings.api_key || isLoadingModels}
-              >
-                {isLoadingModels ? '加载中...' : '刷新列表'}
-              </button>
+              <input
+                id="endpoint"
+                type="text"
+                bind:value={settings.endpoint}
+                placeholder="https://api.openai.com/v1"
+                class="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200"
+              />
             </div>
-            <select
-              id="model"
-              bind:value={settings.model}
-              class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            >
-              {#if availableModels.length === 0}
-                <option value="">请先配置 API 并刷新模型列表</option>
-              {:else}
-                {#each availableModels as model}
-                  <option value={model.value}>{model.label}</option>
-                {/each}
-              {/if}
-            </select>
+            
+            <div>
+              <label for="api_key" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                API Key
+              </label>
+              <input
+                id="api_key"
+                type="password"
+                bind:value={settings.api_key}
+                placeholder="sk-..."
+                class="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200"
+              />
+            </div>
+
+            <div>
+              <div class="flex items-center justify-between mb-2">
+                <label for="model" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  模型选择
+                </label>
+                <button
+                  type="button"
+                  class="text-xs text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 disabled:opacity-50 disabled:cursor-not-allowed px-2 py-1 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-all duration-200"
+                  on:click={loadModels}
+                  disabled={!settings.endpoint || !settings.api_key || isLoadingModels}
+                >
+                  {isLoadingModels ? '加载中...' : '刷新列表'}
+                </button>
+              </div>
+              <select
+                id="model"
+                bind:value={settings.model}
+                class="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200"
+              >
+                {#if availableModels.length === 0}
+                  <option value="">请先配置 API 并刷新模型列表</option>
+                {:else}
+                  {#each availableModels as model}
+                    <option value={model.value}>{model.label}</option>
+                  {/each}
+                {/if}
+              </select>
+            </div>
           </div>
-        </div>
-        
-        <div class="flex justify-end space-x-3 mt-6">
-          <button
-            class="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg border border-gray-300 dark:border-gray-600 transition-all duration-200"
-            on:click={closeSettings}
-          >
-            取消
-          </button>
-          <button
-            class="px-4 py-2 text-sm bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors"
-            on:click={saveSettings}
-          >
-            保存
-          </button>
+          
+          <div class="flex justify-end space-x-3 mt-8">
+            <button
+              class="px-6 py-3 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl border border-gray-300 dark:border-gray-600 transition-all duration-200 font-medium"
+              on:click={closeSettings}
+            >
+              取消
+            </button>
+            <button
+              class="px-6 py-3 text-sm bg-blue-500 hover:bg-blue-600 active:bg-blue-700 text-white rounded-xl transition-all duration-200 font-medium shadow-sm hover:shadow-md active:shadow-inner"
+              on:click={saveSettings}
+            >
+              保存
+            </button>
+          </div>
         </div>
       </div>
     </div>

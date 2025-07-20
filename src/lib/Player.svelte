@@ -777,9 +777,6 @@
 
     // draw statistics
     function drawStatistics(points: { ts: number; count: number }[]) {
-      if (player.getPresentationStartTimeAsDate() == null) {
-        return;
-      }
       if (points == undefined) {
         points = [];
       }
@@ -813,19 +810,25 @@
       const canvasWidth = statisticGraph.width;
       // find value range
       const minValue = 0;
-      const maxValue = Math.max(...preprocessed.map((v) => v.count));
-      const beginTime = player.getPresentationStartTimeAsDate().getTime();
+      let maxValue = 0;
+      if (preprocessed.length > 0) {
+        const counts = preprocessed.map((v) => v.count).filter(c => isFinite(c));
+        if (counts.length > 0) {
+          // Use reduce instead of spread operator to avoid stack overflow
+          maxValue = counts.reduce((max, current) => Math.max(max, current), 0);
+        }
+      }
       const duration = get_total() * 1000;
       canvas.clearRect(0, 0, canvasWidth, canvasHeight);
       if (preprocessed.length > 0) {
         canvas.beginPath();
-        const x = ((preprocessed[0].ts - beginTime) / duration) * canvasWidth;
+        const x = ((preprocessed[0].ts) / duration) * canvasWidth;
         const y =
           (1 - (preprocessed[0].count - minValue) / (maxValue - minValue)) *
           canvasHeight;
         canvas.moveTo(x, y);
         for (let i = 0; i < preprocessed.length; i++) {
-          const x = ((preprocessed[i].ts - beginTime) / duration) * canvasWidth;
+          const x = ((preprocessed[i].ts) / duration) * canvasWidth;
           const y =
             (1 - (preprocessed[i].count - minValue) / (maxValue - minValue)) *
             canvasHeight;

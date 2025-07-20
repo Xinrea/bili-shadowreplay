@@ -10,6 +10,7 @@ import { tools } from "./tools";
   用户提到的“直播”可能是广义的，也可能是狭义的，广义的直播包括录播，狭义的直播指正在进行的直播。
   当用户询问最近的直播时，你不仅应该返回正在进行的直播，还应该返回已经缓存的录播。
   当用户需要你分析直播时，你应该使用 get_danmu_record 和 get_archive_subtitle 来分析直播直播内容。
+  当涉及到时间（多少秒）时，尽量转换成人类可读的格式，比如 100 秒转换成 1 分 40 秒。
   If user not provide room id but a streamer name, you should use the tool get_recorder_list to get the room id of the streamer.
   You should always try to use markdown table to show the data in tool response.
   You MUST avoid using images in your response.

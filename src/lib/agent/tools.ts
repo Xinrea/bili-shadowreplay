@@ -345,7 +345,7 @@ const get_video_typelist = tool(
   {
     name: "get_video_typelist",
     description:
-      "Get the list of all video types that can be selected on bilibili platform",
+      "Get the list of all video types（视频分区） that can be selected on bilibili platform",
     schema: z.object({}),
   }
 );
@@ -405,7 +405,7 @@ const encode_video_subtitle = tool(
 
 // @ts-ignore
 const post_video_to_bilibili = tool(
-  async ({ uid, room_id, video_id, title, desc, tag }: { uid: number; room_id: number; video_id: number; title: string; desc: string; tag: string }) => {
+  async ({ uid, room_id, video_id, title, desc, tag, tid }: { uid: number; room_id: number; video_id: number; title: string; desc: string; tag: string; tid: number }) => {
     // invoke("upload_procedure", {
     //   uid: uid_selected,
     //   eventId: event_id,
@@ -420,6 +420,7 @@ const post_video_to_bilibili = tool(
     profile.title = title;
     profile.desc = desc;
     profile.tag = tag;
+    profile.tid = tid;
     const result = await invoke("upload_procedure", { uid, eventId: event_id, roomId: room_id, videoId: video_id, cover, profile });
     return result;
   },
@@ -433,6 +434,7 @@ const post_video_to_bilibili = tool(
       title: z.string().describe("The title of the video"),
       desc: z.string().describe("The description of the video"),
       tag: z.string().describe("The tag of the video, multiple tags should be separated by comma"),
+      tid: z.number().describe("The tid of the video, it is the id of the video type, you can use get_video_typelist to get the list of all video types"),
     }),
   }
 );
@@ -509,6 +511,40 @@ const get_recent_record = tool(
     description: "Get the list of recent records that bsr has recorded",
     schema: z.object({
       room_id: z.number().describe("The room id of the room"),
+      offset: z.number().describe("The offset of the records"),
+      limit: z.number().describe("The limit of the records"),
+    }),
+  }
+);
+
+// @ts-ignore
+const get_recent_record_all = tool(
+  async ({
+    offset,
+    limit,
+  }: {
+    offset: number;
+    limit: number;
+  }) => {
+    const records = (await invoke("get_recent_record", {
+      roomId: 0,
+      offset,
+      limit,
+    })) as any[];
+    return {
+      records: records.map((r: any) => {
+        return {
+          ...r,
+          cover: null,
+          created_at: new Date(r.created_at).toLocaleString(),
+        };
+      }),
+    };
+  },
+  {
+    name: "get_recent_record_all",
+    description: "Get the list of recent records from all rooms",
+    schema: z.object({
       offset: z.number().describe("The offset of the records"),
       limit: z.number().describe("The limit of the records"),
     }),
@@ -619,6 +655,7 @@ const tools = [
   clip_range,
   get_danmu_record,
   get_recent_record,
+  get_recent_record_all,
   generic_ffmpeg_command,
   open_clip,
   list_folder,

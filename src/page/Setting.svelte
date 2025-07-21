@@ -612,7 +612,7 @@
                       Whisper 提示词
                     </h3>
                     <p class="text-sm text-gray-500 dark:text-gray-400">
-                      生成字幕时使用的提示词，提示词的含义无意义，只用于设定风格
+                      生成字幕时使用的提示词，尽量简洁明了，提示音频内容偏向的领域以及字幕的风格
                     </p>
                   </div>
                   <div class="flex items-center space-x-2">

@@ -38,9 +38,9 @@ features:
   - icon: 🔍
     title: 云端部署
     details: 支持 Docker 部署，提供 Web 控制界面
-  - icon: 📦
-    title: 多平台支持
-    details: 桌面端支持 Windows/Linux/macOS
+  - icon: 🤖
+    title: AI Agent 支持
+    details: 支持 AI 助手管理录播，分析直播内容，生成切片
 ---
 
 ## 总览
@@ -63,7 +63,7 @@ features:
 
 ## 封面编辑
 
-![cover](/images/coveredit.png)
+![cover](/images/cover_edit.png)
 
 ## 设置
 

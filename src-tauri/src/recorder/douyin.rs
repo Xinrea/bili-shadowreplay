@@ -369,6 +369,27 @@ impl DouyinRecorder {
         }
     }
 
+    fn parse_stream_url(&self, stream_url: &str) -> (String, String) {
+        // Parse stream URL to extract base URL and query parameters
+        // Example: http://7167739a741646b4651b6949b2f3eb8e.livehwc3.cn/pull-hls-l26.douyincdn.com/third/stream-693342996808860134_or4.m3u8?sub_m3u8=true&user_session_id=16090eb45ab8a2f042f7c46563936187&major_anchor_level=common&edge_slice=true&expire=67d944ec&sign=47b95cc6e8de20d82f3d404412fa8406
+        
+        let base_url = stream_url
+            .rfind('/')
+            .map(|i| &stream_url[..=i])
+            .unwrap_or(stream_url)
+            .to_string();
+        
+        let query_params = stream_url
+            .find('?')
+            .map(|i| &stream_url[i..])
+            .unwrap_or("")
+            .to_string();
+        
+        (base_url, query_params)
+    }
+
+
+
     async fn update_entries(&self) -> Result<u128, RecorderError> {
         let task_begin_time = std::time::Instant::now();
 
@@ -421,63 +442,91 @@ impl DouyinRecorder {
             }
 
             // example: pull-l3.douyincdn.com_stream-405850027547689439_or4-1752675567719.ts
-            let mut uri = segment.uri.clone();
-            // if uri contains ?params, remove it
-            if let Some(pos) = uri.find('?') {
-                uri = uri[..pos].to_string();
-            }
+            let uri = segment.uri.clone();
 
             let ts_url = if uri.starts_with("http") {
                 uri.clone()
             } else {
-                // Get the base URL without the filename and query parameters
-                let base_url = stream_url
-                    .rfind('/')
-                    .map(|i| &stream_url[..=i])
-                    .unwrap_or(&stream_url);
-                // Get the query parameters
-                let query = stream_url.find('?').map(|i| &stream_url[i..]).unwrap_or("");
-                // Combine: base_url + new_filename + query_params
-                format!("{}{}{}", base_url, uri, query)
+                // Parse the stream URL to extract base URL and query parameters
+                let (base_url, query_params) = self.parse_stream_url(&stream_url);
+                
+                // Check if the segment URI already has query parameters
+                if uri.contains('?') {
+                    // If segment URI has query params, append m3u8 query params with &
+                    format!("{}{}&{}", base_url, uri, &query_params[1..]) // Remove leading ? from query_params
+                } else {
+                    // If segment URI has no query params, append m3u8 query params with ?
+                    format!("{}{}{}", base_url, uri, query_params)
+                }
             };
+            
 
-            let file_name = format!("{}.ts", sequence);
 
-            // Download segment
-            match self
-                .client
-                .download_ts(&ts_url, &format!("{}/{}", work_dir, file_name))
-                .await
-            {
-                Ok(size) => {
-                    if size == 0 {
-                        log::error!("Download segment failed: {}", ts_url);
-                        continue;
+            // Download segment with retry mechanism
+            let mut retry_count = 0;
+            let max_retries = 3;
+            let mut download_success = false;
+            
+            while retry_count < max_retries && !download_success {
+                let file_name = format!("{}.ts", sequence);
+                let file_path = format!("{}/{}", work_dir, file_name);
+                match self
+                    .client
+                    .download_ts(&ts_url, &file_path)
+                    .await
+                {
+                    Ok(size) => {
+                        if size == 0 {
+                            log::error!("Download segment failed (empty response): {}", ts_url);
+                            retry_count += 1;
+                            if retry_count < max_retries {
+                                tokio::time::sleep(Duration::from_millis(500)).await;
+                                continue;
+                            }
+                            break;
+                        }
+                        let ts_entry = TsEntry {
+                            url: file_name,
+                            sequence,
+                            length: segment.duration as f64,
+                            size,
+                            ts: Utc::now().timestamp_millis(),
+                            is_header: false,
+                        };
+
+                        self.entry_store
+                            .write()
+                            .await
+                            .as_mut()
+                            .unwrap()
+                            .add_entry(ts_entry)
+                            .await;
+
+                        new_segment_fetched = true;
+                        download_success = true;
                     }
-                    let ts_entry = TsEntry {
-                        url: file_name,
-                        sequence,
-                        length: segment.duration as f64,
-                        size,
-                        ts: Utc::now().timestamp_millis(),
-                        is_header: false,
-                    };
-
-                    self.entry_store
-                        .write()
-                        .await
-                        .as_mut()
-                        .unwrap()
-                        .add_entry(ts_entry)
-                        .await;
-
-                    new_segment_fetched = true;
+                    Err(e) => {
+                        log::warn!("Failed to download segment (attempt {}/{}): {} - URL: {}", 
+                                  retry_count + 1, max_retries, e, ts_url);
+                        retry_count += 1;
+                        if retry_count < max_retries {
+                            tokio::time::sleep(Duration::from_millis(1000 * retry_count as u64)).await;
+                            continue;
+                        }
+                        // If all retries failed, check if it's a 400 error
+                        if e.to_string().contains("400") {
+                            log::error!("HTTP 400 error for segment, stream URL may be expired: {}", ts_url);
+                            *self.stream_url.write().await = None;
+                            return Err(RecorderError::NoStreamAvailable);
+                        }
+                        return Err(e.into());
+                    }
                 }
-                Err(e) => {
-                    log::error!("Failed to download segment: {}", e);
-                    *self.stream_url.write().await = None;
-                    return Err(e.into());
-                }
+            }
+            
+            if !download_success {
+                log::error!("Failed to download segment after {} retries: {}", max_retries, ts_url);
+                continue;
             }
         }
 

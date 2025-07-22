@@ -155,6 +155,24 @@ fn get_migrations() -> Vec<Migration> {
             sql: r#"CREATE TABLE tasks (id TEXT PRIMARY KEY, type TEXT, status TEXT, message TEXT, metadata TEXT, created_at TEXT);"#,
             kind: MigrationKind::Up,
         },
+        // change uid column from INTEGER to TEXT to support both numeric uid (Bilibili) and sec_uid (Douyin)
+        Migration {
+            version: 5,
+            description: "change_uid_to_text",
+            sql: r#"
+                -- Create new accounts table with TEXT uid
+                CREATE TABLE accounts_new (uid TEXT, platform TEXT NOT NULL DEFAULT 'bilibili', name TEXT, avatar TEXT, csrf TEXT, cookies TEXT, created_at TEXT, PRIMARY KEY(uid, platform));
+                
+                -- Copy data from old table, converting INTEGER uid to TEXT
+                INSERT INTO accounts_new (uid, platform, name, avatar, csrf, cookies, created_at)
+                SELECT CAST(uid AS TEXT), platform, name, avatar, csrf, cookies, created_at FROM accounts;
+                
+                -- Drop old table and rename new table
+                DROP TABLE accounts;
+                ALTER TABLE accounts_new RENAME TO accounts;
+            "#,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

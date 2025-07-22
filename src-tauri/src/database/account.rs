@@ -83,10 +83,10 @@ impl Database {
         Ok(account)
     }
 
-    pub async fn remove_account(&self, platform: &str, uid: u64) -> Result<(), DatabaseError> {
+    pub async fn remove_account(&self, platform: &str, uid: &str) -> Result<(), DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         let sql = sqlx::query("DELETE FROM accounts WHERE uid = $1 and platform = $2")
-            .bind(uid as i64)
+            .bind(uid)
             .bind(platform)
             .execute(&lock)
             .await?;
@@ -99,7 +99,7 @@ impl Database {
     pub async fn update_account(
         &self,
         platform: &str,
-        uid: u64,
+        uid: &str,
         name: &str,
         avatar: &str,
     ) -> Result<(), DatabaseError> {
@@ -109,7 +109,7 @@ impl Database {
         )
         .bind(name)
         .bind(avatar)
-        .bind(uid as i64)
+        .bind(uid)
         .bind(platform)
         .execute(&lock)
         .await?;
@@ -122,7 +122,7 @@ impl Database {
     pub async fn update_account_with_uid(
         &self,
         old_account: &AccountRow,
-        new_uid: u64,
+        new_uid: &str,
         name: &str,
         avatar: &str,
     ) -> Result<(), DatabaseError> {
@@ -132,14 +132,14 @@ impl Database {
         if old_account.uid != new_uid {
             // Delete the old record
             sqlx::query("DELETE FROM accounts WHERE uid = $1 and platform = $2")
-                .bind(old_account.uid as i64)
+                .bind(&old_account.uid)
                 .bind(&old_account.platform)
                 .execute(&lock)
                 .await?;
             
             // Insert the new record with updated UID
             sqlx::query("INSERT INTO accounts (uid, platform, name, avatar, csrf, cookies, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)")
-                .bind(new_uid as i64)
+                .bind(new_uid)
                 .bind(&old_account.platform)
                 .bind(name)
                 .bind(avatar)
@@ -153,7 +153,7 @@ impl Database {
             sqlx::query("UPDATE accounts SET name = $1, avatar = $2 WHERE uid = $3 and platform = $4")
                 .bind(name)
                 .bind(avatar)
-                .bind(new_uid as i64)
+                .bind(new_uid)
                 .bind(&old_account.platform)
                 .execute(&lock)
                 .await?;
@@ -169,12 +169,12 @@ impl Database {
             .await?)
     }
 
-    pub async fn get_account(&self, platform: &str, uid: u64) -> Result<AccountRow, DatabaseError> {
+    pub async fn get_account(&self, platform: &str, uid: &str) -> Result<AccountRow, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         Ok(sqlx::query_as::<_, AccountRow>(
             "SELECT * FROM accounts WHERE uid = $1 and platform = $2",
         )
-        .bind(uid as i64)
+        .bind(uid)
         .bind(platform)
         .fetch_one(&lock)
         .await?)

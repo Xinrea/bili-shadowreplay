@@ -27,12 +27,12 @@ pub async fn add_account(
     }
     let account = state.db.add_account(&platform, cookies).await?;
     if platform == "bilibili" {
-        let account_info = state.client.get_user_info(&account, &account.uid).await?;
+        let account_info = state.client.get_user_info(&account, account.uid).await?;
         state
             .db
             .update_account(
                 &platform,
-                &account_info.user_id.to_string(),
+                account_info.user_id,
                 &account_info.user_name,
                 &account_info.user_avatar_url,
             )
@@ -42,15 +42,14 @@ pub async fn add_account(
         let douyin_client = crate::recorder::douyin::client::DouyinClient::new(&account);
         match douyin_client.get_user_info().await {
             Ok(user_info) => {
-                // For Douyin, use sec_uid as the primary identifier
-                let uid = &user_info.sec_uid;
+                // For Douyin, use sec_uid as the primary identifier in id_str field
                 let avatar_url = user_info.avatar_thumb.url_list.first().cloned().unwrap_or_default();
                 
                 state
                     .db
-                    .update_account_with_uid(
+                    .update_account_with_id_str(
                         &account,
-                        uid,
+                        &user_info.sec_uid,
                         &user_info.nickname,
                         &avatar_url,
                     )
@@ -69,13 +68,13 @@ pub async fn add_account(
 pub async fn remove_account(
     state: state_type!(),
     platform: String,
-    uid: String,
+    uid: u64,
 ) -> Result<(), String> {
     if platform == "bilibili" {
-        let account = state.db.get_account(&platform, &uid).await?;
+        let account = state.db.get_account(&platform, uid).await?;
         state.client.logout(&account).await?;
     }
-    Ok(state.db.remove_account(&platform, &uid).await?)
+    Ok(state.db.remove_account(&platform, uid).await?)
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]

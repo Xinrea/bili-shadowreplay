@@ -167,7 +167,7 @@
                   {#if account.platform === "bilibili"}
                     UID: {account.uid}
                   {:else if account.platform === "douyin"}
-                    UID: {account.uid} • 仅用于获取直播流
+                    ID: {account.id_str || account.uid} • 仅用于获取直播流
                   {/if}
                 </p>
               </div>

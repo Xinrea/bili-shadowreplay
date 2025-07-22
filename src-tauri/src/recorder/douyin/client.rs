@@ -75,6 +75,91 @@ impl DouyinClient {
         Ok(resp)
     }
 
+    pub async fn get_user_info(&self) -> Result<super::response::User, DouyinClientError> {
+        // Try the API endpoint used for getting user info
+        let url = "https://www.douyin.com/aweme/v1/web/aweme/personal/";
+        let resp = self
+            .client
+            .get(url)
+            .header("Referer", "https://www.douyin.com/")
+            .header("User-Agent", USER_AGENT)
+            .header("Cookie", self.cookies.clone())
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            if let Ok(data) = resp.json::<serde_json::Value>().await {
+                if let Some(user_info) = data["aweme_list"].as_array().and_then(|arr| arr.first()) {
+                    if let Some(author) = user_info["author"].as_object() {
+                        // Map the author info to our User struct
+                        let user = super::response::User {
+                            id_str: author["uid"].as_str().unwrap_or("").to_string(),
+                            sec_uid: author["sec_uid"].as_str().unwrap_or("").to_string(),
+                            nickname: author["nickname"].as_str().unwrap_or("").to_string(),
+                            avatar_thumb: super::response::AvatarThumb {
+                                url_list: author["avatar_thumb"]["url_list"]
+                                    .as_array()
+                                    .map(|arr| arr.iter().filter_map(|v| v.as_str()).map(|s| s.to_string()).collect())
+                                    .unwrap_or_default(),
+                            },
+                            follow_info: super::response::FollowInfo::default(),
+                            foreign_user: 0,
+                            open_id_str: "".to_string(),
+                        };
+                        return Ok(user);
+                    }
+                }
+            }
+        }
+
+        // Fallback: try to get user info from personal page
+        let url = "https://www.douyin.com/user/self";
+        let resp = self
+            .client
+            .get(url)
+            .header("Referer", "https://www.douyin.com/")
+            .header("User-Agent", USER_AGENT)
+            .header("Cookie", self.cookies.clone())
+            .send()
+            .await?;
+
+        let html = resp.text().await?;
+        
+        // Parse HTML to extract user info from SSR data
+        if let Some(start) = html.find("window.__INITIAL_STATE__") {
+            if let Some(eq_pos) = html[start..].find("=") {
+                if let Some(script_end) = html[start + eq_pos + 1..].find("</script>") {
+                    let json_str = html[start + eq_pos + 1..start + eq_pos + 1 + script_end].trim();
+                    
+                    if let Ok(data) = serde_json::from_str::<serde_json::Value>(json_str) {
+                        if let Some(user_detail) = data["user"]["user"]["userDetail"].as_object() {
+                            let user = super::response::User {
+                                id_str: user_detail["user"]["uid"].as_str().unwrap_or("").to_string(),
+                                sec_uid: user_detail["user"]["secUid"].as_str().unwrap_or("").to_string(),
+                                nickname: user_detail["user"]["nickname"].as_str().unwrap_or("").to_string(),
+                                avatar_thumb: super::response::AvatarThumb {
+                                    url_list: user_detail["user"]["avatarThumb"]["urlList"]
+                                        .as_array()
+                                        .map(|arr| arr.iter().filter_map(|v| v.as_str()).map(|s| s.to_string()).collect())
+                                        .unwrap_or_default(),
+                                },
+                                follow_info: super::response::FollowInfo::default(),
+                                foreign_user: 0,
+                                open_id_str: "".to_string(),
+                            };
+                            return Ok(user);
+                        }
+                    }
+                }
+            }
+        }
+        
+        Err(DouyinClientError::Network(reqwest::Error::from(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "User info not found in response"
+        ))))
+    }
+
     pub async fn get_cover_base64(&self, url: &str) -> Result<String, DouyinClientError> {
         log::info!("get_cover_base64: {}", url);
         let response = self.client.get(url).send().await?;
@@ -124,5 +209,36 @@ impl DouyinClient {
         let mut content = std::io::Cursor::new(bytes);
         tokio::io::copy(&mut content, &mut file).await?;
         Ok(size)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::account::AccountRow;
+
+    #[tokio::test]
+    async fn test_douyin_user_info_parsing() {
+        // This test verifies that our JSON parsing logic works correctly
+        // with a sample user info structure
+        let sample_user_json = r#"{
+            "id_str": "12345678901234567",
+            "sec_uid": "MS4wLjABAAAA...",
+            "nickname": "测试用户",
+            "avatar_thumb": {
+                "url_list": ["https://example.com/avatar.jpg"]
+            },
+            "follow_info": {
+                "follow_status": 0,
+                "follow_status_str": "未关注"
+            },
+            "foreign_user": 0,
+            "open_id_str": ""
+        }"#;
+
+        let user = serde_json::from_str::<super::response::User>(sample_user_json).unwrap();
+        assert_eq!(user.id_str, "12345678901234567");
+        assert_eq!(user.nickname, "测试用户");
+        assert_eq!(user.avatar_thumb.url_list.len(), 1);
     }
 }

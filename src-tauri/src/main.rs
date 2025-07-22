@@ -233,6 +233,59 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     let progress_manager = Arc::new(ProgressManager::new());
     let emitter = EventEmitter::new(progress_manager.get_event_sender());
     let recorder_manager = Arc::new(RecorderManager::new(emitter, db.clone(), config.clone()));
+
+    // Update account infos for headless mode
+    let accounts = db.get_accounts().await?;
+    for account in accounts {
+        let platform = PlatformType::from_str(&account.platform).unwrap();
+        
+        if platform == PlatformType::BiliBili {
+            match client.get_user_info(&account, account.uid).await {
+                Ok(account_info) => {
+                    if let Err(e) = db
+                        .update_account(
+                            &account.platform,
+                            account_info.user_id,
+                            &account_info.user_name,
+                            &account_info.user_avatar_url,
+                        )
+                        .await
+                    {
+                        log::error!("Error when updating Bilibili account info {}", e);
+                    }
+                }
+                Err(e) => {
+                    log::error!("Get Bilibili user info failed {}", e);
+                }
+            }
+                 } else if platform == PlatformType::Douyin {
+             // Update Douyin account info
+             use crate::recorder::douyin::client::DouyinClient;
+             let douyin_client = DouyinClient::new(&account);
+             match douyin_client.get_user_info().await {
+                 Ok(user_info) => {
+                     let uid = user_info.id_str.parse::<u64>().unwrap_or(account.uid);
+                     let avatar_url = user_info.avatar_thumb.url_list.first().cloned().unwrap_or_default();
+                     
+                     if let Err(e) = db
+                         .update_account_with_uid(
+                             &account,
+                             uid,
+                             &user_info.nickname,
+                             &avatar_url,
+                         )
+                         .await
+                     {
+                         log::error!("Error when updating Douyin account info {}", e);
+                     }
+                 }
+                 Err(e) => {
+                     log::error!("Get Douyin user info failed {}", e);
+                 }
+             }
+         }
+    }
+
     let _ = try_rebuild_archives(&db, config.read().await.cache.clone().into()).await;
 
     Ok(State {
@@ -304,28 +357,51 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
 
     // update account infos
     for account in accounts {
-        // only update bilibili account
         let platform = PlatformType::from_str(&account.platform).unwrap();
-        if platform != PlatformType::BiliBili {
-            continue;
-        }
-
-        match client_clone.get_user_info(&account, account.uid).await {
-            Ok(account_info) => {
-                if let Err(e) = db_clone
-                    .update_account(
-                        &account.platform,
-                        account_info.user_id,
-                        &account_info.user_name,
-                        &account_info.user_avatar_url,
-                    )
-                    .await
-                {
-                    log::error!("Error when updating account info {}", e);
+        
+        if platform == PlatformType::BiliBili {
+            match client_clone.get_user_info(&account, account.uid).await {
+                Ok(account_info) => {
+                    if let Err(e) = db_clone
+                        .update_account(
+                            &account.platform,
+                            account_info.user_id,
+                            &account_info.user_name,
+                            &account_info.user_avatar_url,
+                        )
+                        .await
+                    {
+                        log::error!("Error when updating Bilibili account info {}", e);
+                    }
+                }
+                Err(e) => {
+                    log::error!("Get Bilibili user info failed {}", e);
                 }
             }
-            Err(e) => {
-                log::error!("Get user info failed {}", e);
+        } else if platform == PlatformType::Douyin {
+            // Update Douyin account info
+            use crate::recorder::douyin::client::DouyinClient;
+            let douyin_client = DouyinClient::new(&account);
+            match douyin_client.get_user_info().await {
+                Ok(user_info) => {
+                    let uid = user_info.id_str.parse::<u64>().unwrap_or(account.uid);
+                    let avatar_url = user_info.avatar_thumb.url_list.first().cloned().unwrap_or_default();
+                    
+                    if let Err(e) = db_clone
+                        .update_account_with_uid(
+                            &account,
+                            uid,
+                            &user_info.nickname,
+                            &avatar_url,
+                        )
+                        .await
+                    {
+                        log::error!("Error when updating Douyin account info {}", e);
+                    }
+                }
+                Err(e) => {
+                    log::error!("Get Douyin user info failed {}", e);
+                }
             }
         }
     }

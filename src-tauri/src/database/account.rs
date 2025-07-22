@@ -120,6 +120,49 @@ impl Database {
         Ok(())
     }
 
+    pub async fn update_account_with_uid(
+        &self,
+        old_account: &AccountRow,
+        new_uid: u64,
+        name: &str,
+        avatar: &str,
+    ) -> Result<(), DatabaseError> {
+        let lock = self.db.read().await.clone().unwrap();
+        
+        // If the UID changed, we need to delete the old record and create a new one
+        if old_account.uid != new_uid {
+            // Delete the old record
+            sqlx::query("DELETE FROM accounts WHERE uid = $1 and platform = $2")
+                .bind(old_account.uid as i64)
+                .bind(&old_account.platform)
+                .execute(&lock)
+                .await?;
+            
+            // Insert the new record with updated UID
+            sqlx::query("INSERT INTO accounts (uid, platform, name, avatar, csrf, cookies, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)")
+                .bind(new_uid as i64)
+                .bind(&old_account.platform)
+                .bind(name)
+                .bind(avatar)
+                .bind(&old_account.csrf)
+                .bind(&old_account.cookies)
+                .bind(&old_account.created_at)
+                .execute(&lock)
+                .await?;
+        } else {
+            // UID is the same, just update name and avatar
+            sqlx::query("UPDATE accounts SET name = $1, avatar = $2 WHERE uid = $3 and platform = $4")
+                .bind(name)
+                .bind(avatar)
+                .bind(new_uid as i64)
+                .bind(&old_account.platform)
+                .execute(&lock)
+                .await?;
+        }
+        
+        Ok(())
+    }
+
     pub async fn get_accounts(&self) -> Result<Vec<AccountRow>, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         Ok(sqlx::query_as::<_, AccountRow>("SELECT * FROM accounts")

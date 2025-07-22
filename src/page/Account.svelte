@@ -160,21 +160,16 @@
               <div>
                 <div class="flex items-center space-x-2">
                   <h3 class="font-medium text-gray-900 dark:text-white">
-                    {account.platform === "bilibili"
-                      ? account.name
-                      : "抖音账号" + account.uid}
+                    {account.name || (account.platform === "bilibili" ? "B站账号" : "抖音账号") + account.uid}
                   </h3>
                 </div>
-                {#if account.platform === "bilibili"}
-                  <p class="text-sm text-gray-600 dark:text-gray-400">
+                <p class="text-sm text-gray-600 dark:text-gray-400">
+                  {#if account.platform === "bilibili"}
                     UID: {account.uid}
-                  </p>
-                {/if}
-                {#if account.platform === "douyin"}
-                  <p class="text-sm text-gray-600 dark:text-gray-400">
-                    仅用于获取直播流
-                  </p>
-                {/if}
+                  {:else if account.platform === "douyin"}
+                    UID: {account.uid} • 仅用于获取直播流
+                  {/if}
+                </p>
               </div>
             </div>
             <div class="flex items-center space-x-3">

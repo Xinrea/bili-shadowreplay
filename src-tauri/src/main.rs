@@ -26,6 +26,7 @@ use chrono::Utc;
 use config::Config;
 use database::Database;
 use recorder::bilibili::client::BiliClient;
+use recorder::PlatformType;
 use recorder_manager::RecorderManager;
 use simplelog::ConfigBuilder;
 use state::State;
@@ -42,7 +43,6 @@ use std::os::windows::fs::MetadataExt;
 
 #[cfg(feature = "gui")]
 use {
-    recorder::PlatformType,
     tauri::{Manager, WindowEvent},
     tauri_plugin_sql::{Migration, MigrationKind},
 };
@@ -245,7 +245,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     let accounts = db.get_accounts().await?;
     for account in accounts {
         let platform = PlatformType::from_str(&account.platform).unwrap();
-        
+
         if platform == PlatformType::BiliBili {
             match client.get_user_info(&account, account.uid).await {
                 Ok(account_info) => {
@@ -271,8 +271,13 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
             let douyin_client = DouyinClient::new(&account);
             match douyin_client.get_user_info().await {
                 Ok(user_info) => {
-                    let avatar_url = user_info.avatar_thumb.url_list.first().cloned().unwrap_or_default();
-                    
+                    let avatar_url = user_info
+                        .avatar_thumb
+                        .url_list
+                        .first()
+                        .cloned()
+                        .unwrap_or_default();
+
                     if let Err(e) = db
                         .update_account_with_id_str(
                             &account,
@@ -364,7 +369,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     // update account infos
     for account in accounts {
         let platform = PlatformType::from_str(&account.platform).unwrap();
-        
+
         if platform == PlatformType::BiliBili {
             match client_clone.get_user_info(&account, account.uid).await {
                 Ok(account_info) => {
@@ -390,8 +395,13 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
             let douyin_client = DouyinClient::new(&account);
             match douyin_client.get_user_info().await {
                 Ok(user_info) => {
-                    let avatar_url = user_info.avatar_thumb.url_list.first().cloned().unwrap_or_default();
-                    
+                    let avatar_url = user_info
+                        .avatar_thumb
+                        .url_list
+                        .first()
+                        .cloned()
+                        .unwrap_or_default();
+
                     if let Err(e) = db_clone
                         .update_account_with_id_str(
                             &account,

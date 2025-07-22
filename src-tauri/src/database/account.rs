@@ -102,19 +102,6 @@ impl Database {
         Ok(())
     }
 
-    pub async fn remove_account_by_id_str(&self, platform: &str, id_str: &str) -> Result<(), DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
-        let sql = sqlx::query("DELETE FROM accounts WHERE id_str = $1 and platform = $2")
-            .bind(id_str)
-            .bind(platform)
-            .execute(&lock)
-            .await?;
-        if sql.rows_affected() != 1 {
-            return Err(DatabaseError::NotFoundError);
-        }
-        Ok(())
-    }
-
     pub async fn update_account(
         &self,
         platform: &str,
@@ -129,29 +116,6 @@ impl Database {
         .bind(name)
         .bind(avatar)
         .bind(uid as i64)
-        .bind(platform)
-        .execute(&lock)
-        .await?;
-        if sql.rows_affected() != 1 {
-            return Err(DatabaseError::NotFoundError);
-        }
-        Ok(())
-    }
-
-    pub async fn update_account_by_id_str(
-        &self,
-        platform: &str,
-        id_str: &str,
-        name: &str,
-        avatar: &str,
-    ) -> Result<(), DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
-        let sql = sqlx::query(
-            "UPDATE accounts SET name = $1, avatar = $2 WHERE id_str = $3 and platform = $4",
-        )
-        .bind(name)
-        .bind(avatar)
-        .bind(id_str)
         .bind(platform)
         .execute(&lock)
         .await?;
@@ -218,17 +182,6 @@ impl Database {
             "SELECT * FROM accounts WHERE uid = $1 and platform = $2",
         )
         .bind(uid as i64)
-        .bind(platform)
-        .fetch_one(&lock)
-        .await?)
-    }
-
-    pub async fn get_account_by_id_str(&self, platform: &str, id_str: &str) -> Result<AccountRow, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
-        Ok(sqlx::query_as::<_, AccountRow>(
-            "SELECT * FROM accounts WHERE id_str = $1 and platform = $2",
-        )
-        .bind(id_str)
         .bind(platform)
         .fetch_one(&lock)
         .await?)

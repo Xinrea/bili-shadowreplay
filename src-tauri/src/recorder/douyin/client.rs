@@ -127,10 +127,10 @@ impl DouyinClient {
             }
         }
         
-        Err(DouyinClientError::Network(reqwest::Error::from(std::io::Error::new(
+        Err(DouyinClientError::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "Failed to get user info from Douyin relation API"
-        ))))
+        )))
     }
 
     pub async fn get_cover_base64(&self, url: &str) -> Result<String, DouyinClientError> {

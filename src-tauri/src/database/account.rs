@@ -9,7 +9,7 @@ use rand::Rng;
 #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
 pub struct AccountRow {
     pub platform: String,
-    pub uid: u64,
+    pub uid: String, // Changed from u64 to String to support both sec_uid (Douyin) and numeric uid (Bilibili)
     pub name: String,
     pub avatar: String,
     pub csrf: String,
@@ -52,6 +52,7 @@ impl Database {
 
         // parse uid
         let uid = if platform == PlatformType::BiliBili {
+            // For Bilibili, extract numeric uid from cookies and convert to string
             cookies
                 .split("DedeUserID=")
                 .collect::<Vec<&str>>()
@@ -62,11 +63,9 @@ impl Database {
                 .first()
                 .unwrap()
                 .to_string()
-                .parse::<u64>()
-                .map_err(|_| DatabaseError::InvalidCookiesError)?
         } else {
-            // generate a random uid
-            rand::thread_rng().gen_range(10000..=i32::MAX) as u64
+            // For Douyin, generate a temporary uid (will be replaced with real sec_uid later)
+            format!("temp_{}", rand::thread_rng().gen_range(100000..=999999))
         };
 
         let account = AccountRow {
@@ -79,7 +78,7 @@ impl Database {
             created_at: Utc::now().to_rfc3339(),
         };
 
-        sqlx::query("INSERT INTO accounts (uid, platform, name, avatar, csrf, cookies, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)").bind(account.uid as i64).bind(&account.platform).bind(&account.name).bind(&account.avatar).bind(&account.csrf).bind(&account.cookies).bind(&account.created_at).execute(&lock).await?;
+        sqlx::query("INSERT INTO accounts (uid, platform, name, avatar, csrf, cookies, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)").bind(&account.uid).bind(&account.platform).bind(&account.name).bind(&account.avatar).bind(&account.csrf).bind(&account.cookies).bind(&account.created_at).execute(&lock).await?;
 
         Ok(account)
     }

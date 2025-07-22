@@ -37,6 +37,29 @@ pub async fn add_account(
                 &account_info.user_avatar_url,
             )
             .await?;
+    } else if platform == "douyin" {
+        // Get user info from Douyin API
+        let douyin_client = crate::recorder::douyin::client::DouyinClient::new(&account);
+        match douyin_client.get_user_info().await {
+            Ok(user_info) => {
+                // For Douyin, use sec_uid as the primary identifier in id_str field
+                let avatar_url = user_info.avatar_thumb.url_list.first().cloned().unwrap_or_default();
+                
+                state
+                    .db
+                    .update_account_with_id_str(
+                        &account,
+                        &user_info.sec_uid,
+                        &user_info.nickname,
+                        &avatar_url,
+                    )
+                    .await?;
+            }
+            Err(e) => {
+                log::warn!("Failed to get Douyin user info: {}", e);
+                // Keep the account but with default values
+            }
+        }
     }
     Ok(account)
 }

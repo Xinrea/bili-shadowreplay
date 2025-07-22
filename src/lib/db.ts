@@ -18,6 +18,7 @@ export interface RecorderItem {
 export interface AccountItem {
   platform: string;
   uid: number;
+  id_str?: string; // For platforms like Douyin that use string IDs
   name: string;
   avatar: string;
   csrf: string;

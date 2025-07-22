@@ -9,7 +9,8 @@ use rand::Rng;
 #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
 pub struct AccountRow {
     pub platform: String,
-    pub uid: u64,
+    pub uid: u64, // Keep for Bilibili compatibility
+    pub id_str: Option<String>, // New field for string IDs like Douyin sec_uid
     pub name: String,
     pub avatar: String,
     pub csrf: String,
@@ -50,9 +51,10 @@ impl Database {
             return Err(DatabaseError::InvalidCookiesError);
         }
 
-        // parse uid
-        let uid = if platform == PlatformType::BiliBili {
-            cookies
+        // parse uid and id_str based on platform
+        let (uid, id_str) = if platform == PlatformType::BiliBili {
+            // For Bilibili, extract numeric uid from cookies
+            let uid = cookies
                 .split("DedeUserID=")
                 .collect::<Vec<&str>>()
                 .get(1)
@@ -63,15 +65,18 @@ impl Database {
                 .unwrap()
                 .to_string()
                 .parse::<u64>()
-                .map_err(|_| DatabaseError::InvalidCookiesError)?
+                .map_err(|_| DatabaseError::InvalidCookiesError)?;
+            (uid, None)
         } else {
-            // generate a random uid
-            rand::thread_rng().gen_range(10000..=i32::MAX) as u64
+            // For Douyin, use temporary uid and will set id_str later with real sec_uid
+            let temp_uid = rand::thread_rng().gen_range(10000..=i32::MAX) as u64;
+            (temp_uid, Some(format!("temp_{}", temp_uid)))
         };
 
         let account = AccountRow {
             platform: platform.as_str().to_string(),
             uid,
+            id_str,
             name: "".into(),
             avatar: "".into(),
             csrf: csrf.unwrap(),
@@ -79,7 +84,7 @@ impl Database {
             created_at: Utc::now().to_rfc3339(),
         };
 
-        sqlx::query("INSERT INTO accounts (uid, platform, name, avatar, csrf, cookies, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)").bind(account.uid as i64).bind(&account.platform).bind(&account.name).bind(&account.avatar).bind(&account.csrf).bind(&account.cookies).bind(&account.created_at).execute(&lock).await?;
+        sqlx::query("INSERT INTO accounts (uid, platform, id_str, name, avatar, csrf, cookies, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)").bind(account.uid as i64).bind(&account.platform).bind(&account.id_str).bind(&account.name).bind(&account.avatar).bind(&account.csrf).bind(&account.cookies).bind(&account.created_at).execute(&lock).await?;
 
         Ok(account)
     }
@@ -88,6 +93,19 @@ impl Database {
         let lock = self.db.read().await.clone().unwrap();
         let sql = sqlx::query("DELETE FROM accounts WHERE uid = $1 and platform = $2")
             .bind(uid as i64)
+            .bind(platform)
+            .execute(&lock)
+            .await?;
+        if sql.rows_affected() != 1 {
+            return Err(DatabaseError::NotFoundError);
+        }
+        Ok(())
+    }
+
+    pub async fn remove_account_by_id_str(&self, platform: &str, id_str: &str) -> Result<(), DatabaseError> {
+        let lock = self.db.read().await.clone().unwrap();
+        let sql = sqlx::query("DELETE FROM accounts WHERE id_str = $1 and platform = $2")
+            .bind(id_str)
             .bind(platform)
             .execute(&lock)
             .await?;
@@ -120,6 +138,73 @@ impl Database {
         Ok(())
     }
 
+    pub async fn update_account_by_id_str(
+        &self,
+        platform: &str,
+        id_str: &str,
+        name: &str,
+        avatar: &str,
+    ) -> Result<(), DatabaseError> {
+        let lock = self.db.read().await.clone().unwrap();
+        let sql = sqlx::query(
+            "UPDATE accounts SET name = $1, avatar = $2 WHERE id_str = $3 and platform = $4",
+        )
+        .bind(name)
+        .bind(avatar)
+        .bind(id_str)
+        .bind(platform)
+        .execute(&lock)
+        .await?;
+        if sql.rows_affected() != 1 {
+            return Err(DatabaseError::NotFoundError);
+        }
+        Ok(())
+    }
+
+    pub async fn update_account_with_id_str(
+        &self,
+        old_account: &AccountRow,
+        new_id_str: &str,
+        name: &str,
+        avatar: &str,
+    ) -> Result<(), DatabaseError> {
+        let lock = self.db.read().await.clone().unwrap();
+        
+        // If the id_str changed, we need to delete the old record and create a new one
+        if old_account.id_str.as_deref() != Some(new_id_str) {
+            // Delete the old record (for Douyin accounts, we use uid to identify)
+            sqlx::query("DELETE FROM accounts WHERE uid = $1 and platform = $2")
+                .bind(old_account.uid as i64)
+                .bind(&old_account.platform)
+                .execute(&lock)
+                .await?;
+            
+            // Insert the new record with updated id_str
+            sqlx::query("INSERT INTO accounts (uid, platform, id_str, name, avatar, csrf, cookies, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)")
+                .bind(old_account.uid as i64)
+                .bind(&old_account.platform)
+                .bind(new_id_str)
+                .bind(name)
+                .bind(avatar)
+                .bind(&old_account.csrf)
+                .bind(&old_account.cookies)
+                .bind(&old_account.created_at)
+                .execute(&lock)
+                .await?;
+        } else {
+            // id_str is the same, just update name and avatar
+            sqlx::query("UPDATE accounts SET name = $1, avatar = $2 WHERE uid = $3 and platform = $4")
+                .bind(name)
+                .bind(avatar)
+                .bind(old_account.uid as i64)
+                .bind(&old_account.platform)
+                .execute(&lock)
+                .await?;
+        }
+        
+        Ok(())
+    }
+
     pub async fn get_accounts(&self) -> Result<Vec<AccountRow>, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         Ok(sqlx::query_as::<_, AccountRow>("SELECT * FROM accounts")
@@ -133,6 +218,17 @@ impl Database {
             "SELECT * FROM accounts WHERE uid = $1 and platform = $2",
         )
         .bind(uid as i64)
+        .bind(platform)
+        .fetch_one(&lock)
+        .await?)
+    }
+
+    pub async fn get_account_by_id_str(&self, platform: &str, id_str: &str) -> Result<AccountRow, DatabaseError> {
+        let lock = self.db.read().await.clone().unwrap();
+        Ok(sqlx::query_as::<_, AccountRow>(
+            "SELECT * FROM accounts WHERE id_str = $1 and platform = $2",
+        )
+        .bind(id_str)
         .bind(platform)
         .fetch_one(&lock)
         .await?)

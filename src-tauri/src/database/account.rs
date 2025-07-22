@@ -171,7 +171,7 @@ impl Database {
         let lock = self.db.read().await.clone().unwrap();
         
         // If the id_str changed, we need to delete the old record and create a new one
-        if old_account.id_str.as_ref() != Some(new_id_str) {
+        if old_account.id_str.as_deref() != Some(new_id_str) {
             // Delete the old record (for Douyin accounts, we use uid to identify)
             sqlx::query("DELETE FROM accounts WHERE uid = $1 and platform = $2")
                 .bind(old_account.uid as i64)

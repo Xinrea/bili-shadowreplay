@@ -76,8 +76,8 @@ impl DouyinClient {
     }
 
     pub async fn get_user_info(&self) -> Result<super::response::User, DouyinClientError> {
-        // Try the API endpoint used for getting user info
-        let url = "https://www.douyin.com/aweme/v1/web/aweme/personal/";
+        // Use the IM spotlight relation API to get user info
+        let url = "https://www.douyin.com/aweme/v1/web/im/spotlight/relation/";
         let resp = self
             .client
             .get(url)
@@ -88,75 +88,48 @@ impl DouyinClient {
             .await?;
 
         if resp.status().is_success() {
-            if let Ok(data) = resp.json::<serde_json::Value>().await {
-                if let Some(user_info) = data["aweme_list"].as_array().and_then(|arr| arr.first()) {
-                    if let Some(author) = user_info["author"].as_object() {
-                        // Map the author info to our User struct
-                        let user = super::response::User {
-                            id_str: author["uid"].as_str().unwrap_or("").to_string(),
-                            sec_uid: author["sec_uid"].as_str().unwrap_or("").to_string(),
-                            nickname: author["nickname"].as_str().unwrap_or("").to_string(),
-                            avatar_thumb: super::response::AvatarThumb {
-                                url_list: author["avatar_thumb"]["url_list"]
-                                    .as_array()
-                                    .map(|arr| arr.iter().filter_map(|v| v.as_str()).map(|s| s.to_string()).collect())
-                                    .unwrap_or_default(),
-                            },
-                            follow_info: super::response::FollowInfo::default(),
-                            foreign_user: 0,
-                            open_id_str: "".to_string(),
-                        };
-                        return Ok(user);
-                    }
-                }
-            }
-        }
-
-        // Fallback: try to get user info from personal page
-        let url = "https://www.douyin.com/user/self";
-        let resp = self
-            .client
-            .get(url)
-            .header("Referer", "https://www.douyin.com/")
-            .header("User-Agent", USER_AGENT)
-            .header("Cookie", self.cookies.clone())
-            .send()
-            .await?;
-
-        let html = resp.text().await?;
-        
-        // Parse HTML to extract user info from SSR data
-        if let Some(start) = html.find("window.__INITIAL_STATE__") {
-            if let Some(eq_pos) = html[start..].find("=") {
-                if let Some(script_end) = html[start + eq_pos + 1..].find("</script>") {
-                    let json_str = html[start + eq_pos + 1..start + eq_pos + 1 + script_end].trim();
+            if let Ok(data) = resp.json::<super::response::DouyinRelationResponse>().await {
+                if data.status_code == 0 {
+                    let owner_sec_uid = &data.owner_sec_uid;
                     
-                    if let Ok(data) = serde_json::from_str::<serde_json::Value>(json_str) {
-                        if let Some(user_detail) = data["user"]["user"]["userDetail"].as_object() {
-                            let user = super::response::User {
-                                id_str: user_detail["user"]["uid"].as_str().unwrap_or("").to_string(),
-                                sec_uid: user_detail["user"]["secUid"].as_str().unwrap_or("").to_string(),
-                                nickname: user_detail["user"]["nickname"].as_str().unwrap_or("").to_string(),
-                                avatar_thumb: super::response::AvatarThumb {
-                                    url_list: user_detail["user"]["avatarThumb"]["urlList"]
-                                        .as_array()
-                                        .map(|arr| arr.iter().filter_map(|v| v.as_str()).map(|s| s.to_string()).collect())
-                                        .unwrap_or_default(),
-                                },
-                                follow_info: super::response::FollowInfo::default(),
-                                foreign_user: 0,
-                                open_id_str: "".to_string(),
-                            };
-                            return Ok(user);
+                    // Find the user's own info in the followings list by matching sec_uid
+                    if let Some(followings) = &data.followings {
+                        for following in followings {
+                            if following.sec_uid == *owner_sec_uid {
+                                let user = super::response::User {
+                                    id_str: following.uid.clone(),
+                                    sec_uid: following.sec_uid.clone(),
+                                    nickname: following.nickname.clone(),
+                                    avatar_thumb: following.avatar_thumb.clone(),
+                                    follow_info: super::response::FollowInfo::default(),
+                                    foreign_user: 0,
+                                    open_id_str: "".to_string(),
+                                };
+                                return Ok(user);
+                            }
                         }
                     }
+                    
+                    // If not found in followings, create a minimal user info from owner_sec_uid
+                    let user = super::response::User {
+                        id_str: "".to_string(), // We don't have the numeric UID
+                        sec_uid: owner_sec_uid.clone(),
+                        nickname: "抖音用户".to_string(), // Default nickname
+                        avatar_thumb: super::response::AvatarThumb {
+                            url_list: vec![],
+                        },
+                        follow_info: super::response::FollowInfo::default(),
+                        foreign_user: 0,
+                        open_id_str: "".to_string(),
+                    };
+                    return Ok(user);
                 }
             }
         }
         
         Err(DouyinClientError::Network(reqwest::Error::from(std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            "User info not found in response"
+            "Failed to get user info from Douyin relation API"
         ))))
     }
 
@@ -216,6 +189,68 @@ impl DouyinClient {
 mod tests {
     use super::*;
     use crate::database::account::AccountRow;
+
+    #[tokio::test]
+    async fn test_douyin_relation_response_parsing() {
+        // This test verifies that our JSON parsing logic works correctly
+        // with the new relation API response structure
+        let sample_response_json = r#"{
+            "extra": {
+                "fatal_item_ids": [],
+                "logid": "20250722225937443BF707B84858430847",
+                "now": 1753196377000
+            },
+            "followings": [
+                {
+                    "account_cert_info": "{}",
+                    "avatar_signature": "",
+                    "avatar_small": {
+                        "uri": "168x168/test",
+                        "url_list": ["https://example.com/small_avatar.jpg"]
+                    },
+                    "avatar_thumb": {
+                        "url_list": ["https://example.com/avatar.jpg"]
+                    },
+                    "birthday_hide_level": 0,
+                    "commerce_user_level": 0,
+                    "custom_verify": "",
+                    "enterprise_verify_reason": "",
+                    "follow_status": 0,
+                    "follower_status": 0,
+                    "has_e_account_role": false,
+                    "im_activeness": 3,
+                    "im_role_ids": [],
+                    "is_im_oversea_user": 0,
+                    "nickname": "测试用户",
+                    "sec_uid": "MS4wLjABAAAACYbubi2lhyaRNn7xCsb0xG9AeBaM4g2yo_7JeoUoL3c",
+                    "short_id": "3941301946",
+                    "signature": "",
+                    "social_relation_sub_type": 0,
+                    "social_relation_type": 0,
+                    "uid": "369055625381688",
+                    "unique_id": "testuser",
+                    "verification_type": 0,
+                    "webcast_sp_info": {}
+                }
+            ],
+            "owner_sec_uid": "MS4wLjABAAAACYbubi2lhyaRNn7xCsb0xG9AeBaM4g2yo_7JeoUoL3c",
+            "status_code": 0,
+            "log_pb": {
+                "impr_id": "20250722225937443BF707B84858430847"
+            }
+        }"#;
+
+        let response = serde_json::from_str::<super::response::DouyinRelationResponse>(sample_response_json).unwrap();
+        assert_eq!(response.status_code, 0);
+        assert_eq!(response.owner_sec_uid, "MS4wLjABAAAACYbubi2lhyaRNn7xCsb0xG9AeBaM4g2yo_7JeoUoL3c");
+        assert!(response.followings.is_some());
+        
+        let followings = response.followings.unwrap();
+        assert_eq!(followings.len(), 1);
+        assert_eq!(followings[0].nickname, "测试用户");
+        assert_eq!(followings[0].uid, "369055625381688");
+        assert_eq!(followings[0].sec_uid, "MS4wLjABAAAACYbubi2lhyaRNn7xCsb0xG9AeBaM4g2yo_7JeoUoL3c");
+    }
 
     #[tokio::test]
     async fn test_douyin_user_info_parsing() {

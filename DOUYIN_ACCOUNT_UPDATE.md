@@ -11,11 +11,19 @@
 **文件**: `src-tauri/src/recorder/douyin/client.rs`
 
 新增 `get_user_info` 方法：
-- 首先尝试通过抖音API接口获取用户信息
-- 如果API失败，则回退到解析HTML页面获取用户信息
+- 使用抖音IM关系接口 `https://www.douyin.com/aweme/v1/web/im/spotlight/relation/` 获取用户信息
+- 通过 `owner_sec_uid` 确定当前登录用户身份
+- 在 `followings` 数组中查找匹配的用户信息
 - 返回包含真实UID、昵称和头像的用户信息
 
-### 2. 数据库支持UID更新
+**文件**: `src-tauri/src/recorder/douyin/response.rs`
+
+新增抖音关系API响应结构体：
+- `DouyinRelationResponse` - 主响应结构
+- `Following` - 关注用户信息结构
+- `Extra2`, `LogPb`, `AvatarSmall` - 辅助结构体
+
+### 3. 数据库支持UID更新
 
 **文件**: `src-tauri/src/database/account.rs`
 
@@ -24,7 +32,7 @@
 - 当UID发生变化时，自动删除旧记录并创建新记录
 - 确保数据库的一致性
 
-### 3. 账号添加时获取真实信息
+### 4. 账号添加时获取真实信息
 
 **文件**: `src-tauri/src/handlers/account.rs`
 
@@ -33,7 +41,7 @@
 - 自动更新账号的UID、昵称和头像
 - 失败时保留账号但使用默认值，并记录警告日志
 
-### 4. 程序启动时自动更新账号信息
+### 5. 程序启动时自动更新账号信息
 
 **文件**: `src-tauri/src/main.rs`
 
@@ -42,7 +50,7 @@
 - 自动调用API更新账号信息
 - 支持GUI模式和headless模式
 
-### 5. 前端界面优化
+### 6. 前端界面优化
 
 **文件**: `src/page/Account.svelte`
 
@@ -67,9 +75,16 @@
 ## 技术细节
 
 ### API调用策略
-1. **主要方式**: 直接调用抖音API接口
-2. **备用方式**: 解析HTML页面中的SSR数据
-3. **错误处理**: 失败时保留现有账号信息并记录日志
+1. **主要方式**: 使用抖音IM关系接口 `https://www.douyin.com/aweme/v1/web/im/spotlight/relation/`
+2. **数据获取**: 从响应中的 `owner_sec_uid` 和 `followings` 数组获取用户信息
+3. **备用机制**: 如果在关注列表中找不到自己，使用 `owner_sec_uid` 创建基本用户信息
+4. **错误处理**: 失败时保留现有账号信息并记录日志
+
+### 新API优势
+- **更可靠**: 直接使用抖音官方IM接口，避免HTML解析的不稳定性
+- **更完整**: 能够获取完整的用户信息，包括头像、昵称等
+- **更准确**: 通过 `owner_sec_uid` 精确匹配当前登录用户
+- **结构化数据**: JSON响应便于解析和维护
 
 ### 数据库处理
 - 使用事务确保数据一致性
@@ -90,6 +105,7 @@
 ## 测试
 
 添加了单元测试验证JSON解析逻辑：
-- 测试用户信息结构体的反序列化
-- 验证关键字段的正确解析
+- `test_douyin_relation_response_parsing` - 测试新的关系API响应结构解析
+- `test_douyin_user_info_parsing` - 测试用户信息结构体的反序列化
+- 验证关键字段的正确解析，包括 `owner_sec_uid` 和 `followings` 数组
 - 确保API响应处理的稳定性

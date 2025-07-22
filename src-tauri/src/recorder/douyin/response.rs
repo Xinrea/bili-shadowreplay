@@ -590,3 +590,90 @@ pub struct User {
     #[serde(rename = "open_id_str")]
     pub open_id_str: String,
 }
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DouyinRelationResponse {
+    pub extra: Option<Extra2>,
+    pub followings: Option<Vec<Following>>,
+    #[serde(rename = "owner_sec_uid")]
+    pub owner_sec_uid: String,
+    #[serde(rename = "status_code")]
+    pub status_code: i64,
+    #[serde(rename = "log_pb")]
+    pub log_pb: Option<LogPb>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Extra2 {
+    #[serde(rename = "fatal_item_ids")]
+    pub fatal_item_ids: Vec<String>,
+    pub logid: String,
+    pub now: i64,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogPb {
+    #[serde(rename = "impr_id")]
+    pub impr_id: String,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Following {
+    #[serde(rename = "account_cert_info")]
+    pub account_cert_info: String,
+    #[serde(rename = "avatar_signature")]
+    pub avatar_signature: String,
+    #[serde(rename = "avatar_small")]
+    pub avatar_small: AvatarSmall,
+    #[serde(rename = "avatar_thumb")]
+    pub avatar_thumb: AvatarThumb,
+    #[serde(rename = "birthday_hide_level")]
+    pub birthday_hide_level: i64,
+    #[serde(rename = "commerce_user_level")]
+    pub commerce_user_level: i64,
+    #[serde(rename = "custom_verify")]
+    pub custom_verify: String,
+    #[serde(rename = "enterprise_verify_reason")]
+    pub enterprise_verify_reason: String,
+    #[serde(rename = "follow_status")]
+    pub follow_status: i64,
+    #[serde(rename = "follower_status")]
+    pub follower_status: i64,
+    #[serde(rename = "has_e_account_role")]
+    pub has_e_account_role: bool,
+    #[serde(rename = "im_activeness")]
+    pub im_activeness: i64,
+    #[serde(rename = "im_role_ids")]
+    pub im_role_ids: Vec<serde_json::Value>,
+    #[serde(rename = "is_im_oversea_user")]
+    pub is_im_oversea_user: i64,
+    pub nickname: String,
+    #[serde(rename = "sec_uid")]
+    pub sec_uid: String,
+    #[serde(rename = "short_id")]
+    pub short_id: String,
+    pub signature: String,
+    #[serde(rename = "social_relation_sub_type")]
+    pub social_relation_sub_type: i64,
+    #[serde(rename = "social_relation_type")]
+    pub social_relation_type: i64,
+    pub uid: String,
+    #[serde(rename = "unique_id")]
+    pub unique_id: String,
+    #[serde(rename = "verification_type")]
+    pub verification_type: i64,
+    #[serde(rename = "webcast_sp_info")]
+    pub webcast_sp_info: serde_json::Value,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AvatarSmall {
+    pub uri: String,
+    #[serde(rename = "url_list")]
+    pub url_list: Vec<String>,
+}

@@ -6,26 +6,25 @@
 
 ```
 doc/cursor/
-├── README.md                    # 本文件，目录说明
-├── MODIFICATION_SUMMARY.md     # Recorder update_entries 修改总结
-└── RECORDER_FLOW_DIAGRAM.md    # Recorder 执行流程图
+├── README.md                           # 本文件，目录说明
+└── recorder-update-entries-fix/        # Recorder update_entries 修复任务
+    ├── README.md                       # 任务说明和概述
+    ├── MODIFICATION_SUMMARY.md        # 详细修改总结
+    └── RECORDER_FLOW_DIAGRAM.md       # 执行流程图
 ```
 
-## 📄 文档列表
+## 📂 任务文件夹
 
-### [MODIFICATION_SUMMARY.md](./MODIFICATION_SUMMARY.md)
-**Recorder Update Entries 修改总结**
-- 详细说明了对 `update_entries` 函数的修改
-- 包含问题描述、解决方案、具体修改内容
-- 涵盖了目录清理策略和错误处理逻辑
-- 提供测试建议和注意事项
-
-### [RECORDER_FLOW_DIAGRAM.md](./RECORDER_FLOW_DIAGRAM.md)
-**Recorder 执行流程图**
-- 使用 Mermaid 图表展示两种 recorder 的执行流程
-- 包含 Bilibili Recorder 和 Douyin Recorder 的详细流程
-- 对比两种 recorder 的关键差异
-- 展示错误处理和状态管理的逻辑
+### [recorder-update-entries-fix/](./recorder-update-entries-fix/)
+**Recorder Update Entries 修复任务**
+- **任务目标**：修改 recorder 的 `update_entries` 函数逻辑
+- **主要改进**：仅在成功下载后创建记录，失败时清理空目录
+- **影响文件**：`bilibili.rs` 和 `douyin.rs`
+- **文档内容**：
+  - 任务概述和解决方案
+  - 详细的代码修改说明
+  - Mermaid 流程图和对比分析
+  - 测试建议和注意事项
 
 ## 🎯 文档用途
 
@@ -36,19 +35,18 @@ doc/cursor/
 3. **知识传承**：记录设计决策和实现细节
 4. **问题排查**：提供流程图帮助调试和问题定位
 
-## 📝 文档更新
+## 📝 文档管理
 
-- **创建时间**：2024年
+- **组织方式**：按任务建立独立文件夹
+- **命名规范**：使用描述性的文件夹名称
 - **更新频率**：随代码修改同步更新
 - **维护者**：Cursor AI
 
 ## 🔗 相关资源
 
 - 源代码位置：`src-tauri/src/recorder/`
-- 主要修改文件：
-  - `src-tauri/src/recorder/bilibili.rs`
-  - `src-tauri/src/recorder/douyin.rs`
+- 项目根目录：`/workspace`
 
 ---
 
-> 💡 **提示**：这些文档是对代码修改的详细记录，建议在进行相关开发时参考。
+> 💡 **提示**：每个任务都有独立的文件夹，便于管理和查阅特定任务的相关文档。

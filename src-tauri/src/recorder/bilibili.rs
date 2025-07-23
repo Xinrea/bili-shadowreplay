@@ -582,61 +582,85 @@ impl BiliRecorder {
                 super::errors::RecorderError::IoError { err: e }
             })?;
             
-            // Download header
-            match self
-                .client
-                .read()
-                .await
-                .download_ts(&full_header_url, &format!("{}/{}", work_dir, file_name))
-                .await
-            {
-                Ok(size) => {
-                    if size == 0 {
-                        log::error!("Download header failed: {}", full_header_url);
-                        // Clean up empty directory since header download failed
-                        if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
-                            log::warn!("Failed to cleanup empty work directory {}: {}", work_dir, cleanup_err);
-                        }
-                        return Err(super::errors::RecorderError::InvalidStream {
-                            stream: current_stream,
-                        });
-                    }
-                    header.size = size;
-                    
-                    // Now that download succeeded, create the record and setup stores
-                    self.db
-                        .add_record(
-                            PlatformType::BiliBili,
-                            timestamp.to_string().as_str(),
-                            self.room_id,
-                            &self.room_info.read().await.room_title,
-                            self.cover.read().await.clone(),
-                            None,
-                        )
-                        .await?;
-
-                    let entry_store = EntryStore::new(&work_dir).await;
-                    *self.entry_store.write().await = Some(entry_store);
-
-                    // danmu file
-                    let danmu_file_path = format!("{}{}", work_dir, "danmu.txt");
-                    *self.danmu_storage.write().await = DanmuStorage::new(&danmu_file_path).await;
-                    
-                    self.entry_store
-                        .write()
-                        .await
-                        .as_mut()
-                        .unwrap()
-                        .add_entry(header)
-                        .await;
-                }
-                Err(e) => {
-                    log::error!("Download header failed: {}", e);
+            // Download header with retry mechanism
+            let mut retry = 0;
+            loop {
+                if retry > 3 {
+                    log::error!("Download header failed after retry: {}", full_header_url);
                     // Clean up empty directory since header download failed
                     if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
                         log::warn!("Failed to cleanup empty work directory {}: {}", work_dir, cleanup_err);
                     }
-                    return Err(e.into());
+                    return Err(super::errors::RecorderError::InvalidStream {
+                        stream: current_stream,
+                    });
+                }
+                
+                match self
+                    .client
+                    .read()
+                    .await
+                    .download_ts(&full_header_url, &format!("{}/{}", work_dir, file_name))
+                    .await
+                {
+                    Ok(size) => {
+                        if size == 0 {
+                            log::error!("Download header failed: {}", full_header_url);
+                            // Clean up empty directory since header download failed
+                            if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
+                                log::warn!("Failed to cleanup empty work directory {}: {}", work_dir, cleanup_err);
+                            }
+                            return Err(super::errors::RecorderError::InvalidStream {
+                                stream: current_stream,
+                            });
+                        }
+                        header.size = size;
+                        
+                        // Now that download succeeded, create the record and setup stores
+                        self.db
+                            .add_record(
+                                PlatformType::BiliBili,
+                                timestamp.to_string().as_str(),
+                                self.room_id,
+                                &self.room_info.read().await.room_title,
+                                self.cover.read().await.clone(),
+                                None,
+                            )
+                            .await?;
+
+                        let entry_store = EntryStore::new(&work_dir).await;
+                        *self.entry_store.write().await = Some(entry_store);
+
+                        // danmu file
+                        let danmu_file_path = format!("{}{}", work_dir, "danmu.txt");
+                        *self.danmu_storage.write().await = DanmuStorage::new(&danmu_file_path).await;
+                        
+                        self.entry_store
+                            .write()
+                            .await
+                            .as_mut()
+                            .unwrap()
+                            .add_entry(header)
+                            .await;
+                        break; // 成功下载，跳出循环
+                    }
+                    Err(e) => {
+                        retry += 1;
+                        log::warn!("Download header failed, retry {}: {}", retry, e);
+                        
+                        // If this is the last retry, clean up and return error
+                        if retry > 3 {
+                            if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
+                                log::warn!("Failed to cleanup empty work directory {}: {}", work_dir, cleanup_err);
+                            }
+                            return Err(e.into());
+                        }
+                        
+                        // Add exponential backoff delay before retry
+                        tokio::time::sleep(tokio::time::Duration::from_millis(
+                            100 * 2_u64.pow(retry.saturating_sub(1) as u32)
+                        )).await;
+                    }
                 }
             }
         } else {

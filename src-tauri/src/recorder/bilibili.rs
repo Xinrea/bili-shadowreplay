@@ -659,8 +659,8 @@ impl BiliRecorder {
                     .read()
                     .await
                     .as_ref()
-                    .unwrap()
-                    .last_sequence;
+                    .map(|store| store.last_sequence)
+                    .unwrap_or(0); // For first-time recording, start from 0
 
                 for (i, ts) in pl.segments.iter().enumerate() {
                     let sequence = pl.media_sequence + i as u64;
@@ -805,12 +805,14 @@ impl BiliRecorder {
                     }
                 }
                 // check the current stream is too slow or not
-                if let Some(last_ts) = self.entry_store.read().await.as_ref().unwrap().last_ts() {
-                    if last_ts < Utc::now().timestamp() - 10 {
-                        log::error!("Stream is too slow, last entry ts is at {}", last_ts);
-                        return Err(super::errors::RecorderError::SlowStream {
-                            stream: current_stream,
-                        });
+                if let Some(entry_store) = self.entry_store.read().await.as_ref() {
+                    if let Some(last_ts) = entry_store.last_ts() {
+                        if last_ts < Utc::now().timestamp() - 10 {
+                            log::error!("Stream is too slow, last entry ts is at {}", last_ts);
+                            return Err(super::errors::RecorderError::SlowStream {
+                                stream: current_stream,
+                            });
+                        }
                     }
                 }
             }
@@ -866,11 +868,16 @@ impl BiliRecorder {
             None
         };
 
-        self.entry_store.read().await.as_ref().unwrap().manifest(
-            !live_status || range.is_some(),
-            true,
-            range,
-        )
+        if let Some(entry_store) = self.entry_store.read().await.as_ref() {
+            entry_store.manifest(
+                !live_status || range.is_some(),
+                true,
+                range,
+            )
+        } else {
+            // Return empty manifest if entry_store is not initialized yet
+            "#EXTM3U\n#EXT-X-VERSION:3\n".to_string()
+        }
     }
 }
 

@@ -16,7 +16,8 @@
 doc/cursor/recorder-update-entries-fix/
 ├── README.md                    # 本文件，任务说明
 ├── MODIFICATION_SUMMARY.md     # 详细修改总结
-└── RECORDER_FLOW_DIAGRAM.md    # 执行流程图
+├── RECORDER_FLOW_DIAGRAM.md    # 执行流程图
+└── BUG_FIX_PANIC.md            # Panic Bug 修复记录
 ```
 
 ## 📄 文档说明
@@ -35,6 +36,13 @@ doc/cursor/recorder-update-entries-fix/
 - 错误处理流程
 - 状态管理对比
 
+### [BUG_FIX_PANIC.md](./BUG_FIX_PANIC.md)
+**Panic Bug 修复记录**
+- 非 FMP4 流首次录制的 panic 问题
+- 详细的问题分析和修复方案
+- 根本原因和经验教训
+- 测试验证方法
+
 ## 🔧 主要修改
 
 ### 影响的文件
@@ -45,6 +53,7 @@ doc/cursor/recorder-update-entries-fix/
 1. **延迟创建记录**：只有在成功下载内容后才创建数据库记录
 2. **目录清理机制**：下载失败时自动删除空目录
 3. **优化初始化逻辑**：将存储初始化延迟到实际需要时
+4. **修复 Panic Bug**：解决非 FMP4 流首次录制时的 panic 问题
 
 ## 🎯 改进效果
 
@@ -52,6 +61,7 @@ doc/cursor/recorder-update-entries-fix/
 - ✅ **避免空目录**：文件系统中不会留下空的录制目录
 - ✅ **更好的错误处理**：所有失败场景都有对应的清理逻辑
 - ✅ **资源优化**：避免创建不必要的对象和任务
+- ✅ **修复崩溃问题**：解决非 FMP4 流首次录制的 panic
 
 ## 📝 开发记录
 

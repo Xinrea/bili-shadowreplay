@@ -504,15 +504,6 @@ impl BiliRecorder {
         if index_content.is_empty() {
             return Err(super::errors::RecorderError::InvalidStream { stream });
         }
-        let index_content = self
-            .client
-            .read()
-            .await
-            .get_index_content(&self.account, &stream.index())
-            .await?;
-        if index_content.is_empty() {
-            return Err(super::errors::RecorderError::InvalidStream { stream });
-        }
         if index_content.contains("Not Found") {
             return Err(super::errors::RecorderError::IndexNotFound {
                 url: stream.index(),
@@ -550,7 +541,9 @@ impl BiliRecorder {
         let current_stream = current_stream.unwrap();
         let parsed = self.get_playlist().await;
         let mut timestamp: i64 = self.live_id.read().await.parse::<i64>().unwrap_or(0);
-        let mut work_dir = self.get_work_dir(timestamp.to_string().as_str()).await;
+        let mut work_dir = String::new();
+        let mut is_first_record = false;
+        
         // Check header if None
         if (self.entry_store.read().await.as_ref().is_none()
             || self
@@ -570,26 +563,9 @@ impl BiliRecorder {
             }
             timestamp = Utc::now().timestamp_millis();
             *self.live_id.write().await = timestamp.to_string();
-
-            self.db
-                .add_record(
-                    PlatformType::BiliBili,
-                    timestamp.to_string().as_str(),
-                    self.room_id,
-                    &self.room_info.read().await.room_title,
-                    self.cover.read().await.clone(),
-                    None,
-                )
-                .await?;
-            // now work dir is confirmed
             work_dir = self.get_work_dir(timestamp.to_string().as_str()).await;
+            is_first_record = true;
 
-            let entry_store = EntryStore::new(&work_dir).await;
-            *self.entry_store.write().await = Some(entry_store);
-
-            // danmau file
-            let danmu_file_path = format!("{}{}", work_dir, "danmu.txt");
-            *self.danmu_storage.write().await = DanmuStorage::new(&danmu_file_path).await;
             let full_header_url = current_stream.ts_url(&header_url);
             let file_name = header_url.split('/').next_back().unwrap();
             let mut header = TsEntry {
@@ -600,6 +576,12 @@ impl BiliRecorder {
                 ts: timestamp,
                 is_header: true,
             };
+            
+            // Create work directory before download
+            tokio::fs::create_dir_all(&work_dir).await.map_err(|e| {
+                super::errors::RecorderError::IoError { err: e }
+            })?;
+            
             // Download header
             match self
                 .client
@@ -611,11 +593,35 @@ impl BiliRecorder {
                 Ok(size) => {
                     if size == 0 {
                         log::error!("Download header failed: {}", full_header_url);
+                        // Clean up empty directory since header download failed
+                        if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
+                            log::warn!("Failed to cleanup empty work directory {}: {}", work_dir, cleanup_err);
+                        }
                         return Err(super::errors::RecorderError::InvalidStream {
                             stream: current_stream,
                         });
                     }
                     header.size = size;
+                    
+                    // Now that download succeeded, create the record and setup stores
+                    self.db
+                        .add_record(
+                            PlatformType::BiliBili,
+                            timestamp.to_string().as_str(),
+                            self.room_id,
+                            &self.room_info.read().await.room_title,
+                            self.cover.read().await.clone(),
+                            None,
+                        )
+                        .await?;
+
+                    let entry_store = EntryStore::new(&work_dir).await;
+                    *self.entry_store.write().await = Some(entry_store);
+
+                    // danmu file
+                    let danmu_file_path = format!("{}{}", work_dir, "danmu.txt");
+                    *self.danmu_storage.write().await = DanmuStorage::new(&danmu_file_path).await;
+                    
                     self.entry_store
                         .write()
                         .await
@@ -626,9 +632,24 @@ impl BiliRecorder {
                 }
                 Err(e) => {
                     log::error!("Download header failed: {}", e);
+                    // Clean up empty directory since header download failed
+                    if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
+                        log::warn!("Failed to cleanup empty work directory {}: {}", work_dir, cleanup_err);
+                    }
+                    return Err(e.into());
                 }
             }
+        } else {
+            work_dir = self.get_work_dir(timestamp.to_string().as_str()).await;
+            // For non-FMP4 streams, check if we need to initialize
+            if self.entry_store.read().await.as_ref().is_none() {
+                timestamp = Utc::now().timestamp_millis();
+                *self.live_id.write().await = timestamp.to_string();
+                work_dir = self.get_work_dir(timestamp.to_string().as_str()).await;
+                is_first_record = true;
+            }
         }
+        
         match parsed {
             Ok(Playlist::MasterPlaylist(pl)) => log::debug!("Master playlist:\n{:?}", pl),
             Ok(Playlist::MediaPlaylist(pl)) => {
@@ -638,8 +659,8 @@ impl BiliRecorder {
                     .read()
                     .await
                     .as_ref()
-                    .unwrap()
-                    .last_sequence;
+                    .map(|store| store.last_sequence)
+                    .unwrap_or(0); // For first-time recording, start from 0
 
                 for (i, ts) in pl.segments.iter().enumerate() {
                     let sequence = pl.media_sequence + i as u64;
@@ -659,9 +680,28 @@ impl BiliRecorder {
                     let ts_length = pl.target_duration as f64;
                     let client = self.client.clone();
                     let mut retry = 0;
+                    let mut work_dir_created_for_non_fmp4 = false;
+                    
+                    // For non-FMP4 streams, create record on first successful ts download
+                    if is_first_record && current_stream.format != StreamType::FMP4 {
+                        // Create work directory before first ts download
+                        tokio::fs::create_dir_all(&work_dir).await.map_err(|e| {
+                            super::errors::RecorderError::IoError { err: e }
+                        })?;
+                        work_dir_created_for_non_fmp4 = true;
+                    }
+                    
                     loop {
                         if retry > 3 {
                             log::error!("Download ts failed after retry");
+                            
+                            // Clean up empty directory if first ts download failed for non-FMP4
+                            if is_first_record && current_stream.format != StreamType::FMP4 && work_dir_created_for_non_fmp4 {
+                                if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
+                                    log::warn!("Failed to cleanup empty work directory {}: {}", work_dir, cleanup_err);
+                                }
+                            }
+                            
                             break;
                         }
                         match client
@@ -673,9 +713,40 @@ impl BiliRecorder {
                             Ok(size) => {
                                 if size == 0 {
                                     log::error!("Segment with size 0, stream might be corrupted");
+                                    
+                                    // Clean up empty directory if first ts download failed for non-FMP4
+                                    if is_first_record && current_stream.format != StreamType::FMP4 && work_dir_created_for_non_fmp4 {
+                                        if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
+                                            log::warn!("Failed to cleanup empty work directory {}: {}", work_dir, cleanup_err);
+                                        }
+                                    }
+                                    
                                     return Err(super::errors::RecorderError::InvalidStream {
                                         stream: current_stream,
                                     });
+                                }
+                                
+                                // Create record and setup stores on first successful download for non-FMP4
+                                if is_first_record && current_stream.format != StreamType::FMP4 {
+                                    self.db
+                                        .add_record(
+                                            PlatformType::BiliBili,
+                                            timestamp.to_string().as_str(),
+                                            self.room_id,
+                                            &self.room_info.read().await.room_title,
+                                            self.cover.read().await.clone(),
+                                            None,
+                                        )
+                                        .await?;
+
+                                    let entry_store = EntryStore::new(&work_dir).await;
+                                    *self.entry_store.write().await = Some(entry_store);
+
+                                    // danmu file
+                                    let danmu_file_path = format!("{}{}", work_dir, "danmu.txt");
+                                    *self.danmu_storage.write().await = DanmuStorage::new(&danmu_file_path).await;
+                                    
+                                    is_first_record = false;
                                 }
 
                                 self.entry_store
@@ -698,6 +769,13 @@ impl BiliRecorder {
                             Err(e) => {
                                 retry += 1;
                                 log::warn!("Download ts failed, retry {}: {}", retry, e);
+                                
+                                // If this is the last retry and it's the first record for non-FMP4, clean up
+                                if retry > 3 && is_first_record && current_stream.format != StreamType::FMP4 && work_dir_created_for_non_fmp4 {
+                                    if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
+                                        log::warn!("Failed to cleanup empty work directory {}: {}", work_dir, cleanup_err);
+                                    }
+                                }
                             }
                         }
                     }
@@ -727,12 +805,14 @@ impl BiliRecorder {
                     }
                 }
                 // check the current stream is too slow or not
-                if let Some(last_ts) = self.entry_store.read().await.as_ref().unwrap().last_ts() {
-                    if last_ts < Utc::now().timestamp() - 10 {
-                        log::error!("Stream is too slow, last entry ts is at {}", last_ts);
-                        return Err(super::errors::RecorderError::SlowStream {
-                            stream: current_stream,
-                        });
+                if let Some(entry_store) = self.entry_store.read().await.as_ref() {
+                    if let Some(last_ts) = entry_store.last_ts() {
+                        if last_ts < Utc::now().timestamp() - 10 {
+                            log::error!("Stream is too slow, last entry ts is at {}", last_ts);
+                            return Err(super::errors::RecorderError::SlowStream {
+                                stream: current_stream,
+                            });
+                        }
                     }
                 }
             }
@@ -788,11 +868,16 @@ impl BiliRecorder {
             None
         };
 
-        self.entry_store.read().await.as_ref().unwrap().manifest(
-            !live_status || range.is_some(),
-            true,
-            range,
-        )
+        if let Some(entry_store) = self.entry_store.read().await.as_ref() {
+            entry_store.manifest(
+                !live_status || range.is_some(),
+                true,
+                range,
+            )
+        } else {
+            // Return empty manifest if entry_store is not initialized yet
+            "#EXTM3U\n#EXT-X-VERSION:3\n".to_string()
+        }
     }
 }
 

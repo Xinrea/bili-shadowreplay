@@ -209,59 +209,8 @@ impl DouyinRecorder {
                     .hls_pull_url
                     .is_empty()
                 {
-                    *self.live_id.write().await = Utc::now().timestamp_millis().to_string();
-                    *self.danmu_room_id.write().await = info.data.data[0].id_str.clone();
-                    // create a new record
-                    let cover_url = info.data.data[0]
-                        .cover
-                        .as_ref()
-                        .map(|cover| cover.url_list[0].clone());
-                    let cover = if let Some(url) = cover_url {
-                        Some(self.client.get_cover_base64(&url).await.unwrap())
-                    } else {
-                        None
-                    };
-
-                    if let Err(e) = self
-                        .db
-                        .add_record(
-                            PlatformType::Douyin,
-                            self.live_id.read().await.as_str(),
-                            self.room_id,
-                            &info.data.data[0].title,
-                            cover,
-                            None,
-                        )
-                        .await
-                    {
-                        log::error!("Failed to add record: {}", e);
-                    }
-
-                    // setup entry store
-                    let work_dir = self.get_work_dir(self.live_id.read().await.as_str()).await;
-                    let entry_store = EntryStore::new(&work_dir).await;
-                    *self.entry_store.write().await = Some(entry_store);
-
-                    // setup danmu store
-                    let danmu_file_path = format!("{}{}", work_dir, "danmu.txt");
-                    let danmu_store = DanmuStorage::new(&danmu_file_path).await;
-                    *self.danmu_store.write().await = danmu_store;
-
-                    // start danmu task
-                    if let Some(danmu_task) = self.danmu_task.lock().await.as_mut() {
-                        danmu_task.abort();
-                    }
-                    if let Some(danmu_stream_task) = self.danmu_stream_task.lock().await.as_mut() {
-                        danmu_stream_task.abort();
-                    }
-                    let live_id = self.live_id.read().await.clone();
-                    let self_clone = self.clone();
-                    *self.danmu_task.lock().await = Some(tokio::spawn(async move {
-                        log::info!("Start fetching danmu for live {}", live_id);
-                        let _ = self_clone.danmu().await;
-                    }));
-
-                    // setup stream url
+                    // Only set stream URL, don't create record yet
+                    // Record will be created when first ts download succeeds
                     let new_stream_url = self.get_best_stream_url(&info).await;
                     if new_stream_url.is_none() {
                         log::error!("No stream url found in room_info: {:#?}", info);
@@ -270,6 +219,7 @@ impl DouyinRecorder {
 
                     log::info!("New douyin stream URL: {}", new_stream_url.clone().unwrap());
                     *self.stream_url.write().await = Some(new_stream_url.unwrap());
+                    *self.danmu_room_id.write().await = info.data.data[0].id_str.clone();
                 }
 
                 true
@@ -412,18 +362,29 @@ impl DouyinRecorder {
         *self.stream_url.write().await = Some(updated_stream_url);
 
         let mut new_segment_fetched = false;
-        let work_dir = self.get_work_dir(self.live_id.read().await.as_str()).await;
+        let mut is_first_segment = self.entry_store.read().await.is_none();
+        let mut work_dir = String::new();
+        
+        // If this is the first segment, prepare but don't create directories yet
+        if is_first_segment {
+            // Generate live_id for potential use
+            let live_id = Utc::now().timestamp_millis().to_string();
+            *self.live_id.write().await = live_id.clone();
+            work_dir = self.get_work_dir(&live_id).await;
+        } else {
+            work_dir = self.get_work_dir(self.live_id.read().await.as_str()).await;
+        }
 
-        // Create work directory if not exists
-        tokio::fs::create_dir_all(&work_dir).await?;
-
-        let last_sequence = self
-            .entry_store
-            .read()
-            .await
-            .as_ref()
-            .unwrap()
-            .last_sequence;
+        let last_sequence = if is_first_segment {
+            0
+        } else {
+            self.entry_store
+                .read()
+                .await
+                .as_ref()
+                .unwrap()
+                .last_sequence
+        };
 
         for segment in playlist.segments.iter() {
             let formated_ts_name = segment.uri.clone();
@@ -460,16 +421,26 @@ impl DouyinRecorder {
                 }
             };
             
-
-
             // Download segment with retry mechanism
             let mut retry_count = 0;
             let max_retries = 3;
             let mut download_success = false;
+            let mut work_dir_created = false;
             
             while retry_count < max_retries && !download_success {
                 let file_name = format!("{}.ts", sequence);
                 let file_path = format!("{}/{}", work_dir, file_name);
+                
+                // If this is the first segment, create work directory before first download attempt
+                if is_first_segment && !work_dir_created {
+                    // Create work directory only when we're about to download
+                    if let Err(e) = tokio::fs::create_dir_all(&work_dir).await {
+                        log::error!("Failed to create work directory: {}", e);
+                        return Err(e.into());
+                    }
+                    work_dir_created = true;
+                }
+                
                 match self
                     .client
                     .download_ts(&ts_url, &file_path)
@@ -485,6 +456,62 @@ impl DouyinRecorder {
                             }
                             break;
                         }
+
+                        // If this is the first successful download, create record and initialize stores
+                        if is_first_segment {
+                            // Create database record
+                            let room_info = room_info.as_ref().unwrap();
+                            let cover_url = room_info.data.data[0]
+                                .cover
+                                .as_ref()
+                                .map(|cover| cover.url_list[0].clone());
+                            let cover = if let Some(url) = cover_url {
+                                Some(self.client.get_cover_base64(&url).await.unwrap_or_default())
+                            } else {
+                                None
+                            };
+
+                            if let Err(e) = self
+                                .db
+                                .add_record(
+                                    PlatformType::Douyin,
+                                    self.live_id.read().await.as_str(),
+                                    self.room_id,
+                                    &room_info.data.data[0].title,
+                                    cover,
+                                    None,
+                                )
+                                .await
+                            {
+                                log::error!("Failed to add record: {}", e);
+                            }
+
+                            // Setup entry store
+                            let entry_store = EntryStore::new(&work_dir).await;
+                            *self.entry_store.write().await = Some(entry_store);
+
+                            // Setup danmu store
+                            let danmu_file_path = format!("{}{}", work_dir, "danmu.txt");
+                            let danmu_store = DanmuStorage::new(&danmu_file_path).await;
+                            *self.danmu_store.write().await = danmu_store;
+
+                            // Start danmu task
+                            if let Some(danmu_task) = self.danmu_task.lock().await.as_mut() {
+                                danmu_task.abort();
+                            }
+                            if let Some(danmu_stream_task) = self.danmu_stream_task.lock().await.as_mut() {
+                                danmu_stream_task.abort();
+                            }
+                            let live_id = self.live_id.read().await.clone();
+                            let self_clone = self.clone();
+                            *self.danmu_task.lock().await = Some(tokio::spawn(async move {
+                                log::info!("Start fetching danmu for live {}", live_id);
+                                let _ = self_clone.danmu().await;
+                            }));
+
+                            is_first_segment = false;
+                        }
+
                         let ts_entry = TsEntry {
                             url: file_name,
                             sequence,
@@ -517,8 +544,24 @@ impl DouyinRecorder {
                         if e.to_string().contains("400") {
                             log::error!("HTTP 400 error for segment, stream URL may be expired: {}", ts_url);
                             *self.stream_url.write().await = None;
+                            
+                            // Clean up empty directory if first segment failed
+                            if is_first_segment && work_dir_created {
+                                if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
+                                    log::warn!("Failed to cleanup empty work directory {}: {}", work_dir, cleanup_err);
+                                }
+                            }
+                            
                             return Err(RecorderError::NoStreamAvailable);
                         }
+                        
+                        // Clean up empty directory if first segment failed
+                        if is_first_segment && work_dir_created {
+                            if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
+                                log::warn!("Failed to cleanup empty work directory {}: {}", work_dir, cleanup_err);
+                            }
+                        }
+                        
                         return Err(e.into());
                     }
                 }
@@ -526,6 +569,14 @@ impl DouyinRecorder {
             
             if !download_success {
                 log::error!("Failed to download segment after {} retries: {}", max_retries, ts_url);
+                
+                // Clean up empty directory if first segment failed after all retries
+                if is_first_segment && work_dir_created {
+                    if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
+                        log::warn!("Failed to cleanup empty work directory {}: {}", work_dir, cleanup_err);
+                    }
+                }
+                
                 continue;
             }
         }

@@ -593,6 +593,10 @@ impl BiliRecorder {
                 Ok(size) => {
                     if size == 0 {
                         log::error!("Download header failed: {}", full_header_url);
+                        // Clean up empty directory since header download failed
+                        if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
+                            log::warn!("Failed to cleanup empty work directory {}: {}", work_dir, cleanup_err);
+                        }
                         return Err(super::errors::RecorderError::InvalidStream {
                             stream: current_stream,
                         });
@@ -628,6 +632,10 @@ impl BiliRecorder {
                 }
                 Err(e) => {
                     log::error!("Download header failed: {}", e);
+                    // Clean up empty directory since header download failed
+                    if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
+                        log::warn!("Failed to cleanup empty work directory {}: {}", work_dir, cleanup_err);
+                    }
                     return Err(e.into());
                 }
             }
@@ -672,6 +680,7 @@ impl BiliRecorder {
                     let ts_length = pl.target_duration as f64;
                     let client = self.client.clone();
                     let mut retry = 0;
+                    let mut work_dir_created_for_non_fmp4 = false;
                     
                     // For non-FMP4 streams, create record on first successful ts download
                     if is_first_record && current_stream.format != StreamType::FMP4 {
@@ -679,11 +688,20 @@ impl BiliRecorder {
                         tokio::fs::create_dir_all(&work_dir).await.map_err(|e| {
                             super::errors::RecorderError::IoError { err: e }
                         })?;
+                        work_dir_created_for_non_fmp4 = true;
                     }
                     
                     loop {
                         if retry > 3 {
                             log::error!("Download ts failed after retry");
+                            
+                            // Clean up empty directory if first ts download failed for non-FMP4
+                            if is_first_record && current_stream.format != StreamType::FMP4 && work_dir_created_for_non_fmp4 {
+                                if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
+                                    log::warn!("Failed to cleanup empty work directory {}: {}", work_dir, cleanup_err);
+                                }
+                            }
+                            
                             break;
                         }
                         match client
@@ -695,6 +713,14 @@ impl BiliRecorder {
                             Ok(size) => {
                                 if size == 0 {
                                     log::error!("Segment with size 0, stream might be corrupted");
+                                    
+                                    // Clean up empty directory if first ts download failed for non-FMP4
+                                    if is_first_record && current_stream.format != StreamType::FMP4 && work_dir_created_for_non_fmp4 {
+                                        if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
+                                            log::warn!("Failed to cleanup empty work directory {}: {}", work_dir, cleanup_err);
+                                        }
+                                    }
+                                    
                                     return Err(super::errors::RecorderError::InvalidStream {
                                         stream: current_stream,
                                     });
@@ -743,6 +769,13 @@ impl BiliRecorder {
                             Err(e) => {
                                 retry += 1;
                                 log::warn!("Download ts failed, retry {}: {}", retry, e);
+                                
+                                // If this is the last retry and it's the first record for non-FMP4, clean up
+                                if retry > 3 && is_first_record && current_stream.format != StreamType::FMP4 && work_dir_created_for_non_fmp4 {
+                                    if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
+                                        log::warn!("Failed to cleanup empty work directory {}: {}", work_dir, cleanup_err);
+                                    }
+                                }
                             }
                         }
                     }

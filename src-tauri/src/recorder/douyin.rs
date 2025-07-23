@@ -425,15 +425,20 @@ impl DouyinRecorder {
             let mut retry_count = 0;
             let max_retries = 3;
             let mut download_success = false;
+            let mut work_dir_created = false;
             
             while retry_count < max_retries && !download_success {
                 let file_name = format!("{}.ts", sequence);
                 let file_path = format!("{}/{}", work_dir, file_name);
                 
-                // If this is the first segment, create work directory just before download
-                if is_first_segment {
+                // If this is the first segment, create work directory before first download attempt
+                if is_first_segment && !work_dir_created {
                     // Create work directory only when we're about to download
-                    tokio::fs::create_dir_all(&work_dir).await?;
+                    if let Err(e) = tokio::fs::create_dir_all(&work_dir).await {
+                        log::error!("Failed to create work directory: {}", e);
+                        return Err(e.into());
+                    }
+                    work_dir_created = true;
                 }
                 
                 match self
@@ -539,8 +544,24 @@ impl DouyinRecorder {
                         if e.to_string().contains("400") {
                             log::error!("HTTP 400 error for segment, stream URL may be expired: {}", ts_url);
                             *self.stream_url.write().await = None;
+                            
+                            // Clean up empty directory if first segment failed
+                            if is_first_segment && work_dir_created {
+                                if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
+                                    log::warn!("Failed to cleanup empty work directory {}: {}", work_dir, cleanup_err);
+                                }
+                            }
+                            
                             return Err(RecorderError::NoStreamAvailable);
                         }
+                        
+                        // Clean up empty directory if first segment failed
+                        if is_first_segment && work_dir_created {
+                            if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
+                                log::warn!("Failed to cleanup empty work directory {}: {}", work_dir, cleanup_err);
+                            }
+                        }
+                        
                         return Err(e.into());
                     }
                 }
@@ -548,6 +569,14 @@ impl DouyinRecorder {
             
             if !download_success {
                 log::error!("Failed to download segment after {} retries: {}", max_retries, ts_url);
+                
+                // Clean up empty directory if first segment failed after all retries
+                if is_first_segment && work_dir_created {
+                    if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
+                        log::warn!("Failed to cleanup empty work directory {}: {}", work_dir, cleanup_err);
+                    }
+                }
+                
                 continue;
             }
         }

@@ -421,12 +421,6 @@ impl DouyinRecorder {
                 }
             };
             
-            // If this is the first segment, create work directory before download
-            if is_first_segment {
-                // Create work directory
-                tokio::fs::create_dir_all(&work_dir).await?;
-            }
-
             // Download segment with retry mechanism
             let mut retry_count = 0;
             let max_retries = 3;
@@ -435,6 +429,13 @@ impl DouyinRecorder {
             while retry_count < max_retries && !download_success {
                 let file_name = format!("{}.ts", sequence);
                 let file_path = format!("{}/{}", work_dir, file_name);
+                
+                // If this is the first segment, create work directory just before download
+                if is_first_segment {
+                    // Create work directory only when we're about to download
+                    tokio::fs::create_dir_all(&work_dir).await?;
+                }
+                
                 match self
                     .client
                     .download_ts(&ts_url, &file_path)

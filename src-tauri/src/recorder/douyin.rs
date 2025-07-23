@@ -363,7 +363,7 @@ impl DouyinRecorder {
 
         let mut new_segment_fetched = false;
         let mut is_first_segment = self.entry_store.read().await.is_none();
-        let mut work_dir = String::new();
+        let work_dir ;
         
         // If this is the first segment, prepare but don't create directories yet
         if is_first_segment {

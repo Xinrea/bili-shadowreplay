@@ -249,6 +249,52 @@ async fn get_audio_duration(file: &Path) -> Result<u64, String> {
     duration.ok_or_else(|| "Failed to parse duration".to_string())
 }
 
+/// Get the precise duration of a video segment (TS/MP4) in seconds
+pub async fn get_segment_duration(file: &Path) -> Result<f64, String> {
+    // Use ffprobe to get the exact duration of the segment
+    let child = tokio::process::Command::new(ffprobe_path())
+        .args(["-v", "quiet"])
+        .args(["-show_entries", "format=duration"])
+        .args(["-of", "csv=p=0"])
+        .args(["-i", file.to_str().unwrap()])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+
+    if let Err(e) = child {
+        return Err(format!("Failed to spawn ffprobe process for segment: {}", e));
+    }
+
+    let mut child = child.unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let reader = BufReader::new(stdout);
+    let mut parser = FfmpegLogParser::new(reader);
+
+    let mut duration = None;
+    while let Ok(event) = parser.parse_next_event().await {
+        match event {
+            FfmpegEvent::LogEOF => break,
+            FfmpegEvent::Log(_level, content) => {
+                // Parse the exact duration as f64 for precise timing
+                if let Ok(seconds_f64) = content.trim().parse::<f64>() {
+                    duration = Some(seconds_f64);
+                    log::debug!("Parsed segment duration: {} seconds", seconds_f64);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if let Err(e) = child.wait().await {
+        log::error!("Failed to get segment duration: {}", e);
+        return Err(e.to_string());
+    }
+
+    duration.ok_or_else(|| "Failed to parse segment duration".to_string())
+}
+
+
+
 pub async fn encode_video_subtitle(
     reporter: &impl ProgressReporterTrait,
     file: &Path,

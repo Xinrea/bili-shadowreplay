@@ -68,6 +68,7 @@ pub struct BiliRecorder {
     danmu_storage: Arc<RwLock<Option<DanmuStorage>>>,
     live_end_channel: broadcast::Sender<RecorderEvent>,
     enabled: Arc<RwLock<bool>>,
+    last_segment_offset: Arc<RwLock<Option<i64>>>, // 保存上次处理的最后一个片段的偏移
 
     danmu_task: Arc<Mutex<Option<JoinHandle<()>>>>,
     record_task: Arc<Mutex<Option<JoinHandle<()>>>>,
@@ -140,6 +141,7 @@ impl BiliRecorder {
             danmu_storage: Arc::new(RwLock::new(None)),
             live_end_channel: options.channel,
             enabled: Arc::new(RwLock::new(options.auto_start)),
+            last_segment_offset: Arc::new(RwLock::new(None)),
 
             danmu_task: Arc::new(Mutex::new(None)),
             record_task: Arc::new(Mutex::new(None)),
@@ -154,6 +156,7 @@ impl BiliRecorder {
         *self.live_stream.write().await = None;
         *self.last_update.write().await = Utc::now().timestamp();
         *self.danmu_storage.write().await = None;
+        *self.last_segment_offset.write().await = None;
     }
 
     async fn should_record(&self) -> bool {
@@ -676,6 +679,46 @@ impl BiliRecorder {
                     .map(|store| store.last_sequence)
                     .unwrap_or(0); // For first-time recording, start from 0
 
+                // Parse BILI-AUX offsets to calculate precise durations for FMP4
+                let mut segment_offsets = Vec::new();
+                for ts in pl.segments.iter() {
+                    let mut seg_offset: i64 = 0;
+                    for tag in &ts.unknown_tags {
+                        if tag.tag == "BILI-AUX" {
+                            if let Some(rest) = &tag.rest {
+                                let parts: Vec<&str> = rest.split('|').collect();
+                                if !parts.is_empty() {
+                                    let offset_hex = parts.first().unwrap();
+                                    if let Ok(offset) = i64::from_str_radix(offset_hex, 16) {
+                                        seg_offset = offset;
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    segment_offsets.push(seg_offset);
+                }
+                
+                // Extract stream start timestamp from header if available for FMP4
+                let stream_start_timestamp = if current_stream.format == StreamType::FMP4 {
+                    if let Some(header_entry) = self.entry_store.read().await.as_ref().and_then(|store| store.get_header()) {
+                        // Parse timestamp from header filename like "h1753276580.m4s"
+                        if let Some(timestamp_str) = header_entry.url.strip_prefix("h").and_then(|s| s.strip_suffix(".m4s")) {
+                            timestamp_str.parse::<i64>().unwrap_or(0)
+                        } else {
+                            0
+                        }
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                };
+
+                // Get the last segment offset from previous processing
+                let mut last_offset = *self.last_segment_offset.read().await;
+
                 for (i, ts) in pl.segments.iter().enumerate() {
                     let sequence = pl.media_sequence + i as u64;
                     if sequence <= last_sequence {
@@ -688,10 +731,47 @@ impl BiliRecorder {
                         continue;
                     }
 
-                    let ts_mili = Utc::now().timestamp_millis();
+                    // Calculate precise timestamp from stream start + BILI-AUX offset for FMP4
+                    let ts_mili = if current_stream.format == StreamType::FMP4 && stream_start_timestamp > 0 && i < segment_offsets.len() {
+                        let seg_offset = segment_offsets[i];
+                        
+                        stream_start_timestamp * 1000 + seg_offset
+                    } else {
+                        // Fallback to current time if parsing fails or not FMP4
+                        Utc::now().timestamp_millis()
+                    };
+                    
                     // encode segment offset into filename
                     let file_name = ts.uri.split('/').next_back().unwrap_or(&ts.uri);
                     let ts_length = pl.target_duration as f64;
+
+                    // Calculate precise duration from BILI-AUX offsets for FMP4
+                    let precise_length_from_aux = if current_stream.format == StreamType::FMP4 && i < segment_offsets.len() {
+                        let current_offset = segment_offsets[i];
+                        
+                        // Get the previous offset for duration calculation
+                        let prev_offset = if i > 0 {
+                            // Use previous segment in current M3U8
+                            Some(segment_offsets[i - 1])
+                        } else {
+                            // Use saved last offset from previous M3U8 processing
+                            last_offset
+                        };
+                        
+                        if let Some(prev) = prev_offset {
+                            let duration_ms = current_offset - prev;
+                            if duration_ms > 0 {
+                                Some(duration_ms as f64 / 1000.0) // Convert ms to seconds
+                            } else {
+                                None
+                            }
+                        } else {
+                            // No previous offset available, use target duration
+                            None
+                        }
+                    } else {
+                        None
+                    };
                     let client = self.client.clone();
                     let mut retry = 0;
                     let mut work_dir_created_for_non_fmp4 = false;
@@ -763,6 +843,28 @@ impl BiliRecorder {
                                     is_first_record = false;
                                 }
 
+                                // Get precise duration - prioritize BILI-AUX for FMP4, fallback to ffprobe if needed
+                                let precise_length = if let Some(aux_duration) = precise_length_from_aux {
+                                    aux_duration
+                                } else if current_stream.format != StreamType::FMP4 {
+                                    // For regular TS segments, use direct ffprobe
+                                    let file_path = format!("{}/{}", work_dir, file_name);
+                                    match crate::ffmpeg::get_segment_duration(std::path::Path::new(&file_path)).await {
+                                        Ok(duration) => {
+                                            log::debug!("Precise TS segment duration: {}s (original: {}s)", duration, ts_length);
+                                            duration
+                                        }
+                                        Err(e) => {
+                                            log::warn!("Failed to get precise TS duration for {}: {}, using fallback", file_name, e);
+                                            ts_length
+                                        }
+                                    }
+                                } else {
+                                    // FMP4 segment without BILI-AUX info, use fallback
+                                    log::debug!("No BILI-AUX data available for FMP4 segment {}, using target duration", file_name);
+                                    ts_length
+                                };
+
                                 self.entry_store
                                     .write()
                                     .await
@@ -771,12 +873,18 @@ impl BiliRecorder {
                                     .add_entry(TsEntry {
                                         url: file_name.into(),
                                         sequence,
-                                        length: ts_length,
+                                        length: precise_length,
                                         size,
                                         ts: ts_mili,
                                         is_header: false,
                                     })
                                     .await;
+                                
+                                // Update last offset for next segment calculation
+                                if current_stream.format == StreamType::FMP4 && i < segment_offsets.len() {
+                                    last_offset = Some(segment_offsets[i]);
+                                }
+                                
                                 new_segment_fetched = true;
                                 break;
                             }
@@ -797,6 +905,12 @@ impl BiliRecorder {
 
                 if new_segment_fetched {
                     *self.last_update.write().await = Utc::now().timestamp();
+                    
+                    // Save the last offset for next M3U8 processing
+                    if current_stream.format == StreamType::FMP4 {
+                        *self.last_segment_offset.write().await = last_offset;
+                    }
+                    
                     self.db
                         .update_record(
                             timestamp.to_string().as_str(),

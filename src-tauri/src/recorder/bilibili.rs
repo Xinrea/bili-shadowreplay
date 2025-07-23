@@ -466,6 +466,8 @@ impl BiliRecorder {
             return Err(super::errors::RecorderError::NoStreamAvailable);
         }
         let stream = stream.unwrap();
+        log::info!("[{}] Getting header URL from stream index: {}", self.room_id, stream.index());
+        
         let index_content = self
             .client
             .read()
@@ -480,6 +482,9 @@ impl BiliRecorder {
                 url: stream.index(),
             });
         }
+        
+        log::info!("[{}] Index content: {}", self.room_id, index_content);
+        
         let mut header_url = String::from("");
         let re = Regex::new(r"h.*\.m4s").unwrap();
         if let Some(captures) = re.captures(&index_content) {
@@ -488,6 +493,8 @@ impl BiliRecorder {
         if header_url.is_empty() {
             log::warn!("Parse header url failed: {}", index_content);
         }
+        
+        log::info!("[{}] Parsed header URL: {}", self.room_id, header_url);
         Ok(header_url)
     }
 
@@ -513,11 +520,22 @@ impl BiliRecorder {
             // this index content provides another m3u8 url
             // example: https://765b047cec3b099771d4b1851136046f.v.smtcdns.net/d1--cn-gotcha204-3.bilivideo.com/live-bvc/246284/live_1323355750_55526594/index.m3u8?expires=1741318366&len=0&oi=1961017843&pt=h5&qn=10000&trid=1007049a5300422eeffd2d6995d67b67ca5a&sigparams=cdn,expires,len,oi,pt,qn,trid&cdn=cn-gotcha204&sign=7ef1241439467ef27d3c804c1eda8d4d&site=1c89ef99adec13fab3a3592ee4db26d3&free_type=0&mid=475210&sche=ban&bvchls=1&trace=16&isp=ct&rg=East&pv=Shanghai&source=puv3_onetier&p2p_type=-1&score=1&suffix=origin&deploy_env=prod&flvsk=e5c4d6fb512ed7832b706f0a92f7a8c8&sk=246b3930727a89629f17520b1b551a2f&pp=rtmp&hot_cdn=57345&origin_bitrate=657300&sl=1&info_source=cache&vd=bc&src=puv3&order=1&TxLiveCode=cold_stream&TxDispType=3&svr_type=live_oc&tencent_test_client_ip=116.226.193.243&dispatch_from=OC_MGR61.170.74.11&utime=1741314857497
             let new_url = index_content.lines().last().unwrap();
-            let base_url = new_url.split('/').next().unwrap();
-            let host = base_url.split('/').next().unwrap();
-            // extra is params after index.m3u8
-            let extra = new_url.split(base_url).last().unwrap();
-            let new_stream = BiliStream::new(StreamType::FMP4, base_url, host, extra);
+            log::info!("Found redirect URL: {}", new_url);
+            
+            // extract host: cn-gotcha204-3.bilivideo.com
+            let host = new_url.split('/').nth(2).unwrap_or_default();
+            let extra = new_url.split('?').nth(1).unwrap_or_default();
+            // extract base url: live-bvc/246284/live_1323355750_55526594/
+            let base_url = new_url
+                .split('/')
+                .skip(3)
+                .take_while(|&part| !part.contains('?') && part != "index.m3u8")
+                .collect::<Vec<&str>>()
+                .join("/")
+                + "/";
+            
+            log::info!("Parsed redirect - host: {}, base_url: {}, extra: {}", host, base_url, extra);
+            let new_stream = BiliStream::new(StreamType::FMP4, base_url.as_str(), host, extra);
             return Box::pin(self.fetch_real_stream(new_stream)).await;
         }
         Ok(stream)
@@ -561,12 +579,16 @@ impl BiliRecorder {
             if header_url.is_empty() {
                 return Err(super::errors::RecorderError::EmptyHeader);
             }
+            log::info!("[{}] Header URL parsed: {}", self.room_id, header_url);
+            
             timestamp = Utc::now().timestamp_millis();
             *self.live_id.write().await = timestamp.to_string();
             work_dir = self.get_work_dir(timestamp.to_string().as_str()).await;
             is_first_record = true;
 
             let full_header_url = current_stream.ts_url(&header_url);
+            log::info!("[{}] Full header URL: {}", self.room_id, full_header_url);
+            
             let file_name = header_url.split('/').next_back().unwrap();
             let mut header = TsEntry {
                 url: file_name.to_string(),
@@ -582,85 +604,61 @@ impl BiliRecorder {
                 super::errors::RecorderError::IoError { err: e }
             })?;
             
-            // Download header with retry mechanism
-            let mut retry = 0;
-            loop {
-                if retry > 3 {
-                    log::error!("Download header failed after retry: {}", full_header_url);
+            // Download header
+            match self
+                .client
+                .read()
+                .await
+                .download_ts(&full_header_url, &format!("{}/{}", work_dir, file_name))
+                .await
+            {
+                Ok(size) => {
+                    if size == 0 {
+                        log::error!("Download header failed: {}", full_header_url);
+                        // Clean up empty directory since header download failed
+                        if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
+                            log::warn!("Failed to cleanup empty work directory {}: {}", work_dir, cleanup_err);
+                        }
+                        return Err(super::errors::RecorderError::InvalidStream {
+                            stream: current_stream,
+                        });
+                    }
+                    header.size = size;
+                    
+                    // Now that download succeeded, create the record and setup stores
+                    self.db
+                        .add_record(
+                            PlatformType::BiliBili,
+                            timestamp.to_string().as_str(),
+                            self.room_id,
+                            &self.room_info.read().await.room_title,
+                            self.cover.read().await.clone(),
+                            None,
+                        )
+                        .await?;
+
+                    let entry_store = EntryStore::new(&work_dir).await;
+                    *self.entry_store.write().await = Some(entry_store);
+
+                    // danmu file
+                    let danmu_file_path = format!("{}{}", work_dir, "danmu.txt");
+                    *self.danmu_storage.write().await = DanmuStorage::new(&danmu_file_path).await;
+                    
+                    self.entry_store
+                        .write()
+                        .await
+                        .as_mut()
+                        .unwrap()
+                        .add_entry(header)
+                        .await;
+                }
+                Err(e) => {
+                    log::error!("Download header failed: {}", e);
                     // Clean up empty directory since header download failed
                     if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
                         log::warn!("Failed to cleanup empty work directory {}: {}", work_dir, cleanup_err);
                     }
-                    return Err(super::errors::RecorderError::InvalidStream {
-                        stream: current_stream,
-                    });
-                }
-                
-                match self
-                    .client
-                    .read()
-                    .await
-                    .download_ts(&full_header_url, &format!("{}/{}", work_dir, file_name))
-                    .await
-                {
-                    Ok(size) => {
-                        if size == 0 {
-                            log::error!("Download header failed: {}", full_header_url);
-                            // Clean up empty directory since header download failed
-                            if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
-                                log::warn!("Failed to cleanup empty work directory {}: {}", work_dir, cleanup_err);
-                            }
-                            return Err(super::errors::RecorderError::InvalidStream {
-                                stream: current_stream,
-                            });
-                        }
-                        header.size = size;
-                        
-                        // Now that download succeeded, create the record and setup stores
-                        self.db
-                            .add_record(
-                                PlatformType::BiliBili,
-                                timestamp.to_string().as_str(),
-                                self.room_id,
-                                &self.room_info.read().await.room_title,
-                                self.cover.read().await.clone(),
-                                None,
-                            )
-                            .await?;
-
-                        let entry_store = EntryStore::new(&work_dir).await;
-                        *self.entry_store.write().await = Some(entry_store);
-
-                        // danmu file
-                        let danmu_file_path = format!("{}{}", work_dir, "danmu.txt");
-                        *self.danmu_storage.write().await = DanmuStorage::new(&danmu_file_path).await;
-                        
-                        self.entry_store
-                            .write()
-                            .await
-                            .as_mut()
-                            .unwrap()
-                            .add_entry(header)
-                            .await;
-                        break; // 成功下载，跳出循环
-                    }
-                    Err(e) => {
-                        retry += 1;
-                        log::warn!("Download header failed, retry {}: {}", retry, e);
-                        
-                        // If this is the last retry, clean up and return error
-                        if retry > 3 {
-                            if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
-                                log::warn!("Failed to cleanup empty work directory {}: {}", work_dir, cleanup_err);
-                            }
-                            return Err(e.into());
-                        }
-                        
-                        // Add exponential backoff delay before retry
-                        tokio::time::sleep(tokio::time::Duration::from_millis(
-                            100 * 2_u64.pow(retry.saturating_sub(1) as u32)
-                        )).await;
-                    }
+                    return Err(e.into());
                 }
             }
         } else {

@@ -29,7 +29,6 @@
   import TypeSelect from "./TypeSelect.svelte";
   import { invoke, TAURI_ENV, listen, log, close_window } from "../lib/invoker";
   import { onDestroy, onMount } from "svelte";
-  import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import { listen as tauriListen } from "@tauri-apps/api/event";
   import type { AccountInfo } from "./db";
 

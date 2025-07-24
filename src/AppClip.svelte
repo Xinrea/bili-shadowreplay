@@ -42,7 +42,9 @@
         }
 
         // find video in videos
-        video = videos.find((v) => v.id === parseInt(videoId));
+        let new_video = videos.find((v) => v.id === parseInt(videoId));
+
+        handleVideoChange(new_video);
 
         // 显示视频预览
         showVideoPreview = true;
@@ -55,6 +57,11 @@
   });
 
   async function handleVideoChange(newVideo: VideoItem) {
+    if (newVideo) {
+      // get cover from video
+      const cover = await invoke("get_video_cover", { id: newVideo.id });
+      newVideo.cover = cover as string;
+    }
     video = newVideo;
   }
 

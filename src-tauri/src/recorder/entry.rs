@@ -212,7 +212,7 @@ impl EntryStore {
     /// `vod` indicates the manifest is for stream or video.
     /// `force_time` adds DATE-TIME tag for each entry.
     pub fn manifest(&self, vod: bool, force_time: bool, range: Option<Range>) -> String {
-        log::info!("Generate manifest for range: {:?} with vod: {} and force_time: {}", range, vod, force_time);
+        log::debug!("Generate manifest for range: {:?} with vod: {} and force_time: {}", range, vod, force_time);
         let mut m3u8_content = "#EXTM3U\n".to_string();
         m3u8_content += "#EXT-X-VERSION:6\n";
         m3u8_content += if vod {

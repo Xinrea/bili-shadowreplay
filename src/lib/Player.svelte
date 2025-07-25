@@ -142,8 +142,10 @@
   }
 
   if (TAURI_ENV) {
+    console.log("register tauri network plugin");
     shaka.net.NetworkingEngine.registerScheme("http", tauriNetworkPlugin);
     shaka.net.NetworkingEngine.registerScheme("https", tauriNetworkPlugin);
+    shaka.net.NetworkingEngine.registerScheme("tauri", tauriNetworkPlugin);
   }
 
   async function update_stream_list() {

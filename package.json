@@ -18,7 +18,7 @@
     "@langchain/deepseek": "^0.1.0",
     "@langchain/langgraph": "^0.3.10",
     "@langchain/ollama": "^0.2.3",
-    "@tauri-apps/api": "^2.4.1",
+    "@tauri-apps/api": "^2.6.2",
     "@tauri-apps/plugin-dialog": "~2",
     "@tauri-apps/plugin-fs": "~2",
     "@tauri-apps/plugin-http": "~2",

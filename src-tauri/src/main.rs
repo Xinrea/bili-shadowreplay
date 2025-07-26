@@ -117,6 +117,9 @@ async fn setup_logging(log_dir: &Path) -> Result<(), Box<dyn std::error::Error>>
         ),
     ])?;
 
+    // logging current package version
+    log::info!("Current version: {}", env!("CARGO_PKG_VERSION"));
+
     Ok(())
 }
 

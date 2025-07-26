@@ -212,7 +212,6 @@ impl EntryStore {
     /// `vod` indicates the manifest is for stream or video.
     /// `force_time` adds DATE-TIME tag for each entry.
     pub fn manifest(&self, vod: bool, force_time: bool, range: Option<Range>) -> String {
-        log::debug!("Generate manifest for range: {:?} with vod: {} and force_time: {}", range, vod, force_time);
         let mut m3u8_content = "#EXTM3U\n".to_string();
         m3u8_content += "#EXT-X-VERSION:6\n";
         m3u8_content += if vod {
@@ -240,12 +239,6 @@ impl EntryStore {
         // Collect entries in range
         let first_entry = self.entries.first().unwrap();
         let first_entry_ts = first_entry.ts_seconds();
-        log::debug!("First entry ts: {}", first_entry_ts);
-        let last_entry = self.entries.last().unwrap();
-        let last_entry_ts = last_entry.ts_seconds();
-        log::debug!("Last entry ts: {}", last_entry_ts);
-        log::debug!("Full length: {}", last_entry_ts - first_entry_ts);
-        log::debug!("Range: {:?}", range);
         let mut entries_in_range = vec![];
         for e in &self.entries {
             // ignore header, cause it's already in EXT-X-MAP

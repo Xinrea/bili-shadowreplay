@@ -138,19 +138,6 @@ impl BiliStream {
             }
         })
     }
-
-    pub fn is_same(&self, other: &BiliStream) -> bool {
-        // Extract live_id part from path (e.g., live_1848752274_71463808)
-        let get_live_id = |path: &str| {
-            path.split('/')
-                .find(|part| part.starts_with("live_"))
-                .unwrap_or("")
-                .to_string()
-        };
-        let self_live_id = get_live_id(&self.path);
-        let other_live_id = get_live_id(&other.path);
-        self_live_id == other_live_id
-    }
 }
 
 impl BiliClient {

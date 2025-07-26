@@ -1,7 +1,7 @@
 {
   "name": "bili-shadowreplay",
   "private": true,
-  "version": "2.9.4",
+  "version": "2.9.5",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,7 +11,8 @@
     "tauri": "tauri",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
-    "docs:preview": "vitepress preview docs"
+    "docs:preview": "vitepress preview docs",
+    "bump": "node scripts/bump.cjs"
   },
   "dependencies": {
     "@langchain/core": "^0.3.64",

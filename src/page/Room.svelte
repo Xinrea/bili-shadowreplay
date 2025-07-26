@@ -82,21 +82,30 @@
   let archiveModal = false;
   let archiveRoom = null;
   let archives: RecordItem[] = [];
+
   async function showArchives(room_id: number) {
-    archives = await invoke("get_archives", { roomId: room_id });
-    // sort archives by ts in descending order
-    archives.sort((a, b) => {
+    updateArchives();
+    archiveModal = true;
+    console.log(archives);
+  }
+
+  async function updateArchives() {
+    let updated_archives = (await invoke("get_archives", {
+      roomId: archiveRoom.room_id,
+    })) as RecordItem[];
+    updated_archives.sort((a, b) => {
       return (
         new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       );
     });
-    archiveModal = true;
-    console.log(archives);
+    archives = updated_archives;
   }
+
   function format_ts(ts_string: string) {
     const date = new Date(ts_string);
     return date.toLocaleString();
   }
+
   function format_duration(duration: number) {
     const hours = Math.floor(duration / 3600)
       .toString()
@@ -108,6 +117,7 @@
 
     return `${hours}:${minutes}:${seconds}`;
   }
+
   function format_size(size: number) {
     if (size < 1024) {
       return `${size} B`;
@@ -119,6 +129,7 @@
       return `${(size / 1024 / 1024 / 1024).toFixed(2)} GiB`;
     }
   }
+
   function calc_bitrate(size: number, duration: number) {
     return ((size * 8) / duration / 1024).toFixed(0);
   }
@@ -599,7 +610,7 @@
                 </tr>
               </thead>
               <tbody class="divide-y divide-gray-200 dark:divide-gray-700/50">
-                {#each archives as archive}
+                {#each archives as archive (archive.live_id)}
                   <tr
                     class="group hover:bg-[#f5f5f7] dark:hover:bg-[#3a3a3c] transition-colors"
                   >
@@ -663,9 +674,7 @@
                               liveId: archive.live_id,
                             })
                               .then(async () => {
-                                archives = await invoke("get_archives", {
-                                  roomId: archiveRoom.room_id,
-                                });
+                                await updateArchives();
                               })
                               .catch((e) => {
                                 alert(e);

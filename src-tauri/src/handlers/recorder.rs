@@ -147,7 +147,10 @@ pub async fn get_archive_subtitle(
     if platform.is_none() {
         return Err("Unsupported platform".to_string());
     }
-    Ok(state.recorder_manager.get_archive_subtitle(platform.unwrap(), room_id, &live_id).await?)
+    Ok(state
+        .recorder_manager
+        .get_archive_subtitle(platform.unwrap(), room_id, &live_id)
+        .await?)
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -161,7 +164,10 @@ pub async fn generate_archive_subtitle(
     if platform.is_none() {
         return Err("Unsupported platform".to_string());
     }
-    Ok(state.recorder_manager.generate_archive_subtitle(platform.unwrap(), room_id, &live_id).await?)
+    Ok(state
+        .recorder_manager
+        .generate_archive_subtitle(platform.unwrap(), room_id, &live_id)
+        .await?)
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]

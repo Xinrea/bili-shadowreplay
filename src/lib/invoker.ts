@@ -4,6 +4,7 @@ import { fetch as tauri_fetch } from "@tauri-apps/plugin-http";
 import { convertFileSrc as tauri_convert } from "@tauri-apps/api/core";
 import { listen as tauri_listen } from "@tauri-apps/api/event";
 import { open as tauri_open } from "@tauri-apps/plugin-shell";
+import { onOpenUrl as tauri_onOpenUrl } from "@tauri-apps/plugin-deep-link";
 
 declare global {
   interface Window {
@@ -169,6 +170,12 @@ async function close_window() {
   window.close();
 }
 
+async function onOpenUrl(func: (urls: string[]) => void) {
+  if (TAURI_ENV) {
+    return await tauri_onOpenUrl(func);
+  }
+}
+
 export {
   invoke,
   get,
@@ -180,4 +187,5 @@ export {
   open,
   log,
   close_window,
+  onOpenUrl,
 };

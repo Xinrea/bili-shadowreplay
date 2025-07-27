@@ -2,8 +2,10 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use crate::progress_reporter::{ProgressReporter, ProgressReporterTrait};
-use crate::subtitle_generator::{whisper_cpp, GenerateResult, SubtitleGenerator, SubtitleGeneratorType};
 use crate::subtitle_generator::whisper_online;
+use crate::subtitle_generator::{
+    whisper_cpp, GenerateResult, SubtitleGenerator, SubtitleGeneratorType,
+};
 use async_ffmpeg_sidecar::event::{FfmpegEvent, LogLevel};
 use async_ffmpeg_sidecar::log_parser::FfmpegLogParser;
 use tokio::io::BufReader;
@@ -262,7 +264,10 @@ pub async fn get_segment_duration(file: &Path) -> Result<f64, String> {
         .spawn();
 
     if let Err(e) = child {
-        return Err(format!("Failed to spawn ffprobe process for segment: {}", e));
+        return Err(format!(
+            "Failed to spawn ffprobe process for segment: {}",
+            e
+        ));
     }
 
     let mut child = child.unwrap();
@@ -292,8 +297,6 @@ pub async fn get_segment_duration(file: &Path) -> Result<f64, String> {
 
     duration.ok_or_else(|| "Failed to parse segment duration".to_string())
 }
-
-
 
 pub async fn encode_video_subtitle(
     reporter: &impl ProgressReporterTrait,
@@ -467,10 +470,7 @@ pub async fn encode_video_danmu(
     }
 }
 
-
-pub async fn generic_ffmpeg_command(
-    args: &[&str],
-) -> Result<String, String> {
+pub async fn generic_ffmpeg_command(args: &[&str]) -> Result<String, String> {
     let child = tokio::process::Command::new(ffmpeg_path())
         .args(args)
         .stderr(Stdio::piped())
@@ -520,8 +520,7 @@ pub async fn generate_video_subtitle(
             if whisper_model.is_empty() {
                 return Err("Whisper model not configured".to_string());
             }
-            if let Ok(generator) =
-                whisper_cpp::new(Path::new(&whisper_model), whisper_prompt).await
+            if let Ok(generator) = whisper_cpp::new(Path::new(&whisper_model), whisper_prompt).await
             {
                 let chunk_dir = extract_audio_chunks(file, "wav").await?;
 
@@ -629,7 +628,6 @@ pub async fn generate_video_subtitle(
         )),
     }
 }
-
 
 /// Trying to run ffmpeg for version
 pub async fn check_ffmpeg() -> Result<String, String> {

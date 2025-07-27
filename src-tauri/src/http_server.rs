@@ -22,17 +22,18 @@ use crate::{
         },
         message::{delete_message, get_messages, read_message},
         recorder::{
-            add_recorder, delete_archive, export_danmu, fetch_hls, get_archive, get_archive_subtitle, get_archives,
-            get_danmu_record, get_recent_record, get_recorder_list, get_room_info,
-            get_today_record_count, get_total_length, remove_recorder, send_danmaku, set_enable,
-            ExportDanmuOptions, generate_archive_subtitle,
+            add_recorder, delete_archive, export_danmu, fetch_hls, generate_archive_subtitle,
+            get_archive, get_archive_subtitle, get_archives, get_danmu_record, get_recent_record,
+            get_recorder_list, get_room_info, get_today_record_count, get_total_length,
+            remove_recorder, send_danmaku, set_enable, ExportDanmuOptions,
         },
         task::{delete_task, get_tasks},
         utils::{console_log, get_disk_info, list_folder, DiskInfo},
         video::{
             cancel, clip_range, delete_video, encode_video_subtitle, generate_video_subtitle,
-            get_all_videos, get_video, get_video_cover, get_video_subtitle, get_video_typelist,
-            get_videos, update_video_cover, update_video_subtitle, upload_procedure, generic_ffmpeg_command,
+            generic_ffmpeg_command, get_all_videos, get_video, get_video_cover, get_video_subtitle,
+            get_video_typelist, get_videos, update_video_cover, update_video_subtitle,
+            upload_procedure,
         },
         AccountInfo,
     },
@@ -518,7 +519,8 @@ async fn handler_get_archive_subtitle(
     state: axum::extract::State<State>,
     Json(param): Json<GetArchiveSubtitleRequest>,
 ) -> Result<Json<ApiResponse<String>>, ApiError> {
-    let subtitle = get_archive_subtitle(state.0, param.platform, param.room_id, param.live_id).await?;
+    let subtitle =
+        get_archive_subtitle(state.0, param.platform, param.room_id, param.live_id).await?;
     Ok(Json(ApiResponse::success(subtitle)))
 }
 
@@ -534,7 +536,8 @@ async fn handler_generate_archive_subtitle(
     state: axum::extract::State<State>,
     Json(param): Json<GenerateArchiveSubtitleRequest>,
 ) -> Result<Json<ApiResponse<String>>, ApiError> {
-    let subtitle = generate_archive_subtitle(state.0, param.platform, param.room_id, param.live_id).await?;
+    let subtitle =
+        generate_archive_subtitle(state.0, param.platform, param.room_id, param.live_id).await?;
     Ok(Json(ApiResponse::success(subtitle)))
 }
 
@@ -613,7 +616,8 @@ async fn handler_get_recent_record(
     state: axum::extract::State<State>,
     Json(param): Json<GetRecentRecordRequest>,
 ) -> Result<Json<ApiResponse<Vec<RecordRow>>>, ApiError> {
-    let recent_record = get_recent_record(state.0, param.room_id, param.offset, param.limit).await?;
+    let recent_record =
+        get_recent_record(state.0, param.room_id, param.offset, param.limit).await?;
     Ok(Json(ApiResponse::success(recent_record)))
 }
 
@@ -1333,7 +1337,10 @@ pub async fn start_api_server(state: State) {
         .route("/api/get_room_info", post(handler_get_room_info))
         .route("/api/get_archives", post(handler_get_archives))
         .route("/api/get_archive", post(handler_get_archive))
-        .route("/api/get_archive_subtitle", post(handler_get_archive_subtitle))
+        .route(
+            "/api/get_archive_subtitle",
+            post(handler_get_archive_subtitle),
+        )
         .route("/api/get_danmu_record", post(handler_get_danmu_record))
         .route("/api/get_total_length", post(handler_get_total_length))
         .route(

@@ -9,7 +9,7 @@ use rand::Rng;
 #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
 pub struct AccountRow {
     pub platform: String,
-    pub uid: u64, // Keep for Bilibili compatibility
+    pub uid: u64,               // Keep for Bilibili compatibility
     pub id_str: Option<String>, // New field for string IDs like Douyin sec_uid
     pub name: String,
     pub avatar: String,
@@ -133,7 +133,7 @@ impl Database {
         avatar: &str,
     ) -> Result<(), DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
-        
+
         // If the id_str changed, we need to delete the old record and create a new one
         if old_account.id_str.as_deref() != Some(new_id_str) {
             // Delete the old record (for Douyin accounts, we use uid to identify)
@@ -142,7 +142,7 @@ impl Database {
                 .bind(&old_account.platform)
                 .execute(&lock)
                 .await?;
-            
+
             // Insert the new record with updated id_str
             sqlx::query("INSERT INTO accounts (uid, platform, id_str, name, avatar, csrf, cookies, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)")
                 .bind(old_account.uid as i64)
@@ -157,15 +157,17 @@ impl Database {
                 .await?;
         } else {
             // id_str is the same, just update name and avatar
-            sqlx::query("UPDATE accounts SET name = $1, avatar = $2 WHERE uid = $3 and platform = $4")
-                .bind(name)
-                .bind(avatar)
-                .bind(old_account.uid as i64)
-                .bind(&old_account.platform)
-                .execute(&lock)
-                .await?;
+            sqlx::query(
+                "UPDATE accounts SET name = $1, avatar = $2 WHERE uid = $3 and platform = $4",
+            )
+            .bind(name)
+            .bind(avatar)
+            .bind(old_account.uid as i64)
+            .bind(&old_account.platform)
+            .execute(&lock)
+            .await?;
         }
-        
+
         Ok(())
     }
 

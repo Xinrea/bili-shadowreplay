@@ -556,7 +556,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = fix_path_env::fix();
 
-    let builder = tauri::Builder::default();
+    let builder = tauri::Builder::default().plugin(tauri_plugin_deep_link::init());
     let builder = setup_plugins(builder);
     let builder = setup_event_handlers(builder);
     let builder = setup_invoke_handlers(builder);

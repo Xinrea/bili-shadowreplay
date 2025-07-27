@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke, open } from "../lib/invoker";
+  import { invoke, open, onOpenUrl } from "../lib/invoker";
   import { message } from "@tauri-apps/plugin-dialog";
   import { fade, scale } from "svelte/transition";
   import { Dropdown, DropdownItem } from "flowbite-svelte";
@@ -15,11 +15,11 @@
     Trash2,
     X,
     History,
-    Activity,
   } from "lucide-svelte";
   import BilibiliIcon from "../lib/BilibiliIcon.svelte";
   import DouyinIcon from "../lib/DouyinIcon.svelte";
   import AutoRecordIcon from "../lib/AutoRecordIcon.svelte";
+  import { onMount } from "svelte";
 
   export let room_count = 0;
   let room_active = 0;
@@ -61,13 +61,6 @@
   }
   update_summary();
   setInterval(update_summary, 5000);
-
-  function format_time(time: number) {
-    let hours = Math.floor(time / 3600);
-    let minutes = Math.floor((time % 3600) / 60);
-    let seconds = Math.floor(time % 60);
-    return `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
-  }
 
   // modals
   let deleteModal = false;
@@ -146,9 +139,6 @@
     }
   }
 
-  // Add toggle state for auto-recording
-  let autoRecordStates = new Map<string, boolean>();
-
   // Function to toggle auto-record state
   function toggleEnabled(room: RecorderInfo) {
     invoke("set_enable", {
@@ -176,6 +166,54 @@
       open("https://live.douyin.com/" + room.room_id);
     }
   }
+
+  function addNewRecorder(room_id: number, platform: string) {
+    invoke("add_recorder", {
+      roomId: room_id,
+      platform: platform,
+    })
+      .then(() => {
+        addModal = false;
+        addRoom = "";
+      })
+      .catch(async (e) => {
+        await message(e);
+      });
+  }
+
+  onMount(async () => {
+    await onOpenUrl((urls: string[]) => {
+      console.log("Received Deep Link:", urls);
+      if (urls.length > 0) {
+        const url = urls[0];
+        // extract platform and room_id from url
+        // url example:
+        // bsr://live.bilibili.com/167537?live_from=85001&spm_id_from=333.1365.live_users.item.click
+        // bsr://live.douyin.com/200525029536
+
+        let platform = "";
+        let room_id = "";
+
+        if (url.startsWith("bsr://live.bilibili.com/")) {
+          // 1. remove bsr://live.bilibili.com/
+          // 2. remove all query params
+          room_id = url.replace("bsr://live.bilibili.com/", "").split("?")[0];
+          platform = "bilibili";
+        }
+
+        if (url.startsWith("bsr://live.douyin.com/")) {
+          room_id = url.replace("bsr://live.douyin.com/", "").split("?")[0];
+          platform = "douyin";
+        }
+
+        if (platform && room_id) {
+          addModal = true;
+          addRoom = room_id;
+          selectedPlatform = platform;
+        }
+      }
+    });
+  });
 </script>
 
 <div class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50">
@@ -526,17 +564,9 @@
               class="px-4 py-2 bg-[#0A84FF] hover:bg-[#0A84FF]/90 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               disabled={!addValid}
               on:click={() => {
-                invoke("add_recorder", {
-                  roomId: Number(addRoom),
-                  platform: selectedPlatform,
-                })
-                  .then(() => {
-                    addModal = false;
-                    addRoom = "";
-                  })
-                  .catch(async (e) => {
-                    await message(e);
-                  });
+                addNewRecorder(Number(addRoom), selectedPlatform);
+                addModal = false;
+                addRoom = "";
               }}
             >
               添加

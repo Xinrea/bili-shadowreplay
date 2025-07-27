@@ -82,7 +82,10 @@ pub trait Recorder: Send + Sync + 'static {
     async fn comments(&self, live_id: &str) -> Result<Vec<DanmuEntry>, errors::RecorderError>;
     async fn is_recording(&self, live_id: &str) -> bool;
     async fn get_archive_subtitle(&self, live_id: &str) -> Result<String, errors::RecorderError>;
-    async fn generate_archive_subtitle(&self, live_id: &str) -> Result<String, errors::RecorderError>;
+    async fn generate_archive_subtitle(
+        &self,
+        live_id: &str,
+    ) -> Result<String, errors::RecorderError>;
     async fn enable(&self);
     async fn disable(&self);
 }

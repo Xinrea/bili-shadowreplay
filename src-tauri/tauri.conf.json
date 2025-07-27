@@ -22,6 +22,11 @@
   "plugins": {
     "sql": {
       "preload": ["sqlite:data_v2.db"]
+    },
+    "deep-link": {
+      "desktop": {
+        "schemes": ["bsr"]
+      }
     }
   },
   "app": {

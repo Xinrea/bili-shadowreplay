@@ -411,7 +411,18 @@ pub async fn generate_video_subtitle(
     let filepath = Path::new(state.config.read().await.output.as_str()).join(&video.file);
     let file = Path::new(&filepath);
 
-    match ffmpeg::generate_video_subtitle(Some(&reporter), file, generator_type, &whisper_model, &whisper_prompt, &openai_api_key, &openai_api_endpoint, language_hint).await {
+    match ffmpeg::generate_video_subtitle(
+        Some(&reporter),
+        file,
+        generator_type,
+        &whisper_model,
+        &whisper_prompt,
+        &openai_api_key,
+        &openai_api_endpoint,
+        language_hint,
+    )
+    .await
+    {
         Ok(result) => {
             reporter.finish(true, "字幕生成完成").await;
             // for local whisper, we need to update the task status to success
@@ -551,7 +562,6 @@ async fn encode_video_subtitle_inner(
 
     Ok(new_video)
 }
-
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn generic_ffmpeg_command(

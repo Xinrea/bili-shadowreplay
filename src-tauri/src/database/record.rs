@@ -133,9 +133,9 @@ impl Database {
                 "SELECT * FROM records ORDER BY created_at DESC LIMIT $1 OFFSET $2",
             )
             .bind(limit as i64)
-                .bind(offset as i64)
-                .fetch_all(&lock)
-                .await?)
+            .bind(offset as i64)
+            .fetch_all(&lock)
+            .await?)
         } else {
             Ok(sqlx::query_as::<_, RecordRow>(
                 "SELECT * FROM records WHERE room_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",

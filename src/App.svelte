@@ -5,11 +5,46 @@
   import Setting from "./page/Setting.svelte";
   import Account from "./page/Account.svelte";
   import About from "./page/About.svelte";
-  import { log } from "./lib/invoker";
+  import { log, onOpenUrl } from "./lib/invoker";
   import Clip from "./page/Clip.svelte";
   import Task from "./page/Task.svelte";
   import AI from "./page/AI.svelte";
+  import { onMount } from "svelte";
+
   let active = "总览";
+
+  onMount(async () => {
+    await onOpenUrl((urls: string[]) => {
+      console.log("Received Deep Link:", urls);
+      if (urls.length > 0) {
+        const url = urls[0];
+        // extract platform and room_id from url
+        // url example:
+        // bsr://live.bilibili.com/167537?live_from=85001&spm_id_from=333.1365.live_users.item.click
+        // bsr://live.douyin.com/200525029536
+
+        let platform = "";
+        let room_id = "";
+
+        if (url.startsWith("bsr://live.bilibili.com/")) {
+          // 1. remove bsr://live.bilibili.com/
+          // 2. remove all query params
+          room_id = url.replace("bsr://live.bilibili.com/", "").split("?")[0];
+          platform = "bilibili";
+        }
+
+        if (url.startsWith("bsr://live.douyin.com/")) {
+          room_id = url.replace("bsr://live.douyin.com/", "").split("?")[0];
+          platform = "douyin";
+        }
+
+        if (platform && room_id) {
+          // switch to room page
+          active = "直播间";
+        }
+      }
+    });
+  });
 
   log.info("App loaded");
 </script>

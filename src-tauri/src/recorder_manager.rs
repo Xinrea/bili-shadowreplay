@@ -613,7 +613,12 @@ impl RecorderManager {
         Ok(self.db.get_record(room_id, live_id).await?)
     }
 
-    pub async fn get_archive_subtitle(&self, platform: PlatformType, room_id: u64, live_id: &str) -> Result<String, RecorderManagerError> {
+    pub async fn get_archive_subtitle(
+        &self,
+        platform: PlatformType,
+        room_id: u64,
+        live_id: &str,
+    ) -> Result<String, RecorderManagerError> {
         let recorder_id = format!("{}:{}", platform.as_str(), room_id);
         if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
             let recorder = recorder_ref.as_ref();
@@ -623,7 +628,12 @@ impl RecorderManager {
         }
     }
 
-    pub async fn generate_archive_subtitle(&self, platform: PlatformType, room_id: u64, live_id: &str) -> Result<String, RecorderManagerError> {
+    pub async fn generate_archive_subtitle(
+        &self,
+        platform: PlatformType,
+        room_id: u64,
+        live_id: &str,
+    ) -> Result<String, RecorderManagerError> {
         let recorder_id = format!("{}:{}", platform.as_str(), room_id);
         if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
             let recorder = recorder_ref.as_ref();

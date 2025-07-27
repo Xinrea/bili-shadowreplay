@@ -91,7 +91,7 @@ impl DouyinClient {
             if let Ok(data) = resp.json::<super::response::DouyinRelationResponse>().await {
                 if data.status_code == 0 {
                     let owner_sec_uid = &data.owner_sec_uid;
-                    
+
                     // Find the user's own info in the followings list by matching sec_uid
                     if let Some(followings) = &data.followings {
                         for following in followings {
@@ -109,15 +109,13 @@ impl DouyinClient {
                             }
                         }
                     }
-                    
+
                     // If not found in followings, create a minimal user info from owner_sec_uid
                     let user = super::response::User {
                         id_str: "".to_string(), // We don't have the numeric UID
                         sec_uid: owner_sec_uid.clone(),
                         nickname: "抖音用户".to_string(), // Default nickname
-                        avatar_thumb: super::response::AvatarThumb {
-                            url_list: vec![],
-                        },
+                        avatar_thumb: super::response::AvatarThumb { url_list: vec![] },
                         follow_info: super::response::FollowInfo::default(),
                         foreign_user: 0,
                         open_id_str: "".to_string(),
@@ -126,10 +124,10 @@ impl DouyinClient {
                 }
             }
         }
-        
+
         Err(DouyinClientError::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            "Failed to get user info from Douyin relation API"
+            "Failed to get user info from Douyin relation API",
         )))
     }
 
@@ -148,7 +146,8 @@ impl DouyinClient {
         &self,
         url: &str,
     ) -> Result<(MediaPlaylist, String), DouyinClientError> {
-        let content = self.client
+        let content = self
+            .client
             .get(url)
             .header("Referer", "https://live.douyin.com/")
             .header("User-Agent", USER_AGENT)
@@ -183,7 +182,8 @@ impl DouyinClient {
     }
 
     pub async fn download_ts(&self, url: &str, path: &str) -> Result<u64, DouyinClientError> {
-        let response = self.client
+        let response = self
+            .client
             .get(url)
             .header("Referer", "https://live.douyin.com/")
             .header("User-Agent", USER_AGENT)
@@ -212,5 +212,3 @@ impl DouyinClient {
         Ok(size)
     }
 }
-
-

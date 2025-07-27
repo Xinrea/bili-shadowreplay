@@ -67,12 +67,16 @@ impl DanmuStorage {
 
     // get entries with ts relative to live start time
     pub async fn get_entries(&self, live_start_ts: i64) -> Vec<DanmuEntry> {
-        let mut danmus: Vec<DanmuEntry> = self.cache.read().await.iter().map(|entry| {
-            DanmuEntry {
+        let mut danmus: Vec<DanmuEntry> = self
+            .cache
+            .read()
+            .await
+            .iter()
+            .map(|entry| DanmuEntry {
                 ts: entry.ts - live_start_ts,
                 content: entry.content.clone(),
-            }
-        }).collect();
+            })
+            .collect();
         // filter out danmus with ts < 0
         danmus.retain(|entry| entry.ts >= 0);
         danmus

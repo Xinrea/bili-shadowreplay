@@ -622,22 +622,24 @@
                   on:click={loadModels}
                   disabled={!settings.endpoint || !settings.api_key || isLoadingModels}
                 >
-                  {isLoadingModels ? '加载中...' : '刷新列表'}
+                  {isLoadingModels ? '加载中...' : '刷新模型列表'}
                 </button>
               </div>
-              <select
-                id="model"
-                bind:value={settings.model}
-                class="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200"
-              >
-                {#if availableModels.length === 0}
-                  <option value="">请先配置 API 并刷新模型列表</option>
-                {:else}
+              <div class="relative">
+                <input
+                  id="model"
+                  type="text"
+                  bind:value={settings.model}
+                  list="model-options"
+                  placeholder="输入模型名称或从列表中选择"
+                  class="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200"
+                />
+                <datalist id="model-options">
                   {#each availableModels as model}
                     <option value={model.value}>{model.label}</option>
                   {/each}
-                {/if}
-              </select>
+                </datalist>
+              </div>
             </div>
           </div>
           

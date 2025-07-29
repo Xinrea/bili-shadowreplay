@@ -18,9 +18,28 @@ export default defineConfig({
       {
         text: "开始使用",
         items: [
-          { text: "安装准备", link: "/getting-started/installation" },
-          { text: "配置使用", link: "/getting-started/configuration" },
-          { text: "FFmpeg 配置", link: "/getting-started/ffmpeg" },
+          {
+            text: "安装准备",
+            items: [
+              {
+                text: "桌面端安装",
+                link: "/getting-started/installation/desktop",
+              },
+              {
+                text: "Docker 安装",
+                link: "/getting-started/installation/docker",
+              },
+            ],
+          },
+          {
+            text: "配置使用",
+            items: [
+              { text: "账号配置", link: "/getting-started/config/account" },
+              { text: "FFmpeg 配置", link: "/getting-started/config/ffmpeg" },
+              { text: "Whisper 配置", link: "/getting-started/config/whisper" },
+              { text: "LLM 配置", link: "/getting-started/config/llm" },
+            ],
+          },
         ],
       },
       {

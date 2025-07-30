@@ -45,7 +45,15 @@ export default defineConfig({
       {
         text: "说明文档",
         items: [
-          { text: "功能说明", link: "/usage/features" },
+          {
+            text: "功能说明",
+            items: [
+              { text: "直播间管理", link: "/usage/features/room_manage" },
+              { text: "剪辑功能", link: "/usage/clip" },
+              { text: "字幕功能", link: "/usage/subtitle" },
+              { text: "弹幕功能", link: "/usage/danmaku" },
+            ],
+          },
           { text: "常见问题", link: "/usage/faq" },
         ],
       },

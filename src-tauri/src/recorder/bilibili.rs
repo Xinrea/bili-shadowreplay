@@ -724,7 +724,7 @@ impl BiliRecorder {
             let current_header_info = current_header_info.unwrap();
             if current_header_info.url != header_url {
                 let new_resolution = self.get_resolution(&full_header_url).await?;
-                log::warn!(
+                log::debug!(
                     "[{}] Header url changed: {} => {}, resolution: {} => {}",
                     self.room_id,
                     current_header_info.url,

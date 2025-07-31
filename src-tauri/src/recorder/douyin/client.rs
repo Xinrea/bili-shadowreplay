@@ -10,7 +10,7 @@ const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleW
 
 #[derive(Debug)]
 pub enum DouyinClientError {
-    Network(ReqwestError),
+    Network(String),
     Io(std::io::Error),
     Playlist(String),
 }
@@ -27,7 +27,7 @@ impl fmt::Display for DouyinClientError {
 
 impl From<ReqwestError> for DouyinClientError {
     fn from(err: ReqwestError) -> Self {
-        DouyinClientError::Network(err)
+        DouyinClientError::Network(err.to_string())
     }
 }
 
@@ -68,11 +68,28 @@ impl DouyinClient {
             .header("User-Agent", USER_AGENT)
             .header("Cookie", self.cookies.clone())
             .send()
-            .await?
-            .json::<DouyinRoomInfoResponse>()
             .await?;
 
-        Ok(resp)
+        let status = resp.status();
+        let text = resp.text().await?;
+
+        if status.is_success() {
+            if let Ok(data) = serde_json::from_str::<DouyinRoomInfoResponse>(&text) {
+                return Ok(data);
+            } else {
+                log::error!("Failed to parse room info response: {}", text);
+                return Err(DouyinClientError::Network(format!(
+                    "Failed to parse room info response: {}",
+                    text
+                )));
+            }
+        }
+
+        log::error!("Failed to get room info: {}", status);
+        Err(DouyinClientError::Network(format!(
+            "Failed to get room info: {} {}",
+            status, text
+        )))
     }
 
     pub async fn get_user_info(&self) -> Result<super::response::User, DouyinClientError> {
@@ -87,8 +104,12 @@ impl DouyinClient {
             .send()
             .await?;
 
-        if resp.status().is_success() {
-            if let Ok(data) = resp.json::<super::response::DouyinRelationResponse>().await {
+        let status = resp.status();
+        let text = resp.text().await?;
+
+        if status.is_success() {
+            if let Ok(data) = serde_json::from_str::<super::response::DouyinRelationResponse>(&text)
+            {
                 if data.status_code == 0 {
                     let owner_sec_uid = &data.owner_sec_uid;
 
@@ -122,8 +143,16 @@ impl DouyinClient {
                     };
                     return Ok(user);
                 }
+            } else {
+                log::error!("Failed to parse user info response: {}", text);
+                return Err(DouyinClientError::Network(format!(
+                    "Failed to parse user info response: {}",
+                    text
+                )));
             }
         }
+
+        log::error!("Failed to get user info: {}", status);
 
         Err(DouyinClientError::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -201,7 +230,7 @@ impl DouyinClient {
         if response.status() != reqwest::StatusCode::OK {
             let error = response.error_for_status().unwrap_err();
             log::error!("HTTP error: {} for URL: {}", error, url);
-            return Err(DouyinClientError::Network(error));
+            return Err(DouyinClientError::Network(error.to_string()));
         }
 
         let mut file = tokio::fs::File::create(path).await?;

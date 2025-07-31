@@ -14,7 +14,6 @@ custom_error! {pub RecorderError
     InvalidStream {stream: BiliStream} = "Invalid stream: {stream}",
     SlowStream {stream: BiliStream} = "Stream is too slow: {stream}",
     EmptyHeader = "Header url is empty",
-    HeaderChanged = "Header URL changed, need to restart recording",
     InvalidTimestamp = "Header timestamp is invalid",
     InvalidDBOP {err: crate::database::DatabaseError } = "Database error: {err}",
     BiliClientError {err: super::bilibili::errors::BiliClientError} = "BiliClient error: {err}",

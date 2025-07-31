@@ -8,7 +8,7 @@ use crate::subtitle_generator::{
 };
 use async_ffmpeg_sidecar::event::{FfmpegEvent, LogLevel};
 use async_ffmpeg_sidecar::log_parser::FfmpegLogParser;
-use tokio::io::BufReader;
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 pub async fn clip_from_m3u8(
     reporter: Option<&impl ProgressReporterTrait>,
@@ -668,6 +668,48 @@ pub async fn check_ffmpeg() -> Result<String, String> {
     }
 }
 
+pub async fn get_video_resolution(file: &str) -> Result<String, String> {
+    // ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 input.mp4
+    let child = tokio::process::Command::new(ffprobe_path())
+        .arg("-i")
+        .arg(file)
+        .arg("-v")
+        .arg("error")
+        .arg("-select_streams")
+        .arg("v:0")
+        .arg("-show_entries")
+        .arg("stream=width,height")
+        .arg("-of")
+        .arg("csv=s=x:p=0")
+        .stdout(Stdio::piped())
+        .spawn();
+    if let Err(e) = child {
+        log::error!("Faild to spwan ffprobe process: {e}");
+        return Err(e.to_string());
+    }
+
+    let mut child = child.unwrap();
+    let stdout = child.stdout.take();
+    if stdout.is_none() {
+        log::error!("Failed to take ffprobe output");
+        return Err("Failed to take ffprobe output".into());
+    }
+
+    let stdout = stdout.unwrap();
+    let reader = BufReader::new(stdout);
+    let mut lines = reader.lines();
+    let line = lines.next_line().await.unwrap();
+    if line.is_none() {
+        return Err("Failed to parse resolution from output".into());
+    }
+    let line = line.unwrap();
+    let resolution = line.split("x").collect::<Vec<&str>>();
+    if resolution.len() != 2 {
+        return Err("Failed to parse resolution from output".into());
+    }
+    Ok(format!("{}x{}", resolution[0], resolution[1]))
+}
+
 fn ffmpeg_path() -> PathBuf {
     let mut path = Path::new("ffmpeg").to_path_buf();
     if cfg!(windows) {
@@ -684,4 +726,17 @@ fn ffprobe_path() -> PathBuf {
     }
 
     path
+}
+
+// tests
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_get_video_size() {
+        let file = Path::new("/Users/xinreasuper/Desktop/shadowreplay-test/output2/[1789714684][1753965688317][摄像头被前夫抛妻弃子直播挣点奶粉][2025-07-31_12-58-14].mp4");
+        let resolution = get_video_resolution(file.to_str().unwrap()).await.unwrap();
+        println!("Resolution: {}", resolution);
+    }
 }

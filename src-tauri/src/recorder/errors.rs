@@ -22,4 +22,6 @@ custom_error! {pub RecorderError
     DanmuStreamError {err: danmu_stream::DanmuStreamError} = "Danmu stream error: {err}",
     SubtitleNotFound {live_id: String} = "Subtitle not found: {live_id}",
     SubtitleGenerationFailed {error: String} = "Subtitle generation failed: {error}",
+    FfmpegError {err: String} = "FFmpeg error: {err}",
+    ResolutionChanged {err: String} = "Resolution changed: {err}",
 }

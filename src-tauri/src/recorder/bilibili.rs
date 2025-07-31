@@ -6,6 +6,7 @@ use super::entry::{EntryStore, Range};
 use super::errors::RecorderError;
 use super::PlatformType;
 use crate::database::account::AccountRow;
+use crate::ffmpeg::get_video_resolution;
 use crate::progress_manager::Event;
 use crate::progress_reporter::EventEmitter;
 use crate::recorder_manager::RecorderEvent;
@@ -69,6 +70,7 @@ pub struct BiliRecorder {
     live_end_channel: broadcast::Sender<RecorderEvent>,
     enabled: Arc<RwLock<bool>>,
     last_segment_offset: Arc<RwLock<Option<i64>>>, // 保存上次处理的最后一个片段的偏移
+    current_header_info: Arc<RwLock<Option<HeaderInfo>>>, // 保存当前的分辨率
 
     danmu_task: Arc<Mutex<Option<JoinHandle<()>>>>,
     record_task: Arc<Mutex<Option<JoinHandle<()>>>>,
@@ -97,6 +99,12 @@ pub struct BiliRecorderOptions {
     pub config: Arc<RwLock<Config>>,
     pub auto_start: bool,
     pub channel: broadcast::Sender<RecorderEvent>,
+}
+
+#[derive(Debug, Clone)]
+struct HeaderInfo {
+    url: String,
+    resolution: String,
 }
 
 impl BiliRecorder {
@@ -143,7 +151,7 @@ impl BiliRecorder {
             live_end_channel: options.channel,
             enabled: Arc::new(RwLock::new(options.auto_start)),
             last_segment_offset: Arc::new(RwLock::new(None)),
-
+            current_header_info: Arc::new(RwLock::new(None)),
             danmu_task: Arc::new(Mutex::new(None)),
             record_task: Arc::new(Mutex::new(None)),
             master_manifest: Arc::new(RwLock::new(None)),
@@ -159,6 +167,7 @@ impl BiliRecorder {
         *self.last_update.write().await = Utc::now().timestamp();
         *self.danmu_storage.write().await = None;
         *self.last_segment_offset.write().await = None;
+        *self.current_header_info.write().await = None;
     }
 
     async fn should_record(&self) -> bool {
@@ -310,8 +319,6 @@ impl BiliRecorder {
                 }
 
                 let variant = variant.unwrap();
-
-                log::info!("Variant: {:?}", variant);
 
                 let new_stream = self.stream_from_variant(variant).await;
                 if new_stream.is_err() {
@@ -500,6 +507,17 @@ impl BiliRecorder {
         Ok(header_url)
     }
 
+    async fn get_resolution(
+        &self,
+        header_url: &str,
+    ) -> Result<String, super::errors::RecorderError> {
+        log::debug!("Get resolution from {}", header_url);
+        let resolution = get_video_resolution(header_url)
+            .await
+            .map_err(|e| super::errors::RecorderError::FfmpegError { err: e })?;
+        Ok(resolution)
+    }
+
     async fn fetch_real_stream(
         &self,
         stream: &BiliStream,
@@ -571,6 +589,13 @@ impl BiliRecorder {
         let mut work_dir;
         let mut is_first_record = false;
 
+        // Get url from EXT-X-MAP
+        let header_url = self.get_header_url().await?;
+        if header_url.is_empty() {
+            return Err(super::errors::RecorderError::EmptyHeader);
+        }
+        let full_header_url = current_stream.ts_url(&header_url);
+
         // Check header if None
         if (self.entry_store.read().await.as_ref().is_none()
             || self
@@ -583,18 +608,10 @@ impl BiliRecorder {
                 .is_none())
             && current_stream.format == StreamType::FMP4
         {
-            // Get url from EXT-X-MAP
-            let header_url = self.get_header_url().await?;
-            if header_url.is_empty() {
-                return Err(super::errors::RecorderError::EmptyHeader);
-            }
-
             timestamp = Utc::now().timestamp_millis();
             *self.live_id.write().await = timestamp.to_string();
             work_dir = self.get_work_dir(timestamp.to_string().as_str()).await;
             is_first_record = true;
-
-            let full_header_url = current_stream.ts_url(&header_url);
 
             let file_name = header_url.split('/').next_back().unwrap();
             let mut header = TsEntry {
@@ -662,6 +679,20 @@ impl BiliRecorder {
                         .unwrap()
                         .add_entry(header)
                         .await;
+
+                    let new_resolution = self.get_resolution(&full_header_url).await?;
+
+                    log::info!(
+                        "[{}] Initial header resolution: {} {}",
+                        self.room_id,
+                        header_url,
+                        new_resolution
+                    );
+
+                    *self.current_header_info.write().await = Some(HeaderInfo {
+                        url: header_url.clone(),
+                        resolution: new_resolution,
+                    });
                 }
                 Err(e) => {
                     log::error!("Download header failed: {}", e);
@@ -684,6 +715,33 @@ impl BiliRecorder {
                 *self.live_id.write().await = timestamp.to_string();
                 work_dir = self.get_work_dir(timestamp.to_string().as_str()).await;
                 is_first_record = true;
+            }
+        }
+
+        // check resolution change
+        let current_header_info = self.current_header_info.read().await.clone();
+        if current_header_info.is_some() {
+            let current_header_info = current_header_info.unwrap();
+            if current_header_info.url != header_url {
+                let new_resolution = self.get_resolution(&full_header_url).await?;
+                log::warn!(
+                    "[{}] Header url changed: {} => {}, resolution: {} => {}",
+                    self.room_id,
+                    current_header_info.url,
+                    header_url,
+                    current_header_info.resolution,
+                    new_resolution
+                );
+                if current_header_info.resolution != new_resolution {
+                    self.reset().await;
+
+                    return Err(super::errors::RecorderError::ResolutionChanged {
+                        err: format!(
+                            "Resolution changed: {} => {}",
+                            current_header_info.resolution, new_resolution
+                        ),
+                    });
+                }
             }
         }
 

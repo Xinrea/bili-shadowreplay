@@ -210,6 +210,13 @@
           addModal = true;
           addRoom = room_id;
           selectedPlatform = platform;
+
+          if (Number.isInteger(Number(room_id))) {
+            addValid = true;
+          } else {
+            addErrorMsg = "ID格式错误，请检查输入";
+            addValid = false;
+          }
         }
       }
     });

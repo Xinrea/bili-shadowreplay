@@ -12,9 +12,11 @@ BiliBili ShadowReplay 是一个缓存直播并进行实时编辑投稿的工具�
 
 目前仅支持 B 站和抖音平台的直播。
 
-![rooms](docs/public/images/summary.png)
+[![Star History Chart](https://api.star-history.com/svg?repos=Xinrea/bili-shadowreplay&type=Date)](https://www.star-history.com/#Xinrea/bili-shadowreplay&Date)
 
 ## 安装和使用
+
+![rooms](docs/public/images/summary.png)
 
 前往网站查看说明：[BiliBili ShadowReplay](https://bsr.xinrea.cn/)
 

@@ -14,7 +14,7 @@ hero:
       link: /getting-started/installation/desktop
     - theme: alt
       text: 说明文档
-      link: /usage/features
+      link: /usage/features/room_manage
 
 features:
   - icon: 📹

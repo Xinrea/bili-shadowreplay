@@ -48,10 +48,11 @@ export default defineConfig({
           {
             text: "功能说明",
             items: [
-              { text: "直播间管理", link: "/usage/features/room_manage" },
-              { text: "剪辑功能", link: "/usage/clip" },
-              { text: "字幕功能", link: "/usage/subtitle" },
-              { text: "弹幕功能", link: "/usage/danmaku" },
+              { text: "工作流程", link: "/usage/features/workflow" },
+              { text: "直播间管理", link: "/usage/features/room" },
+              { text: "切片功能", link: "/usage/features/clip" },
+              { text: "字幕功能", link: "/usage/features/subtitle" },
+              { text: "弹幕功能", link: "/usage/features/danmaku" },
             ],
           },
           { text: "常见问题", link: "/usage/faq" },

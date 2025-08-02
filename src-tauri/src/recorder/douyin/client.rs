@@ -6,8 +6,6 @@ use reqwest::{Client, Error as ReqwestError};
 use super::response::DouyinRoomInfoResponse;
 use std::fmt;
 
-const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
-
 #[derive(Debug)]
 pub enum DouyinClientError {
     Network(String),
@@ -44,8 +42,8 @@ pub struct DouyinClient {
 }
 
 impl DouyinClient {
-    pub fn new(account: &AccountRow) -> Self {
-        let client = Client::builder().user_agent(USER_AGENT).build().unwrap();
+    pub fn new(user_agent: &str, account: &AccountRow) -> Self {
+        let client = Client::builder().user_agent(user_agent).build().unwrap();
         Self {
             client,
             cookies: account.cookies.clone(),
@@ -65,7 +63,6 @@ impl DouyinClient {
             .client
             .get(&url)
             .header("Referer", "https://live.douyin.com/")
-            .header("User-Agent", USER_AGENT)
             .header("Cookie", self.cookies.clone())
             .send()
             .await?;
@@ -99,7 +96,6 @@ impl DouyinClient {
             .client
             .get(url)
             .header("Referer", "https://www.douyin.com/")
-            .header("User-Agent", USER_AGENT)
             .header("Cookie", self.cookies.clone())
             .send()
             .await?;
@@ -179,7 +175,6 @@ impl DouyinClient {
             .client
             .get(url)
             .header("Referer", "https://live.douyin.com/")
-            .header("User-Agent", USER_AGENT)
             .header("Cookie", self.cookies.clone())
             .header("Accept", "*/*")
             .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
@@ -215,7 +210,6 @@ impl DouyinClient {
             .client
             .get(url)
             .header("Referer", "https://live.douyin.com/")
-            .header("User-Agent", USER_AGENT)
             .header("Cookie", self.cookies.clone())
             .header("Accept", "*/*")
             .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")

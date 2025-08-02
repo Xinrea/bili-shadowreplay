@@ -39,7 +39,10 @@ pub async fn add_account(
             .await?;
     } else if platform == "douyin" {
         // Get user info from Douyin API
-        let douyin_client = crate::recorder::douyin::client::DouyinClient::new(&account);
+        let douyin_client = crate::recorder::douyin::client::DouyinClient::new(
+            &state.config.read().await.user_agent,
+            &account,
+        );
         match douyin_client.get_user_info().await {
             Ok(user_info) => {
                 // For Douyin, use sec_uid as the primary identifier in id_str field

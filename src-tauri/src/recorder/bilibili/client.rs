@@ -141,9 +141,9 @@ impl BiliStream {
 }
 
 impl BiliClient {
-    pub fn new() -> Result<BiliClient, BiliClientError> {
+    pub fn new(user_agent: &str) -> Result<BiliClient, BiliClientError> {
         let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert("user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36".parse().unwrap());
+        headers.insert("user-agent", user_agent.parse().unwrap());
 
         if let Ok(client) = Client::builder().timeout(Duration::from_secs(10)).build() {
             Ok(BiliClient { client, headers })

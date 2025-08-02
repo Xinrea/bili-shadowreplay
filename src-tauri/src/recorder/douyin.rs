@@ -90,7 +90,7 @@ impl DouyinRecorder {
         enabled: bool,
         channel: broadcast::Sender<RecorderEvent>,
     ) -> Result<Self, super::errors::RecorderError> {
-        let client = client::DouyinClient::new(account);
+        let client = client::DouyinClient::new(&config.read().await.user_agent, account);
         let room_info = client.get_room_info(room_id).await?;
         let mut live_status = LiveStatus::Offline;
         if room_info.data.room_status == 0 {

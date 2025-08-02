@@ -245,3 +245,10 @@ pub async fn update_whisper_language(
     state.config.write().await.save();
     Ok(())
 }
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn update_user_agent(state: state_type!(), user_agent: String) -> Result<(), ()> {
+    log::info!("Updating user agent to {}", user_agent);
+    state.config.write().await.set_user_agent(&user_agent);
+    Ok(())
+}

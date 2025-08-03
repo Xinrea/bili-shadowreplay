@@ -123,7 +123,8 @@ impl BiliDanmu {
         tx: mpsc::UnboundedSender<DanmuMessageType>,
     ) -> Result<(), DanmuStreamError> {
         let wbi_key = self.get_wbi_key().await?;
-        let danmu_info = self.get_danmu_info(&wbi_key, self.room_id).await?;
+        let real_room = self.get_real_room(&wbi_key, self.room_id).await?;
+        let danmu_info = self.get_danmu_info(&wbi_key, real_room).await?;
         let ws_hosts = danmu_info.data.host_list.clone();
         let mut conn = None;
         log::debug!("ws_hosts: {:?}", ws_hosts);
@@ -152,7 +153,7 @@ impl BiliDanmu {
         *self.write.write().await = Some(write);
 
         let json = serde_json::to_string(&WsSend {
-            roomid: self.room_id,
+            roomid: real_room,
             key: danmu_info.data.token,
             uid: self.user_id,
             protover: 3,
@@ -239,7 +240,6 @@ impl BiliDanmu {
         wbi_key: &str,
         room_id: u64,
     ) -> Result<DanmuInfo, DanmuStreamError> {
-        let room_id = self.get_real_room(wbi_key, room_id).await?;
         let params = self
             .get_sign(
                 wbi_key,

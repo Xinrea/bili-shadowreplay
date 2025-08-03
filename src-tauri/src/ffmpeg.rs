@@ -30,11 +30,9 @@ pub async fn clip_from_m3u8(
         std::fs::create_dir_all(output_folder).unwrap();
     }
 
-    #[cfg(target_os = "windows")]
-    let mut ffmpeg_process =
-        tokio::process::Command::new(ffmpeg_path()).creation_flags(CREATE_NO_WINDOW);
-    #[cfg(not(target_os = "windows"))]
     let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
+    #[cfg(target_os = "windows")]
+    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
     let child = ffmpeg_process
         .args(["-i", &format!("{}", m3u8_index.display())])
@@ -174,11 +172,9 @@ pub async fn extract_audio_chunks(file: &Path, format: &str) -> Result<PathBuf, 
 
     args.push(segment_pattern_str);
 
-    #[cfg(target_os = "windows")]
-    let mut ffmpeg_process =
-        tokio::process::Command::new(ffmpeg_path()).creation_flags(CREATE_NO_WINDOW);
-    #[cfg(not(target_os = "windows"))]
     let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
+    #[cfg(target_os = "windows")]
+    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
     let child = ffmpeg_process.args(&args).stderr(Stdio::piped()).spawn();
 
@@ -224,11 +220,9 @@ pub async fn extract_audio_chunks(file: &Path, format: &str) -> Result<PathBuf, 
 /// Get the duration of an audio/video file in seconds
 async fn get_audio_duration(file: &Path) -> Result<u64, String> {
     // Use ffprobe with format option to get duration
-    #[cfg(target_os = "windows")]
-    let mut ffprobe_process =
-        tokio::process::Command::new(ffprobe_path()).creation_flags(CREATE_NO_WINDOW);
-    #[cfg(not(target_os = "windows"))]
     let mut ffprobe_process = tokio::process::Command::new(ffprobe_path());
+    #[cfg(target_os = "windows")]
+    ffprobe_process.creation_flags(CREATE_NO_WINDOW);
 
     let child = ffprobe_process
         .args(["-v", "quiet"])
@@ -274,11 +268,9 @@ async fn get_audio_duration(file: &Path) -> Result<u64, String> {
 /// Get the precise duration of a video segment (TS/MP4) in seconds
 pub async fn get_segment_duration(file: &Path) -> Result<f64, String> {
     // Use ffprobe to get the exact duration of the segment
-    #[cfg(target_os = "windows")]
-    let mut ffprobe_process =
-        tokio::process::Command::new(ffprobe_path()).creation_flags(CREATE_NO_WINDOW);
-    #[cfg(not(target_os = "windows"))]
     let mut ffprobe_process = tokio::process::Command::new(ffprobe_path());
+    #[cfg(target_os = "windows")]
+    ffprobe_process.creation_flags(CREATE_NO_WINDOW);
 
     let child = ffprobe_process
         .args(["-v", "quiet"])
@@ -360,11 +352,9 @@ pub async fn encode_video_subtitle(
     let vf = format!("subtitles={}:force_style='{}'", subtitle, srt_style);
     log::info!("vf: {}", vf);
 
-    #[cfg(target_os = "windows")]
-    let mut ffmpeg_process =
-        tokio::process::Command::new(ffmpeg_path()).creation_flags(CREATE_NO_WINDOW);
-    #[cfg(not(target_os = "windows"))]
     let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
+    #[cfg(target_os = "windows")]
+    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
     let child = ffmpeg_process
         .args(["-i", file.to_str().unwrap()])
@@ -447,11 +437,9 @@ pub async fn encode_video_danmu(
         format!("'{}'", subtitle.display())
     };
 
-    #[cfg(target_os = "windows")]
-    let mut ffmpeg_process =
-        tokio::process::Command::new(ffmpeg_path()).creation_flags(CREATE_NO_WINDOW);
-    #[cfg(not(target_os = "windows"))]
     let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
+    #[cfg(target_os = "windows")]
+    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
     let child = ffmpeg_process
         .args(["-i", file.to_str().unwrap()])
@@ -509,11 +497,9 @@ pub async fn encode_video_danmu(
 }
 
 pub async fn generic_ffmpeg_command(args: &[&str]) -> Result<String, String> {
-    #[cfg(target_os = "windows")]
-    let mut ffmpeg_process =
-        tokio::process::Command::new(ffmpeg_path()).creation_flags(CREATE_NO_WINDOW);
-    #[cfg(not(target_os = "windows"))]
     let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
+    #[cfg(target_os = "windows")]
+    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
     let child = ffmpeg_process.args(args).stderr(Stdio::piped()).spawn();
     if let Err(e) = child {
@@ -711,11 +697,9 @@ pub async fn check_ffmpeg() -> Result<String, String> {
 
 pub async fn get_video_resolution(file: &str) -> Result<String, String> {
     // ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 input.mp4
-    #[cfg(target_os = "windows")]
-    let mut ffprobe_process =
-        tokio::process::Command::new(ffprobe_path()).creation_flags(CREATE_NO_WINDOW);
-    #[cfg(not(target_os = "windows"))]
     let mut ffprobe_process = tokio::process::Command::new(ffprobe_path());
+    #[cfg(target_os = "windows")]
+    ffprobe_process.creation_flags(CREATE_NO_WINDOW);
 
     let child = ffprobe_process
         .arg("-i")

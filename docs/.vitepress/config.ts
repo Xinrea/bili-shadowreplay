@@ -61,7 +61,12 @@ export default withMermaid({
       },
       {
         text: "开发文档",
-        items: [{ text: "架构设计", link: "/develop/architecture" }],
+        items: [
+          {
+            text: "DeepWiki",
+            link: "https://deepwiki.com/Xinrea/bili-shadowreplay",
+          },
+        ],
       },
     ],
 

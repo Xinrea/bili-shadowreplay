@@ -42,6 +42,7 @@
     "flowbite": "^2.5.1",
     "flowbite-svelte": "^0.46.16",
     "flowbite-svelte-icons": "^1.6.1",
+    "mermaid": "^11.9.0",
     "postcss": "^8.4.21",
     "svelte": "^3.54.0",
     "svelte-check": "^3.0.0",
@@ -51,6 +52,7 @@
     "tslib": "^2.4.1",
     "typescript": "^4.6.4",
     "vite": "^4.0.0",
-    "vitepress": "^1.6.3"
+    "vitepress": "^1.6.3",
+    "vitepress-plugin-mermaid": "^2.0.17"
   }
 }

@@ -18,3 +18,19 @@
 <video src="/videos/deeplinking.mp4" loop autoplay muted style="border-radius: 10px;"></video>
 
 在浏览器中观看直播时，替换地址栏中直播间地址中的 `https://` 为 `bsr://` 即可快速唤起 BSR 添加直播间。
+
+## 启用/禁用直播间
+
+你可以点击直播间卡片右上角的菜单按钮，选择启用/禁用直播间。
+
+- 启用后，当直播间开播时，会自动开始录制
+- 禁用后，当直播间开播时，不会自动开始录制
+
+## 移除直播间
+
+> [!CAUTION]
+> 移除直播间后，该直播间相关的所有录播都会被删除，请谨慎操作。
+
+你可以点击直播间卡片右上角的菜单按钮，选择移除直播间。
+
+<video src="/videos/room_remove.mp4" loop autoplay muted style="border-radius: 10px;"></video>

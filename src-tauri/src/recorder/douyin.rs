@@ -358,12 +358,13 @@ impl DouyinRecorder {
             return Err(RecorderError::NoStreamAvailable);
         }
 
-        let stream_url = self.stream_url.read().await.as_ref().unwrap().clone();
+        let mut stream_url = self.stream_url.read().await.as_ref().unwrap().clone();
 
         // Get m3u8 playlist
         let (playlist, updated_stream_url) = self.client.get_m3u8_content(&stream_url).await?;
 
-        *self.stream_url.write().await = Some(updated_stream_url);
+        *self.stream_url.write().await = Some(updated_stream_url.clone());
+        stream_url = updated_stream_url;
 
         let mut new_segment_fetched = false;
         let mut is_first_segment = self.entry_store.read().await.is_none();

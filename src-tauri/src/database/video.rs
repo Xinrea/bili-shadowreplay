@@ -20,6 +20,27 @@ pub struct VideoRow {
     pub platform: String,
 }
 
+impl VideoRow {
+    // 判断是否为导入视频
+    pub fn is_imported(&self) -> bool {
+        self.platform == "imported"
+    }
+    
+    // 判断是否为导入视频的切片
+    pub fn is_imported_clip(&self) -> bool {
+        self.platform == "imported_clip"
+    }
+    
+    // 获取原始文件路径（从desc字段解析）
+    pub fn get_original_path(&self) -> Option<String> {
+        if let Ok(metadata) = serde_json::from_str::<serde_json::Value>(&self.desc) {
+            metadata["original_path"].as_str().map(|s| s.to_string())
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
 pub struct VideoNoCover {
     pub id: i64,

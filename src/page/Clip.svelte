@@ -15,6 +15,8 @@
     Globe,
     Upload,
     Home,
+    FileVideo,
+    Scissors,
   } from "lucide-svelte";
 
   let videos: VideoItem[] = [];
@@ -29,6 +31,9 @@
   let selectedVideos: Set<number> = new Set();
   let showDeleteConfirm = false;
   let videoToDelete: VideoItem | null = null;
+  let showImportDialog = false;
+  let showClipDialog = false;
+  let videoToClip: VideoItem | null = null;
 
   onMount(async () => {
     await loadVideos();
@@ -176,7 +181,24 @@
         return "虎牙";
       case "youtube":
         return "YouTube";
+      case "imported":
+        return "导入视频";
+      case "imported_clip":
+        return "导入切片";
+      case "bilibili_clip":
+        return "B站切片";
+      case "douyin_clip":
+        return "抖音切片";
+      case "huya_clip":
+        return "虎牙切片";
+      case "youtube_clip":
+        return "YouTube切片";
       default:
+        // 处理其他切片类型
+        if (platform.endsWith("_clip")) {
+          const basePlatform = platform.replace("_clip", "");
+          return `${formatPlatform(basePlatform)}切片`;
+        }
         return platform;
     }
   }
@@ -249,13 +271,59 @@
     }
   }
 
-  async function playVideo(video: VideoItem) {
+      async function playVideo(video: VideoItem) {
     try {
       await invoke("open_clip", { videoId: video.id });
     } catch (error) {
       console.error("Failed to play video:", error);
     }
   }
+  
+  function handleVideoImported() {
+    // 视频导入完成后刷新列表
+    loadVideos();
+  }
+  
+  function handleVideoClipped() {
+    // 视频切片完成后刷新列表
+    loadVideos();
+  }
+
+  function canClipVideo(video: VideoItem): boolean {
+    // 可以切片的视频类型：
+    // 1. 导入的视频 (imported)
+    // 2. 录制完成的视频 (status === 0 或 status === 1)
+    if (video.platform === "imported") {
+      return true;
+    }
+    
+    // 排除导入切片和录制切片（已经是切片了，不需要再切片）
+    if (video.platform === "imported_clip" || video.platform?.endsWith("_clip")) {
+      return false;
+    }
+    
+    // 对于录制的视频，检查状态
+    // status === 0: 录制完成
+    // status === 1: 已上传到平台
+    // 两种状态的视频都可以进行切片
+    if (video.status === 0 || video.status === 1) {
+      return true;
+    }
+    
+    return false;
+  }
+  
+  function handleImageError(event: Event) {
+    // 如果图片加载失败，隐藏图片元素并显示默认图标
+    const target = event.target as HTMLImageElement;
+    target.style.display = 'none';
+    if (target.parentElement) {
+      target.parentElement.innerHTML = '<svg class="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>';
+    }
+  }
+  
+  import ImportVideoDialog from "../lib/ImportVideoDialog.svelte";
+  import ClipFromImportedDialog from "../lib/ClipFromImportedDialog.svelte";
 </script>
 
 <!-- svelte-ignore a11y-click-events-have-key-events -->
@@ -274,6 +342,13 @@
 
       <div class="flex items-center space-x-3">
         <button
+          class="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors flex items-center space-x-2"
+          on:click={() => showImportDialog = true}
+        >
+          <Upload class="w-4 h-4 text-white" />
+          <span>导入视频</span>
+        </button>
+        <button
           class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
           on:click={loadVideos}
           disabled={loading}
@@ -291,16 +366,29 @@
       class="p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 space-y-4"
     >
       <div class="flex justify-between items-center flex-wrap gap-4">
-        <select
-          bind:value={selectedRoomId}
-          on:change={applyFilters}
-          class="px-3 py-2 bg-gray-100 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 cursor-pointer"
-        >
-          <option value={null}>所有直播间</option>
-          {#each roomIds as roomId}
-            <option value={roomId}>{roomId}</option>
-          {/each}
-        </select>
+        <div class="flex space-x-3">
+          <select
+            bind:value={selectedRoomId}
+            on:change={applyFilters}
+            class="px-3 py-2 bg-gray-100 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 cursor-pointer"
+          >
+            <option value={null}>所有直播间</option>
+            {#each roomIds as roomId}
+              <option value={roomId}>{roomId}</option>
+            {/each}
+          </select>
+          
+          <select
+            bind:value={selectedPlatform}
+            on:change={applyFilters}
+            class="px-3 py-2 bg-gray-100 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 cursor-pointer"
+          >
+            <option value={null}>所有平台</option>
+            {#each platforms as platform}
+              <option value={platform}>{formatPlatform(platform)}</option>
+            {/each}
+          </select>
+        </div>
 
         <div class="flex items-center space-x-2">
           <span class="text-sm text-gray-600 dark:text-gray-400">排序:</span>
@@ -514,31 +602,48 @@
 
                   <td class="px-4 py-3 w-20">
                     <div class="flex items-center space-x-2">
-                      <Globe class="w-4 h-4 text-gray-400" />
-                      <span
-                        class="text-sm text-gray-900 dark:text-white truncate"
-                        >{formatPlatform(video.platform)}</span
-                      >
+                      {#if video.platform === "imported" || video.platform === "imported_clip"}
+                        <FileVideo class="w-4 h-4 text-purple-400" />
+                        <span class="text-sm text-purple-600 dark:text-purple-400">
+                          {formatPlatform(video.platform)}
+                        </span>
+                      {:else if video.platform?.endsWith("_clip")}
+                        <Scissors class="w-4 h-4 text-green-400" />
+                        <span class="text-sm text-green-600 dark:text-green-400">
+                          {formatPlatform(video.platform)}
+                        </span>
+                      {:else}
+                        <Globe class="w-4 h-4 text-gray-400" />
+                        <span
+                          class="text-sm text-gray-900 dark:text-white truncate"
+                          >{formatPlatform(video.platform)}</span
+                        >
+                      {/if}
                     </div>
                   </td>
 
                   <td class="px-4 py-3 w-24">
                     <div class="flex items-center space-x-2">
-                      <Home class="w-4 h-4 text-gray-400" />
-                      {#if getRoomUrl(video.platform, video.room_id)}
-                        <a
-                          href={getRoomUrl(video.platform, video.room_id)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          class="text-blue-500 hover:text-blue-700 text-sm"
-                          title={`打开 ${formatPlatform(video.platform)} 直播间`}
-                        >
-                          {video.room_id}
-                        </a>
+                      {#if video.platform === "imported" || video.platform === "imported_clip"}
+                        <Home class="w-4 h-4 text-purple-400" />
+                        <span class="text-sm text-purple-600 dark:text-purple-400">外部视频</span>
                       {:else}
-                        <span class="text-sm text-gray-900 dark:text-white"
-                          >{video.room_id}</span
-                        >
+                        <Home class="w-4 h-4 text-gray-400" />
+                        {#if getRoomUrl(video.platform, video.room_id)}
+                          <a
+                            href={getRoomUrl(video.platform, video.room_id)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="text-blue-500 hover:text-blue-700 text-sm"
+                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
+                          >
+                            {video.room_id}
+                          </a>
+                        {:else}
+                          <span class="text-sm text-gray-900 dark:text-white"
+                            >{video.room_id}</span
+                          >
+                        {/if}
                       {/if}
                     </div>
                   </td>
@@ -548,11 +653,19 @@
                       <div
                         class="w-12 h-8 rounded-lg overflow-hidden bg-gray-100 dark:bg-gray-700 flex items-center justify-center flex-shrink-0"
                       >
-                        <img
-                          src={video.cover}
-                          alt="封面"
-                          class="w-full h-full object-cover"
-                        />
+                        {#if video.cover && video.cover.trim() !== ""}
+                          <img
+                            src={video.cover}
+                            alt="封面"
+                            class="w-full h-full object-cover"
+                            on:error={handleImageError}
+                          />
+                        {:else}
+                          <!-- 默认视频图标 -->
+                          <svg class="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+                          </svg>
+                        {/if}
                       </div>
                       <div class="min-w-0 flex-1 w-64">
                         <p
@@ -629,6 +742,21 @@
                       >
                         <Play class="w-4 h-4" />
                       </button>
+                      
+                      {#if canClipVideo(video)}
+                        <!-- 视频切片操作 -->
+                        <button
+                          class="p-1.5 text-gray-600 dark:text-gray-400 hover:text-green-600 dark:hover:text-green-400 hover:bg-green-50 dark:hover:bg-green-900/20 rounded transition-colors"
+                          title="切片"
+                          on:click={() => {
+                            videoToClip = video;
+                            showClipDialog = true;
+                          }}
+                        >
+                          <Scissors class="w-4 h-4" />
+                        </button>
+                      {/if}
+                      
                       <button
                         class="p-1.5 text-gray-600 dark:text-gray-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors"
                         title="删除"
@@ -708,3 +836,13 @@
     -webkit-backdrop-filter: blur(20px);
   }
 </style>
+
+<!-- 导入视频对话框 -->
+<ImportVideoDialog bind:showDialog={showImportDialog} on:imported={handleVideoImported} />
+
+<!-- 导入视频切片对话框 -->
+<ClipFromImportedDialog 
+  bind:showDialog={showClipDialog} 
+  bind:videoToClip={videoToClip}
+  on:clipped={handleVideoClipped} 
+/>

@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { invoke } from "./lib/invoker";
+  import { invoke, convertFileSrc } from "./lib/invoker";
   import { onMount } from "svelte";
   import VideoPreview from "./lib/VideoPreview.svelte";
   import type { Config, VideoItem } from "./lib/interface";
-  import { convertFileSrc, set_title } from "./lib/invoker";
+  import { set_title } from "./lib/invoker";
 
   let video: VideoItem | null = null;
   let videos: any[] = [];
@@ -24,10 +24,12 @@
         // 获取视频信息
         const videoData = await invoke("get_video", { id: parseInt(videoId) });
         roomId = (videoData as VideoItem).room_id;
+        console.log("Video data loaded:", videoData, "Room ID:", roomId);
         // update window title to file name
         set_title((videoData as VideoItem).file);
         // 获取房间下的所有视频列表
-        if (roomId) {
+        if (roomId !== null && roomId !== undefined) {
+          console.log("Loading videos for room:", roomId);
           videos = (
             (await invoke("get_videos", { roomId: roomId })) as VideoItem[]
           ).map((v) => {
@@ -39,10 +41,12 @@
               cover: v.cover,
             };
           });
+          console.log("Videos loaded:", videos);
         }
 
         // find video in videos
         let new_video = videos.find((v) => v.id === parseInt(videoId));
+        console.log("Found video:", new_video, "from videos array:", videos.length);
 
         handleVideoChange(new_video);
 
@@ -59,14 +63,24 @@
   async function handleVideoChange(newVideo: VideoItem) {
     if (newVideo) {
       // get cover from video
-      const cover = await invoke("get_video_cover", { id: newVideo.id });
-      newVideo.cover = cover as string;
+      const cover = await invoke("get_video_cover", { id: newVideo.id }) as string;
+      console.log("Raw cover path:", cover);
+      
+      // 对于非空的封面路径，使用convertFileSrc转换
+      if (cover && cover.trim() !== "") {
+        const fullCoverPath = `${config.output}/${cover}`;
+        newVideo.cover = convertFileSrc(fullCoverPath);
+        console.log("Converted cover path:", newVideo.cover);
+      } else {
+        newVideo.cover = "";
+        console.log("Empty cover, will show default icon");
+      }
     }
     video = newVideo;
   }
 
   async function handleVideoListUpdate() {
-    if (roomId) {
+    if (roomId !== null && roomId !== undefined) {
       const videosData = await invoke("get_videos", { roomId });
       videos = (videosData as VideoItem[]).map((v) => {
         return {
@@ -81,7 +95,7 @@
   }
 </script>
 
-{#if showVideoPreview && video && roomId}
+{#if showVideoPreview && video && (roomId !== null && roomId !== undefined)}
   <VideoPreview
     bind:show={showVideoPreview}
     {video}

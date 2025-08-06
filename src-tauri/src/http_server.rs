@@ -1156,14 +1156,16 @@ async fn handler_output(
             content_type.parse().unwrap(),
         );
 
-        // Add Content-Disposition header to force download
-        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-        headers.insert(
-            axum::http::header::CONTENT_DISPOSITION,
-            format!("attachment; filename=\"{}\"", filename)
-                .parse()
-                .unwrap(),
-        );
+        // Only set Content-Disposition for non-video files to allow inline playback
+        if !matches!(content_type, "video/mp4" | "video/webm" | "video/x-m4v" | "video/x-matroska" | "video/x-msvideo") {
+            let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+            headers.insert(
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{}\"", filename)
+                    .parse()
+                    .unwrap(),
+            );
+        }
 
         let content_length = end - start + 1;
         headers.insert(

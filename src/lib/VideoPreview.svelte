@@ -50,7 +50,13 @@
   let currentTime = 0;
   let currentSubtitle = "";
   let videoElement: HTMLVideoElement;
+  let showDefaultCoverIcon = false;
   let timelineWidth = 0;
+
+  // 当视频改变时重置封面错误状态
+  $: if (video) {
+    showDefaultCoverIcon = false;
+  }
   let timelineElement: HTMLElement;
   let draggingSubtitle: { index: number; isStart: boolean } | null = null;
   let draggingBlock: number | null = null;
@@ -656,6 +662,11 @@
     if (videoElement) {
       videoElement.volume = volume;
     }
+  }
+
+  function handleCoverError(event: Event) {
+    console.error("Cover image load failed:", event);
+    showDefaultCoverIcon = true;
   }
 
   function toggleMute() {
@@ -1303,7 +1314,23 @@
                   <div
                     class="relative rounded-xl overflow-hidden bg-black/20 border border-gray-800/50"
                   >
-                    <img src={video.cover} alt="视频封面" class="w-full" />
+                    {#if video.cover && video.cover.trim() !== ""}
+                      <img 
+                        src={video.cover} 
+                        alt="视频封面" 
+                        class="w-full" 
+                        on:error={handleCoverError}
+                        style:display={showDefaultCoverIcon ? 'none' : 'block'}
+                      />
+                    {/if}
+                    {#if !video.cover || video.cover.trim() === "" || showDefaultCoverIcon}
+                      <div class="w-full aspect-video flex items-center justify-center bg-gray-800">
+                        <!-- 默认视频图标 -->
+                        <svg class="w-16 h-16 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+                        </svg>
+                      </div>
+                    {/if}
                   </div>
                 </div>
               </section>

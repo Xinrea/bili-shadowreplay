@@ -171,27 +171,13 @@ impl DouyinClient {
         &self,
         url: &str,
     ) -> Result<(MediaPlaylist, String), DouyinClientError> {
-        let content = self
-            .client
-            .get(url)
-            .header("Referer", "https://live.douyin.com/")
-            .header("Cookie", self.cookies.clone())
-            .header("Accept", "*/*")
-            .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-            .header("Accept-Encoding", "gzip, deflate, br")
-            .header("Connection", "keep-alive")
-            .header("Sec-Fetch-Dest", "empty")
-            .header("Sec-Fetch-Mode", "cors")
-            .header("Sec-Fetch-Site", "cross-site")
-            .send()
-            .await?
-            .text()
-            .await?;
+        let content = self.client.get(url).send().await?.text().await?;
         // m3u8 content: #EXTM3U
         // #EXT-X-VERSION:3
         // #EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=2560000
         // http://7167739a741646b4651b6949b2f3eb8e.livehwc3.cn/pull-hls-l26.douyincdn.com/third/stream-693342996808860134_or4.m3u8?sub_m3u8=true&user_session_id=16090eb45ab8a2f042f7c46563936187&major_anchor_level=common&edge_slice=true&expire=67d944ec&sign=47b95cc6e8de20d82f3d404412fa8406
         if content.contains("BANDWIDTH") {
+            log::info!("Master manifest with playlist URL: {}", url);
             let new_url = content.lines().last().unwrap();
             return Box::pin(self.get_m3u8_content(new_url)).await;
         }
@@ -206,20 +192,7 @@ impl DouyinClient {
     }
 
     pub async fn download_ts(&self, url: &str, path: &str) -> Result<u64, DouyinClientError> {
-        let response = self
-            .client
-            .get(url)
-            .header("Referer", "https://live.douyin.com/")
-            .header("Cookie", self.cookies.clone())
-            .header("Accept", "*/*")
-            .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-            .header("Accept-Encoding", "gzip, deflate, br")
-            .header("Connection", "keep-alive")
-            .header("Sec-Fetch-Dest", "empty")
-            .header("Sec-Fetch-Mode", "cors")
-            .header("Sec-Fetch-Site", "cross-site")
-            .send()
-            .await?;
+        let response = self.client.get(url).send().await?;
 
         if response.status() != reqwest::StatusCode::OK {
             let error = response.error_for_status().unwrap_err();

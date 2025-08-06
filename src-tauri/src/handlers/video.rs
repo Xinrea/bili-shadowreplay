@@ -97,9 +97,15 @@ pub async fn clip_range(
             if state.config.read().await.auto_subtitle {
                 // generate a subtitle task event id
                 let subtitle_event_id = format!("{}_subtitle", event_id);
-                let result = generate_video_subtitle(state, subtitle_event_id, video.id).await;
-                if let Err(e) = result {
-                    log::error!("Generate video subtitle error: {}", e);
+                let result =
+                    generate_video_subtitle(state.clone(), subtitle_event_id, video.id).await;
+                if let Ok(subtitle) = result {
+                    let result = update_video_subtitle(state.clone(), video.id, subtitle).await;
+                    if let Err(e) = result {
+                        log::error!("Update video subtitle error: {}", e);
+                    }
+                } else {
+                    log::error!("Generate video subtitle error: {}", result.err().unwrap());
                 }
             }
             Ok(video)
@@ -392,6 +398,7 @@ pub async fn update_video_cover(
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_video_subtitle(state: state_type!(), id: i64) -> Result<String, String> {
+    log::debug!("Get video subtitle: {}", id);
     let video = state.db.get_video(id).await?;
     let filepath = Path::new(state.config.read().await.output.as_str()).join(&video.file);
     let file = Path::new(&filepath);
@@ -472,12 +479,18 @@ pub async fn generate_video_subtitle(
                 )
                 .await?;
 
-            Ok(result
+            let subtitle = result
                 .subtitle_content
                 .iter()
                 .map(item_to_srt)
                 .collect::<Vec<String>>()
-                .join(""))
+                .join("");
+
+            let result = update_video_subtitle(state.clone(), id, subtitle.clone()).await;
+            if let Err(e) = result {
+                log::error!("Update video subtitle error: {}", e);
+            }
+            Ok(subtitle)
         }
         Err(e) => {
             reporter

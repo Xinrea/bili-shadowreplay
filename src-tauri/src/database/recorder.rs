@@ -10,6 +10,7 @@ pub struct RecorderRow {
     pub created_at: String,
     pub platform: String,
     pub auto_start: bool,
+    pub extra: String,
 }
 
 // recorders
@@ -18,6 +19,7 @@ impl Database {
         &self,
         platform: PlatformType,
         room_id: u64,
+        extra: &str,
     ) -> Result<RecorderRow, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         let recorder = RecorderRow {
@@ -25,14 +27,16 @@ impl Database {
             created_at: Utc::now().to_rfc3339(),
             platform: platform.as_str().to_string(),
             auto_start: true,
+            extra: extra.to_string(),
         };
         let _ = sqlx::query(
-            "INSERT INTO recorders (room_id, created_at, platform, auto_start) VALUES ($1, $2, $3, $4)",
+            "INSERT OR REPLACE INTO recorders (room_id, created_at, platform, auto_start, extra) VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(room_id as i64)
         .bind(&recorder.created_at)
         .bind(platform.as_str())
         .bind(recorder.auto_start)
+        .bind(extra)
         .execute(&lock)
         .await?;
         Ok(recorder)
@@ -56,7 +60,7 @@ impl Database {
     pub async fn get_recorders(&self) -> Result<Vec<RecorderRow>, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         Ok(sqlx::query_as::<_, RecorderRow>(
-            "SELECT room_id, created_at, platform, auto_start FROM recorders",
+            "SELECT room_id, created_at, platform, auto_start, extra FROM recorders",
         )
         .fetch_all(&lock)
         .await?)

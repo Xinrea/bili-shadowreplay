@@ -673,3 +673,120 @@ pub struct AvatarSmall {
     #[serde(rename = "url_list")]
     pub url_list: Vec<String>,
 }
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DouyinH5RoomInfoResponse {
+    pub data: H5Data,
+    pub extra: H5Extra,
+    #[serde(rename = "status_code")]
+    pub status_code: i64,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct H5Data {
+    pub room: H5Room,
+    pub user: H5User,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct H5Room {
+    pub id: u64,
+    #[serde(rename = "id_str")]
+    pub id_str: String,
+    pub status: i64,
+    pub title: String,
+    pub cover: Option<H5Cover>,
+    #[serde(rename = "stream_url")]
+    pub stream_url: Option<H5StreamUrl>,
+    pub owner: H5Owner,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct H5Cover {
+    #[serde(rename = "url_list")]
+    pub url_list: Vec<String>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct H5StreamUrl {
+    pub provider: i64,
+    pub id: u64,
+    #[serde(rename = "id_str")]
+    pub id_str: String,
+    #[serde(rename = "default_resolution")]
+    pub default_resolution: String,
+    #[serde(rename = "rtmp_pull_url")]
+    pub rtmp_pull_url: String,
+    #[serde(rename = "flv_pull_url")]
+    pub flv_pull_url: H5FlvPullUrl,
+    #[serde(rename = "hls_pull_url")]
+    pub hls_pull_url: String,
+    #[serde(rename = "hls_pull_url_map")]
+    pub hls_pull_url_map: H5HlsPullUrlMap,
+    #[serde(rename = "live_core_sdk_data")]
+    pub live_core_sdk_data: LiveCoreSdkData,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct H5FlvPullUrl {
+    #[serde(rename = "FULL_HD1")]
+    pub full_hd1: Option<String>,
+    #[serde(rename = "HD1")]
+    pub hd1: Option<String>,
+    #[serde(rename = "SD1")]
+    pub sd1: Option<String>,
+    #[serde(rename = "SD2")]
+    pub sd2: Option<String>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct H5HlsPullUrlMap {
+    #[serde(rename = "FULL_HD1")]
+    pub full_hd1: Option<String>,
+    #[serde(rename = "HD1")]
+    pub hd1: Option<String>,
+    #[serde(rename = "SD1")]
+    pub sd1: Option<String>,
+    #[serde(rename = "SD2")]
+    pub sd2: Option<String>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct H5Owner {
+    pub nickname: String,
+    #[serde(rename = "avatar_thumb")]
+    pub avatar_thumb: H5AvatarThumb,
+    #[serde(rename = "sec_uid")]
+    pub sec_uid: String,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct H5AvatarThumb {
+    #[serde(rename = "url_list")]
+    pub url_list: Vec<String>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct H5User {
+    pub nickname: String,
+    #[serde(rename = "avatar_thumb")]
+    pub avatar_thumb: Option<H5AvatarThumb>,
+    #[serde(rename = "sec_uid")]
+    pub sec_uid: String,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct H5Extra {
+    pub now: i64,
+}

@@ -1,7 +1,12 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { invoke } from "../invoker";
-import { default_profile, generateEventId, type ClipRangeParams, type Profile } from "../interface";
+import {
+  default_profile,
+  generateEventId,
+  type ClipRangeParams,
+  type Profile,
+} from "../interface";
 
 const platform_list = ["bilibili", "douyin"];
 
@@ -51,10 +56,19 @@ const remove_account = tool(
 
 // @ts-ignore
 const add_recorder = tool(
-  async ({ platform, room_id }: { platform: string; room_id: number }) => {
+  async ({
+    platform,
+    room_id,
+    extra,
+  }: {
+    platform: string;
+    room_id: number;
+    extra: string;
+  }) => {
     const result = await invoke("add_recorder", {
       platform,
       roomId: room_id,
+      extra,
     });
     return result;
   },
@@ -68,6 +82,11 @@ const add_recorder = tool(
           `The platform of the recorder. Can be ${platform_list.join(", ")}`
         ),
       room_id: z.number().describe("The room id of the recorder"),
+      extra: z
+        .string()
+        .describe(
+          "The extra of the recorder, should be empty for bilibili, and the sec_user_id for douyin"
+        ),
     }),
   }
 );
@@ -358,7 +377,8 @@ const get_video_subtitle = tool(
   },
   {
     name: "get_video_subtitle",
-    description: "Get the subtitle of a video, if empty, you can use generate_video_subtitle to generate the subtitle",
+    description:
+      "Get the subtitle of a video, if empty, you can use generate_video_subtitle to generate the subtitle",
     schema: z.object({
       id: z.number().describe("The id of the video"),
     }),
@@ -405,7 +425,23 @@ const encode_video_subtitle = tool(
 
 // @ts-ignore
 const post_video_to_bilibili = tool(
-  async ({ uid, room_id, video_id, title, desc, tag, tid }: { uid: number; room_id: number; video_id: number; title: string; desc: string; tag: string; tid: number }) => {
+  async ({
+    uid,
+    room_id,
+    video_id,
+    title,
+    desc,
+    tag,
+    tid,
+  }: {
+    uid: number;
+    room_id: number;
+    video_id: number;
+    title: string;
+    desc: string;
+    tag: string;
+    tid: number;
+  }) => {
     // invoke("upload_procedure", {
     //   uid: uid_selected,
     //   eventId: event_id,
@@ -421,28 +457,59 @@ const post_video_to_bilibili = tool(
     profile.desc = desc;
     profile.tag = tag;
     profile.tid = tid;
-    const result = await invoke("upload_procedure", { uid, eventId: event_id, roomId: room_id, videoId: video_id, cover, profile });
+    const result = await invoke("upload_procedure", {
+      uid,
+      eventId: event_id,
+      roomId: room_id,
+      videoId: video_id,
+      cover,
+      profile,
+    });
     return result;
   },
   {
     name: "post_video_to_bilibili",
     description: "Post a video to bilibili",
     schema: z.object({
-      uid: z.number().describe("The uid of the user, it should be one of the uid in the bilibili accounts"),
+      uid: z
+        .number()
+        .describe(
+          "The uid of the user, it should be one of the uid in the bilibili accounts"
+        ),
       room_id: z.number().describe("The room id of the room"),
       video_id: z.number().describe("The id of the video"),
       title: z.string().describe("The title of the video"),
       desc: z.string().describe("The description of the video"),
-      tag: z.string().describe("The tag of the video, multiple tags should be separated by comma"),
-      tid: z.number().describe("The tid of the video, it is the id of the video type, you can use get_video_typelist to get the list of all video types"),
+      tag: z
+        .string()
+        .describe(
+          "The tag of the video, multiple tags should be separated by comma"
+        ),
+      tid: z
+        .number()
+        .describe(
+          "The tid of the video, it is the id of the video type, you can use get_video_typelist to get the list of all video types"
+        ),
     }),
   }
 );
 
 // @ts-ignore
 const get_danmu_record = tool(
-  async ({ platform, room_id, live_id }: { platform: string; room_id: number; live_id: string }) => {
-    const result = (await invoke("get_danmu_record", { platform, roomId: room_id, liveId: live_id })) as any[];
+  async ({
+    platform,
+    room_id,
+    live_id,
+  }: {
+    platform: string;
+    room_id: number;
+    live_id: string;
+  }) => {
+    const result = (await invoke("get_danmu_record", {
+      platform,
+      roomId: room_id,
+      liveId: live_id,
+    })) as any[];
     // remove ts from result
     return {
       danmu_record: result.map((r: any) => {
@@ -455,7 +522,8 @@ const get_danmu_record = tool(
   },
   {
     name: "get_danmu_record",
-    description: "Get the danmu record of a live, entry ts is relative to the live start time in seconds",
+    description:
+      "Get the danmu record of a live, entry ts is relative to the live start time in seconds",
     schema: z.object({
       platform: z.string().describe("The platform of the room"),
       room_id: z.number().describe("The room id of the room"),
@@ -466,24 +534,54 @@ const get_danmu_record = tool(
 
 // @ts-ignore
 const clip_range = tool(
-  async ({ reason, clip_range_params }: { reason: string; clip_range_params: ClipRangeParams }) => {
+  async ({
+    reason,
+    clip_range_params,
+  }: {
+    reason: string;
+    clip_range_params: ClipRangeParams;
+  }) => {
     const event_id = generateEventId();
-    const result = await invoke("clip_range", { eventId: event_id, params: clip_range_params });
+    const result = await invoke("clip_range", {
+      eventId: event_id,
+      params: clip_range_params,
+    });
     return result;
   },
   {
     name: "clip_range",
-    description: "Clip a range of a live, it will be used to generate a video. You must provide a reason for your decision on params",
+    description:
+      "Clip a range of a live, it will be used to generate a video. You must provide a reason for your decision on params",
     schema: z.object({
-      reason: z.string().describe("The reason for the clip range, it will be shown to the user. You must offer a summary of the clip range content and why you choose this clip range."),
+      reason: z
+        .string()
+        .describe(
+          "The reason for the clip range, it will be shown to the user. You must offer a summary of the clip range content and why you choose this clip range."
+        ),
       clip_range_params: z.object({
         room_id: z.number().describe("The room id of the room"),
         live_id: z.string().describe("The live id of the live"),
-        x: z.number().describe("The start time in SECONDS of the clip, relative to the live start time, must be less than y"),
-        y: z.number().describe("The end time in SECONDS of the clip, relative to the live start time, must be greater than x"),
-        danmu: z.boolean().describe("Whether to encode danmu, encode danmu will take a lot of time, so it is recommended to set it to false"),
+        x: z
+          .number()
+          .describe(
+            "The start time in SECONDS of the clip, relative to the live start time, must be less than y"
+          ),
+        y: z
+          .number()
+          .describe(
+            "The end time in SECONDS of the clip, relative to the live start time, must be greater than x"
+          ),
+        danmu: z
+          .boolean()
+          .describe(
+            "Whether to encode danmu, encode danmu will take a lot of time, so it is recommended to set it to false"
+          ),
         offset: z.number().describe("Must be 0"),
-        local_offset: z.number().describe("The offset for danmu timestamp, it is used to correct the timestamp of danmu"),
+        local_offset: z
+          .number()
+          .describe(
+            "The offset for danmu timestamp, it is used to correct the timestamp of danmu"
+          ),
         title: z.string().describe("The title of the clip"),
         cover: z.string().describe("Must be empty"),
         platform: z.string().describe("The platform of the clip"),
@@ -494,7 +592,15 @@ const clip_range = tool(
 
 // @ts-ignore
 const get_recent_record = tool(
-  async ({ room_id, offset, limit }: { room_id: number; offset: number; limit: number }) => {
+  async ({
+    room_id,
+    offset,
+    limit,
+  }: {
+    room_id: number;
+    offset: number;
+    limit: number;
+  }) => {
     const records = (await invoke("get_recent_record", {
       roomId: room_id,
       offset,
@@ -502,7 +608,11 @@ const get_recent_record = tool(
     })) as any[];
     return {
       records: records.map((r: any) => {
-        return { ...r, cover: null, created_at: new Date(r.created_at).toLocaleString() };
+        return {
+          ...r,
+          cover: null,
+          created_at: new Date(r.created_at).toLocaleString(),
+        };
       }),
     };
   },
@@ -519,13 +629,7 @@ const get_recent_record = tool(
 
 // @ts-ignore
 const get_recent_record_all = tool(
-  async ({
-    offset,
-    limit,
-  }: {
-    offset: number;
-    limit: number;
-  }) => {
+  async ({ offset, limit }: { offset: number; limit: number }) => {
     const records = (await invoke("get_recent_record", {
       roomId: 0,
       offset,
@@ -598,13 +702,26 @@ const list_folder = tool(
 
 // @ts-ignore
 const get_archive_subtitle = tool(
-  async ({ platform, room_id, live_id }: { platform: string; room_id: number; live_id: string }) => {
-    const result = await invoke("get_archive_subtitle", { platform, roomId: room_id, liveId: live_id });
+  async ({
+    platform,
+    room_id,
+    live_id,
+  }: {
+    platform: string;
+    room_id: number;
+    live_id: string;
+  }) => {
+    const result = await invoke("get_archive_subtitle", {
+      platform,
+      roomId: room_id,
+      liveId: live_id,
+    });
     return result;
   },
   {
     name: "get_archive_subtitle",
-    description: "Get the subtitle of a archive, it may not be generated yet, you can use generate_archive_subtitle to generate the subtitle",
+    description:
+      "Get the subtitle of a archive, it may not be generated yet, you can use generate_archive_subtitle to generate the subtitle",
     schema: z.object({
       platform: z.string().describe("The platform of the archive"),
       room_id: z.number().describe("The room id of the archive"),
@@ -615,13 +732,26 @@ const get_archive_subtitle = tool(
 
 // @ts-ignore
 const generate_archive_subtitle = tool(
-  async ({ platform, room_id, live_id }: { platform: string; room_id: number; live_id: string }) => {
-    const result = await invoke("generate_archive_subtitle", { platform, roomId: room_id, liveId: live_id });
+  async ({
+    platform,
+    room_id,
+    live_id,
+  }: {
+    platform: string;
+    room_id: number;
+    live_id: string;
+  }) => {
+    const result = await invoke("generate_archive_subtitle", {
+      platform,
+      roomId: room_id,
+      liveId: live_id,
+    });
     return result;
   },
   {
     name: "generate_archive_subtitle",
-    description: "Generate the subtitle of a archive, it may take a long time, you should not call this tool unless user ask you to generate the subtitle. It can be used to overwrite the subtitle of a archive",
+    description:
+      "Generate the subtitle of a archive, it may take a long time, you should not call this tool unless user ask you to generate the subtitle. It can be used to overwrite the subtitle of a archive",
     schema: z.object({
       platform: z.string().describe("The platform of the archive"),
       room_id: z.number().describe("The room id of the archive"),

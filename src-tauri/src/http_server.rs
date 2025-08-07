@@ -17,8 +17,8 @@ use crate::{
         config::{
             get_config, update_auto_generate, update_clip_name_format, update_notify,
             update_openai_api_endpoint, update_openai_api_key, update_status_check_interval,
-            update_subtitle_generator_type, update_subtitle_setting, update_whisper_language,
-            update_user_agent, update_whisper_model, update_whisper_prompt,
+            update_subtitle_generator_type, update_subtitle_setting, update_user_agent,
+            update_whisper_language, update_whisper_model, update_whisper_prompt,
         },
         message::{delete_message, get_messages, read_message},
         recorder::{
@@ -450,13 +450,14 @@ async fn handler_get_recorder_list(
 struct AddRecorderRequest {
     platform: String,
     room_id: u64,
+    extra: String,
 }
 
 async fn handler_add_recorder(
     state: axum::extract::State<State>,
     Json(param): Json<AddRecorderRequest>,
 ) -> Result<Json<ApiResponse<RecorderRow>>, ApiError> {
-    let recorder = add_recorder(state.0, param.platform, param.room_id)
+    let recorder = add_recorder(state.0, param.platform, param.room_id, param.extra)
         .await
         .expect("Failed to add recorder");
     Ok(Json(ApiResponse::success(recorder)))
@@ -1339,10 +1340,7 @@ pub async fn start_api_server(state: State) {
                 "/api/update_whisper_language",
                 post(handler_update_whisper_language),
             )
-            .route(
-                "/api/update_user_agent",
-                post(handler_update_user_agent),
-            );
+            .route("/api/update_user_agent", post(handler_update_user_agent));
     } else {
         log::info!("Running in readonly mode, some api routes are disabled");
     }

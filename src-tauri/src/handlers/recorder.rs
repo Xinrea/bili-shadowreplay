@@ -24,6 +24,7 @@ pub async fn add_recorder(
     state: state_type!(),
     platform: String,
     room_id: u64,
+    extra: String,
 ) -> Result<RecorderRow, String> {
     log::info!("Add recorder: {} {}", platform, room_id);
     let platform = PlatformType::from_str(&platform).unwrap();
@@ -50,11 +51,11 @@ pub async fn add_recorder(
     match account {
         Ok(account) => match state
             .recorder_manager
-            .add_recorder(&account, platform, room_id, true)
+            .add_recorder(&account, platform, room_id, &extra, true)
             .await
         {
             Ok(()) => {
-                let room = state.db.add_recorder(platform, room_id).await?;
+                let room = state.db.add_recorder(platform, room_id, &extra).await?;
                 state
                     .db
                     .new_message("添加直播间", &format!("添加了新直播间 {}", room_id))

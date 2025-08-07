@@ -26,14 +26,12 @@
   let sortOrder = "desc";
   let selectedRoomId: number | null = null;
   let roomIds: number[] = [];
-  let selectedPlatform: string | null = null;
-  let platforms: string[] = [];
+
   let selectedVideos: Set<number> = new Set();
   let showDeleteConfirm = false;
   let videoToDelete: VideoItem | null = null;
   let showImportDialog = false;
-  let showClipDialog = false;
-  let videoToClip: VideoItem | null = null;
+
 
   onMount(async () => {
     await loadVideos();
@@ -47,9 +45,8 @@
       // Get all videos from all rooms
       const allVideos: VideoItem[] = [];
 
-      // First, get all room IDs and platforms that have videos
+      // First, get all room IDs that have videos
       const roomIdsSet = new Set<number>();
-      const platformsSet = new Set<string>();
       const tempVideos = await invoke<VideoItem[]>("get_all_videos");
       for (const video of tempVideos) {
         if (cover_cache.has(video.id)) {
@@ -64,15 +61,11 @@
 
       for (const video of tempVideos) {
         roomIdsSet.add(video.room_id);
-        if (video.platform) {
-          platformsSet.add(video.platform);
-        }
         allVideos.push(video);
       }
 
       videos = allVideos;
       roomIds = Array.from(roomIdsSet).sort((a, b) => a - b);
-      platforms = Array.from(platformsSet).sort();
 
       applyFilters();
     } catch (error) {
@@ -83,19 +76,12 @@
   }
 
   function applyFilters() {
-    console.log("applyFilters", selectedRoomId, selectedPlatform);
+    console.log("applyFilters", selectedRoomId);
     let filtered = [...videos];
 
     // Apply room filter
     if (selectedRoomId !== null) {
       filtered = filtered.filter((video) => video.room_id === selectedRoomId);
-    }
-
-    // Apply platform filter
-    if (selectedPlatform !== null) {
-      filtered = filtered.filter(
-        (video) => video.platform === selectedPlatform
-      );
     }
 
     // Apply sorting
@@ -183,22 +169,9 @@
         return "YouTube";
       case "imported":
         return "导入视频";
-      case "imported_clip":
-        return "导入切片";
-      case "bilibili_clip":
-        return "B站切片";
-      case "douyin_clip":
-        return "抖音切片";
-      case "huya_clip":
-        return "虎牙切片";
-      case "youtube_clip":
-        return "YouTube切片";
+      case "clip":
+        return "切片";
       default:
-        // 处理其他切片类型
-        if (platform.endsWith("_clip")) {
-          const basePlatform = platform.replace("_clip", "");
-          return `${formatPlatform(basePlatform)}切片`;
-        }
         return platform;
     }
   }
@@ -284,34 +257,9 @@
     loadVideos();
   }
   
-  function handleVideoClipped() {
-    // 视频切片完成后刷新列表
-    loadVideos();
-  }
 
-  function canClipVideo(video: VideoItem): boolean {
-    // 可以切片的视频类型：
-    // 1. 导入的视频 (imported)
-    // 2. 录制完成的视频 (status === 0 或 status === 1)
-    if (video.platform === "imported") {
-      return true;
-    }
-    
-    // 排除导入切片和录制切片（已经是切片了，不需要再切片）
-    if (video.platform === "imported_clip" || video.platform?.endsWith("_clip")) {
-      return false;
-    }
-    
-    // 对于录制的视频，检查状态
-    // status === 0: 录制完成
-    // status === 1: 已上传到平台
-    // 两种状态的视频都可以进行切片
-    if (video.status === 0 || video.status === 1) {
-      return true;
-    }
-    
-    return false;
-  }
+
+
   
   function handleImageError(event: Event) {
     // 如果图片加载失败，隐藏图片元素并显示默认图标
@@ -323,7 +271,6 @@
   }
   
   import ImportVideoDialog from "../lib/ImportVideoDialog.svelte";
-  import ClipFromImportedDialog from "../lib/ClipFromImportedDialog.svelte";
 </script>
 
 <!-- svelte-ignore a11y-click-events-have-key-events -->
@@ -375,17 +322,6 @@
             <option value={null}>所有直播间</option>
             {#each roomIds as roomId}
               <option value={roomId}>{roomId}</option>
-            {/each}
-          </select>
-          
-          <select
-            bind:value={selectedPlatform}
-            on:change={applyFilters}
-            class="px-3 py-2 bg-gray-100 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 cursor-pointer"
-          >
-            <option value={null}>所有平台</option>
-            {#each platforms as platform}
-              <option value={platform}>{formatPlatform(platform)}</option>
             {/each}
           </select>
         </div>
@@ -602,12 +538,12 @@
 
                   <td class="px-4 py-3 w-20">
                     <div class="flex items-center space-x-2">
-                      {#if video.platform === "imported" || video.platform === "imported_clip"}
+                      {#if video.platform === "imported"}
                         <FileVideo class="w-4 h-4 text-purple-400" />
                         <span class="text-sm text-purple-600 dark:text-purple-400">
                           {formatPlatform(video.platform)}
                         </span>
-                      {:else if video.platform?.endsWith("_clip")}
+                      {:else if video.platform === "clip"}
                         <Scissors class="w-4 h-4 text-green-400" />
                         <span class="text-sm text-green-600 dark:text-green-400">
                           {formatPlatform(video.platform)}
@@ -624,9 +560,11 @@
 
                   <td class="px-4 py-3 w-24">
                     <div class="flex items-center space-x-2">
-                      {#if video.platform === "imported" || video.platform === "imported_clip"}
+                      {#if video.platform === "imported" || video.platform === "clip"}
                         <Home class="w-4 h-4 text-purple-400" />
-                        <span class="text-sm text-purple-600 dark:text-purple-400">外部视频</span>
+                        <span class="text-sm text-purple-600 dark:text-purple-400">
+                          {video.platform === "imported" ? "外部视频" : "视频切片"}
+                        </span>
                       {:else}
                         <Home class="w-4 h-4 text-gray-400" />
                         {#if getRoomUrl(video.platform, video.room_id)}
@@ -743,19 +681,6 @@
                         <Play class="w-4 h-4" />
                       </button>
                       
-                      {#if canClipVideo(video)}
-                        <!-- 视频切片操作 -->
-                        <button
-                          class="p-1.5 text-gray-600 dark:text-gray-400 hover:text-green-600 dark:hover:text-green-400 hover:bg-green-50 dark:hover:bg-green-900/20 rounded transition-colors"
-                          title="切片"
-                          on:click={() => {
-                            videoToClip = video;
-                            showClipDialog = true;
-                          }}
-                        >
-                          <Scissors class="w-4 h-4" />
-                        </button>
-                      {/if}
                       
                       <button
                         class="p-1.5 text-gray-600 dark:text-gray-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors"
@@ -840,9 +765,4 @@
 <!-- 导入视频对话框 -->
 <ImportVideoDialog bind:showDialog={showImportDialog} on:imported={handleVideoImported} />
 
-<!-- 导入视频切片对话框 -->
-<ClipFromImportedDialog 
-  bind:showDialog={showClipDialog} 
-  bind:videoToClip={videoToClip}
-  on:clipped={handleVideoClipped} 
-/>
+

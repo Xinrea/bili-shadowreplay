@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use chrono::Utc;
+use chrono::Local;
 use serde::{Deserialize, Serialize};
 
 use crate::{recorder::PlatformType, recorder_manager::ClipRangeParams};
@@ -187,7 +187,7 @@ impl Config {
         let format_config = format_config.replace("{y}", &params.y.to_string());
         let format_config = format_config.replace(
             "{created_at}",
-            &Utc::now().format("%Y-%m-%d_%H-%M-%S").to_string(),
+            &Local::now().format("%Y-%m-%d_%H-%M-%S").to_string(),
         );
         let format_config = format_config.replace("{length}", &(params.y - params.x).to_string());
 

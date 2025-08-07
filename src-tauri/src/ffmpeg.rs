@@ -16,8 +16,6 @@ pub struct VideoMetadata {
     pub duration: f64,
     pub width: u32,
     pub height: u32,
-    pub bitrate: u64,
-    pub format: String,
 }
 
 #[cfg(target_os = "windows")]
@@ -339,10 +337,9 @@ pub async fn encode_video_subtitle(
     let output_filename = format!("[subtitle]{}", file.file_name().unwrap().to_str().unwrap());
     let output_path = file.with_file_name(&output_filename);
 
-    // check output path exists
+    // check output path exists - log but allow overwrite
     if output_path.exists() {
-        log::info!("Output path already exists: {}", output_path.display());
-        return Err("Output path already exists".to_string());
+        log::info!("Output path already exists, will overwrite: {}", output_path.display());
     }
 
     let mut command_error = None;
@@ -426,10 +423,9 @@ pub async fn encode_video_danmu(
     let danmu_filename = format!("[danmu]{}", file.file_name().unwrap().to_str().unwrap());
     let output_path = file.with_file_name(danmu_filename);
 
-    // check output path exists
+    // check output path exists - log but allow overwrite
     if output_path.exists() {
-        log::info!("Output path already exists: {}", output_path.display());
-        return Err("Output path already exists".to_string());
+        log::info!("Output path already exists, will overwrite: {}", output_path.display());
     }
 
     let mut command_error = None;
@@ -801,10 +797,11 @@ pub async fn clip_from_video_file(
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
     let child = ffmpeg_process
-        .args(["-i", &format!("{}", input_path.display())])
         .args(["-ss", &start_time.to_string()])
+        .args(["-i", &format!("{}", input_path.display())])
         .args(["-t", &duration.to_string()])
-        .args(["-c", "copy"])
+        .args(["-c:v", "copy"])
+        .args(["-c:a", "copy"])
         .args(["-avoid_negative_ts", "make_zero"])
         .args(["-y", output_path.to_str().unwrap()])
         .args(["-progress", "pipe:2"])
@@ -902,21 +899,11 @@ pub async fn extract_video_metadata(file_path: &Path) -> Result<VideoMetadata, S
 
     let width = video_stream["width"].as_u64().unwrap_or(0) as u32;
     let height = video_stream["height"].as_u64().unwrap_or(0) as u32;
-    
-    let bitrate = format["bit_rate"].as_str()
-        .and_then(|b| b.parse::<u64>().ok())
-        .unwrap_or(0);
-
-    let format_name = format["format_name"].as_str()
-        .unwrap_or("unknown")
-        .to_string();
 
     Ok(VideoMetadata {
         duration,
         width,
         height,
-        bitrate,
-        format: format_name,
     })
 }
 

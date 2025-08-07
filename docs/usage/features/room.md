@@ -13,6 +13,8 @@
 
 抖音直播间比较特殊，当未开播时，你无法找到直播间的入口，因此你需要当直播间开播时找到直播间网页地址，并记录其直播间号。
 
+抖音直播间需要输入主播的 sec_uid，你可以在主播主页的 URL 中找到，例如 `https://www.douyin.com/user/MS4wLjABAAAA` 中的 `MS4wLjABAAAA`。
+
 ### 使用 DeepLinking 快速添加直播间
 
 <video src="/videos/deeplinking.mp4" loop autoplay muted style="border-radius: 10px;"></video>

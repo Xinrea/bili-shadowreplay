@@ -35,10 +35,24 @@ impl From<std::io::Error> for DouyinClientError {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct DouyinBasicRoomInfo {
+    pub room_id_str: String,
+    pub room_title: String,
+    pub cover: Option<String>,
+    pub status: i64,
+    pub hls_url: String,
+    pub stream_data: String,
+    // user related
+    pub user_name: String,
+    pub user_avatar: String,
+    pub sec_user_id: String,
+}
+
 #[derive(Clone)]
 pub struct DouyinClient {
     client: Client,
-    cookies: String,
+    account: AccountRow,
 }
 
 impl DouyinClient {
@@ -46,14 +60,15 @@ impl DouyinClient {
         let client = Client::builder().user_agent(user_agent).build().unwrap();
         Self {
             client,
-            cookies: account.cookies.clone(),
+            account: account.clone(),
         }
     }
 
     pub async fn get_room_info(
         &self,
         room_id: u64,
-    ) -> Result<DouyinRoomInfoResponse, DouyinClientError> {
+        sec_user_id: &str,
+    ) -> Result<DouyinBasicRoomInfo, DouyinClientError> {
         let url = format!(
             "https://live.douyin.com/webcast/room/web/enter/?aid=6383&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&enter_from=web_live&a_bogus=0&cookie_enabled=true&screen_width=1920&screen_height=1080&browser_language=zh-CN&browser_platform=MacIntel&browser_name=Chrome&browser_version=122.0.0.0&web_rid={}",
             room_id
@@ -63,7 +78,93 @@ impl DouyinClient {
             .client
             .get(&url)
             .header("Referer", "https://live.douyin.com/")
-            .header("Cookie", self.cookies.clone())
+            .header("Cookie", self.account.cookies.clone())
+            .send()
+            .await?;
+
+        let status = resp.status();
+        let text = resp.text().await?;
+
+        if text.is_empty() {
+            log::warn!("Empty room info response, trying H5 API");
+            return self.get_room_info_h5(room_id, sec_user_id).await;
+        }
+
+        if status.is_success() {
+            if let Ok(data) = serde_json::from_str::<DouyinRoomInfoResponse>(&text) {
+                let cover = data
+                    .data
+                    .data
+                    .first()
+                    .and_then(|data| data.cover.as_ref())
+                    .map(|cover| cover.url_list[0].clone());
+                return Ok(DouyinBasicRoomInfo {
+                    room_id_str: data.data.data[0].id_str.clone(),
+                    sec_user_id: sec_user_id.to_string(),
+                    cover,
+                    room_title: data.data.data[0].title.clone(),
+                    user_name: data.data.user.nickname.clone(),
+                    user_avatar: data.data.user.avatar_thumb.url_list[0].clone(),
+                    status: data.data.room_status,
+                    hls_url: data.data.data[0]
+                        .stream_url
+                        .as_ref()
+                        .map(|stream_url| stream_url.hls_pull_url.clone())
+                        .unwrap_or_default(),
+                    stream_data: data.data.data[0]
+                        .stream_url
+                        .as_ref()
+                        .map(|s| s.live_core_sdk_data.pull_data.stream_data.clone())
+                        .unwrap_or_default(),
+                });
+            } else {
+                log::error!("Failed to parse room info response: {}", text);
+                return self.get_room_info_h5(room_id, sec_user_id).await;
+            }
+        }
+
+        log::error!("Failed to get room info: {}", status);
+        return self.get_room_info_h5(room_id, sec_user_id).await;
+    }
+
+    pub async fn get_room_info_h5(
+        &self,
+        room_id: u64,
+        sec_user_id: &str,
+    ) -> Result<DouyinBasicRoomInfo, DouyinClientError> {
+        // 参考biliup实现，构建完整的URL参数
+        let room_id_str = room_id.to_string();
+        // https://webcast.amemv.com/webcast/room/reflow/info/?type_id=0&live_id=1&version_code=99.99.99&app_id=1128&room_id=10000&sec_user_id=MS4wLjAB&aid=6383&device_platform=web&browser_language=zh-CN&browser_platform=Win32&browser_name=Mozilla&browser_version=5.0
+        let url_params = [
+            ("type_id", "0"),
+            ("live_id", "1"),
+            ("version_code", "99.99.99"),
+            ("app_id", "1128"),
+            ("room_id", &room_id_str),
+            ("sec_user_id", sec_user_id),
+            ("aid", "6383"),
+            ("device_platform", "web"),
+        ];
+
+        // 构建URL
+        let query_string = url_params
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join("&");
+        let url = format!(
+            "https://webcast.amemv.com/webcast/room/reflow/info/?{}",
+            query_string
+        );
+
+        log::info!("get_room_info_h5: {}", url);
+
+        let resp = self
+            .client
+            .get(&url)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+            .header("Referer", "https://live.douyin.com/")
+            .header("Cookie", self.account.cookies.clone())
             .send()
             .await?;
 
@@ -71,20 +172,94 @@ impl DouyinClient {
         let text = resp.text().await?;
 
         if status.is_success() {
-            if let Ok(data) = serde_json::from_str::<DouyinRoomInfoResponse>(&text) {
-                return Ok(data);
-            } else {
-                log::error!("Failed to parse room info response: {}", text);
+            // Try to parse as H5 response format
+            if let Ok(h5_data) =
+                serde_json::from_str::<super::response::DouyinH5RoomInfoResponse>(&text)
+            {
+                // Extract RoomBasicInfo from H5 response
+                let room = &h5_data.data.room;
+                let owner = &room.owner;
+
+                let cover = room
+                    .cover
+                    .as_ref()
+                    .and_then(|c| c.url_list.first().cloned());
+                let hls_url = room
+                    .stream_url
+                    .as_ref()
+                    .map(|s| s.hls_pull_url.clone())
+                    .unwrap_or_default();
+
+                return Ok(DouyinBasicRoomInfo {
+                    room_id_str: room.id_str.clone(),
+                    room_title: room.title.clone(),
+                    cover,
+                    status: if room.status == 2 { 0 } else { 1 },
+                    hls_url,
+                    user_name: owner.nickname.clone(),
+                    user_avatar: owner
+                        .avatar_thumb
+                        .url_list
+                        .first()
+                        .unwrap_or(&String::new())
+                        .clone(),
+                    sec_user_id: owner.sec_uid.clone(),
+                    stream_data: room
+                        .stream_url
+                        .as_ref()
+                        .map(|s| s.live_core_sdk_data.pull_data.stream_data.clone())
+                        .unwrap_or_default(),
+                });
+            }
+
+            // If that fails, try to parse as a generic JSON to see what we got
+            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&text) {
+                log::error!(
+                    "Unexpected response structure: {}",
+                    serde_json::to_string_pretty(&json_value).unwrap_or_default()
+                );
+
+                // Check if it's an error response
+                if let Some(status_code) = json_value.get("status_code").and_then(|v| v.as_i64()) {
+                    if status_code != 0 {
+                        let error_msg = json_value
+                            .get("status_message")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Unknown error");
+                        return Err(DouyinClientError::Network(format!(
+                            "API returned error status_code: {} - {}",
+                            status_code, error_msg
+                        )));
+                    }
+                }
+
+                // 检查是否是"invalid session"错误
+                if let Some(status_message) =
+                    json_value.get("status_message").and_then(|v| v.as_str())
+                {
+                    if status_message.contains("invalid session") {
+                        return Err(DouyinClientError::Network(
+                            "Invalid session - please check your cookies. Make sure you have valid sessionid, passport_csrf_token, and other authentication cookies from douyin.com".to_string(),
+                        ));
+                    }
+                }
+
                 return Err(DouyinClientError::Network(format!(
-                    "Failed to parse room info response: {}",
+                    "Failed to parse h5 room info response: {}",
+                    text
+                )));
+            } else {
+                log::error!("Failed to parse h5 room info response: {}", text);
+                return Err(DouyinClientError::Network(format!(
+                    "Failed to parse h5 room info response: {}",
                     text
                 )));
             }
         }
 
-        log::error!("Failed to get room info: {}", status);
+        log::error!("Failed to get h5 room info: {}", status);
         Err(DouyinClientError::Network(format!(
-            "Failed to get room info: {} {}",
+            "Failed to get h5 room info: {} {}",
             status, text
         )))
     }
@@ -96,7 +271,7 @@ impl DouyinClient {
             .client
             .get(url)
             .header("Referer", "https://www.douyin.com/")
-            .header("Cookie", self.cookies.clone())
+            .header("Cookie", self.account.cookies.clone())
             .send()
             .await?;
 

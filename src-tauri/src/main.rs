@@ -165,6 +165,13 @@ fn get_migrations() -> Vec<Migration> {
             sql: r#"ALTER TABLE accounts ADD COLUMN id_str TEXT;"#,
             kind: MigrationKind::Up,
         },
+        // add extra column to recorders
+        Migration {
+            version: 6,
+            description: "add_extra_column_to_recorders",
+            sql: r#"ALTER TABLE recorders ADD COLUMN extra TEXT;"#,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

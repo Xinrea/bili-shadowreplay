@@ -59,7 +59,8 @@ pub struct DouyinRecorder {
     db: Arc<Database>,
     account: AccountRow,
     room_id: u64,
-    room_info: Arc<RwLock<Option<response::DouyinRoomInfoResponse>>>,
+    sec_user_id: String,
+    room_info: Arc<RwLock<Option<client::DouyinBasicRoomInfo>>>,
     stream_url: Arc<RwLock<Option<String>>>,
     entry_store: Arc<RwLock<Option<EntryStore>>>,
     danmu_store: Arc<RwLock<Option<DanmuStorage>>>,
@@ -84,6 +85,7 @@ impl DouyinRecorder {
         #[cfg(not(feature = "headless"))] app_handle: AppHandle,
         emitter: EventEmitter,
         room_id: u64,
+        sec_user_id: &str,
         config: Arc<RwLock<Config>>,
         account: &AccountRow,
         db: &Arc<Database>,
@@ -91,9 +93,9 @@ impl DouyinRecorder {
         channel: broadcast::Sender<RecorderEvent>,
     ) -> Result<Self, super::errors::RecorderError> {
         let client = client::DouyinClient::new(&config.read().await.user_agent, account);
-        let room_info = client.get_room_info(room_id).await?;
+        let room_info = client.get_room_info(room_id, sec_user_id).await?;
         let mut live_status = LiveStatus::Offline;
-        if room_info.data.room_status == 0 {
+        if room_info.status == 0 {
             live_status = LiveStatus::Live;
         }
 
@@ -104,6 +106,7 @@ impl DouyinRecorder {
             db: db.clone(),
             account: account.clone(),
             room_id,
+            sec_user_id: sec_user_id.to_string(),
             live_id: Arc::new(RwLock::new(String::new())),
             danmu_room_id: Arc::new(RwLock::new(String::new())),
             entry_store: Arc::new(RwLock::new(None)),
@@ -134,9 +137,13 @@ impl DouyinRecorder {
     }
 
     async fn check_status(&self) -> bool {
-        match self.client.get_room_info(self.room_id).await {
+        match self
+            .client
+            .get_room_info(self.room_id, &self.sec_user_id)
+            .await
+        {
             Ok(info) => {
-                let live_status = info.data.room_status == 0; // room_status == 0 表示正在直播
+                let live_status = info.status == 0; // room_status == 0 表示正在直播
 
                 *self.room_info.write().await = Some(info.clone());
 
@@ -157,7 +164,7 @@ impl DouyinRecorder {
                             .title("BiliShadowReplay - 直播开始")
                             .body(format!(
                                 "{} 开启了直播：{}",
-                                info.data.user.nickname, info.data.data[0].title
+                                info.user_name, info.room_title
                             ))
                             .show()
                             .unwrap();
@@ -169,7 +176,7 @@ impl DouyinRecorder {
                             .title("BiliShadowReplay - 直播结束")
                             .body(format!(
                                 "{} 关闭了直播：{}",
-                                info.data.user.nickname, info.data.data[0].title
+                                info.user_name, info.room_title
                             ))
                             .show()
                             .unwrap();
@@ -202,13 +209,7 @@ impl DouyinRecorder {
                 }
 
                 // Get stream URL when live starts
-                if !info.data.data[0]
-                    .stream_url
-                    .as_ref()
-                    .unwrap()
-                    .hls_pull_url
-                    .is_empty()
-                {
+                if !info.hls_url.is_empty() {
                     // Only set stream URL, don't create record yet
                     // Record will be created when first ts download succeeds
                     let new_stream_url = self.get_best_stream_url(&info).await;
@@ -219,7 +220,7 @@ impl DouyinRecorder {
 
                     log::info!("New douyin stream URL: {}", new_stream_url.clone().unwrap());
                     *self.stream_url.write().await = Some(new_stream_url.unwrap());
-                    *self.danmu_room_id.write().await = info.data.data[0].id_str.clone();
+                    *self.danmu_room_id.write().await = info.room_id_str.clone();
                 }
 
                 true
@@ -296,18 +297,8 @@ impl DouyinRecorder {
         )
     }
 
-    async fn get_best_stream_url(
-        &self,
-        room_info: &response::DouyinRoomInfoResponse,
-    ) -> Option<String> {
-        let stream_data = room_info.data.data[0]
-            .stream_url
-            .as_ref()
-            .unwrap()
-            .live_core_sdk_data
-            .pull_data
-            .stream_data
-            .clone();
+    async fn get_best_stream_url(&self, room_info: &client::DouyinBasicRoomInfo) -> Option<String> {
+        let stream_data = room_info.stream_data.clone();
         // parse stream_data into stream_info
         let stream_info = serde_json::from_str::<stream_info::StreamInfo>(&stream_data);
         if let Ok(stream_info) = stream_info {
@@ -462,10 +453,7 @@ impl DouyinRecorder {
                         if is_first_segment {
                             // Create database record
                             let room_info = room_info.as_ref().unwrap();
-                            let cover_url = room_info.data.data[0]
-                                .cover
-                                .as_ref()
-                                .map(|cover| cover.url_list[0].clone());
+                            let cover_url = room_info.cover.clone();
                             let cover = if let Some(url) = cover_url {
                                 Some(self.client.get_cover_base64(&url).await.unwrap_or_default())
                             } else {
@@ -478,7 +466,7 @@ impl DouyinRecorder {
                                     PlatformType::Douyin,
                                     self.live_id.read().await.as_str(),
                                     self.room_id,
-                                    &room_info.data.data[0].title,
+                                    &room_info.room_title,
                                     cover,
                                     None,
                                 )
@@ -863,17 +851,11 @@ impl Recorder for DouyinRecorder {
         let room_info = self.room_info.read().await;
         let room_cover_url = room_info
             .as_ref()
-            .and_then(|info| {
-                info.data
-                    .data
-                    .first()
-                    .and_then(|data| data.cover.as_ref())
-                    .map(|cover| cover.url_list[0].clone())
-            })
+            .and_then(|info| info.cover.clone())
             .unwrap_or_default();
         let room_title = room_info
             .as_ref()
-            .and_then(|info| info.data.data.first().map(|data| data.title.clone()))
+            .map(|info| info.room_title.clone())
             .unwrap_or_default();
         RecorderInfo {
             room_id: self.room_id,
@@ -885,15 +867,15 @@ impl Recorder for DouyinRecorder {
             user_info: UserInfo {
                 user_id: room_info
                     .as_ref()
-                    .map(|info| info.data.user.sec_uid.clone())
+                    .map(|info| info.sec_user_id.clone())
                     .unwrap_or_default(),
                 user_name: room_info
                     .as_ref()
-                    .map(|info| info.data.user.nickname.clone())
+                    .map(|info| info.user_name.clone())
                     .unwrap_or_default(),
                 user_avatar: room_info
                     .as_ref()
-                    .map(|info| info.data.user.avatar_thumb.url_list[0].clone())
+                    .map(|info| info.user_avatar.clone())
                     .unwrap_or_default(),
             },
             total_length: if let Some(store) = self.entry_store.read().await.as_ref() {

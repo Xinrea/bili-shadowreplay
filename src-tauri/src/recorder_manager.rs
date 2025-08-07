@@ -292,7 +292,8 @@ impl RecorderManager {
                 let platform = PlatformType::from_str(&recorder.platform).unwrap();
                 let room_id = recorder.room_id;
                 let auto_start = recorder.auto_start;
-                recorder_map.insert((platform, room_id), auto_start);
+                let extra = recorder.extra;
+                recorder_map.insert((platform, room_id), (auto_start, extra));
             }
             let mut recorders_to_add = Vec::new();
             for (platform, room_id) in recorder_map.keys() {
@@ -307,7 +308,7 @@ impl RecorderManager {
                 if self.is_migrating.load(std::sync::atomic::Ordering::Relaxed) {
                     break;
                 }
-                let auto_start = recorder_map.get(&(platform, room_id)).unwrap();
+                let (auto_start, extra) = recorder_map.get(&(platform, room_id)).unwrap();
                 let account = self
                     .db
                     .get_account_by_platform(platform.clone().as_str())
@@ -319,7 +320,7 @@ impl RecorderManager {
                 let account = account.unwrap();
 
                 if let Err(e) = self
-                    .add_recorder(&account, platform, room_id, *auto_start)
+                    .add_recorder(&account, platform, room_id, extra, *auto_start)
                     .await
                 {
                     log::error!("Failed to add recorder: {}", e);
@@ -334,6 +335,7 @@ impl RecorderManager {
         account: &AccountRow,
         platform: PlatformType,
         room_id: u64,
+        extra: &str,
         auto_start: bool,
     ) -> Result<(), RecorderManagerError> {
         let recorder_id = format!("{}:{}", platform.as_str(), room_id);
@@ -363,6 +365,7 @@ impl RecorderManager {
                     self.app_handle.clone(),
                     self.emitter.clone(),
                     room_id,
+                    extra,
                     self.config.clone(),
                     account,
                     &self.db,

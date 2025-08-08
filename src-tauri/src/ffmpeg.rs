@@ -21,6 +21,7 @@ pub struct VideoMetadata {
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[cfg(target_os = "windows")]
+#[allow(unused_imports)]
 use std::os::windows::process::CommandExt;
 
 pub async fn clip_from_m3u8(
@@ -797,11 +798,13 @@ pub async fn clip_from_video_file(
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
     let child = ffmpeg_process
-        .args(["-ss", &start_time.to_string()])
         .args(["-i", &format!("{}", input_path.display())])
+        .args(["-ss", &start_time.to_string()])
         .args(["-t", &duration.to_string()])
-        .args(["-c:v", "copy"])
-        .args(["-c:a", "copy"])
+        .args(["-c:v", "libx264"])
+        .args(["-c:a", "aac"])
+        .args(["-preset", "fast"])
+        .args(["-crf", "23"])
         .args(["-avoid_negative_ts", "make_zero"])
         .args(["-y", output_path.to_str().unwrap()])
         .args(["-progress", "pipe:2"])

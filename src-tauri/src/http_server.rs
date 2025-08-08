@@ -30,9 +30,9 @@ use crate::{
         task::{delete_task, get_tasks},
         utils::{console_log, get_disk_info, list_folder, DiskInfo},
         video::{
-            cancel, clip_range, delete_video, encode_video_subtitle, generate_video_subtitle,
-            generic_ffmpeg_command, get_all_videos, get_video, get_video_cover, get_video_subtitle,
-            get_video_typelist, get_videos, update_video_cover, update_video_subtitle,
+            cancel, clip_range, clip_video, delete_video, encode_video_subtitle, generate_video_subtitle,
+            generic_ffmpeg_command, get_all_videos, get_file_size, get_video, get_video_cover, get_video_subtitle,
+            get_video_typelist, get_videos, import_external_video, update_video_cover, update_video_subtitle,
             upload_procedure,
         },
         AccountInfo,
@@ -866,6 +866,61 @@ async fn handler_encode_video_subtitle(
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ImportExternalVideoRequest {
+    event_id: String,
+    file_path: String,
+    room_id: u64,
+}
+
+async fn handler_import_external_video(
+    state: axum::extract::State<State>,
+    Json(param): Json<ImportExternalVideoRequest>,
+) -> Result<Json<ApiResponse<String>>, ApiError> {
+    import_external_video(state.0, param.event_id.clone(), param.file_path, param.room_id).await?;
+    Ok(Json(ApiResponse::success(param.event_id)))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClipVideoRequest {
+    event_id: String,
+    parent_video_id: i64,
+    start_time: f64,
+    end_time: f64,
+    clip_title: String,
+}
+
+async fn handler_clip_video(
+    state: axum::extract::State<State>,
+    Json(param): Json<ClipVideoRequest>,
+) -> Result<Json<ApiResponse<String>>, ApiError> {
+    clip_video(
+        state.0,
+        param.event_id.clone(),
+        param.parent_video_id,
+        param.start_time,
+        param.end_time,
+        param.clip_title,
+    ).await?;
+    Ok(Json(ApiResponse::success(param.event_id)))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GetFileSizeRequest {
+    file_path: String,
+}
+
+async fn handler_get_file_size(
+    state: axum::extract::State<State>,
+    Json(param): Json<GetFileSizeRequest>,
+) -> Result<Json<ApiResponse<u64>>, ApiError> {
+    let file_size = get_file_size(param.file_path).await?;
+    Ok(Json(ApiResponse::success(file_size)))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ConsoleLogRequest {
     level: String,
     message: String,
@@ -1311,6 +1366,11 @@ pub async fn start_api_server(state: State) {
                 "/api/encode_video_subtitle",
                 post(handler_encode_video_subtitle),
             )
+            .route(
+                "/api/import_external_video",
+                post(handler_import_external_video),
+            )
+            .route("/api/clip_video", post(handler_clip_video))
             .route("/api/update_notify", post(handler_update_notify))
             .route(
                 "/api/update_status_check_interval",
@@ -1376,6 +1436,7 @@ pub async fn start_api_server(state: State) {
         .route("/api/get_all_videos", post(handler_get_all_videos))
         .route("/api/get_video_typelist", post(handler_get_video_typelist))
         .route("/api/get_video_subtitle", post(handler_get_video_subtitle))
+        .route("/api/get_file_size", post(handler_get_file_size))
         .route("/api/delete_task", post(handler_delete_task))
         .route("/api/get_tasks", post(handler_get_tasks))
         .route("/api/export_danmu", post(handler_export_danmu))

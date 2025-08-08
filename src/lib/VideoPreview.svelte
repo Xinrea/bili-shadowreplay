@@ -524,8 +524,13 @@
     if (videoElement) {
       const newStartTime = videoElement.currentTime;
       
+      // 如果没有选区（首次设置起点），自动将终点设置为视频结尾
+      if (!clipTimesSet || clipEndTime === 0) {
+        clipStartTime = newStartTime;
+        clipEndTime = videoElement.duration; // 自动设置为视频结尾
+      }
       // 如果新的开始时间在现有结束时间之后，自动设置终点为视频结尾
-      if (clipTimesSet && clipEndTime > 0 && newStartTime >= clipEndTime) {
+      else if (clipTimesSet && clipEndTime > 0 && newStartTime >= clipEndTime) {
         clipStartTime = newStartTime;
         clipEndTime = videoElement.duration; // 自动设置为视频结尾
       } else {
@@ -540,8 +545,13 @@
     if (videoElement) {
       const newEndTime = videoElement.currentTime;
       
+      // 如果没有选区（首次设置终点），自动将起点设置为视频开头
+      if (!clipTimesSet || clipStartTime === 0) {
+        clipStartTime = 0; // 自动设置为视频开头
+        clipEndTime = newEndTime;
+      }
       // 如果新的结束时间在现有开始时间之前，清空选区重新开始
-      if (clipTimesSet && clipStartTime > 0 && newEndTime <= clipStartTime) {
+      else if (clipTimesSet && clipStartTime > 0 && newEndTime <= clipStartTime) {
         clipStartTime = 0; // 清空开始时间
         clipEndTime = newEndTime;
       } else {
@@ -1261,7 +1271,7 @@
       <div class="flex-1 flex flex-col">
         <!-- 切片控制信息条 -->
         {#if canBeClipped(video)}
-          <div class="bg-[#2c2c2e] border-b border-gray-800/50 px-4 py-2 flex items-center justify-between text-sm">
+          <div class="bg-black px-4 py-2 flex items-center justify-between text-sm">
             <div class="flex items-center space-x-6">
               <div class="text-gray-300">
                 切片起点: <span class="text-[#0A84FF] font-mono">{formatTime(clipStartTime)}</span>
@@ -1436,18 +1446,18 @@
                 <div class="absolute top-0 left-0 right-0 h-1 group-hover:h-1.5 transition-all duration-200 z-15">
                   <!-- 切片选中区域 -->
                   <div 
-                    class="absolute h-full bg-green-400 rounded-full transition-all duration-200"
-                    style="left: {(clipStartTime / (videoElement?.duration || 1)) * 100}%; width: {((clipEndTime - clipStartTime) / (videoElement?.duration || 1)) * 100}%"
+                    class="absolute h-full bg-green-400/80 transition-all duration-200"
+                    style="left: {(clipStartTime / (videoElement?.duration || 1)) * 100}%; right: {100 - (clipEndTime / (videoElement?.duration || 1)) * 100}%"
                   ></div>
                   <!-- 切片起点标记 -->
                   <div 
-                    class="absolute h-full w-0.5 bg-green-400 rounded-full"
+                    class="absolute h-full w-0.5 bg-green-500 transition-all duration-200"
                     style="left: {(clipStartTime / (videoElement?.duration || 1)) * 100}%"
                   ></div>
                   <!-- 切片终点标记 -->
                   <div 
-                    class="absolute h-full w-0.5 bg-green-400 rounded-full"
-                    style="left: {(clipEndTime / (videoElement?.duration || 1)) * 100}%"
+                    class="absolute h-full w-0.5 bg-green-500 transition-all duration-200"
+                    style="left: {(clipEndTime / (videoElement?.duration || 1)) * 100}%; transform: translateX(-100%)"
                   ></div>
                 </div>
               {/if}

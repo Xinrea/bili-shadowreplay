@@ -40,8 +40,6 @@ pub struct ClipRangeParams {
     pub room_id: u64,
     pub live_id: String,
     pub range: Option<Range>,
-    /// Timestamp of first stream segment in seconds
-    pub offset: i64,
     /// Encode danmu after clip
     pub danmu: bool,
     pub local_offset: i64,
@@ -205,7 +203,6 @@ impl RecorderManager {
             room_id,
             live_id: live_id.to_string(),
             range: None,
-            offset: recorder.first_segment_ts(live_id).await,
             danmu: encode_danmu,
             local_offset: 0,
             fix_encoding: false,
@@ -534,12 +531,6 @@ impl RecorderManager {
             return Ok(clip_file);
         }
 
-        let mut clip_offset = params.offset;
-        if clip_offset > 0 {
-            clip_offset -= recorder.first_segment_ts(&params.live_id).await;
-            clip_offset = clip_offset.max(0);
-        }
-
         let danmus = recorder.comments(&params.live_id).await;
         if danmus.is_err() {
             log::error!("Failed to get danmus");
@@ -547,12 +538,11 @@ impl RecorderManager {
         }
 
         log::info!(
-            "Filter danmus in range {} with global offset {} and local offset {}",
+            "Filter danmus in range {} with local offset {}",
             params
                 .range
                 .as_ref()
                 .map_or("None".to_string(), |r| r.to_string()),
-            clip_offset,
             params.local_offset
         );
         let mut danmus = danmus.unwrap();
@@ -561,7 +551,7 @@ impl RecorderManager {
         if let Some(range) = &params.range {
             // update entry ts to offset and filter danmus in range
             for d in &mut danmus {
-                d.ts -= (range.start as i64 + clip_offset + params.local_offset) * 1000;
+                d.ts -= (range.start as i64 + params.local_offset) * 1000;
             }
             if range.duration() > 0.0 {
                 danmus.retain(|x| x.ts >= 0 && x.ts <= (range.duration() as i64) * 1000);

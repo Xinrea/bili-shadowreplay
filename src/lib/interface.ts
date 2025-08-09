@@ -245,7 +245,6 @@ export interface ClipRangeParams {
     end: number;
   };
   danmu: boolean;
-  offset: number;
   local_offset: number;
   fix_encoding: boolean;
 }

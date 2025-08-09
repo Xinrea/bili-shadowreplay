@@ -10,6 +10,7 @@ use crate::database::account::AccountRow;
 use crate::progress_reporter::ProgressReporter;
 use crate::progress_reporter::ProgressReporterTrait;
 use base64::Engine;
+use chrono::TimeZone;
 use pct_str::PctString;
 use pct_str::URIReserved;
 use regex::Regex;
@@ -42,6 +43,7 @@ pub struct RoomInfo {
     pub room_keyframe_url: String,
     pub room_title: String,
     pub user_id: u64,
+    pub live_start_time: i64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -331,6 +333,22 @@ impl BiliClient {
         let live_status = res["data"]["live_status"]
             .as_u64()
             .ok_or(BiliClientError::InvalidValue)? as u8;
+        // "live_time": "2025-08-09 18:33:35",
+        let live_start_time_str = res["data"]["live_time"]
+            .as_str()
+            .ok_or(BiliClientError::InvalidValue)?;
+        let live_start_time = if live_start_time_str == "0000-00-00 00:00:00" {
+            0
+        } else {
+            let naive =
+                chrono::NaiveDateTime::parse_from_str(live_start_time_str, "%Y-%m-%d %H:%M:%S")
+                    .map_err(|_| BiliClientError::InvalidValue)?;
+            chrono::Local
+                .from_local_datetime(&naive)
+                .earliest()
+                .ok_or(BiliClientError::InvalidValue)?
+                .timestamp()
+        };
         Ok(RoomInfo {
             room_id,
             room_title,
@@ -338,6 +356,7 @@ impl BiliClient {
             room_keyframe_url,
             user_id,
             live_status,
+            live_start_time,
         })
     }
 

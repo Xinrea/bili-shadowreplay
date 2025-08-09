@@ -376,6 +376,11 @@
           return;
         }
 
+        if (event.payload.ts < global_offset * 1000) {
+          log.error("invalid danmu ts:", event.payload.ts, global_offset);
+          return;
+        }
+
         let danmu_record = {
           ...event.payload,
           ts: event.payload.ts - global_offset * 1000,
@@ -822,7 +827,9 @@
       const minValue = 0;
       let maxValue = 0;
       if (preprocessed.length > 0) {
-        const counts = preprocessed.map((v) => v.count).filter(c => isFinite(c));
+        const counts = preprocessed
+          .map((v) => v.count)
+          .filter((c) => isFinite(c));
         if (counts.length > 0) {
           // Use reduce instead of spread operator to avoid stack overflow
           maxValue = counts.reduce((max, current) => Math.max(max, current), 0);
@@ -832,13 +839,13 @@
       canvas.clearRect(0, 0, canvasWidth, canvasHeight);
       if (preprocessed.length > 0) {
         canvas.beginPath();
-        const x = ((preprocessed[0].ts) / duration) * canvasWidth;
+        const x = (preprocessed[0].ts / duration) * canvasWidth;
         const y =
           (1 - (preprocessed[0].count - minValue) / (maxValue - minValue)) *
           canvasHeight;
         canvas.moveTo(x, y);
         for (let i = 0; i < preprocessed.length; i++) {
-          const x = ((preprocessed[i].ts) / duration) * canvasWidth;
+          const x = (preprocessed[i].ts / duration) * canvasWidth;
           const y =
             (1 - (preprocessed[i].count - minValue) / (maxValue - minValue)) *
             canvasHeight;

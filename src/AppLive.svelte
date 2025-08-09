@@ -342,7 +342,6 @@
         end: focus_start + end,
       },
       danmu: danmu_enabled,
-      offset: global_offset,
       local_offset:
         parseInt(localStorage.getItem(`local_offset:${live_id}`) || "0", 10) ||
         0,

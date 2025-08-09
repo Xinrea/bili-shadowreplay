@@ -570,7 +570,6 @@ const clip_range = tool(
           .describe(
             "Whether to encode danmu, encode danmu will take a lot of time, so it is recommended to set it to false"
           ),
-        offset: z.number().describe("Must be 0"),
         local_offset: z
           .number()
           .describe(

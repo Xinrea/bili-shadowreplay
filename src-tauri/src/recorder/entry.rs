@@ -83,7 +83,7 @@ impl TsEntry {
 
         let mut content = String::new();
 
-        content += &format!("#EXTINF:{:.2},\n", self.length);
+        content += &format!("#EXTINF:{:.4},\n", self.length);
         content += &format!("{}\n", self.url);
 
         content
@@ -200,10 +200,12 @@ impl EntryStore {
         self.total_size
     }
 
+    /// Get first timestamp in milliseconds
     pub fn first_ts(&self) -> Option<i64> {
         self.entries.first().map(|x| x.ts_mili())
     }
 
+    /// Get last timestamp in milliseconds
     pub fn last_ts(&self) -> Option<i64> {
         self.entries.last().map(|x| x.ts_mili())
     }

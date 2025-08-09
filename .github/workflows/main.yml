@@ -63,6 +63,7 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: "./src-tauri -> target"
+          shared-key: ${{ matrix.platform }}
 
       - name: Setup ffmpeg
         if: matrix.platform == 'windows-latest'

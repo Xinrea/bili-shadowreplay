@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { invoke } from "./lib/invoker";
+  import { invoke, convertFileSrc, convertCoverSrc } from "./lib/invoker";
   import { onMount } from "svelte";
   import VideoPreview from "./lib/VideoPreview.svelte";
   import type { Config, VideoItem } from "./lib/interface";
-  import { convertFileSrc, set_title } from "./lib/invoker";
+  import { set_title } from "./lib/invoker";
 
   let video: VideoItem | null = null;
   let videos: any[] = [];
@@ -14,7 +14,6 @@
 
   invoke("get_config").then((c) => {
     config = c as Config;
-    console.log(config);
   });
 
   onMount(async () => {
@@ -27,18 +26,17 @@
         // update window title to file name
         set_title((videoData as VideoItem).file);
         // 获取房间下的所有视频列表
-        if (roomId) {
-          videos = (
-            (await invoke("get_videos", { roomId: roomId })) as VideoItem[]
-          ).map((v) => {
+        if (roomId !== null && roomId !== undefined) {
+          const videoList = (await invoke("get_videos", { roomId: roomId })) as VideoItem[];
+          videos = await Promise.all(videoList.map(async (v) => {
             return {
               id: v.id,
               value: v.id,
               name: v.file,
-              file: convertFileSrc(config.output + "/" + v.file),
+              file: await convertFileSrc(v.file),
               cover: v.cover,
             };
-          });
+          }));
         }
 
         // find video in videos
@@ -52,36 +50,40 @@
         console.error("Failed to load video:", error);
       }
     }
-
-    console.log(video);
   });
 
   async function handleVideoChange(newVideo: VideoItem) {
     if (newVideo) {
       // get cover from video
-      const cover = await invoke("get_video_cover", { id: newVideo.id });
-      newVideo.cover = cover as string;
+      const cover = await invoke("get_video_cover", { id: newVideo.id }) as string;
+      
+      // 对于非空的封面路径，使用convertCoverSrc转换
+      if (cover && cover.trim() !== "") {
+        newVideo.cover = await convertCoverSrc(cover, newVideo.id);
+      } else {
+        newVideo.cover = "";
+      }
     }
     video = newVideo;
   }
 
   async function handleVideoListUpdate() {
-    if (roomId) {
+    if (roomId !== null && roomId !== undefined) {
       const videosData = await invoke("get_videos", { roomId });
-      videos = (videosData as VideoItem[]).map((v) => {
+      videos = await Promise.all((videosData as VideoItem[]).map(async (v) => {
         return {
           id: v.id,
           value: v.id,
           name: v.file,
-          file: convertFileSrc(config.output + "/" + v.file),
-          cover: v.cover,
+          file: await convertFileSrc(v.file),
+          cover: v.cover, // 这里保持原样，因为get_videos返回的是VideoNoCover类型，不包含完整封面数据
         };
-      });
+      }));
     }
   }
 </script>
 
-{#if showVideoPreview && video && roomId}
+{#if showVideoPreview && video && (roomId !== null && roomId !== undefined)}
   <VideoPreview
     bind:show={showVideoPreview}
     {video}

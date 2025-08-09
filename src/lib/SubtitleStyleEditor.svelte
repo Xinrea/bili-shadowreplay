@@ -183,8 +183,9 @@
           <h3 class="text-sm font-medium text-gray-300">对齐和边距</h3>
           <div class="grid grid-cols-2 gap-4">
             <div class="space-y-2">
-              <label class="block text-sm text-gray-400">对齐方式</label>
+              <label for="alignment-select" class="block text-sm text-gray-400">对齐方式</label>
               <select
+                id="alignment-select"
                 bind:value={style.alignment}
                 class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg
                        border border-gray-800/50 focus:border-[#0A84FF]
@@ -198,8 +199,9 @@
               </select>
             </div>
             <div class="space-y-2">
-              <label class="block text-sm text-gray-400">垂直边距</label>
+              <label for="margin-v-input" class="block text-sm text-gray-400">垂直边距</label>
               <input
+                id="margin-v-input"
                 type="number"
                 bind:value={style.marginV}
                 class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg
@@ -210,8 +212,9 @@
           </div>
           <div class="grid grid-cols-2 gap-4">
             <div class="space-y-2">
-              <label class="block text-sm text-gray-400">左边距</label>
+              <label for="margin-l-input" class="block text-sm text-gray-400">左边距</label>
               <input
+                id="margin-l-input"
                 type="number"
                 bind:value={style.marginL}
                 class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg
@@ -220,8 +223,9 @@
               />
             </div>
             <div class="space-y-2">
-              <label class="block text-sm text-gray-400">右边距</label>
+              <label for="margin-r-input" class="block text-sm text-gray-400">右边距</label>
               <input
+                id="margin-r-input"
                 type="number"
                 bind:value={style.marginR}
                 class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg

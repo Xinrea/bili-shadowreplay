@@ -675,37 +675,22 @@
       }
       switch (e.key) {
         case "[":
-          e.preventDefault();
-          start = parseFloat(video.currentTime.toFixed(2));
-          if (end < start) {
-            end = get_total();
-          }
-
-          saveStartEnd();
-          console.log(start, end);
-          break;
         case "【":
           e.preventDefault();
           start = parseFloat(video.currentTime.toFixed(2));
-          if (end < start) {
+          // 如果没有选区（end为0）或者end小于start，自动设置终点为视频结尾
+          if (end === 0 || end < start) {
             end = get_total();
           }
           saveStartEnd();
           console.log(start, end);
           break;
         case "]":
-          e.preventDefault();
-          end = parseFloat(video.currentTime.toFixed(2));
-          if (start > end) {
-            start = 0;
-          }
-          saveStartEnd();
-          console.log(start, end);
-          break;
         case "】":
           e.preventDefault();
           end = parseFloat(video.currentTime.toFixed(2));
-          if (start > end) {
+          // 如果没有选区（start为0）或者start大于end，自动设置起点为视频开头
+          if (start === 0 || start > end) {
             start = 0;
           }
           saveStartEnd();

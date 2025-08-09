@@ -12,9 +12,18 @@ use async_ffmpeg_sidecar::log_parser::FfmpegLogParser;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
+// 视频元数据结构
+#[derive(Debug)]
+pub struct VideoMetadata {
+    pub duration: f64,
+    pub width: u32,
+    pub height: u32,
+}
+
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[cfg(target_os = "windows")]
+#[allow(unused_imports)]
 use std::os::windows::process::CommandExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -367,10 +376,9 @@ pub async fn encode_video_subtitle(
     let output_filename = format!("[subtitle]{}", file.file_name().unwrap().to_str().unwrap());
     let output_path = file.with_file_name(&output_filename);
 
-    // check output path exists
+    // check output path exists - log but allow overwrite
     if output_path.exists() {
-        log::info!("Output path already exists: {}", output_path.display());
-        return Err("Output path already exists".to_string());
+        log::info!("Output path already exists, will overwrite: {}", output_path.display());
     }
 
     let mut command_error = None;
@@ -454,10 +462,9 @@ pub async fn encode_video_danmu(
     let danmu_filename = format!("[danmu]{}", file.file_name().unwrap().to_str().unwrap());
     let output_path = file.with_file_name(danmu_filename);
 
-    // check output path exists
+    // check output path exists - log but allow overwrite
     if output_path.exists() {
-        log::info!("Output path already exists: {}", output_path.display());
-        return Err("Output path already exists".to_string());
+        log::info!("Output path already exists, will overwrite: {}", output_path.display());
     }
 
     let mut command_error = None;
@@ -795,6 +802,187 @@ fn ffprobe_path() -> PathBuf {
     }
 
     path
+}
+
+// 解析 FFmpeg 时间字符串 (格式如 "00:01:23.45")
+fn parse_time_string(time_str: &str) -> Result<f64, String> {
+    let parts: Vec<&str> = time_str.split(':').collect();
+    if parts.len() != 3 {
+        return Err("Invalid time format".to_string());
+    }
+    
+    let hours: f64 = parts[0].parse().map_err(|_| "Invalid hours")?;
+    let minutes: f64 = parts[1].parse().map_err(|_| "Invalid minutes")?;
+    let seconds: f64 = parts[2].parse().map_err(|_| "Invalid seconds")?;
+    
+    Ok(hours * 3600.0 + minutes * 60.0 + seconds)
+}
+
+// 从视频文件切片
+pub async fn clip_from_video_file(
+    reporter: Option<&impl ProgressReporterTrait>,
+    input_path: &Path,
+    output_path: &Path,
+    start_time: f64,
+    duration: f64,
+) -> Result<(), String> {
+    let output_folder = output_path.parent().unwrap();
+    if !output_folder.exists() {
+        std::fs::create_dir_all(output_folder).unwrap();
+    }
+
+    let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
+    #[cfg(target_os = "windows")]
+    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
+
+    let child = ffmpeg_process
+        .args(["-i", &format!("{}", input_path.display())])
+        .args(["-ss", &start_time.to_string()])
+        .args(["-t", &duration.to_string()])
+        .args(["-c:v", "libx264"])
+        .args(["-c:a", "aac"])
+        .args(["-preset", "fast"])
+        .args(["-crf", "23"])
+        .args(["-avoid_negative_ts", "make_zero"])
+        .args(["-y", output_path.to_str().unwrap()])
+        .args(["-progress", "pipe:2"])
+        .stderr(Stdio::piped())
+        .spawn();
+
+    if let Err(e) = child {
+        return Err(format!("启动ffmpeg进程失败: {}", e));
+    }
+
+    let mut child = child.unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let reader = BufReader::new(stderr);
+    let mut parser = FfmpegLogParser::new(reader);
+
+    let mut clip_error = None;
+    while let Ok(event) = parser.parse_next_event().await {
+        match event {
+            FfmpegEvent::Progress(p) => {
+                if let Some(reporter) = reporter {
+                    // 解析时间字符串 (格式如 "00:01:23.45")
+                    if let Ok(current_time) = parse_time_string(&p.time) {
+                        let progress = (current_time / duration * 100.0).min(100.0);
+                        reporter.update(&format!("切片进度: {:.1}%", progress));
+                    }
+                }
+            }
+            FfmpegEvent::LogEOF => break,
+            FfmpegEvent::Log(level, content) => {
+                if content.contains("error") || level == LogLevel::Error {
+                    log::error!("切片错误: {}", content);
+                }
+            }
+            FfmpegEvent::Error(e) => {
+                log::error!("切片错误: {}", e);
+                clip_error = Some(e.to_string());
+            }
+            _ => {}
+        }
+    }
+
+    if let Err(e) = child.wait().await {
+        return Err(e.to_string());
+    }
+
+    if let Some(error) = clip_error {
+        Err(error)
+    } else {
+        log::info!("切片任务完成: {}", output_path.display());
+        Ok(())
+    }
+}
+
+// 获取视频元数据
+pub async fn extract_video_metadata(file_path: &Path) -> Result<VideoMetadata, String> {
+    let mut ffprobe_process = tokio::process::Command::new("ffprobe");
+    #[cfg(target_os = "windows")]
+    ffprobe_process.creation_flags(CREATE_NO_WINDOW);
+
+    let output = ffprobe_process
+        .args([
+            "-v", "quiet",
+            "-print_format", "json",
+            "-show_format",
+            "-show_streams",
+            "-select_streams", "v:0",
+            &format!("{}", file_path.display())
+        ])
+        .output()
+        .await
+        .map_err(|e| format!("执行ffprobe失败: {}", e))?;
+
+    if !output.status.success() {
+        return Err(format!("ffprobe执行失败: {}", String::from_utf8_lossy(&output.stderr)));
+    }
+
+    let json_str = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&json_str)
+        .map_err(|e| format!("解析ffprobe输出失败: {}", e))?;
+
+    // 解析视频流信息
+    let streams = json["streams"].as_array()
+        .ok_or("未找到视频流信息")?;
+    
+    if streams.is_empty() {
+        return Err("未找到视频流".to_string());
+    }
+
+    let video_stream = &streams[0];
+    let format = &json["format"];
+
+    let duration = format["duration"].as_str()
+        .and_then(|d| d.parse::<f64>().ok())
+        .unwrap_or(0.0);
+
+    let width = video_stream["width"].as_u64().unwrap_or(0) as u32;
+    let height = video_stream["height"].as_u64().unwrap_or(0) as u32;
+
+    Ok(VideoMetadata {
+        duration,
+        width,
+        height,
+    })
+}
+
+// 生成视频缩略图
+pub async fn generate_thumbnail(
+    video_path: &Path,
+    output_path: &Path,
+    timestamp: f64,
+) -> Result<(), String> {
+    let output_folder = output_path.parent().unwrap();
+    if !output_folder.exists() {
+        std::fs::create_dir_all(output_folder).unwrap();
+    }
+
+    let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
+    #[cfg(target_os = "windows")]
+    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
+
+    let output = ffmpeg_process
+        .args(["-i", &format!("{}", video_path.display())])
+        .args(["-ss", &timestamp.to_string()])
+        .args(["-vframes", "1"])
+        .args(["-y", output_path.to_str().unwrap()])
+        .output()
+        .await
+        .map_err(|e| format!("生成缩略图失败: {}", e))?;
+
+    if !output.status.success() {
+        return Err(format!("ffmpeg生成缩略图失败: {}", String::from_utf8_lossy(&output.stderr)));
+    }
+
+    // 记录生成的缩略图信息
+    if let Ok(metadata) = std::fs::metadata(output_path) {
+        log::info!("生成缩略图完成: {} (文件大小: {} bytes)", output_path.display(), metadata.len());
+    } else {
+        log::info!("生成缩略图完成: {}", output_path.display());
+    }
+    Ok(())
 }
 
 // tests

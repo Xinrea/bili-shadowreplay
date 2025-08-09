@@ -153,7 +153,7 @@
             <div class="flex items-center space-x-4">
               <div class="relative">
                 <Image
-                  iclass="w-12 h-12 rounded-full object-cover"
+                  iclass="w-12 h-12 rounded-full object-contain"
                   src={account.avatar}
                 />
               </div>

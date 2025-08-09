@@ -8,12 +8,33 @@ use crate::progress_reporter::{
 use crate::recorder::bilibili::profile::Profile;
 use crate::recorder_manager::ClipRangeParams;
 use crate::subtitle_generator::item_to_srt;
-use chrono::Utc;
+use chrono::{Local, Utc};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
 use crate::state::State;
 use crate::state_type;
+
+// 导入视频相关的数据结构
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ImportedVideoMetadata {
+    original_path: String,
+    import_date: String,
+    original_size: i64,
+    video_format: String,
+    duration: f64,
+    resolution: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ClipMetadata {
+    parent_video_id: i64,
+    start_time: f64,
+    end_time: f64,
+    clip_source: String,
+    original_platform: String,
+    original_room_id: u64,
+}
 
 #[cfg(feature = "gui")]
 use {tauri::State as TauriState, tauri_plugin_notification::NotificationExt};
@@ -137,7 +158,7 @@ async fn clip_range_inner(
             id: 0,
             status: 0,
             room_id: params.room_id,
-            created_at: Utc::now().to_rfc3339(),
+            created_at: Local::now().to_rfc3339(),
             cover: params.cover.clone(),
             file: filename.into(),
             length: params.range.as_ref().map_or(0.0, |r| r.duration()) as i64,
@@ -553,11 +574,31 @@ async fn encode_video_subtitle_inner(
     srt_style: String,
 ) -> Result<VideoRow, String> {
     let video = state.db.get_video(id).await?;
-    let filepath = Path::new(&state.config.read().await.output).join(&video.file);
-    let file = Path::new(&filepath);
+    let config = state.config.read().await;
+    let filepath = Path::new(&config.output).join(&video.file);
+    
+    // 查找字幕文件：对于切片视频，需要查找原视频的字幕文件
+    let subtitle_path = find_subtitle_file(state, &video, &filepath).await?;
+    
     let output_file =
-        ffmpeg::encode_video_subtitle(reporter, file, &file.with_extension("srt"), srt_style)
+        ffmpeg::encode_video_subtitle(reporter, &filepath, &subtitle_path, srt_style)
             .await?;
+
+    // 构建正确的相对路径：如果原文件在子目录中，保持相同的目录结构
+    let relative_output_file = if let Some((parent_dir, _)) = video.file.rsplit_once('/') {
+        // 原文件在子目录中（如 clips/xxx.mp4），保持目录结构
+        format!("{}/{}", parent_dir, output_file)
+    } else {
+        // 原文件在根目录
+        output_file
+    };
+
+    // 为标题添加 [subtitle] 前缀
+    let subtitle_title = if video.title.starts_with("[subtitle]") {
+        video.title.clone() // 如果已经有前缀，不再添加
+    } else {
+        format!("[subtitle]{}", video.title)
+    };
 
     let new_video = state
         .db
@@ -565,13 +606,13 @@ async fn encode_video_subtitle_inner(
             id: 0,
             status: video.status,
             room_id: video.room_id,
-            created_at: Utc::now().to_rfc3339(),
+            created_at: Local::now().to_rfc3339(),
             cover: video.cover.clone(),
-            file: output_file,
+            file: relative_output_file,
             length: video.length,
             size: video.size,
             bvid: video.bvid.clone(),
-            title: video.title.clone(),
+            title: subtitle_title,
             desc: video.desc.clone(),
             tags: video.tags.clone(),
             area: video.area,
@@ -589,4 +630,335 @@ pub async fn generic_ffmpeg_command(
 ) -> Result<String, String> {
     let args_str: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     ffmpeg::generic_ffmpeg_command(&args_str).await
+}
+
+// 导入外部视频
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn import_external_video(
+    state: state_type!(),
+    file_path: String,
+    title: String,
+    _original_name: String,
+    size: i64,
+    room_id: u64,
+) -> Result<VideoRow, String> {
+    let source_path = Path::new(&file_path);
+    
+    // 验证文件存在
+    if !source_path.exists() {
+        return Err("文件不存在".to_string());
+    }
+    
+    // 获取视频元数据
+    let metadata = ffmpeg::extract_video_metadata(source_path).await?;
+    
+    // 生成目标文件名
+    let config = state.config.read().await;
+    let output_dir = Path::new(&config.output).join("imported");
+    if !output_dir.exists() {
+        std::fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
+    }
+    
+    let timestamp = Utc::now().format("%Y%m%d_%H%M%S").to_string();
+    let extension = source_path.extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("mp4");
+    let target_filename = format!("imported_{}_{}.{}", timestamp, 
+        sanitize_filename(&title), extension);
+    let target_path = output_dir.join(&target_filename);
+    
+    // 复制文件到目标位置
+    std::fs::copy(source_path, &target_path).map_err(|e| e.to_string())?;
+    
+    // 生成缩略图
+    let thumbnail_dir = Path::new(&config.output).join("thumbnails").join("imported");
+    if !thumbnail_dir.exists() {
+        std::fs::create_dir_all(&thumbnail_dir).map_err(|e| e.to_string())?;
+    }
+    
+    let thumbnail_filename = format!("{}.jpg", 
+        target_path.file_stem().unwrap().to_str().unwrap());
+    let thumbnail_path = thumbnail_dir.join(&thumbnail_filename);
+    
+    // 生成缩略图，如果失败则使用默认封面
+    let cover_path = match ffmpeg::generate_thumbnail(&target_path, &thumbnail_path, metadata.duration / 2.0).await {
+        Ok(_) => format!("thumbnails/imported/{}", thumbnail_filename),
+        Err(e) => {
+            log::warn!("生成缩略图失败: {}", e);
+            "".to_string() // 使用空字符串，前端会显示默认图标
+        }
+    };
+    
+    // 构建导入视频的元数据
+    let import_metadata = ImportedVideoMetadata {
+        original_path: file_path.clone(),
+        import_date: Utc::now().to_rfc3339(),
+        original_size: size,
+        video_format: extension.to_string(),
+        duration: metadata.duration,
+        resolution: Some(format!("{}x{}", metadata.width, metadata.height)),
+    };
+    
+    // 添加到数据库
+    let video = VideoRow {
+        id: 0,
+        room_id, // 使用传入的 room_id
+        platform: "imported".to_string(), // 使用 platform 字段标识
+        title,
+        file: format!("imported/{}", target_filename), // 包含完整相对路径
+        length: metadata.duration as i64,
+        size: target_path.metadata().map_err(|e| e.to_string())?.len() as i64,
+        status: 1, // 导入完成
+        cover: cover_path,
+        desc: serde_json::to_string(&import_metadata).unwrap_or_default(),
+        tags: "imported,external".to_string(),
+        bvid: "".to_string(),
+        area: 0,
+        created_at: Utc::now().to_rfc3339(),
+    };
+    
+    let result = state.db.add_video(&video).await?;
+    
+    // 发送通知消息
+    state.db.new_message(
+        "视频导入完成",
+        &format!("成功导入视频：{}", result.title),
+    ).await?;
+    
+    Ok(result)
+}
+
+// 通用视频切片函数（支持所有类型的视频）
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn clip_video(
+    state: state_type!(),
+    event_id: String,
+    parent_video_id: i64,
+    start_time: f64,
+    end_time: f64,
+    clip_title: String,
+) -> Result<VideoRow, String> {
+    // 获取父视频信息
+    let parent_video = state.db.get_video(parent_video_id).await?;
+    
+    // 检查是否为正在录制的视频
+    if parent_video.status == -1 {
+        return Err("正在录制的视频无法进行切片".to_string());
+    }
+    
+    #[cfg(feature = "gui")]
+    let emitter = EventEmitter::new(state.app_handle.clone());
+    #[cfg(feature = "headless")]
+    let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
+    let reporter = ProgressReporter::new(&emitter, &event_id).await?;
+    
+    // 创建任务记录
+    let task = TaskRow {
+        id: event_id.clone(),
+        task_type: "clip_video".to_string(),
+        status: "pending".to_string(),
+        message: "".to_string(),
+        metadata: json!({
+            "parent_video_id": parent_video_id,
+            "start_time": start_time,
+            "end_time": end_time,
+            "clip_title": clip_title,
+        }).to_string(),
+        created_at: Utc::now().to_rfc3339(),
+    };
+    state.db.add_task(&task).await?;
+    
+    match clip_video_inner(&state, &reporter, parent_video, start_time, end_time, clip_title).await {
+        Ok(video) => {
+            reporter.finish(true, "切片完成").await;
+            state.db.update_task(&event_id, "success", "切片完成", None).await?;
+            Ok(video)
+        }
+        Err(e) => {
+            reporter.finish(false, &format!("切片失败: {}", e)).await;
+            state.db.update_task(&event_id, "failed", &format!("切片失败: {}", e), None).await?;
+            Err(e)
+        }
+    }
+}
+
+
+
+async fn clip_video_inner(
+    state: &state_type!(),
+    reporter: &ProgressReporter,
+    parent_video: VideoRow,
+    start_time: f64,
+    end_time: f64,
+    clip_title: String,
+) -> Result<VideoRow, String> {
+    let config = state.config.read().await;
+    
+    // 构建输入文件路径
+    let input_path = Path::new(&config.output)
+        .join(&parent_video.file);
+    
+    if !input_path.exists() {
+        return Err("原视频文件不存在".to_string());
+    }
+    
+    // 统一的输出目录：clips
+    let output_dir = Path::new(&config.output).join("clips");
+    if !output_dir.exists() {
+        std::fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
+    }
+    
+    let timestamp = Local::now().format("%Y%m%d%H%M").to_string();
+    let extension = input_path.extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("mp4");
+    
+    // 获取原文件名（不含扩展名）
+    let original_filename = input_path.file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("video");
+    
+    // 生成新的文件名格式：原文件名[clip][时间戳].扩展名
+    let output_filename = format!("{}[clip][{}].{}", 
+        original_filename, timestamp, extension);
+    let output_path = output_dir.join(&output_filename);
+    
+    // 执行切片
+    reporter.update("开始切片处理");
+    ffmpeg::clip_from_video_file(
+        Some(reporter),
+        &input_path,
+        &output_path,
+        start_time,
+        end_time - start_time,
+    ).await?;
+    
+    // 生成缩略图
+    let thumbnail_dir = Path::new(&config.output).join("thumbnails").join("clips");
+    if !thumbnail_dir.exists() {
+        std::fs::create_dir_all(&thumbnail_dir).map_err(|e| e.to_string())?;
+    }
+    
+    // 生成缩略图文件名，确保路径安全
+    let clip_thumbnail_filename = if let Some(stem) = output_path.file_stem().and_then(|s| s.to_str()) {
+        format!("{}.jpg", stem)
+    } else {
+        format!("thumbnail_{}.jpg", timestamp)
+    };
+    let thumbnail_path = thumbnail_dir.join(&clip_thumbnail_filename);
+    
+    // 生成缩略图，如果失败则使用默认封面
+    let clip_cover_path = match ffmpeg::generate_thumbnail(&output_path, &thumbnail_path, (end_time - start_time) / 2.0).await {
+        Ok(_) => format!("thumbnails/clips/{}", clip_thumbnail_filename),
+        Err(e) => {
+            log::warn!("生成切片缩略图失败: {}", e);
+            "".to_string() // 使用空字符串，前端会显示默认图标
+        }
+    };
+    
+    // 构建统一的切片元数据
+    let clip_metadata = ClipMetadata {
+        parent_video_id: parent_video.id,
+        start_time,
+        end_time,
+        clip_source: determine_clip_source(&parent_video.platform),
+        original_platform: parent_video.platform.clone(),
+        original_room_id: parent_video.room_id,
+    };
+    
+    // 获取输出文件信息
+    let file_metadata = output_path.metadata().map_err(|e| e.to_string())?;
+    
+    // 添加到数据库 - 统一使用 "clip" 平台类型
+    let clip_video = VideoRow {
+        id: 0,
+        room_id: parent_video.room_id,
+        platform: "clip".to_string(), // 统一的切片类型
+        title: clip_title,
+        file: format!("clips/{}", output_filename),
+        length: (end_time - start_time) as i64,
+        size: file_metadata.len() as i64,
+        status: 1,
+        cover: clip_cover_path,
+        desc: serde_json::to_string(&clip_metadata).unwrap_or_default(),
+        tags: "clip".to_string(),
+        bvid: "".to_string(),
+        area: parent_video.area,
+        created_at: Local::now().to_rfc3339(),
+    };
+    
+    let result = state.db.add_video(&clip_video).await?;
+    
+    // 发送通知消息
+    state.db.new_message(
+        "视频切片完成",
+        &format!("生成切片：{}", result.title),
+    ).await?;
+    
+    Ok(result)
+}
+
+// 确定切片来源的辅助函数
+fn determine_clip_source(platform: &str) -> String {
+    match platform {
+        "imported" => "imported_video".to_string(),
+        "clip" => "clip".to_string(),
+        _ => "recorded_video".to_string(),
+    }
+}
+
+// 查找字幕文件的辅助函数
+async fn find_subtitle_file(
+    state: &state_type!(),
+    video: &VideoRow,
+    video_file: &Path,
+) -> Result<PathBuf, String> {
+    // 首先尝试当前视频同目录下的字幕文件
+    let local_subtitle = video_file.with_extension("srt");
+    if local_subtitle.exists() {
+        return Ok(local_subtitle);
+    }
+    
+    // 如果是切片视频，尝试查找原视频的字幕文件
+    if video.platform == "clip" && !video.desc.is_empty() {
+        // 解析切片元数据，获取父视频ID
+        if let Ok(metadata) = serde_json::from_str::<ClipMetadata>(&video.desc) {
+            if let Ok(parent_video) = state.db.get_video(metadata.parent_video_id).await {
+                let parent_filepath = Path::new(&state.config.read().await.output)
+                    .join(&parent_video.file);
+                let parent_subtitle = parent_filepath.with_extension("srt");
+                if parent_subtitle.exists() {
+                    return Ok(parent_subtitle);
+                }
+            }
+        }
+    }
+    
+    // 如果都找不到，返回默认路径（即使文件不存在，让ffmpeg处理错误）
+    Ok(local_subtitle)
+}
+
+
+
+// 获取文件大小
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_file_size(file_path: String) -> Result<u64, String> {
+    let path = Path::new(&file_path);
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.len()),
+        Err(e) => Err(format!("无法获取文件信息: {}", e))
+    }
+}
+
+// 辅助函数：清理文件名
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            _ => c,
+        })
+        .collect::<String>()
+        .chars()
+        .take(50) // 限制长度
+        .collect()
 }

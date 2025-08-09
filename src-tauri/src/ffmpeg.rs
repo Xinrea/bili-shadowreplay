@@ -929,7 +929,6 @@ pub async fn generate_thumbnail(
         .args(["-i", &format!("{}", video_path.display())])
         .args(["-ss", &timestamp.to_string()])
         .args(["-vframes", "1"])
-        .args(["-vf", "scale=320:240"])
         .args(["-y", output_path.to_str().unwrap()])
         .output()
         .await
@@ -939,7 +938,12 @@ pub async fn generate_thumbnail(
         return Err(format!("ffmpeg生成缩略图失败: {}", String::from_utf8_lossy(&output.stderr)));
     }
 
-    log::info!("生成缩略图完成: {}", output_path.display());
+    // 记录生成的缩略图信息
+    if let Ok(metadata) = std::fs::metadata(output_path) {
+        log::info!("生成缩略图完成: {} (文件大小: {} bytes)", output_path.display(), metadata.len());
+    } else {
+        log::info!("生成缩略图完成: {}", output_path.display());
+    }
     Ok(())
 }
 

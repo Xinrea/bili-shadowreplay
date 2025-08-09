@@ -32,7 +32,7 @@
         });
         
         if (selected && typeof selected === 'string') {
-          await setSelectedFile(selected, 0);
+          await setSelectedFile(selected);
         }
       } catch (error) {
         console.error("文件选择失败:", error);

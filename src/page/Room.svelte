@@ -284,7 +284,7 @@
           <div class="relative">
             <Image
               src={room.room_info.room_cover}
-              iclass={"w-full h-40 object-cover rounded-lg " +
+              iclass={"w-full h-40 object-contain rounded-lg " +
                 (room.live_status ? "" : "brightness-75")}
             />
             <!-- Room ID watermark -->
@@ -695,7 +695,7 @@
                         {#if archive.cover}
                           <Image
                             src={archive.cover}
-                            iclass="w-12 h-8 rounded object-cover"
+                            iclass="w-12 h-8 rounded object-contain"
                           />
                         {/if}
                         <span class="text-sm text-gray-900 dark:text-white"

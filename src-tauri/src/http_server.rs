@@ -1336,6 +1336,11 @@ async fn handler_output(
         Some("m4v") => "video/x-m4v",
         Some("mkv") => "video/x-matroska",
         Some("avi") => "video/x-msvideo",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("png") => "image/png",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("svg") => "image/svg+xml",
         _ => "application/octet-stream",
     };
 
@@ -1347,8 +1352,10 @@ async fn handler_output(
             content_type.parse().unwrap(),
         );
 
-        // Only set Content-Disposition for non-video files to allow inline playback
-        if !matches!(content_type, "video/mp4" | "video/webm" | "video/x-m4v" | "video/x-matroska" | "video/x-msvideo") {
+        // Only set Content-Disposition for non-media files to allow inline playback/display
+        if !matches!(content_type, 
+            "video/mp4" | "video/webm" | "video/x-m4v" | "video/x-matroska" | "video/x-msvideo" |
+            "image/jpeg" | "image/png" | "image/gif" | "image/webp" | "image/svg+xml") {
             let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
             headers.insert(
                 axum::http::header::CONTENT_DISPOSITION,

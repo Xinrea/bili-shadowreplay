@@ -595,7 +595,7 @@
                           <img
                             src={video.cover}
                             alt="封面"
-                            class="w-full h-full object-cover"
+                            class="w-full h-full object-contain"
                             on:error={handleImageError}
                           />
                         {:else}

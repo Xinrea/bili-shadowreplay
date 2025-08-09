@@ -398,7 +398,7 @@
               {#if record.cover}
                 <img
                   src={record.cover}
-                  class="w-32 h-18 rounded-lg object-contain"
+                  class="w-32 h-18 rounded-lg object-cover"
                   alt="Gaming stream thumbnail"
                 />
               {:else}

@@ -32,7 +32,6 @@
   let videoToDelete: VideoItem | null = null;
   let showImportDialog = false;
 
-
   onMount(async () => {
     await loadVideos();
   });
@@ -244,32 +243,29 @@
     }
   }
 
-      async function playVideo(video: VideoItem) {
+  async function playVideo(video: VideoItem) {
     try {
       await invoke("open_clip", { videoId: video.id });
     } catch (error) {
       console.error("Failed to play video:", error);
     }
   }
-  
+
   function handleVideoImported() {
     // 视频导入完成后刷新列表
     loadVideos();
   }
-  
 
-
-
-  
   function handleImageError(event: Event) {
     // 如果图片加载失败，隐藏图片元素并显示默认图标
     const target = event.target as HTMLImageElement;
-    target.style.display = 'none';
+    target.style.display = "none";
     if (target.parentElement) {
-      target.parentElement.innerHTML = '<svg class="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>';
+      target.parentElement.innerHTML =
+        '<svg class="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>';
     }
   }
-  
+
   import ImportVideoDialog from "../lib/ImportVideoDialog.svelte";
 </script>
 
@@ -290,7 +286,7 @@
       <div class="flex items-center space-x-3">
         <button
           class="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors flex items-center space-x-2"
-          on:click={() => showImportDialog = true}
+          on:click={() => (showImportDialog = true)}
         >
           <Upload class="w-4 h-4 text-white" />
           <span>导入视频</span>
@@ -476,7 +472,7 @@
         </div>
       {:else}
         <div class="overflow-x-auto custom-scrollbar-light">
-          <table class="w-full table-fixed">
+          <table class="w-full table-fixed whitespace-nowrap">
             <thead>
               <tr class="border-b border-gray-200 dark:border-gray-700/50">
                 <th class="px-4 py-3 text-left w-12">
@@ -539,34 +535,29 @@
                   <td class="px-4 py-3 w-20">
                     <div class="flex items-center space-x-2">
                       {#if video.platform === "imported"}
-                        <FileVideo class="w-4 h-4 text-purple-400" />
-                        <span class="text-sm text-purple-600 dark:text-purple-400">
-                          {formatPlatform(video.platform)}
-                        </span>
+                        <FileVideo class="table-icon text-gray-400" />
                       {:else if video.platform === "clip"}
-                        <Scissors class="w-4 h-4 text-green-400" />
-                        <span class="text-sm text-green-600 dark:text-green-400">
-                          {formatPlatform(video.platform)}
-                        </span>
+                        <Scissors class="table-icon text-gray-400" />
                       {:else}
-                        <Globe class="w-4 h-4 text-gray-400" />
-                        <span
-                          class="text-sm text-gray-900 dark:text-white truncate"
-                          >{formatPlatform(video.platform)}</span
-                        >
+                        <Globe class="table-icon text-gray-400" />
                       {/if}
+                      <span class="text-sm text-gray-800 truncate"
+                        >{formatPlatform(video.platform)}</span
+                      >
                     </div>
                   </td>
 
                   <td class="px-4 py-3 w-24">
                     <div class="flex items-center space-x-2">
                       {#if video.platform === "imported" || video.platform === "clip"}
-                        <Home class="w-4 h-4 text-purple-400" />
-                        <span class="text-sm text-purple-600 dark:text-purple-400">
-                          {video.platform === "imported" ? "外部视频" : "视频切片"}
+                        <FileVideo class="table-icon text-gray-400" />
+                        <span class="text-sm text-gray-800">
+                          {video.platform === "imported"
+                            ? "外部视频"
+                            : "视频切片"}
                         </span>
                       {:else}
-                        <Home class="w-4 h-4 text-gray-400" />
+                        <Home class="table-icon text-gray-400" />
                         {#if getRoomUrl(video.platform, video.room_id)}
                           <a
                             href={getRoomUrl(video.platform, video.room_id)}
@@ -595,13 +586,23 @@
                           <img
                             src={video.cover}
                             alt="封面"
-                            class="w-full h-full object-contain"
+                            class="w-full h-full object-cover"
                             on:error={handleImageError}
                           />
                         {:else}
                           <!-- 默认视频图标 -->
-                          <svg class="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+                          <svg
+                            class="w-6 h-6 text-gray-400"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              stroke-width="2"
+                              d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"
+                            ></path>
                           </svg>
                         {/if}
                       </div>
@@ -624,8 +625,8 @@
 
                   <td class="px-4 py-3 w-20">
                     <div class="flex items-center space-x-2">
-                      <Clock class="w-4 h-4 text-gray-400" />
-                      <span class="text-sm text-gray-900 dark:text-white"
+                      <Clock class="table-icon text-gray-400" />
+                      <span class="text-sm text-gray-800"
                         >{formatDuration(video.length)}</span
                       >
                     </div>
@@ -633,8 +634,8 @@
 
                   <td class="px-4 py-3 w-24">
                     <div class="flex items-center space-x-2">
-                      <HardDrive class="w-4 h-4 text-gray-400" />
-                      <span class="text-sm text-gray-900 dark:text-white"
+                      <HardDrive class="table-icon text-gray-400" />
+                      <span class="text-sm text-gray-800"
                         >{formatSize(video.size)}</span
                       >
                     </div>
@@ -642,9 +643,8 @@
 
                   <td class="px-4 py-3 w-28">
                     <div class="flex items-center space-x-2">
-                      <Calendar class="w-4 h-4 text-gray-400" />
-                      <span
-                        class="text-sm text-gray-900 dark:text-white truncate"
+                      <Calendar class="table-icon text-gray-400" />
+                      <span class="text-sm text-gray-800 truncate"
                         >{formatDate(video.created_at)}</span
                       >
                     </div>
@@ -652,7 +652,7 @@
 
                   <td class="px-4 py-3 w-28">
                     <div class="flex items-center space-x-2">
-                      <Upload class="w-4 h-4 text-gray-400" />
+                      <Upload class="table-icon text-gray-400" />
                       {#if video.bvid}
                         <a
                           href={`https://www.bilibili.com/video/${video.bvid}`}
@@ -678,10 +678,9 @@
                         title="播放"
                         on:click={() => playVideo(video)}
                       >
-                        <Play class="w-4 h-4" />
+                        <Play class="table-icon" />
                       </button>
-                      
-                      
+
                       <button
                         class="p-1.5 text-gray-600 dark:text-gray-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors"
                         title="删除"
@@ -690,7 +689,7 @@
                           showDeleteConfirm = true;
                         }}
                       >
-                        <Trash2 class="w-4 h-4" />
+                        <Trash2 class="table-icon" />
                       </button>
                     </div>
                   </td>
@@ -754,15 +753,23 @@
   </div>
 {/if}
 
+<!-- 导入视频对话框 -->
+<ImportVideoDialog
+  bind:showDialog={showImportDialog}
+  roomId={selectedRoomId}
+  on:imported={handleVideoImported}
+/>
+
 <style>
   /* macOS style modal */
   .mac-modal {
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
   }
+  /* fixed icon size in tables */
+  :global(.table-icon) {
+    width: 1rem; /* 16px, same as Tailwind w-4 */
+    height: 1rem; /* 16px, same as Tailwind h-4 */
+    flex: 0 0 auto;
+  }
 </style>
-
-<!-- 导入视频对话框 -->
-<ImportVideoDialog bind:showDialog={showImportDialog} roomId={selectedRoomId} on:imported={handleVideoImported} />
-
-

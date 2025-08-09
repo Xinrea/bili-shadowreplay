@@ -151,9 +151,9 @@
         >
           <div class="flex items-center justify-between">
             <div class="flex items-center space-x-4">
-              <div class="relative">
+              <div class="relative shrink-0">
                 <Image
-                  iclass="w-12 h-12 rounded-full object-contain"
+                  iclass="w-12 h-12 rounded-full object-cover"
                   src={account.avatar}
                 />
               </div>

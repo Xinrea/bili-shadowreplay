@@ -102,6 +102,7 @@ pub async fn clip_from_m3u8(
                 if reporter.is_none() {
                     continue;
                 }
+                log::debug!("Clip progress: {}", p.time);
                 reporter
                     .unwrap()
                     .update(format!("编码中：{}", p.time).as_str())

@@ -561,16 +561,10 @@ const clip_range = tool(
       clip_range_params: z.object({
         room_id: z.number().describe("The room id of the room"),
         live_id: z.string().describe("The live id of the live"),
-        x: z
-          .number()
-          .describe(
-            "The start time in SECONDS of the clip, relative to the live start time, must be less than y"
-          ),
-        y: z
-          .number()
-          .describe(
-            "The end time in SECONDS of the clip, relative to the live start time, must be greater than x"
-          ),
+        range: z.object({
+          start: z.number().describe("The start time in SECONDS of the clip"),
+          end: z.number().describe("The end time in SECONDS of the clip"),
+        }),
         danmu: z
           .boolean()
           .describe(
@@ -585,6 +579,11 @@ const clip_range = tool(
         title: z.string().describe("The title of the clip"),
         cover: z.string().describe("Must be empty"),
         platform: z.string().describe("The platform of the clip"),
+        fix_encoding: z
+          .boolean()
+          .describe(
+            "Whether to fix the encoding of the clip, it will take a lot of time, so it is recommended to set it to false"
+          ),
       }),
     }),
   }

@@ -482,8 +482,15 @@ impl RecorderManager {
         );
 
         let manifest_content = self.handle_hls_request(&range_m3u8).await?;
-        let manifest_content = String::from_utf8(manifest_content)
+        let mut manifest_content = String::from_utf8(manifest_content)
             .map_err(|e| RecorderManagerError::ClipError { err: e.to_string() })?;
+
+        // if manifest is for stream, replace EXT-X-PLAYLIST-TYPE:EVENT to EXT-X-PLAYLIST-TYPE:VOD, and add #EXT-X-ENDLIST
+        if manifest_content.contains("#EXT-X-PLAYLIST-TYPE:EVENT") {
+            manifest_content =
+                manifest_content.replace("#EXT-X-PLAYLIST-TYPE:EVENT", "#EXT-X-PLAYLIST-TYPE:VOD");
+            manifest_content += "\n#EXT-X-ENDLIST\n";
+        }
 
         let cache_path = self.config.read().await.cache.clone();
         let cache_path = Path::new(&cache_path);

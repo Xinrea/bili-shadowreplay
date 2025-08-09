@@ -1,3 +1,4 @@
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -8,6 +9,7 @@ use crate::subtitle_generator::{
 };
 use async_ffmpeg_sidecar::event::{FfmpegEvent, LogLevel};
 use async_ffmpeg_sidecar::log_parser::FfmpegLogParser;
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 #[cfg(target_os = "windows")]
@@ -15,10 +17,30 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Range {
+    pub start: f64,
+    pub end: f64,
+}
+
+impl fmt::Display for Range {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[{}, {}]", self.start, self.end)
+    }
+}
+
+impl Range {
+    pub fn duration(&self) -> f64 {
+        self.end - self.start
+    }
+}
+
 pub async fn clip_from_m3u8(
     reporter: Option<&impl ProgressReporterTrait>,
     m3u8_index: &Path,
     output_path: &Path,
+    range: Option<&Range>,
+    fix_encoding: bool,
 ) -> Result<(), String> {
     // first check output folder exists
     let output_folder = output_path.parent().unwrap();
@@ -34,9 +56,31 @@ pub async fn clip_from_m3u8(
     #[cfg(target_os = "windows")]
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
-    let child = ffmpeg_process
+    let child_command = ffmpeg_process
         .args(["-i", &format!("{}", m3u8_index.display())])
-        .args(["-c", "copy"])
+        .args([
+            "-ss",
+            &range
+                .as_ref()
+                .map_or("0".to_string(), |r| r.start.to_string()),
+        ])
+        .args([
+            "-t",
+            &range
+                .as_ref()
+                .map_or("0".to_string(), |r| r.duration().to_string()),
+        ]);
+
+    if fix_encoding {
+        child_command
+            .args(["-c:v", "libx264"])
+            .args(["-c:a", "aac"])
+            .args(["-preset", "fast"]);
+    } else {
+        child_command.args(["-c", "copy"]);
+    }
+
+    let child = child_command
         .args(["-y", output_path.to_str().unwrap()])
         .args(["-progress", "pipe:2"])
         .stderr(Stdio::piped())
@@ -468,7 +512,7 @@ pub async fn encode_video_danmu(
                 command_error = Some(e.to_string());
             }
             FfmpegEvent::Progress(p) => {
-                log::info!("Encode video danmu progress: {}", p.time);
+                log::debug!("Encode video danmu progress: {}", p.time);
                 if reporter.is_none() {
                     continue;
                 }

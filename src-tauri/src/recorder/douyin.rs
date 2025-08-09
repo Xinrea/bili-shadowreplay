@@ -792,6 +792,8 @@ impl Recorder for DouyinRecorder {
             None::<&crate::progress_reporter::ProgressReporter>,
             Path::new(&m3u8_index_file_path),
             Path::new(&clip_file_path),
+            None,
+            false,
         )
         .await
         {

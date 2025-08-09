@@ -41,6 +41,7 @@
 
   let current_clip_event_id = null;
   let danmu_enabled = false;
+  let fix_encoding = false;
 
   // 弹幕相关变量
   let danmu_records: DanmuEntry[] = [];
@@ -142,10 +143,25 @@
   function format_time(milliseconds: number): string {
     const seconds = Math.floor(milliseconds / 1000);
     const minutes = Math.floor(seconds / 60);
-    const hours = Math.floor(minutes / 60).toString().padStart(2, "0");
+    const hours = Math.floor(minutes / 60)
+      .toString()
+      .padStart(2, "0");
     const remaining_seconds = (seconds % 60).toString().padStart(2, "0");
     const remaining_minutes = (minutes % 60).toString().padStart(2, "0");
     return `${hours}:${remaining_minutes}:${remaining_seconds}`;
+  }
+
+  // 将时长(单位: 秒)格式化为 "X小时 Y分 Z秒"
+  function format_duration_seconds(totalSecondsFloat: number): string {
+    const totalSeconds = Math.max(0, Math.floor(totalSecondsFloat));
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    const parts = [] as string[];
+    if (hours > 0) parts.push(`${hours}小时`);
+    if (minutes > 0) parts.push(`${minutes}分`);
+    parts.push(`${seconds}秒`);
+    return parts.join(" ");
   }
 
   // 跳转到弹幕时间点
@@ -321,13 +337,16 @@
       platform: platform,
       cover: new_cover,
       live_id: live_id,
-      x: Math.floor(focus_start + start),
-      y: Math.floor(focus_start + end),
+      range: {
+        start: focus_start + start,
+        end: focus_start + end,
+      },
       danmu: danmu_enabled,
       offset: global_offset,
       local_offset:
         parseInt(localStorage.getItem(`local_offset:${live_id}`) || "0", 10) ||
         0,
+      fix_encoding,
     })) as VideoItem;
     await get_video_list();
     video_selected = new_video.id;
@@ -673,40 +692,77 @@
 
 <!-- Clip Confirmation Dialog -->
 {#if show_clip_confirm}
-  <div
-    class="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center z-50"
-  >
-    <div class="bg-[#1c1c1e] rounded-lg p-6 max-w-md w-full mx-4">
-      <h3 class="text-lg font-medium text-white mb-4">确认生成切片</h3>
-      <div class="space-y-4">
-        <div class="text-sm text-gray-300">
-          <p>切片时长: {(end - start).toFixed(2)} 秒</p>
-        </div>
-        <div class="flex items-center space-x-2">
-          <input
-            type="checkbox"
-            id="confirm-danmu-checkbox"
-            bind:checked={danmu_enabled}
-            class="w-4 h-4 text-[#0A84FF] bg-[#2c2c2e] border-gray-800 rounded focus:ring-[#0A84FF] focus:ring-offset-[#1c1c1e]"
-          />
-          <label for="confirm-danmu-checkbox" class="text-sm text-gray-300"
-            >压制弹幕</label
+  <div class="fixed inset-0 z-[100] flex items-center justify-center">
+    <div
+      class="absolute inset-0 bg-black/60 backdrop-blur-md"
+      role="button"
+      tabindex="0"
+      aria-label="关闭对话框"
+      on:click={() => (show_clip_confirm = false)}
+      on:keydown={(e) => {
+        if (e.key === "Escape" || e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          show_clip_confirm = false;
+        }
+      }}
+    />
+
+    <div
+      role="dialog"
+      aria-modal="true"
+      class="relative mx-4 w-full max-w-md rounded-2xl bg-[#1c1c1e] border border-white/10 shadow-2xl ring-1 ring-black/5"
+    >
+      <div class="p-5">
+        <h3 class="text-[17px] font-semibold text-white">确认生成切片</h3>
+        <p class="mt-1 text-[13px] text-white/70">请确认以下设置后继续</p>
+
+        <div class="mt-4 rounded-xl bg-[#2c2c2e] border border-white/10 p-3">
+          <div class="text-[13px] text-white/80">切片时长</div>
+          <div
+            class="mt-0.5 text-[22px] font-semibold tracking-tight text-white"
           >
+            {format_duration_seconds(end - start)}
+          </div>
         </div>
-        <div class="flex justify-end space-x-3">
-          <button
-            on:click={() => (show_clip_confirm = false)}
-            class="px-4 py-2 text-gray-300 hover:text-white transition-colors duration-200"
-          >
-            取消
-          </button>
-          <button
-            on:click={confirm_generate_clip}
-            class="px-4 py-2 bg-[#0A84FF] text-white rounded-lg hover:bg-[#0A84FF]/90 transition-colors duration-200"
-          >
-            确认生成
-          </button>
+
+        <div class="mt-3 space-y-3">
+          <label class="flex items-center gap-2.5">
+            <input
+              type="checkbox"
+              id="confirm-danmu-checkbox"
+              bind:checked={danmu_enabled}
+              class="h-4 w-4 rounded border-white/30 bg-[#2c2c2e] text-[#0A84FF] accent-[#0A84FF] focus:outline-none focus:ring-2 focus:ring-[#0A84FF]/40"
+            />
+            <span class="text-[13px] text-white/80">压制弹幕</span>
+          </label>
+
+          <label class="flex items-center gap-2.5">
+            <input
+              type="checkbox"
+              id="confirm-fix-encoding-checkbox"
+              bind:checked={fix_encoding}
+              class="h-4 w-4 rounded border-white/30 bg-[#2c2c2e] text-[#0A84FF] accent-[#0A84FF] focus:outline-none focus:ring-2 focus:ring-[#0A84FF]/40"
+            />
+            <span class="text-[13px] text-white/80">修复编码</span>
+          </label>
         </div>
+      </div>
+
+      <div
+        class="flex items-center justify-end gap-2 rounded-b-2xl border-t border-white/10 bg-[#111113] px-5 py-3"
+      >
+        <button
+          on:click={() => (show_clip_confirm = false)}
+          class="px-3.5 py-2 text-[13px] rounded-lg border border-white/20 text-white/90 hover:bg-white/10 transition-colors"
+        >
+          取消
+        </button>
+        <button
+          on:click={confirm_generate_clip}
+          class="px-3.5 py-2 text-[13px] rounded-lg bg-[#0A84FF] text-white shadow-[inset_0_1px_0_rgba(255,255,255,.15)] hover:bg-[#0A84FF]/90 transition-colors"
+        >
+          确认生成
+        </button>
       </div>
     </div>
   </div>

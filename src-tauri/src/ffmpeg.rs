@@ -56,20 +56,13 @@ pub async fn clip_from_m3u8(
     #[cfg(target_os = "windows")]
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
-    let child_command = ffmpeg_process
-        .args(["-i", &format!("{}", m3u8_index.display())])
-        .args([
-            "-ss",
-            &range
-                .as_ref()
-                .map_or("0".to_string(), |r| r.start.to_string()),
-        ])
-        .args([
-            "-t",
-            &range
-                .as_ref()
-                .map_or("0".to_string(), |r| r.duration().to_string()),
-        ]);
+    let child_command = ffmpeg_process.args(["-i", &format!("{}", m3u8_index.display())]);
+
+    if let Some(range) = range {
+        child_command
+            .args(["-ss", &range.start.to_string()])
+            .args(["-t", &range.duration().to_string()]);
+    }
 
     if fix_encoding {
         child_command

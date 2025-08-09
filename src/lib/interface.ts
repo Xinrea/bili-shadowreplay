@@ -117,7 +117,6 @@ export function default_profile(): Profile {
   };
 }
 
-
 export interface Config {
   cache: string;
   output: string;
@@ -241,11 +240,13 @@ export interface ClipRangeParams {
   platform: string;
   room_id: number;
   live_id: string;
-  x: number;
-  y: number;
+  range: {
+    start: number;
+    end: number;
+  };
   danmu: boolean;
-  offset: number;
   local_offset: number;
+  fix_encoding: boolean;
 }
 
 export function generateEventId() {

@@ -3,7 +3,7 @@ use crate::danmu2ass;
 use crate::database::video::VideoRow;
 use crate::database::{account::AccountRow, record::RecordRow};
 use crate::database::{Database, DatabaseError};
-use crate::ffmpeg::{clip_from_m3u8, encode_video_danmu};
+use crate::ffmpeg::{clip_from_m3u8, encode_video_danmu, Range};
 use crate::progress_reporter::{EventEmitter, ProgressReporter};
 use crate::recorder::bilibili::{BiliRecorder, BiliRecorderOptions};
 use crate::recorder::danmu::DanmuEntry;
@@ -39,15 +39,12 @@ pub struct ClipRangeParams {
     pub platform: String,
     pub room_id: u64,
     pub live_id: String,
-    /// Clip range start in seconds
-    pub x: i64,
-    /// Clip range end in seconds
-    pub y: i64,
-    /// Timestamp of first stream segment in seconds
-    pub offset: i64,
+    pub range: Option<Range>,
     /// Encode danmu after clip
     pub danmu: bool,
     pub local_offset: i64,
+    /// Fix encoding after clip
+    pub fix_encoding: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -205,11 +202,10 @@ impl RecorderManager {
             platform: live_record.platform.clone(),
             room_id,
             live_id: live_id.to_string(),
-            x: 0,
-            y: 0,
-            offset: recorder.first_segment_ts(live_id).await,
+            range: None,
             danmu: encode_danmu,
             local_offset: 0,
+            fix_encoding: false,
         };
 
         let clip_filename = self.config.read().await.generate_clip_name(&clip_config);
@@ -478,13 +474,20 @@ impl RecorderManager {
         params: &ClipRangeParams,
     ) -> Result<PathBuf, RecorderManagerError> {
         let range_m3u8 = format!(
-            "{}/{}/{}/playlist.m3u8?start={}&end={}",
-            params.platform, params.room_id, params.live_id, params.x, params.y
+            "{}/{}/{}/playlist.m3u8",
+            params.platform, params.room_id, params.live_id
         );
 
         let manifest_content = self.handle_hls_request(&range_m3u8).await?;
-        let manifest_content = String::from_utf8(manifest_content)
+        let mut manifest_content = String::from_utf8(manifest_content)
             .map_err(|e| RecorderManagerError::ClipError { err: e.to_string() })?;
+
+        // if manifest is for stream, replace EXT-X-PLAYLIST-TYPE:EVENT to EXT-X-PLAYLIST-TYPE:VOD, and add #EXT-X-ENDLIST
+        if manifest_content.contains("#EXT-X-PLAYLIST-TYPE:EVENT") {
+            manifest_content =
+                manifest_content.replace("#EXT-X-PLAYLIST-TYPE:EVENT", "#EXT-X-PLAYLIST-TYPE:VOD");
+            manifest_content += "\n#EXT-X-ENDLIST\n";
+        }
 
         let cache_path = self.config.read().await.cache.clone();
         let cache_path = Path::new(&cache_path);
@@ -500,7 +503,15 @@ impl RecorderManager {
             .await
             .map_err(|e| RecorderManagerError::ClipError { err: e.to_string() })?;
 
-        if let Err(e) = clip_from_m3u8(reporter, &tmp_manifest_file_path, &clip_file).await {
+        if let Err(e) = clip_from_m3u8(
+            reporter,
+            &tmp_manifest_file_path,
+            &clip_file,
+            params.range.as_ref(),
+            params.fix_encoding,
+        )
+        .await
+        {
             log::error!("Failed to generate clip file: {}", e);
             return Err(RecorderManagerError::ClipError { err: e.to_string() });
         }
@@ -520,12 +531,6 @@ impl RecorderManager {
             return Ok(clip_file);
         }
 
-        let mut clip_offset = params.offset;
-        if clip_offset > 0 {
-            clip_offset -= recorder.first_segment_ts(&params.live_id).await;
-            clip_offset = clip_offset.max(0);
-        }
-
         let danmus = recorder.comments(&params.live_id).await;
         if danmus.is_err() {
             log::error!("Failed to get danmus");
@@ -533,20 +538,24 @@ impl RecorderManager {
         }
 
         log::info!(
-            "Filter danmus in range [{}, {}] with global offset {} and local offset {}",
-            params.x,
-            params.y,
-            clip_offset,
+            "Filter danmus in range {} with local offset {}",
+            params
+                .range
+                .as_ref()
+                .map_or("None".to_string(), |r| r.to_string()),
             params.local_offset
         );
         let mut danmus = danmus.unwrap();
         log::debug!("First danmu entry: {:?}", danmus.first());
-        // update entry ts to offset
-        for d in &mut danmus {
-            d.ts -= (params.x + clip_offset + params.local_offset) * 1000;
-        }
-        if params.x != 0 || params.y != 0 {
-            danmus.retain(|x| x.ts >= 0 && x.ts <= (params.y - params.x) * 1000);
+
+        if let Some(range) = &params.range {
+            // update entry ts to offset and filter danmus in range
+            for d in &mut danmus {
+                d.ts -= (range.start as i64 + params.local_offset) * 1000;
+            }
+            if range.duration() > 0.0 {
+                danmus.retain(|x| x.ts >= 0 && x.ts <= (range.duration() as i64) * 1000);
+            }
         }
 
         if danmus.is_empty() {

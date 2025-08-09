@@ -779,30 +779,7 @@ impl BiliRecorder {
                 }
 
                 // Extract stream start timestamp from header if available for FMP4
-                let stream_start_timestamp = if current_stream.format == StreamType::FMP4 {
-                    if let Some(header_entry) = self
-                        .entry_store
-                        .read()
-                        .await
-                        .as_ref()
-                        .and_then(|store| store.get_header())
-                    {
-                        // Parse timestamp from header filename like "h1753276580.m4s"
-                        if let Some(timestamp_str) = header_entry
-                            .url
-                            .strip_prefix("h")
-                            .and_then(|s| s.strip_suffix(".m4s"))
-                        {
-                            timestamp_str.parse::<i64>().unwrap_or(0)
-                        } else {
-                            0
-                        }
-                    } else {
-                        0
-                    }
-                } else {
-                    0
-                };
+                let stream_start_timestamp = self.room_info.read().await.live_start_time;
 
                 // Get the last segment offset from previous processing
                 let mut last_offset = *self.last_segment_offset.read().await;
@@ -1347,6 +1324,8 @@ impl super::Recorder for BiliRecorder {
             None::<&crate::progress_reporter::ProgressReporter>,
             Path::new(&m3u8_index_file_path),
             Path::new(&clip_file_path),
+            None,
+            false,
         )
         .await
         {

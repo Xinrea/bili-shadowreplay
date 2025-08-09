@@ -102,8 +102,14 @@ async fn clip_range_inner(
         reporter.event_id,
         params.room_id,
         params.live_id,
-        params.x,
-        params.y
+        params
+            .range
+            .as_ref()
+            .map_or("None".to_string(), |r| r.start.to_string()),
+        params
+            .range
+            .as_ref()
+            .map_or("None".to_string(), |r| r.end.to_string()),
     );
 
     let clip_file = state.config.read().await.generate_clip_name(&params);
@@ -134,7 +140,7 @@ async fn clip_range_inner(
             created_at: Utc::now().to_rfc3339(),
             cover: params.cover.clone(),
             file: filename.into(),
-            length: (params.y - params.x),
+            length: params.range.as_ref().map_or(0.0, |r| r.duration()) as i64,
             size: metadata.len() as i64,
             bvid: "".into(),
             title: "".into(),
@@ -149,9 +155,9 @@ async fn clip_range_inner(
         .new_message(
             "生成新切片",
             &format!(
-                "生成了房间 {} 的切片，长度 {:.1}s：{}",
+                "生成了房间 {} 的切片，长度 {}s：{}",
                 params.room_id,
-                params.y - params.x,
+                params.range.as_ref().map_or(0.0, |r| r.duration()),
                 filename
             ),
         )

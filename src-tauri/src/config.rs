@@ -183,13 +183,31 @@ impl Config {
         let format_config = format_config.replace("{platform}", platform.as_str());
         let format_config = format_config.replace("{room_id}", &params.room_id.to_string());
         let format_config = format_config.replace("{live_id}", &params.live_id);
-        let format_config = format_config.replace("{x}", &params.x.to_string());
-        let format_config = format_config.replace("{y}", &params.y.to_string());
+        let format_config = format_config.replace(
+            "{x}",
+            &params
+                .range
+                .as_ref()
+                .map_or("0".to_string(), |r| r.start.to_string()),
+        );
+        let format_config = format_config.replace(
+            "{y}",
+            &params
+                .range
+                .as_ref()
+                .map_or("0".to_string(), |r| r.end.to_string()),
+        );
         let format_config = format_config.replace(
             "{created_at}",
             &Utc::now().format("%Y-%m-%d_%H-%M-%S").to_string(),
         );
-        let format_config = format_config.replace("{length}", &(params.y - params.x).to_string());
+        let format_config = format_config.replace(
+            "{length}",
+            &params
+                .range
+                .as_ref()
+                .map_or("0".to_string(), |r| r.duration().to_string()),
+        );
 
         let output = self.output.clone();
 

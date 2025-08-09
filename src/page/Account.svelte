@@ -160,7 +160,10 @@
               <div>
                 <div class="flex items-center space-x-2">
                   <h3 class="font-medium text-gray-900 dark:text-white">
-                    {account.name || (account.platform === "bilibili" ? "B站账号" : "抖音账号") + account.uid}
+                    {account.name ||
+                      (account.platform === "bilibili"
+                        ? "B站账号"
+                        : "抖音账号") + account.uid}
                   </h3>
                 </div>
                 <p class="text-sm text-gray-600 dark:text-gray-400">
@@ -347,7 +350,7 @@
               <div class="flex justify-end items-center space-x-2">
                 {#if selectedPlatform === "douyin"}
                   <a
-                    href="https://bsr.xinrea.cn/getting-started/configuration.html"
+                    href="https://bsr.xinrea.cn/getting-started/config/account.html"
                     class="text-blue-500 hover:underline text-sm"
                     target="_blank"
                     rel="noopener noreferrer"

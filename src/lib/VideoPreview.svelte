@@ -28,7 +28,7 @@
   import SubtitleStyleEditor from "./SubtitleStyleEditor.svelte";
   import CoverEditor from "./CoverEditor.svelte";
   import TypeSelect from "./TypeSelect.svelte";
-  import { invoke, TAURI_ENV, listen, log, close_window } from "../lib/invoker";
+  import { invoke, TAURI_ENV, listen, log, close_window, convertCoverSrc } from "../lib/invoker";
   import { onDestroy, onMount } from "svelte";
   import { listen as tauriListen } from "@tauri-apps/api/event";
   import type { AccountInfo } from "./db";

@@ -4,6 +4,7 @@
     set_title,
     TAURI_ENV,
     convertFileSrc,
+    convertCoverSrc,
     listen,
     log,
   } from "./lib/invoker";
@@ -36,7 +37,6 @@
 
   invoke("get_config").then((c) => {
     config = c as Config;
-    console.log(config);
   });
 
   let current_clip_event_id = null;
@@ -157,7 +157,6 @@
   }
 
   const update_listener = listen<ProgressUpdate>(`progress-update`, (e) => {
-    console.log("progress-update event", e.payload.id);
     let event_id = e.payload.id;
     if (event_id === current_clip_event_id) {
       update_clip_prompt(e.payload.content);
@@ -166,10 +165,8 @@
   const finished_listener = listen<ProgressFinished>(
     `progress-finished`,
     (e) => {
-      console.log("progress-finished event", e.payload.id);
       let event_id = e.payload.id;
       if (event_id === current_clip_event_id) {
-        console.log("clip event finished", event_id);
         update_clip_prompt(`生成切片`);
         if (!e.payload.success) {
           alert("请检查 ffmpeg 是否配置正确：" + e.payload.message);
@@ -203,7 +200,7 @@
     end = parseFloat(localStorage.getItem(`${live_id}_end`)) - focus_start;
   }
 
-  console.log("Loaded start and end", start, end);
+
 
   function generateCover() {
     const video = document.getElementById("video") as HTMLVideoElement;
@@ -252,7 +249,6 @@
 
   invoke("get_archive", { roomId: room_id, liveId: live_id }).then(
     (a: RecordItem) => {
-      console.log(a);
       archive = a;
       set_title(`[${room_id}]${archive.title}`);
     }
@@ -267,17 +263,16 @@
   }
 
   async function get_video_list() {
-    videos = (
-      (await invoke("get_videos", { roomId: room_id })) as VideoItem[]
-    ).map((v) => {
+    const videoList = (await invoke("get_videos", { roomId: room_id })) as VideoItem[];
+    videos = await Promise.all(videoList.map(async (v) => {
       return {
         id: v.id,
         value: v.id,
         name: v.file,
-        file: convertFileSrc(config.output + "/" + v.file),
+        file: await convertFileSrc(v.file),
         cover: v.cover,
       };
-    });
+    }));
   }
 
   async function find_video(e) {
@@ -290,10 +285,10 @@
       return v.value == id;
     });
     if (target_video) {
-      target_video.cover = await invoke("get_video_cover", { id: id });
+      const rawCover = await invoke("get_video_cover", { id: id }) as string;
+      target_video.cover = await convertCoverSrc(rawCover, id);
     }
     selected_video = target_video;
-    console.log("video selected", videos, selected_video, e, id);
   }
 
   async function generate_clip() {

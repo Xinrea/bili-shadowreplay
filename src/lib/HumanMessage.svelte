@@ -7,7 +7,7 @@
 
   // 获取消息时间戳，如果没有则使用当前时间
   $: messageTime = message.additional_kwargs?.timestamp 
-    ? new Date(message.additional_kwargs.timestamp)
+    ? new Date(message.additional_kwargs.timestamp as string | number)
     : new Date();
 </script>
 

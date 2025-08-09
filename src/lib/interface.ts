@@ -137,6 +137,7 @@ export interface Config {
   auto_generate: AutoGenerateConfig;
   status_check_interval: number;
   whisper_language: string;
+  user_agent: string;
 }
 
 export interface AutoGenerateConfig {

@@ -634,6 +634,7 @@ pub async fn import_external_video(
     title: String,
     _original_name: String,
     size: i64,
+    room_id: u64,
 ) -> Result<VideoRow, String> {
     let source_path = Path::new(&file_path);
     
@@ -695,7 +696,7 @@ pub async fn import_external_video(
     // 添加到数据库
     let video = VideoRow {
         id: 0,
-        room_id: 0, // 导入视频使用 0 作为 room_id
+        room_id, // 使用传入的 room_id
         platform: "imported".to_string(), // 使用 platform 字段标识
         title,
         file: format!("imported/{}", target_filename), // 包含完整相对路径

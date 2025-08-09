@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke } from "../lib/invoker";
+  import { invoke, convertCoverSrc } from "../lib/invoker";
   import type { VideoItem } from "../lib/interface";
   import { onMount } from "svelte";
   import {
@@ -52,9 +52,10 @@
         if (cover_cache.has(video.id)) {
           video.cover = cover_cache.get(video.id) || "";
         } else {
-          video.cover = await invoke<string>("get_video_cover", {
+          const rawCover = await invoke<string>("get_video_cover", {
             id: video.id,
           });
+          video.cover = await convertCoverSrc(rawCover, video.id);
           cover_cache.set(video.id, video.cover);
         }
       }
@@ -76,7 +77,6 @@
   }
 
   function applyFilters() {
-    console.log("applyFilters", selectedRoomId);
     let filtered = [...videos];
 
     // Apply room filter
@@ -763,6 +763,6 @@
 </style>
 
 <!-- 导入视频对话框 -->
-<ImportVideoDialog bind:showDialog={showImportDialog} on:imported={handleVideoImported} />
+<ImportVideoDialog bind:showDialog={showImportDialog} roomId={selectedRoomId} on:imported={handleVideoImported} />
 
 

@@ -52,7 +52,7 @@ use crate::{
 };
 use axum::{extract::Query, response::sse};
 use axum::{
-    extract::{DefaultBodyLimit, Json, Path},
+    extract::{DefaultBodyLimit, Json, Path, Multipart},
     http::StatusCode,
     response::{IntoResponse, Sse},
     routing::{get, post},
@@ -796,6 +796,57 @@ async fn handler_update_video_cover(
     Ok(Json(ApiResponse::success(())))
 }
 
+// 处理base64图片数据的API
+async fn handler_image_base64(
+    Path(video_id): Path<i64>,
+    state: axum::extract::State<State>,
+) -> Result<impl IntoResponse, StatusCode> {
+    // 获取视频封面
+    let cover = match get_video_cover(state.0, video_id).await {
+        Ok(cover) => cover,
+        Err(_) => return Err(StatusCode::NOT_FOUND),
+    };
+    
+    // 检查是否是base64数据URL
+    if cover.starts_with("data:image/") {
+        if let Some(base64_start) = cover.find("base64,") {
+            let base64_data = &cover[base64_start + 7..]; // 跳过 "base64," 
+            
+            // 解码base64数据
+            use base64::{Engine as _, engine::general_purpose};
+            if let Ok(image_data) = general_purpose::STANDARD.decode(base64_data) {
+                // 确定MIME类型
+                let content_type = if cover.contains("data:image/png") {
+                    "image/png"
+                } else if cover.contains("data:image/jpeg") || cover.contains("data:image/jpg") {
+                    "image/jpeg"
+                } else if cover.contains("data:image/gif") {
+                    "image/gif"
+                } else if cover.contains("data:image/webp") {
+                    "image/webp"
+                } else {
+                    "image/png" // 默认
+                };
+                
+                let mut response = axum::response::Response::new(axum::body::Body::from(image_data));
+                let headers = response.headers_mut();
+                headers.insert(
+                    axum::http::header::CONTENT_TYPE,
+                    content_type.parse().unwrap(),
+                );
+                headers.insert(
+                    axum::http::header::CACHE_CONTROL,
+                    "public, max-age=3600".parse().unwrap(),
+                );
+                
+                return Ok(response);
+            }
+        }
+    }
+    
+    Err(StatusCode::NOT_FOUND)
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GenerateVideoSubtitleRequest {
@@ -869,6 +920,9 @@ async fn handler_encode_video_subtitle(
 struct ImportExternalVideoRequest {
     event_id: String,
     file_path: String,
+    title: String,
+    original_name: String,
+    size: i64,
     room_id: u64,
 }
 
@@ -876,7 +930,7 @@ async fn handler_import_external_video(
     state: axum::extract::State<State>,
     Json(param): Json<ImportExternalVideoRequest>,
 ) -> Result<Json<ApiResponse<String>>, ApiError> {
-    import_external_video(state.0, param.event_id.clone(), param.file_path, param.room_id).await?;
+    import_external_video(state.0, param.file_path.clone(), param.title, param.original_name, param.size, param.room_id).await?;
     Ok(Json(ApiResponse::success(param.event_id)))
 }
 
@@ -912,7 +966,7 @@ struct GetFileSizeRequest {
 }
 
 async fn handler_get_file_size(
-    state: axum::extract::State<State>,
+    _state: axum::extract::State<State>,
     Json(param): Json<GetFileSizeRequest>,
 ) -> Result<Json<ApiResponse<u64>>, ApiError> {
     let file_size = get_file_size(param.file_path).await?;
@@ -1067,6 +1121,87 @@ async fn handler_list_folder(
 ) -> Result<Json<ApiResponse<Vec<String>>>, ApiError> {
     let result = list_folder(state.0, params.path).await?;
     Ok(Json(ApiResponse::success(result)))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FileUploadResponse {
+    file_path: String,
+    file_name: String,
+    file_size: u64,
+}
+
+async fn handler_upload_file(
+    state: axum::extract::State<State>,
+    mut multipart: Multipart,
+) -> Result<Json<ApiResponse<FileUploadResponse>>, ApiError> {
+    if state.readonly {
+        return Err(ApiError("Server is in readonly mode".to_string()));
+    }
+
+    let mut file_name = String::new();
+    let mut file_data = Vec::new();
+    let mut _room_id = 0u64;
+
+    while let Some(field) = multipart.next_field().await.map_err(|e| e.to_string())? {
+        let name = field.name().unwrap_or("").to_string();
+        
+        match name.as_str() {
+            "file" => {
+                file_name = field.file_name().unwrap_or("unknown").to_string();
+                file_data = field.bytes().await.map_err(|e| e.to_string())?.to_vec();
+            }
+            "roomId" => {
+                let room_id_str = field.text().await.map_err(|e| e.to_string())?;
+                _room_id = room_id_str.parse().unwrap_or(0);
+            }
+            _ => {}
+        }
+    }
+
+    if file_name.is_empty() || file_data.is_empty() {
+        return Err(ApiError("No file uploaded".to_string()));
+    }
+
+    // 创建上传目录
+    let config = state.config.read().await;
+    let upload_dir = std::path::Path::new(&config.cache).join("uploads");
+    if !upload_dir.exists() {
+        std::fs::create_dir_all(&upload_dir).map_err(|e| e.to_string())?;
+    }
+
+    // 生成唯一文件名避免冲突
+    let timestamp = chrono::Utc::now().timestamp();
+    let extension = std::path::Path::new(&file_name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("");
+    let base_name = std::path::Path::new(&file_name)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("upload");
+    
+    let unique_filename = if extension.is_empty() {
+        format!("{}_{}", base_name, timestamp)
+    } else {
+        format!("{}_{}.{}", base_name, timestamp, extension)
+    };
+    
+    let file_path = upload_dir.join(&unique_filename);
+    
+    // 写入文件
+    tokio::fs::write(&file_path, &file_data).await.map_err(|e| e.to_string())?;
+    
+    let file_size = file_data.len() as u64;
+    let file_path_str = file_path.to_string_lossy().to_string();
+    
+    log::info!("File uploaded: {} ({} bytes)", file_path_str, file_size);
+    
+    Ok(Json(ApiResponse::success(FileUploadResponse {
+        file_path: file_path_str,
+        file_name: unique_filename,
+        file_size,
+    })))
 }
 
 async fn handler_hls(
@@ -1445,6 +1580,8 @@ pub async fn start_api_server(state: State) {
         .route("/api/console_log", post(handler_console_log))
         .route("/api/list_folder", post(handler_list_folder))
         .route("/api/fetch", post(handler_fetch))
+        .route("/api/upload_file", post(handler_upload_file))
+        .route("/api/image/:video_id", get(handler_image_base64))
         .route("/hls/*uri", get(handler_hls))
         .route("/output/*uri", get(handler_output))
         .route("/api/sse", get(handler_sse));
@@ -1455,8 +1592,21 @@ pub async fn start_api_server(state: State) {
         .with_state(state);
 
     let addr = "0.0.0.0:3000";
-    log::info!("API server listening on http://{}", addr);
+    log::info!("Starting API server on http://{}", addr);
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, router).await.unwrap();
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(listener) => {
+            log::info!("API server listening on http://{}", addr);
+            listener
+        }
+        Err(e) => {
+            log::error!("Failed to bind to address {}: {}", addr, e);
+            log::error!("Please check if the port is already in use or try a different port");
+            return;
+        }
+    };
+
+    if let Err(e) = axum::serve(listener, router).await {
+        log::error!("Server error: {}", e);
+    }
 }

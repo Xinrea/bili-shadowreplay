@@ -23,7 +23,6 @@ use errors::BiliClientError;
 use m3u8_rs::{Playlist, QuotedOrUnquoted, VariantStream};
 use regex::Regex;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::fs::File;
@@ -62,7 +61,6 @@ pub struct BiliRecorder {
     cover: Arc<RwLock<Option<String>>>,
     entry_store: Arc<RwLock<Option<EntryStore>>>,
     is_recording: Arc<RwLock<bool>>,
-    force_update: Arc<AtomicBool>,
     last_update: Arc<RwLock<i64>>,
     quit: Arc<Mutex<bool>>,
     live_stream: Arc<RwLock<Option<BiliStream>>>,
@@ -144,7 +142,6 @@ impl BiliRecorder {
             live_id: Arc::new(RwLock::new(String::new())),
             cover: Arc::new(RwLock::new(cover)),
             last_update: Arc::new(RwLock::new(Utc::now().timestamp())),
-            force_update: Arc::new(AtomicBool::new(false)),
             quit: Arc::new(Mutex::new(false)),
             live_stream: Arc::new(RwLock::new(None)),
             danmu_storage: Arc::new(RwLock::new(None)),
@@ -332,33 +329,26 @@ impl BiliRecorder {
 
                 let stream = new_stream.unwrap();
 
-                let should_update_stream = self.live_stream.read().await.is_none()
-                    || self.force_update.load(Ordering::Relaxed);
-
-                if should_update_stream {
-                    self.force_update.store(false, Ordering::Relaxed);
-
-                    let new_stream = self.fetch_real_stream(&stream).await;
-                    if new_stream.is_err() {
-                        log::error!(
-                            "[{}]Fetch real stream failed: {}",
-                            self.room_id,
-                            new_stream.err().unwrap()
-                        );
-                        return true;
-                    }
-
-                    let new_stream = new_stream.unwrap();
-                    *self.live_stream.write().await = Some(new_stream);
-                    *self.last_update.write().await = Utc::now().timestamp();
-
-                    log::info!(
-                        "[{}]Update to a new stream: {:?} => {}",
+                let new_stream = self.fetch_real_stream(&stream).await;
+                if new_stream.is_err() {
+                    log::error!(
+                        "[{}]Fetch real stream failed: {}",
                         self.room_id,
-                        self.live_stream.read().await.clone(),
-                        stream
+                        new_stream.err().unwrap()
                     );
+                    return true;
                 }
+
+                let new_stream = new_stream.unwrap();
+                *self.live_stream.write().await = Some(new_stream);
+                *self.last_update.write().await = Utc::now().timestamp();
+
+                log::info!(
+                    "[{}]Update to a new stream: {:?} => {}",
+                    self.room_id,
+                    self.live_stream.read().await.clone(),
+                    stream
+                );
 
                 true
             }
@@ -579,7 +569,6 @@ impl BiliRecorder {
         let current_stream = current_stream.unwrap();
         let parsed = self.get_playlist().await;
         if parsed.is_err() {
-            self.force_update.store(true, Ordering::Relaxed);
             return Err(parsed.err().unwrap());
         }
 
@@ -1065,8 +1054,7 @@ impl BiliRecorder {
             .as_ref()
             .is_some_and(|s| s.expire - Utc::now().timestamp() < pre_offset as i64)
         {
-            log::info!("Stream is nearly expired, force update");
-            self.force_update.store(true, Ordering::Relaxed);
+            log::info!("Stream is nearly expired");
             return Err(super::errors::RecorderError::StreamExpired {
                 stream: current_stream.unwrap(),
             });
@@ -1153,7 +1141,10 @@ impl super::Recorder for BiliRecorder {
                             }
                         }
                     }
+
+                    // whatever error happened during update entries, reset to start another recording.
                     *self_clone.is_recording.write().await = false;
+                    self_clone.reset().await;
                     // go check status again after random 2-5 secs
                     let secs = rand::random::<u64>() % 4 + 2;
                     tokio::time::sleep(Duration::from_secs(

@@ -10,42 +10,40 @@ use crate::recorder_manager::ClipRangeParams;
 use crate::subtitle_generator::item_to_srt;
 use chrono::{Local, Utc};
 use serde_json::json;
-use std::path::{Path, PathBuf};
-use std::io::{Read, Write};
 use std::fs::File;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 
 // 检测是否为网络协议路径（排除Windows盘符）
 fn is_network_protocol(path_str: &str) -> bool {
     // 常见的网络协议
     let network_protocols = [
-        "ftp://", "sftp://", "ftps://",
-        "http://", "https://",
-        "smb://", "cifs://",
-        "nfs://", "afp://",
-        "ssh://", "scp://",
+        "ftp://", "sftp://", "ftps://", "http://", "https://", "smb://", "cifs://", "nfs://",
+        "afp://", "ssh://", "scp://",
     ];
-    
+
     // 检查是否以网络协议开头
     for protocol in &network_protocols {
         if path_str.to_lowercase().starts_with(protocol) {
             return true;
         }
     }
-    
+
     // 排除Windows盘符格式 (如 C:/, D:/, E:/ 等)
     if cfg!(windows) {
         // 检查是否为Windows盘符格式：单字母 + : + /
         if path_str.len() >= 3 {
             let chars: Vec<char> = path_str.chars().collect();
-            if chars.len() >= 3 && 
-               chars[0].is_ascii_alphabetic() && 
-               chars[1] == ':' && 
-               (chars[2] == '/' || chars[2] == '\\') {
+            if chars.len() >= 3
+                && chars[0].is_ascii_alphabetic()
+                && chars[1] == ':'
+                && (chars[2] == '/' || chars[2] == '\\')
+            {
                 return false; // 这是Windows盘符，不是网络路径
             }
         }
     }
-    
+
     false
 }
 
@@ -95,55 +93,68 @@ async fn copy_file_with_progress(
 ) -> Result<(), String> {
     let mut source_file = File::open(source).map_err(|e| format!("无法打开源文件: {}", e))?;
     let mut dest_file = File::create(dest).map_err(|e| format!("无法创建目标文件: {}", e))?;
-    
-    let total_size = source_file.metadata().map_err(|e| format!("无法获取文件大小: {}", e))?.len();
+
+    let total_size = source_file
+        .metadata()
+        .map_err(|e| format!("无法获取文件大小: {}", e))?
+        .len();
     let mut copied = 0u64;
-    
+
     // 根据文件大小调整缓冲区大小
-    let buffer_size = if total_size > 100 * 1024 * 1024 { // 100MB以上
+    let buffer_size = if total_size > 100 * 1024 * 1024 {
+        // 100MB以上
         1024 * 1024 // 1MB buffer for large files
-    } else if total_size > 10 * 1024 * 1024 { // 10MB-100MB
+    } else if total_size > 10 * 1024 * 1024 {
+        // 10MB-100MB
         256 * 1024 // 256KB buffer
     } else {
         64 * 1024 // 64KB buffer for small files
     };
-    
+
     let mut buffer = vec![0u8; buffer_size];
-    
+
     let mut last_reported_percent = 0;
-    
+
     loop {
-        let bytes_read = source_file.read(&mut buffer).map_err(|e| format!("读取文件失败: {}", e))?;
+        let bytes_read = source_file
+            .read(&mut buffer)
+            .map_err(|e| format!("读取文件失败: {}", e))?;
         if bytes_read == 0 {
             break;
         }
-        
-        dest_file.write_all(&buffer[..bytes_read]).map_err(|e| format!("写入文件失败: {}", e))?;
+
+        dest_file
+            .write_all(&buffer[..bytes_read])
+            .map_err(|e| format!("写入文件失败: {}", e))?;
         copied += bytes_read as u64;
-        
+
         // 计算进度百分比，只在变化时更新
         let percent = if total_size > 0 {
             ((copied as f64 / total_size as f64) * 100.0) as u32
         } else {
             0
         };
-        
+
         // 根据文件大小调整报告频率
-        let report_threshold = if total_size > 100 * 1024 * 1024 { // 100MB以上
+        let report_threshold = if total_size > 100 * 1024 * 1024 {
+            // 100MB以上
             1 // 每1%报告一次
-        } else if total_size > 10 * 1024 * 1024 { // 10MB-100MB
+        } else if total_size > 10 * 1024 * 1024 {
+            // 10MB-100MB
             2 // 每2%报告一次
         } else {
             5 // 小文件每5%报告一次
         };
-        
+
         if percent != last_reported_percent && (percent % report_threshold == 0 || percent == 100) {
             reporter.update(&format!("正在复制视频文件... {}%", percent));
             last_reported_percent = percent;
         }
     }
-    
-    dest_file.flush().map_err(|e| format!("刷新文件缓冲区失败: {}", e))?;
+
+    dest_file
+        .flush()
+        .map_err(|e| format!("刷新文件缓冲区失败: {}", e))?;
     Ok(())
 }
 
@@ -158,12 +169,12 @@ async fn copy_and_convert_with_progress(
         // 非转换文件直接使用原有拷贝逻辑
         return copy_file_with_progress(source, dest, reporter).await;
     }
-    
+
     // 检查源文件是否在网络位置（启发式判断）
     let source_str = source.to_string_lossy();
     let is_network_source = source_str.starts_with("\\\\") ||  // UNC path (Windows网络共享)
-                           is_network_protocol(&source_str);   // 网络协议但排除Windows盘符
-    
+                           is_network_protocol(&source_str); // 网络协议但排除Windows盘符
+
     if is_network_source {
         // 网络文件：先复制到本地临时位置，再转换
         reporter.update("检测到网络文件，使用先复制后转换策略...");
@@ -183,24 +194,26 @@ async fn copy_then_convert_strategy(
 ) -> Result<(), String> {
     // 创建临时文件路径
     let temp_dir = std::env::temp_dir();
-    let temp_filename = format!("temp_video_{}.{}", 
+    let temp_filename = format!(
+        "temp_video_{}.{}",
         chrono::Utc::now().timestamp(),
-        source.extension().and_then(|e| e.to_str()).unwrap_or("tmp"));
+        source.extension().and_then(|e| e.to_str()).unwrap_or("tmp")
+    );
     let temp_path = temp_dir.join(&temp_filename);
-    
+
     // 确保临时目录存在
     if let Some(parent) = temp_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("创建临时目录失败: {}", e))?;
     }
-    
+
     // 第一步：将网络文件复制到本地临时位置（使用优化的缓冲区）
     reporter.update("第1步：从网络复制文件到本地临时位置...");
     copy_file_with_network_optimization(source, &temp_path, reporter).await?;
-    
+
     // 第二步：从本地临时文件转换到目标位置
     reporter.update("第2步：从临时文件转换到目标格式...");
     let convert_result = ffmpeg::convert_video_format(&temp_path, dest, reporter).await;
-    
+
     // 清理临时文件
     if temp_path.exists() {
         if let Err(e) = std::fs::remove_file(&temp_path) {
@@ -209,7 +222,7 @@ async fn copy_then_convert_strategy(
             log::info!("已清理临时文件: {}", temp_path.display());
         }
     }
-    
+
     convert_result
 }
 
@@ -221,69 +234,88 @@ async fn copy_file_with_network_optimization(
 ) -> Result<(), String> {
     let mut source_file = File::open(source).map_err(|e| format!("无法打开网络源文件: {}", e))?;
     let mut dest_file = File::create(dest).map_err(|e| format!("无法创建本地临时文件: {}", e))?;
-    
-    let total_size = source_file.metadata().map_err(|e| format!("无法获取文件大小: {}", e))?.len();
+
+    let total_size = source_file
+        .metadata()
+        .map_err(|e| format!("无法获取文件大小: {}", e))?
+        .len();
     let mut copied = 0u64;
-    
+
     // 网络文件使用更大的缓冲区以减少网络请求次数
-    let buffer_size = if total_size > 1024 * 1024 * 1024 { // >1GB
+    let buffer_size = if total_size > 1024 * 1024 * 1024 {
+        // >1GB
         8 * 1024 * 1024 // 8MB buffer for very large files
-    } else if total_size > 100 * 1024 * 1024 { // >100MB
+    } else if total_size > 100 * 1024 * 1024 {
+        // >100MB
         4 * 1024 * 1024 // 4MB buffer for large files
     } else {
         2 * 1024 * 1024 // 2MB buffer for network files
     };
-    
+
     let mut buffer = vec![0u8; buffer_size];
     let mut last_reported_percent = 0;
     let mut consecutive_errors = 0;
     const MAX_RETRIES: u32 = 3;
-    
+
     loop {
         match source_file.read(&mut buffer) {
             Ok(bytes_read) => {
                 if bytes_read == 0 {
                     break; // 文件读取完成
                 }
-                
+
                 // 重置错误计数
                 consecutive_errors = 0;
-                
-                dest_file.write_all(&buffer[..bytes_read]).map_err(|e| format!("写入临时文件失败: {}", e))?;
+
+                dest_file
+                    .write_all(&buffer[..bytes_read])
+                    .map_err(|e| format!("写入临时文件失败: {}", e))?;
                 copied += bytes_read as u64;
-                
+
                 // 计算并报告进度
                 let percent = if total_size > 0 {
                     ((copied as f64 / total_size as f64) * 100.0) as u32
                 } else {
                     0
                 };
-                
+
                 // 网络文件更频繁地报告进度
                 if percent != last_reported_percent {
-                    reporter.update(&format!("正在从网络复制文件... {}% ({:.1}MB/{:.1}MB)", 
-                        percent, 
+                    reporter.update(&format!(
+                        "正在从网络复制文件... {}% ({:.1}MB/{:.1}MB)",
+                        percent,
                         copied as f64 / (1024.0 * 1024.0),
-                        total_size as f64 / (1024.0 * 1024.0)));
+                        total_size as f64 / (1024.0 * 1024.0)
+                    ));
                     last_reported_percent = percent;
                 }
             }
             Err(e) => {
                 consecutive_errors += 1;
-                log::warn!("网络读取错误 (尝试 {}/{}): {}", consecutive_errors, MAX_RETRIES, e);
-                
+                log::warn!(
+                    "网络读取错误 (尝试 {}/{}): {}",
+                    consecutive_errors,
+                    MAX_RETRIES,
+                    e
+                );
+
                 if consecutive_errors >= MAX_RETRIES {
                     return Err(format!("网络文件读取失败，已重试{}次: {}", MAX_RETRIES, e));
                 }
-                
+
                 // 等待一小段时间后重试
                 tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-                reporter.update(&format!("网络连接中断，正在重试... ({}/{})", consecutive_errors, MAX_RETRIES));
+                reporter.update(&format!(
+                    "网络连接中断，正在重试... ({}/{})",
+                    consecutive_errors, MAX_RETRIES
+                ));
             }
         }
     }
-    
-    dest_file.flush().map_err(|e| format!("刷新临时文件缓冲区失败: {}", e))?;
+
+    dest_file
+        .flush()
+        .map_err(|e| format!("刷新临时文件缓冲区失败: {}", e))?;
     reporter.update("网络文件复制完成");
     Ok(())
 }
@@ -621,10 +653,10 @@ pub async fn delete_video(state: state_type!(), id: i64) -> Result<(), String> {
     // get video info from db
     let video = state.db.get_video(id).await?;
     let config = state.config.read().await;
-    
+
     // delete video from db
     state.db.delete_video(id).await?;
-    
+
     // delete video files
     let filepath = Path::new(&config.output).join(&video.file);
     let file = Path::new(&filepath);
@@ -644,7 +676,7 @@ pub async fn delete_video(state: state_type!(), id: i64) -> Result<(), String> {
 
     // delete thumbnail file based on video type
     delete_video_thumbnail(&config.output, &video).await;
-    
+
     Ok(())
 }
 
@@ -653,10 +685,10 @@ async fn delete_video_thumbnail(output_dir: &str, video: &VideoRow) {
     if video.cover.is_empty() {
         return; // 没有缩略图，无需删除
     }
-    
+
     // 构建缩略图完整路径
     let thumbnail_path = Path::new(output_dir).join(&video.cover);
-    
+
     if thumbnail_path.exists() {
         if let Err(e) = std::fs::remove_file(&thumbnail_path) {
             log::warn!("删除缩略图失败: {} - {}", thumbnail_path.display(), e);
@@ -867,13 +899,12 @@ async fn encode_video_subtitle_inner(
     let video = state.db.get_video(id).await?;
     let config = state.config.read().await;
     let filepath = Path::new(&config.output).join(&video.file);
-    
+
     // 查找字幕文件：对于切片视频，需要查找原视频的字幕文件
     let subtitle_path = find_subtitle_file(state, &video, &filepath).await?;
-    
+
     let output_file =
-        ffmpeg::encode_video_subtitle(reporter, &filepath, &subtitle_path, srt_style)
-            .await?;
+        ffmpeg::encode_video_subtitle(reporter, &filepath, &subtitle_path, srt_style).await?;
 
     // 构建正确的相对路径：如果原文件在子目录中，保持相同的目录结构
     let relative_output_file = if let Some((parent_dir, _)) = video.file.rsplit_once('/') {
@@ -942,43 +973,47 @@ pub async fn import_external_video(
     let reporter = ProgressReporter::new(&emitter, &event_id).await?;
 
     let source_path = Path::new(&file_path);
-    
+
     // 验证文件存在
     if !source_path.exists() {
         return Err("文件不存在".to_string());
     }
-    
+
     // 步骤1: 获取视频元数据
     reporter.update("正在提取视频元数据...");
     let metadata = ffmpeg::extract_video_metadata(source_path).await?;
-    
+
     // 生成目标文件名
     let config = state.config.read().await;
     let output_dir = Path::new(&config.output).join("imported");
     if !output_dir.exists() {
         std::fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
     }
-    
+
     let timestamp = Utc::now().format("%Y%m%d_%H%M%S").to_string();
-    let extension = source_path.extension()
+    let extension = source_path
+        .extension()
         .and_then(|ext| ext.to_str())
         .unwrap_or("mp4");
-    let mut target_filename = format!("imported_{}_{}.{}", timestamp, 
-        sanitize_filename(&title), extension);
+    let mut target_filename = format!(
+        "imported_{}_{}.{}",
+        timestamp,
+        sanitize_filename(&title),
+        extension
+    );
     let target_path = output_dir.join(&target_filename);
-    
+
     // 步骤2: 智能复制或转换文件到目标位置
-    let need_conversion = should_convert_video_format(&extension);
+    let need_conversion = should_convert_video_format(extension);
     let final_target_path = if need_conversion {
         // FLV文件需要转换为MP4
-        let mp4_filename = format!("imported_{}_{}.mp4", timestamp, 
-            sanitize_filename(&title));
+        let mp4_filename = format!("imported_{}_{}.mp4", timestamp, sanitize_filename(&title));
         let mp4_target_path = output_dir.join(&mp4_filename);
-        
+
         reporter.update("准备转换视频格式 (FLV → MP4)...");
         // 使用智能转换函数，自动检测网络优化
         copy_and_convert_with_progress(source_path, &mp4_target_path, true, &reporter).await?;
-        
+
         // 更新最终文件名和路径
         target_filename = mp4_filename;
         mp4_target_path
@@ -987,31 +1022,38 @@ pub async fn import_external_video(
         copy_and_convert_with_progress(source_path, &target_path, false, &reporter).await?;
         target_path
     };
-    
+
     // 步骤3: 生成缩略图
     reporter.update("正在生成视频缩略图...");
-    let thumbnail_dir = Path::new(&config.output).join("thumbnails").join("imported");
+    let thumbnail_dir = Path::new(&config.output)
+        .join("thumbnails")
+        .join("imported");
     if !thumbnail_dir.exists() {
         std::fs::create_dir_all(&thumbnail_dir).map_err(|e| e.to_string())?;
     }
-    
-    let thumbnail_filename = format!("{}.jpg", 
-        final_target_path.file_stem().unwrap().to_str().unwrap());
+
+    let thumbnail_filename = format!(
+        "{}.jpg",
+        final_target_path.file_stem().unwrap().to_str().unwrap()
+    );
     let thumbnail_path = thumbnail_dir.join(&thumbnail_filename);
-    
+
     // 生成缩略图，使用智能时间点选择
     let thumbnail_timestamp = get_optimal_thumbnail_timestamp(metadata.duration);
-    let cover_path = match ffmpeg::generate_thumbnail(&final_target_path, &thumbnail_path, thumbnail_timestamp).await {
-        Ok(_) => format!("thumbnails/imported/{}", thumbnail_filename),
-        Err(e) => {
-            log::warn!("生成缩略图失败: {}", e);
-            "".to_string() // 使用空字符串，前端会显示默认图标
-        }
-    };
-    
+    let cover_path =
+        match ffmpeg::generate_thumbnail(&final_target_path, &thumbnail_path, thumbnail_timestamp)
+            .await
+        {
+            Ok(_) => format!("thumbnails/imported/{}", thumbnail_filename),
+            Err(e) => {
+                log::warn!("生成缩略图失败: {}", e);
+                "".to_string() // 使用空字符串，前端会显示默认图标
+            }
+        };
+
     // 步骤4: 保存到数据库
     reporter.update("正在保存视频信息...");
-    
+
     // 构建导入视频的元数据
     let import_metadata = ImportedVideoMetadata {
         original_path: file_path.clone(),
@@ -1021,16 +1063,19 @@ pub async fn import_external_video(
         duration: metadata.duration,
         resolution: Some(format!("{}x{}", metadata.width, metadata.height)),
     };
-    
+
     // 添加到数据库
     let video = VideoRow {
         id: 0,
-        room_id, // 使用传入的 room_id
+        room_id,                          // 使用传入的 room_id
         platform: "imported".to_string(), // 使用 platform 字段标识
         title,
         file: format!("imported/{}", target_filename), // 包含完整相对路径
         length: metadata.duration as i64,
-        size: final_target_path.metadata().map_err(|e| e.to_string())?.len() as i64,
+        size: final_target_path
+            .metadata()
+            .map_err(|e| e.to_string())?
+            .len() as i64,
         status: 1, // 导入完成
         cover: cover_path,
         desc: serde_json::to_string(&import_metadata).unwrap_or_default(),
@@ -1039,18 +1084,18 @@ pub async fn import_external_video(
         area: 0,
         created_at: Utc::now().to_rfc3339(),
     };
-    
+
     let result = state.db.add_video(&video).await?;
-    
+
     // 完成进度通知
     reporter.finish(true, "视频导入完成").await;
-    
+
     // 发送通知消息
-    state.db.new_message(
-        "视频导入完成",
-        &format!("成功导入视频：{}", result.title),
-    ).await?;
-    
+    state
+        .db
+        .new_message("视频导入完成", &format!("成功导入视频：{}", result.title))
+        .await?;
+
     log::info!("导入视频成功: {} -> {}", file_path, result.file);
     Ok(result)
 }
@@ -1067,18 +1112,18 @@ pub async fn clip_video(
 ) -> Result<VideoRow, String> {
     // 获取父视频信息
     let parent_video = state.db.get_video(parent_video_id).await?;
-    
+
     // 检查是否为正在录制的视频
     if parent_video.status == -1 {
         return Err("正在录制的视频无法进行切片".to_string());
     }
-    
+
     #[cfg(feature = "gui")]
     let emitter = EventEmitter::new(state.app_handle.clone());
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
     let reporter = ProgressReporter::new(&emitter, &event_id).await?;
-    
+
     // 创建任务记录
     let task = TaskRow {
         id: event_id.clone(),
@@ -1090,26 +1135,40 @@ pub async fn clip_video(
             "start_time": start_time,
             "end_time": end_time,
             "clip_title": clip_title,
-        }).to_string(),
+        })
+        .to_string(),
         created_at: Utc::now().to_rfc3339(),
     };
     state.db.add_task(&task).await?;
-    
-    match clip_video_inner(&state, &reporter, parent_video, start_time, end_time, clip_title).await {
+
+    match clip_video_inner(
+        &state,
+        &reporter,
+        parent_video,
+        start_time,
+        end_time,
+        clip_title,
+    )
+    .await
+    {
         Ok(video) => {
             reporter.finish(true, "切片完成").await;
-            state.db.update_task(&event_id, "success", "切片完成", None).await?;
+            state
+                .db
+                .update_task(&event_id, "success", "切片完成", None)
+                .await?;
             Ok(video)
         }
         Err(e) => {
             reporter.finish(false, &format!("切片失败: {}", e)).await;
-            state.db.update_task(&event_id, "failed", &format!("切片失败: {}", e), None).await?;
+            state
+                .db
+                .update_task(&event_id, "failed", &format!("切片失败: {}", e), None)
+                .await?;
             Err(e)
         }
     }
 }
-
-
 
 async fn clip_video_inner(
     state: &state_type!(),
@@ -1120,36 +1179,36 @@ async fn clip_video_inner(
     clip_title: String,
 ) -> Result<VideoRow, String> {
     let config = state.config.read().await;
-    
+
     // 构建输入文件路径
-    let input_path = Path::new(&config.output)
-        .join(&parent_video.file);
-    
+    let input_path = Path::new(&config.output).join(&parent_video.file);
+
     if !input_path.exists() {
         return Err("原视频文件不存在".to_string());
     }
-    
+
     // 统一的输出目录：clips
     let output_dir = Path::new(&config.output).join("clips");
     if !output_dir.exists() {
         std::fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
     }
-    
+
     let timestamp = Local::now().format("%Y%m%d%H%M").to_string();
-    let extension = input_path.extension()
+    let extension = input_path
+        .extension()
         .and_then(|ext| ext.to_str())
         .unwrap_or("mp4");
-    
+
     // 获取原文件名（不含扩展名）
-    let original_filename = input_path.file_stem()
+    let original_filename = input_path
+        .file_stem()
         .and_then(|name| name.to_str())
         .unwrap_or("video");
-    
+
     // 生成新的文件名格式：原文件名[clip][时间戳].扩展名
-    let output_filename = format!("{}[clip][{}].{}", 
-        original_filename, timestamp, extension);
+    let output_filename = format!("{}[clip][{}].{}", original_filename, timestamp, extension);
     let output_path = output_dir.join(&output_filename);
-    
+
     // 执行切片
     reporter.update("开始切片处理");
     ffmpeg::clip_from_video_file(
@@ -1158,33 +1217,38 @@ async fn clip_video_inner(
         &output_path,
         start_time,
         end_time - start_time,
-    ).await?;
-    
+    )
+    .await?;
+
     // 生成缩略图
     let thumbnail_dir = Path::new(&config.output).join("thumbnails").join("clips");
     if !thumbnail_dir.exists() {
         std::fs::create_dir_all(&thumbnail_dir).map_err(|e| e.to_string())?;
     }
-    
+
     // 生成缩略图文件名，确保路径安全
-    let clip_thumbnail_filename = if let Some(stem) = output_path.file_stem().and_then(|s| s.to_str()) {
-        format!("{}.jpg", stem)
-    } else {
-        format!("thumbnail_{}.jpg", timestamp)
-    };
+    let clip_thumbnail_filename =
+        if let Some(stem) = output_path.file_stem().and_then(|s| s.to_str()) {
+            format!("{}.jpg", stem)
+        } else {
+            format!("thumbnail_{}.jpg", timestamp)
+        };
     let thumbnail_path = thumbnail_dir.join(&clip_thumbnail_filename);
-    
+
     // 生成缩略图，选择切片开头的合理位置
     let clip_duration = end_time - start_time;
     let clip_thumbnail_timestamp = get_optimal_thumbnail_timestamp(clip_duration);
-    let clip_cover_path = match ffmpeg::generate_thumbnail(&output_path, &thumbnail_path, clip_thumbnail_timestamp).await {
-        Ok(_) => format!("thumbnails/clips/{}", clip_thumbnail_filename),
-        Err(e) => {
-            log::warn!("生成切片缩略图失败: {}", e);
-            "".to_string() // 使用空字符串，前端会显示默认图标
-        }
-    };
-    
+    let clip_cover_path =
+        match ffmpeg::generate_thumbnail(&output_path, &thumbnail_path, clip_thumbnail_timestamp)
+            .await
+        {
+            Ok(_) => format!("thumbnails/clips/{}", clip_thumbnail_filename),
+            Err(e) => {
+                log::warn!("生成切片缩略图失败: {}", e);
+                "".to_string() // 使用空字符串，前端会显示默认图标
+            }
+        };
+
     // 构建统一的切片元数据
     let clip_metadata = ClipMetadata {
         parent_video_id: parent_video.id,
@@ -1194,10 +1258,10 @@ async fn clip_video_inner(
         original_platform: parent_video.platform.clone(),
         original_room_id: parent_video.room_id,
     };
-    
+
     // 获取输出文件信息
     let file_metadata = output_path.metadata().map_err(|e| e.to_string())?;
-    
+
     // 添加到数据库 - 统一使用 "clip" 平台类型
     let clip_video = VideoRow {
         id: 0,
@@ -1215,15 +1279,15 @@ async fn clip_video_inner(
         area: parent_video.area,
         created_at: Local::now().to_rfc3339(),
     };
-    
+
     let result = state.db.add_video(&clip_video).await?;
-    
+
     // 发送通知消息
-    state.db.new_message(
-        "视频切片完成",
-        &format!("生成切片：{}", result.title),
-    ).await?;
-    
+    state
+        .db
+        .new_message("视频切片完成", &format!("生成切片：{}", result.title))
+        .await?;
+
     Ok(result)
 }
 
@@ -1247,14 +1311,14 @@ async fn find_subtitle_file(
     if local_subtitle.exists() {
         return Ok(local_subtitle);
     }
-    
+
     // 如果是切片视频，尝试查找原视频的字幕文件
     if video.platform == "clip" && !video.desc.is_empty() {
         // 解析切片元数据，获取父视频ID
         if let Ok(metadata) = serde_json::from_str::<ClipMetadata>(&video.desc) {
             if let Ok(parent_video) = state.db.get_video(metadata.parent_video_id).await {
-                let parent_filepath = Path::new(&state.config.read().await.output)
-                    .join(&parent_video.file);
+                let parent_filepath =
+                    Path::new(&state.config.read().await.output).join(&parent_video.file);
                 let parent_subtitle = parent_filepath.with_extension("srt");
                 if parent_subtitle.exists() {
                     return Ok(parent_subtitle);
@@ -1262,12 +1326,10 @@ async fn find_subtitle_file(
             }
         }
     }
-    
+
     // 如果都找不到，返回默认路径（即使文件不存在，让ffmpeg处理错误）
     Ok(local_subtitle)
 }
-
-
 
 // 获取文件大小
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -1275,7 +1337,7 @@ pub async fn get_file_size(file_path: String) -> Result<u64, String> {
     let path = Path::new(&file_path);
     match std::fs::metadata(path) {
         Ok(metadata) => Ok(metadata.len()),
-        Err(e) => Err(format!("无法获取文件信息: {}", e))
+        Err(e) => Err(format!("无法获取文件信息: {}", e)),
     }
 }
 

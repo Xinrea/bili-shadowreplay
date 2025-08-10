@@ -11,6 +11,22 @@ use crate::subtitle_generator::item_to_srt;
 use chrono::{Local, Utc};
 use serde_json::json;
 use std::path::{Path, PathBuf};
+use std::io::{Read, Write};
+use std::fs::File;
+
+// 解析FFmpeg时间字符串为秒数 (格式: "HH:MM:SS.mmm")
+fn parse_ffmpeg_time(time_str: &str) -> Result<f64, String> {
+    let parts: Vec<&str> = time_str.split(':').collect();
+    if parts.len() != 3 {
+        return Err(format!("Invalid time format: {}", time_str));
+    }
+    
+    let hours: f64 = parts[0].parse().map_err(|_| format!("Invalid hours: {}", parts[0]))?;
+    let minutes: f64 = parts[1].parse().map_err(|_| format!("Invalid minutes: {}", parts[1]))?;
+    let seconds: f64 = parts[2].parse().map_err(|_| format!("Invalid seconds: {}", parts[2]))?;
+    
+    Ok(hours * 3600.0 + minutes * 60.0 + seconds)
+}
 
 use crate::state::State;
 use crate::state_type;
@@ -24,6 +40,263 @@ struct ImportedVideoMetadata {
     video_format: String,
     duration: f64,
     resolution: Option<String>,
+}
+
+// 带进度的文件复制函数
+async fn copy_file_with_progress(
+    source: &Path,
+    dest: &Path,
+    reporter: &ProgressReporter,
+) -> Result<(), String> {
+    let mut source_file = File::open(source).map_err(|e| format!("无法打开源文件: {}", e))?;
+    let mut dest_file = File::create(dest).map_err(|e| format!("无法创建目标文件: {}", e))?;
+    
+    let total_size = source_file.metadata().map_err(|e| format!("无法获取文件大小: {}", e))?.len();
+    let mut copied = 0u64;
+    
+    // 根据文件大小调整缓冲区大小
+    let buffer_size = if total_size > 100 * 1024 * 1024 { // 100MB以上
+        1024 * 1024 // 1MB buffer for large files
+    } else if total_size > 10 * 1024 * 1024 { // 10MB-100MB
+        256 * 1024 // 256KB buffer
+    } else {
+        64 * 1024 // 64KB buffer for small files
+    };
+    
+    let mut buffer = vec![0u8; buffer_size];
+    
+    let mut last_reported_percent = 0;
+    
+    loop {
+        let bytes_read = source_file.read(&mut buffer).map_err(|e| format!("读取文件失败: {}", e))?;
+        if bytes_read == 0 {
+            break;
+        }
+        
+        dest_file.write_all(&buffer[..bytes_read]).map_err(|e| format!("写入文件失败: {}", e))?;
+        copied += bytes_read as u64;
+        
+        // 计算进度百分比，只在变化时更新
+        let percent = if total_size > 0 {
+            ((copied as f64 / total_size as f64) * 100.0) as u32
+        } else {
+            0
+        };
+        
+        // 根据文件大小调整报告频率
+        let report_threshold = if total_size > 100 * 1024 * 1024 { // 100MB以上
+            1 // 每1%报告一次
+        } else if total_size > 10 * 1024 * 1024 { // 10MB-100MB
+            2 // 每2%报告一次
+        } else {
+            5 // 小文件每5%报告一次
+        };
+        
+        if percent != last_reported_percent && (percent % report_threshold == 0 || percent == 100) {
+            reporter.update(&format!("正在复制视频文件... {}%", percent));
+            last_reported_percent = percent;
+        }
+    }
+    
+    dest_file.flush().map_err(|e| format!("刷新文件缓冲区失败: {}", e))?;
+    Ok(())
+}
+
+// 获取最佳缩略图时间点
+fn get_optimal_thumbnail_timestamp(duration: f64) -> f64 {
+    // 根据视频长度选择最佳时间点
+    if duration <= 10.0 {
+        // 短视频（10秒以内）：选择1/3位置，避免开头黑屏
+        duration / 3.0
+    } else if duration <= 60.0 {
+        // 1分钟以内：选择第3秒
+        3.0
+    } else if duration <= 300.0 {
+        // 5分钟以内：选择第5秒
+        5.0
+    } else {
+        // 长视频：选择第10秒，确保跳过开头可能的黑屏/logo
+        10.0
+    }
+}
+
+// 判断是否需要转换视频格式
+fn should_convert_video_format(extension: &str) -> bool {
+    // FLV格式在现代浏览器中播放兼容性差，需要转换为MP4
+    matches!(extension.to_lowercase().as_str(), "flv")
+}
+
+// 带进度的视频格式转换函数（智能质量保持策略）
+async fn convert_video_format(
+    source: &Path,
+    dest: &Path,
+    reporter: &ProgressReporter,
+) -> Result<(), String> {
+    // 先尝试stream copy（无损转换），如果失败则使用高质量重编码
+    match try_stream_copy_conversion(source, dest, reporter).await {
+        Ok(()) => Ok(()),
+        Err(stream_copy_error) => {
+            reporter.update("流复制失败，使用高质量重编码模式...");
+            log::warn!("Stream copy failed: {}, falling back to re-encoding", stream_copy_error);
+            try_high_quality_conversion(source, dest, reporter).await
+        }
+    }
+}
+
+// 尝试流复制转换（无损，速度快）
+async fn try_stream_copy_conversion(
+    source: &Path,
+    dest: &Path,
+    reporter: &ProgressReporter,
+) -> Result<(), String> {
+    
+    // 获取视频时长以计算进度
+    let metadata = crate::ffmpeg::extract_video_metadata(source).await?;
+    let total_duration = metadata.duration;
+    
+    reporter.update("正在转换视频格式... 0% (无损模式)");
+    
+    // 构建ffmpeg命令 - 流复制模式
+    let mut cmd = tokio::process::Command::new("ffmpeg");
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    
+    cmd.args([
+        "-i", &source.to_string_lossy(),
+        "-c:v", "copy",              // 直接复制视频流，零损失
+        "-c:a", "copy",              // 直接复制音频流，零损失
+        "-avoid_negative_ts", "make_zero", // 修复时间戳问题
+        "-movflags", "+faststart",   // 优化web播放
+        "-progress", "pipe:2",       // 输出进度到stderr
+        "-y",                        // 覆盖输出文件
+        &dest.to_string_lossy(),
+    ]);
+    
+    execute_ffmpeg_conversion(cmd, total_duration, reporter, "无损转换").await
+}
+
+// 高质量重编码转换（兼容性好，质量高）
+async fn try_high_quality_conversion(
+    source: &Path,
+    dest: &Path,
+    reporter: &ProgressReporter,
+) -> Result<(), String> {
+    
+    // 获取视频时长以计算进度
+    let metadata = crate::ffmpeg::extract_video_metadata(source).await?;
+    let total_duration = metadata.duration;
+    
+    reporter.update("正在转换视频格式... 0% (高质量模式)");
+    
+    // 构建ffmpeg命令 - 高质量重编码
+    let mut cmd = tokio::process::Command::new("ffmpeg");
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    
+    cmd.args([
+        "-i", &source.to_string_lossy(),
+        "-c:v", "libx264",           // H.264编码器
+        "-preset", "slow",           // 慢速预设，更好的压缩效率
+        "-crf", "18",                // 高质量设置 (18-23范围，越小质量越高)
+        "-c:a", "aac",               // AAC音频编码器
+        "-b:a", "192k",              // 高音频码率
+        "-avoid_negative_ts", "make_zero", // 修复时间戳问题
+        "-movflags", "+faststart",   // 优化web播放
+        "-progress", "pipe:2",       // 输出进度到stderr
+        "-y",                        // 覆盖输出文件
+        &dest.to_string_lossy(),
+    ]);
+    
+    execute_ffmpeg_conversion(cmd, total_duration, reporter, "高质量转换").await
+}
+
+// 执行FFmpeg转换的通用函数
+async fn execute_ffmpeg_conversion(
+    mut cmd: tokio::process::Command,
+    total_duration: f64,
+    reporter: &ProgressReporter,
+    mode_name: &str,
+) -> Result<(), String> {
+    use std::process::Stdio;
+    use tokio::io::BufReader;
+    use async_ffmpeg_sidecar::event::FfmpegEvent;
+    use async_ffmpeg_sidecar::log_parser::FfmpegLogParser;
+    
+    let mut child = cmd
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("启动FFmpeg进程失败: {}", e))?;
+    
+    let stderr = child.stderr.take().unwrap();
+    let reader = BufReader::new(stderr);
+    let mut parser = FfmpegLogParser::new(reader);
+    
+    let mut conversion_error = None;
+    while let Ok(event) = parser.parse_next_event().await {
+        match event {
+            FfmpegEvent::Progress(p) => {
+                if total_duration > 0.0 {
+                    // 解析时间字符串为浮点数 (格式: "HH:MM:SS.mmm")
+                    if let Ok(current_time) = parse_ffmpeg_time(&p.time) {
+                        let progress = (current_time / total_duration * 100.0).min(100.0);
+                        reporter.update(&format!("正在转换视频格式... {:.1}% ({})", progress, mode_name));
+                    } else {
+                        reporter.update(&format!("正在转换视频格式... {} ({})", p.time, mode_name));
+                    }
+                } else {
+                    reporter.update(&format!("正在转换视频格式... {} ({})", p.time, mode_name));
+                }
+            }
+            FfmpegEvent::LogEOF => break,
+            FfmpegEvent::Log(level, content) => {
+                if matches!(level, async_ffmpeg_sidecar::event::LogLevel::Error) && content.contains("Error") {
+                    conversion_error = Some(content);
+                }
+            }
+            FfmpegEvent::Error(e) => {
+                conversion_error = Some(e);
+            }
+            _ => {} // 忽略其他事件类型
+        }
+    }
+    
+    let status = child.wait().await.map_err(|e| format!("等待FFmpeg进程失败: {}", e))?;
+    
+    if !status.success() {
+        let error_msg = conversion_error.unwrap_or_else(|| format!("FFmpeg退出码: {}", status.code().unwrap_or(-1)));
+        return Err(format!("视频格式转换失败 ({}): {}", mode_name, error_msg));
+    }
+    
+    reporter.update(&format!("视频格式转换完成 100% ({})", mode_name));
+    Ok(())
+}
+
+// 智能边拷贝边转换函数（针对网络文件优化）
+async fn copy_and_convert_with_progress(
+    source: &Path,
+    dest: &Path,
+    need_conversion: bool,
+    reporter: &ProgressReporter,
+) -> Result<(), String> {
+    if !need_conversion {
+        // 非转换文件直接使用原有拷贝逻辑
+        return copy_file_with_progress(source, dest, reporter).await;
+    }
+    
+    // 检查源文件是否在网络位置（启发式判断）
+    let source_str = source.to_string_lossy();
+    let is_network_source = source_str.starts_with("\\\\") ||  // UNC path
+                           source_str.contains(":/") ||        // Network protocol
+                           source.metadata()
+                               .map(|m| m.len() > 500 * 1024 * 1024) // >500MB文件
+                               .unwrap_or(false);
+    
+    if is_network_source {
+        reporter.update("检测到网络/大文件，使用优化转换模式...");
+    }
+    
+    // 对于所有转换，都使用主转换函数（已内置智能策略）
+    convert_video_format(source, dest, reporter).await
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -636,12 +909,20 @@ pub async fn generic_ffmpeg_command(
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn import_external_video(
     state: state_type!(),
+    event_id: String,
     file_path: String,
     title: String,
     _original_name: String,
     size: i64,
     room_id: u64,
 ) -> Result<VideoRow, String> {
+    // 设置进度事件发射器
+    #[cfg(feature = "gui")]
+    let emitter = EventEmitter::new(state.app_handle.clone());
+    #[cfg(feature = "headless")]
+    let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
+    let reporter = ProgressReporter::new(&emitter, &event_id).await?;
+
     let source_path = Path::new(&file_path);
     
     // 验证文件存在
@@ -649,7 +930,8 @@ pub async fn import_external_video(
         return Err("文件不存在".to_string());
     }
     
-    // 获取视频元数据
+    // 步骤1: 获取视频元数据
+    reporter.update("正在提取视频元数据...");
     let metadata = ffmpeg::extract_video_metadata(source_path).await?;
     
     // 生成目标文件名
@@ -663,31 +945,54 @@ pub async fn import_external_video(
     let extension = source_path.extension()
         .and_then(|ext| ext.to_str())
         .unwrap_or("mp4");
-    let target_filename = format!("imported_{}_{}.{}", timestamp, 
+    let mut target_filename = format!("imported_{}_{}.{}", timestamp, 
         sanitize_filename(&title), extension);
     let target_path = output_dir.join(&target_filename);
     
-    // 复制文件到目标位置
-    std::fs::copy(source_path, &target_path).map_err(|e| e.to_string())?;
+    // 步骤2: 智能复制或转换文件到目标位置
+    let need_conversion = should_convert_video_format(&extension);
+    let final_target_path = if need_conversion {
+        // FLV文件需要转换为MP4
+        let mp4_filename = format!("imported_{}_{}.mp4", timestamp, 
+            sanitize_filename(&title));
+        let mp4_target_path = output_dir.join(&mp4_filename);
+        
+        reporter.update("准备转换视频格式 (FLV → MP4)...");
+        // 使用智能转换函数，自动检测网络优化
+        copy_and_convert_with_progress(source_path, &mp4_target_path, true, &reporter).await?;
+        
+        // 更新最终文件名和路径
+        target_filename = mp4_filename;
+        mp4_target_path
+    } else {
+        // 其他格式使用智能拷贝
+        copy_and_convert_with_progress(source_path, &target_path, false, &reporter).await?;
+        target_path
+    };
     
-    // 生成缩略图
+    // 步骤3: 生成缩略图
+    reporter.update("正在生成视频缩略图...");
     let thumbnail_dir = Path::new(&config.output).join("thumbnails").join("imported");
     if !thumbnail_dir.exists() {
         std::fs::create_dir_all(&thumbnail_dir).map_err(|e| e.to_string())?;
     }
     
     let thumbnail_filename = format!("{}.jpg", 
-        target_path.file_stem().unwrap().to_str().unwrap());
+        final_target_path.file_stem().unwrap().to_str().unwrap());
     let thumbnail_path = thumbnail_dir.join(&thumbnail_filename);
     
-    // 生成缩略图，如果失败则使用默认封面
-    let cover_path = match ffmpeg::generate_thumbnail(&target_path, &thumbnail_path, metadata.duration / 2.0).await {
+    // 生成缩略图，使用智能时间点选择
+    let thumbnail_timestamp = get_optimal_thumbnail_timestamp(metadata.duration);
+    let cover_path = match ffmpeg::generate_thumbnail(&final_target_path, &thumbnail_path, thumbnail_timestamp).await {
         Ok(_) => format!("thumbnails/imported/{}", thumbnail_filename),
         Err(e) => {
             log::warn!("生成缩略图失败: {}", e);
             "".to_string() // 使用空字符串，前端会显示默认图标
         }
     };
+    
+    // 步骤4: 保存到数据库
+    reporter.update("正在保存视频信息...");
     
     // 构建导入视频的元数据
     let import_metadata = ImportedVideoMetadata {
@@ -707,7 +1012,7 @@ pub async fn import_external_video(
         title,
         file: format!("imported/{}", target_filename), // 包含完整相对路径
         length: metadata.duration as i64,
-        size: target_path.metadata().map_err(|e| e.to_string())?.len() as i64,
+        size: final_target_path.metadata().map_err(|e| e.to_string())?.len() as i64,
         status: 1, // 导入完成
         cover: cover_path,
         desc: serde_json::to_string(&import_metadata).unwrap_or_default(),
@@ -719,12 +1024,16 @@ pub async fn import_external_video(
     
     let result = state.db.add_video(&video).await?;
     
+    // 完成进度通知
+    reporter.finish(true, "视频导入完成").await;
+    
     // 发送通知消息
     state.db.new_message(
         "视频导入完成",
         &format!("成功导入视频：{}", result.title),
     ).await?;
     
+    log::info!("导入视频成功: {} -> {}", file_path, result.file);
     Ok(result)
 }
 
@@ -847,8 +1156,10 @@ async fn clip_video_inner(
     };
     let thumbnail_path = thumbnail_dir.join(&clip_thumbnail_filename);
     
-    // 生成缩略图，如果失败则使用默认封面
-    let clip_cover_path = match ffmpeg::generate_thumbnail(&output_path, &thumbnail_path, (end_time - start_time) / 2.0).await {
+    // 生成缩略图，选择切片开头的合理位置
+    let clip_duration = end_time - start_time;
+    let clip_thumbnail_timestamp = get_optimal_thumbnail_timestamp(clip_duration);
+    let clip_cover_path = match ffmpeg::generate_thumbnail(&output_path, &thumbnail_path, clip_thumbnail_timestamp).await {
         Ok(_) => format!("thumbnails/clips/{}", clip_thumbnail_filename),
         Err(e) => {
             log::warn!("生成切片缩略图失败: {}", e);

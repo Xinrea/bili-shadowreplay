@@ -1,10 +1,10 @@
 [package]
-name = "danmu_stream"
+name = "danmaku-stream"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "danmu_stream"
+name = "danmaku_stream"
 path = "src/lib.rs"
 
 [[example]]

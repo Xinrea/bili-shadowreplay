@@ -1,4 +1,4 @@
-use crate::{provider::DanmuProvider, DanmuMessage, DanmuMessageType, DanmuStreamError};
+use crate::{provider::DanmakuProvider, DanmakuMessage, DanmakuMessageType, DanmakuStreamError};
 use async_trait::async_trait;
 use deno_core::v8;
 use deno_core::JsRuntime;
@@ -30,18 +30,18 @@ type WsReadType = futures_util::stream::SplitStream<WebSocketStream<MaybeTlsStre
 type WsWriteType =
     futures_util::stream::SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, WsMessage>;
 
-pub struct DouyinDanmu {
+pub struct DouyinDanmakuStream {
     room_id: u64,
     cookie: String,
     stop: Arc<RwLock<bool>>,
     write: Arc<RwLock<Option<WsWriteType>>>,
 }
 
-impl DouyinDanmu {
+impl DouyinDanmakuStream {
     async fn connect_and_handle(
         &self,
-        tx: mpsc::UnboundedSender<DanmuMessageType>,
-    ) -> Result<(), DanmuStreamError> {
+        tx: mpsc::UnboundedSender<DanmakuMessageType>,
+    ) -> Result<(), DanmakuStreamError> {
         let url = self.get_wss_url().await?;
 
         let request = tokio_tungstenite::tungstenite::http::Request::builder()
@@ -88,7 +88,7 @@ impl DouyinDanmu {
         let (ws_stream, response) =
             connect_async(request)
                 .await
-                .map_err(|e| DanmuStreamError::WebsocketError {
+                .map_err(|e| DanmakuStreamError::WebsocketError {
                     err: format!("Failed to connect to douyin websocket: {}", e),
                 })?;
 
@@ -100,7 +100,7 @@ impl DouyinDanmu {
         self.handle_connection(read, tx).await
     }
 
-    async fn get_wss_url(&self) -> Result<String, DanmuStreamError> {
+    async fn get_wss_url(&self) -> Result<String, DanmakuStreamError> {
         // Create a new V8 runtime
         let mut runtime = JsRuntime::new(RuntimeOptions::default());
 
@@ -111,7 +111,7 @@ impl DouyinDanmu {
                 "<crypto-js.min.js>",
                 deno_core::FastString::Static(crypto_js),
             )
-            .map_err(|e| DanmuStreamError::WebsocketError {
+            .map_err(|e| DanmakuStreamError::WebsocketError {
                 err: format!("Failed to execute crypto-js: {}", e),
             })?;
 
@@ -119,7 +119,7 @@ impl DouyinDanmu {
         let js_code = include_str!("douyin/webmssdk.js");
         runtime
             .execute_script("<sign.js>", deno_core::FastString::Static(js_code))
-            .map_err(|e| DanmuStreamError::WebsocketError {
+            .map_err(|e| DanmakuStreamError::WebsocketError {
                 err: format!("Failed to execute JavaScript: {}", e),
             })?;
 
@@ -130,7 +130,7 @@ impl DouyinDanmu {
                 "<sign_call>",
                 deno_core::FastString::Owned(sign_call.into_boxed_str()),
             )
-            .map_err(|e| DanmuStreamError::WebsocketError {
+            .map_err(|e| DanmakuStreamError::WebsocketError {
                 err: format!("Failed to execute JavaScript: {}", e),
             })?;
 
@@ -147,8 +147,8 @@ impl DouyinDanmu {
     async fn handle_connection(
         &self,
         mut read: WsReadType,
-        tx: mpsc::UnboundedSender<DanmuMessageType>,
-    ) -> Result<(), DanmuStreamError> {
+        tx: mpsc::UnboundedSender<DanmakuMessageType>,
+    ) -> Result<(), DanmakuStreamError> {
         // Start heartbeat task with error handling
         let (tx_write, mut _rx_write) = mpsc::channel(32);
         let tx_write_clone = tx_write.clone();
@@ -200,7 +200,7 @@ impl DouyinDanmu {
             while let Some(msg) =
                 read.try_next()
                     .await
-                    .map_err(|e| DanmuStreamError::WebsocketError {
+                    .map_err(|e| DanmakuStreamError::WebsocketError {
                         err: format!("Failed to read message: {}", e),
                     })?
             {
@@ -235,7 +235,7 @@ impl DouyinDanmu {
                     _ => {}
                 }
             }
-            Ok::<(), DanmuStreamError>(())
+            Ok::<(), DanmakuStreamError>(())
         });
 
         // Wait for either the heartbeat or message handling to complete
@@ -255,11 +255,11 @@ impl DouyinDanmu {
         Ok(())
     }
 
-    async fn send_heartbeat(tx: &mpsc::Sender<WsMessage>) -> Result<(), DanmuStreamError> {
+    async fn send_heartbeat(tx: &mpsc::Sender<WsMessage>) -> Result<(), DanmakuStreamError> {
         // heartbeat message: 3A 02 68 62
         tx.send(WsMessage::Binary(vec![0x3A, 0x02, 0x68, 0x62]))
             .await
-            .map_err(|e| DanmuStreamError::WebsocketError {
+            .map_err(|e| DanmakuStreamError::WebsocketError {
                 err: format!("Failed to send heartbeat message: {}", e),
             })?;
         Ok(())
@@ -268,12 +268,12 @@ impl DouyinDanmu {
 
 async fn handle_binary_message(
     data: &[u8],
-    tx: &mpsc::UnboundedSender<DanmuMessageType>,
+    tx: &mpsc::UnboundedSender<DanmakuMessageType>,
     room_id: u64,
-) -> Result<Option<PushFrame>, DanmuStreamError> {
+) -> Result<Option<PushFrame>, DanmakuStreamError> {
     // First decode the PushFrame
     let push_frame = PushFrame::decode(Bytes::from(data.to_vec())).map_err(|e| {
-        DanmuStreamError::WebsocketError {
+        DanmakuStreamError::WebsocketError {
             err: format!("Failed to decode PushFrame: {}", e),
         }
     })?;
@@ -283,13 +283,13 @@ async fn handle_binary_message(
     let mut decompressed = Vec::new();
     decoder
         .read_to_end(&mut decompressed)
-        .map_err(|e| DanmuStreamError::WebsocketError {
+        .map_err(|e| DanmakuStreamError::WebsocketError {
             err: format!("Failed to decompress payload: {}", e),
         })?;
 
     // Decode the Response from decompressed payload
     let response = Response::decode(Bytes::from(decompressed)).map_err(|e| {
-        DanmuStreamError::WebsocketError {
+        DanmakuStreamError::WebsocketError {
             err: format!("Failed to decode Response: {}", e),
         }
     })?;
@@ -323,12 +323,12 @@ async fn handle_binary_message(
             "WebcastChatMessage" => {
                 let chat_msg =
                     DouyinChatMessage::decode(message.payload.as_slice()).map_err(|e| {
-                        DanmuStreamError::WebsocketError {
+                        DanmakuStreamError::WebsocketError {
                             err: format!("Failed to decode chat message: {}", e),
                         }
                     })?;
                 if let Some(user) = chat_msg.user {
-                    let danmu_msg = DanmuMessage {
+                    let danmu_msg = DanmakuMessage {
                         room_id,
                         user_id: user.id,
                         user_name: user.nick_name,
@@ -337,15 +337,15 @@ async fn handle_binary_message(
                         timestamp: chat_msg.event_time as i64 * 1000,
                     };
                     debug!("Received danmu message: {:?}", danmu_msg);
-                    tx.send(DanmuMessageType::DanmuMessage(danmu_msg))
-                        .map_err(|e| DanmuStreamError::WebsocketError {
+                    tx.send(DanmakuMessageType::DanmuMessage(danmu_msg))
+                        .map_err(|e| DanmakuStreamError::WebsocketError {
                             err: format!("Failed to send message to channel: {}", e),
                         })?;
                 }
             }
             "WebcastGiftMessage" => {
                 let gift_msg = GiftMessage::decode(message.payload.as_slice()).map_err(|e| {
-                    DanmuStreamError::WebsocketError {
+                    DanmakuStreamError::WebsocketError {
                         err: format!("Failed to decode gift message: {}", e),
                     }
                 })?;
@@ -357,7 +357,7 @@ async fn handle_binary_message(
             }
             "WebcastLikeMessage" => {
                 let like_msg = LikeMessage::decode(message.payload.as_slice()).map_err(|e| {
-                    DanmuStreamError::WebsocketError {
+                    DanmakuStreamError::WebsocketError {
                         err: format!("Failed to decode like message: {}", e),
                     }
                 })?;
@@ -372,7 +372,7 @@ async fn handle_binary_message(
             "WebcastMemberMessage" => {
                 let member_msg =
                     MemberMessage::decode(message.payload.as_slice()).map_err(|e| {
-                        DanmuStreamError::WebsocketError {
+                        DanmakuStreamError::WebsocketError {
                             err: format!("Failed to decode member message: {}", e),
                         }
                     })?;
@@ -394,8 +394,8 @@ async fn handle_binary_message(
 }
 
 #[async_trait]
-impl DanmuProvider for DouyinDanmu {
-    async fn new(identifier: &str, room_id: u64) -> Result<Self, DanmuStreamError> {
+impl DanmakuProvider for DouyinDanmakuStream {
+    async fn new(identifier: &str, room_id: u64) -> Result<Self, DanmakuStreamError> {
         Ok(Self {
             room_id,
             cookie: identifier.to_string(),
@@ -406,8 +406,8 @@ impl DanmuProvider for DouyinDanmu {
 
     async fn start(
         &self,
-        tx: mpsc::UnboundedSender<DanmuMessageType>,
-    ) -> Result<(), DanmuStreamError> {
+        tx: mpsc::UnboundedSender<DanmakuMessageType>,
+    ) -> Result<(), DanmakuStreamError> {
         let mut retry_count = 0;
         const MAX_RETRIES: u32 = 5;
         const RETRY_DELAY: Duration = Duration::from_secs(5);
@@ -431,7 +431,7 @@ impl DanmuProvider for DouyinDanmu {
                     retry_count += 1;
 
                     if retry_count >= MAX_RETRIES {
-                        return Err(DanmuStreamError::WebsocketError {
+                        return Err(DanmakuStreamError::WebsocketError {
                             err: format!("Failed to connect after {} retries", MAX_RETRIES),
                         });
                     }
@@ -450,7 +450,7 @@ impl DanmuProvider for DouyinDanmu {
         Ok(())
     }
 
-    async fn stop(&self) -> Result<(), DanmuStreamError> {
+    async fn stop(&self) -> Result<(), DanmakuStreamError> {
         *self.stop.write().await = true;
         if let Some(mut write) = self.write.write().await.take() {
             if let Err(e) = write.close().await {

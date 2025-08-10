@@ -1,5 +1,3 @@
-use super::bilibili::client::BiliStream;
-use super::douyin::client::DouyinClientError;
 use custom_error::custom_error;
 
 custom_error! {pub RecorderError
@@ -14,14 +12,11 @@ custom_error! {pub RecorderError
     InvalidStream {stream: BiliStream} = "Invalid stream: {stream}",
     SlowStream {stream: BiliStream} = "Stream is too slow: {stream}",
     EmptyHeader = "Header url is empty",
+    HeaderChanged = "Header URL changed, need to restart recording",
     InvalidTimestamp = "Header timestamp is invalid",
-    InvalidDBOP {err: crate::database::DatabaseError } = "Database error: {err}",
-    BiliClientError {err: super::bilibili::errors::BiliClientError} = "BiliClient error: {err}",
-    DouyinClientError {err: DouyinClientError} = "DouyinClient error: {err}",
+    ClientError {err: String} = "Client error: {err}",
     IoError {err: std::io::Error} = "IO error: {err}",
-    DanmakuStreamError {err: danmaku_stream::DanmakuStreamError} = "Danmaku stream error: {err}",
+    DanmuStreamError {err: danmu_stream::DanmuStreamError} = "Danmu stream error: {err}",
     SubtitleNotFound {live_id: String} = "Subtitle not found: {live_id}",
     SubtitleGenerationFailed {error: String} = "Subtitle generation failed: {error}",
-    FfmpegError {err: String} = "FFmpeg error: {err}",
-    ResolutionChanged {err: String} = "Resolution changed: {err}",
 }

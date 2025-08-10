@@ -1,15 +1,15 @@
 use std::time::Duration;
 
-use crate::DanmuStreamError;
+use crate::DanmakuStreamError;
 use reqwest::header::HeaderMap;
 
-impl From<reqwest::Error> for DanmuStreamError {
+impl From<reqwest::Error> for DanmakuStreamError {
     fn from(value: reqwest::Error) -> Self {
         Self::HttpError { err: value }
     }
 }
 
-impl From<url::ParseError> for DanmuStreamError {
+impl From<url::ParseError> for DanmakuStreamError {
     fn from(value: url::ParseError) -> Self {
         Self::ParseError { err: value }
     }
@@ -35,7 +35,7 @@ impl ApiClient {
         &self,
         url: &str,
         query: Option<&[(&str, &str)]>,
-    ) -> Result<reqwest::Response, DanmuStreamError> {
+    ) -> Result<reqwest::Response, DanmakuStreamError> {
         let resp = self
             .client
             .get(url)

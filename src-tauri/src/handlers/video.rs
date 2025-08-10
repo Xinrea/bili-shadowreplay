@@ -14,18 +14,63 @@ use std::path::{Path, PathBuf};
 use std::io::{Read, Write};
 use std::fs::File;
 
-// 解析FFmpeg时间字符串为秒数 (格式: "HH:MM:SS.mmm")
-fn parse_ffmpeg_time(time_str: &str) -> Result<f64, String> {
-    let parts: Vec<&str> = time_str.split(':').collect();
-    if parts.len() != 3 {
-        return Err(format!("Invalid time format: {}", time_str));
+// 检测是否为网络协议路径（排除Windows盘符）
+fn is_network_protocol(path_str: &str) -> bool {
+    // 常见的网络协议
+    let network_protocols = [
+        "ftp://", "sftp://", "ftps://",
+        "http://", "https://",
+        "smb://", "cifs://",
+        "nfs://", "afp://",
+        "ssh://", "scp://",
+    ];
+    
+    // 检查是否以网络协议开头
+    for protocol in &network_protocols {
+        if path_str.to_lowercase().starts_with(protocol) {
+            return true;
+        }
     }
     
-    let hours: f64 = parts[0].parse().map_err(|_| format!("Invalid hours: {}", parts[0]))?;
-    let minutes: f64 = parts[1].parse().map_err(|_| format!("Invalid minutes: {}", parts[1]))?;
-    let seconds: f64 = parts[2].parse().map_err(|_| format!("Invalid seconds: {}", parts[2]))?;
+    // 排除Windows盘符格式 (如 C:/, D:/, E:/ 等)
+    if cfg!(windows) {
+        // 检查是否为Windows盘符格式：单字母 + : + /
+        if path_str.len() >= 3 {
+            let chars: Vec<char> = path_str.chars().collect();
+            if chars.len() >= 3 && 
+               chars[0].is_ascii_alphabetic() && 
+               chars[1] == ':' && 
+               (chars[2] == '/' || chars[2] == '\\') {
+                return false; // 这是Windows盘符，不是网络路径
+            }
+        }
+    }
     
-    Ok(hours * 3600.0 + minutes * 60.0 + seconds)
+    false
+}
+
+// 判断是否需要转换视频格式
+fn should_convert_video_format(extension: &str) -> bool {
+    // FLV格式在现代浏览器中播放兼容性差，需要转换为MP4
+    matches!(extension.to_lowercase().as_str(), "flv")
+}
+
+// 获取最佳缩略图时间点
+fn get_optimal_thumbnail_timestamp(duration: f64) -> f64 {
+    // 根据视频长度选择最佳时间点
+    if duration <= 10.0 {
+        // 短视频（10秒以内）：选择1/3位置，避免开头黑屏
+        duration / 3.0
+    } else if duration <= 60.0 {
+        // 1分钟以内：选择第3秒
+        3.0
+    } else if duration <= 300.0 {
+        // 5分钟以内：选择第5秒
+        5.0
+    } else {
+        // 长视频：选择第10秒，确保跳过开头可能的黑屏/logo
+        10.0
+    }
 }
 
 use crate::state::State;
@@ -102,175 +147,6 @@ async fn copy_file_with_progress(
     Ok(())
 }
 
-// 获取最佳缩略图时间点
-fn get_optimal_thumbnail_timestamp(duration: f64) -> f64 {
-    // 根据视频长度选择最佳时间点
-    if duration <= 10.0 {
-        // 短视频（10秒以内）：选择1/3位置，避免开头黑屏
-        duration / 3.0
-    } else if duration <= 60.0 {
-        // 1分钟以内：选择第3秒
-        3.0
-    } else if duration <= 300.0 {
-        // 5分钟以内：选择第5秒
-        5.0
-    } else {
-        // 长视频：选择第10秒，确保跳过开头可能的黑屏/logo
-        10.0
-    }
-}
-
-// 判断是否需要转换视频格式
-fn should_convert_video_format(extension: &str) -> bool {
-    // FLV格式在现代浏览器中播放兼容性差，需要转换为MP4
-    matches!(extension.to_lowercase().as_str(), "flv")
-}
-
-// 带进度的视频格式转换函数（智能质量保持策略）
-async fn convert_video_format(
-    source: &Path,
-    dest: &Path,
-    reporter: &ProgressReporter,
-) -> Result<(), String> {
-    // 先尝试stream copy（无损转换），如果失败则使用高质量重编码
-    match try_stream_copy_conversion(source, dest, reporter).await {
-        Ok(()) => Ok(()),
-        Err(stream_copy_error) => {
-            reporter.update("流复制失败，使用高质量重编码模式...");
-            log::warn!("Stream copy failed: {}, falling back to re-encoding", stream_copy_error);
-            try_high_quality_conversion(source, dest, reporter).await
-        }
-    }
-}
-
-// 尝试流复制转换（无损，速度快）
-async fn try_stream_copy_conversion(
-    source: &Path,
-    dest: &Path,
-    reporter: &ProgressReporter,
-) -> Result<(), String> {
-    
-    // 获取视频时长以计算进度
-    let metadata = crate::ffmpeg::extract_video_metadata(source).await?;
-    let total_duration = metadata.duration;
-    
-    reporter.update("正在转换视频格式... 0% (无损模式)");
-    
-    // 构建ffmpeg命令 - 流复制模式
-    let mut cmd = tokio::process::Command::new("ffmpeg");
-    #[cfg(target_os = "windows")]
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    
-    cmd.args([
-        "-i", &source.to_string_lossy(),
-        "-c:v", "copy",              // 直接复制视频流，零损失
-        "-c:a", "copy",              // 直接复制音频流，零损失
-        "-avoid_negative_ts", "make_zero", // 修复时间戳问题
-        "-movflags", "+faststart",   // 优化web播放
-        "-progress", "pipe:2",       // 输出进度到stderr
-        "-y",                        // 覆盖输出文件
-        &dest.to_string_lossy(),
-    ]);
-    
-    execute_ffmpeg_conversion(cmd, total_duration, reporter, "无损转换").await
-}
-
-// 高质量重编码转换（兼容性好，质量高）
-async fn try_high_quality_conversion(
-    source: &Path,
-    dest: &Path,
-    reporter: &ProgressReporter,
-) -> Result<(), String> {
-    
-    // 获取视频时长以计算进度
-    let metadata = crate::ffmpeg::extract_video_metadata(source).await?;
-    let total_duration = metadata.duration;
-    
-    reporter.update("正在转换视频格式... 0% (高质量模式)");
-    
-    // 构建ffmpeg命令 - 高质量重编码
-    let mut cmd = tokio::process::Command::new("ffmpeg");
-    #[cfg(target_os = "windows")]
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    
-    cmd.args([
-        "-i", &source.to_string_lossy(),
-        "-c:v", "libx264",           // H.264编码器
-        "-preset", "slow",           // 慢速预设，更好的压缩效率
-        "-crf", "18",                // 高质量设置 (18-23范围，越小质量越高)
-        "-c:a", "aac",               // AAC音频编码器
-        "-b:a", "192k",              // 高音频码率
-        "-avoid_negative_ts", "make_zero", // 修复时间戳问题
-        "-movflags", "+faststart",   // 优化web播放
-        "-progress", "pipe:2",       // 输出进度到stderr
-        "-y",                        // 覆盖输出文件
-        &dest.to_string_lossy(),
-    ]);
-    
-    execute_ffmpeg_conversion(cmd, total_duration, reporter, "高质量转换").await
-}
-
-// 执行FFmpeg转换的通用函数
-async fn execute_ffmpeg_conversion(
-    mut cmd: tokio::process::Command,
-    total_duration: f64,
-    reporter: &ProgressReporter,
-    mode_name: &str,
-) -> Result<(), String> {
-    use std::process::Stdio;
-    use tokio::io::BufReader;
-    use async_ffmpeg_sidecar::event::FfmpegEvent;
-    use async_ffmpeg_sidecar::log_parser::FfmpegLogParser;
-    
-    let mut child = cmd
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("启动FFmpeg进程失败: {}", e))?;
-    
-    let stderr = child.stderr.take().unwrap();
-    let reader = BufReader::new(stderr);
-    let mut parser = FfmpegLogParser::new(reader);
-    
-    let mut conversion_error = None;
-    while let Ok(event) = parser.parse_next_event().await {
-        match event {
-            FfmpegEvent::Progress(p) => {
-                if total_duration > 0.0 {
-                    // 解析时间字符串为浮点数 (格式: "HH:MM:SS.mmm")
-                    if let Ok(current_time) = parse_ffmpeg_time(&p.time) {
-                        let progress = (current_time / total_duration * 100.0).min(100.0);
-                        reporter.update(&format!("正在转换视频格式... {:.1}% ({})", progress, mode_name));
-                    } else {
-                        reporter.update(&format!("正在转换视频格式... {} ({})", p.time, mode_name));
-                    }
-                } else {
-                    reporter.update(&format!("正在转换视频格式... {} ({})", p.time, mode_name));
-                }
-            }
-            FfmpegEvent::LogEOF => break,
-            FfmpegEvent::Log(level, content) => {
-                if matches!(level, async_ffmpeg_sidecar::event::LogLevel::Error) && content.contains("Error") {
-                    conversion_error = Some(content);
-                }
-            }
-            FfmpegEvent::Error(e) => {
-                conversion_error = Some(e);
-            }
-            _ => {} // 忽略其他事件类型
-        }
-    }
-    
-    let status = child.wait().await.map_err(|e| format!("等待FFmpeg进程失败: {}", e))?;
-    
-    if !status.success() {
-        let error_msg = conversion_error.unwrap_or_else(|| format!("FFmpeg退出码: {}", status.code().unwrap_or(-1)));
-        return Err(format!("视频格式转换失败 ({}): {}", mode_name, error_msg));
-    }
-    
-    reporter.update(&format!("视频格式转换完成 100% ({})", mode_name));
-    Ok(())
-}
-
 // 智能边拷贝边转换函数（针对网络文件优化）
 async fn copy_and_convert_with_progress(
     source: &Path,
@@ -285,18 +161,131 @@ async fn copy_and_convert_with_progress(
     
     // 检查源文件是否在网络位置（启发式判断）
     let source_str = source.to_string_lossy();
-    let is_network_source = source_str.starts_with("\\\\") ||  // UNC path
-                           source_str.contains(":/") ||        // Network protocol
-                           source.metadata()
-                               .map(|m| m.len() > 500 * 1024 * 1024) // >500MB文件
-                               .unwrap_or(false);
+    let is_network_source = source_str.starts_with("\\\\") ||  // UNC path (Windows网络共享)
+                           is_network_protocol(&source_str);   // 网络协议但排除Windows盘符
     
     if is_network_source {
-        reporter.update("检测到网络/大文件，使用优化转换模式...");
+        // 网络文件：先复制到本地临时位置，再转换
+        reporter.update("检测到网络文件，使用先复制后转换策略...");
+        copy_then_convert_strategy(source, dest, reporter).await
+    } else {
+        // 本地文件：直接转换（更高效）
+        reporter.update("检测到本地文件，使用直接转换策略...");
+        ffmpeg::convert_video_format(source, dest, reporter).await
+    }
+}
+
+// 网络文件处理策略：先复制到本地临时位置，再转换
+async fn copy_then_convert_strategy(
+    source: &Path,
+    dest: &Path,
+    reporter: &ProgressReporter,
+) -> Result<(), String> {
+    // 创建临时文件路径
+    let temp_dir = std::env::temp_dir();
+    let temp_filename = format!("temp_video_{}.{}", 
+        chrono::Utc::now().timestamp(),
+        source.extension().and_then(|e| e.to_str()).unwrap_or("tmp"));
+    let temp_path = temp_dir.join(&temp_filename);
+    
+    // 确保临时目录存在
+    if let Some(parent) = temp_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建临时目录失败: {}", e))?;
     }
     
-    // 对于所有转换，都使用主转换函数（已内置智能策略）
-    convert_video_format(source, dest, reporter).await
+    // 第一步：将网络文件复制到本地临时位置（使用优化的缓冲区）
+    reporter.update("第1步：从网络复制文件到本地临时位置...");
+    copy_file_with_network_optimization(source, &temp_path, reporter).await?;
+    
+    // 第二步：从本地临时文件转换到目标位置
+    reporter.update("第2步：从临时文件转换到目标格式...");
+    let convert_result = ffmpeg::convert_video_format(&temp_path, dest, reporter).await;
+    
+    // 清理临时文件
+    if temp_path.exists() {
+        if let Err(e) = std::fs::remove_file(&temp_path) {
+            log::warn!("删除临时文件失败: {} - {}", temp_path.display(), e);
+        } else {
+            log::info!("已清理临时文件: {}", temp_path.display());
+        }
+    }
+    
+    convert_result
+}
+
+// 针对网络文件优化的复制函数
+async fn copy_file_with_network_optimization(
+    source: &Path,
+    dest: &Path,
+    reporter: &ProgressReporter,
+) -> Result<(), String> {
+    let mut source_file = File::open(source).map_err(|e| format!("无法打开网络源文件: {}", e))?;
+    let mut dest_file = File::create(dest).map_err(|e| format!("无法创建本地临时文件: {}", e))?;
+    
+    let total_size = source_file.metadata().map_err(|e| format!("无法获取文件大小: {}", e))?.len();
+    let mut copied = 0u64;
+    
+    // 网络文件使用更大的缓冲区以减少网络请求次数
+    let buffer_size = if total_size > 1024 * 1024 * 1024 { // >1GB
+        8 * 1024 * 1024 // 8MB buffer for very large files
+    } else if total_size > 100 * 1024 * 1024 { // >100MB
+        4 * 1024 * 1024 // 4MB buffer for large files
+    } else {
+        2 * 1024 * 1024 // 2MB buffer for network files
+    };
+    
+    let mut buffer = vec![0u8; buffer_size];
+    let mut last_reported_percent = 0;
+    let mut consecutive_errors = 0;
+    const MAX_RETRIES: u32 = 3;
+    
+    loop {
+        match source_file.read(&mut buffer) {
+            Ok(bytes_read) => {
+                if bytes_read == 0 {
+                    break; // 文件读取完成
+                }
+                
+                // 重置错误计数
+                consecutive_errors = 0;
+                
+                dest_file.write_all(&buffer[..bytes_read]).map_err(|e| format!("写入临时文件失败: {}", e))?;
+                copied += bytes_read as u64;
+                
+                // 计算并报告进度
+                let percent = if total_size > 0 {
+                    ((copied as f64 / total_size as f64) * 100.0) as u32
+                } else {
+                    0
+                };
+                
+                // 网络文件更频繁地报告进度
+                if percent != last_reported_percent {
+                    reporter.update(&format!("正在从网络复制文件... {}% ({:.1}MB/{:.1}MB)", 
+                        percent, 
+                        copied as f64 / (1024.0 * 1024.0),
+                        total_size as f64 / (1024.0 * 1024.0)));
+                    last_reported_percent = percent;
+                }
+            }
+            Err(e) => {
+                consecutive_errors += 1;
+                log::warn!("网络读取错误 (尝试 {}/{}): {}", consecutive_errors, MAX_RETRIES, e);
+                
+                if consecutive_errors >= MAX_RETRIES {
+                    return Err(format!("网络文件读取失败，已重试{}次: {}", MAX_RETRIES, e));
+                }
+                
+                // 等待一小段时间后重试
+                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                reporter.update(&format!("网络连接中断，正在重试... ({}/{})", consecutive_errors, MAX_RETRIES));
+            }
+        }
+    }
+    
+    dest_file.flush().map_err(|e| format!("刷新临时文件缓冲区失败: {}", e))?;
+    reporter.update("网络文件复制完成");
+    Ok(())
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]

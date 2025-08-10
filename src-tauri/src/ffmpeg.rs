@@ -985,6 +985,165 @@ pub async fn generate_thumbnail(
     Ok(())
 }
 
+// 解析FFmpeg时间字符串为秒数 (格式: "HH:MM:SS.mmm")
+pub fn parse_ffmpeg_time(time_str: &str) -> Result<f64, String> {
+    let parts: Vec<&str> = time_str.split(':').collect();
+    if parts.len() != 3 {
+        return Err(format!("Invalid time format: {}", time_str));
+    }
+    
+    let hours: f64 = parts[0].parse().map_err(|_| format!("Invalid hours: {}", parts[0]))?;
+    let minutes: f64 = parts[1].parse().map_err(|_| format!("Invalid minutes: {}", parts[1]))?;
+    let seconds: f64 = parts[2].parse().map_err(|_| format!("Invalid seconds: {}", parts[2]))?;
+    
+    Ok(hours * 3600.0 + minutes * 60.0 + seconds)
+}
+
+
+
+// 执行FFmpeg转换的通用函数
+pub async fn execute_ffmpeg_conversion(
+    mut cmd: tokio::process::Command,
+    total_duration: f64,
+    reporter: &ProgressReporter,
+    mode_name: &str,
+) -> Result<(), String> {
+    use std::process::Stdio;
+    use tokio::io::BufReader;
+    use async_ffmpeg_sidecar::event::FfmpegEvent;
+    use async_ffmpeg_sidecar::log_parser::FfmpegLogParser;
+    
+    let mut child = cmd
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("启动FFmpeg进程失败: {}", e))?;
+    
+    let stderr = child.stderr.take().unwrap();
+    let reader = BufReader::new(stderr);
+    let mut parser = FfmpegLogParser::new(reader);
+    
+    let mut conversion_error = None;
+    while let Ok(event) = parser.parse_next_event().await {
+        match event {
+            FfmpegEvent::Progress(p) => {
+                if total_duration > 0.0 {
+                    // 解析时间字符串为浮点数 (格式: "HH:MM:SS.mmm")
+                    if let Ok(current_time) = parse_ffmpeg_time(&p.time) {
+                        let progress = (current_time / total_duration * 100.0).min(100.0);
+                        reporter.update(&format!("正在转换视频格式... {:.1}% ({})", progress, mode_name));
+                    } else {
+                        reporter.update(&format!("正在转换视频格式... {} ({})", p.time, mode_name));
+                    }
+                } else {
+                    reporter.update(&format!("正在转换视频格式... {} ({})", p.time, mode_name));
+                }
+            }
+            FfmpegEvent::LogEOF => break,
+            FfmpegEvent::Log(level, content) => {
+                if matches!(level, async_ffmpeg_sidecar::event::LogLevel::Error) && content.contains("Error") {
+                    conversion_error = Some(content);
+                }
+            }
+            FfmpegEvent::Error(e) => {
+                conversion_error = Some(e);
+            }
+            _ => {} // 忽略其他事件类型
+        }
+    }
+    
+    let status = child.wait().await.map_err(|e| format!("等待FFmpeg进程失败: {}", e))?;
+    
+    if !status.success() {
+        let error_msg = conversion_error.unwrap_or_else(|| format!("FFmpeg退出码: {}", status.code().unwrap_or(-1)));
+        return Err(format!("视频格式转换失败 ({}): {}", mode_name, error_msg));
+    }
+    
+    reporter.update(&format!("视频格式转换完成 100% ({})", mode_name));
+    Ok(())
+}
+
+// 尝试流复制转换（无损，速度快）
+pub async fn try_stream_copy_conversion(
+    source: &Path,
+    dest: &Path,
+    reporter: &ProgressReporter,
+) -> Result<(), String> {
+    // 获取视频时长以计算进度
+    let metadata = extract_video_metadata(source).await?;
+    let total_duration = metadata.duration;
+    
+    reporter.update("正在转换视频格式... 0% (无损模式)");
+    
+    // 构建ffmpeg命令 - 流复制模式
+    let mut cmd = tokio::process::Command::new(ffmpeg_path());
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    
+    cmd.args([
+        "-i", &source.to_string_lossy(),
+        "-c:v", "copy",              // 直接复制视频流，零损失
+        "-c:a", "copy",              // 直接复制音频流，零损失
+        "-avoid_negative_ts", "make_zero", // 修复时间戳问题
+        "-movflags", "+faststart",   // 优化web播放
+        "-progress", "pipe:2",       // 输出进度到stderr
+        "-y",                        // 覆盖输出文件
+        &dest.to_string_lossy(),
+    ]);
+    
+    execute_ffmpeg_conversion(cmd, total_duration, reporter, "无损转换").await
+}
+
+// 高质量重编码转换（兼容性好，质量高）
+pub async fn try_high_quality_conversion(
+    source: &Path,
+    dest: &Path,
+    reporter: &ProgressReporter,
+) -> Result<(), String> {
+    // 获取视频时长以计算进度
+    let metadata = extract_video_metadata(source).await?;
+    let total_duration = metadata.duration;
+    
+    reporter.update("正在转换视频格式... 0% (高质量模式)");
+    
+    // 构建ffmpeg命令 - 高质量重编码
+    let mut cmd = tokio::process::Command::new(ffmpeg_path());
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    
+    cmd.args([
+        "-i", &source.to_string_lossy(),
+        "-c:v", "libx264",           // H.264编码器
+        "-preset", "slow",           // 慢速预设，更好的压缩效率
+        "-crf", "18",                // 高质量设置 (18-23范围，越小质量越高)
+        "-c:a", "aac",               // AAC音频编码器
+        "-b:a", "192k",              // 高音频码率
+        "-avoid_negative_ts", "make_zero", // 修复时间戳问题
+        "-movflags", "+faststart",   // 优化web播放
+        "-progress", "pipe:2",       // 输出进度到stderr
+        "-y",                        // 覆盖输出文件
+        &dest.to_string_lossy(),
+    ]);
+    
+    execute_ffmpeg_conversion(cmd, total_duration, reporter, "高质量转换").await
+}
+
+// 带进度的视频格式转换函数（智能质量保持策略）
+pub async fn convert_video_format(
+    source: &Path,
+    dest: &Path,
+    reporter: &ProgressReporter,
+) -> Result<(), String> {
+    // 先尝试stream copy（无损转换），如果失败则使用高质量重编码
+    match try_stream_copy_conversion(source, dest, reporter).await {
+        Ok(()) => Ok(()),
+        Err(stream_copy_error) => {
+            reporter.update("流复制失败，使用高质量重编码模式...");
+            log::warn!("Stream copy failed: {}, falling back to re-encoding", stream_copy_error);
+            try_high_quality_conversion(source, dest, reporter).await
+        }
+    }
+}
+
 // tests
 #[cfg(test)]
 mod tests {

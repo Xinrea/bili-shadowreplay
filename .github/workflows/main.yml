@@ -59,12 +59,6 @@ jobs:
         if: matrix.platform == 'windows-latest' && matrix.features == 'cuda'
         uses: Jimver/cuda-toolkit@v0.2.24
 
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: "./src-tauri -> target"
-          shared-key: ${{ matrix.platform }}
-
       - name: Setup ffmpeg
         if: matrix.platform == 'windows-latest'
         working-directory: ./

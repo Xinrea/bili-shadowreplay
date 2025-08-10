@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::{provider::bilibili::stream::WsStreamCtx, DanmuStreamError};
+use crate::{provider::bilibili::stream::WsStreamCtx, DanmakuStreamError};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -17,18 +17,18 @@ pub struct SendGift {
 
 #[allow(dead_code)]
 impl SendGift {
-    pub fn new_from_ctx(ctx: &WsStreamCtx) -> Result<Self, DanmuStreamError> {
+    pub fn new_from_ctx(ctx: &WsStreamCtx) -> Result<Self, DanmakuStreamError> {
         let data = ctx
             .data
             .as_ref()
-            .ok_or_else(|| DanmuStreamError::MessageParseError {
+            .ok_or_else(|| DanmakuStreamError::MessageParseError {
                 err: "data is None".to_string(),
             })?;
 
         let action = data
             .action
             .as_ref()
-            .ok_or_else(|| DanmuStreamError::MessageParseError {
+            .ok_or_else(|| DanmakuStreamError::MessageParseError {
                 err: "action is None".to_string(),
             })?
             .to_owned();
@@ -40,7 +40,7 @@ impl SendGift {
         } else if let Some(gift) = combo_send.clone().and_then(|x| x.gift_name) {
             gift
         } else {
-            return Err(DanmuStreamError::MessageParseError {
+            return Err(DanmakuStreamError::MessageParseError {
                 err: "gift_name is None".to_string(),
             });
         };
@@ -52,7 +52,7 @@ impl SendGift {
         } else if let Some(num) = combo_send.and_then(|x| x.gift_num) {
             num
         } else {
-            return Err(DanmuStreamError::MessageParseError {
+            return Err(DanmakuStreamError::MessageParseError {
                 err: "num is None".to_string(),
             });
         };
@@ -60,7 +60,7 @@ impl SendGift {
         let uname = data
             .uname
             .as_ref()
-            .ok_or_else(|| DanmuStreamError::MessageParseError {
+            .ok_or_else(|| DanmakuStreamError::MessageParseError {
                 err: "uname is None".to_string(),
             })?
             .to_owned();
@@ -68,11 +68,11 @@ impl SendGift {
         let uid = data
             .uid
             .as_ref()
-            .ok_or_else(|| DanmuStreamError::MessageParseError {
+            .ok_or_else(|| DanmakuStreamError::MessageParseError {
                 err: "uid is None".to_string(),
             })?
             .as_u64()
-            .ok_or_else(|| DanmuStreamError::MessageParseError {
+            .ok_or_else(|| DanmakuStreamError::MessageParseError {
                 err: "uid is None".to_string(),
             })?;
 
@@ -97,7 +97,7 @@ impl SendGift {
 
         let price = data
             .price
-            .ok_or_else(|| DanmuStreamError::MessageParseError {
+            .ok_or_else(|| DanmakuStreamError::MessageParseError {
                 err: "price is None".to_string(),
             })?;
 

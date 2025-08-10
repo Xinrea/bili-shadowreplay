@@ -2,8 +2,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
-    provider::{bilibili::dannmu_msg::BiliDanmuMessage, DanmuMessageType},
-    DanmuMessage, DanmuStreamError,
+    provider::{bilibili::dannmu_msg::BiliDanmuMessage, DanmakuMessageType},
+    DanmakuMessage, DanmakuStreamError,
 };
 
 #[derive(Debug, Deserialize, Clone)]
@@ -50,13 +50,13 @@ pub struct WsStreamCtxDataUser {
 }
 
 impl WsStreamCtx {
-    pub fn new(s: &str) -> Result<Self, DanmuStreamError> {
-        serde_json::from_str(s).map_err(|_| DanmuStreamError::MessageParseError {
+    pub fn new(s: &str) -> Result<Self, DanmakuStreamError> {
+        serde_json::from_str(s).map_err(|_| DanmakuStreamError::MessageParseError {
             err: "Failed to parse message".to_string(),
         })
     }
 
-    pub fn match_msg(&self) -> Result<DanmuMessageType, DanmuStreamError> {
+    pub fn match_msg(&self) -> Result<DanmakuMessageType, DanmakuStreamError> {
         let cmd = self.handle_cmd();
 
         let danmu_msg = match cmd {
@@ -65,7 +65,7 @@ impl WsStreamCtx {
         };
 
         if let Some(danmu_msg) = danmu_msg {
-            Ok(DanmuMessageType::DanmuMessage(DanmuMessage {
+            Ok(DanmakuMessageType::DanmuMessage(DanmakuMessage {
                 room_id: 0,
                 user_id: danmu_msg.uid,
                 user_name: danmu_msg.username,
@@ -74,7 +74,7 @@ impl WsStreamCtx {
                 timestamp: danmu_msg.timestamp,
             }))
         } else {
-            Err(DanmuStreamError::MessageParseError {
+            Err(DanmakuStreamError::MessageParseError {
                 err: "Unknown message".to_string(),
             })
         }

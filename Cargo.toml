@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = [
+    "src-tauri",
+    "libs/danmaku-stream",
+]
+
+[workspace.dependencies]
+danmaku-stream = { path = "libs/danmaku-stream" }

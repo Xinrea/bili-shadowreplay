@@ -21,8 +21,8 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::{
     http_client::ApiClient,
-    provider::{DanmuMessageType, DanmuProvider},
-    DanmuStreamError,
+    provider::{DanmakuMessageType, DanmakuProvider},
+    DanmakuStreamError,
 };
 
 type WsReadType = futures_util::stream::SplitStream<
@@ -34,7 +34,7 @@ type WsWriteType = futures_util::stream::SplitSink<
     Message,
 >;
 
-pub struct BiliDanmu {
+pub struct BiliDanmakuStream {
     client: ApiClient,
     room_id: u64,
     user_id: u64,
@@ -43,10 +43,10 @@ pub struct BiliDanmu {
 }
 
 #[async_trait]
-impl DanmuProvider for BiliDanmu {
-    async fn new(cookie: &str, room_id: u64) -> Result<Self, DanmuStreamError> {
+impl DanmakuProvider for BiliDanmakuStream {
+    async fn new(cookie: &str, room_id: u64) -> Result<Self, DanmakuStreamError> {
         // find DedeUserID=<user_id> in cookie str
-        let user_id = BiliDanmu::parse_user_id(cookie)?;
+        let user_id = BiliDanmakuStream::parse_user_id(cookie)?;
         // add buvid3 to cookie
         let cookie = format!("{};buvid3={}", cookie, uuid::Uuid::new_v4());
         let client = ApiClient::new(&cookie);
@@ -62,8 +62,8 @@ impl DanmuProvider for BiliDanmu {
 
     async fn start(
         &self,
-        tx: mpsc::UnboundedSender<DanmuMessageType>,
-    ) -> Result<(), DanmuStreamError> {
+        tx: mpsc::UnboundedSender<DanmakuMessageType>,
+    ) -> Result<(), DanmakuStreamError> {
         let mut retry_count = 0;
         const RETRY_DELAY: Duration = Duration::from_secs(5);
         info!(
@@ -109,7 +109,7 @@ impl DanmuProvider for BiliDanmu {
         Ok(())
     }
 
-    async fn stop(&self) -> Result<(), DanmuStreamError> {
+    async fn stop(&self) -> Result<(), DanmakuStreamError> {
         *self.stop.write().await = true;
         if let Some(mut write) = self.write.write().await.take() {
             if let Err(e) = write.close().await {
@@ -120,11 +120,11 @@ impl DanmuProvider for BiliDanmu {
     }
 }
 
-impl BiliDanmu {
+impl BiliDanmakuStream {
     async fn connect_and_handle(
         &self,
-        tx: mpsc::UnboundedSender<DanmuMessageType>,
-    ) -> Result<(), DanmuStreamError> {
+        tx: mpsc::UnboundedSender<DanmakuMessageType>,
+    ) -> Result<(), DanmakuStreamError> {
         let wbi_key = self.get_wbi_key().await?;
         let real_room = self.get_real_room(&wbi_key, self.room_id).await?;
         let danmu_info = self.get_danmu_info(&wbi_key, real_room).await?;
@@ -148,7 +148,7 @@ impl BiliDanmu {
             }
         }
 
-        let conn = conn.ok_or(DanmuStreamError::WebsocketError {
+        let conn = conn.ok_or(DanmakuStreamError::WebsocketError {
             err: "Failed to connect to ws host".into(),
         })?;
 
@@ -163,19 +163,19 @@ impl BiliDanmu {
             platform: "web".to_string(),
             t: 2,
         })
-        .map_err(|e| DanmuStreamError::WebsocketError { err: e.to_string() })?;
+        .map_err(|e| DanmakuStreamError::WebsocketError { err: e.to_string() })?;
 
         let json = pack::encode(&json, 7);
         if let Some(write) = self.write.write().await.as_mut() {
             write
                 .send(Message::binary(json))
                 .await
-                .map_err(|e| DanmuStreamError::WebsocketError { err: e.to_string() })?;
+                .map_err(|e| DanmakuStreamError::WebsocketError { err: e.to_string() })?;
         }
 
         tokio::select! {
-            v = BiliDanmu::send_heartbeat_packets(Arc::clone(&self.write)) => v,
-            v = BiliDanmu::recv(read, tx, Arc::clone(&self.stop)) => v
+            v = BiliDanmakuStream::send_heartbeat_packets(Arc::clone(&self.write)) => v,
+            v = BiliDanmakuStream::recv(read, tx, Arc::clone(&self.stop)) => v
         }?;
 
         Ok(())
@@ -183,13 +183,13 @@ impl BiliDanmu {
 
     async fn send_heartbeat_packets(
         write: Arc<RwLock<Option<WsWriteType>>>,
-    ) -> Result<(), DanmuStreamError> {
+    ) -> Result<(), DanmakuStreamError> {
         loop {
             if let Some(write) = write.write().await.as_mut() {
                 write
                     .send(Message::binary(pack::encode("", 2)))
                     .await
-                    .map_err(|e| DanmuStreamError::WebsocketError { err: e.to_string() })?;
+                    .map_err(|e| DanmakuStreamError::WebsocketError { err: e.to_string() })?;
             }
             sleep(Duration::from_secs(30)).await;
         }
@@ -197,9 +197,9 @@ impl BiliDanmu {
 
     async fn recv(
         mut read: WsReadType,
-        tx: mpsc::UnboundedSender<DanmuMessageType>,
+        tx: mpsc::UnboundedSender<DanmakuMessageType>,
         stop: Arc<RwLock<bool>>,
-    ) -> Result<(), DanmuStreamError> {
+    ) -> Result<(), DanmakuStreamError> {
         while let Ok(Some(msg)) = read.try_next().await {
             if *stop.read().await {
                 log::info!("Stopping bilibili danmu stream");
@@ -216,8 +216,7 @@ impl BiliDanmu {
                         if let Ok(ws) = ws {
                             match ws.match_msg() {
                                 Ok(v) => {
-                                    log::debug!("Received message: {:?}", v);
-                                    tx.send(v).map_err(|e| DanmuStreamError::WebsocketError {
+                                    tx.send(v).map_err(|e| DanmakuStreamError::WebsocketError {
                                         err: e.to_string(),
                                     })?;
                                 }
@@ -242,7 +241,7 @@ impl BiliDanmu {
         &self,
         wbi_key: &str,
         room_id: u64,
-    ) -> Result<DanmuInfo, DanmuStreamError> {
+    ) -> Result<DanmuInfo, DanmakuStreamError> {
         let params = self
             .get_sign(
                 wbi_key,
@@ -268,7 +267,7 @@ impl BiliDanmu {
         Ok(resp)
     }
 
-    async fn get_real_room(&self, wbi_key: &str, room_id: u64) -> Result<u64, DanmuStreamError> {
+    async fn get_real_room(&self, wbi_key: &str, room_id: u64) -> Result<u64, DanmakuStreamError> {
         let params = self
             .get_sign(
                 wbi_key,
@@ -296,7 +295,7 @@ impl BiliDanmu {
         Ok(resp)
     }
 
-    fn parse_user_id(cookie: &str) -> Result<u64, DanmuStreamError> {
+    fn parse_user_id(cookie: &str) -> Result<u64, DanmakuStreamError> {
         let mut user_id = None;
 
         // find DedeUserID=<user_id> in cookie str
@@ -310,13 +309,13 @@ impl BiliDanmu {
         if let Some(user_id) = user_id {
             Ok(user_id)
         } else {
-            Err(DanmuStreamError::InvalidIdentifier {
+            Err(DanmakuStreamError::InvalidIdentifier {
                 err: format!("Failed to find user_id in cookie: {cookie}"),
             })
         }
     }
 
-    async fn get_wbi_key(&self) -> Result<String, DanmuStreamError> {
+    async fn get_wbi_key(&self) -> Result<String, DanmakuStreamError> {
         let nav_info: serde_json::Value = self
             .client
             .get("https://api.bilibili.com/x/web-interface/nav", None)
@@ -344,7 +343,7 @@ impl BiliDanmu {
         &self,
         wbi_key: &str,
         mut parameters: serde_json::Value,
-    ) -> Result<String, DanmuStreamError> {
+    ) -> Result<String, DanmakuStreamError> {
         let table = vec![
             46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42,
             19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60,

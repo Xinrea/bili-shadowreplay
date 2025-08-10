@@ -1,10 +1,10 @@
-pub mod danmu_stream;
+pub mod stream;
 mod http_client;
 pub mod provider;
 
 use custom_error::custom_error;
 
-custom_error! {pub DanmuStreamError
+custom_error! {pub DanmakuStreamError
     HttpError {err: reqwest::Error} = "HttpError {err}",
     ParseError {err: url::ParseError} = "ParseError {err}",
     WebsocketError {err: String } = "WebsocketError {err}",
@@ -15,12 +15,12 @@ custom_error! {pub DanmuStreamError
 }
 
 #[derive(Debug)]
-pub enum DanmuMessageType {
-    DanmuMessage(DanmuMessage),
+pub enum DanmakuMessageType {
+    DanmuMessage(DanmakuMessage),
 }
 
 #[derive(Debug, Clone)]
-pub struct DanmuMessage {
+pub struct DanmakuMessage {
     pub room_id: u64,
     pub user_id: u64,
     pub user_name: String,

@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 
 use crate::{
-    provider::bilibili::BiliDanmu, provider::douyin::DouyinDanmu, DanmuMessageType,
-    DanmuStreamError,
+    provider::bilibili::BiliDanmakuStream, provider::douyin::DouyinDanmakuStream, DanmakuMessageType,
+    DanmakuStreamError,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,17 +16,17 @@ pub enum ProviderType {
 }
 
 #[async_trait]
-pub trait DanmuProvider: Send + Sync {
-    async fn new(identifier: &str, room_id: u64) -> Result<Self, DanmuStreamError>
+pub trait DanmakuProvider: Send + Sync {
+    async fn new(identifier: &str, room_id: u64) -> Result<Self, DanmakuStreamError>
     where
         Self: Sized;
 
     async fn start(
         &self,
-        tx: mpsc::UnboundedSender<DanmuMessageType>,
-    ) -> Result<(), DanmuStreamError>;
+        tx: mpsc::UnboundedSender<DanmakuMessageType>,
+    ) -> Result<(), DanmakuStreamError>;
 
-    async fn stop(&self) -> Result<(), DanmuStreamError>;
+    async fn stop(&self) -> Result<(), DanmakuStreamError>;
 }
 
 /// Creates a new danmu stream provider for the specified platform.
@@ -58,14 +58,14 @@ pub async fn new(
     provider_type: ProviderType,
     identifier: &str,
     room_id: u64,
-) -> Result<Box<dyn DanmuProvider>, DanmuStreamError> {
+) -> Result<Box<dyn DanmakuProvider>, DanmakuStreamError> {
     match provider_type {
         ProviderType::BiliBili => {
-            let bili = BiliDanmu::new(identifier, room_id).await?;
+            let bili = BiliDanmakuStream::new(identifier, room_id).await?;
             Ok(Box::new(bili))
         }
         ProviderType::Douyin => {
-            let douyin = DouyinDanmu::new(identifier, room_id).await?;
+            let douyin = DouyinDanmakuStream::new(identifier, room_id).await?;
             Ok(Box::new(douyin))
         }
     }

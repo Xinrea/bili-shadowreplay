@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use danmu_stream::{danmu_stream::DanmuStream, provider::ProviderType, DanmuMessageType};
+use danmaku_stream::{stream::DanmakuStream, provider::ProviderType, DanmakuMessageType};
 use tokio::time::sleep;
 
 #[tokio::main]
@@ -10,7 +10,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Replace these with actual values
     let room_id = 768756;
     let cookie = "";
-    let stream = Arc::new(DanmuStream::new(ProviderType::BiliBili, cookie, room_id).await?);
+    let stream = Arc::new(DanmakuStream::new(ProviderType::BiliBili, cookie, room_id).await?);
 
     log::info!("Start to receive danmu messages: {}", cookie);
 
@@ -20,7 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             log::info!("Waitting for message");
             if let Ok(Some(msg)) = stream_clone.recv().await {
                 match msg {
-                    DanmuMessageType::DanmuMessage(danmu) => {
+                    DanmakuMessageType::DanmuMessage(danmu) => {
                         log::info!("Received danmu message: {:?}", danmu.message);
                     }
                 }

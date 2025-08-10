@@ -238,6 +238,8 @@
       }
       selectedVideos.clear();
       await loadVideos();
+      showDeleteConfirm = false;
+      videoToDelete = null;
     } catch (error) {
       console.error("Failed to delete selected videos:", error);
     }

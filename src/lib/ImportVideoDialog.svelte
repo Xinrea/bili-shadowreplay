@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { invoke, TAURI_ENV, ENDPOINT } from "../lib/invoker";
+  import { invoke, TAURI_ENV, ENDPOINT, listen } from "../lib/invoker";
   import { Upload, X, CheckCircle } from "lucide-svelte";
-  import { createEventDispatcher } from "svelte";
+  import { createEventDispatcher, onDestroy } from "svelte";
   import { open } from "@tauri-apps/plugin-dialog";
+  import type { ProgressUpdate, ProgressFinished } from "./interface";
   
   export let showDialog = false;
   export let roomId: number | null = null;
@@ -18,6 +19,60 @@
   let uploadProgress = 0;
   let dragOver = false;
   let fileInput: HTMLInputElement;
+  let importProgress = "";
+  let currentImportEventId: string | null = null;
+
+  // 格式化文件大小
+  function formatFileSize(sizeInBytes: number): string {
+    if (sizeInBytes === 0) return "0 B";
+    
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    const k = 1024;
+    let unitIndex = 0;
+    let size = sizeInBytes;
+    
+    // 找到合适的单位
+    while (size >= k && unitIndex < units.length - 1) {
+      size /= k;
+      unitIndex++;
+    }
+    
+    // 对于GB以上，显示2位小数；MB显示2位小数；KB及以下显示1位小数
+    const decimals = unitIndex >= 3 ? 2 : (unitIndex >= 2 ? 2 : 1);
+    
+    return size.toFixed(decimals) + " " + units[unitIndex];
+  }
+
+  // 进度监听器
+  const progressUpdateListener = listen<ProgressUpdate>('progress-update', (e) => {
+    if (e.payload.id === currentImportEventId) {
+      importProgress = e.payload.content;
+    }
+  });
+
+  const progressFinishedListener = listen<ProgressFinished>('progress-finished', (e) => {
+    if (e.payload.id === currentImportEventId) {
+      if (e.payload.success) {
+        // 导入成功，关闭对话框并刷新列表
+        showDialog = false;
+        selectedFilePath = null;
+        selectedFileName = "";
+        selectedFileSize = 0;
+        videoTitle = "";
+        dispatch("imported");
+      } else {
+        alert("导入失败: " + e.payload.message);
+      }
+      importing = false;
+      currentImportEventId = null;
+      importProgress = "";
+    }
+  });
+
+  onDestroy(() => {
+    progressUpdateListener?.then(fn => fn());
+    progressFinishedListener?.then(fn => fn());
+  });
   
   async function handleFileSelect() {
     if (TAURI_ENV) {
@@ -151,8 +206,12 @@
     if (!selectedFilePath) return;
     
     importing = true;
+    importProgress = "准备导入...";
+    
     try {
       const eventId = "import_" + Date.now();
+      currentImportEventId = eventId;
+      
       await invoke("import_external_video", {
         eventId: eventId,
         filePath: selectedFilePath,
@@ -162,20 +221,13 @@
         roomId: roomId || 0
       });
       
-      // 导入成功，关闭对话框并刷新列表
-      showDialog = false;
-      selectedFilePath = null;
-      selectedFileName = "";
-      selectedFileSize = 0;
-      videoTitle = "";
-      dispatch("imported");
+      // 注意：成功处理移到了progressFinishedListener中
     } catch (error) {
       console.error("导入失败:", error);
       alert("导入失败: " + error);
-    } finally {
       importing = false;
-      uploading = false;
-      uploadProgress = 0;
+      currentImportEventId = null;
+      importProgress = "";
     }
   }
   
@@ -187,6 +239,9 @@
     videoTitle = "";
     uploading = false;
     uploadProgress = 0;
+    importing = false;
+    currentImportEventId = null;
+    importProgress = "";
   }
   
   function handleDragOver(event: DragEvent) {
@@ -251,7 +306,7 @@
               <CheckCircle class="w-12 h-12 text-green-500 mx-auto" />
             </div>
             <p class="text-sm text-gray-900 dark:text-white font-medium">{selectedFileName}</p>
-            <p class="text-xs text-gray-500">大小: {(selectedFileSize / 1024 / 1024).toFixed(2)} MB</p>
+            <p class="text-xs text-gray-500">大小: {formatFileSize(selectedFileSize)}</p>
             <p class="text-xs text-gray-400 break-all" title={selectedFilePath}>{selectedFilePath}</p>
             <button
               on:click={() => { 
@@ -327,9 +382,15 @@
         <button
           on:click={startImport}
           disabled={!selectedFilePath || importing || !videoTitle.trim() || uploading}
-          class="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          class="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center space-x-2"
         >
-          {importing ? "导入中..." : "开始导入"}
+          {#if importing}
+            <svg class="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+          {/if}
+          <span>{importing ? (importProgress || "导入中...") : "开始导入"}</span>
         </button>
       </div>
     </div>

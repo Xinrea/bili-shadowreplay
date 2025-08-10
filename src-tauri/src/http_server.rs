@@ -930,7 +930,7 @@ async fn handler_import_external_video(
     state: axum::extract::State<State>,
     Json(param): Json<ImportExternalVideoRequest>,
 ) -> Result<Json<ApiResponse<String>>, ApiError> {
-    import_external_video(state.0, param.file_path.clone(), param.title, param.original_name, param.size, param.room_id).await?;
+    import_external_video(state.0, param.event_id.clone(), param.file_path.clone(), param.title, param.original_name, param.size, param.room_id).await?;
     Ok(Json(ApiResponse::success(param.event_id)))
 }
 

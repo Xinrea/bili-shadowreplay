@@ -618,25 +618,54 @@ pub async fn get_video_cover(state: state_type!(), id: i64) -> Result<String, St
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn delete_video(state: state_type!(), id: i64) -> Result<(), String> {
-    // get video info from dbus
+    // get video info from db
     let video = state.db.get_video(id).await?;
+    let config = state.config.read().await;
+    
     // delete video from db
     state.db.delete_video(id).await?;
+    
     // delete video files
-    let filepath = Path::new(state.config.read().await.output.as_str()).join(&video.file);
+    let filepath = Path::new(&config.output).join(&video.file);
     let file = Path::new(&filepath);
-    let _ = std::fs::remove_file(file);
+    if let Err(e) = std::fs::remove_file(file) {
+        log::warn!("删除视频文件失败: {} - {}", file.display(), e);
+    } else {
+        log::info!("已删除视频文件: {}", file.display());
+    }
 
-    // delete srt file
+    // delete subtitle files
     let srt_path = file.with_extension("srt");
     let _ = std::fs::remove_file(srt_path);
-    // delete wav file
     let wav_path = file.with_extension("wav");
     let _ = std::fs::remove_file(wav_path);
-    // delete mp3 file
     let mp3_path = file.with_extension("mp3");
     let _ = std::fs::remove_file(mp3_path);
+
+    // delete thumbnail file based on video type
+    delete_video_thumbnail(&config.output, &video).await;
+    
     Ok(())
+}
+
+// 根据视频类型删除对应的缩略图文件
+async fn delete_video_thumbnail(output_dir: &str, video: &VideoRow) {
+    if video.cover.is_empty() {
+        return; // 没有缩略图，无需删除
+    }
+    
+    // 构建缩略图完整路径
+    let thumbnail_path = Path::new(output_dir).join(&video.cover);
+    
+    if thumbnail_path.exists() {
+        if let Err(e) = std::fs::remove_file(&thumbnail_path) {
+            log::warn!("删除缩略图失败: {} - {}", thumbnail_path.display(), e);
+        } else {
+            log::info!("已删除缩略图: {}", thumbnail_path.display());
+        }
+    } else {
+        log::debug!("缩略图文件不存在: {}", thumbnail_path.display());
+    }
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]

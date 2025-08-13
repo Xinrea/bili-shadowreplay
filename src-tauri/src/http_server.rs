@@ -30,10 +30,10 @@ use crate::{
         task::{delete_task, get_tasks},
         utils::{console_log, get_disk_info, list_folder, DiskInfo},
         video::{
-            cancel, clip_range, clip_video, delete_video, encode_video_subtitle, generate_video_subtitle,
-            generic_ffmpeg_command, get_all_videos, get_file_size, get_video, get_video_cover, get_video_subtitle,
-            get_video_typelist, get_videos, import_external_video, update_video_cover, update_video_subtitle,
-            upload_procedure,
+            cancel, clip_range, clip_video, delete_video, encode_video_subtitle,
+            generate_video_subtitle, generic_ffmpeg_command, get_all_videos, get_file_size,
+            get_video, get_video_cover, get_video_subtitle, get_video_typelist, get_videos,
+            import_external_video, update_video_cover, update_video_subtitle, upload_procedure,
         },
         AccountInfo,
     },
@@ -52,7 +52,7 @@ use crate::{
 };
 use axum::{extract::Query, response::sse};
 use axum::{
-    extract::{DefaultBodyLimit, Json, Path, Multipart},
+    extract::{DefaultBodyLimit, Json, Multipart, Path},
     http::StatusCode,
     response::{IntoResponse, Sse},
     routing::{get, post},
@@ -806,14 +806,14 @@ async fn handler_image_base64(
         Ok(cover) => cover,
         Err(_) => return Err(StatusCode::NOT_FOUND),
     };
-    
+
     // 检查是否是base64数据URL
     if cover.starts_with("data:image/") {
         if let Some(base64_start) = cover.find("base64,") {
-            let base64_data = &cover[base64_start + 7..]; // 跳过 "base64," 
-            
+            let base64_data = &cover[base64_start + 7..]; // 跳过 "base64,"
+
             // 解码base64数据
-            use base64::{Engine as _, engine::general_purpose};
+            use base64::{engine::general_purpose, Engine as _};
             if let Ok(image_data) = general_purpose::STANDARD.decode(base64_data) {
                 // 确定MIME类型
                 let content_type = if cover.contains("data:image/png") {
@@ -827,8 +827,9 @@ async fn handler_image_base64(
                 } else {
                     "image/png" // 默认
                 };
-                
-                let mut response = axum::response::Response::new(axum::body::Body::from(image_data));
+
+                let mut response =
+                    axum::response::Response::new(axum::body::Body::from(image_data));
                 let headers = response.headers_mut();
                 headers.insert(
                     axum::http::header::CONTENT_TYPE,
@@ -838,12 +839,12 @@ async fn handler_image_base64(
                     axum::http::header::CACHE_CONTROL,
                     "public, max-age=3600".parse().unwrap(),
                 );
-                
+
                 return Ok(response);
             }
         }
     }
-    
+
     Err(StatusCode::NOT_FOUND)
 }
 
@@ -930,7 +931,16 @@ async fn handler_import_external_video(
     state: axum::extract::State<State>,
     Json(param): Json<ImportExternalVideoRequest>,
 ) -> Result<Json<ApiResponse<String>>, ApiError> {
-    import_external_video(state.0, param.event_id.clone(), param.file_path.clone(), param.title, param.original_name, param.size, param.room_id).await?;
+    import_external_video(
+        state.0,
+        param.event_id.clone(),
+        param.file_path.clone(),
+        param.title,
+        param.original_name,
+        param.size,
+        param.room_id,
+    )
+    .await?;
     Ok(Json(ApiResponse::success(param.event_id)))
 }
 
@@ -955,7 +965,8 @@ async fn handler_clip_video(
         param.start_time,
         param.end_time,
         param.clip_title,
-    ).await?;
+    )
+    .await?;
     Ok(Json(ApiResponse::success(param.event_id)))
 }
 
@@ -1145,7 +1156,7 @@ async fn handler_upload_file(
 
     while let Some(field) = multipart.next_field().await.map_err(|e| e.to_string())? {
         let name = field.name().unwrap_or("").to_string();
-        
+
         match name.as_str() {
             "file" => {
                 file_name = field.file_name().unwrap_or("unknown").to_string();
@@ -1180,23 +1191,25 @@ async fn handler_upload_file(
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or("upload");
-    
+
     let unique_filename = if extension.is_empty() {
         format!("{}_{}", base_name, timestamp)
     } else {
         format!("{}_{}.{}", base_name, timestamp, extension)
     };
-    
+
     let file_path = upload_dir.join(&unique_filename);
-    
+
     // 写入文件
-    tokio::fs::write(&file_path, &file_data).await.map_err(|e| e.to_string())?;
-    
+    tokio::fs::write(&file_path, &file_data)
+        .await
+        .map_err(|e| e.to_string())?;
+
     let file_size = file_data.len() as u64;
     let file_path_str = file_path.to_string_lossy().to_string();
-    
+
     log::info!("File uploaded: {} ({} bytes)", file_path_str, file_size);
-    
+
     Ok(Json(ApiResponse::success(FileUploadResponse {
         file_path: file_path_str,
         file_name: unique_filename,
@@ -1353,9 +1366,19 @@ async fn handler_output(
         );
 
         // Only set Content-Disposition for non-media files to allow inline playback/display
-        if !matches!(content_type, 
-            "video/mp4" | "video/webm" | "video/x-m4v" | "video/x-matroska" | "video/x-msvideo" |
-            "image/jpeg" | "image/png" | "image/gif" | "image/webp" | "image/svg+xml") {
+        if !matches!(
+            content_type,
+            "video/mp4"
+                | "video/webm"
+                | "video/x-m4v"
+                | "video/x-matroska"
+                | "video/x-msvideo"
+                | "image/jpeg"
+                | "image/png"
+                | "image/gif"
+                | "image/webp"
+                | "image/svg+xml"
+        ) {
             let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
             headers.insert(
                 axum::http::header::CONTENT_DISPOSITION,
@@ -1446,6 +1469,8 @@ async fn handler_sse(
             .text("keep-alive"),
     )
 }
+
+const MAX_BODY_SIZE: usize = 10 * 1024 * 1024 * 1024;
 
 pub async fn start_api_server(state: State) {
     let cors = CorsLayer::new()
@@ -1595,7 +1620,7 @@ pub async fn start_api_server(state: State) {
 
     let router = app
         .layer(cors)
-        .layer(DefaultBodyLimit::max(20 * 1024 * 1024))
+        .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
         .with_state(state);
 
     let addr = "0.0.0.0:3000";

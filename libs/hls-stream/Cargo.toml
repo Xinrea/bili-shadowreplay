@@ -7,10 +7,6 @@ edition = "2024"
 name = "hls_stream"
 path = "src/lib.rs"
 
+
 [dependencies]
-async-trait = "0.1.88"
-chrono = "0.4.41"
 custom_error = "1.9.2"
-log = "0.4.27"
-serde = "1.0.219"
-tokio = "1.47.0"

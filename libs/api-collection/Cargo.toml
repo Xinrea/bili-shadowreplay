@@ -1,0 +1,16 @@
+[package]
+name = "api-collection"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chrono = "0.4.41"
+custom_error = "1.9.2"
+md5 = "0.8.0"
+pct-str = "2.0.0"
+regex = "1.11.1"
+reqwest = { version = "0.12.22", features = ["json"] }
+serde = "1.0.219"
+serde_json = "1.0.142"
+tempfile = "3.20.0"
+tokio = "1.47.1"

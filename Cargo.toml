@@ -3,7 +3,10 @@ resolver = "2"
 members = [
     "src-tauri",
     "libs/danmaku-stream",
+    "libs/hls-recorder", "libs/hls-stream", "libs/utils", "libs/api-collection",
 ]
 
 [workspace.dependencies]
 danmaku-stream = { path = "libs/danmaku-stream" }
+hls-stream = { path = "libs/hls-stream" }
+hls-recorder = { path = "libs/hls-recorder" }

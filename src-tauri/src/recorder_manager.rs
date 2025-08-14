@@ -613,8 +613,17 @@ impl RecorderManager {
         }
     }
 
-    pub async fn get_archives(&self, room_id: u64) -> Result<Vec<RecordRow>, RecorderManagerError> {
-        Ok(self.db.get_records(room_id).await?)
+    pub async fn get_archive_disk_usage(&self) -> Result<u64, RecorderManagerError> {
+        Ok(self.db.get_record_disk_usage().await?)
+    }
+
+    pub async fn get_archives(
+        &self,
+        room_id: u64,
+        offset: u64,
+        limit: u64,
+    ) -> Result<Vec<RecordRow>, RecorderManagerError> {
+        Ok(self.db.get_records(room_id, offset, limit).await?)
     }
 
     pub async fn get_archive(

@@ -77,22 +77,83 @@
   let archiveRoom = null;
   let archives: RecordItem[] = [];
 
+  // 分页相关状态
+  let currentPage = 0;
+  let pageSize = 20;
+  let hasMore = true;
+  let isLoading = false;
+  let loadError = "";
+
   async function showArchives(room_id: number) {
+    // 重置分页状态
+    currentPage = 0;
+    archives = [];
+    hasMore = true;
+    isLoading = false;
+    loadError = "";
+
     updateArchives();
     archiveModal = true;
     console.log(archives);
   }
 
   async function updateArchives() {
-    let updated_archives = (await invoke("get_archives", {
-      roomId: archiveRoom.room_id,
-    })) as RecordItem[];
-    updated_archives.sort((a, b) => {
-      return (
-        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-      );
-    });
-    archives = updated_archives;
+    if (isLoading || !hasMore) return;
+
+    isLoading = true;
+
+    try {
+      let new_archives = (await invoke("get_archives", {
+        roomId: archiveRoom.room_id,
+        offset: currentPage * pageSize,
+        limit: pageSize,
+      })) as RecordItem[];
+
+      // 如果是第一页，直接替换；否则追加数据
+      if (currentPage === 0) {
+        archives = new_archives;
+      } else {
+        archives = [...archives, ...new_archives];
+      }
+
+      // 检查是否还有更多数据
+      hasMore = new_archives.length === pageSize;
+
+      // 按时间排序
+      archives.sort((a, b) => {
+        return (
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        );
+      });
+
+      // 更新总数（如果后端支持的话）
+      // totalCount = await invoke("get_archives_count", { roomId: archiveRoom.room_id });
+
+      currentPage++;
+    } catch (error) {
+      console.error("Failed to load archives:", error);
+      loadError = "加载失败，请重试";
+    } finally {
+      isLoading = false;
+    }
+  }
+
+  async function loadMoreArchives() {
+    await updateArchives();
+  }
+
+  function handleScroll(event: Event) {
+    const target = event.target as HTMLElement;
+    const { scrollTop, scrollHeight, clientHeight } = target;
+
+    // 当滚动到距离底部100px时，自动加载更多
+    if (
+      scrollHeight - scrollTop - clientHeight < 100 &&
+      hasMore &&
+      !isLoading
+    ) {
+      loadMoreArchives();
+    }
   }
 
   function format_ts(ts_string: string) {
@@ -643,7 +704,10 @@
         </button>
       </div>
 
-      <div class="flex-1 overflow-auto custom-scrollbar-light">
+      <div
+        class="flex-1 overflow-auto custom-scrollbar-light"
+        on:scroll={handleScroll}
+      >
         <div class="p-6">
           <div class="overflow-x-auto custom-scrollbar-light">
             <table class="w-full">
@@ -740,6 +804,11 @@
                               liveId: archive.live_id,
                             })
                               .then(async () => {
+                                // 删除后重新加载第一页数据
+                                currentPage = 0;
+                                archives = [];
+                                hasMore = true;
+                                loadError = "";
                                 await updateArchives();
                               })
                               .catch((e) => {
@@ -755,6 +824,48 @@
                 {/each}
               </tbody>
             </table>
+          </div>
+
+          <!-- 加载更多区域 -->
+          <div class="mt-6 flex justify-center">
+            {#if loadError}
+              <div class="text-red-500 dark:text-red-400 text-sm mb-3">
+                {loadError}
+                <button
+                  class="ml-2 text-blue-500 hover:text-blue-600 underline"
+                  on:click={() => {
+                    loadError = "";
+                    loadMoreArchives();
+                  }}
+                >
+                  重试
+                </button>
+              </div>
+            {/if}
+
+            {#if isLoading && currentPage === 0}
+              <div
+                class="flex items-center space-x-2 text-gray-500 dark:text-gray-400"
+              >
+                <div
+                  class="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-500"
+                ></div>
+                <span>加载中...</span>
+              </div>
+            {:else if isLoading}
+              <div
+                class="flex items-center space-x-2 text-gray-500 dark:text-gray-400"
+              >
+                <div
+                  class="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500"
+                ></div>
+                <span>加载更多...</span>
+              </div>
+            {:else if archives.length === 0 && !isLoading}
+              <div class="text-gray-500 dark:text-gray-400 text-sm">
+                暂无录制记录
+              </div>
+            {/if}
           </div>
         </div>
       </div>

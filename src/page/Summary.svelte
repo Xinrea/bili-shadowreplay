@@ -45,11 +45,8 @@
     summary = (await invoke("get_recorder_list")) as RecorderList;
     total = summary.count;
     online = summary.recorders.filter((r) => r.live_status).length;
-    let new_disk_usage = 0;
-    for (const recorder of summary.recorders) {
-      new_disk_usage += await get_disk_usage(recorder.room_id);
-    }
-    disk_usage = new_disk_usage;
+
+    disk_usage = await get_archive_disk_usage();
 
     // get disk info
     disk_info = await invoke("get_disk_info");
@@ -129,15 +126,9 @@
   update_summary();
   setInterval(update_summary, INTERVAL);
 
-  async function get_disk_usage(room_id: number) {
-    let ds = 0;
-    const archives = (await invoke("get_archives", {
-      roomId: room_id,
-    })) as RecordItem[];
-    for (const archive of archives) {
-      ds += archive.size;
-    }
-    return ds;
+  async function get_archive_disk_usage() {
+    const total_size = (await invoke("get_archive_disk_usage")) as number;
+    return total_size;
   }
 
   async function get_total_length(): Promise<number> {

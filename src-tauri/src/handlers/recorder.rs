@@ -121,8 +121,21 @@ pub async fn get_room_info(
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn get_archives(state: state_type!(), room_id: u64) -> Result<Vec<RecordRow>, String> {
-    Ok(state.recorder_manager.get_archives(room_id).await?)
+pub async fn get_archive_disk_usage(state: state_type!()) -> Result<u64, String> {
+    Ok(state.recorder_manager.get_archive_disk_usage().await?)
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_archives(
+    state: state_type!(),
+    room_id: u64,
+    offset: u64,
+    limit: u64,
+) -> Result<Vec<RecordRow>, String> {
+    Ok(state
+        .recorder_manager
+        .get_archives(room_id, offset, limit)
+        .await?)
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]

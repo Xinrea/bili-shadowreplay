@@ -145,9 +145,19 @@ const get_recorder_info = tool(
 
 // @ts-ignore
 const get_archives = tool(
-  async ({ room_id }: { room_id: number }) => {
+  async ({
+    room_id,
+    offset,
+    limit,
+  }: {
+    room_id: number;
+    offset: number;
+    limit: number;
+  }) => {
     const archives = (await invoke("get_archives", {
       roomId: room_id,
+      offset,
+      limit,
     })) as any[];
     // hide cover in result
     return {
@@ -165,6 +175,8 @@ const get_archives = tool(
     description: "Get the list of all archives of a recorder",
     schema: z.object({
       room_id: z.number().describe("The room id of the recorder"),
+      offset: z.number().describe("The offset of the archives"),
+      limit: z.number().describe("The limit of the archives"),
     }),
   }
 );

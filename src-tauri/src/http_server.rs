@@ -23,9 +23,10 @@ use crate::{
         message::{delete_message, get_messages, read_message},
         recorder::{
             add_recorder, delete_archive, export_danmu, fetch_hls, generate_archive_subtitle,
-            get_archive, get_archive_subtitle, get_archives, get_danmu_record, get_recent_record,
-            get_recorder_list, get_room_info, get_today_record_count, get_total_length,
-            remove_recorder, send_danmaku, set_enable, ExportDanmuOptions,
+            get_archive, get_archive_disk_usage, get_archive_subtitle, get_archives,
+            get_danmu_record, get_recent_record, get_recorder_list, get_room_info,
+            get_today_record_count, get_total_length, remove_recorder, send_danmaku, set_enable,
+            ExportDanmuOptions,
         },
         task::{delete_task, get_tasks},
         utils::{console_log, get_disk_info, list_folder, DiskInfo},
@@ -495,17 +496,26 @@ async fn handler_get_room_info(
     Ok(Json(ApiResponse::success(room_info)))
 }
 
+async fn handler_get_archive_disk_usage(
+    state: axum::extract::State<State>,
+) -> Result<Json<ApiResponse<u64>>, ApiError> {
+    let disk_usage = get_archive_disk_usage(state.0).await?;
+    Ok(Json(ApiResponse::success(disk_usage)))
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GetArchivesRequest {
     room_id: u64,
+    offset: u64,
+    limit: u64,
 }
 
 async fn handler_get_archives(
     state: axum::extract::State<State>,
     Json(param): Json<GetArchivesRequest>,
 ) -> Result<Json<ApiResponse<Vec<RecordRow>>>, ApiError> {
-    let archives = get_archives(state.0, param.room_id).await?;
+    let archives = get_archives(state.0, param.room_id, param.offset, param.limit).await?;
     Ok(Json(ApiResponse::success(archives)))
 }
 
@@ -1584,6 +1594,10 @@ pub async fn start_api_server(state: State) {
         .route("/api/get_room_info", post(handler_get_room_info))
         .route("/api/get_archives", post(handler_get_archives))
         .route("/api/get_archive", post(handler_get_archive))
+        .route(
+            "/api/get_archive_disk_usage",
+            post(handler_get_archive_disk_usage),
+        )
         .route(
             "/api/get_archive_subtitle",
             post(handler_get_archive_subtitle),

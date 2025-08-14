@@ -172,6 +172,18 @@ fn get_migrations() -> Vec<Migration> {
             sql: r#"ALTER TABLE recorders ADD COLUMN extra TEXT;"#,
             kind: MigrationKind::Up,
         },
+        // add indexes
+        Migration {
+            version: 7,
+            description: "add_indexes",
+            sql: r#"
+                CREATE INDEX idx_records_live_id ON records (room_id, live_id);
+                CREATE INDEX idx_records_created_at ON records (room_id, created_at);
+                CREATE INDEX idx_videos_room_id ON videos (room_id);
+                CREATE INDEX idx_videos_created_at ON videos (created_at);
+            "#,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -519,6 +531,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::recorder::add_recorder,
         crate::handlers::recorder::remove_recorder,
         crate::handlers::recorder::get_room_info,
+        crate::handlers::recorder::get_archive_disk_usage,
         crate::handlers::recorder::get_archives,
         crate::handlers::recorder::get_archive,
         crate::handlers::recorder::get_archive_subtitle,

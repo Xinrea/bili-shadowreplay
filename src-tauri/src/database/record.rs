@@ -18,14 +18,21 @@ pub struct RecordRow {
 
 // CREATE TABLE records (live_id INTEGER PRIMARY KEY, room_id INTEGER, title TEXT, length INTEGER, size INTEGER, created_at TEXT);
 impl Database {
-    pub async fn get_records(&self, room_id: u64) -> Result<Vec<RecordRow>, DatabaseError> {
+    pub async fn get_records(
+        &self,
+        room_id: u64,
+        offset: u64,
+        limit: u64,
+    ) -> Result<Vec<RecordRow>, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
-        Ok(
-            sqlx::query_as::<_, RecordRow>("SELECT * FROM records WHERE room_id = $1")
-                .bind(room_id as i64)
-                .fetch_all(&lock)
-                .await?,
+        Ok(sqlx::query_as::<_, RecordRow>(
+            "SELECT * FROM records WHERE room_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
         )
+        .bind(room_id as i64)
+        .bind(limit as i64)
+        .bind(offset as i64)
+        .fetch_all(&lock)
+        .await?)
     }
 
     pub async fn get_record(
@@ -35,10 +42,10 @@ impl Database {
     ) -> Result<RecordRow, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         Ok(sqlx::query_as::<_, RecordRow>(
-            "SELECT * FROM records WHERE live_id = $1 and room_id = $2",
+            "SELECT * FROM records WHERE room_id = $1 and live_id = $2",
         )
-        .bind(live_id)
         .bind(room_id as i64)
+        .bind(live_id)
         .fetch_one(&lock)
         .await?)
     }
@@ -146,5 +153,13 @@ impl Database {
             .fetch_all(&lock)
             .await?)
         }
+    }
+
+    pub async fn get_record_disk_usage(&self) -> Result<u64, DatabaseError> {
+        let lock = self.db.read().await.clone().unwrap();
+        let result: (i64,) = sqlx::query_as("SELECT SUM(size) FROM records;")
+            .fetch_one(&lock)
+            .await?;
+        Ok(result.0 as u64)
     }
 }

@@ -1,5 +1,10 @@
 <script lang="ts">
-  import { invoke, convertCoverSrc } from "../lib/invoker";
+  import {
+    invoke,
+    convertCoverSrc,
+    TAURI_ENV,
+    convertFileSrc,
+  } from "../lib/invoker";
   import type { VideoItem } from "../lib/interface";
   import { onMount } from "svelte";
   import {
@@ -17,6 +22,7 @@
     Home,
     FileVideo,
     Scissors,
+    Download,
   } from "lucide-svelte";
 
   let videos: VideoItem[] = [];
@@ -266,6 +272,16 @@
       target.parentElement.innerHTML =
         '<svg class="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>';
     }
+  }
+
+  async function exportVideo(video: VideoItem) {
+    // download video
+    const video_url = await convertFileSrc(video.file);
+    const video_name = video.title;
+    const a = document.createElement("a");
+    a.href = video_url;
+    a.download = video_name;
+    a.click();
   }
 
   import ImportVideoDialog from "../lib/ImportVideoDialog.svelte";
@@ -682,7 +698,15 @@
                       >
                         <Play class="table-icon" />
                       </button>
-
+                      {#if !TAURI_ENV}
+                        <button
+                          class="p-1.5 text-gray-600 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded transition-colors"
+                          title="导出"
+                          on:click={async () => await exportVideo(video)}
+                        >
+                          <Download class="table-icon" />
+                        </button>
+                      {/if}
                       <button
                         class="p-1.5 text-gray-600 dark:text-gray-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors"
                         title="删除"

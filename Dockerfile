@@ -90,4 +90,4 @@ COPY --from=rust-builder /app/src-tauri/ffprobe ./ffprobe
 EXPOSE 3000
 
 # Run the application
-CMD ["./bili-shadowreplay"]
+CMD ["sh", "-c", "nscd && ./bili-shadowreplay"]

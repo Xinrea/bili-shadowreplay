@@ -65,8 +65,15 @@ RUN apt-get update && apt-get install -y \
     libssl3 \
     ca-certificates \
     fonts-wqy-microhei \
+    netbase \
+    nscd \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+
+RUN touch /etc/netgroup
+RUN mkdir -p /var/run/nscd && chmod 755 /var/run/nscd
+RUN nscd
 
 # Add /app to PATH
 ENV PATH="/app:${PATH}"

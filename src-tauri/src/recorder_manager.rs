@@ -690,6 +690,19 @@ impl RecorderManager {
         Ok(())
     }
 
+    pub async fn delete_archives(
+        &self,
+        platform: PlatformType,
+        room_id: u64,
+        live_ids: &[&str],
+    ) -> Result<(), RecorderManagerError> {
+        log::info!("Deleting archives in batch: {:?}", live_ids);
+        for live_id in live_ids {
+            self.delete_archive(platform, room_id, live_id).await?;
+        }
+        Ok(())
+    }
+
     pub async fn get_danmu(
         &self,
         platform: PlatformType,

@@ -22,9 +22,9 @@ use crate::{
         },
         message::{delete_message, get_messages, read_message},
         recorder::{
-            add_recorder, delete_archive, export_danmu, fetch_hls, generate_archive_subtitle,
-            get_archive, get_archive_disk_usage, get_archive_subtitle, get_archives,
-            get_danmu_record, get_recent_record, get_recorder_list, get_room_info,
+            add_recorder, delete_archive, delete_archives, export_danmu, fetch_hls,
+            generate_archive_subtitle, get_archive, get_archive_disk_usage, get_archive_subtitle,
+            get_archives, get_danmu_record, get_recent_record, get_recorder_list, get_room_info,
             get_today_record_count, get_total_length, remove_recorder, send_danmaku, set_enable,
             ExportDanmuOptions,
         },
@@ -581,6 +581,22 @@ async fn handler_delete_archive(
     Json(param): Json<DeleteArchiveRequest>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
     delete_archive(state.0, param.platform, param.room_id, param.live_id).await?;
+    Ok(Json(ApiResponse::success(())))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteArchivesRequest {
+    platform: String,
+    room_id: u64,
+    live_ids: Vec<String>,
+}
+
+async fn handler_delete_archives(
+    state: axum::extract::State<State>,
+    Json(param): Json<DeleteArchivesRequest>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    delete_archives(state.0, param.platform, param.room_id, param.live_ids).await?;
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -1517,6 +1533,7 @@ pub async fn start_api_server(state: State) {
             .route("/api/add_recorder", post(handler_add_recorder))
             .route("/api/remove_recorder", post(handler_remove_recorder))
             .route("/api/delete_archive", post(handler_delete_archive))
+            .route("/api/delete_archives", post(handler_delete_archives))
             .route("/api/send_danmaku", post(handler_send_danmaku))
             .route("/api/set_enable", post(handler_set_enable))
             .route("/api/upload_procedure", post(handler_upload_procedure))

@@ -210,6 +210,35 @@ pub async fn delete_archive(
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
+pub async fn delete_archives(
+    state: state_type!(),
+    platform: String,
+    room_id: u64,
+    live_ids: Vec<String>,
+) -> Result<(), String> {
+    let platform = PlatformType::from_str(&platform);
+    if platform.is_none() {
+        return Err("Unsupported platform".to_string());
+    }
+    state
+        .recorder_manager
+        .delete_archives(
+            platform.unwrap(),
+            room_id,
+            &live_ids.iter().map(|s| s.as_str()).collect::<Vec<&str>>(),
+        )
+        .await?;
+    state
+        .db
+        .new_message(
+            "删除历史缓存",
+            &format!("删除了房间 {} 的历史缓存 {}", room_id, live_ids.join(", ")),
+        )
+        .await?;
+    Ok(())
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_danmu_record(
     state: state_type!(),
     platform: String,

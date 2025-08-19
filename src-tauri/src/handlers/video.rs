@@ -74,6 +74,9 @@ fn get_optimal_thumbnail_timestamp(duration: f64) -> f64 {
 use crate::state::State;
 use crate::state_type;
 
+// 大文件阈值（100MB），超过此大小的FLV转换将显示进度
+const LARGE_FILE_THRESHOLD: u64 = 100 * 1024 * 1024;
+
 // 导入视频相关的数据结构
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ImportedVideoMetadata {
@@ -1353,3 +1356,384 @@ fn sanitize_filename(name: &str) -> String {
         .take(50) // 限制长度
         .collect()
 }
+
+// 检查文件扩展名是否为支持的视频格式（复用现有逻辑）
+fn is_supported_video_format(extension: &str) -> bool {
+    // 使用与前端ImportVideoDialog.svelte相同的格式列表
+    let supported_extensions = ["mp4", "mkv", "avi", "mov", "wmv", "flv", "m4v", "webm"];
+    supported_extensions.iter().any(|&ext| ext.eq_ignore_ascii_case(extension))
+}
+
+// 扫描导入目录中的新视频文件
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn scan_imported_directory(state: state_type!()) -> Result<Vec<String>, String> {
+    let output_path = {
+        let config = state.config.read().await;
+        config.output.clone()
+    };
+    let imported_dir = Path::new(&output_path).join("imported");
+    
+    if !imported_dir.exists() {
+        // 创建导入目录
+        std::fs::create_dir_all(&imported_dir)
+            .map_err(|e| format!("创建导入目录失败: {}", e))?;
+        return Ok(Vec::new());
+    }
+    
+    let mut new_files = Vec::new();
+    
+    // 获取数据库中所有已导入的视频
+    let all_videos = state.db.get_all_videos().await.map_err(|e| e.to_string())?;
+    let imported_videos: Vec<_> = all_videos.iter()
+        .filter(|v| v.platform == "imported")
+        .collect();
+    
+    // 扫描导入目录
+    let entries = std::fs::read_dir(&imported_dir)
+        .map_err(|e| format!("读取导入目录失败: {}", e))?;
+        
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("读取目录项失败: {}", e))?;
+        let path = entry.path();
+        
+        if !path.is_file() {
+            continue;
+        }
+        
+        // 检查文件扩展名
+        let extension = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+            
+        if !is_supported_video_format(&extension) {
+            continue;
+        }
+        
+        // 生成相对路径（相对于output目录）
+        let relative_path = format!("imported/{}", 
+            path.file_name().unwrap().to_string_lossy());
+        
+        // 检查是否已在数据库中
+        let mut already_imported = false;
+        for video in &imported_videos {
+            // 检查相对路径是否匹配
+            if video.file == relative_path {
+                already_imported = true;
+                break;
+            }
+            
+            // 特殊处理：如果当前文件是 FLV，检查是否已有对应的 MP4 版本
+            if extension == "flv" {
+                let mp4_relative_path = format!("imported/{}.mp4", 
+                    path.file_stem().unwrap().to_string_lossy());
+                if video.file == mp4_relative_path {
+                    already_imported = true;
+                    break;
+                }
+            }
+            
+            // 特殊处理：如果数据库中有 MP4，当前是对应的 FLV 源文件
+            if video.file.ends_with(".mp4") && extension == "flv" {
+                let video_stem = video.file.trim_end_matches(".mp4")
+                    .trim_start_matches("imported/");
+                let current_stem = path.file_stem().unwrap().to_string_lossy();
+                if video_stem == current_stem {
+                    already_imported = true;
+                    break;
+                }
+            }
+        }
+        
+        if !already_imported {
+            new_files.push(path.to_string_lossy().to_string());
+        }
+    }
+    
+    Ok(new_files)
+}
+
+// 就地导入文件到数据库（不复制文件）
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn import_file_in_place(
+    state: state_type!(),
+    file_path: String,
+    room_id: u64,
+) -> Result<i64, String> {
+    let file_path = Path::new(&file_path);
+    
+    if !file_path.exists() {
+        return Err("文件不存在".to_string());
+    }
+    
+    let output_path = {
+        let config = state.config.read().await;
+        config.output.clone()
+    };
+    let output_dir = Path::new(&output_path);
+    
+    // 确保文件在imported目录中
+    if !file_path.starts_with(output_dir.join("imported")) {
+        return Err("文件必须位于导入目录中".to_string());
+    }
+    
+    // 获取文件信息
+    let metadata = file_path.metadata()
+        .map_err(|e| format!("获取文件信息失败: {}", e))?;
+    
+    let file_name = file_path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("unknown")
+        .to_string();
+    
+    let extension = file_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("mp4")
+        .to_lowercase();
+    
+    // 检查是否需要格式转换（FLV -> MP4）
+    let need_conversion = should_convert_video_format(&extension);
+    
+    // 确定最终文件路径和相对路径
+    let (final_file_path, final_relative_path, final_extension) = if need_conversion {
+        // FLV 需要转换为 MP4
+        let mp4_filename = format!("{}.mp4", file_name);
+        let mp4_path = output_dir.join("imported").join(&mp4_filename);
+        (mp4_path, format!("imported/{}", mp4_filename), "mp4".to_string())
+    } else {
+        // 其他格式使用原文件
+        let relative_path = format!("imported/{}", 
+            file_path.file_name().unwrap().to_string_lossy());
+        (file_path.to_path_buf(), relative_path, extension.clone())
+    };
+    
+    // 执行格式转换（如果需要）
+    if need_conversion {
+        // 创建一个简单的进度报告器（用于转换过程）
+        use crate::progress_reporter::ProgressReporter;
+        use crate::progress_reporter::EventEmitter;
+        
+        #[cfg(feature = "gui")]
+        let emitter = EventEmitter::new(state.app_handle.clone());
+        #[cfg(feature = "headless")]
+        let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
+        
+        let temp_event_id = format!("convert_flv_{}", chrono::Utc::now().timestamp());
+        let reporter = ProgressReporter::new(&emitter, &temp_event_id).await
+            .map_err(|e| format!("创建进度报告器失败: {}", e))?;
+        
+        // 检查是否是大文件，需要任务跟踪
+        let file_size = metadata.len();
+        let should_track_progress = file_size > LARGE_FILE_THRESHOLD;
+        
+        if should_track_progress {
+            // 为大文件创建任务记录
+            let task = crate::database::task::TaskRow {
+                id: temp_event_id.clone(),
+                task_type: "import_flv_conversion".to_string(),
+                status: "pending".to_string(),
+                message: format!("正在转换 {} ({:.1}MB)", file_name, file_size as f64 / (1024.0 * 1024.0)),
+                metadata: serde_json::json!({
+                    "file_name": file_name,
+                    "file_size": file_size,
+                    "conversion_type": "flv_to_mp4",
+                    "source_path": file_path.to_string_lossy()
+                }).to_string(),
+                created_at: chrono::Utc::now().to_rfc3339(),
+            };
+            state.db.add_task(&task).await
+                .map_err(|e| format!("创建转换任务记录失败: {}", e))?;
+        }
+        
+        reporter.update("正在转换 FLV 格式为 MP4...");
+        
+        // 执行转换
+        let conversion_result = ffmpeg::convert_video_format(file_path, &final_file_path, &reporter).await;
+        
+        if should_track_progress {
+            // 更新任务状态
+            match &conversion_result {
+                Ok(_) => {
+                    state.db.update_task(&temp_event_id, "success", "转换完成", None).await
+                        .map_err(|e| log::warn!("更新任务状态失败: {}", e)).ok();
+                }
+                Err(e) => {
+                    state.db.update_task(&temp_event_id, "failed", &format!("转换失败: {}", e), None).await
+                        .map_err(|e| log::warn!("更新任务状态失败: {}", e)).ok();
+                }
+            }
+        }
+        
+        conversion_result.map_err(|e| format!("FLV 转 MP4 失败: {}", e))?;
+        
+        reporter.finish(true, "格式转换完成").await;
+        
+        log::info!("FLV 转换完成: {} -> {}", 
+                   file_path.display(), final_file_path.display());
+        
+        // 检查是否需要删除源FLV文件
+        let config_guard = state.config.read().await;
+        let cleanup_source_flv = config_guard.cleanup_source_flv_after_import;
+        drop(config_guard);
+        
+        if cleanup_source_flv {
+            if let Err(e) = std::fs::remove_file(file_path) {
+                log::warn!("删除源FLV文件失败: {} - {}", file_path.display(), e);
+            } else {
+                log::info!("已删除源FLV文件: {}", file_path.display());
+            }
+        }
+    }
+    
+    // 获取视频元数据（基于最终文件）
+    let video_metadata = ffmpeg::extract_video_metadata(&final_file_path).await
+        .map_err(|e| format!("获取视频元数据失败: {}", e))?;
+    
+    // 生成缩略图
+    let timestamp = chrono::Utc::now().timestamp();
+    let thumbnail_name = format!("imported_{}_{}.jpg", timestamp, sanitize_filename(&file_name));
+    let thumbnail_dir = output_dir.join("thumbnails").join("imported");
+    let thumbnail_path = thumbnail_dir.join(&thumbnail_name);
+    
+    // 确保缩略图目录存在
+    if !thumbnail_dir.exists() {
+        std::fs::create_dir_all(&thumbnail_dir)
+            .map_err(|e| format!("创建缩略图目录失败: {}", e))?;
+    }
+    
+    // 获取最佳缩略图时间点
+    let thumbnail_time = get_optimal_thumbnail_timestamp(video_metadata.duration);
+    
+    // 生成缩略图（基于最终文件）
+    let ffmpeg_result = ffmpeg::generate_thumbnail(
+        &final_file_path,
+        &thumbnail_path,
+        thumbnail_time,
+    ).await;
+    
+    let cover_path = if ffmpeg_result.is_ok() {
+        format!("thumbnails/imported/{}", thumbnail_name)
+    } else {
+        log::warn!("生成缩略图失败，使用默认封面: {:?}", ffmpeg_result);
+        "".to_string()
+    };
+    
+    // 创建导入元数据
+    let import_metadata = ImportedVideoMetadata {
+        original_path: file_path.to_string_lossy().to_string(),
+        original_size: metadata.len() as i64,
+        import_date: chrono::Utc::now().to_rfc3339(),
+        video_format: final_extension.clone(),
+        duration: video_metadata.duration,
+        resolution: Some(format!("{}x{}", video_metadata.width, video_metadata.height)),
+    };
+    
+    let metadata_json = serde_json::to_string(&import_metadata)
+        .map_err(|e| format!("序列化元数据失败: {}", e))?;
+    
+    // 获取最终文件的大小
+    let final_file_size = if need_conversion {
+        final_file_path.metadata()
+            .map_err(|e| format!("获取转换后文件大小失败: {}", e))?
+            .len() as i64
+    } else {
+        metadata.len() as i64
+    };
+    
+    // 创建视频记录
+    let video_row = VideoRow {
+        id: 0, // 将由数据库分配
+        room_id,
+        cover: cover_path,
+        file: final_relative_path,
+        length: video_metadata.duration as i64,
+        size: final_file_size,
+        status: 0,
+        bvid: "".to_string(),
+        title: file_name.clone(),
+        desc: metadata_json,
+        tags: "".to_string(),
+        area: 0,
+        created_at: chrono::Utc::now().to_rfc3339(),
+        platform: "imported".to_string(),
+    };
+    
+    // 插入数据库
+    let inserted_video = state.db.add_video(&video_row).await
+        .map_err(|e| format!("插入数据库失败: {}", e))?;
+    
+    if need_conversion {
+        log::info!("就地导入视频成功 (FLV->MP4): {} -> ID: {}", file_name, inserted_video.id);
+    } else {
+        log::info!("就地导入视频成功: {} -> ID: {}", file_name, inserted_video.id);
+    }
+    
+    Ok(inserted_video.id)
+}
+
+// 批量就地导入文件
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn batch_import_in_place(
+    state: state_type!(),
+    file_paths: Vec<String>,
+    room_id: u64,
+) -> Result<serde_json::Value, String> {
+    let mut successful_imports = 0;
+    let mut failed_imports = 0;
+    let mut imported_video_ids = Vec::new();
+    let mut errors = Vec::new();
+    
+    for file_path in file_paths {
+        match import_file_in_place(state.clone(), file_path.clone(), room_id).await {
+            Ok(video_id) => {
+                imported_video_ids.push(video_id);
+                successful_imports += 1;
+            }
+            Err(e) => {
+                errors.push(format!("导入失败 {}: {}", file_path, e));
+                failed_imports += 1;
+            }
+        }
+    }
+    
+    Ok(serde_json::json!({
+        "successful_imports": successful_imports,
+        "failed_imports": failed_imports,
+        "imported_video_ids": imported_video_ids,
+        "errors": errors
+    }))
+}
+
+// 查询当前导入进度
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_import_progress(state: state_type!()) -> Result<Option<serde_json::Value>, String> {
+    // 查询进行中的FLV转换任务
+    let all_tasks = state.db.get_tasks().await.map_err(|e| e.to_string())?;
+    
+    // 查找状态为 "pending" 或 "running" 的 import_flv_conversion 任务
+    for task in &all_tasks {
+        if task.task_type == "import_flv_conversion" && 
+           (task.status == "pending" || task.status == "running") {
+            
+            // 解析任务元数据
+            let metadata: serde_json::Value = serde_json::from_str(&task.metadata)
+                .unwrap_or_default();
+            
+            return Ok(Some(serde_json::json!({
+                "task_id": task.id,
+                "file_name": metadata.get("file_name").and_then(|v| v.as_str()).unwrap_or("未知文件"),
+                "file_size": metadata.get("file_size").and_then(|v| v.as_u64()).unwrap_or(0),
+                "message": task.message,
+                "status": task.status,
+                "created_at": task.created_at
+            })));
+        }
+    }
+    
+    Ok(None)
+}
+
+

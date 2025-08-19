@@ -38,6 +38,7 @@
     status_check_interval: 30, // 默认30秒
     whisper_language: "",
     user_agent: "",
+    cleanup_source_flv_after_import: false,
   };
 
   let showModal = false;
@@ -131,6 +132,12 @@
     }
     await invoke("update_status_check_interval", {
       interval: setting_model.status_check_interval,
+    });
+  }
+
+  async function update_cleanup_source_flv() {
+    await invoke("update_cleanup_source_flv", {
+      cleanup: setting_model.cleanup_source_flv_after_import,
     });
   }
 
@@ -320,6 +327,32 @@
                     >
                       打开
                     </button>
+                  </div>
+                </div>
+                <!-- FLV Auto-cleanup Setting -->
+                <div class="p-4">
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <h3
+                        class="text-sm font-medium text-gray-900 dark:text-white"
+                      >
+                         FLV 转换后自动清理源文件
+                      </h3>
+                      <p class="text-sm text-gray-500 dark:text-gray-400">
+                        启用后，自动识别目录导入 FLV 视频并自动转换为 MP4 后，会删除原始 FLV 文件以节省存储空间
+                      </p>
+                    </div>
+                    <label class="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        bind:checked={setting_model.cleanup_source_flv_after_import}
+                        on:change={update_cleanup_source_flv}
+                        class="sr-only peer"
+                      />
+                      <div
+                        class="w-11 h-6 bg-gray-200 dark:bg-gray-700 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-blue-600"
+                      ></div>
+                    </label>
                   </div>
                 </div>
               </div>

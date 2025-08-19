@@ -44,15 +44,28 @@
 
   let cover_cache: Map<number, string> = new Map();
 
+  let importProgressInfo = null;
+
   async function loadVideos() {
     loading = true;
     try {
-      // Get all videos from all rooms
-      const allVideos: VideoItem[] = [];
+      // 1. 先扫描导入目录中的新文件
+      const scanResult = await scanAndImportNewFiles();
+      
+      // 如果有进行中的转换任务，设置进度信息
+      if (scanResult.hasProgress) {
+        importProgressInfo = scanResult.progressInfo;
+        // 设置定时器定期更新进度信息
+        setTimeout(loadVideos, 3000); // 3秒后再次检查
+      } else {
+        importProgressInfo = null;
+      }
 
-      // First, get all room IDs that have videos
+      // 2. 获取所有视频
+      const allVideos: VideoItem[] = [];
       const roomIdsSet = new Set<number>();
       const tempVideos = await invoke<VideoItem[]>("get_all_videos");
+      
       for (const video of tempVideos) {
         if (cover_cache.has(video.id)) {
           video.cover = cover_cache.get(video.id) || "";
@@ -78,6 +91,55 @@
       console.error("Failed to load videos:", error);
     } finally {
       loading = false;
+    }
+  }
+
+  // 扫描并导入新文件
+  async function scanAndImportNewFiles() {
+    try {
+      // 先检查是否有进行中的大文件FLV转换任务
+      const importProgress = await invoke("get_import_progress");
+      if (importProgress) {
+        console.log(`检测到进行中的转换任务:`, importProgress);
+        // 如果有进行中的转换任务，显示进度信息而不是执行新扫描
+        return {
+          hasProgress: true,
+          progressInfo: importProgress
+        };
+      }
+      
+      // 扫描导入目录
+      const newFiles = await invoke<string[]>("scan_imported_directory");
+      
+      if (newFiles.length > 0) {
+        console.log(`发现 ${newFiles.length} 个新视频文件`);
+        
+        // 批量就地导入
+        const result = await invoke("batch_import_in_place", {
+          filePaths: newFiles,
+          roomId: selectedRoomId || 0
+        });
+        
+        if (result.successful_imports > 0) {
+          console.log(`成功导入 ${result.successful_imports} 个视频文件`);
+        }
+        
+        if (result.failed_imports > 0) {
+          console.error("导入失败的文件:", result.errors);
+        }
+      }
+      
+      return {
+        hasProgress: false,
+        progressInfo: null
+      };
+    } catch (error) {
+      console.error("扫描导入目录失败:", error);
+      // 扫描失败不影响正常的视频列表加载
+      return {
+        hasProgress: false,
+        progressInfo: null
+      };
     }
   }
 
@@ -285,6 +347,7 @@
   }
 
   import ImportVideoDialog from "../lib/ImportVideoDialog.svelte";
+
 </script>
 
 <!-- svelte-ignore a11y-click-events-have-key-events -->
@@ -472,7 +535,21 @@
           class="flex flex-col items-center justify-center p-12 space-y-4 text-gray-500 dark:text-gray-400"
         >
           <RefreshCw class="w-8 h-8 animate-spin" />
-          <span>加载中...</span>
+          {#if importProgressInfo}
+            <div class="text-center space-y-2">
+              <span class="text-lg font-medium text-blue-600 dark:text-blue-400">
+                正在转换视频格式
+              </span>
+              <p class="text-sm">
+                {importProgressInfo.message}
+              </p>
+              <div class="text-xs text-gray-400">
+                文件大小: {(importProgressInfo.file_size / (1024 * 1024)).toFixed(1)} MB
+              </div>
+            </div>
+          {:else}
+            <span>加载中...</span>
+          {/if}
         </div>
       {:else if filteredVideos.length === 0}
         <div

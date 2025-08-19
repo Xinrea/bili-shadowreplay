@@ -252,3 +252,10 @@ pub async fn update_user_agent(state: state_type!(), user_agent: String) -> Resu
     state.config.write().await.set_user_agent(&user_agent);
     Ok(())
 }
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn update_cleanup_source_flv(state: state_type!(), cleanup: bool) -> Result<(), ()> {
+    log::info!("Updating cleanup source FLV after import to {}", cleanup);
+    state.config.write().await.set_cleanup_source_flv(cleanup);
+    Ok(())
+}

@@ -135,11 +135,11 @@ pub async fn set_output_path(state: state_type!(), output_path: String) -> Resul
         // if entry is a folder
         if entry.is_dir() {
             if let Err(e) = crate::handlers::utils::copy_dir_all(entry, &new_entry) {
-                log::error!("Copy old cache to new cache error: {}", e);
+                log::error!("Copy old output to new output error: {}", e);
                 return Err(e.to_string());
             }
         } else if let Err(e) = std::fs::copy(entry, &new_entry) {
-            log::error!("Copy old cache to new cache error: {}", e);
+            log::error!("Copy old output to new output error: {}", e);
             return Err(e.to_string());
         }
     }
@@ -148,10 +148,10 @@ pub async fn set_output_path(state: state_type!(), output_path: String) -> Resul
     for entry in old_output_entries {
         if entry.is_dir() {
             if let Err(e) = std::fs::remove_dir_all(&entry) {
-                log::error!("Remove old cache error: {}", e);
+                log::error!("Remove old output error: {}", e);
             }
         } else if let Err(e) = std::fs::remove_file(&entry) {
-            log::error!("Remove old cache error: {}", e);
+            log::error!("Remove old output error: {}", e);
         }
     }
 

@@ -21,6 +21,7 @@ use danmu_stream::provider::ProviderType;
 use danmu_stream::DanmuMessageType;
 use errors::BiliClientError;
 use m3u8_rs::{Playlist, QuotedOrUnquoted, VariantStream};
+use rand::seq::SliceRandom;
 use regex::Regex;
 use std::path::Path;
 use std::sync::Arc;
@@ -291,32 +292,36 @@ impl BiliRecorder {
                 let variant = match master_manifest {
                     Playlist::MasterPlaylist(playlist) => {
                         let variants = playlist.variants.clone();
-                        variants.into_iter().find(|variant| {
-                            if let Some(other_attributes) = &variant.other_attributes {
-                                if let Some(QuotedOrUnquoted::Quoted(bili_display)) =
-                                    other_attributes.get("BILI-DISPLAY")
-                                {
-                                    bili_display == "原画"
+                        variants
+                            .into_iter()
+                            .filter(|variant| {
+                                if let Some(other_attributes) = &variant.other_attributes {
+                                    if let Some(QuotedOrUnquoted::Quoted(bili_display)) =
+                                        other_attributes.get("BILI-DISPLAY")
+                                    {
+                                        bili_display == "原画"
+                                    } else {
+                                        false
+                                    }
                                 } else {
                                     false
                                 }
-                            } else {
-                                false
-                            }
-                        })
+                            })
+                            .collect::<Vec<_>>()
                     }
                     _ => {
                         log::error!("[{}]Master manifest is not a media playlist", self.room_id);
-                        None
+                        vec![]
                     }
                 };
 
-                if variant.is_none() {
+                if variant.is_empty() {
                     log::error!("[{}]No variant found", self.room_id);
                     return true;
                 }
 
-                let variant = variant.unwrap();
+                // random select a variant
+                let variant = variant.choose(&mut rand::thread_rng()).unwrap();
 
                 let new_stream = self.stream_from_variant(variant).await;
                 if new_stream.is_err() {
@@ -363,7 +368,7 @@ impl BiliRecorder {
 
     async fn stream_from_variant(
         &self,
-        variant: VariantStream,
+        variant: &VariantStream,
     ) -> Result<BiliStream, super::errors::RecorderError> {
         let url = variant.uri.clone();
         // example url: https://cn-hnld-ct-01-47.bilivideo.com/live-bvc/931676/live_1789460279_3538985/index.m3u8?expires=1745927098&len=0&oi=3729149990&pt=h5&qn=10000&trid=10075ceab17d4c9498264eb76d572b6810ad&sigparams=cdn,expires,len,oi,pt,qn,trid&cdn=cn-gotcha01&sign=686434f3ad01d33e001c80bfb7e1713d&site=3124fc9e0fabc664ace3d1b33638f7f2&free_type=0&mid=0&sche=ban&bvchls=1&sid=cn-hnld-ct-01-47&chash=0&bmt=1&sg=lr&trace=25&isp=ct&rg=East&pv=Shanghai&sk=28cc07215ff940102a1d60dade11467e&codec=0&pp=rtmp&hdr_type=0&hot_cdn=57345&suffix=origin&flvsk=c9154f5b3c6b14808bc5569329cf7f94&origin_bitrate=1281767&score=1&source=puv3_master&p2p_type=-1&deploy_env=prod&sl=1&info_source=origin&vd=nc&zoneid_l=151355393&sid_l=stream_name_cold&src=puv3&order=1

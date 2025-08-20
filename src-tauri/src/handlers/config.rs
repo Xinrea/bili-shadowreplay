@@ -14,8 +14,25 @@ pub async fn get_config(state: state_type!()) -> Result<Config, ()> {
 #[allow(dead_code)]
 pub async fn set_cache_path(state: state_type!(), cache_path: String) -> Result<(), String> {
     let old_cache_path = state.config.read().await.cache.clone();
+    log::info!(
+        "Try to set cache path: {} -> {}",
+        old_cache_path,
+        cache_path
+    );
     if old_cache_path == cache_path {
         return Ok(());
+    }
+
+    let old_cache_path_obj = std::path::Path::new(&old_cache_path);
+    let new_cache_path_obj = std::path::Path::new(&cache_path);
+    // check if new cache path is under old cache path
+    if new_cache_path_obj.starts_with(old_cache_path_obj) {
+        log::error!(
+            "New cache path is under old cache path: {} -> {}",
+            old_cache_path,
+            cache_path
+        );
+        return Err("New cache path cannot be under old cache path".to_string());
     }
 
     state.recorder_manager.set_migrating(true).await;
@@ -52,9 +69,11 @@ pub async fn set_cache_path(state: state_type!(), cache_path: String) -> Result<
         if entry.is_dir() {
             if let Err(e) = crate::handlers::utils::copy_dir_all(entry, &new_entry) {
                 log::error!("Copy old cache to new cache error: {}", e);
+                return Err(e.to_string());
             }
         } else if let Err(e) = std::fs::copy(entry, &new_entry) {
             log::error!("Copy old cache to new cache error: {}", e);
+            return Err(e.to_string());
         }
     }
 
@@ -79,12 +98,30 @@ pub async fn set_cache_path(state: state_type!(), cache_path: String) -> Result<
 
 #[cfg_attr(feature = "gui", tauri::command)]
 #[allow(dead_code)]
-pub async fn set_output_path(state: state_type!(), output_path: String) -> Result<(), ()> {
+pub async fn set_output_path(state: state_type!(), output_path: String) -> Result<(), String> {
     let mut config = state.config.write().await;
     let old_output_path = config.output.clone();
+    log::info!(
+        "Try to set output path: {} -> {}",
+        old_output_path,
+        output_path
+    );
     if old_output_path == output_path {
         return Ok(());
     }
+
+    let old_output_path_obj = std::path::Path::new(&old_output_path);
+    let new_output_path_obj = std::path::Path::new(&output_path);
+    // check if new output path is under old output path
+    if new_output_path_obj.starts_with(old_output_path_obj) {
+        log::error!(
+            "New output path is under old output path: {} -> {}",
+            old_output_path,
+            output_path
+        );
+        return Err("New output path cannot be under old output path".to_string());
+    }
+
     // list all file and folder in old output
     let mut old_output_entries = vec![];
     if let Ok(entries) = std::fs::read_dir(&old_output_path) {
@@ -103,10 +140,12 @@ pub async fn set_output_path(state: state_type!(), output_path: String) -> Resul
         // if entry is a folder
         if entry.is_dir() {
             if let Err(e) = crate::handlers::utils::copy_dir_all(entry, &new_entry) {
-                log::error!("Copy old cache to new cache error: {}", e);
+                log::error!("Copy old output to new output error: {}", e);
+                return Err(e.to_string());
             }
         } else if let Err(e) = std::fs::copy(entry, &new_entry) {
-            log::error!("Copy old cache to new cache error: {}", e);
+            log::error!("Copy old output to new output error: {}", e);
+            return Err(e.to_string());
         }
     }
 
@@ -114,10 +153,10 @@ pub async fn set_output_path(state: state_type!(), output_path: String) -> Resul
     for entry in old_output_entries {
         if entry.is_dir() {
             if let Err(e) = std::fs::remove_dir_all(&entry) {
-                log::error!("Remove old cache error: {}", e);
+                log::error!("Remove old output error: {}", e);
             }
         } else if let Err(e) = std::fs::remove_file(&entry) {
-            log::error!("Remove old cache error: {}", e);
+            log::error!("Remove old output error: {}", e);
         }
     }
 

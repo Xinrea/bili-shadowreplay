@@ -23,8 +23,10 @@ pub async fn set_cache_path(state: state_type!(), cache_path: String) -> Result<
         return Ok(());
     }
 
+    let old_cache_path_obj = std::path::Path::new(&old_cache_path);
+    let new_cache_path_obj = std::path::Path::new(&cache_path);
     // check if new cache path is under old cache path
-    if cache_path.starts_with(&old_cache_path) {
+    if new_cache_path_obj.starts_with(old_cache_path_obj) {
         log::error!(
             "New cache path is under old cache path: {} -> {}",
             old_cache_path,
@@ -107,8 +109,11 @@ pub async fn set_output_path(state: state_type!(), output_path: String) -> Resul
     if old_output_path == output_path {
         return Ok(());
     }
+
+    let old_output_path_obj = std::path::Path::new(&old_output_path);
+    let new_output_path_obj = std::path::Path::new(&output_path);
     // check if new output path is under old output path
-    if output_path.starts_with(&old_output_path) {
+    if new_output_path_obj.starts_with(old_output_path_obj) {
         log::error!(
             "New output path is under old output path: {} -> {}",
             old_output_path,

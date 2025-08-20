@@ -14,8 +14,23 @@ pub async fn get_config(state: state_type!()) -> Result<Config, ()> {
 #[allow(dead_code)]
 pub async fn set_cache_path(state: state_type!(), cache_path: String) -> Result<(), String> {
     let old_cache_path = state.config.read().await.cache.clone();
+    log::info!(
+        "Try to set cache path: {} -> {}",
+        old_cache_path,
+        cache_path
+    );
     if old_cache_path == cache_path {
         return Ok(());
+    }
+
+    // check if new cache path is under old cache path
+    if cache_path.starts_with(&old_cache_path) {
+        log::error!(
+            "New cache path is under old cache path: {} -> {}",
+            old_cache_path,
+            cache_path
+        );
+        return Err("New cache path cannot be under old cache path".to_string());
     }
 
     state.recorder_manager.set_migrating(true).await;
@@ -52,9 +67,11 @@ pub async fn set_cache_path(state: state_type!(), cache_path: String) -> Result<
         if entry.is_dir() {
             if let Err(e) = crate::handlers::utils::copy_dir_all(entry, &new_entry) {
                 log::error!("Copy old cache to new cache error: {}", e);
+                return Err(e.to_string());
             }
         } else if let Err(e) = std::fs::copy(entry, &new_entry) {
             log::error!("Copy old cache to new cache error: {}", e);
+            return Err(e.to_string());
         }
     }
 
@@ -79,12 +96,27 @@ pub async fn set_cache_path(state: state_type!(), cache_path: String) -> Result<
 
 #[cfg_attr(feature = "gui", tauri::command)]
 #[allow(dead_code)]
-pub async fn set_output_path(state: state_type!(), output_path: String) -> Result<(), ()> {
+pub async fn set_output_path(state: state_type!(), output_path: String) -> Result<(), String> {
     let mut config = state.config.write().await;
     let old_output_path = config.output.clone();
+    log::info!(
+        "Try to set output path: {} -> {}",
+        old_output_path,
+        output_path
+    );
     if old_output_path == output_path {
         return Ok(());
     }
+    // check if new output path is under old output path
+    if output_path.starts_with(&old_output_path) {
+        log::error!(
+            "New output path is under old output path: {} -> {}",
+            old_output_path,
+            output_path
+        );
+        return Err("New output path cannot be under old output path".to_string());
+    }
+
     // list all file and folder in old output
     let mut old_output_entries = vec![];
     if let Ok(entries) = std::fs::read_dir(&old_output_path) {
@@ -104,9 +136,11 @@ pub async fn set_output_path(state: state_type!(), output_path: String) -> Resul
         if entry.is_dir() {
             if let Err(e) = crate::handlers::utils::copy_dir_all(entry, &new_entry) {
                 log::error!("Copy old cache to new cache error: {}", e);
+                return Err(e.to_string());
             }
         } else if let Err(e) = std::fs::copy(entry, &new_entry) {
             log::error!("Copy old cache to new cache error: {}", e);
+            return Err(e.to_string());
         }
     }
 

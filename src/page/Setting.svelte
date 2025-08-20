@@ -77,10 +77,14 @@
   async function handleOutputChange() {
     const new_folder = await browse_folder();
     if (new_folder) {
-      setting_model.output = new_folder;
-      await invoke("set_output_path", {
-        outputPath: setting_model.output,
-      });
+      try {
+        await invoke("set_output_path", {
+          outputPath: new_folder,
+        });
+        setting_model.output = new_folder;
+      } catch (e) {
+        alert(e);
+      }
     }
   }
 
@@ -92,10 +96,14 @@
     showModal = false;
     const new_folder = await browse_folder();
     if (new_folder) {
-      setting_model.cache = new_folder;
-      await invoke("set_cache_path", {
-        cachePath: setting_model.cache,
-      });
+      try {
+        await invoke("set_cache_path", {
+          cachePath: new_folder,
+        });
+        setting_model.cache = new_folder;
+      } catch (e) {
+        alert(e);
+      }
     }
   }
 

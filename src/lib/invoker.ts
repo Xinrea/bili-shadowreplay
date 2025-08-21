@@ -63,21 +63,43 @@ async function invoke<T>(
       return;
     }
 
-    const response = await fetch(`${ENDPOINT}/api/${command}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(args || {}),
-    });
+    // 需要使用 GET 方法的命令列表
+    const GET_COMMANDS = ['get_import_progress'];
+    
+    let response: Response;
+    
+    if (GET_COMMANDS.includes(command)) {
+      // 使用 GET 方法
+      const queryParams = args && Object.keys(args).length > 0 
+        ? `?${new URLSearchParams(args).toString()}` 
+        : '';
+      response = await fetch(`${ENDPOINT}/api/${command}${queryParams}`, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+        }
+      });
+    } else {
+      // 使用 POST 方法（现有逻辑）
+      response = await fetch(`${ENDPOINT}/api/${command}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(args || {}),
+      });
+    }
+    
     // if status is 405, it means the command is not allowed
     if (response.status === 405) {
       throw new Error(
-        `Command ${command} is not allowed, maybe bili-shadowreplay is running in readonly mode`
+        `Command ${command} is not allowed, maybe bili-shadowreplay is running in readonly mode or HTTP method mismatch`
       );
     }
     if (!response.ok) {
-      const error = await response.json();
+      const error = await response.json().catch(() => ({
+        message: `HTTP ${response.status}`
+      }));
       throw new Error(error.message || `HTTP error: ${response.status}`);
     }
 

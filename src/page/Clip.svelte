@@ -100,9 +100,14 @@
       }
     } catch (error) {
       console.error("轮询检查进度失败:", error);
-      importProgressInfo = null;
-      stopProgressPolling();
-      loading = false;
+      
+      // 不要立即重置状态，避免在网络错误时丢失进度
+      // 保持现有状态一段时间，然后重置
+      setTimeout(() => {
+        importProgressInfo = null;
+        stopProgressPolling();
+        loading = false;
+      }, 5000);
     }
   }
 
@@ -219,8 +224,9 @@
   async function scanAndImportNewFiles() {
     try {
       // 扫描导入目录
-      const newFiles = await invoke<string[]>("scan_imported_directory");
-      console.log(`发现 ${newFiles.length} 个新视频文件`);
+      const scanResponse = await invoke<{newFiles: string[]}>("scan_imported_directory");
+      
+      const newFiles = scanResponse.newFiles;
       
       if (newFiles.length === 0) {
         return {
@@ -678,7 +684,7 @@
 
               <!-- 副信息：文件名显示在小字部分 -->
               <div class="text-sm text-gray-500 dark:text-gray-400 break-all px-4">
-                {importProgressInfo.file_name || '正在准备...'}
+                {importProgressInfo.fileName || importProgressInfo.file_name || '正在准备...'}
               </div>
             </div>
           {:else}

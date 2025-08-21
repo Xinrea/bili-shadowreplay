@@ -128,14 +128,21 @@
   
   async function handleFileInputChange(event: Event) {
     const target = event.target as HTMLInputElement;
-    const file = target.files?.[0];
-    if (file) {
-      // 提前设置文件信息，提升用户体验
-      selectedFileName = file.name;
-      videoTitle = file.name.replace(/\.[^/.]+$/, ""); // 去掉扩展名
-      selectedFileSize = file.size;
-      
-      await uploadFile(file);
+    const files = target.files;
+    if (files && files.length > 0) {
+      if (files.length > 1) {
+        // 批量上传模式
+        await uploadAndImportMultipleFiles(Array.from(files));
+      } else {
+        // 单文件上传模式（保持现有逻辑）
+        const file = files[0];
+        // 提前设置文件信息，提升用户体验
+        selectedFileName = file.name;
+        videoTitle = file.name.replace(/\.[^/.]+$/, ""); // 去掉扩展名
+        selectedFileSize = file.size;
+        
+        await uploadFile(file);
+      }
     }
   }
   
@@ -210,6 +217,85 @@
       console.error("上传失败:", error);
       alert("上传失败: " + error);
       uploading = false;
+    }
+  }
+
+  async function uploadAndImportMultipleFiles(files: File[]) {
+    batchImporting = true;
+    importing = true;
+    totalFiles = files.length;
+    currentFileIndex = 0;
+    importProgress = `准备批量上传和导入 ${totalFiles} 个文件...`;
+    
+    // 设置当前处理的文件名列表
+    const fileNames = files.map(file => file.name);
+    
+    try {
+      // 验证所有文件格式
+      const allowedTypes = ['video/mp4', 'video/x-msvideo', 'video/quicktime', 'video/x-ms-wmv', 'video/x-flv', 'video/x-m4v', 'video/webm', 'video/x-matroska'];
+      for (const file of files) {
+        if (!allowedTypes.includes(file.type) && !file.name.match(/\.(mp4|mkv|avi|mov|wmv|flv|m4v|webm)$/i)) {
+          throw new Error(`不支持的文件格式: ${file.name}`);
+        }
+      }
+
+      const formData = new FormData();
+      formData.append('room_id', String(roomId || 0));
+      
+      files.forEach((file) => {
+        formData.append('files', file);
+      });
+      
+      const xhr = new XMLHttpRequest();
+      
+      // 监听上传进度
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) {
+          const progress = Math.round((e.loaded / e.total) * 100);
+          importProgress = `批量上传进度: ${progress}%`;
+          
+          // 根据进度估算当前正在上传的文件
+          const estimatedCurrentIndex = Math.min(
+            Math.floor((progress / 100) * totalFiles),
+            totalFiles - 1
+          );
+          currentFileName = fileNames[estimatedCurrentIndex] || fileNames[0];
+        }
+      });
+      
+      // 处理上传完成
+      xhr.addEventListener('load', () => {
+        if (xhr.status === 200) {
+          const response = JSON.parse(xhr.responseText);
+          if (response.code === 0) {
+            // 批量上传和导入成功，关闭对话框并刷新列表
+            showDialog = false;
+            selectedFilePath = null;
+            selectedFileName = "";
+            selectedFileSize = 0;
+            videoTitle = "";
+            resetBatchImportState();
+            dispatch("imported");
+          } else {
+            throw new Error(response.message || '批量导入失败');
+          }
+        } else {
+          throw new Error(`批量上传失败: HTTP ${xhr.status}`);
+        }
+      });
+      
+      xhr.addEventListener('error', () => {
+        alert("批量上传失败：网络错误");
+        resetBatchImportState();
+      });
+      
+      xhr.open('POST', `${ENDPOINT}/api/upload_and_import_files`);
+      xhr.send(formData);
+      
+    } catch (error) {
+      console.error("批量上传失败:", error);
+      alert("批量上传失败: " + error);
+      resetBatchImportState();
     }
   }
   
@@ -338,7 +424,8 @@
 <input
   bind:this={fileInput}
   type="file"
-  accept="video/*"
+  accept=".mp4,.mkv,.avi,.mov,.wmv,.flv,.m4v,.webm,video/*"
+  multiple
   style="display: none"
   on:change={handleFileInputChange}
 />
@@ -424,7 +511,7 @@
               </p>
             {:else}
               <p class="text-sm text-gray-600 dark:text-gray-400">
-                拖拽视频文件到此处，或点击按钮选择文件
+                拖拽视频文件到此处，或点击按钮选择文件（支持多选）
               </p>
             {/if}
             <p class="text-xs text-gray-500 dark:text-gray-500">

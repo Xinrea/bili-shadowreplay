@@ -14,7 +14,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-// 检测是否为网络协议路径（排除Windows盘符）
+/// 检测路径是否为网络协议路径（排除Windows盘符）
 fn is_network_protocol(path_str: &str) -> bool {
     // 常见的网络协议
     let network_protocols = [
@@ -47,13 +47,15 @@ fn is_network_protocol(path_str: &str) -> bool {
     false
 }
 
-// 判断是否需要转换视频格式
+/// 判断是否需要转换视频格式
+/// FLV格式在现代浏览器中播放兼容性差，需要转换为MP4
 fn should_convert_video_format(extension: &str) -> bool {
     // FLV格式在现代浏览器中播放兼容性差，需要转换为MP4
     matches!(extension.to_lowercase().as_str(), "flv")
 }
 
-// 获取最佳缩略图时间点
+/// 获取视频的最佳缩略图截取时间点
+/// 根据视频长度选择最佳时间点，避开开头可能的黑屏
 fn get_optimal_thumbnail_timestamp(duration: f64) -> f64 {
     // 根据视频长度选择最佳时间点
     if duration <= 10.0 {
@@ -74,8 +76,8 @@ fn get_optimal_thumbnail_timestamp(duration: f64) -> f64 {
 use crate::state::State;
 use crate::state_type;
 
-// 大文件阈值（100MB），超过此大小的FLV转换将显示进度
-const LARGE_FILE_THRESHOLD: u64 = 100 * 1024 * 1024;
+// 大文件阈值（500MB），超过此大小的FLV转换将显示进度
+const LARGE_FILE_THRESHOLD: u64 = 500 * 1024 * 1024;
 
 // 导入视频相关的数据结构
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -1357,6 +1359,141 @@ fn sanitize_filename(name: &str) -> String {
         .collect()
 }
 
+/// 删除源FLV文件（如果配置了的话）
+/// 
+/// # 参数
+/// - `file_path`: 要删除的文件路径
+/// - `cleanup_enabled`: 是否启用清理功能
+fn cleanup_source_flv_file(file_path: &Path, cleanup_enabled: bool) {
+    if cleanup_enabled {
+        if let Err(e) = std::fs::remove_file(file_path) {
+            log::warn!("删除源FLV文件失败: {} - {}", file_path.display(), e);
+        } else {
+            log::info!("已删除源FLV文件: {}", file_path.display());
+        }
+    }
+}
+
+/// 为导入的视频生成缩略图
+/// 
+/// # 参数
+/// - `video_file`: 视频文件路径
+/// - `file_name`: 文件名（用于生成缩略图文件名）
+/// - `output_path`: 输出目录路径
+/// - `duration`: 视频时长（用于选择最佳截图时间点）
+/// 
+/// # 返回值
+/// 成功时返回缩略图的相对路径，失败时返回空字符串
+async fn generate_imported_video_thumbnail(
+    video_file: &Path,
+    file_name: &str,
+    output_path: &str,
+    duration: f64,
+) -> Result<String, String> {
+    let timestamp = chrono::Utc::now().timestamp();
+    let thumbnail_name = format!("imported_{}_{}.jpg", timestamp, sanitize_filename(file_name));
+    let thumbnail_dir = Path::new(output_path).join("thumbnails").join("imported");
+    let thumbnail_path = thumbnail_dir.join(&thumbnail_name);
+    
+    // 确保缩略图目录存在
+    if !thumbnail_dir.exists() {
+        std::fs::create_dir_all(&thumbnail_dir)
+            .map_err(|e| format!("创建缩略图目录失败: {}", e))?;
+    }
+    
+    // 获取最佳缩略图时间点
+    let thumbnail_time = get_optimal_thumbnail_timestamp(duration);
+    
+    // 生成缩略图
+    match ffmpeg::generate_thumbnail(video_file, &thumbnail_path, thumbnail_time).await {
+        Ok(_) => Ok(format!("thumbnails/imported/{}", thumbnail_name)),
+        Err(e) => {
+            log::warn!("生成缩略图失败，使用默认封面: {}", e);
+            Ok("".to_string())
+        }
+    }
+}
+
+/// 转换完成后创建数据库记录
+/// 
+/// 用于异步转换任务完成后，创建对应的视频数据库记录
+/// 
+/// # 参数
+/// - `db`: 数据库连接
+/// - `final_file_path`: 最终视频文件路径（MP4）
+/// - `file_name`: 原始文件名
+/// - `room_id`: 房间ID
+/// - `output_path`: 输出目录路径
+/// 
+/// # 返回值
+/// 成功时返回视频ID，失败时返回错误信息
+async fn create_video_record_after_conversion(
+    db: &crate::database::Database,
+    final_file_path: &Path,
+    file_name: &str,
+    room_id: u64,
+    output_path: &str,
+) -> Result<i64, String> {
+    // 获取视频元数据（基于转换后的MP4文件）
+    let video_metadata = ffmpeg::extract_video_metadata(final_file_path).await
+        .map_err(|e| format!("获取视频元数据失败: {}", e))?;
+    
+    // 生成缩略图
+    let cover_path = generate_imported_video_thumbnail(
+        final_file_path,
+        file_name,
+        output_path,
+        video_metadata.duration,
+    ).await?;
+    
+    // 创建导入元数据
+    let import_metadata = ImportedVideoMetadata {
+        original_path: final_file_path.to_string_lossy().to_string(),
+        original_size: final_file_path.metadata()
+            .map_err(|e| format!("获取文件大小失败: {}", e))?
+            .len() as i64,
+        import_date: chrono::Utc::now().to_rfc3339(),
+        video_format: "mp4".to_string(), // 转换后都是MP4
+        duration: video_metadata.duration,
+        resolution: Some(format!("{}x{}", video_metadata.width, video_metadata.height)),
+    };
+    
+    let metadata_json = serde_json::to_string(&import_metadata)
+        .map_err(|e| format!("序列化元数据失败: {}", e))?;
+    
+    // 获取文件的相对路径
+    let relative_path = final_file_path.strip_prefix(output_path)
+        .map_err(|e| format!("计算相对路径失败: {}", e))?
+        .to_string_lossy()
+        .replace('\\', "/"); // 统一使用Unix风格路径分隔符
+    
+    // 创建视频记录
+    let video_row = VideoRow {
+        id: 0, // 将由数据库分配
+        room_id,
+        cover: cover_path,
+        file: relative_path,
+        length: video_metadata.duration as i64,
+        size: final_file_path.metadata()
+            .map_err(|e| format!("获取文件大小失败: {}", e))?
+            .len() as i64,
+        status: 0,
+        bvid: "".to_string(),
+        title: file_name.to_string(),
+        desc: metadata_json,
+        tags: "".to_string(),
+        area: 0,
+        created_at: chrono::Utc::now().to_rfc3339(),
+        platform: "imported".to_string(),
+    };
+    
+    // 插入数据库
+    let inserted_video = db.add_video(&video_row).await
+        .map_err(|e| format!("插入数据库失败: {}", e))?;
+    
+    Ok(inserted_video.id)
+}
+
 // 检查文件扩展名是否为支持的视频格式（复用现有逻辑）
 fn is_supported_video_format(extension: &str) -> bool {
     // 使用与前端ImportVideoDialog.svelte相同的格式列表
@@ -1534,7 +1671,7 @@ pub async fn import_file_in_place(
             let task = crate::database::task::TaskRow {
                 id: temp_event_id.clone(),
                 task_type: "import_flv_conversion".to_string(),
-                status: "pending".to_string(),
+                status: "running".to_string(), // 直接设为running
                 message: format!("正在转换 {} ({:.1}MB)", file_name, file_size as f64 / (1024.0 * 1024.0)),
                 metadata: serde_json::json!({
                     "file_name": file_name,
@@ -1546,45 +1683,80 @@ pub async fn import_file_in_place(
             };
             state.db.add_task(&task).await
                 .map_err(|e| format!("创建转换任务记录失败: {}", e))?;
-        }
-        
-        reporter.update("正在转换 FLV 格式为 MP4...");
-        
-        // 执行转换
-        let conversion_result = ffmpeg::convert_video_format(file_path, &final_file_path, &reporter).await;
-        
-        if should_track_progress {
-            // 更新任务状态
-            match &conversion_result {
-                Ok(_) => {
-                    state.db.update_task(&temp_event_id, "success", "转换完成", None).await
-                        .map_err(|e| log::warn!("更新任务状态失败: {}", e)).ok();
+            
+            // 启动异步转换任务
+            let db = state.db.clone();
+            let temp_event_id_clone = temp_event_id.clone();
+            let source_path = file_path.to_path_buf();
+            let target_path = final_file_path.clone();
+            let reporter_clone = reporter.clone();
+            
+            // 获取配置和其他数据用于后续处理
+            let cleanup_source_flv = state.config.read().await.cleanup_source_flv_after_import;
+            let output_path = {
+                let config = state.config.read().await;
+                config.output.clone()
+            };
+            let room_id_for_task = room_id;
+            let file_name_for_task = file_name.clone();
+            
+            tokio::spawn(async move {
+                // 执行转换
+                let conversion_result = crate::ffmpeg::convert_video_format(&source_path, &target_path, &reporter_clone).await;
+                
+                // 更新任务状态
+                match &conversion_result {
+                    Ok(_) => {
+                        db.update_task(&temp_event_id_clone, "success", "转换完成", None).await
+                            .map_err(|e| log::warn!("更新任务状态失败: {}", e)).ok();
+                        
+                        // 转换成功后删除源FLV文件（如果配置了的话）
+                        cleanup_source_flv_file(&source_path, cleanup_source_flv);
+                        
+                        // 转换完成后创建数据库记录
+                        match create_video_record_after_conversion(
+                            &db, 
+                            &target_path, 
+                            &file_name_for_task,
+                            room_id_for_task,
+                            &output_path
+                        ).await {
+                            Ok(video_id) => {
+                                log::info!("大文件转换完成，创建数据库记录: ID {}", video_id);
+                                reporter_clone.finish(true, "转换和导入完成").await;
+                            }
+                            Err(e) => {
+                                log::error!("创建数据库记录失败: {}", e);
+                                reporter_clone.finish(false, &format!("数据库记录创建失败: {}", e)).await;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        db.update_task(&temp_event_id_clone, "failed", &format!("转换失败: {}", e), None).await
+                            .map_err(|e| log::warn!("更新任务状态失败: {}", e)).ok();
+                        reporter_clone.finish(false, &format!("转换失败: {}", e)).await;
+                        // 转换失败时不删除源文件，留给用户手动处理
+                    }
                 }
-                Err(e) => {
-                    state.db.update_task(&temp_event_id, "failed", &format!("转换失败: {}", e), None).await
-                        .map_err(|e| log::warn!("更新任务状态失败: {}", e)).ok();
-                }
-            }
-        }
-        
-        conversion_result.map_err(|e| format!("FLV 转 MP4 失败: {}", e))?;
-        
-        reporter.finish(true, "格式转换完成").await;
-        
-        log::info!("FLV 转换完成: {} -> {}", 
-                   file_path.display(), final_file_path.display());
-        
-        // 检查是否需要删除源FLV文件
-        let config_guard = state.config.read().await;
-        let cleanup_source_flv = config_guard.cleanup_source_flv_after_import;
-        drop(config_guard);
-        
-        if cleanup_source_flv {
-            if let Err(e) = std::fs::remove_file(file_path) {
-                log::warn!("删除源FLV文件失败: {} - {}", file_path.display(), e);
-            } else {
-                log::info!("已删除源FLV文件: {}", file_path.display());
-            }
+            });
+            
+            // 对于大文件，立即返回一个临时的视频ID，转换完成后会创建真正的记录
+            return Ok(-1); // 返回特殊ID表示异步处理中
+        } else {
+            reporter.update("正在转换 FLV 格式为 MP4...");
+            
+            // 小文件同步转换
+            let conversion_result = ffmpeg::convert_video_format(file_path, &final_file_path, &reporter).await;
+            conversion_result.map_err(|e| format!("FLV 转 MP4 失败: {}", e))?;
+            
+            reporter.finish(true, "格式转换完成").await;
+            
+            log::info!("FLV 转换完成: {} -> {}", 
+                       file_path.display(), final_file_path.display());
+            
+            // 小文件转换完成后删除源FLV文件（如果配置了的话）
+            let cleanup_source_flv = state.config.read().await.cleanup_source_flv_after_import;
+            cleanup_source_flv_file(file_path, cleanup_source_flv);
         }
     }
     
@@ -1593,33 +1765,12 @@ pub async fn import_file_in_place(
         .map_err(|e| format!("获取视频元数据失败: {}", e))?;
     
     // 生成缩略图
-    let timestamp = chrono::Utc::now().timestamp();
-    let thumbnail_name = format!("imported_{}_{}.jpg", timestamp, sanitize_filename(&file_name));
-    let thumbnail_dir = output_dir.join("thumbnails").join("imported");
-    let thumbnail_path = thumbnail_dir.join(&thumbnail_name);
-    
-    // 确保缩略图目录存在
-    if !thumbnail_dir.exists() {
-        std::fs::create_dir_all(&thumbnail_dir)
-            .map_err(|e| format!("创建缩略图目录失败: {}", e))?;
-    }
-    
-    // 获取最佳缩略图时间点
-    let thumbnail_time = get_optimal_thumbnail_timestamp(video_metadata.duration);
-    
-    // 生成缩略图（基于最终文件）
-    let ffmpeg_result = ffmpeg::generate_thumbnail(
+    let cover_path = generate_imported_video_thumbnail(
         &final_file_path,
-        &thumbnail_path,
-        thumbnail_time,
-    ).await;
-    
-    let cover_path = if ffmpeg_result.is_ok() {
-        format!("thumbnails/imported/{}", thumbnail_name)
-    } else {
-        log::warn!("生成缩略图失败，使用默认封面: {:?}", ffmpeg_result);
-        "".to_string()
-    };
+        &file_name,
+        &output_path,
+        video_metadata.duration,
+    ).await?;
     
     // 创建导入元数据
     let import_metadata = ImportedVideoMetadata {

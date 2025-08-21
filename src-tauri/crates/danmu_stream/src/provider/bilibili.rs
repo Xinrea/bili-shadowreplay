@@ -65,7 +65,6 @@ impl DanmuProvider for BiliDanmu {
         tx: mpsc::UnboundedSender<DanmuMessageType>,
     ) -> Result<(), DanmuStreamError> {
         let mut retry_count = 0;
-        const MAX_RETRIES: u32 = 5;
         const RETRY_DELAY: Duration = Duration::from_secs(5);
         info!(
             "Bilibili WebSocket connection started, room_id: {}",
@@ -74,33 +73,37 @@ impl DanmuProvider for BiliDanmu {
 
         loop {
             if *self.stop.read().await {
+                info!(
+                    "Bilibili WebSocket connection stopped, room_id: {}",
+                    self.room_id
+                );
                 break;
             }
 
             match self.connect_and_handle(tx.clone()).await {
                 Ok(_) => {
-                    info!("Bilibili WebSocket connection closed normally");
+                    info!(
+                        "Bilibili WebSocket connection closed normally, room_id: {}",
+                        self.room_id
+                    );
                     break;
                 }
                 Err(e) => {
-                    error!("Bilibili WebSocket connection error: {}", e);
-                    retry_count += 1;
-
-                    if retry_count >= MAX_RETRIES {
-                        return Err(DanmuStreamError::WebsocketError {
-                            err: format!("Failed to connect after {} retries", MAX_RETRIES),
-                        });
-                    }
-
-                    info!(
-                        "Retrying connection in {} seconds... (Attempt {}/{})",
-                        RETRY_DELAY.as_secs(),
-                        retry_count,
-                        MAX_RETRIES
+                    error!(
+                        "Bilibili WebSocket connection error, room_id: {}, error: {}",
+                        self.room_id, e
                     );
-                    tokio::time::sleep(RETRY_DELAY).await;
+                    retry_count += 1;
                 }
             }
+
+            info!(
+                "Retrying connection in {} seconds... (Attempt {}), room_id: {}",
+                RETRY_DELAY.as_secs(),
+                retry_count,
+                self.room_id
+            );
+            tokio::time::sleep(RETRY_DELAY).await;
         }
 
         Ok(())

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke, TAURI_ENV, ENDPOINT, listen } from "../lib/invoker";
+  import { invoke, TAURI_ENV, ENDPOINT, listen, onConnectionRestore } from "../lib/invoker";
   import { Upload, X, CheckCircle } from "lucide-svelte";
   import { createEventDispatcher, onDestroy } from "svelte";
   import { open } from "@tauri-apps/plugin-dialog";
@@ -82,8 +82,38 @@
         alert("导入失败: " + e.payload.message);
         resetBatchImportState();
       }
+      // 无论成功失败都要重置状态
+      importing = false;
+      currentImportEventId = null;
+      importProgress = "";
     }
   });
+
+  // 连接恢复时检查任务状态
+  async function checkTaskStatus() {
+    if (!currentImportEventId || !importing) return;
+
+    try {
+      // 使用现有的进度查询接口检查状态
+      const progress = await invoke("get_import_progress");
+      if (!progress) {
+        // 没有进行中的任务，说明可能已经完成但错过了事件
+        importing = false;
+        currentImportEventId = null;
+        importProgress = "";
+        resetBatchImportState();
+        // 刷新列表以显示可能已完成的导入
+        dispatch("imported");
+      }
+    } catch (error) {
+      console.error(`[ImportDialog] Failed to check task status:`, error);
+    }
+  }
+
+  // 注册连接恢复回调
+  if (!TAURI_ENV) {
+    onConnectionRestore(checkTaskStatus);
+  }
 
   onDestroy(() => {
     progressUpdateListener?.then(fn => fn());
@@ -337,7 +367,7 @@
         filePaths: selectedFiles,
         roomId: roomId || 0
       });
-      
+
       // 注意：成功处理在 progressFinishedListener 中进行
     } catch (error) {
       console.error("批量导入失败:", error);
@@ -377,7 +407,7 @@
         size: selectedFileSize,
         roomId: roomId || 0
       });
-      
+
       // 注意：成功处理移到了progressFinishedListener中
     } catch (error) {
       console.error("导入失败:", error);

@@ -29,7 +29,7 @@ use crate::{
             ExportDanmuOptions,
         },
         task::{delete_task, get_tasks},
-        utils::{console_log, get_disk_info, list_folder, DiskInfo},
+        utils::{console_log, get_disk_info, list_folder, sanitize_filename_advanced, DiskInfo},
         video::{
             batch_import_external_videos, batch_import_in_place, cancel, clip_range, clip_video,
             delete_video, encode_video_subtitle, generate_video_subtitle, generic_ffmpeg_command,
@@ -60,6 +60,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use std::path::PathBuf;
 use futures::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncSeekExt;
@@ -1154,7 +1155,7 @@ async fn handler_upload_files(
             .map_err(|e| format!("创建上传目录失败: {}", e))?;
     }
 
-    while let Some(field) = multipart.next_field().await.map_err(|e| e.to_string())? {
+    while let Some(mut field) = multipart.next_field().await.map_err(|e| e.to_string())? {
         if let Some(file_name) = field.file_name() {
             let file_name = file_name.to_string();
             
@@ -1177,27 +1178,31 @@ async fn handler_upload_files(
             
             // 生成唯一的文件名
             let timestamp = chrono::Utc::now().timestamp();
-            let sanitized_name = file_name
-                .chars()
-                .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
-                    c
-                } else {
-                    '_'
-                })
-                .collect::<String>();
+            let sanitized_name = sanitize_filename_advanced(&file_name, None);
             let unique_name = format!("{}_{}", timestamp, sanitized_name);
             let file_path = upload_dir.join(&unique_name);
             
-            // 保存文件
-            let data = field.bytes().await.map_err(|e| e.to_string())?;
-            tokio::fs::write(&file_path, &data)
+            // 流式保存文件，避免大文件内存占用
+            let mut file = tokio::fs::File::create(&file_path)
                 .await
-                .map_err(|e| format!("保存文件失败: {}", e))?;
+                .map_err(|e| format!("创建文件失败: {}", e))?;
+            
+            let mut total_size = 0u64;
+            while let Some(chunk) = field.chunk().await.map_err(|e| e.to_string())? {
+                tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
+                    .await
+                    .map_err(|e| format!("写入文件失败: {}", e))?;
+                total_size += chunk.len() as u64;
+            }
+            
+            tokio::io::AsyncWriteExt::flush(&mut file)
+                .await
+                .map_err(|e| format!("刷新文件缓冲区失败: {}", e))?;
             
             uploaded_files.push(UploadedFileInfo {
                 file_path: file_path.to_string_lossy().to_string(),
                 original_name: file_name,
-                size: data.len() as u64,
+                size: total_size,
             });
         }
     }
@@ -1223,7 +1228,7 @@ async fn handler_upload_and_import_files(
     }
 
     // 处理multipart表单数据
-    while let Some(field) = multipart.next_field().await.map_err(|e| e.to_string())? {
+    while let Some(mut field) = multipart.next_field().await.map_err(|e| e.to_string())? {
         if let Some(name) = field.name() {
             match name {
                 "room_id" => {
@@ -1254,27 +1259,31 @@ async fn handler_upload_and_import_files(
                         
                         // 生成唯一的文件名
                         let timestamp = chrono::Utc::now().timestamp();
-                        let sanitized_name = file_name
-                            .chars()
-                            .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
-                                c
-                            } else {
-                                '_'
-                            })
-                            .collect::<String>();
+                        let sanitized_name = sanitize_filename_advanced(&file_name, None);
                         let unique_name = format!("{}_{}", timestamp, sanitized_name);
                         let file_path = upload_dir.join(&unique_name);
                         
-                        // 保存文件
-                        let data = field.bytes().await.map_err(|e| e.to_string())?;
-                        tokio::fs::write(&file_path, &data)
+                        // 流式保存文件，避免大文件内存占用
+                        let mut file = tokio::fs::File::create(&file_path)
                             .await
-                            .map_err(|e| format!("保存文件失败: {}", e))?;
+                            .map_err(|e| format!("创建文件失败: {}", e))?;
+                        
+                        let mut total_size = 0u64;
+                        while let Some(chunk) = field.chunk().await.map_err(|e| e.to_string())? {
+                            tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
+                                .await
+                                .map_err(|e| format!("写入文件失败: {}", e))?;
+                            total_size += chunk.len() as u64;
+                        }
+                        
+                        tokio::io::AsyncWriteExt::flush(&mut file)
+                            .await
+                            .map_err(|e| format!("刷新文件缓冲区失败: {}", e))?;
                         
                         uploaded_files.push(UploadedFileInfo {
                             file_path: file_path.to_string_lossy().to_string(),
                             original_name: file_name,
-                            size: data.len() as u64,
+                            size: total_size,
                         });
                     }
                 }
@@ -1483,16 +1492,61 @@ async fn handler_upload_file(
     }
 
     let mut file_name = String::new();
-    let mut file_data = Vec::new();
+    let mut uploaded_file_path: Option<PathBuf> = None;
+    let mut file_size = 0u64;
     let mut _room_id = 0u64;
 
-    while let Some(field) = multipart.next_field().await.map_err(|e| e.to_string())? {
+    while let Some(mut field) = multipart.next_field().await.map_err(|e| e.to_string())? {
         let name = field.name().unwrap_or("").to_string();
 
         match name.as_str() {
             "file" => {
                 file_name = field.file_name().unwrap_or("unknown").to_string();
-                file_data = field.bytes().await.map_err(|e| e.to_string())?.to_vec();
+                
+                // 创建上传目录
+                let config = state.config.read().await;
+                let upload_dir = std::path::Path::new(&config.cache).join("uploads");
+                if !upload_dir.exists() {
+                    std::fs::create_dir_all(&upload_dir).map_err(|e| e.to_string())?;
+                }
+
+                // 生成唯一文件名避免冲突
+                let timestamp = chrono::Utc::now().timestamp();
+                let extension = std::path::Path::new(&file_name)
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .unwrap_or("");
+                let base_name = std::path::Path::new(&file_name)
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .unwrap_or("upload");
+
+                let unique_filename = if extension.is_empty() {
+                    format!("{}_{}", base_name, timestamp)
+                } else {
+                    format!("{}_{}.{}", base_name, timestamp, extension)
+                };
+
+                let file_path = upload_dir.join(&unique_filename);
+                
+                // 流式保存文件，避免大文件内存占用
+                let mut file = tokio::fs::File::create(&file_path)
+                    .await
+                    .map_err(|e| format!("创建文件失败: {}", e))?;
+                
+                while let Some(chunk) = field.chunk().await.map_err(|e| e.to_string())? {
+                    tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
+                        .await
+                        .map_err(|e| format!("写入文件失败: {}", e))?;
+                    file_size += chunk.len() as u64;
+                }
+                
+                tokio::io::AsyncWriteExt::flush(&mut file)
+                    .await
+                    .map_err(|e| format!("刷新文件缓冲区失败: {}", e))?;
+                
+                uploaded_file_path = Some(file_path);
+                file_name = unique_filename;
             }
             "roomId" => {
                 let room_id_str = field.text().await.map_err(|e| e.to_string())?;
@@ -1502,49 +1556,18 @@ async fn handler_upload_file(
         }
     }
 
-    if file_name.is_empty() || file_data.is_empty() {
+    if file_name.is_empty() || uploaded_file_path.is_none() {
         return Err(ApiError("No file uploaded".to_string()));
     }
 
-    // 创建上传目录
-    let config = state.config.read().await;
-    let upload_dir = std::path::Path::new(&config.cache).join("uploads");
-    if !upload_dir.exists() {
-        std::fs::create_dir_all(&upload_dir).map_err(|e| e.to_string())?;
-    }
-
-    // 生成唯一文件名避免冲突
-    let timestamp = chrono::Utc::now().timestamp();
-    let extension = std::path::Path::new(&file_name)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or("");
-    let base_name = std::path::Path::new(&file_name)
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("upload");
-
-    let unique_filename = if extension.is_empty() {
-        format!("{}_{}", base_name, timestamp)
-    } else {
-        format!("{}_{}.{}", base_name, timestamp, extension)
-    };
-
-    let file_path = upload_dir.join(&unique_filename);
-
-    // 写入文件
-    tokio::fs::write(&file_path, &file_data)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let file_size = file_data.len() as u64;
+    let file_path = uploaded_file_path.unwrap();
     let file_path_str = file_path.to_string_lossy().to_string();
 
     log::info!("File uploaded: {} ({} bytes)", file_path_str, file_size);
 
     Ok(Json(ApiResponse::success(FileUploadResponse {
         file_path: file_path_str,
-        file_name: unique_filename,
+        file_name,
         file_size,
     })))
 }

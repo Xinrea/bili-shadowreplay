@@ -105,16 +105,8 @@ async fn copy_file_with_progress(
         .len();
     let mut copied = 0u64;
 
-    // 根据文件大小调整缓冲区大小
-    let buffer_size = if total_size > 100 * 1024 * 1024 {
-        // 100MB以上
-        1024 * 1024 // 1MB buffer for large files
-    } else if total_size > 10 * 1024 * 1024 {
-        // 10MB-100MB
-        256 * 1024 // 256KB buffer
-    } else {
-        64 * 1024 // 64KB buffer for small files
-    };
+    // 使用固定的小缓冲区避免大文件时的内存占用
+    let buffer_size = 64 * 1024; // 64KB buffer for all files
 
     let mut buffer = vec![0u8; buffer_size];
 
@@ -140,16 +132,8 @@ async fn copy_file_with_progress(
             0
         };
 
-        // 根据文件大小调整报告频率
-        let report_threshold = if total_size > 100 * 1024 * 1024 {
-            // 100MB以上
-            1 // 每1%报告一次
-        } else if total_size > 10 * 1024 * 1024 {
-            // 10MB-100MB
-            2 // 每2%报告一次
-        } else {
-            5 // 小文件每5%报告一次
-        };
+        // 使用固定的进度报告频率
+        let report_threshold = 1; // 每1%报告一次
 
         if percent != last_reported_percent && (percent % report_threshold == 0 || percent == 100) {
             reporter.update(&format!("正在复制视频文件... {}%", percent));
@@ -246,16 +230,8 @@ async fn copy_file_with_network_optimization(
         .len();
     let mut copied = 0u64;
 
-    // 网络文件使用更大的缓冲区以减少网络请求次数
-    let buffer_size = if total_size > 1024 * 1024 * 1024 {
-        // >1GB
-        8 * 1024 * 1024 // 8MB buffer for very large files
-    } else if total_size > 100 * 1024 * 1024 {
-        // >100MB
-        4 * 1024 * 1024 // 4MB buffer for large files
-    } else {
-        2 * 1024 * 1024 // 2MB buffer for network files
-    };
+    // 使用固定的小缓冲区，避免大文件时内存占用过多
+    let buffer_size = 64 * 1024; // 64KB buffer for network files
 
     let mut buffer = vec![0u8; buffer_size];
     let mut last_reported_percent = 0;

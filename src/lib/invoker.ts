@@ -186,17 +186,58 @@ async function convertCoverSrc(coverPath: string, videoId?: number) {
 }
 
 let event_source: EventSource | null = null;
+let reconnectTimeout: number | null = null;
+const MAX_RECONNECT_ATTEMPTS = 5;
+let reconnectAttempts = 0;
 
-if (!TAURI_ENV) {
+// 连接恢复回调列表
+const connectionRestoreCallbacks: Array<() => void> = [];
+
+function createEventSource() {
+  if (TAURI_ENV) return;
+  
+  if (event_source) {
+    event_source.close();
+  }
   event_source = new EventSource(`${ENDPOINT}/api/sse`);
 
   event_source.onopen = () => {
     console.log("EventSource connection opened");
+    reconnectAttempts = 0;
+    
+    // 触发连接恢复回调
+    connectionRestoreCallbacks.forEach(callback => {
+      try {
+        callback();
+      } catch (e) {
+        console.error("[SSE] Error in connection restore callback:", e);
+      }
+    });
   };
 
   event_source.onerror = (error) => {
     console.error("EventSource error:", error);
+    // 自动重连逻辑
+    if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+      reconnectAttempts++;
+      const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 10000); // 指数退避，最大10秒
+
+      reconnectTimeout = window.setTimeout(() => {
+        createEventSource();
+      }, delay);
+    } else {
+      console.error("[SSE] Max reconnection attempts reached, giving up");
+    }
   };
+}
+
+// 注册连接恢复回调
+function onConnectionRestore(callback: () => void) {
+  connectionRestoreCallbacks.push(callback);
+}
+
+if (!TAURI_ENV) {
+  createEventSource();
 }
 
 async function listen<T>(event: string, callback: (data: any) => void) {
@@ -247,4 +288,5 @@ export {
   log,
   close_window,
   onOpenUrl,
+  onConnectionRestore,
 };

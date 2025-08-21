@@ -1858,6 +1858,127 @@ pub async fn batch_import_in_place(
     }))
 }
 
+/// 批量导入结果结构
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct BatchImportResult {
+    pub successful_imports: i32,
+    pub failed_imports: i32,
+    pub imported_video_ids: Vec<i64>,
+    pub errors: Vec<String>,
+}
+
+/// 批量导入外部视频文件
+/// 
+/// # 参数
+/// - `state`: 应用状态
+/// - `event_id`: 进度事件ID
+/// - `file_paths`: 要导入的文件路径列表
+/// - `room_id`: 房间ID
+/// 
+/// # 返回值
+/// 返回批量导入结果，包含成功数量、失败数量、视频ID列表和错误信息
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn batch_import_external_videos(
+    state: state_type!(),
+    event_id: String,
+    file_paths: Vec<String>,
+    room_id: u64,
+) -> Result<BatchImportResult, String> {
+    if file_paths.is_empty() {
+        return Ok(BatchImportResult {
+            successful_imports: 0,
+            failed_imports: 0,
+            imported_video_ids: Vec::new(),
+            errors: Vec::new(),
+        });
+    }
+
+    let mut successful_imports = 0;
+    let mut failed_imports = 0;
+    let mut imported_video_ids = Vec::new();
+    let mut errors = Vec::new();
+    
+    // 设置批量进度事件发射器
+    #[cfg(feature = "gui")]
+    let emitter = EventEmitter::new(state.app_handle.clone());
+    #[cfg(feature = "headless")]
+    let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
+    let batch_reporter = ProgressReporter::new(&emitter, &event_id).await?;
+    
+    let total_files = file_paths.len();
+    
+    for (index, file_path) in file_paths.iter().enumerate() {
+        let current_index = index + 1;
+        let file_name = Path::new(file_path)
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+            
+        // 更新批量进度，只显示进度信息
+        batch_reporter.update(&format!(
+            "正在导入第{}个，共{}个文件",
+            current_index, total_files
+        ));
+        
+        // 为每个文件创建独立的事件ID
+        let file_event_id = format!("{}_file_{}", event_id, index);
+        
+        // 从文件名生成标题（去掉扩展名）
+        let title = file_name.clone();
+        
+        // 获取文件大小
+        let size = match get_file_size(file_path.clone()).await {
+            Ok(s) => s as i64,
+            Err(_) => 0,
+        };
+        
+        // 调用现有的单文件导入函数
+        match import_external_video(
+            state.clone(),
+            file_event_id,
+            file_path.clone(),
+            title,
+            file_name.clone(),
+            size,
+            room_id,
+        ).await {
+            Ok(video) => {
+                imported_video_ids.push(video.id);
+                successful_imports += 1;
+                log::info!("批量导入成功: {} (ID: {})", file_path, video.id);
+            }
+            Err(e) => {
+                let error_msg = format!("导入失败 {}: {}", file_path, e);
+                errors.push(error_msg.clone());
+                failed_imports += 1;
+                log::error!("批量导入失败: {}", error_msg);
+            }
+        }
+    }
+    
+    // 完成批量导入
+    let result_msg = if failed_imports == 0 {
+        format!("批量导入完成：成功导入{}个文件", successful_imports)
+    } else {
+        format!("批量导入完成：成功{}个，失败{}个", successful_imports, failed_imports)
+    };
+    batch_reporter.finish(failed_imports == 0, &result_msg).await;
+    
+    // 发送通知消息
+    state.db.new_message(
+        "批量视频导入完成",
+        &result_msg,
+    ).await?;
+    
+    Ok(BatchImportResult {
+        successful_imports,
+        failed_imports,
+        imported_video_ids,
+        errors,
+    })
+}
+
 // 查询当前导入进度
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_import_progress(state: state_type!()) -> Result<Option<serde_json::Value>, String> {

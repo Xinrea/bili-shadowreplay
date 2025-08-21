@@ -21,6 +21,17 @@
   let fileInput: HTMLInputElement;
   let importProgress = "";
   let currentImportEventId: string | null = null;
+  
+  // 批量导入状态
+  let selectedFiles: string[] = [];
+  let batchImporting = false;
+  let currentFileIndex = 0;
+  let totalFiles = 0;
+  
+  // 获取当前正在处理的文件名（从文件路径中提取文件名）
+  $: currentFileName = currentFileIndex > 0 && selectedFiles.length > 0 ? 
+    selectedFiles[currentFileIndex - 1]?.split(/[/\\]/).pop() || '未知文件' : 
+    '';
 
   // 格式化文件大小
   function formatFileSize(sizeInBytes: number): string {
@@ -47,6 +58,12 @@
   const progressUpdateListener = listen<ProgressUpdate>('progress-update', (e) => {
     if (e.payload.id === currentImportEventId) {
       importProgress = e.payload.content;
+      
+      // 从进度文本中提取当前文件索引
+      const match = importProgress.match(/正在导入第(\d+)个/);
+      if (match) {
+        currentFileIndex = parseInt(match[1]);
+      }
     }
   });
 
@@ -59,13 +76,12 @@
         selectedFileName = "";
         selectedFileSize = 0;
         videoTitle = "";
+        resetBatchImportState();
         dispatch("imported");
       } else {
         alert("导入失败: " + e.payload.message);
+        resetBatchImportState();
       }
-      importing = false;
-      currentImportEventId = null;
-      importProgress = "";
     }
   });
 
@@ -76,21 +92,33 @@
   
   async function handleFileSelect() {
     if (TAURI_ENV) {
-      // Tauri模式：使用文件对话框
+      // Tauri模式：使用文件对话框，支持多选
       try {
         const selected = await open({
-          multiple: false,
+          multiple: true,
           filters: [{
             name: '视频文件',
             extensions: ['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'm4v', 'webm']
           }]
         });
         
-        if (selected && typeof selected === 'string') {
+        // 检查用户是否取消了选择
+        if (!selected) return;
+        
+        if (Array.isArray(selected) && selected.length > 1) {
+          // 批量导入：多个文件
+          selectedFiles = selected;
+          await startBatchImport();
+        } else if (Array.isArray(selected) && selected.length === 1) {
+          // 单文件导入：数组中的单个文件
+          await setSelectedFile(selected[0]);
+        } else if (typeof selected === 'string') {
+          // 单文件导入：直接返回字符串路径
           await setSelectedFile(selected);
         }
       } catch (error) {
         console.error("文件选择失败:", error);
+        alert("文件选择失败: " + error);
       }
     } else {
       // Web模式：触发文件输入
@@ -202,6 +230,49 @@
     }
   }
   
+  /**
+   * 开始批量导入视频文件
+   */
+  async function startBatchImport() {
+    if (selectedFiles.length === 0) return;
+    
+    batchImporting = true;
+    importing = true;
+    totalFiles = selectedFiles.length;
+    currentFileIndex = 0;
+    importProgress = `准备批量导入 ${totalFiles} 个文件...`;
+    
+    try {
+      const eventId = "batch_import_" + Date.now();
+      currentImportEventId = eventId;
+      
+      await invoke("batch_import_external_videos", {
+        eventId: eventId,
+        filePaths: selectedFiles,
+        roomId: roomId || 0
+      });
+      
+      // 注意：成功处理在 progressFinishedListener 中进行
+    } catch (error) {
+      console.error("批量导入失败:", error);
+      alert("批量导入失败: " + error);
+      resetBatchImportState();
+    }
+  }
+  
+  /**
+   * 重置批量导入状态
+   */
+  function resetBatchImportState() {
+    batchImporting = false;
+    importing = false;
+    currentImportEventId = null;
+    importProgress = "";
+    selectedFiles = [];
+    totalFiles = 0;
+    currentFileIndex = 0;
+  }
+
   async function startImport() {
     if (!selectedFilePath) return;
     
@@ -231,8 +302,12 @@
     }
   }
   
+  /**
+   * 关闭对话框并重置所有状态
+   */
   function closeDialog() {
     showDialog = false;
+    // 重置单文件导入状态
     selectedFilePath = null;
     selectedFileName = "";
     selectedFileSize = 0;
@@ -242,6 +317,8 @@
     importing = false;
     currentImportEventId = null;
     importProgress = "";
+    // 重置批量导入状态
+    resetBatchImportState();
   }
   
   function handleDragOver(event: DragEvent) {
@@ -299,6 +376,23 @@
             </div>
             <p class="text-xs text-gray-500">{uploadProgress}%</p>
           </div>
+        {:else if batchImporting}
+          <!-- 批量导入中 -->
+          <div class="space-y-4">
+            <div class="flex items-center justify-center">
+              <svg class="animate-spin h-12 w-12 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+            </div>
+            <p class="text-sm text-gray-900 dark:text-white font-medium">批量导入进行中...</p>
+            <div class="text-xs text-gray-500">{importProgress}</div>
+            {#if currentFileName}
+              <div class="text-xs text-gray-400 break-all">
+                当前文件：{currentFileName}
+              </div>
+            {/if}
+          </div>
         {:else if selectedFilePath}
           <!-- 已选择文件 -->
           <div class="space-y-4">
@@ -326,7 +420,7 @@
             <Upload class="w-12 h-12 text-gray-400 mx-auto" />
             {#if TAURI_ENV}
               <p class="text-sm text-gray-600 dark:text-gray-400">
-                点击按钮选择视频文件
+                点击按钮选择视频文件（支持多选）
               </p>
             {:else}
               <p class="text-sm text-gray-600 dark:text-gray-400">
@@ -339,7 +433,7 @@
           </div>
         {/if}
         
-        {#if !uploading && !selectedFilePath}
+        {#if !uploading && !selectedFilePath && !batchImporting}
           <button
             on:click={handleFileSelect}
             class="mt-4 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
@@ -381,7 +475,7 @@
         </button>
         <button
           on:click={startImport}
-          disabled={!selectedFilePath || importing || !videoTitle.trim() || uploading}
+          disabled={!selectedFilePath || importing || !videoTitle.trim() || uploading || batchImporting}
           class="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center space-x-2"
         >
           {#if importing}

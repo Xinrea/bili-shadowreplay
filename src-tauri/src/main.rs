@@ -563,6 +563,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::video::encode_video_subtitle,
         crate::handlers::video::generic_ffmpeg_command,
         crate::handlers::video::import_external_video,
+        crate::handlers::video::batch_import_external_videos,
         crate::handlers::video::clip_video,
         crate::handlers::video::get_file_size,
         crate::handlers::video::scan_imported_directory,

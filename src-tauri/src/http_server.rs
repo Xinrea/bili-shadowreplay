@@ -1776,6 +1776,14 @@ struct ServerEvent {
     data: String,
 }
 
+// 字符串转义工具函数
+fn escape_sse_string(s: &str) -> String {
+    s.replace('\\', "\\\\")
+     .replace('\n', "\\n")
+     .replace('\r', "\\r")
+     .replace('"', "\\\"")
+}
+
 async fn handler_sse(
     state: axum::extract::State<State>,
 ) -> Sse<impl Stream<Item = Result<sse::Event, axum::Error>>> {
@@ -1784,43 +1792,43 @@ async fn handler_sse(
     let stream = stream::unfold(rx, move |mut rx| async move {
         match rx.recv().await {
             Ok(event) => {
-                let event = match event {
+                let sse_event = match event {
                     Event::ProgressUpdate { id, content } => {
                         sse::Event::default().event("progress-update").data(format!(
                             r#"{{"id":"{}","content":"{}"}}"#,
                             id,
-                            content.replace('\n', "\\n").replace('\r', "\\r")
+                            escape_sse_string(&content)
                         ))
                     }
-                    Event::ProgressFinished {
-                        id,
-                        success,
-                        message,
-                    } => sse::Event::default()
-                        .event("progress-finished")
-                        .data(format!(
+                    Event::ProgressFinished { id, success, message } => {
+                        sse::Event::default().event("progress-finished").data(format!(
                             r#"{{"id":"{}","success":{},"message":"{}"}}"#,
                             id,
                             success,
-                            message.replace('\n', "\\n").replace('\r', "\\r")
-                        )),
-                    Event::DanmuReceived { room, ts, content } => sse::Event::default()
-                        .event(format!("danmu:{}", room))
-                        .data(format!(
+                            escape_sse_string(&message)
+                        ))
+                    }
+                    Event::DanmuReceived { room, ts, content } => {
+                        sse::Event::default().event(format!("danmu:{}", room)).data(format!(
                             r#"{{"ts":"{}","content":"{}"}}"#,
                             ts,
-                            content.replace('\n', "\\n").replace('\r', "\\r")
-                        )),
+                            escape_sse_string(&content)
+                        ))
+                    }
                 };
-                Some((Ok(event), rx))
+                Some((Ok(sse_event), rx))
             }
-            Err(_) => None,
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                // 跳过丢失的事件，继续处理
+                Some((Ok(sse::Event::default().event("keep-alive").data("")), rx))
+            }
         }
     });
 
     Sse::new(stream).keep_alive(
         sse::KeepAlive::new()
-            .interval(std::time::Duration::from_secs(1))
+            .interval(std::time::Duration::from_secs(30))
             .text("keep-alive"),
     )
 }

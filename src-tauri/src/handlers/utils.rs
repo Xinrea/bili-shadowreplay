@@ -313,6 +313,7 @@ pub async fn list_folder(_state: state_type!(), path: String) -> Result<Vec<Stri
 /// 
 /// # 返回
 /// 经过全面清理的安全文件名
+#[cfg(feature = "headless")]
 pub fn sanitize_filename_advanced(name: &str, max_length: Option<usize>) -> String {
     let max_len = max_length.unwrap_or(100);
     
@@ -364,6 +365,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(feature = "headless")]
     fn test_sanitize_filename_advanced() {
         assert_eq!(sanitize_filename_advanced("test<>file.txt", None), "test__file.txt");
         assert_eq!(sanitize_filename_advanced("文件名.txt", None), "文件名.txt");

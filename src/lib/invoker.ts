@@ -202,7 +202,6 @@ function createEventSource() {
   event_source = new EventSource(`${ENDPOINT}/api/sse`);
 
   event_source.onopen = () => {
-    console.log("EventSource connection opened");
     reconnectAttempts = 0;
     
     // 触发连接恢复回调
@@ -210,18 +209,17 @@ function createEventSource() {
       try {
         callback();
       } catch (e) {
-        console.error("[SSE] Error in connection restore callback:", e);
+        console.error("[SSE] Connection restore callback error:", e);
       }
     });
   };
 
   event_source.onerror = (error) => {
-    console.error("EventSource error:", error);
-    // 自动重连逻辑
-    if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+    // 只有在连接真正关闭时才进行重连
+    if (event_source.readyState === EventSource.CLOSED && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
       reconnectAttempts++;
-      const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 10000); // 指数退避，最大10秒
-
+      const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 10000);
+      
       reconnectTimeout = window.setTimeout(() => {
         createEventSource();
       }, delay);
@@ -247,7 +245,6 @@ async function listen<T>(event: string, callback: (data: any) => void) {
 
   event_source.addEventListener(event, (event_data) => {
     const data = JSON.parse(event_data.data);
-    console.log("Parsed EventSource data:", data);
     callback({
       type: event,
       payload: data,

@@ -94,15 +94,12 @@
     if (!currentImportEventId || !importing) return;
 
     try {
-      // 使用现有的进度查询接口检查状态
       const progress = await invoke("get_import_progress");
       if (!progress) {
-        // 没有进行中的任务，说明可能已经完成但错过了事件
         importing = false;
         currentImportEventId = null;
         importProgress = "";
         resetBatchImportState();
-        // 刷新列表以显示可能已完成的导入
         dispatch("imported");
       }
     } catch (error) {

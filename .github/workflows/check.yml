@@ -43,5 +43,5 @@ jobs:
         working-directory: src-tauri
 
       - name: Check tests
-        run: cargo test && cargo test --no-default-features --features headless
+        run: cargo test -v && cargo test --no-default-features --features headless -v
         working-directory: src-tauri

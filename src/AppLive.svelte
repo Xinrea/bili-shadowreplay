@@ -8,7 +8,7 @@
     listen,
     log,
   } from "./lib/invoker";
-  import Player from "./lib/Player.svelte";
+  import Player from "./lib/components/Player.svelte";
   import type { RecordItem } from "./lib/db";
   import { ChevronRight, ChevronLeft, Play, Pen } from "lucide-svelte";
   import {
@@ -21,7 +21,7 @@
     clipRange,
     generateEventId,
   } from "./lib/interface";
-  import MarkerPanel from "./lib/MarkerPanel.svelte";
+  import MarkerPanel from "./lib/components/MarkerPanel.svelte";
   import { onDestroy, onMount } from "svelte";
 
   const urlParams = new URLSearchParams(window.location.search);

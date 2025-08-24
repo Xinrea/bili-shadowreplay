@@ -9,7 +9,7 @@
     Video,
     Brain,
   } from "lucide-svelte";
-  import { hasNewVersion } from "./stores/version";
+  import { hasNewVersion } from "../stores/version";
   import SidebarItem from "./SidebarItem.svelte";
   import { createEventDispatcher } from "svelte";
 

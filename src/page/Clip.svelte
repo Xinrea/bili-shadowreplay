@@ -6,6 +6,7 @@
     convertFileSrc,
   } from "../lib/invoker";
   import type { VideoItem } from "../lib/interface";
+  import ImportVideoDialog from "../lib/components/ImportVideoDialog.svelte";
   import { onMount, onDestroy, tick } from "svelte";
   import {
     Play,
@@ -90,7 +91,7 @@
         // 任务已完成，延迟100ms确保状态同步后再重新加载
         importProgressInfo = null;
         stopProgressPolling();
-        
+
         // 延迟处理避免状态竞争
         setTimeout(async () => {
           loading = false;
@@ -100,7 +101,7 @@
       }
     } catch (error) {
       console.error("轮询检查进度失败:", error);
-      
+
       // 不要立即重置状态，避免在网络错误时丢失进度
       // 保持现有状态一段时间，然后重置
       setTimeout(() => {
@@ -224,21 +225,27 @@
   async function scanAndImportNewFiles() {
     try {
       // 扫描导入目录
-      const scanResponse = await invoke<{newFiles: string[]}>("scan_imported_directory");
-      
+      const scanResponse = await invoke<{ newFiles: string[] }>(
+        "scan_imported_directory"
+      );
+
       const newFiles = scanResponse.newFiles;
-      
+
       if (newFiles.length === 0) {
         return {
           hasProgress: false,
-          progressInfo: null
+          progressInfo: null,
         };
       }
 
       // 批量就地导入
-      const result = await invoke("batch_import_in_place", {
+      const result: {
+        successful_imports: number;
+        failed_imports: number;
+        errors?: any;
+      } = await invoke("batch_import_in_place", {
         filePaths: newFiles,
-        roomId: selectedRoomId || 0
+        roomId: selectedRoomId || 0,
       });
 
       // 导入完成后，立即查询是否有转换任务
@@ -254,7 +261,7 @@
         // 返回转换任务信息
         return {
           hasProgress: true,
-          progressInfo: progressInfo
+          progressInfo: progressInfo,
         };
       }
 
@@ -268,14 +275,14 @@
 
       return {
         hasProgress: false,
-        progressInfo: null
+        progressInfo: null,
       };
     } catch (error) {
       console.error("扫描导入目录失败:", error);
       // 扫描失败不影响正常的视频列表加载
       return {
         hasProgress: false,
-        progressInfo: null
+        progressInfo: null,
       };
     }
   }
@@ -482,9 +489,6 @@
     a.download = video_name;
     a.click();
   }
-
-  import ImportVideoDialog from "../lib/ImportVideoDialog.svelte";
-
 </script>
 
 <!-- svelte-ignore a11y-click-events-have-key-events -->
@@ -676,15 +680,23 @@
             <div class="text-center space-y-3 max-w-md">
               <!-- 主要信息：醒目的转换状态 -->
               <div class="flex items-center justify-center space-x-3">
-                <RotateCw class="w-7 h-7 text-blue-600 dark:text-blue-400 animate-spin" />
-                <span class="text-xl font-semibold text-blue-600 dark:text-blue-400">
+                <RotateCw
+                  class="w-7 h-7 text-blue-600 dark:text-blue-400 animate-spin"
+                />
+                <span
+                  class="text-xl font-semibold text-blue-600 dark:text-blue-400"
+                >
                   正在转换视频
                 </span>
               </div>
 
               <!-- 副信息：文件名显示在小字部分 -->
-              <div class="text-sm text-gray-500 dark:text-gray-400 break-all px-4">
-                {importProgressInfo.fileName || importProgressInfo.file_name || '正在准备...'}
+              <div
+                class="text-sm text-gray-500 dark:text-gray-400 break-all px-4"
+              >
+                {importProgressInfo.fileName ||
+                  importProgressInfo.file_name ||
+                  "正在准备..."}
               </div>
             </div>
           {:else}

@@ -5,12 +5,12 @@
     ForwardOutline,
     ClockOutline,
   } from "flowbite-svelte-icons";
-  import type { Marker } from "./interface";
+  import type { Marker } from "../interface";
   import { createEventDispatcher } from "svelte";
   import { Tooltip } from "flowbite-svelte";
-  import { invoke, TAURI_ENV } from "../lib/invoker";
+  import { invoke, TAURI_ENV } from "../invoker";
   import { save } from "@tauri-apps/plugin-dialog";
-  import type { RecordItem } from "./db";
+  import type { RecordItem } from "../db";
   const dispatch = createEventDispatcher();
   export let archive: RecordItem;
   export let markers: Marker[] = [];

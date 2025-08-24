@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { get, log } from "./invoker";
+  import { get, log } from "../invoker";
   export let src = "";
   export let iclass = "";
   let b = "";

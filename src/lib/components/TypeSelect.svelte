@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { invoke } from "../lib/invoker";
+  import { invoke } from "../invoker";
   import { ChevronDownOutline } from "flowbite-svelte-icons";
   import { scale } from "svelte/transition";
-  import type { Children, VideoType } from "./interface";
+  import type { Children, VideoType } from "../interface";
   export let value = 0;
   let parentSelected: VideoType;
   let areaSelected: Children;

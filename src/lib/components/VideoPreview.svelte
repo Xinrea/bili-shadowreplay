@@ -24,14 +24,21 @@
     type Profile,
     type Config,
     default_profile,
-  } from "./interface";
+  } from "../interface";
   import SubtitleStyleEditor from "./SubtitleStyleEditor.svelte";
   import CoverEditor from "./CoverEditor.svelte";
   import TypeSelect from "./TypeSelect.svelte";
-  import { invoke, TAURI_ENV, listen, log, close_window, convertCoverSrc } from "../lib/invoker";
+  import {
+    invoke,
+    TAURI_ENV,
+    listen,
+    log,
+    close_window,
+    convertCoverSrc,
+  } from "../invoker";
   import { onDestroy, onMount } from "svelte";
   import { listen as tauriListen } from "@tauri-apps/api/event";
-  import type { AccountInfo } from "./db";
+  import type { AccountInfo } from "../db";
 
   export let show = false;
   export let video: VideoItem;
@@ -458,7 +465,7 @@
   // 当视频改变时重新初始化切片时间（只在视频ID改变时触发）
   $: if (video && videoElement?.duration && video.id !== lastVideoId) {
     lastVideoId = video.id;
-    // 切换视频时重置切片时间 - 不设置默认值，等待用户输入 
+    // 切换视频时重置切片时间 - 不设置默认值，等待用户输入
     clipStartTime = 0;
     clipEndTime = 0;
     clipTitle = "";
@@ -523,7 +530,7 @@
   function setClipStartTime() {
     if (videoElement) {
       const newStartTime = videoElement.currentTime;
-      
+
       // 如果没有选区（首次设置起点），自动将终点设置为视频结尾
       if (!clipTimesSet || clipEndTime === 0) {
         clipStartTime = newStartTime;
@@ -536,7 +543,7 @@
       } else {
         clipStartTime = newStartTime;
       }
-      
+
       clipTimesSet = true; // 标记用户已设置切片时间
     }
   }
@@ -544,20 +551,24 @@
   function setClipEndTime() {
     if (videoElement) {
       const newEndTime = videoElement.currentTime;
-      
+
       // 如果没有选区（首次设置终点），自动将起点设置为视频开头
       if (!clipTimesSet || clipStartTime === 0) {
         clipStartTime = 0; // 自动设置为视频开头
         clipEndTime = newEndTime;
       }
       // 如果新的结束时间在现有开始时间之前，清空选区重新开始
-      else if (clipTimesSet && clipStartTime > 0 && newEndTime <= clipStartTime) {
+      else if (
+        clipTimesSet &&
+        clipStartTime > 0 &&
+        newEndTime <= clipStartTime
+      ) {
         clipStartTime = 0; // 清空开始时间
         clipEndTime = newEndTime;
       } else {
         clipEndTime = newEndTime;
       }
-      
+
       clipTimesSet = true; // 标记用户已设置切片时间
     }
   }
@@ -582,15 +593,15 @@
 
   async function generateClip() {
     if (!video) return;
-    
+
     // 如果没有设置切片标题，则以当前本地时间戳命名
     if (!clipTitle.trim()) {
       const now = new Date();
-      const pad = (n) => n.toString().padStart(2, '0');
+      const pad = (n) => n.toString().padStart(2, "0");
       const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
       clipTitle = `clip_${timestamp}`;
     }
-    
+
     if (clipStartTime >= clipEndTime) {
       alert("开始时间必须小于结束时间");
       return;
@@ -603,14 +614,14 @@
 
     clipping = true;
     current_clip_event_id = generateEventId();
-    
+
     try {
       await invoke("clip_video", {
         eventId: current_clip_event_id,
         parentVideoId: video.id,
         startTime: clipStartTime,
         endTime: clipEndTime,
-        clipTitle: clipTitle
+        clipTitle: clipTitle,
       });
     } catch (error) {
       console.error("切片失败:", error);
@@ -631,7 +642,7 @@
     if (!video) {
       return false;
     }
-    
+
     // 只要不是正在录制的视频(status !== -1)，都可以切片
     // 这包括：
     // - 导入的视频 (imported)
@@ -643,10 +654,10 @@
   // 键盘快捷键处理
   function handleKeydown(event: KeyboardEvent) {
     if (!show || !isVideoLoaded) return;
-    
+
     // 如果在输入框中，不处理某些快捷键
-    const isInInput = (event.target as HTMLElement)?.tagName === 'INPUT';
-    
+    const isInInput = (event.target as HTMLElement)?.tagName === "INPUT";
+
     switch (event.key) {
       case "【":
       case "[":
@@ -686,7 +697,10 @@
         if (!isInInput) {
           event.preventDefault();
           if (videoElement) {
-            videoElement.currentTime = Math.max(0, videoElement.currentTime - 5);
+            videoElement.currentTime = Math.max(
+              0,
+              videoElement.currentTime - 5
+            );
           }
         }
         break;
@@ -694,7 +708,10 @@
         if (!isInInput) {
           event.preventDefault();
           if (videoElement) {
-            videoElement.currentTime = Math.min(videoElement.duration, videoElement.currentTime + 5);
+            videoElement.currentTime = Math.min(
+              videoElement.duration,
+              videoElement.currentTime + 5
+            );
           }
         }
         break;
@@ -722,8 +739,6 @@
     }
   }
 
-
-
   function togglePlay() {
     if (isPlaying) {
       videoElement.pause();
@@ -745,8 +760,6 @@
     isPlaying = false;
   }
 
-
-
   function handleTimelineClick(e: MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
@@ -762,33 +775,31 @@
     videoElement.currentTime = time;
   }
 
-
-
   // 进度条拖动事件处理
   function handleSeekbarMouseDown(e: MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
-    
+
     if (!videoElement || !seekbarElement) return;
-    
+
     isDraggingSeekbar = true;
     wasPlayingBeforeDrag = isPlaying;
-    
+
     // 先初始化预览时间为当前时间，避免跳跃
     previewTime = videoElement.currentTime;
-    
+
     // 然后计算鼠标位置对应的时间
     const rect = seekbarElement.getBoundingClientRect();
     const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
     const newTime = (x / rect.width) * videoElement.duration;
     previewTime = newTime;
-    
+
     // 暂停播放
     if (isPlaying) {
       videoElement.pause();
       isPlaying = false;
     }
-    
+
     // 添加全局事件监听器
     document.addEventListener("mousemove", handleSeekbarMouseMove);
     document.addEventListener("mouseup", handleSeekbarMouseUp);
@@ -796,7 +807,7 @@
 
   function handleSeekbarMouseMove(e: MouseEvent) {
     if (!isDraggingSeekbar || !seekbarElement || !videoElement) return;
-    
+
     const rect = seekbarElement.getBoundingClientRect();
     const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
     const newTime = (x / rect.width) * videoElement.duration;
@@ -805,28 +816,26 @@
 
   function handleSeekbarMouseUp(e: MouseEvent) {
     if (!isDraggingSeekbar) return;
-    
+
     // 应用最终时间
     if (videoElement) {
       videoElement.currentTime = previewTime;
       // 立即同步currentTime变量，避免视觉偏移
       currentTime = previewTime;
     }
-    
+
     isDraggingSeekbar = false;
-    
+
     // 移除全局事件监听器
     document.removeEventListener("mousemove", handleSeekbarMouseMove);
     document.removeEventListener("mouseup", handleSeekbarMouseUp);
-    
+
     // 恢复播放状态
     if (wasPlayingBeforeDrag && videoElement) {
       videoElement.play();
       isPlaying = true;
     }
   }
-
-
 
   function addSubtitle() {
     const newStartTime = currentTime;
@@ -844,17 +853,20 @@
 
   function updateSubtitleTime(index: number, isStart: boolean, time: number) {
     if (!videoElement?.duration) return; // 防御性检查
-    
+
     subtitles = subtitles.map((sub, i) => {
       if (i !== index) return sub;
-      
+
       if (isStart) {
         // 开始时间约束：不能小于0，不能大于结束时间-0.1秒
         const newStartTime = Math.max(0, Math.min(time, sub.endTime - 0.1));
         return { ...sub, startTime: newStartTime };
       } else {
         // 结束时间约束：不能小于开始时间+0.1秒，不能大于视频总长度
-        const newEndTime = Math.min(videoElement.duration, Math.max(time, sub.startTime + 0.1));
+        const newEndTime = Math.min(
+          videoElement.duration,
+          Math.max(time, sub.startTime + 0.1)
+        );
         return { ...sub, endTime: newEndTime };
       }
     });
@@ -863,16 +875,21 @@
 
   function moveSubtitle(index: number, newStartTime: number) {
     if (!videoElement?.duration) return;
-    
+
     const sub = subtitles[index];
     const duration = sub.endTime - sub.startTime;
-    
+
     // 约束开始时间到有效范围 [0, videoDuration - duration]
-    const finalStartTime = Math.max(0, Math.min(newStartTime, videoElement.duration - duration));
+    const finalStartTime = Math.max(
+      0,
+      Math.min(newStartTime, videoElement.duration - duration)
+    );
     const finalEndTime = finalStartTime + duration;
 
     subtitles = subtitles.map((s, i) =>
-      i === index ? { ...s, startTime: finalStartTime, endTime: finalEndTime } : s
+      i === index
+        ? { ...s, startTime: finalStartTime, endTime: finalEndTime }
+        : s
     );
     subtitles = subtitles.sort((a, b) => a.startTime - b.startTime);
   }
@@ -928,7 +945,11 @@
   }
 
   // 辅助函数：统一开始块拖拽
-  function startBlockDragging(index: number, mouseTime: number, startTime: number) {
+  function startBlockDragging(
+    index: number,
+    mouseTime: number,
+    startTime: number
+  ) {
     draggingBlock = index;
     dragOffset = mouseTime - startTime;
     document.addEventListener("mousemove", handleBlockMouseMove);
@@ -942,10 +963,11 @@
     const mouseTime = (x / rect.width) * videoElement.duration;
 
     // 计算边缘检测参数
-    const blockWidth = rect.width * ((sub.endTime - sub.startTime) / videoElement.duration);
+    const blockWidth =
+      rect.width * ((sub.endTime - sub.startTime) / videoElement.duration);
     const relativeX = x - rect.width * (sub.startTime / videoElement.duration);
     const edgeSize = Math.min(5, Math.max(2, blockWidth / 3));
-    
+
     // 确定拖拽类型
     if (relativeX < edgeSize) {
       // 左边缘：调整开始时间
@@ -1002,7 +1024,8 @@
     // 字幕块位置应该是相对于时间轴容器的百分比，不需要乘以缩放因子
     // 因为容器本身已经通过 style="width: {100 * timelineScale}%" 进行了缩放
     const start = (subtitle.startTime / videoElement.duration) * 100;
-    const width = ((subtitle.endTime - subtitle.startTime) / videoElement.duration) * 100;
+    const width =
+      ((subtitle.endTime - subtitle.startTime) / videoElement.duration) * 100;
     return `left: ${start}%; width: ${width}%;`;
   }
 
@@ -1188,7 +1211,9 @@
             {:else}
               <Scissors class="w-4 h-4" />
             {/if}
-            <span id="generate-clip-prompt">{clipping ? "生成中..." : "生成切片"}</span>
+            <span id="generate-clip-prompt"
+              >{clipping ? "生成中..." : "生成切片"}</span
+            >
           </button>
         {/if}
         <button
@@ -1290,16 +1315,24 @@
       <div class="flex-1 flex flex-col">
         <!-- 切片控制信息条 -->
         {#if canBeClipped(video)}
-          <div class="bg-black px-4 py-2 flex items-center justify-between text-sm">
+          <div
+            class="bg-black px-4 py-2 flex items-center justify-between text-sm"
+          >
             <div class="flex items-center space-x-6">
               <div class="text-gray-300">
-                切片起点: <span class="text-[#0A84FF] font-mono">{formatTime(clipStartTime)}</span>
+                切片起点: <span class="text-[#0A84FF] font-mono"
+                  >{formatTime(clipStartTime)}</span
+                >
               </div>
               <div class="text-gray-300">
-                切片终点: <span class="text-[#0A84FF] font-mono">{formatTime(clipEndTime)}</span>
+                切片终点: <span class="text-[#0A84FF] font-mono"
+                  >{formatTime(clipEndTime)}</span
+                >
               </div>
               <div class="text-gray-300">
-                时长: <span class="text-white font-mono">{formatTime(clipEndTime - clipStartTime)}</span>
+                时长: <span class="text-white font-mono"
+                  >{formatTime(clipEndTime - clipStartTime)}</span
+                >
               </div>
             </div>
           </div>
@@ -1317,24 +1350,74 @@
               on:loadedmetadata={handleVideoLoaded}
               on:click={togglePlay}
             />
-            
+
             <!-- 切片快捷键说明 -->
             {#if canBeClipped(video)}
-              <div id="overlay" class="absolute top-2 left-2 rounded-md px-2 py-2 flex flex-col pointer-events-none" style="background-color: rgba(0, 0, 0, 0.5); color: white; font-size: 0.8em;">
+              <div
+                id="overlay"
+                class="absolute top-2 left-2 rounded-md px-2 py-2 flex flex-col pointer-events-none"
+                style="background-color: rgba(0, 0, 0, 0.5); color: white; font-size: 0.8em;"
+              >
                 <p style="margin: 0;">
                   快捷键说明
-                  <kbd style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;">h</kbd>展开
+                  <kbd
+                    style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;"
+                    >h</kbd
+                  >展开
                 </p>
                 {#if show_detail}
                   <span>
-                    <p style="margin: 0;"><kbd style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;">[</kbd>设定选区开始</p>
-                    <p style="margin: 0;"><kbd style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;">]</kbd>设定选区结束</p>
-                    <p style="margin: 0;"><kbd style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;">q</kbd>跳转到选区开始</p>
-                    <p style="margin: 0;"><kbd style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;">e</kbd>跳转到选区结束</p>
-                    <p style="margin: 0;"><kbd style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;">g</kbd>生成切片</p>
-                    <p style="margin: 0;"><kbd style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;">c</kbd>清除选区</p>
-                    <p style="margin: 0;"><kbd style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;">Space</kbd>播放/暂停</p>
-                    <p style="margin: 0;"><kbd style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;">←</kbd><kbd style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;">→</kbd>前进/后退</p>
+                    <p style="margin: 0;">
+                      <kbd
+                        style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;"
+                        >[</kbd
+                      >设定选区开始
+                    </p>
+                    <p style="margin: 0;">
+                      <kbd
+                        style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;"
+                        >]</kbd
+                      >设定选区结束
+                    </p>
+                    <p style="margin: 0;">
+                      <kbd
+                        style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;"
+                        >q</kbd
+                      >跳转到选区开始
+                    </p>
+                    <p style="margin: 0;">
+                      <kbd
+                        style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;"
+                        >e</kbd
+                      >跳转到选区结束
+                    </p>
+                    <p style="margin: 0;">
+                      <kbd
+                        style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;"
+                        >g</kbd
+                      >生成切片
+                    </p>
+                    <p style="margin: 0;">
+                      <kbd
+                        style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;"
+                        >c</kbd
+                      >清除选区
+                    </p>
+                    <p style="margin: 0;">
+                      <kbd
+                        style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;"
+                        >Space</kbd
+                      >播放/暂停
+                    </p>
+                    <p style="margin: 0;">
+                      <kbd
+                        style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;"
+                        >←</kbd
+                      ><kbd
+                        style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;"
+                        >→</kbd
+                      >前进/后退
+                    </p>
                   </span>
                 {/if}
               </div>
@@ -1368,9 +1451,11 @@
           </div>
         </div>
 
-                <!-- 字幕控制栏 -->
+        <!-- 字幕控制栏 -->
         <div class="bg-[#1c1c1e] border-t border-gray-800/50 p-2">
-          <div class="h-8 px-4 flex items-center justify-between border-b border-gray-800/50">
+          <div
+            class="h-8 px-4 flex items-center justify-between border-b border-gray-800/50"
+          >
             <!-- 左侧控制 -->
             <div class="flex items-center space-x-2">
               <!-- 缩放控制 -->
@@ -1407,17 +1492,38 @@
                 on:click={toggleMute}
               >
                 {#if isMuted || volume === 0}
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="h-4 w-4"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
                     <path d="M11 5L6 9H2v6h4l5 4V5z" />
                     <line x1="23" y1="9" x2="17" y2="15" />
                     <line x1="17" y1="9" x2="23" y2="15" />
                   </svg>
                 {:else if volume < 0.5}
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="h-4 w-4"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
                     <path d="M11 5L6 9H2v6h4l5 4V5z" />
                   </svg>
                 {:else}
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    class="h-4 w-4"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
                     <path d="M11 5L6 9H2v6h4l5 4V5z" />
                   </svg>
                 {/if}
@@ -1462,26 +1568,35 @@
             >
               <!-- 切片选区可视化 -->
               {#if canBeClipped(video) && clipTimesSet}
-                <div class="absolute top-0 left-0 right-0 h-1 group-hover:h-1.5 transition-all duration-200 z-15">
+                <div
+                  class="absolute top-0 left-0 right-0 h-1 group-hover:h-1.5 transition-all duration-200 z-15"
+                >
                   <!-- 切片选中区域 -->
-                  <div 
+                  <div
                     class="absolute h-full bg-green-400/80 transition-all duration-200"
-                    style="left: {(clipStartTime / (videoElement?.duration || 1)) * 100}%; right: {100 - (clipEndTime / (videoElement?.duration || 1)) * 100}%"
+                    style="left: {(clipStartTime /
+                      (videoElement?.duration || 1)) *
+                      100}%; right: {100 -
+                      (clipEndTime / (videoElement?.duration || 1)) * 100}%"
                   ></div>
                   <!-- 切片起点标记 -->
-                  <div 
+                  <div
                     class="absolute h-full w-0.5 bg-green-500 transition-all duration-200"
-                    style="left: {(clipStartTime / (videoElement?.duration || 1)) * 100}%"
+                    style="left: {(clipStartTime /
+                      (videoElement?.duration || 1)) *
+                      100}%"
                   ></div>
                   <!-- 切片终点标记 -->
-                  <div 
+                  <div
                     class="absolute h-full w-0.5 bg-green-500 transition-all duration-200"
-                    style="left: {(clipEndTime / (videoElement?.duration || 1)) * 100}%; transform: translateX(-100%)"
+                    style="left: {(clipEndTime /
+                      (videoElement?.duration || 1)) *
+                      100}%; transform: translateX(-100%)"
                   ></div>
                 </div>
               {/if}
               <!-- 播放进度条容器 (借鉴Shaka Player样式) -->
-              <div 
+              <div
                 bind:this={seekbarElement}
                 class="shaka-seek-bar-container absolute top-2 left-0 right-0 h-1 group-hover:h-1.5 bg-white/30 rounded-full cursor-pointer transition-all duration-200 z-10"
                 class:dragging={isDraggingSeekbar}
@@ -1491,15 +1606,22 @@
                 <div
                   class="h-full bg-[#0A84FF] rounded-full pointer-events-none transition-all duration-200"
                   class:no-transition={isDraggingSeekbar}
-                  style="width: {((isDraggingSeekbar ? previewTime : currentTime) / (videoElement?.duration || 1)) * 100}%"
-                >
-                </div>
-                
+                  style="width: {((isDraggingSeekbar
+                    ? previewTime
+                    : currentTime) /
+                    (videoElement?.duration || 1)) *
+                    100}%"
+                ></div>
+
                 <!-- 播放进度条滑块 (hover或拖动时显示) -->
-                <div 
+                <div
                   class="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full border-2 border-[#0A84FF] shadow-lg z-30 opacity-0 group-hover:opacity-100 transition-opacity duration-200"
                   class:opacity-100={isDraggingSeekbar}
-                  style="left: calc({((isDraggingSeekbar ? previewTime : currentTime) / (videoElement?.duration || 1)) * 100}% - 6px)"
+                  style="left: calc({((isDraggingSeekbar
+                    ? previewTime
+                    : currentTime) /
+                    (videoElement?.duration || 1)) *
+                    100}% - 6px)"
                 ></div>
               </div>
 
@@ -1725,7 +1847,6 @@
               {/each}
             </div>
           </div>
-
         {:else if activeTab === "upload"}
           <!-- 投稿 Tab 内容 -->
           <div class="p-4 space-y-6">
@@ -1749,19 +1870,31 @@
                     class="relative rounded-xl overflow-hidden bg-black/20 border border-gray-800/50"
                   >
                     {#if video.cover && video.cover.trim() !== ""}
-                      <img 
-                        src={video.cover} 
-                        alt="视频封面" 
-                        class="w-full" 
+                      <img
+                        src={video.cover}
+                        alt="视频封面"
+                        class="w-full"
                         on:error={handleCoverError}
-                        style:display={showDefaultCoverIcon ? 'none' : 'block'}
+                        style:display={showDefaultCoverIcon ? "none" : "block"}
                       />
                     {/if}
                     {#if !video.cover || video.cover.trim() === "" || showDefaultCoverIcon}
-                      <div class="w-full aspect-video flex items-center justify-center bg-gray-800">
+                      <div
+                        class="w-full aspect-video flex items-center justify-center bg-gray-800"
+                      >
                         <!-- 默认视频图标 -->
-                        <svg class="w-16 h-16 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+                        <svg
+                          class="w-16 h-16 text-gray-400"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            stroke-width="2"
+                            d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"
+                          ></path>
                         </svg>
                       </div>
                     {/if}
@@ -1986,4 +2119,3 @@
     background: #4a5568;
   }
 </style>
-

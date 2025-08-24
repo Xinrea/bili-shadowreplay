@@ -4,7 +4,7 @@
   import { fade, scale } from "svelte/transition";
   import { Dropdown, DropdownItem } from "flowbite-svelte";
   import type { RecorderList, RecorderInfo } from "../lib/interface";
-  import Image from "../lib/Image.svelte";
+  import Image from "../lib/components/Image.svelte";
   import type { RecordItem } from "../lib/db";
   import {
     Ellipsis,
@@ -16,9 +16,9 @@
     X,
     History,
   } from "lucide-svelte";
-  import BilibiliIcon from "../lib/BilibiliIcon.svelte";
-  import DouyinIcon from "../lib/DouyinIcon.svelte";
-  import AutoRecordIcon from "../lib/AutoRecordIcon.svelte";
+  import BilibiliIcon from "../lib/components/BilibiliIcon.svelte";
+  import DouyinIcon from "../lib/components/DouyinIcon.svelte";
+  import AutoRecordIcon from "../lib/components/AutoRecordIcon.svelte";
   import { onMount } from "svelte";
 
   export let room_count = 0;

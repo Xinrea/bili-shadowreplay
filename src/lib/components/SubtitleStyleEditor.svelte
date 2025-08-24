@@ -1,6 +1,6 @@
 <script lang="ts">
   import { X } from "lucide-svelte";
-  import { parseSubtitleStyle, type SubtitleStyle } from "./interface";
+  import { parseSubtitleStyle, type SubtitleStyle } from "../interface";
 
   export let show = false;
   export let onClose: () => void;
@@ -183,7 +183,9 @@
           <h3 class="text-sm font-medium text-gray-300">对齐和边距</h3>
           <div class="grid grid-cols-2 gap-4">
             <div class="space-y-2">
-              <label for="alignment-select" class="block text-sm text-gray-400">对齐方式</label>
+              <label for="alignment-select" class="block text-sm text-gray-400"
+                >对齐方式</label
+              >
               <select
                 id="alignment-select"
                 bind:value={style.alignment}
@@ -199,7 +201,9 @@
               </select>
             </div>
             <div class="space-y-2">
-              <label for="margin-v-input" class="block text-sm text-gray-400">垂直边距</label>
+              <label for="margin-v-input" class="block text-sm text-gray-400"
+                >垂直边距</label
+              >
               <input
                 id="margin-v-input"
                 type="number"
@@ -212,7 +216,9 @@
           </div>
           <div class="grid grid-cols-2 gap-4">
             <div class="space-y-2">
-              <label for="margin-l-input" class="block text-sm text-gray-400">左边距</label>
+              <label for="margin-l-input" class="block text-sm text-gray-400"
+                >左边距</label
+              >
               <input
                 id="margin-l-input"
                 type="number"
@@ -223,7 +229,9 @@
               />
             </div>
             <div class="space-y-2">
-              <label for="margin-r-input" class="block text-sm text-gray-400">右边距</label>
+              <label for="margin-r-input" class="block text-sm text-gray-400"
+                >右边距</label
+              >
               <input
                 id="margin-r-input"
                 type="number"

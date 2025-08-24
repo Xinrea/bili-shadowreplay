@@ -3,9 +3,9 @@
 </script>
 
 <script lang="ts">
-  import { invoke, TAURI_ENV, ENDPOINT, listen, log } from "../lib/invoker";
-  import type { AccountInfo } from "./db";
-  import type { Marker, RecorderList, RecorderInfo } from "./interface";
+  import { invoke, TAURI_ENV, ENDPOINT, listen, log } from "../invoker";
+  import type { AccountInfo } from "../db";
+  import type { Marker, RecorderList, RecorderInfo } from "../interface";
 
   import { createEventDispatcher } from "svelte";
   import {

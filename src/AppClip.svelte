@@ -1,7 +1,7 @@
 <script lang="ts">
   import { invoke, convertFileSrc, convertCoverSrc } from "./lib/invoker";
   import { onMount } from "svelte";
-  import VideoPreview from "./lib/VideoPreview.svelte";
+  import VideoPreview from "./lib/components/VideoPreview.svelte";
   import type { Config, VideoItem } from "./lib/interface";
   import { set_title } from "./lib/invoker";
 

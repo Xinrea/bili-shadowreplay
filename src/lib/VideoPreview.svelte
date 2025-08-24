@@ -757,6 +757,7 @@
     if (!timelineElement || !videoElement) return;
     const rect = timelineElement.getBoundingClientRect();
     const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+    // 直接使用容器的实际宽度计算时间，与 getSubtitleStyle 逻辑保持一致
     const time = (x / rect.width) * videoElement.duration;
     videoElement.currentTime = time;
   }
@@ -842,27 +843,36 @@
   }
 
   function updateSubtitleTime(index: number, isStart: boolean, time: number) {
+    if (!videoElement?.duration) return; // 防御性检查
+    
     subtitles = subtitles.map((sub, i) => {
       if (i !== index) return sub;
+      
       if (isStart) {
-        return { ...sub, startTime: Math.min(time, sub.endTime - 0.1) };
+        // 开始时间约束：不能小于0，不能大于结束时间-0.1秒
+        const newStartTime = Math.max(0, Math.min(time, sub.endTime - 0.1));
+        return { ...sub, startTime: newStartTime };
       } else {
-        return { ...sub, endTime: Math.max(time, sub.startTime + 0.1) };
+        // 结束时间约束：不能小于开始时间+0.1秒，不能大于视频总长度
+        const newEndTime = Math.min(videoElement.duration, Math.max(time, sub.startTime + 0.1));
+        return { ...sub, endTime: newEndTime };
       }
     });
     subtitles = subtitles.sort((a, b) => a.startTime - b.startTime);
   }
 
   function moveSubtitle(index: number, newStartTime: number) {
+    if (!videoElement?.duration) return;
+    
     const sub = subtitles[index];
     const duration = sub.endTime - sub.startTime;
-    const newEndTime = Math.min(newStartTime + duration, videoElement.duration);
-    const newStartTimeFinal = Math.max(0, newStartTime);
+    
+    // 约束开始时间到有效范围 [0, videoDuration - duration]
+    const finalStartTime = Math.max(0, Math.min(newStartTime, videoElement.duration - duration));
+    const finalEndTime = finalStartTime + duration;
 
     subtitles = subtitles.map((s, i) =>
-      i === index
-        ? { ...s, startTime: newStartTimeFinal, endTime: newEndTime }
-        : s
+      i === index ? { ...s, startTime: finalStartTime, endTime: finalEndTime } : s
     );
     subtitles = subtitles.sort((a, b) => a.startTime - b.startTime);
   }
@@ -907,39 +917,48 @@
     index: number,
     isStart: boolean
   ) {
+    startEdgeDragging(index, isStart);
+  }
+
+  // 辅助函数：统一开始边缘拖拽
+  function startEdgeDragging(index: number, isStart: boolean) {
     draggingSubtitle = { index, isStart };
     document.addEventListener("mousemove", handleTimelineMouseMove);
     document.addEventListener("mouseup", handleTimelineMouseUp);
   }
 
-  function handleBlockMouseDown(e: MouseEvent, index: number) {
+  // 辅助函数：统一开始块拖拽
+  function startBlockDragging(index: number, mouseTime: number, startTime: number) {
     draggingBlock = index;
+    dragOffset = mouseTime - startTime;
+    document.addEventListener("mousemove", handleBlockMouseMove);
+    document.addEventListener("mouseup", handleBlockMouseUp);
+  }
+
+  function handleBlockMouseDown(e: MouseEvent, index: number) {
     const sub = subtitles[index];
     const rect = timelineElement.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const mouseTime = (x / rect.width) * videoElement.duration;
 
-    // 检查是否点击了边缘
-    const blockWidth =
-      rect.width * ((sub.endTime - sub.startTime) / videoElement.duration);
-    const blockLeft = rect.width * (sub.startTime / videoElement.duration);
-    const relativeX = x - blockLeft;
-
-    if (relativeX < 5) {
-      // 开始边缘
-      draggingSubtitle = { index, isStart: true };
-      document.addEventListener("mousemove", handleTimelineMouseMove);
-      document.addEventListener("mouseup", handleTimelineMouseUp);
-    } else if (relativeX > blockWidth - 5) {
-      // 结束边缘
-      draggingSubtitle = { index, isStart: false };
-      document.addEventListener("mousemove", handleTimelineMouseMove);
-      document.addEventListener("mouseup", handleTimelineMouseUp);
+    // 计算边缘检测参数
+    const blockWidth = rect.width * ((sub.endTime - sub.startTime) / videoElement.duration);
+    const relativeX = x - rect.width * (sub.startTime / videoElement.duration);
+    const edgeSize = Math.min(5, Math.max(2, blockWidth / 3));
+    
+    // 确定拖拽类型
+    if (relativeX < edgeSize) {
+      // 左边缘：调整开始时间
+      startEdgeDragging(index, true);
+    } else if (blockWidth > edgeSize * 2 && relativeX > blockWidth - edgeSize) {
+      // 右边缘：调整结束时间（仅当有足够空间时）
+      startEdgeDragging(index, false);
+    } else if (blockWidth <= edgeSize * 2 && relativeX > edgeSize) {
+      // 短字幕右侧：调整结束时间
+      startEdgeDragging(index, false);
     } else {
-      // 中间部分
-      dragOffset = mouseTime - sub.startTime;
-      document.addEventListener("mousemove", handleBlockMouseMove);
-      document.addEventListener("mouseup", handleBlockMouseUp);
+      // 中间区域：移动整个字幕
+      startBlockDragging(index, mouseTime, sub.startTime);
     }
   }
 
@@ -948,6 +967,7 @@
 
     const rect = timelineElement.getBoundingClientRect();
     const x = e.clientX - rect.left;
+    // 直接使用容器的实际宽度计算时间，与 getSubtitleStyle 逻辑保持一致
     const time = (x / rect.width) * videoElement.duration;
 
     updateSubtitleTime(draggingSubtitle.index, draggingSubtitle.isStart, time);
@@ -958,6 +978,7 @@
 
     const rect = timelineElement.getBoundingClientRect();
     const x = e.clientX - rect.left;
+    // 直接使用容器的实际宽度计算时间，与 getSubtitleStyle 逻辑保持一致
     const mouseTime = (x / rect.width) * videoElement.duration;
     const newStartTime = mouseTime - dragOffset; // 使用偏移量计算新的开始时间
 
@@ -978,12 +999,10 @@
 
   function getSubtitleStyle(subtitle: Subtitle) {
     if (!isVideoLoaded || !videoElement?.duration) return "";
-    const start =
-      (subtitle.startTime / videoElement.duration) * 100 * timelineScale;
-    const width =
-      ((subtitle.endTime - subtitle.startTime) / videoElement.duration) *
-      100 *
-      timelineScale;
+    // 字幕块位置应该是相对于时间轴容器的百分比，不需要乘以缩放因子
+    // 因为容器本身已经通过 style="width: {100 * timelineScale}%" 进行了缩放
+    const start = (subtitle.startTime / videoElement.duration) * 100;
+    const width = ((subtitle.endTime - subtitle.startTime) / videoElement.duration) * 100;
     return `left: ${start}%; width: ${width}%;`;
   }
 

@@ -60,9 +60,9 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use std::path::PathBuf;
 use futures::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use tokio::io::AsyncSeekExt;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
@@ -785,7 +785,7 @@ async fn handler_get_all_videos(
             log::warn!("扫描导入目录失败: {}", e);
         }
     }
-    
+
     // 返回所有视频列表
     let videos = get_all_videos(state.0).await?;
     Ok(Json(ApiResponse::success(videos)))
@@ -1054,7 +1054,6 @@ struct ImportProgressResponse {
     created_at: Option<String>,
 }
 
-
 async fn handler_get_file_size(
     _state: axum::extract::State<State>,
     Json(param): Json<GetFileSizeRequest>,
@@ -1099,15 +1098,30 @@ async fn handler_get_import_progress(
     state: axum::extract::State<State>,
 ) -> Result<Json<ApiResponse<Option<ImportProgressResponse>>>, ApiError> {
     let progress = get_import_progress(state.0).await?;
-    
+
     if let Some(progress_data) = progress {
         let response = ImportProgressResponse {
-            task_id: progress_data.get("task_id").and_then(|v| v.as_str()).map(String::from),
-            file_name: progress_data.get("file_name").and_then(|v| v.as_str()).map(String::from),
+            task_id: progress_data
+                .get("task_id")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            file_name: progress_data
+                .get("file_name")
+                .and_then(|v| v.as_str())
+                .map(String::from),
             file_size: progress_data.get("file_size").and_then(|v| v.as_u64()),
-            message: progress_data.get("message").and_then(|v| v.as_str()).map(String::from),
-            status: progress_data.get("status").and_then(|v| v.as_str()).map(String::from),
-            created_at: progress_data.get("created_at").and_then(|v| v.as_str()).map(String::from),
+            message: progress_data
+                .get("message")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            status: progress_data
+                .get("status")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            created_at: progress_data
+                .get("created_at")
+                .and_then(|v| v.as_str())
+                .map(String::from),
         };
         Ok(Json(ApiResponse::success(Some(response))))
     } else {
@@ -1148,24 +1162,23 @@ async fn handler_upload_files(
 ) -> Result<Json<ApiResponse<UploadFilesResponse>>, ApiError> {
     let mut uploaded_files = Vec::new();
     let upload_dir = std::env::temp_dir().join("bsr_uploads");
-    
+
     // 确保上传目录存在
     if !upload_dir.exists() {
-        std::fs::create_dir_all(&upload_dir)
-            .map_err(|e| format!("创建上传目录失败: {}", e))?;
+        std::fs::create_dir_all(&upload_dir).map_err(|e| format!("创建上传目录失败: {}", e))?;
     }
 
     while let Some(mut field) = multipart.next_field().await.map_err(|e| e.to_string())? {
         if let Some(file_name) = field.file_name() {
             let file_name = file_name.to_string();
-            
+
             // 检查文件格式是否为支持的视频格式
             let extension = std::path::Path::new(&file_name)
                 .extension()
                 .and_then(|ext| ext.to_str())
                 .unwrap_or("")
                 .to_lowercase();
-            
+
             // 使用与后端相同的格式验证逻辑
             let supported_extensions = ["mp4", "mkv", "avi", "mov", "wmv", "flv", "m4v", "webm"];
             if !supported_extensions.iter().any(|&ext| ext == extension) {
@@ -1175,18 +1188,18 @@ async fn handler_upload_files(
                     supported_extensions.join(", ")
                 )));
             }
-            
+
             // 生成唯一的文件名
             let timestamp = chrono::Utc::now().timestamp();
             let sanitized_name = sanitize_filename_advanced(&file_name, None);
             let unique_name = format!("{}_{}", timestamp, sanitized_name);
             let file_path = upload_dir.join(&unique_name);
-            
+
             // 流式保存文件，避免大文件内存占用
             let mut file = tokio::fs::File::create(&file_path)
                 .await
                 .map_err(|e| format!("创建文件失败: {}", e))?;
-            
+
             let mut total_size = 0u64;
             while let Some(chunk) = field.chunk().await.map_err(|e| e.to_string())? {
                 tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
@@ -1194,11 +1207,11 @@ async fn handler_upload_files(
                     .map_err(|e| format!("写入文件失败: {}", e))?;
                 total_size += chunk.len() as u64;
             }
-            
+
             tokio::io::AsyncWriteExt::flush(&mut file)
                 .await
                 .map_err(|e| format!("刷新文件缓冲区失败: {}", e))?;
-            
+
             uploaded_files.push(UploadedFileInfo {
                 file_path: file_path.to_string_lossy().to_string(),
                 original_name: file_name,
@@ -1220,11 +1233,10 @@ async fn handler_upload_and_import_files(
     let mut uploaded_files = Vec::new();
     let mut room_id = 0u64;
     let upload_dir = std::env::temp_dir().join("bsr_uploads");
-    
+
     // 确保上传目录存在
     if !upload_dir.exists() {
-        std::fs::create_dir_all(&upload_dir)
-            .map_err(|e| format!("创建上传目录失败: {}", e))?;
+        std::fs::create_dir_all(&upload_dir).map_err(|e| format!("创建上传目录失败: {}", e))?;
     }
 
     // 处理multipart表单数据
@@ -1240,15 +1252,16 @@ async fn handler_upload_and_import_files(
                     // 处理文件上传
                     if let Some(file_name) = field.file_name() {
                         let file_name = file_name.to_string();
-                        
+
                         // 检查文件格式
                         let extension = std::path::Path::new(&file_name)
                             .extension()
                             .and_then(|ext| ext.to_str())
                             .unwrap_or("")
                             .to_lowercase();
-                        
-                        let supported_extensions = ["mp4", "mkv", "avi", "mov", "wmv", "flv", "m4v", "webm"];
+
+                        let supported_extensions =
+                            ["mp4", "mkv", "avi", "mov", "wmv", "flv", "m4v", "webm"];
                         if !supported_extensions.iter().any(|&ext| ext == extension) {
                             return Err(ApiError(format!(
                                 "不支持的文件格式: {}。支持的格式: {}",
@@ -1256,18 +1269,18 @@ async fn handler_upload_and_import_files(
                                 supported_extensions.join(", ")
                             )));
                         }
-                        
+
                         // 生成唯一的文件名
                         let timestamp = chrono::Utc::now().timestamp();
                         let sanitized_name = sanitize_filename_advanced(&file_name, None);
                         let unique_name = format!("{}_{}", timestamp, sanitized_name);
                         let file_path = upload_dir.join(&unique_name);
-                        
+
                         // 流式保存文件，避免大文件内存占用
                         let mut file = tokio::fs::File::create(&file_path)
                             .await
                             .map_err(|e| format!("创建文件失败: {}", e))?;
-                        
+
                         let mut total_size = 0u64;
                         while let Some(chunk) = field.chunk().await.map_err(|e| e.to_string())? {
                             tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
@@ -1275,11 +1288,11 @@ async fn handler_upload_and_import_files(
                                 .map_err(|e| format!("写入文件失败: {}", e))?;
                             total_size += chunk.len() as u64;
                         }
-                        
+
                         tokio::io::AsyncWriteExt::flush(&mut file)
                             .await
                             .map_err(|e| format!("刷新文件缓冲区失败: {}", e))?;
-                        
+
                         uploaded_files.push(UploadedFileInfo {
                             file_path: file_path.to_string_lossy().to_string(),
                             original_name: file_name,
@@ -1301,20 +1314,17 @@ async fn handler_upload_and_import_files(
 
     // 生成批量导入的事件ID
     let event_id = format!("upload_import_{}", chrono::Utc::now().timestamp());
-    
+
     // 启动批量导入任务
     let file_paths: Vec<String> = uploaded_files.iter().map(|f| f.file_path.clone()).collect();
-    
+
     // 异步执行批量导入，不阻塞响应
     let state_clone = state.0.clone();
     let event_id_clone = event_id.clone();
     tokio::spawn(async move {
-        if let Err(e) = batch_import_external_videos(
-            state_clone,
-            event_id_clone,
-            file_paths,
-            room_id,
-        ).await {
+        if let Err(e) =
+            batch_import_external_videos(state_clone, event_id_clone, file_paths, room_id).await
+        {
             log::error!("批量导入上传文件失败: {}", e);
         }
     });
@@ -1502,7 +1512,7 @@ async fn handler_upload_file(
         match name.as_str() {
             "file" => {
                 file_name = field.file_name().unwrap_or("unknown").to_string();
-                
+
                 // 创建上传目录
                 let config = state.config.read().await;
                 let upload_dir = std::path::Path::new(&config.cache).join("uploads");
@@ -1528,23 +1538,23 @@ async fn handler_upload_file(
                 };
 
                 let file_path = upload_dir.join(&unique_filename);
-                
+
                 // 流式保存文件，避免大文件内存占用
                 let mut file = tokio::fs::File::create(&file_path)
                     .await
                     .map_err(|e| format!("创建文件失败: {}", e))?;
-                
+
                 while let Some(chunk) = field.chunk().await.map_err(|e| e.to_string())? {
                     tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
                         .await
                         .map_err(|e| format!("写入文件失败: {}", e))?;
                     file_size += chunk.len() as u64;
                 }
-                
+
                 tokio::io::AsyncWriteExt::flush(&mut file)
                     .await
                     .map_err(|e| format!("刷新文件缓冲区失败: {}", e))?;
-                
+
                 uploaded_file_path = Some(file_path);
                 file_name = unique_filename;
             }
@@ -1779,9 +1789,9 @@ struct ServerEvent {
 // 字符串转义工具函数
 fn escape_sse_string(s: &str) -> String {
     s.replace('\\', "\\\\")
-     .replace('\n', "\\n")
-     .replace('\r', "\\r")
-     .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('"', "\\\"")
 }
 
 async fn handler_sse(
@@ -1800,21 +1810,25 @@ async fn handler_sse(
                             escape_sse_string(&content)
                         ))
                     }
-                    Event::ProgressFinished { id, success, message } => {
-                        sse::Event::default().event("progress-finished").data(format!(
+                    Event::ProgressFinished {
+                        id,
+                        success,
+                        message,
+                    } => sse::Event::default()
+                        .event("progress-finished")
+                        .data(format!(
                             r#"{{"id":"{}","success":{},"message":"{}"}}"#,
                             id,
                             success,
                             escape_sse_string(&message)
-                        ))
-                    }
-                    Event::DanmuReceived { room, ts, content } => {
-                        sse::Event::default().event(format!("danmu:{}", room)).data(format!(
+                        )),
+                    Event::DanmuReceived { room, ts, content } => sse::Event::default()
+                        .event(format!("danmu:{}", room))
+                        .data(format!(
                             r#"{{"ts":"{}","content":"{}"}}"#,
                             ts,
                             escape_sse_string(&content)
-                        ))
-                    }
+                        )),
                 };
                 Some((Ok(sse_event), rx))
             }
@@ -1933,12 +1947,24 @@ pub async fn start_api_server(state: State) {
             )
             .route("/api/update_user_agent", post(handler_update_user_agent))
             // 批量导入相关的 API 端点
-            .route("/api/scan_imported_directory", post(handler_scan_imported_directory))
-            .route("/api/batch_import_in_place", post(handler_batch_import_in_place))
-            .route("/api/batch_import_external_videos", post(handler_batch_import_external_videos))
+            .route(
+                "/api/scan_imported_directory",
+                post(handler_scan_imported_directory),
+            )
+            .route(
+                "/api/batch_import_in_place",
+                post(handler_batch_import_in_place),
+            )
+            .route(
+                "/api/batch_import_external_videos",
+                post(handler_batch_import_external_videos),
+            )
             .route("/api/get_import_progress", get(handler_get_import_progress))
             .route("/api/upload_files", post(handler_upload_files))
-            .route("/api/upload_and_import_files", post(handler_upload_and_import_files));
+            .route(
+                "/api/upload_and_import_files",
+                post(handler_upload_and_import_files),
+            );
     } else {
         log::info!("Running in readonly mode, some api routes are disabled");
     }
@@ -2017,4 +2043,3 @@ pub async fn start_api_server(state: State) {
         log::error!("Server error: {}", e);
     }
 }
-

@@ -304,21 +304,22 @@ pub async fn list_folder(_state: state_type!(), path: String) -> Result<Vec<Stri
 }
 
 /// 高级文件名清理函数，全面处理各种危险字符和控制字符
-/// 
+///
 /// 适用于需要严格文件名清理的场景，支持中文字符
-/// 
-/// # 参数 
+///
+/// # 参数
 /// - `name`: 需要清理的文件名
 /// - `max_length`: 最大长度限制（默认100字符）
-/// 
+///
 /// # 返回
 /// 经过全面清理的安全文件名
 #[cfg(feature = "headless")]
 pub fn sanitize_filename_advanced(name: &str, max_length: Option<usize>) -> String {
     let max_len = max_length.unwrap_or(100);
-    
+
     // 先清理所有字符
-    let cleaned: String = name.chars()
+    let cleaned: String = name
+        .chars()
         .map(|c| match c {
             // 文件系统危险字符
             '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '.' => '_',
@@ -326,36 +327,48 @@ pub fn sanitize_filename_advanced(name: &str, max_length: Option<usize>) -> Stri
             c if c.is_control() => '_',
             // 保留安全的字符（白名单）
             c if c.is_alphanumeric()
-                || c == ' ' || c == '.' || c == '-' || c == '_'
-                || c == '(' || c == ')' || c == '[' || c == ']' 
-                || c == '《' || c == '》' || c == '（' || c == '）' => c,
+                || c == ' '
+                || c == '.'
+                || c == '-'
+                || c == '_'
+                || c == '('
+                || c == ')'
+                || c == '['
+                || c == ']'
+                || c == '《'
+                || c == '》'
+                || c == '（'
+                || c == '）' =>
+            {
+                c
+            }
             // 其他字符替换为下划线
             _ => '_',
         })
         .collect();
-    
+
     // 如果清理后的长度在限制内，直接返回
     if cleaned.chars().count() <= max_len {
         return cleaned;
     }
-    
+
     // 智能截断：保护文件扩展名
     if let Some(dot_pos) = cleaned.rfind('.') {
         let extension = &cleaned[dot_pos..];
         let main_part = &cleaned[..dot_pos];
-        
+
         // 确保扩展名不会太长（最多10个字符，包括点号）
         if extension.chars().count() <= 10 {
             let ext_len = extension.chars().count();
             let available_for_main = max_len.saturating_sub(ext_len);
-            
+
             if available_for_main > 0 {
                 let truncated_main: String = main_part.chars().take(available_for_main).collect();
                 return format!("{}{}", truncated_main, extension);
             }
         }
     }
-    
+
     // 如果没有扩展名或扩展名太长，直接截断
     cleaned.chars().take(max_len).collect()
 }
@@ -367,29 +380,47 @@ mod tests {
     #[test]
     #[cfg(feature = "headless")]
     fn test_sanitize_filename_advanced() {
-        assert_eq!(sanitize_filename_advanced("test<>file.txt", None), "test__file.txt");
+        assert_eq!(
+            sanitize_filename_advanced("test<>file.txt", None),
+            "test__file.txt"
+        );
         assert_eq!(sanitize_filename_advanced("文件名.txt", None), "文件名.txt");
-        assert_eq!(sanitize_filename_advanced("《视频》（高清）.mp4", None), "《视频》（高清）.mp4");
-        assert_eq!(sanitize_filename_advanced("file\x00with\x01control.txt", None), "file_with_control.txt");
-        
+        assert_eq!(
+            sanitize_filename_advanced("《视频》（高清）.mp4", None),
+            "《视频》（高清）.mp4"
+        );
+        assert_eq!(
+            sanitize_filename_advanced("file\x00with\x01control.txt", None),
+            "file_with_control.txt"
+        );
+
         // 测试空白字符处理（函数不自动移除空白字符）
-        assert_eq!(sanitize_filename_advanced("   .hidden_file.txt   ", None), "   .hidden_file.txt   ");
-        assert_eq!(sanitize_filename_advanced("  normal_file.mp4  ", None), "  normal_file.mp4  ");
-        
+        assert_eq!(
+            sanitize_filename_advanced("   .hidden_file.txt   ", None),
+            "   .hidden_file.txt   "
+        );
+        assert_eq!(
+            sanitize_filename_advanced("  normal_file.mp4  ", None),
+            "  normal_file.mp4  "
+        );
+
         // 测试特殊字符替换
-        assert_eq!(sanitize_filename_advanced("file@#$%^&.txt", None), "file______.txt");
-        
+        assert_eq!(
+            sanitize_filename_advanced("file@#$%^&.txt", None),
+            "file______.txt"
+        );
+
         // 测试长度限制 - 无扩展名
         let long_name = "测试".repeat(60);
         let result = sanitize_filename_advanced(&long_name, Some(10));
         assert_eq!(result.chars().count(), 10);
-        
+
         // 测试长度限制 - 有扩展名
         let long_name_with_ext = format!("{}.txt", "测试".repeat(60));
         let result = sanitize_filename_advanced(&long_name_with_ext, Some(10));
         assert!(result.ends_with(".txt"));
         assert_eq!(result.chars().count(), 10); // 6个测试字符 + .txt (4个字符)
-        
+
         // 测试短文件名不被截断
         let short_name = "test.mp4";
         let result = sanitize_filename_advanced(short_name, Some(50));

@@ -1201,8 +1201,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_video_size() {
-        let file = Path::new("/Users/xinreasuper/Desktop/shadowreplay-test/output2/[1789714684][1753965688317][摄像头被前夫抛妻弃子直播挣点奶粉][2025-07-31_12-58-14].mp4");
+        let file = Path::new("tests/video/h_test.m4s");
         let resolution = get_video_resolution(file.to_str().unwrap()).await.unwrap();
-        println!("Resolution: {}", resolution);
+        assert_eq!(resolution, "1920x1080");
     }
 }

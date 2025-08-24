@@ -228,6 +228,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requres api key"]
     async fn test_generate_subtitle() {
         let result = new(Some("https://api.openai.com/v1"), Some("sk-****"), None).await;
         assert!(result.is_ok());

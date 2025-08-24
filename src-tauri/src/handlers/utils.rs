@@ -322,7 +322,7 @@ pub fn sanitize_filename_advanced(name: &str, max_length: Option<usize>) -> Stri
         .chars()
         .map(|c| match c {
             // 文件系统危险字符
-            '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '.' => '_',
+            '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
             // 控制字符和不可见字符
             c if c.is_control() => '_',
             // 保留安全的字符（白名单）
@@ -375,11 +375,11 @@ pub fn sanitize_filename_advanced(name: &str, max_length: Option<usize>) -> Stri
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     #[cfg(feature = "headless")]
     fn test_sanitize_filename_advanced() {
+        use super::sanitize_filename_advanced;
+
         assert_eq!(
             sanitize_filename_advanced("test<>file.txt", None),
             "test__file.txt"

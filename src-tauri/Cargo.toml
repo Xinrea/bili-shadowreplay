@@ -1,6 +1,11 @@
 [workspace]
-members = ["crates/danmu_stream"]
+members = ["crates/danmu_stream", "crates/hls_stream", "crates/recorder"]
 resolver = "2"
+
+[workspace.dependencies]
+danmu_stream = { path = "crates/danmu_stream" }
+hls_stream = { path = "crates/hls_stream" }
+recorder = { path = "crates/recorder" }
 
 [package]
 name = "bili-shadowreplay"
@@ -15,6 +20,7 @@ edition = "2021"
 
 [dependencies]
 danmu_stream = { path = "crates/danmu_stream" }
+hls_stream = { path = "crates/hls_stream" }
 serde_json = "1.0"
 reqwest = { version = "0.11", features = ["blocking", "json", "multipart"] }
 serde_derive = "1.0.158"

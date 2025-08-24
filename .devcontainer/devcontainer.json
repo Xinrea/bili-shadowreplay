@@ -1,0 +1,31 @@
+{
+    "name": "vscode",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "args": {
+            "CONTAINER_USER": "vscode",
+            "CONTAINER_GROUP": "vscode"
+        }
+    },
+    "features": {
+        "ghcr.io/devcontainers/features/node:1": {
+            "version": "latest"
+        }
+    },
+    "customizations": {
+        "vscode": {
+            "settings": {
+                "lldb.executable": "/usr/bin/lldb",
+                "files.watcherExclude": {
+                    "**/target/**": true
+                }
+            },
+            "extensions": [
+                "vadimcn.vscode-lldb",
+                "rust-lang.rust-analyzer",
+                "tamasfe.even-better-toml"
+            ]
+        }
+    },
+    "remoteUser": "vscode"
+}

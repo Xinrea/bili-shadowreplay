@@ -1,4 +1,9 @@
-use crate::{provider::DanmuProvider, DanmuMessage, DanmuMessageType, DanmuStreamError};
+mod messages;
+
+use std::io::Read;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
+
 use async_trait::async_trait;
 use deno_core::v8;
 use deno_core::JsRuntime;
@@ -7,11 +12,9 @@ use flate2::read::GzDecoder;
 use futures_util::{SinkExt, StreamExt, TryStreamExt};
 use log::debug;
 use log::{error, info};
+use messages::*;
 use prost::bytes::Bytes;
 use prost::Message;
-use std::io::Read;
-use std::sync::Arc;
-use std::time::{Duration, SystemTime};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
@@ -19,8 +22,7 @@ use tokio_tungstenite::{
     connect_async, tungstenite::Message as WsMessage, MaybeTlsStream, WebSocketStream,
 };
 
-mod messages;
-use messages::*;
+use crate::{provider::DanmuProvider, DanmuMessage, DanmuMessageType, DanmuStreamError};
 
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
@@ -109,7 +111,7 @@ impl DouyinDanmu {
         runtime
             .execute_script(
                 "<crypto-js.min.js>",
-                deno_core::FastString::Static(crypto_js),
+                deno_core::FastString::from_static(crypto_js),
             )
             .map_err(|e| DanmuStreamError::WebsocketError {
                 err: format!("Failed to execute crypto-js: {}", e),
@@ -118,7 +120,7 @@ impl DouyinDanmu {
         // Load and execute the sign.js file
         let js_code = include_str!("douyin/webmssdk.js");
         runtime
-            .execute_script("<sign.js>", deno_core::FastString::Static(js_code))
+            .execute_script("<sign.js>", deno_core::FastString::from_static(js_code))
             .map_err(|e| DanmuStreamError::WebsocketError {
                 err: format!("Failed to execute JavaScript: {}", e),
             })?;
@@ -126,10 +128,7 @@ impl DouyinDanmu {
         // Call the get_wss_url function
         let sign_call = format!("get_wss_url(\"{}\")", self.room_id);
         let result = runtime
-            .execute_script(
-                "<sign_call>",
-                deno_core::FastString::Owned(sign_call.into_boxed_str()),
-            )
+            .execute_script("<sign_call>", deno_core::FastString::from(sign_call))
             .map_err(|e| DanmuStreamError::WebsocketError {
                 err: format!("Failed to execute JavaScript: {}", e),
             })?;
@@ -214,7 +213,7 @@ impl DouyinDanmu {
                         if let Ok(Some(ack)) = handle_binary_message(&data, &tx, room_id).await {
                             if let Some(write) = write.write().await.as_mut() {
                                 if let Err(e) =
-                                    write.send(WsMessage::Binary(ack.encode_to_vec())).await
+                                    write.send(WsMessage::binary(ack.encode_to_vec())).await
                                 {
                                     error!("Failed to send ack: {}", e);
                                 }
@@ -257,7 +256,7 @@ impl DouyinDanmu {
 
     async fn send_heartbeat(tx: &mpsc::Sender<WsMessage>) -> Result<(), DanmuStreamError> {
         // heartbeat message: 3A 02 68 62
-        tx.send(WsMessage::Binary(vec![0x3A, 0x02, 0x68, 0x62]))
+        tx.send(WsMessage::binary(vec![0x3A, 0x02, 0x68, 0x62]))
             .await
             .map_err(|e| DanmuStreamError::WebsocketError {
                 err: format!("Failed to send heartbeat message: {}", e),

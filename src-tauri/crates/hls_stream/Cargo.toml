@@ -1,0 +1,32 @@
+[package]
+name = "hls_stream"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "hls_stream"
+path = "src/lib.rs"
+
+[[example]]
+name = "bilibili"
+path = "examples/bilibili.rs"
+
+[[example]]
+name = "douyin"
+path = "examples/douyin.rs"
+
+[dependencies]
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+log = "0.4"
+m3u8-rs = "5.0"
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2.0"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+url = "2.4"
+
+[dev-dependencies]
+env_logger = "0.11"
+tokio-test = "0.4"

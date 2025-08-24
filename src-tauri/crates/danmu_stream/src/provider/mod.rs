@@ -4,10 +4,10 @@ mod douyin;
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-use crate::{
-    provider::bilibili::BiliDanmu, provider::douyin::DouyinDanmu, DanmuMessageType,
-    DanmuStreamError,
-};
+use self::bilibili::BiliDanmu;
+use self::douyin::DouyinDanmu;
+
+use crate::{DanmuMessageType, DanmuStreamError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderType {

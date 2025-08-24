@@ -1,6 +1,8 @@
 use serde::Deserialize;
 
-use crate::{provider::bilibili::stream::WsStreamCtx, DanmuStreamError};
+use super::stream::WsStreamCtx;
+
+use crate::DanmuStreamError;
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]

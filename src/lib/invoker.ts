@@ -63,21 +63,43 @@ async function invoke<T>(
       return;
     }
 
-    const response = await fetch(`${ENDPOINT}/api/${command}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(args || {}),
-    });
+    // 需要使用 GET 方法的命令列表
+    const GET_COMMANDS = ['get_import_progress'];
+    
+    let response: Response;
+    
+    if (GET_COMMANDS.includes(command)) {
+      // 使用 GET 方法
+      const queryParams = args && Object.keys(args).length > 0 
+        ? `?${new URLSearchParams(args).toString()}` 
+        : '';
+      response = await fetch(`${ENDPOINT}/api/${command}${queryParams}`, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+        }
+      });
+    } else {
+      // 使用 POST 方法（现有逻辑）
+      response = await fetch(`${ENDPOINT}/api/${command}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(args || {}),
+      });
+    }
+    
     // if status is 405, it means the command is not allowed
     if (response.status === 405) {
       throw new Error(
-        `Command ${command} is not allowed, maybe bili-shadowreplay is running in readonly mode`
+        `Command ${command} is not allowed, maybe bili-shadowreplay is running in readonly mode or HTTP method mismatch`
       );
     }
     if (!response.ok) {
-      const error = await response.json();
+      const error = await response.json().catch(() => ({
+        message: `HTTP ${response.status}`
+      }));
       throw new Error(error.message || `HTTP error: ${response.status}`);
     }
 
@@ -164,17 +186,56 @@ async function convertCoverSrc(coverPath: string, videoId?: number) {
 }
 
 let event_source: EventSource | null = null;
+let reconnectTimeout: number | null = null;
+const MAX_RECONNECT_ATTEMPTS = 5;
+let reconnectAttempts = 0;
 
-if (!TAURI_ENV) {
+// 连接恢复回调列表
+const connectionRestoreCallbacks: Array<() => void> = [];
+
+function createEventSource() {
+  if (TAURI_ENV) return;
+  
+  if (event_source) {
+    event_source.close();
+  }
   event_source = new EventSource(`${ENDPOINT}/api/sse`);
 
   event_source.onopen = () => {
-    console.log("EventSource connection opened");
+    reconnectAttempts = 0;
+    
+    // 触发连接恢复回调
+    connectionRestoreCallbacks.forEach(callback => {
+      try {
+        callback();
+      } catch (e) {
+        console.error("[SSE] Connection restore callback error:", e);
+      }
+    });
   };
 
   event_source.onerror = (error) => {
-    console.error("EventSource error:", error);
+    // 只有在连接真正关闭时才进行重连
+    if (event_source.readyState === EventSource.CLOSED && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+      reconnectAttempts++;
+      const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 10000);
+      
+      reconnectTimeout = window.setTimeout(() => {
+        createEventSource();
+      }, delay);
+    } else {
+      console.error("[SSE] Max reconnection attempts reached, giving up");
+    }
   };
+}
+
+// 注册连接恢复回调
+function onConnectionRestore(callback: () => void) {
+  connectionRestoreCallbacks.push(callback);
+}
+
+if (!TAURI_ENV) {
+  createEventSource();
 }
 
 async function listen<T>(event: string, callback: (data: any) => void) {
@@ -184,7 +245,6 @@ async function listen<T>(event: string, callback: (data: any) => void) {
 
   event_source.addEventListener(event, (event_data) => {
     const data = JSON.parse(event_data.data);
-    console.log("Parsed EventSource data:", data);
     callback({
       type: event,
       payload: data,
@@ -225,4 +285,5 @@ export {
   log,
   close_window,
   onOpenUrl,
+  onConnectionRestore,
 };

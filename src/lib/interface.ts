@@ -137,6 +137,7 @@ export interface Config {
   status_check_interval: number;
   whisper_language: string;
   user_agent: string;
+  cleanup_source_flv_after_import: boolean;
 }
 
 export interface AutoGenerateConfig {

@@ -30,7 +30,7 @@ pub struct ProgressManager {
 #[cfg(feature = "headless")]
 impl ProgressManager {
     pub fn new() -> Self {
-        let (progress_sender, progress_receiver) = broadcast::channel(16);
+        let (progress_sender, progress_receiver) = broadcast::channel(256);
         Self {
             progress_sender,
             progress_receiver,

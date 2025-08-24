@@ -6,7 +6,7 @@
     convertFileSrc,
   } from "../lib/invoker";
   import type { VideoItem } from "../lib/interface";
-  import { onMount } from "svelte";
+  import { onMount, onDestroy, tick } from "svelte";
   import {
     Play,
     Trash2,
@@ -23,6 +23,7 @@
     FileVideo,
     Scissors,
     Download,
+    RotateCw,
   } from "lucide-svelte";
 
   let videos: VideoItem[] = [];
@@ -42,17 +43,148 @@
     await loadVideos();
   });
 
+  onDestroy(() => {
+    stopProgressPolling();
+  });
+
   let cover_cache: Map<number, string> = new Map();
 
+  let importProgressInfo = null;
+  let progressPollingTimer = null;
+
+  /**
+   * 响应式语句：当检测到转换任务时，确保 loading 状态为 true
+   */
+  $: if (importProgressInfo) {
+    loading = true;
+  }
+
+  /**
+   * 启动进度轮询定时器
+   * 每3秒检查一次导入任务进度
+   */
+  function startProgressPolling() {
+    if (progressPollingTimer) {
+      clearTimeout(progressPollingTimer);
+    }
+    progressPollingTimer = setTimeout(async () => {
+      await checkImportProgress();
+    }, 3000);
+  }
+
+  /**
+   * 检查导入任务进度
+   * 如果任务仍在进行中，更新进度信息并继续轮询
+   * 如果任务完成，停止轮询并重新加载视频列表
+   */
+  async function checkImportProgress() {
+    try {
+      const importProgress = await invoke("get_import_progress");
+
+      if (importProgress) {
+        // 仍有进行中的任务，更新进度信息并继续轮询
+        importProgressInfo = importProgress;
+        loading = true;
+        startProgressPolling();
+      } else {
+        // 任务已完成，延迟100ms确保状态同步后再重新加载
+        importProgressInfo = null;
+        stopProgressPolling();
+        
+        // 延迟处理避免状态竞争
+        setTimeout(async () => {
+          loading = false;
+          // 重新加载视频列表（不包括进度检查）
+          await loadVideoList();
+        }, 100);
+      }
+    } catch (error) {
+      console.error("轮询检查进度失败:", error);
+      
+      // 不要立即重置状态，避免在网络错误时丢失进度
+      // 保持现有状态一段时间，然后重置
+      setTimeout(() => {
+        importProgressInfo = null;
+        stopProgressPolling();
+        loading = false;
+      }, 5000);
+    }
+  }
+
+  /**
+   * 停止进度轮询定时器
+   */
+  function stopProgressPolling() {
+    if (progressPollingTimer) {
+      clearTimeout(progressPollingTimer);
+      progressPollingTimer = null;
+    }
+  }
+
+  /**
+   * 格式化毫秒转换为可读的时间长度
+   * @param milliseconds 毫秒数
+   * @returns 格式化的时间字符串（如：1小时30分20秒）
+   */
+  function formatProgressDuration(milliseconds: number): string {
+    const seconds = Math.floor(milliseconds / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+
+    if (hours > 0) {
+      return `${hours}小时${minutes % 60}分${seconds % 60}秒`;
+    } else if (minutes > 0) {
+      return `${minutes}分${seconds % 60}秒`;
+    } else {
+      return `${seconds}秒`;
+    }
+  }
+
+  /**
+   * 加载视频列表
+   * 1. 扫描导入目录中的新视频文件并自动导入
+   * 2. 检查是否有正在进行的转换任务
+   * 3. 加载并显示所有视频
+   */
   async function loadVideos() {
     loading = true;
     try {
-      // Get all videos from all rooms
-      const allVideos: VideoItem[] = [];
+      // 扫描导入目录中的新文件
+      const scanResult = await scanAndImportNewFiles();
 
-      // First, get all room IDs that have videos
+      // 如果有进行中的转换任务，设置进度信息
+      if (scanResult.hasProgress && scanResult.progressInfo) {
+        importProgressInfo = scanResult.progressInfo;
+        loading = true;
+        // 启动轮询检查进度
+        startProgressPolling();
+        return; // 提前返回，保持loading状态
+      } else {
+        importProgressInfo = null;
+        stopProgressPolling();
+      }
+
+      // 2. 加载视频列表
+      await loadVideoList();
+    } catch (error) {
+      console.error("Failed to load videos:", error);
+      importProgressInfo = null;
+      stopProgressPolling();
+      loading = false;
+    }
+  }
+
+  /**
+   * 加载视频数据列表
+   * 从后端获取所有视频数据，包含封面信息，并应用筛选条件
+   */
+  async function loadVideoList() {
+    try {
+      // 获取所有视频
+      const allVideos: VideoItem[] = [];
       const roomIdsSet = new Set<number>();
       const tempVideos = await invoke<VideoItem[]>("get_all_videos");
+
       for (const video of tempVideos) {
         if (cover_cache.has(video.id)) {
           video.cover = cover_cache.get(video.id) || "";
@@ -75,9 +207,76 @@
 
       applyFilters();
     } catch (error) {
-      console.error("Failed to load videos:", error);
+      console.error("加载视频列表失败:", error);
+      throw error;
     } finally {
-      loading = false;
+      // 只有在没有转换任务且没有轮询定时器时才设置 loading = false
+      if (!importProgressInfo && !progressPollingTimer) {
+        loading = false;
+      }
+    }
+  }
+
+  /**
+   * 扫描导入目录并自动导入新文件
+   * @returns 返回扫描结果，包含是否有转换任务正在进行
+   */
+  async function scanAndImportNewFiles() {
+    try {
+      // 扫描导入目录
+      const scanResponse = await invoke<{newFiles: string[]}>("scan_imported_directory");
+      
+      const newFiles = scanResponse.newFiles;
+      
+      if (newFiles.length === 0) {
+        return {
+          hasProgress: false,
+          progressInfo: null
+        };
+      }
+
+      // 批量就地导入
+      const result = await invoke("batch_import_in_place", {
+        filePaths: newFiles,
+        roomId: selectedRoomId || 0
+      });
+
+      // 导入完成后，立即查询是否有转换任务
+      const progressInfo = await invoke("get_import_progress");
+
+      // 检查是否有转换任务正在进行
+      if (progressInfo) {
+        // 立即设置UI状态，让转换界面立刻显示
+        importProgressInfo = progressInfo;
+        loading = true;
+        // 强制DOM更新确保状态同步
+        await tick();
+        // 返回转换任务信息
+        return {
+          hasProgress: true,
+          progressInfo: progressInfo
+        };
+      }
+
+      if (result.successful_imports > 0) {
+        console.log(`成功导入 ${result.successful_imports} 个视频文件`);
+      }
+
+      if (result.failed_imports > 0) {
+        console.error("导入失败的文件:", result.errors);
+      }
+
+      return {
+        hasProgress: false,
+        progressInfo: null
+      };
+    } catch (error) {
+      console.error("扫描导入目录失败:", error);
+      // 扫描失败不影响正常的视频列表加载
+      return {
+        hasProgress: false,
+        progressInfo: null
+      };
     }
   }
 
@@ -285,6 +484,7 @@
   }
 
   import ImportVideoDialog from "../lib/ImportVideoDialog.svelte";
+
 </script>
 
 <!-- svelte-ignore a11y-click-events-have-key-events -->
@@ -471,8 +671,27 @@
         <div
           class="flex flex-col items-center justify-center p-12 space-y-4 text-gray-500 dark:text-gray-400"
         >
-          <RefreshCw class="w-8 h-8 animate-spin" />
-          <span>加载中...</span>
+          {#if importProgressInfo}
+            <!-- 优化的转换进度显示 -->
+            <div class="text-center space-y-3 max-w-md">
+              <!-- 主要信息：醒目的转换状态 -->
+              <div class="flex items-center justify-center space-x-3">
+                <RotateCw class="w-7 h-7 text-blue-600 dark:text-blue-400 animate-spin" />
+                <span class="text-xl font-semibold text-blue-600 dark:text-blue-400">
+                  正在转换视频
+                </span>
+              </div>
+
+              <!-- 副信息：文件名显示在小字部分 -->
+              <div class="text-sm text-gray-500 dark:text-gray-400 break-all px-4">
+                {importProgressInfo.fileName || importProgressInfo.file_name || '正在准备...'}
+              </div>
+            </div>
+          {:else}
+            <!-- 普通加载状态 -->
+            <RefreshCw class="w-8 h-8 animate-spin" />
+            <span>加载中...</span>
+          {/if}
         </div>
       {:else if filteredVideos.length === 0}
         <div

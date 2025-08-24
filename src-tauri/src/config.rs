@@ -37,6 +37,8 @@ pub struct Config {
     pub whisper_language: String,
     #[serde(default = "default_user_agent")]
     pub user_agent: String,
+    #[serde(default = "default_cleanup_source_flv")]
+    pub cleanup_source_flv_after_import: bool,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -92,6 +94,10 @@ fn default_user_agent() -> String {
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36".to_string()
 }
 
+fn default_cleanup_source_flv() -> bool {
+    false
+}
+
 impl Config {
     pub fn load(
         config_path: &PathBuf,
@@ -130,6 +136,7 @@ impl Config {
             config_path: config_path.to_str().unwrap().into(),
             whisper_language: default_whisper_language(),
             user_agent: default_user_agent(),
+            cleanup_source_flv_after_import: default_cleanup_source_flv(),
         };
 
         config.save();
@@ -165,6 +172,12 @@ impl Config {
     #[allow(dead_code)]
     pub fn set_user_agent(&mut self, user_agent: &str) {
         self.user_agent = user_agent.to_string();
+        self.save();
+    }
+
+    #[allow(dead_code)]
+    pub fn set_cleanup_source_flv(&mut self, cleanup: bool) {
+        self.cleanup_source_flv_after_import = cleanup;
         self.save();
     }
 

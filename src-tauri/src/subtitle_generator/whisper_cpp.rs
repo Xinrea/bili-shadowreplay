@@ -178,6 +178,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Might not have enough memory to run this test"]
     async fn generate_subtitle() {
         let whisper = new(Path::new("tests/model/ggml-tiny-q5_1.bin"), "")
             .await

@@ -1959,7 +1959,10 @@ pub async fn start_api_server(state: State) {
                 "/api/batch_import_external_videos",
                 post(handler_batch_import_external_videos),
             )
-            .route("/api/get_import_progress", get(handler_get_import_progress))
+            .route(
+                "/api/get_import_progress",
+                post(handler_get_import_progress),
+            )
             .route("/api/upload_files", post(handler_upload_files))
             .route(
                 "/api/upload_and_import_files",

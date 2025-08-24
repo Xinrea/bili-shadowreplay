@@ -32,16 +32,12 @@ jobs:
       - name: Install dependencies (ubuntu only)
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf ffmpeg
 
       - name: Check formatting
         run: cargo fmt --check
         working-directory: src-tauri
 
-      - name: Check compilation
-        run: cargo check && cargo check --no-default-features --features headless
-        working-directory: src-tauri
-
       - name: Check tests
-        run: cargo test && cargo test --no-default-features --features headless
+        run: cargo test -v && cargo test --no-default-features --features headless -v
         working-directory: src-tauri

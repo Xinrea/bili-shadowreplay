@@ -42,6 +42,7 @@
   let current_clip_event_id = null;
   let danmu_enabled = false;
   let fix_encoding = false;
+  let clip_note: string = "";
 
   // 弹幕相关变量
   let danmu_records: DanmuEntry[] = [];
@@ -66,11 +67,11 @@
 
     visible_start_index = Math.max(
       0,
-      Math.floor(scroll_top / danmu_item_height) - buffer
+      Math.floor(scroll_top / danmu_item_height) - buffer,
     );
     visible_end_index = Math.min(
       filtered_danmu.length,
-      Math.ceil((scroll_top + container_height) / danmu_item_height) + buffer
+      Math.ceil((scroll_top + container_height) / danmu_item_height) + buffer,
     );
   }
 
@@ -158,9 +159,9 @@
     const minutes = Math.floor((totalSeconds % 3600) / 60);
     const seconds = totalSeconds % 60;
     const parts = [] as string[];
-    if (hours > 0) parts.push(`${hours}小时`);
-    if (minutes > 0) parts.push(`${minutes}分`);
-    parts.push(`${seconds}秒`);
+    if (hours > 0) parts.push(`${hours} 小时`);
+    if (minutes > 0) parts.push(`${minutes} 分`);
+    parts.push(`${seconds} 秒`);
     return parts.join(" ");
   }
 
@@ -189,7 +190,7 @@
         }
         current_clip_event_id = null;
       }
-    }
+    },
   );
 
   onDestroy(() => {
@@ -215,8 +216,6 @@
   if (localStorage.getItem(`${live_id}_end`)) {
     end = parseFloat(localStorage.getItem(`${live_id}_end`)) - focus_start;
   }
-
-
 
   function generateCover() {
     const video = document.getElementById("video") as HTMLVideoElement;
@@ -267,7 +266,7 @@
     (a: RecordItem) => {
       archive = a;
       set_title(`[${room_id}]${archive.title}`);
-    }
+    },
   );
 
   function update_clip_prompt(str: string) {
@@ -279,16 +278,20 @@
   }
 
   async function get_video_list() {
-    const videoList = (await invoke("get_videos", { roomId: room_id })) as VideoItem[];
-    videos = await Promise.all(videoList.map(async (v) => {
-      return {
-        id: v.id,
-        value: v.id,
-        name: v.file,
-        file: await convertFileSrc(v.file),
-        cover: v.cover,
-      };
-    }));
+    const videoList = (await invoke("get_videos", {
+      roomId: room_id,
+    })) as VideoItem[];
+    videos = await Promise.all(
+      videoList.map(async (v) => {
+        return {
+          id: v.id,
+          value: v.id,
+          name: v.file,
+          file: await convertFileSrc(v.file),
+          cover: v.cover,
+        };
+      }),
+    );
   }
 
   async function find_video(e) {
@@ -301,7 +304,7 @@
       return v.value == id;
     });
     if (target_video) {
-      const rawCover = await invoke("get_video_cover", { id: id }) as string;
+      const rawCover = (await invoke("get_video_cover", { id: id })) as string;
       target_video.cover = await convertCoverSrc(rawCover, id);
     }
     selected_video = target_video;
@@ -328,6 +331,7 @@
     current_clip_event_id = event_id;
     let new_video = (await clipRange(event_id, {
       title: archive.title,
+      note: clip_note,
       room_id: room_id,
       platform: platform,
       cover: new_cover,
@@ -350,6 +354,9 @@
     if (selected_video) {
       selected_video.cover = new_video.cover;
     }
+
+    // clean up previous input data
+    clip_note = "";
   }
 
   async function cancel_clip() {
@@ -374,13 +381,13 @@
   let markers: Marker[] = [];
   // load markers from local storage
   markers = JSON.parse(
-    window.localStorage.getItem(`markers:${room_id}:${live_id}`) || "[]"
+    window.localStorage.getItem(`markers:${room_id}:${live_id}`) || "[]",
   );
   $: {
     // makers changed, save to local storage
     window.localStorage.setItem(
       `markers:${room_id}:${live_id}`,
-      JSON.stringify(markers)
+      JSON.stringify(markers),
     );
   }
 
@@ -710,13 +717,26 @@
         <h3 class="text-[17px] font-semibold text-white">确认生成切片</h3>
         <p class="mt-1 text-[13px] text-white/70">请确认以下设置后继续</p>
 
-        <div class="mt-4 rounded-xl bg-[#2c2c2e] border border-white/10 p-3">
-          <div class="text-[13px] text-white/80">切片时长</div>
+        <div class="mt-3 space-y-3">
+          <div class="text-[13px] text-white/80">> 切片时长</div>
           <div
             class="mt-0.5 text-[22px] font-semibold tracking-tight text-white"
           >
             {format_duration_seconds(end - start)}
           </div>
+        </div>
+
+        <div class="mt-3 space-y-3">
+          <div class="mt-1 text-[13px] text-white/80">> 切片备注（可选）</div>
+          <input
+            type="text"
+            id="confirm-clip-note-input"
+            bind:value={clip_note}
+            class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg
+                   border border-gray-800/50 focus:border-[#0A84FF]
+                   transition duration-200 outline-none
+                   placeholder-gray-500"
+          />
         </div>
 
         <div class="mt-3 space-y-3">

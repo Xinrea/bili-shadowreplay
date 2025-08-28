@@ -25,7 +25,9 @@
     Scissors,
     Download,
     RotateCw,
+    Edit,
   } from "lucide-svelte";
+  import { AnnotationOutline } from "flowbite-svelte-icons";
 
   let videos: VideoItem[] = [];
   let filteredVideos: VideoItem[] = [];
@@ -39,6 +41,11 @@
   let showDeleteConfirm = false;
   let videoToDelete: VideoItem | null = null;
   let showImportDialog = false;
+
+  // 编辑备注相关状态
+  let showEditNoteDialog = false;
+  let videoToEditNote: VideoItem | null = null;
+  let editingNote = "";
 
   onMount(async () => {
     await loadVideos();
@@ -304,6 +311,9 @@
           aValue = a.title.toLowerCase();
           bValue = b.title.toLowerCase();
           break;
+        case "note":
+          aValue = a.note;
+          bValue = b.note;
         case "length":
           aValue = a.length;
           bValue = b.length;
@@ -489,9 +499,63 @@
     a.download = video_name;
     a.click();
   }
+
+  // 编辑备注相关函数
+  function openEditNoteDialog(video: VideoItem) {
+    videoToEditNote = video;
+    editingNote = video.note || "";
+    showEditNoteDialog = true;
+  }
+
+  function closeEditNoteDialog() {
+    showEditNoteDialog = false;
+    videoToEditNote = null;
+    editingNote = "";
+  }
+
+  async function saveNote() {
+    if (!videoToEditNote) return;
+
+    try {
+      await invoke("update_video_note", {
+        id: videoToEditNote.id,
+        note: editingNote,
+      });
+
+      // 更新本地数据
+      videoToEditNote.note = editingNote;
+
+      // 更新筛选后的视频列表
+      const index = filteredVideos.findIndex(
+        (v) => v.id === videoToEditNote.id
+      );
+      if (index !== -1) {
+        filteredVideos[index].note = editingNote;
+      }
+
+      // 更新所有视频列表
+      const allIndex = videos.findIndex((v) => v.id === videoToEditNote.id);
+      if (allIndex !== -1) {
+        videos[allIndex].note = editingNote;
+      }
+
+      closeEditNoteDialog();
+    } catch (error) {
+      console.error("Failed to update video note:", error);
+    }
+  }
+
+  // 键盘事件处理
+  function handleKeydown(event: KeyboardEvent) {
+    if (showEditNoteDialog && event.key === "Escape") {
+      closeEditNoteDialog();
+    }
+  }
 </script>
 
 <!-- svelte-ignore a11y-click-events-have-key-events -->
+<svelte:window on:keydown={handleKeydown} />
+
 <div class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50">
   <div class="space-y-6">
     <!-- Header -->
@@ -571,6 +635,22 @@
           >
             文件名
             {#if sortBy === "title"}
+              {#if sortOrder === "asc"}
+                <ChevronUp class="w-3 h-3 inline ml-1" />
+              {:else}
+                <ChevronDown class="w-3 h-3 inline ml-1" />
+              {/if}
+            {/if}
+          </button>
+          <button
+            class="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors {sortBy ===
+            'note'
+              ? 'bg-blue-500 text-white'
+              : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
+            on:click={() => toggleSort("note")}
+          >
+            备注
+            {#if sortBy === "note"}
               {#if sortOrder === "asc"}
                 <ChevronUp class="w-3 h-3 inline ml-1" />
               {:else}
@@ -746,6 +826,10 @@
                   >视频</th
                 >
                 <th
+                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-32"
+                  >备注</th
+                >
+                <th
                   class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-20"
                   >时长</th
                 >
@@ -874,6 +958,15 @@
 
                   <td class="px-4 py-3 w-20">
                     <div class="flex items-center space-x-2">
+                      <AnnotationOutline class="table-icon text-gray-400" />
+                      <span class="text-sm text-gray-800 truncate"
+                        >{video.note}</span
+                      >
+                    </div>
+                  </td>
+
+                  <td class="px-4 py-3 w-20">
+                    <div class="flex items-center space-x-2">
                       <Clock class="table-icon text-gray-400" />
                       <span class="text-sm text-gray-800"
                         >{formatDuration(video.length)}</span
@@ -928,6 +1021,13 @@
                         on:click={() => playVideo(video)}
                       >
                         <Play class="table-icon" />
+                      </button>
+                      <button
+                        class="p-1.5 text-gray-600 dark:text-gray-400 hover:text-green-600 dark:hover:text-green-400 hover:bg-green-50 dark:hover:bg-green-900/20 rounded transition-colors"
+                        title="编辑备注"
+                        on:click={() => openEditNoteDialog(video)}
+                      >
+                        <Edit class="table-icon" />
                       </button>
                       {#if !TAURI_ENV}
                         <button
@@ -984,7 +1084,7 @@
         </div>
         <div class="flex justify-center space-x-3">
           <button
-            class="w-24 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-[#f5f5f7] dark:hover:bg-[#3a3a3c] rounded-lg transition-colors"
+            class="w-24 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg transition-colors"
             on:click={() => {
               showDeleteConfirm = false;
               videoToDelete = null;
@@ -1010,6 +1110,108 @@
   </div>
 {/if}
 
+<!-- Edit Note Dialog -->
+{#if showEditNoteDialog && videoToEditNote}
+  <!-- svelte-ignore a11y-click-events-have-key-events -->
+  <!-- svelte-ignore a11y-no-static-element-interactions -->
+  <div
+    class="fixed inset-0 bg-black/30 dark:bg-black/50 z-50 flex items-center justify-center p-4"
+    on:click={closeEditNoteDialog}
+  >
+    <!-- svelte-ignore a11y-click-events-have-key-events -->
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <div
+      class="mac-modal w-[480px] max-w-full bg-white dark:bg-[#2d2d30] rounded-xl shadow-xl border border-gray-200 dark:border-gray-600 overflow-hidden"
+      on:click|stopPropagation
+      role="dialog"
+      aria-labelledby="edit-note-title"
+      aria-describedby="edit-note-description"
+    >
+      <!-- Header -->
+      <div
+        class="px-6 pt-6 pb-4 border-b border-gray-100 dark:border-gray-700/50"
+      >
+        <div class="flex items-center space-x-3">
+          <div
+            class="w-8 h-8 rounded-full bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center"
+          >
+            <Edit class="w-4 h-4 text-blue-600 dark:text-blue-400" />
+          </div>
+          <div class="min-w-0 flex-1">
+            <h3
+              id="edit-note-title"
+              class="text-base font-semibold text-gray-900 dark:text-white"
+            >
+              编辑切片备注
+            </h3>
+            <p
+              id="edit-note-description"
+              class="text-sm text-gray-500 dark:text-gray-400 truncate mt-0.5"
+            >
+              {videoToEditNote.title || videoToEditNote.file}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Content -->
+      <div class="px-6 py-5">
+        <div class="space-y-3">
+          <label
+            for="edit-note-textarea"
+            class="block text-sm font-medium text-gray-700 dark:text-gray-300"
+          >
+            备注内容
+          </label>
+          <div class="relative">
+            <textarea
+              id="edit-note-textarea"
+              bind:value={editingNote}
+              placeholder="为这个切片添加备注信息，如高光时刻、重要内容等..."
+              class="w-full px-3 py-2 text-sm
+                     bg-white dark:bg-gray-800
+                     border border-gray-300 dark:border-gray-500 rounded-md
+                     text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400
+                     focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500
+                     transition-colors duration-150 resize-none"
+              rows="5"
+              on:keydown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                  saveNote();
+                }
+              }}
+            ></textarea>
+            <!-- Helper text -->
+            <div class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+              按 ⌘+Enter 快速保存
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div
+        class="px-6 py-4 bg-gray-50 dark:bg-gray-800 border-t border-gray-200 dark:border-gray-600"
+      >
+        <div class="flex justify-end space-x-3">
+          <button
+            class="w-24 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg transition-colors"
+            on:click={closeEditNoteDialog}
+          >
+            取消
+          </button>
+          <button
+            class="w-24 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+            on:click={saveNote}
+          >
+            保存
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <!-- 导入视频对话框 -->
 <ImportVideoDialog
   bind:showDialog={showImportDialog}
@@ -1020,13 +1222,31 @@
 <style>
   /* macOS style modal */
   .mac-modal {
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
+    box-shadow:
+      0 20px 25px -5px rgba(0, 0, 0, 0.1),
+      0 10px 10px -5px rgba(0, 0, 0, 0.04);
   }
+
+  :global(.dark) .mac-modal {
+    box-shadow:
+      0 20px 25px -5px rgba(0, 0, 0, 0.3),
+      0 10px 10px -5px rgba(0, 0, 0, 0.1);
+  }
+
   /* fixed icon size in tables */
   :global(.table-icon) {
     width: 1rem; /* 16px, same as Tailwind w-4 */
     height: 1rem; /* 16px, same as Tailwind h-4 */
     flex: 0 0 auto;
+  }
+
+  /* macOS style textarea */
+  .mac-modal textarea {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+      sans-serif;
+  }
+
+  .mac-modal textarea:focus {
+    box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.3);
   }
 </style>

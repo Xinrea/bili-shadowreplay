@@ -55,6 +55,7 @@ export interface VideoItem {
   status: number;
   bvid: string;
   title: string;
+  note: string;
   desc: string;
   tags: string;
   area: number;
@@ -228,7 +229,7 @@ export function parseSubtitleStyle(style: SubtitleStyle): string {
   return `FontName=${style.fontName},FontSize=${
     style.fontSize
   },PrimaryColour=${hexToAssColor(
-    style.fontColor
+    style.fontColor,
   )},OutlineColour=${hexToAssColor(style.outlineColor)},Outline=${
     style.outlineWidth
   },Alignment=${style.alignment},MarginV=${style.marginV},MarginL=${
@@ -238,6 +239,7 @@ export function parseSubtitleStyle(style: SubtitleStyle): string {
 
 export interface ClipRangeParams {
   title: string;
+  note: string;
   cover: string;
   platform: string;
   room_id: number;

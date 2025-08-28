@@ -2,6 +2,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+use crate::constants;
 use crate::progress_reporter::{ProgressReporter, ProgressReporterTrait};
 use crate::subtitle_generator::whisper_online;
 use crate::subtitle_generator::{
@@ -363,6 +364,7 @@ pub async fn get_segment_duration(file: &Path) -> Result<f64, String> {
     duration.ok_or_else(|| "Failed to parse segment duration".to_string())
 }
 
+/// Encode video subtitle using ffmpeg, output is file name with prefix [subtitle]
 pub async fn encode_video_subtitle(
     reporter: &impl ProgressReporterTrait,
     file: &Path,
@@ -371,9 +373,13 @@ pub async fn encode_video_subtitle(
 ) -> Result<String, String> {
     // ffmpeg -i fixed_\[30655190\]1742887114_0325084106_81.5.mp4 -vf "subtitles=test.srt:force_style='FontSize=24'" -c:v libx264 -c:a copy output.mp4
     log::info!("Encode video subtitle task start: {}", file.display());
-    log::info!("srt_style: {}", srt_style);
+    log::info!("SRT style: {}", srt_style);
     // output path is file with prefix [subtitle]
-    let output_filename = format!("[subtitle]{}", file.file_name().unwrap().to_str().unwrap());
+    let output_filename = format!(
+        "{}{}",
+        constants::PREFIX_SUBTITLE,
+        file.file_name().unwrap().to_str().unwrap()
+    );
     let output_path = file.with_file_name(&output_filename);
 
     // check output path exists - log but allow overwrite
@@ -462,14 +468,18 @@ pub async fn encode_video_danmu(
 ) -> Result<PathBuf, String> {
     // ffmpeg -i fixed_\[30655190\]1742887114_0325084106_81.5.mp4 -vf ass=subtitle.ass -c:v libx264 -c:a copy output.mp4
     log::info!("Encode video danmu task start: {}", file.display());
-    let danmu_filename = format!("[danmu]{}", file.file_name().unwrap().to_str().unwrap());
-    let output_path = file.with_file_name(danmu_filename);
+    let danmu_filename = format!(
+        "{}{}",
+        constants::PREFIX_DANMAKU,
+        file.file_name().unwrap().to_str().unwrap()
+    );
+    let output_file_path = file.with_file_name(danmu_filename);
 
     // check output path exists - log but allow overwrite
-    if output_path.exists() {
+    if output_file_path.exists() {
         log::info!(
             "Output path already exists, will overwrite: {}",
-            output_path.display()
+            output_file_path.display()
         );
     }
 
@@ -497,7 +507,7 @@ pub async fn encode_video_danmu(
         .args(["-vf", &format!("ass={}", subtitle)])
         .args(["-c:v", "libx264"])
         .args(["-c:a", "copy"])
-        .args([output_path.to_str().unwrap()])
+        .args([output_file_path.to_str().unwrap()])
         .args(["-y"])
         .args(["-progress", "pipe:2"])
         .stderr(Stdio::piped())
@@ -542,8 +552,11 @@ pub async fn encode_video_danmu(
         log::error!("Encode video danmu error: {}", error);
         Err(error)
     } else {
-        log::info!("Encode video danmu task end: {}", output_path.display());
-        Ok(output_path)
+        log::info!(
+            "Encode video danmu task end: {}",
+            output_file_path.display()
+        );
+        Ok(output_file_path)
     }
 }
 
@@ -810,20 +823,6 @@ fn ffprobe_path() -> PathBuf {
     path
 }
 
-// 解析 FFmpeg 时间字符串 (格式如 "00:01:23.45")
-fn parse_time_string(time_str: &str) -> Result<f64, String> {
-    let parts: Vec<&str> = time_str.split(':').collect();
-    if parts.len() != 3 {
-        return Err("Invalid time format".to_string());
-    }
-
-    let hours: f64 = parts[0].parse().map_err(|_| "Invalid hours")?;
-    let minutes: f64 = parts[1].parse().map_err(|_| "Invalid minutes")?;
-    let seconds: f64 = parts[2].parse().map_err(|_| "Invalid seconds")?;
-
-    Ok(hours * 3600.0 + minutes * 60.0 + seconds)
-}
-
 // 从视频文件切片
 pub async fn clip_from_video_file(
     reporter: Option<&impl ProgressReporterTrait>,
@@ -869,11 +868,7 @@ pub async fn clip_from_video_file(
         match event {
             FfmpegEvent::Progress(p) => {
                 if let Some(reporter) = reporter {
-                    // 解析时间字符串 (格式如 "00:01:23.45")
-                    if let Ok(current_time) = parse_time_string(&p.time) {
-                        let progress = (current_time / duration * 100.0).min(100.0);
-                        reporter.update(&format!("切片进度: {:.1}%", progress));
-                    }
+                    reporter.update(&format!("切片进度: {}", p.time));
                 }
             }
             FfmpegEvent::LogEOF => break,
@@ -902,7 +897,13 @@ pub async fn clip_from_video_file(
     }
 }
 
-// 获取视频元数据
+/// Extract basic information from a video file.
+///
+/// # Arguments
+/// * `file_path` - The path to the video file.
+///
+/// # Returns
+/// A `Result` containing the video metadata or an error message.
 pub async fn extract_video_metadata(file_path: &Path) -> Result<VideoMetadata, String> {
     let mut ffprobe_process = tokio::process::Command::new("ffprobe");
     #[cfg(target_os = "windows")]
@@ -960,26 +961,26 @@ pub async fn extract_video_metadata(file_path: &Path) -> Result<VideoMetadata, S
     })
 }
 
-// 生成视频缩略图
-pub async fn generate_thumbnail(
-    video_path: &Path,
-    output_path: &Path,
-    timestamp: f64,
-) -> Result<(), String> {
-    let output_folder = output_path.parent().unwrap();
-    if !output_folder.exists() {
-        std::fs::create_dir_all(output_folder).unwrap();
-    }
-
+/// Generate thumbnail file from video, capturing a frame at the specified timestamp.
+///
+/// # Arguments
+/// * `video_full_path` - The full path to the video file.
+/// * `timestamp` - The timestamp (in seconds) to capture the thumbnail.
+///
+/// # Returns
+/// The path to the generated thumbnail image.
+pub async fn generate_thumbnail(video_full_path: &Path, timestamp: f64) -> Result<PathBuf, String> {
     let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
     #[cfg(target_os = "windows")]
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
+    let thumbnail_full_path = video_full_path.with_extension("jpg");
+
     let output = ffmpeg_process
-        .args(["-i", &format!("{}", video_path.display())])
+        .args(["-i", &format!("{}", video_full_path.display())])
         .args(["-ss", &timestamp.to_string()])
         .args(["-vframes", "1"])
-        .args(["-y", output_path.to_str().unwrap()])
+        .args(["-y", thumbnail_full_path.to_str().unwrap()])
         .output()
         .await
         .map_err(|e| format!("生成缩略图失败: {}", e))?;
@@ -992,42 +993,21 @@ pub async fn generate_thumbnail(
     }
 
     // 记录生成的缩略图信息
-    if let Ok(metadata) = std::fs::metadata(output_path) {
+    if let Ok(metadata) = std::fs::metadata(&thumbnail_full_path) {
         log::info!(
             "生成缩略图完成: {} (文件大小: {} bytes)",
-            output_path.display(),
+            thumbnail_full_path.display(),
             metadata.len()
         );
     } else {
-        log::info!("生成缩略图完成: {}", output_path.display());
+        log::info!("生成缩略图完成: {}", thumbnail_full_path.display());
     }
-    Ok(())
-}
-
-// 解析FFmpeg时间字符串为秒数 (格式: "HH:MM:SS.mmm")
-pub fn parse_ffmpeg_time(time_str: &str) -> Result<f64, String> {
-    let parts: Vec<&str> = time_str.split(':').collect();
-    if parts.len() != 3 {
-        return Err(format!("Invalid time format: {}", time_str));
-    }
-
-    let hours: f64 = parts[0]
-        .parse()
-        .map_err(|_| format!("Invalid hours: {}", parts[0]))?;
-    let minutes: f64 = parts[1]
-        .parse()
-        .map_err(|_| format!("Invalid minutes: {}", parts[1]))?;
-    let seconds: f64 = parts[2]
-        .parse()
-        .map_err(|_| format!("Invalid seconds: {}", parts[2]))?;
-
-    Ok(hours * 3600.0 + minutes * 60.0 + seconds)
+    Ok(thumbnail_full_path)
 }
 
 // 执行FFmpeg转换的通用函数
 pub async fn execute_ffmpeg_conversion(
     mut cmd: tokio::process::Command,
-    total_duration: f64,
     reporter: &ProgressReporter,
     mode_name: &str,
 ) -> Result<(), String> {
@@ -1049,20 +1029,7 @@ pub async fn execute_ffmpeg_conversion(
     while let Ok(event) = parser.parse_next_event().await {
         match event {
             FfmpegEvent::Progress(p) => {
-                if total_duration > 0.0 {
-                    // 解析时间字符串为浮点数 (格式: "HH:MM:SS.mmm")
-                    if let Ok(current_time) = parse_ffmpeg_time(&p.time) {
-                        let progress = (current_time / total_duration * 100.0).min(100.0);
-                        reporter.update(&format!(
-                            "正在转换视频格式... {:.1}% ({})",
-                            progress, mode_name
-                        ));
-                    } else {
-                        reporter.update(&format!("正在转换视频格式... {} ({})", p.time, mode_name));
-                    }
-                } else {
-                    reporter.update(&format!("正在转换视频格式... {} ({})", p.time, mode_name));
-                }
+                reporter.update(&format!("正在转换视频格式... {} ({})", p.time, mode_name));
             }
             FfmpegEvent::LogEOF => break,
             FfmpegEvent::Log(level, content) => {
@@ -1100,10 +1067,6 @@ pub async fn try_stream_copy_conversion(
     dest: &Path,
     reporter: &ProgressReporter,
 ) -> Result<(), String> {
-    // 获取视频时长以计算进度
-    let metadata = extract_video_metadata(source).await?;
-    let total_duration = metadata.duration;
-
     reporter.update("正在转换视频格式... 0% (无损模式)");
 
     // 构建ffmpeg命令 - 流复制模式
@@ -1128,7 +1091,7 @@ pub async fn try_stream_copy_conversion(
         &dest.to_string_lossy(),
     ]);
 
-    execute_ffmpeg_conversion(cmd, total_duration, reporter, "无损转换").await
+    execute_ffmpeg_conversion(cmd, reporter, "无损转换").await
 }
 
 // 高质量重编码转换（兼容性好，质量高）
@@ -1137,10 +1100,6 @@ pub async fn try_high_quality_conversion(
     dest: &Path,
     reporter: &ProgressReporter,
 ) -> Result<(), String> {
-    // 获取视频时长以计算进度
-    let metadata = extract_video_metadata(source).await?;
-    let total_duration = metadata.duration;
-
     reporter.update("正在转换视频格式... 0% (高质量模式)");
 
     // 构建ffmpeg命令 - 高质量重编码
@@ -1171,7 +1130,7 @@ pub async fn try_high_quality_conversion(
         &dest.to_string_lossy(),
     ]);
 
-    execute_ffmpeg_conversion(cmd, total_duration, reporter, "高质量转换").await
+    execute_ffmpeg_conversion(cmd, reporter, "高质量转换").await
 }
 
 // 带进度的视频格式转换函数（智能质量保持策略）
@@ -1204,5 +1163,15 @@ mod tests {
         let file = Path::new("tests/video/h_test.m4s");
         let resolution = get_video_resolution(file.to_str().unwrap()).await.unwrap();
         assert_eq!(resolution, "1920x1080");
+    }
+
+    #[tokio::test]
+    async fn test_generate_thumbnail() {
+        let file = Path::new("tests/video/test.mp4");
+        let thumbnail_file = generate_thumbnail(file, 0.0).await.unwrap();
+        assert!(thumbnail_file.exists());
+        assert_eq!(thumbnail_file.extension().unwrap(), "jpg");
+        // clean up
+        std::fs::remove_file(thumbnail_file).unwrap();
     }
 }

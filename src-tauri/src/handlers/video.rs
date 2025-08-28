@@ -1,6 +1,6 @@
 use crate::database::task::TaskRow;
 use crate::database::video::{VideoNoCover, VideoRow};
-use crate::ffmpeg;
+use crate::ffmpeg::{self, generate_thumbnail};
 use crate::handlers::utils::get_disk_info_inner;
 use crate::progress_reporter::{
     cancel_progress, EventEmitter, ProgressReporter, ProgressReporterTrait,
@@ -436,6 +436,7 @@ async fn clip_range_inner(
             created_at: Local::now().to_rfc3339(),
             cover: params.cover.clone(),
             file: filename.into(),
+            note: params.note.clone(),
             length: params.range.as_ref().map_or(0.0, |r| r.duration()) as i64,
             size: metadata.len() as i64,
             bvid: "".into(),
@@ -824,6 +825,15 @@ pub async fn update_video_subtitle(
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
+pub async fn update_video_note(state: state_type!(), id: i64, note: String) -> Result<(), String> {
+    log::info!("Update video note: {} -> {}", id, note);
+    let mut video = state.db.get_video(id).await?;
+    video.note = note;
+    state.db.update_video(&video).await?;
+    Ok(())
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn encode_video_subtitle(
     state: state_type!(),
     event_id: String,
@@ -880,28 +890,10 @@ async fn encode_video_subtitle_inner(
     let video = state.db.get_video(id).await?;
     let config = state.config.read().await;
     let filepath = Path::new(&config.output).join(&video.file);
+    let subtitle_path = filepath.with_extension("srt");
 
-    // 查找字幕文件：对于切片视频，需要查找原视频的字幕文件
-    let subtitle_path = find_subtitle_file(state, &video, &filepath).await?;
-
-    let output_file =
+    let output_filename =
         ffmpeg::encode_video_subtitle(reporter, &filepath, &subtitle_path, srt_style).await?;
-
-    // 构建正确的相对路径：如果原文件在子目录中，保持相同的目录结构
-    let relative_output_file = if let Some((parent_dir, _)) = video.file.rsplit_once('/') {
-        // 原文件在子目录中（如 clips/xxx.mp4），保持目录结构
-        format!("{}/{}", parent_dir, output_file)
-    } else {
-        // 原文件在根目录
-        output_file
-    };
-
-    // 为标题添加 [subtitle] 前缀
-    let subtitle_title = if video.title.starts_with("[subtitle]") {
-        video.title.clone() // 如果已经有前缀，不再添加
-    } else {
-        format!("[subtitle]{}", video.title)
-    };
 
     let new_video = state
         .db
@@ -911,11 +903,12 @@ async fn encode_video_subtitle_inner(
             room_id: video.room_id,
             created_at: Local::now().to_rfc3339(),
             cover: video.cover.clone(),
-            file: relative_output_file,
+            file: output_filename,
+            note: video.note.clone(),
             length: video.length,
             size: video.size,
             bvid: video.bvid.clone(),
-            title: subtitle_title,
+            title: video.title.clone(),
             desc: video.desc.clone(),
             tags: video.tags.clone(),
             area: video.area,
@@ -935,97 +928,74 @@ pub async fn generic_ffmpeg_command(
     ffmpeg::generic_ffmpeg_command(&args_str).await
 }
 
-// 导入外部视频
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn import_external_video(
     state: state_type!(),
     event_id: String,
     file_path: String,
     title: String,
-    _original_name: String,
-    size: i64,
     room_id: u64,
 ) -> Result<VideoRow, String> {
-    // 设置进度事件发射器
     #[cfg(feature = "gui")]
     let emitter = EventEmitter::new(state.app_handle.clone());
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
+
     let reporter = ProgressReporter::new(&emitter, &event_id).await?;
 
     let source_path = Path::new(&file_path);
-
-    // 验证文件存在
     if !source_path.exists() {
         return Err("文件不存在".to_string());
     }
 
-    // 步骤1: 获取视频元数据
     reporter.update("正在提取视频元数据...");
     let metadata = ffmpeg::extract_video_metadata(source_path).await?;
-
-    // 生成目标文件名
-    let config = state.config.read().await;
-    let output_dir = Path::new(&config.output).join("imported");
-    if !output_dir.exists() {
-        std::fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
-    }
-
+    let output_str = state.config.read().await.output.clone();
+    let output_dir = Path::new(&output_str);
     let timestamp = Utc::now().format("%Y%m%d_%H%M%S").to_string();
     let extension = source_path
         .extension()
         .and_then(|ext| ext.to_str())
         .unwrap_or("mp4");
     let mut target_filename = format!(
-        "imported_{}_{}.{}",
-        timestamp,
+        "{}{}{}.{}",
+        crate::constants::PREFIX_IMPORTED,
         sanitize_filename(&title),
+        timestamp,
         extension
     );
-    let target_path = output_dir.join(&target_filename);
+    let target_full_path = output_dir.join(&target_filename);
 
-    // 步骤2: 智能复制或转换文件到目标位置
     let need_conversion = should_convert_video_format(extension);
-    let final_target_path = if need_conversion {
-        // FLV文件需要转换为MP4
-        let mp4_filename = format!("imported_{}_{}.mp4", timestamp, sanitize_filename(&title));
-        let mp4_target_path = output_dir.join(&mp4_filename);
+    let final_target_full_path = if need_conversion {
+        let mp4_target_full_path = target_full_path.with_extension("mp4");
 
         reporter.update("准备转换视频格式 (FLV → MP4)...");
-        // 使用智能转换函数，自动检测网络优化
-        copy_and_convert_with_progress(source_path, &mp4_target_path, true, &reporter).await?;
+
+        copy_and_convert_with_progress(source_path, &mp4_target_full_path, true, &reporter).await?;
 
         // 更新最终文件名和路径
-        target_filename = mp4_filename;
-        mp4_target_path
+        target_filename = mp4_target_full_path
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        mp4_target_full_path
     } else {
         // 其他格式使用智能拷贝
-        copy_and_convert_with_progress(source_path, &target_path, false, &reporter).await?;
-        target_path
+        copy_and_convert_with_progress(source_path, &target_full_path, false, &reporter).await?;
+        target_full_path
     };
 
     // 步骤3: 生成缩略图
     reporter.update("正在生成视频缩略图...");
-    let thumbnail_dir = Path::new(&config.output)
-        .join("thumbnails")
-        .join("imported");
-    if !thumbnail_dir.exists() {
-        std::fs::create_dir_all(&thumbnail_dir).map_err(|e| e.to_string())?;
-    }
-
-    let thumbnail_filename = format!(
-        "{}.jpg",
-        final_target_path.file_stem().unwrap().to_str().unwrap()
-    );
-    let thumbnail_path = thumbnail_dir.join(&thumbnail_filename);
 
     // 生成缩略图，使用智能时间点选择
     let thumbnail_timestamp = get_optimal_thumbnail_timestamp(metadata.duration);
     let cover_path =
-        match ffmpeg::generate_thumbnail(&final_target_path, &thumbnail_path, thumbnail_timestamp)
-            .await
-        {
-            Ok(_) => format!("thumbnails/imported/{}", thumbnail_filename),
+        match ffmpeg::generate_thumbnail(&final_target_full_path, thumbnail_timestamp).await {
+            Ok(path) => path.file_name().unwrap().to_str().unwrap().to_string(),
             Err(e) => {
                 log::warn!("生成缩略图失败: {}", e);
                 "".to_string() // 使用空字符串，前端会显示默认图标
@@ -1035,32 +1005,23 @@ pub async fn import_external_video(
     // 步骤4: 保存到数据库
     reporter.update("正在保存视频信息...");
 
-    // 构建导入视频的元数据
-    let import_metadata = ImportedVideoMetadata {
-        original_path: file_path.clone(),
-        import_date: Utc::now().to_rfc3339(),
-        original_size: size,
-        video_format: extension.to_string(),
-        duration: metadata.duration,
-        resolution: Some(format!("{}x{}", metadata.width, metadata.height)),
-    };
-
     // 添加到数据库
     let video = VideoRow {
         id: 0,
-        room_id,                          // 使用传入的 room_id
-        platform: "imported".to_string(), // 使用 platform 字段标识
+        room_id, // 使用传入的 room_id
+        platform: "imported".to_string(),
         title,
-        file: format!("imported/{}", target_filename), // 包含完整相对路径
+        file: target_filename,
+        note: "".to_string(),
         length: metadata.duration as i64,
-        size: final_target_path
+        size: final_target_full_path
             .metadata()
             .map_err(|e| e.to_string())?
             .len() as i64,
         status: 1, // 导入完成
         cover: cover_path,
-        desc: serde_json::to_string(&import_metadata).unwrap_or_default(),
-        tags: "imported,external".to_string(),
+        desc: "".to_string(),
+        tags: "".to_string(),
         bvid: "".to_string(),
         area: 0,
         created_at: Utc::now().to_rfc3339(),
@@ -1093,11 +1054,6 @@ pub async fn clip_video(
 ) -> Result<VideoRow, String> {
     // 获取父视频信息
     let parent_video = state.db.get_video(parent_video_id).await?;
-
-    // 检查是否为正在录制的视频
-    if parent_video.status == -1 {
-        return Err("正在录制的视频无法进行切片".to_string());
-    }
 
     #[cfg(feature = "gui")]
     let emitter = EventEmitter::new(state.app_handle.clone());
@@ -1186,76 +1142,62 @@ async fn clip_video_inner(
         .and_then(|name| name.to_str())
         .unwrap_or("video");
 
-    // 生成新的文件名格式：原文件名[clip][时间戳].扩展名
-    let output_filename = format!("{}[clip][{}].{}", original_filename, timestamp, extension);
-    let output_path = output_dir.join(&output_filename);
+    // 生成新的文件名格式：[clip]原文件名[时间戳].扩展名
+    let output_filename = format!(
+        "{}{}[{}].{}",
+        crate::constants::PREFIX_CLIP,
+        original_filename,
+        timestamp,
+        extension
+    );
+    let output_full_path = output_dir.join(&output_filename);
 
     // 执行切片
     reporter.update("开始切片处理");
     ffmpeg::clip_from_video_file(
         Some(reporter),
         &input_path,
-        &output_path,
+        &output_full_path,
         start_time,
         end_time - start_time,
     )
     .await?;
 
-    // 生成缩略图
-    let thumbnail_dir = Path::new(&config.output).join("thumbnails").join("clips");
-    if !thumbnail_dir.exists() {
-        std::fs::create_dir_all(&thumbnail_dir).map_err(|e| e.to_string())?;
-    }
-
     // 生成缩略图文件名，确保路径安全
-    let clip_thumbnail_filename =
-        if let Some(stem) = output_path.file_stem().and_then(|s| s.to_str()) {
-            format!("{}.jpg", stem)
-        } else {
-            format!("thumbnail_{}.jpg", timestamp)
-        };
-    let thumbnail_path = thumbnail_dir.join(&clip_thumbnail_filename);
+    let thumbnail_full_path = output_full_path.with_extension("jpg");
 
     // 生成缩略图，选择切片开头的合理位置
     let clip_duration = end_time - start_time;
     let clip_thumbnail_timestamp = get_optimal_thumbnail_timestamp(clip_duration);
     let clip_cover_path =
-        match ffmpeg::generate_thumbnail(&output_path, &thumbnail_path, clip_thumbnail_timestamp)
-            .await
-        {
-            Ok(_) => format!("thumbnails/clips/{}", clip_thumbnail_filename),
+        match ffmpeg::generate_thumbnail(&output_full_path, clip_thumbnail_timestamp).await {
+            Ok(_) => thumbnail_full_path
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string(),
             Err(e) => {
                 log::warn!("生成切片缩略图失败: {}", e);
                 "".to_string() // 使用空字符串，前端会显示默认图标
             }
         };
 
-    // 构建统一的切片元数据
-    let clip_metadata = ClipMetadata {
-        parent_video_id: parent_video.id,
-        start_time,
-        end_time,
-        clip_source: determine_clip_source(&parent_video.platform),
-        original_platform: parent_video.platform.clone(),
-        original_room_id: parent_video.room_id,
-    };
+    let file_metadata = output_full_path.metadata().map_err(|e| e.to_string())?;
 
-    // 获取输出文件信息
-    let file_metadata = output_path.metadata().map_err(|e| e.to_string())?;
-
-    // 添加到数据库 - 统一使用 "clip" 平台类型
     let clip_video = VideoRow {
         id: 0,
         room_id: parent_video.room_id,
-        platform: "clip".to_string(), // 统一的切片类型
+        platform: "clip".to_string(),
         title: clip_title,
-        file: format!("clips/{}", output_filename),
+        file: output_filename,
+        note: "".to_string(),
         length: (end_time - start_time) as i64,
         size: file_metadata.len() as i64,
         status: 1,
         cover: clip_cover_path,
-        desc: serde_json::to_string(&clip_metadata).unwrap_or_default(),
-        tags: "clip".to_string(),
+        desc: "".to_string(),
+        tags: "".to_string(),
         bvid: "".to_string(),
         area: parent_video.area,
         created_at: Local::now().to_rfc3339(),
@@ -1270,46 +1212,6 @@ async fn clip_video_inner(
         .await?;
 
     Ok(result)
-}
-
-// 确定切片来源的辅助函数
-fn determine_clip_source(platform: &str) -> String {
-    match platform {
-        "imported" => "imported_video".to_string(),
-        "clip" => "clip".to_string(),
-        _ => "recorded_video".to_string(),
-    }
-}
-
-// 查找字幕文件的辅助函数
-async fn find_subtitle_file(
-    state: &state_type!(),
-    video: &VideoRow,
-    video_file: &Path,
-) -> Result<PathBuf, String> {
-    // 首先尝试当前视频同目录下的字幕文件
-    let local_subtitle = video_file.with_extension("srt");
-    if local_subtitle.exists() {
-        return Ok(local_subtitle);
-    }
-
-    // 如果是切片视频，尝试查找原视频的字幕文件
-    if video.platform == "clip" && !video.desc.is_empty() {
-        // 解析切片元数据，获取父视频ID
-        if let Ok(metadata) = serde_json::from_str::<ClipMetadata>(&video.desc) {
-            if let Ok(parent_video) = state.db.get_video(metadata.parent_video_id).await {
-                let parent_filepath =
-                    Path::new(&state.config.read().await.output).join(&parent_video.file);
-                let parent_subtitle = parent_filepath.with_extension("srt");
-                if parent_subtitle.exists() {
-                    return Ok(parent_subtitle);
-                }
-            }
-        }
-    }
-
-    // 如果都找不到，返回默认路径（即使文件不存在，让ffmpeg处理错误）
-    Ok(local_subtitle)
 }
 
 // 获取文件大小
@@ -1350,69 +1252,11 @@ fn cleanup_source_flv_file(file_path: &Path, cleanup_enabled: bool) {
     }
 }
 
-/// 为导入的视频生成缩略图
-///
-/// # 参数
-/// - `video_file`: 视频文件路径
-/// - `file_name`: 文件名（用于生成缩略图文件名）
-/// - `output_path`: 输出目录路径
-/// - `duration`: 视频时长（用于选择最佳截图时间点）
-///
-/// # 返回值
-/// 成功时返回缩略图的相对路径，失败时返回空字符串
-async fn generate_imported_video_thumbnail(
-    video_file: &Path,
-    file_name: &str,
-    output_path: &str,
-    duration: f64,
-) -> Result<String, String> {
-    let timestamp = chrono::Utc::now().timestamp();
-    let thumbnail_name = format!(
-        "imported_{}_{}.jpg",
-        timestamp,
-        sanitize_filename(file_name)
-    );
-    let thumbnail_dir = Path::new(output_path).join("thumbnails").join("imported");
-    let thumbnail_path = thumbnail_dir.join(&thumbnail_name);
-
-    // 确保缩略图目录存在
-    if !thumbnail_dir.exists() {
-        std::fs::create_dir_all(&thumbnail_dir)
-            .map_err(|e| format!("创建缩略图目录失败: {}", e))?;
-    }
-
-    // 获取最佳缩略图时间点
-    let thumbnail_time = get_optimal_thumbnail_timestamp(duration);
-
-    // 生成缩略图
-    match ffmpeg::generate_thumbnail(video_file, &thumbnail_path, thumbnail_time).await {
-        Ok(_) => Ok(format!("thumbnails/imported/{}", thumbnail_name)),
-        Err(e) => {
-            log::warn!("生成缩略图失败，使用默认封面: {}", e);
-            Ok("".to_string())
-        }
-    }
-}
-
-/// 转换完成后创建数据库记录
-///
-/// 用于异步转换任务完成后，创建对应的视频数据库记录
-///
-/// # 参数
-/// - `db`: 数据库连接
-/// - `final_file_path`: 最终视频文件路径（MP4）
-/// - `file_name`: 原始文件名
-/// - `room_id`: 房间ID
-/// - `output_path`: 输出目录路径
-///
-/// # 返回值
-/// 成功时返回视频ID，失败时返回错误信息
 async fn create_video_record_after_conversion(
     db: &crate::database::Database,
     final_file_path: &Path,
     file_name: &str,
     room_id: u64,
-    output_path: &str,
 ) -> Result<i64, String> {
     // 获取视频元数据（基于转换后的MP4文件）
     let video_metadata = ffmpeg::extract_video_metadata(final_file_path)
@@ -1420,46 +1264,21 @@ async fn create_video_record_after_conversion(
         .map_err(|e| format!("获取视频元数据失败: {}", e))?;
 
     // 生成缩略图
-    let cover_path = generate_imported_video_thumbnail(
-        final_file_path,
-        file_name,
-        output_path,
-        video_metadata.duration,
-    )
-    .await?;
-
-    // 创建导入元数据
-    let import_metadata = ImportedVideoMetadata {
-        original_path: final_file_path.to_string_lossy().to_string(),
-        original_size: final_file_path
-            .metadata()
-            .map_err(|e| format!("获取文件大小失败: {}", e))?
-            .len() as i64,
-        import_date: chrono::Utc::now().to_rfc3339(),
-        video_format: "mp4".to_string(), // 转换后都是MP4
-        duration: video_metadata.duration,
-        resolution: Some(format!(
-            "{}x{}",
-            video_metadata.width, video_metadata.height
-        )),
-    };
-
-    let metadata_json =
-        serde_json::to_string(&import_metadata).map_err(|e| format!("序列化元数据失败: {}", e))?;
-
-    // 获取文件的相对路径
-    let relative_path = final_file_path
-        .strip_prefix(output_path)
-        .map_err(|e| format!("计算相对路径失败: {}", e))?
-        .to_string_lossy()
-        .replace('\\', "/"); // 统一使用Unix风格路径分隔符
+    let thumbnail_timestamp = get_optimal_thumbnail_timestamp(video_metadata.duration);
+    let cover_full_path = generate_thumbnail(final_file_path, thumbnail_timestamp).await?;
 
     // 创建视频记录
     let video_row = VideoRow {
         id: 0, // 将由数据库分配
         room_id,
-        cover: cover_path,
-        file: relative_path,
+        cover: cover_full_path
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string(),
+        file: file_name.to_string(),
+        note: "".to_string(),
         length: video_metadata.duration as i64,
         size: final_file_path
             .metadata()
@@ -1468,7 +1287,7 @@ async fn create_video_record_after_conversion(
         status: 0,
         bvid: "".to_string(),
         title: file_name.to_string(),
-        desc: metadata_json,
+        desc: "".to_string(),
         tags: "".to_string(),
         area: 0,
         created_at: chrono::Utc::now().to_rfc3339(),
@@ -1704,10 +1523,6 @@ pub async fn import_file_in_place(
 
             // 获取配置和其他数据用于后续处理
             let cleanup_source_flv = state.config.read().await.cleanup_source_flv_after_import;
-            let output_path = {
-                let config = state.config.read().await;
-                config.output.clone()
-            };
             let room_id_for_task = room_id;
             let file_name_for_task = file_name.clone();
 
@@ -1737,7 +1552,6 @@ pub async fn import_file_in_place(
                             &target_path,
                             &file_name_for_task,
                             room_id_for_task,
-                            &output_path,
                         )
                         .await
                         {
@@ -1801,13 +1615,8 @@ pub async fn import_file_in_place(
         .map_err(|e| format!("获取视频元数据失败: {}", e))?;
 
     // 生成缩略图
-    let cover_path = generate_imported_video_thumbnail(
-        &final_file_path,
-        &file_name,
-        &output_path,
-        video_metadata.duration,
-    )
-    .await?;
+    let cover_path =
+        ffmpeg::generate_thumbnail(&final_file_path, video_metadata.duration / 2.0).await?;
 
     // 创建导入元数据
     let import_metadata = ImportedVideoMetadata {
@@ -1839,8 +1648,14 @@ pub async fn import_file_in_place(
     let video_row = VideoRow {
         id: 0, // 将由数据库分配
         room_id,
-        cover: cover_path,
+        cover: cover_path
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string(),
         file: final_relative_path,
+        note: "".to_string(),
         length: video_metadata.duration as i64,
         size: final_file_size,
         status: 0,
@@ -1979,20 +1794,12 @@ pub async fn batch_import_external_videos(
         // 从文件名生成标题（去掉扩展名）
         let title = file_name.clone();
 
-        // 获取文件大小
-        let size = match get_file_size(file_path.clone()).await {
-            Ok(s) => s as i64,
-            Err(_) => 0,
-        };
-
         // 调用现有的单文件导入函数
         match import_external_video(
             state.clone(),
             file_event_id,
             file_path.clone(),
             title,
-            file_name.clone(),
-            size,
             room_id,
         )
         .await

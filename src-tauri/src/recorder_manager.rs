@@ -35,6 +35,7 @@ pub struct RecorderList {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ClipRangeParams {
     pub title: String,
+    pub note: String,
     pub cover: String,
     pub platform: String,
     pub room_id: u64,
@@ -198,6 +199,7 @@ impl RecorderManager {
 
         let clip_config = ClipRangeParams {
             title: live_record.title,
+            note: "".into(),
             cover: "".into(),
             platform: live_record.platform.clone(),
             room_id,
@@ -238,6 +240,7 @@ impl RecorderManager {
                         created_at: Utc::now().to_rfc3339(),
                         cover: "".into(),
                         file: f.file_name().unwrap().to_str().unwrap().to_string(),
+                        note: "".into(),
                         length: live_record.length,
                         size: metadata.len() as i64,
                         bvid: "".into(),

@@ -517,7 +517,7 @@
         </div>
         <div class="flex justify-center space-x-3">
           <button
-            class="w-24 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-[#f5f5f7] dark:hover:bg-[#3a3a3c] rounded-lg transition-colors"
+            class="w-24 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg transition-colors"
             on:click={() => {
               deleteModal = false;
             }}
@@ -650,7 +650,7 @@
 
           <div class="flex justify-end space-x-3">
             <button
-              class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-[#f5f5f7] dark:hover:bg-[#3a3a3c] rounded-lg transition-colors"
+              class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg transition-colors"
               on:click={() => {
                 addModal = false;
               }}

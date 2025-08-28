@@ -3,6 +3,7 @@
 
 mod archive_migration;
 mod config;
+mod constants;
 mod danmu2ass;
 mod database;
 mod ffmpeg;
@@ -182,6 +183,13 @@ fn get_migrations() -> Vec<Migration> {
                 CREATE INDEX idx_videos_room_id ON videos (room_id);
                 CREATE INDEX idx_videos_created_at ON videos (created_at);
             "#,
+            kind: MigrationKind::Up,
+        },
+        // add note column for video
+        Migration {
+            version: 8,
+            description: "add_note_column_for_video",
+            sql: r#"ALTER TABLE videos ADD COLUMN note TEXT;"#,
             kind: MigrationKind::Up,
         },
     ]
@@ -560,6 +568,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::video::generate_video_subtitle,
         crate::handlers::video::get_video_subtitle,
         crate::handlers::video::update_video_subtitle,
+        crate::handlers::video::update_video_note,
         crate::handlers::video::encode_video_subtitle,
         crate::handlers::video::generic_ffmpeg_command,
         crate::handlers::video::import_external_video,

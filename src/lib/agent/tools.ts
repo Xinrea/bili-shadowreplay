@@ -621,6 +621,7 @@ const clip_range = tool(
             "The offset for danmu timestamp, it is used to correct the timestamp of danmu",
           ),
         title: z.string().describe("The title of the clip"),
+        note: z.string().describe("The note of the clip"),
         cover: z.string().describe("Must be empty"),
         platform: z.string().describe("The platform of the clip"),
         fix_encoding: z

@@ -1,0 +1,50 @@
+name: Bug Report
+description: 提交 BUG 报告.
+title: "[Bug] "
+labels: ["bug"]
+assignees:
+  - Xinrea
+body:
+  - type: checkboxes
+    attributes:
+      label: 提交须知
+      description: 请确认以下内容
+      options:
+        - label: 我是在最新版本上发现的此问题
+          required: true
+        - label: 我已阅读 [常见问题](https://bsr.xinrea.cn/usage/faq.html) 的说明
+          required: true
+  - type: dropdown
+    id: app_type
+    attributes:
+      label: 以哪种方式使用的该软件？
+      multiple: false
+      options:
+        - Docker 镜像
+        - 桌面应用
+  - type: dropdown
+    id: os
+    attributes:
+      label: 运行环境
+      multiple: false
+      options:
+        - Linux
+        - Windows
+        - MacOS
+        - Docker
+  - type: textarea
+    attributes:
+      label: BUG 描述
+      description:
+      render: Markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志
+      description: 请粘贴日志内容或是上传日志文件（在主窗口的设置页面，提供了一键打开日志目录所在位置的按钮；当你打开日志目录所在位置后，进入 logs 目录，找到后缀名为 log 的文件）
+      render: Markdown
+    validations:
+      required: true

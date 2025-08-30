@@ -311,9 +311,8 @@
           aValue = a.title.toLowerCase();
           bValue = b.title.toLowerCase();
           break;
-        case "note":
-          aValue = a.note;
           bValue = b.note;
+          break;
         case "length":
           aValue = a.length;
           bValue = b.length;

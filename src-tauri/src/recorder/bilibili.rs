@@ -1027,6 +1027,8 @@ impl BiliRecorder {
                                     retry,
                                     e
                                 );
+                                log::warn!("[{}]file_name: {}", self.room_id, file_name);
+                                log::warn!("[{}]ts_url: {}", self.room_id, ts_url);
 
                                 // If this is the last retry and it's the first record for non-FMP4, clean up
                                 if retry > 3

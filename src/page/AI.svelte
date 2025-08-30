@@ -8,10 +8,10 @@
     AIMessage,
     ToolMessage,
   } from "@langchain/core/messages";
-  import HumanMessageComponent from "../lib/HumanMessage.svelte";
-  import AIMessageComponent from "../lib/AIMessage.svelte";
-  import ProcessingMessageComponent from "../lib/ProcessingMessage.svelte";
-  import ToolMessageComponent from "../lib/ToolMessage.svelte";
+  import HumanMessageComponent from "../lib/components/HumanMessage.svelte";
+  import AIMessageComponent from "../lib/components/AIMessage.svelte";
+  import ProcessingMessageComponent from "../lib/components/ProcessingMessage.svelte";
+  import ToolMessageComponent from "../lib/components/ToolMessage.svelte";
 
   let messages: any[] = [];
   let inputMessage = "";

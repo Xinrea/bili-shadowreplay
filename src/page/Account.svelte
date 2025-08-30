@@ -2,7 +2,7 @@
   import { invoke } from "../lib/invoker";
   import { scale, fade } from "svelte/transition";
   import { Textarea } from "flowbite-svelte";
-  import Image from "../lib/Image.svelte";
+  import Image from "../lib/components/Image.svelte";
   import QRCode from "qrcode";
   import type { AccountItem, AccountInfo } from "../lib/db";
   import { Ellipsis, Plus } from "lucide-svelte";

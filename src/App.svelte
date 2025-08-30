@@ -1,6 +1,6 @@
 <script lang="ts">
   import Room from "./page/Room.svelte";
-  import BSidebar from "./lib/BSidebar.svelte";
+  import BSidebar from "./lib/components/BSidebar.svelte";
   import Summary from "./page/Summary.svelte";
   import Setting from "./page/Setting.svelte";
   import Account from "./page/Account.svelte";

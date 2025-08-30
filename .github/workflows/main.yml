@@ -82,6 +82,18 @@ jobs:
           Copy-Item "$cudaPath\cublas64*.dll" -Destination $targetPath
           Copy-Item "$cudaPath\cublasLt64*.dll" -Destination $targetPath
 
+      - name: Get previous tag
+        id: get_previous_tag
+        run: |
+          # Get the previous tag (excluding the current one being pushed)
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
+          if [ -z "$PREVIOUS_TAG" ]; then
+            # If no previous tag found, use the first commit
+            PREVIOUS_TAG=$(git rev-list --max-parents=0 HEAD | head -1)
+          fi
+          echo "previous_tag=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
+          echo "current_tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -91,7 +103,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "BiliBili ShadowReplay v__VERSION__"
-          releaseBody: "See the assets to download this version and install."
+          releaseBody: "> [!NOTE]\n> 如果你是第一次下载安装，请参考 [安装准备](https://bsr.xinrea.cn/getting-started/installation/desktop.html) 选择合适的版本。\n> Changelog: https://github.com/Xinrea/bili-shadowreplay/compare/${{ steps.get_previous_tag.outputs.previous_tag }}...${{ steps.get_previous_tag.outputs.current_tag }}"
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }} ${{ matrix.platform == 'windows-latest' && matrix.features == 'cuda' && '--config src-tauri/tauri.windows.cuda.conf.json' || '' }}

@@ -1,0 +1,13 @@
+name: Feature Request
+description: 提交新功能的需求
+title: "[feature] "
+labels: ["feature"]
+assignees:
+  - Xinrea
+body:
+  - type: textarea
+    attributes:
+      label: 需求描述
+      description: 请尽可能详细描述你想要的新功能
+    validations:
+      required: true

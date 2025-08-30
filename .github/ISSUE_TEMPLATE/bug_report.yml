@@ -1,6 +1,6 @@
 name: Bug Report
 description: 提交 BUG 报告.
-title: "[Bug] "
+title: "[bug] "
 labels: ["bug"]
 assignees:
   - Xinrea
@@ -35,16 +35,13 @@ body:
   - type: textarea
     attributes:
       label: BUG 描述
-      description:
-      render: Markdown
+      description: 请尽可能详细描述 BUG 的现象以及复现的方法
     validations:
       required: true
-
   - type: textarea
     id: logs
     attributes:
       label: 日志
       description: 请粘贴日志内容或是上传日志文件（在主窗口的设置页面，提供了一键打开日志目录所在位置的按钮；当你打开日志目录所在位置后，进入 logs 目录，找到后缀名为 log 的文件）
-      render: Markdown
     validations:
       required: true

@@ -448,8 +448,6 @@
         eventId: eventId,
         filePath: selectedFilePath,
         title: videoTitle,
-        originalName: selectedFileName,
-        size: selectedFileSize,
         roomId: roomId || 0,
       });
 

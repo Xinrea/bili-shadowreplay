@@ -35,7 +35,8 @@ use crate::{
             delete_video, encode_video_subtitle, generate_video_subtitle, generic_ffmpeg_command,
             get_all_videos, get_file_size, get_import_progress, get_video, get_video_cover,
             get_video_subtitle, get_video_typelist, get_videos, import_external_video,
-            scan_imported_directory, update_video_cover, update_video_subtitle, upload_procedure,
+            scan_imported_directory, update_video_cover, update_video_note, update_video_subtitle,
+            upload_procedure,
         },
         AccountInfo,
     },
@@ -939,6 +940,21 @@ async fn handler_update_video_subtitle(
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct UpdateVideoNoteRequest {
+    id: i64,
+    note: String,
+}
+
+async fn handler_update_video_note(
+    state: axum::extract::State<State>,
+    Json(param): Json<UpdateVideoNoteRequest>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    update_video_note(state.0, param.id, param.note).await?;
+    Ok(Json(ApiResponse::success(())))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct EncodeVideoSubtitleRequest {
     event_id: String,
     id: i64,
@@ -967,8 +983,6 @@ struct ImportExternalVideoRequest {
     event_id: String,
     file_path: String,
     title: String,
-    original_name: String,
-    size: i64,
     room_id: u64,
 }
 
@@ -981,8 +995,6 @@ async fn handler_import_external_video(
         param.event_id.clone(),
         param.file_path.clone(),
         param.title,
-        param.original_name,
-        param.size,
         param.room_id,
     )
     .await?;
@@ -1907,6 +1919,7 @@ pub async fn start_api_server(state: State) {
                 post(handler_update_video_subtitle),
             )
             .route("/api/update_video_cover", post(handler_update_video_cover))
+            .route("/api/update_video_note", post(handler_update_video_note))
             .route(
                 "/api/encode_video_subtitle",
                 post(handler_encode_video_subtitle),

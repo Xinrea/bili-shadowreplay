@@ -1,0 +1,53 @@
+# Build and Deployment Configuration
+
+## Build Scripts
+
+- **PowerShell**: [build.ps1](mdc:build.ps1) - Windows build script
+- **FFmpeg Setup**: [ffmpeg_setup.ps1](mdc:ffmpeg_setup.ps1) - FFmpeg installation script
+- **Version Bump**: [scripts/bump.cjs](mdc:scripts/bump.cjs) - Version management script
+
+## Package Management
+
+- **Node.js**: [package.json](mdc:package.json) - Frontend dependencies and scripts
+- **Rust**: [src-tauri/Cargo.toml](mdc:src-tauri/Cargo.toml) - Backend dependencies and features
+- **Lock Files**: [yarn.lock](mdc:yarn.lock) - Yarn dependency lock
+
+## Build Configuration
+
+- **Vite**: [vite.config.ts](mdc:vite.config.ts) - Frontend build tool configuration
+- **Tailwind**: [tailwind.config.cjs](mdc:tailwind.config.cjs) - CSS framework configuration
+- **PostCSS**: [postcss.config.cjs](mdc:postcss.config.cjs) - CSS processing configuration
+- **TypeScript**: [tsconfig.json](mdc:tsconfig.json), [tsconfig.node.json](mdc:tsconfig.node.json) - TypeScript configuration
+
+## Tauri Configuration
+
+- **Main Config**: [src-tauri/tauri.conf.json](mdc:src-tauri/tauri.conf.json) - Core Tauri settings
+- **Platform Configs**:
+  - [src-tauri/tauri.macos.conf.json](mdc:src-tauri/tauri.macos.conf.json) - macOS specific
+  - [src-tauri/tauri.linux.conf.json](mdc:src-tauri/tauri.linux.conf.json) - Linux specific
+  - [src-tauri/tauri.windows.conf.json](mdc:src-tauri/tauri.windows.conf.json) - Windows specific
+  - [src-tauri/tauri.windows.cuda.conf.json](mdc:src-tauri/tauri.windows.cuda.conf.json) - Windows with CUDA
+
+## Docker Support
+
+- **Dockerfile**: [Dockerfile](mdc:Dockerfile) - Container deployment configuration
+- **Documentation**: [docs/](mdc:docs/) - VitePress-based documentation site
+
+## Build Commands
+
+- **Frontend**: `yarn build` - Build production frontend
+- **Tauri**: `yarn tauri build` - Build desktop application
+- **Documentation**: `yarn docs:build` - Build documentation site
+- **Type Check**: `yarn check` - TypeScript and Svelte validation
+
+## Deployment Targets
+
+- **Desktop**: Native Tauri applications for Windows, macOS, Linux
+- **Docker**: Containerized deployment option
+- **Documentation**: Static site deployment via VitePress
+- **Assets**: Static asset distribution for web components
+  description:
+  globs:
+  alwaysApply: true
+
+---

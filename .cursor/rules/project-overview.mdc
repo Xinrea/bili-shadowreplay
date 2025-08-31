@@ -1,0 +1,47 @@
+# BiliBili ShadowReplay Project Overview
+
+This is a Tauri-based desktop application for caching live streams and performing real-time editing and submission. It supports Bilibili and Douyin platforms.
+
+## Project Structure
+
+### Frontend (Svelte + TypeScript)
+
+- **Main entry points**: [src/main.ts](mdc:src/main.ts), [src/main_clip.ts](mdc:src/main_clip.ts), [src/main_live.ts](mdc:src/main_live.ts)
+- **App components**: [src/App.svelte](mdc:src/App.svelte), [src/AppClip.svelte](mdc:src/AppClip.svelte), [src/AppLive.svelte](mdc:src/AppLive.svelte)
+- **Pages**: Located in [src/page/](mdc:src/page/) directory
+- **Components**: Located in [src/lib/components/](mdc:src/lib/components/) directory
+- **Stores**: Located in [src/lib/stores/](mdc:src/lib/stores/) directory
+
+### Backend (Rust + Tauri)
+
+- **Main entry**: [src-tauri/src/main.rs](mdc:src-tauri/src/main.rs)
+- **Core modules**:
+  - [src-tauri/src/recorder/](mdc:src-tauri/src/recorder/) - Stream recording functionality
+  - [src-tauri/src/database/](mdc:src-tauri/src/database/) - Database operations
+  - [src-tauri/src/handlers/](mdc:src-tauri/src/handlers/) - Tauri command handlers
+- **Custom crate**: [src-tauri/crates/danmu_stream/](mdc:src-tauri/crates/danmu_stream/) - Danmaku stream processing
+
+### Configuration
+
+- **Frontend config**: [tsconfig.json](mdc:tsconfig.json), [vite.config.ts](mdc:vite.config.ts), [tailwind.config.cjs](mdc:tailwind.config.cjs)
+- **Backend config**: [src-tauri/Cargo.toml](mdc:src-tauri/Cargo.toml), [src-tauri/tauri.conf.json](mdc:src-tauri/tauri.conf.json)
+- **Example config**: [src-tauri/config.example.toml](mdc:src-tauri/config.example.toml)
+
+## Key Technologies
+
+- **Frontend**: Svelte 3, TypeScript, Tailwind CSS, Flowbite
+- **Backend**: Rust, Tauri 2, SQLite, FFmpeg
+- **AI Features**: LangChain, Whisper for transcription
+- **Build Tools**: Vite, VitePress for documentation
+
+## Development Commands
+
+- `yarn dev` - Start development server
+- `yarn tauri dev` - Start Tauri development
+- `yarn build` - Build frontend
+- `yarn docs:dev` - Start documentation server
+  description:
+  globs:
+  alwaysApply: true
+
+---

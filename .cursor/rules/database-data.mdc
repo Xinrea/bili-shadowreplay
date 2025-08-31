@@ -1,0 +1,53 @@
+# Database and Data Management
+
+## Database Architecture
+
+- **SQLite Database**: Primary data storage using `sqlx` with async runtime
+- **Database Module**: [src-tauri/src/database/](mdc:src-tauri/src/database/) - Core database operations
+- **Migration System**: [src-tauri/src/migration.rs](mdc:src-tauri/src/migration.rs) - Database schema management
+
+## Data Models
+
+- **Recording Data**: Stream metadata, recording sessions, and file information
+- **Room Configuration**: Stream room settings and platform credentials
+- **Task Management**: Recording task status and progress tracking
+- **User Preferences**: Application settings and user configurations
+
+## Frontend Data Layer
+
+- **Database Interface**: [src/lib/db.ts](mdc:src/lib/db.ts) - Frontend database operations
+- **Stores**: [src/lib/stores/](mdc:src/lib/stores/) - State management for data
+- **Version Management**: [src/lib/stores/version.ts](mdc:src/lib/stores/version.ts) - Version tracking
+
+## Data Operations
+
+- **CRUD Operations**: Create, read, update, delete for all data entities
+- **Query Optimization**: Efficient SQL queries with proper indexing
+- **Transaction Support**: ACID compliance for critical operations
+- **Data Validation**: Input validation and sanitization
+
+## File Management
+
+- **Cache Directory**: [src-tauri/cache/](mdc:src-tauri/cache/) - Temporary file storage
+- **Upload Directory**: [src-tauri/cache/uploads/](mdc:src-tauri/cache/uploads/) - User upload storage
+- **Bilibili Cache**: [src-tauri/cache/bilibili/](mdc:src-tauri/cache/bilibili/) - Platform-specific cache
+
+## Data Persistence
+
+- **SQLite Files**: [src-tauri/data/data_v2.db](mdc:src-tauri/data/data_v2.db) - Main database file
+- **Write-Ahead Logging**: WAL mode for concurrent access and performance
+- **Backup Strategy**: Database backup and recovery procedures
+- **Migration Handling**: Automatic schema updates and data migration
+
+## Development Guidelines
+
+- Use prepared statements to prevent SQL injection
+- Implement proper error handling for database operations
+- Use transactions for multi-step operations
+- Follow database naming conventions consistently
+- Test database operations with sample data
+  description:
+  globs:
+  alwaysApply: true
+
+---

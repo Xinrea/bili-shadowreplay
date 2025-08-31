@@ -1,0 +1,44 @@
+# AI Features and LangChain Integration
+
+## AI Components
+
+- **LangChain Integration**: Uses `@langchain/core`, `@langchain/deepseek`, `@langchain/langgraph`, `@langchain/ollama`
+- **Whisper Transcription**: Local and online transcription via `whisper-rs` in Rust backend
+- **AI Agent**: Located in [src/lib/agent/](mdc:src/lib/agent/) directory
+
+## Frontend AI Features
+
+- **AI Page**: [src/page/AI.svelte](mdc:src/page/AI.svelte) - Main AI interface
+- **Agent Logic**: [src/lib/agent/](mdc:src/lib/agent/) - AI agent implementation
+- **Interface**: [src/lib/interface.ts](mdc:src/lib/interface.ts) - AI communication layer
+
+## Backend AI Features
+
+- **Subtitle Generation**: [src-tauri/src/subtitle_generator/](mdc:src-tauri/src/subtitle_generator/) - AI-powered subtitle creation
+- **Whisper Integration**: [src-tauri/src/subtitle_generator.rs](mdc:src-tauri/src/subtitle_generator.rs) - Speech-to-text processing
+- **CUDA Support**: Optional CUDA acceleration for Whisper via feature flag
+
+## AI Workflows
+
+- **Live Transcription**: Real-time speech-to-text during live streams
+- **Content Summarization**: AI-powered content analysis and summarization
+- **Smart Editing**: AI-assisted video editing and clip generation
+- **Danmaku Processing**: AI analysis of danmaku (bullet comments) streams
+
+## Configuration
+
+- **LLM Settings**: Configure AI models in [src-tauri/config.example.toml](mdc:src-tauri/config.example.toml)
+- **Whisper Models**: Local model configuration for offline transcription
+- **API Keys**: External AI service configuration for online features
+
+## Development Notes
+
+- AI features require proper model configuration
+- CUDA feature enables GPU acceleration for Whisper
+- LangChain integration supports multiple AI providers
+- AI agent can work with both local and cloud-based models
+  description:
+  globs:
+  alwaysApply: true
+
+---

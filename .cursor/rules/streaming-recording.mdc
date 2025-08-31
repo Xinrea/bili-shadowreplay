@@ -1,0 +1,53 @@
+# Streaming and Recording System
+
+## Core Recording Components
+
+- **Recorder Manager**: [src-tauri/src/recorder_manager.rs](mdc:src-tauri/src/recorder_manager.rs) - Main recording orchestration
+- **Recorder**: [src-tauri/src/recorder/](mdc:src-tauri/src/recorder/) - Individual stream recording logic
+- **Danmaku Stream**: [src-tauri/crates/danmu_stream/](mdc:src-tauri/crates/danmu_stream/) - Custom crate for bullet comment processing
+
+## Supported Platforms
+
+- **Bilibili**: Main platform support with live stream caching
+- **Douyin**: TikTok's Chinese platform support
+- **Multi-stream**: Support for recording multiple streams simultaneously
+
+## Recording Features
+
+- **Live Caching**: Real-time stream recording and buffering
+- **Time-based Clipping**: Extract specific time segments from recorded streams
+- **Danmaku Capture**: Record bullet comments and chat messages
+- **Quality Control**: Configurable recording quality and format options
+
+## Frontend Interfaces
+
+- **Live Mode**: [src/AppLive.svelte](mdc:src/AppLive.svelte) - Live streaming interface
+- **Clip Mode**: [src/AppClip.svelte](mdc:src/AppClip.svelte) - Video editing and clipping
+- **Room Management**: [src/page/Room.svelte](mdc:src/page/Room.svelte) - Stream room configuration
+- **Task Management**: [src/page/Task.svelte](mdc:src/page/Task.svelte) - Recording task monitoring
+
+## Technical Implementation
+
+- **FFmpeg Integration**: Video/audio processing via `async-ffmpeg-sidecar`
+- **M3U8 Support**: HLS stream processing with `m3u8-rs`
+- **Async Processing**: Non-blocking I/O with `tokio` runtime
+- **Database Storage**: SQLite for metadata and recording information
+
+## Configuration
+
+- **Recording Settings**: Configure in [src-tauri/config.example.toml](mdc:src-tauri/config.example.toml)
+- **FFmpeg Path**: Set FFmpeg binary location for video processing
+- **Storage Paths**: Configure cache and output directories
+- **Quality Settings**: Adjust recording bitrate and format options
+
+## Development Workflow
+
+- Use [src-tauri/src/recorder/](mdc:src-tauri/src/recorder/) for core recording logic
+- Test with [src-tauri/tests/](mdc:src-tauri/tests/) directory
+- Monitor recording progress via progress manager
+- Handle errors gracefully with custom error types
+  description:
+  globs:
+  alwaysApply: true
+
+---

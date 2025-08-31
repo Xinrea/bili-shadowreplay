@@ -1,0 +1,45 @@
+# Frontend Development Guidelines
+
+## Svelte 3 Best Practices
+
+- Use Svelte 3 syntax with `<script>` tags for component logic
+- Prefer reactive statements with `$:` for derived state
+- Use stores from [src/lib/stores/](mdc:src/lib/stores/) for global state management
+- Import components from [src/lib/components/](mdc:src/lib/components/)
+
+## TypeScript Configuration
+
+- Follow the configuration in [tsconfig.json](mdc:tsconfig.json)
+- Use strict type checking with `checkJs: true`
+- Extends `@tsconfig/svelte` for Svelte-specific TypeScript settings
+- Base URL is set to workspace root for clean imports
+
+## Component Structure
+
+- **Page components**: Located in [src/page/](mdc:src/page/) directory
+- **Reusable components**: Located in [src/lib/components/](mdc:src/lib/components/) directory
+- **Layout components**: [src/App.svelte](mdc:src/App.svelte), [src/AppClip.svelte](mdc:src/AppClip.svelte), [src/AppLive.svelte](mdc:src/AppLive.svelte)
+
+## Styling
+
+- Use Tailwind CSS classes for styling
+- Configuration in [tailwind.config.cjs](mdc:tailwind.config.cjs)
+- PostCSS configuration in [postcss.config.cjs](mdc:postcss.config.cjs)
+- Global styles in [src/styles.css](mdc:src/styles.css)
+
+## Entry Points
+
+- **Main app**: [src/main.ts](mdc:src/main.ts) - Main application entry
+- **Clip mode**: [src/main_clip.ts](mdc:src/main_clip.ts) - Clip editing interface
+- **Live mode**: [src/main_live.ts](mdc:src/main_live.ts) - Live streaming interface
+
+## Development Workflow
+
+- Use `yarn dev` for frontend-only development
+- Use `yarn tauri dev` for full Tauri development
+- Use `yarn check` for TypeScript and Svelte type checking
+  description:
+  globs:
+  alwaysApply: true
+
+---

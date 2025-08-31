@@ -1,19 +1,8 @@
 use std::time::Duration;
 
-use crate::DanmuStreamError;
 use reqwest::header::HeaderMap;
 
-impl From<reqwest::Error> for DanmuStreamError {
-    fn from(value: reqwest::Error) -> Self {
-        Self::HttpError { err: value }
-    }
-}
-
-impl From<url::ParseError> for DanmuStreamError {
-    fn from(value: url::ParseError) -> Self {
-        Self::ParseError { err: value }
-    }
-}
+use crate::DanmuStreamError;
 
 pub struct ApiClient {
     client: reqwest::Client,

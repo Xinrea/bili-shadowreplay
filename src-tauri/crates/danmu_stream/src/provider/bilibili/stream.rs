@@ -1,10 +1,9 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::{
-    provider::{bilibili::dannmu_msg::BiliDanmuMessage, DanmuMessageType},
-    DanmuMessage, DanmuStreamError,
-};
+use super::dannmu_msg::BiliDanmuMessage;
+
+use crate::{provider::DanmuMessageType, DanmuMessage, DanmuStreamError};
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct WsStreamCtx {

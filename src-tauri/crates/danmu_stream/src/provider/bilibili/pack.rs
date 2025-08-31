@@ -24,7 +24,7 @@ struct PackHotCount {
 
 type BilibiliPackCtx<'a> = (BilibiliPackHeader, &'a [u8]);
 
-fn pack(buffer: &[u8]) -> Result<BilibiliPackCtx, DanmuStreamError> {
+fn pack(buffer: &[u8]) -> Result<BilibiliPackCtx<'_>, DanmuStreamError> {
     let data = buffer
         .pread_with(0, scroll::BE)
         .map_err(|e: scroll::Error| DanmuStreamError::PackError { err: e.to_string() })?;

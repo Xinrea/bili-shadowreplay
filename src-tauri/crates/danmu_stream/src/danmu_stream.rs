@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
+use tokio::sync::{mpsc, RwLock};
+
 use crate::{
     provider::{new, DanmuProvider, ProviderType},
     DanmuMessageType, DanmuStreamError,
 };
-use tokio::sync::{mpsc, RwLock};
 
 #[derive(Clone)]
 pub struct DanmuStream {

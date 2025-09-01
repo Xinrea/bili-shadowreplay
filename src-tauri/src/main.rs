@@ -20,6 +20,7 @@ mod state;
 mod subtitle_generator;
 #[cfg(feature = "gui")]
 mod tray;
+mod webhook;
 
 use archive_migration::try_rebuild_archives;
 use async_std::fs;

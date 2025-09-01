@@ -54,6 +54,7 @@ export default withMermaid({
               { text: "切片功能", link: "/usage/features/clip" },
               { text: "字幕功能", link: "/usage/features/subtitle" },
               { text: "弹幕功能", link: "/usage/features/danmaku" },
+              { text: "Webhook", link: "/usage/features/webhook" },
             ],
           },
           { text: "常见问题", link: "/usage/faq" },

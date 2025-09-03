@@ -377,13 +377,8 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     };
     db_clone.set(sqlite_pool.unwrap().clone()).await;
     db_clone.finish_pending_tasks().await?;
-    let webhook_poster = if config.read().await.webhook_url.is_empty() {
-        None
-    } else {
-        use crate::webhook::poster::create_webhook_poster;
-
-        Some(create_webhook_poster(&config.read().await.webhook_url, None).unwrap())
-    };
+    let webhook_poster =
+        webhook::poster::create_webhook_poster(&config.read().await.webhook_url, None).unwrap();
 
     let webhook_poster = Arc::new(RwLock::new(webhook_poster));
 

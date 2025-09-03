@@ -6,7 +6,6 @@ use crate::progress_reporter::{
     cancel_progress, EventEmitter, ProgressReporter, ProgressReporterTrait,
 };
 use crate::recorder::bilibili::profile::Profile;
-use crate::recorder::PlatformType;
 use crate::recorder_manager::ClipRangeParams;
 use crate::subtitle_generator::item_to_srt;
 use crate::webhook::events;
@@ -330,12 +329,14 @@ pub async fn clip_range(
         let cwd = std::env::current_dir().unwrap();
         output = cwd.join(output);
     }
+
     if let Ok(disk_info) = get_disk_info_inner(output).await {
         // if free space is less than 1GB, return error
         if disk_info.free < 1024 * 1024 * 1024 {
             return Err("Storage space is not enough, clip canceled".to_string());
         }
     }
+
     #[cfg(feature = "gui")]
     let emitter = EventEmitter::new(state.app_handle.clone());
     #[cfg(feature = "headless")]
@@ -354,102 +355,51 @@ pub async fn clip_range(
         .to_string(),
         created_at: Utc::now().to_rfc3339(),
     };
+
     state.db.add_task(&task).await?;
     log::info!("Create task: {} {}", task.id, task.task_type);
-    match clip_range_inner(&state, &reporter, params.clone()).await {
-        Ok(video) => {
-            reporter.finish(true, "切片完成").await;
-            state
-                .db
-                .update_task(&event_id, "success", "切片完成", None)
-                .await?;
-            if state.config.read().await.auto_subtitle {
-                // generate a subtitle task event id
-                let subtitle_event_id = format!("{}_subtitle", event_id);
-                let result =
-                    generate_video_subtitle(state.clone(), subtitle_event_id, video.id).await;
-                if let Ok(subtitle) = result {
-                    let result = update_video_subtitle(state.clone(), video.id, subtitle).await;
-                    if let Err(e) = result {
-                        log::error!("Update video subtitle error: {}", e);
-                    }
-                } else {
-                    log::error!("Generate video subtitle error: {}", result.err().unwrap());
-                }
+
+    let clip_result = clip_range_inner(&state, &reporter, params.clone()).await;
+    if let Err(e) = clip_result {
+        reporter.finish(false, &format!("切片失败: {}", e)).await;
+        state
+            .db
+            .update_task(&event_id, "failed", &format!("切片失败: {}", e), None)
+            .await?;
+        return Err(e);
+    }
+
+    let video = clip_result.unwrap();
+
+    reporter.finish(true, "切片完成").await;
+    state
+        .db
+        .update_task(&event_id, "success", "切片完成", None)
+        .await?;
+
+    if state.config.read().await.auto_subtitle {
+        // generate a subtitle task event id
+        let subtitle_event_id = format!("{}_subtitle", event_id);
+        let result = generate_video_subtitle(state.clone(), subtitle_event_id, video.id).await;
+        if let Ok(subtitle) = result {
+            let result = update_video_subtitle(state.clone(), video.id, subtitle).await;
+            if let Err(e) = result {
+                log::error!("Update video subtitle error: {}", e);
             }
-            if let Some(webhook_poster) = (*state.webhook_poster.read().await).clone() {
-                let live = state.db.get_record(params.room_id, &params.live_id).await?;
-                let room_info = state
-                    .recorder_manager
-                    .get_recorder_info(
-                        PlatformType::from_str(&params.platform).unwrap(),
-                        params.room_id,
-                    )
-                    .await;
-                let mut user_info = events::UserObject {
-                    user_id: "".to_string(),
-                    user_name: "".to_string(),
-                    user_avatar: "".to_string(),
-                };
-                if let Some(room_info) = room_info {
-                    user_info = events::UserObject {
-                        user_id: room_info.user_info.user_id.to_string(),
-                        user_name: room_info.user_info.user_name,
-                        user_avatar: room_info.user_info.user_avatar,
-                    };
-                } else {
-                    log::error!(
-                        "Get recorder info failed: {} {}",
-                        params.platform,
-                        params.room_id
-                    );
-                }
-                if let Err(e) = webhook_poster
-                    .post_event(&events::new_webhook_event(
-                        "clip_finished",
-                        events::Payload::Clip(events::ClipObject {
-                            clip_id: video.id.to_string(),
-                            live: events::LiveObject {
-                                live_id: params.live_id.clone(),
-                                room: events::RoomObject {
-                                    room_id: video.room_id.to_string(),
-                                    platform: params.platform,
-                                    room_title: live.title,
-                                    room_cover: live.cover.unwrap_or("".to_string()),
-                                    room_owner: user_info,
-                                },
-                                start_time: None,
-                                end_time: None,
-                            },
-                            range: events::Range {
-                                start: params.range.as_ref().unwrap().start,
-                                end: params.range.as_ref().unwrap().end,
-                            },
-                            note: video.note.clone(),
-                            cover: video.cover.clone(),
-                            file: video.file.clone(),
-                            size: video.size,
-                            length: video.length,
-                            with_danmaku: params.danmu,
-                            with_subtitle: false,
-                        }),
-                    ))
-                    .await
-                {
-                    log::error!("Post webhook event error: {}", e);
-                }
-            }
-            Ok(video)
-        }
-        Err(e) => {
-            reporter.finish(false, &format!("切片失败: {}", e)).await;
-            state
-                .db
-                .update_task(&event_id, "failed", &format!("切片失败: {}", e), None)
-                .await?;
-            Err(e)
+        } else {
+            log::error!("Generate video subtitle error: {}", result.err().unwrap());
         }
     }
+
+    // Emit webhook events
+    let event =
+        events::new_webhook_event(events::CLIP_GENERATED, events::Payload::Clip(video.clone()));
+
+    if let Err(e) = state.webhook_poster.read().await.post_event(&event).await {
+        log::error!("Post webhook event error: {}", e);
+    }
+
+    Ok(video)
 }
 
 async fn clip_range_inner(
@@ -699,6 +649,13 @@ pub async fn delete_video(state: state_type!(), id: i64) -> Result<(), String> {
     // get video info from db
     let video = state.db.get_video(id).await?;
     let config = state.config.read().await;
+
+    // Emit webhook events
+    let event =
+        events::new_webhook_event(events::CLIP_DELETED, events::Payload::Clip(video.clone()));
+    if let Err(e) = state.webhook_poster.read().await.post_event(&event).await {
+        log::error!("Post webhook event error: {}", e);
+    }
 
     // delete video from db
     state.db.delete_video(id).await?;

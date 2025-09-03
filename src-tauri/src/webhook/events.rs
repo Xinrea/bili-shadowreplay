@@ -1,5 +1,10 @@
 use uuid::Uuid;
 
+use crate::database::video::VideoRow;
+
+pub const CLIP_GENERATED: &str = "clip.generated";
+pub const CLIP_DELETED: &str = "clip.deleted";
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct WebhookEvent {
     pub id: String,
@@ -9,11 +14,12 @@ pub struct WebhookEvent {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[serde(untagged)]
 pub enum Payload {
     User(UserObject),
     Room(RoomObject),
     Live(LiveObject),
-    Clip(ClipObject),
+    Clip(VideoRow),
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -49,7 +55,6 @@ pub struct Range {
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct ClipObject {
     pub clip_id: String,
-    pub live: LiveObject,
     pub range: Range,
     pub note: String,
     pub cover: String,

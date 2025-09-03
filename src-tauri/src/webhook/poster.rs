@@ -87,6 +87,11 @@ impl WebhookPoster {
 
     /// Post a webhook event to the configured URL
     pub async fn post_event(&self, event: &WebhookEvent) -> Result<(), WebhookPostError> {
+        if self.config.url.is_empty() {
+            log::debug!("Webhook URL is empty, skipping");
+            return Ok(());
+        }
+
         let serialized_event = serde_json::to_string(event)
             .map_err(|e| WebhookPostError::Serialization(e.to_string()))?;
 
@@ -94,12 +99,23 @@ impl WebhookPoster {
     }
 
     /// Post raw JSON data to the configured URL
+    #[allow(dead_code)]
     pub async fn post_json(&self, json_data: &str) -> Result<(), WebhookPostError> {
+        if self.config.url.is_empty() {
+            log::debug!("Webhook URL is empty, skipping");
+            return Ok(());
+        }
+
         self.post_with_retry(json_data).await
     }
 
     /// Post data with retry logic
     async fn post_with_retry(&self, data: &str) -> Result<(), WebhookPostError> {
+        if self.config.url.is_empty() {
+            log::debug!("Webhook URL is empty, skipping");
+            return Ok(());
+        }
+
         let mut last_error = None;
 
         for attempt in 1..=self.config.retry_attempts {
@@ -170,11 +186,6 @@ impl WebhookPoster {
         self.config = config;
         Ok(())
     }
-
-    /// Get the current configuration
-    pub fn config(&self) -> &WebhookConfig {
-        &self.config
-    }
 }
 
 /// Errors that can occur during webhook posting
@@ -188,9 +199,6 @@ pub enum WebhookPostError {
 
     #[error("Serialization error: {0}")]
     Serialization(String),
-
-    #[error("Configuration error: {0}")]
-    Config(String),
 }
 
 /// Convenience function to create a webhook poster with custom headers

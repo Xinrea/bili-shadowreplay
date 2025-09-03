@@ -39,6 +39,7 @@
     whisper_language: "",
     user_agent: "",
     cleanup_source_flv_after_import: false,
+    webhook_url: "",
   };
 
   let showModal = false;
@@ -149,6 +150,12 @@
     });
   }
 
+  async function update_webhook_url() {
+    await invoke("update_webhook_url", {
+      webhookUrl: setting_model.webhook_url,
+    });
+  }
+
   onMount(async () => {
     await get_config();
   });
@@ -218,6 +225,27 @@
                         userAgent: setting_model.user_agent,
                       });
                     }}
+                  />
+                </div>
+              </div>
+            </div>
+            <div class="p-4">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                    Webhook URL
+                  </h3>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    设置 Webhook URL，用于接收直播状态变化、切片完成等事件通知
+                  </p>
+                </div>
+                <div class="flex items-center space-x-2">
+                  <input
+                    type="text"
+                    class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
+                    bind:value={setting_model.webhook_url}
+                    on:change={update_webhook_url}
+                    placeholder="https://example.com/webhook"
                   />
                 </div>
               </div>
@@ -344,16 +372,21 @@
                       <h3
                         class="text-sm font-medium text-gray-900 dark:text-white"
                       >
-                         FLV 转换后自动清理源文件
+                        FLV 转换后自动清理源文件
                       </h3>
                       <p class="text-sm text-gray-500 dark:text-gray-400">
-                        启用后，自动识别目录导入 FLV 视频并自动转换为 MP4 后，会删除原始 FLV 文件以节省存储空间
+                        启用后，自动识别目录导入 FLV 视频并自动转换为 MP4
+                        后，会删除原始 FLV 文件以节省存储空间
                       </p>
                     </div>
-                    <label class="relative inline-flex items-center cursor-pointer">
+                    <label
+                      class="relative inline-flex items-center cursor-pointer"
+                    >
                       <input
                         type="checkbox"
-                        bind:checked={setting_model.cleanup_source_flv_after_import}
+                        bind:checked={
+                          setting_model.cleanup_source_flv_after_import
+                        }
                         on:change={update_cleanup_source_flv}
                         class="sr-only peer"
                       />

@@ -6,8 +6,10 @@ use crate::progress_reporter::{
     cancel_progress, EventEmitter, ProgressReporter, ProgressReporterTrait,
 };
 use crate::recorder::bilibili::profile::Profile;
+use crate::recorder::PlatformType;
 use crate::recorder_manager::ClipRangeParams;
 use crate::subtitle_generator::item_to_srt;
+use crate::webhook::events;
 use chrono::{Local, Utc};
 use serde_json::json;
 use std::fs::File;
@@ -354,7 +356,7 @@ pub async fn clip_range(
     };
     state.db.add_task(&task).await?;
     log::info!("Create task: {} {}", task.id, task.task_type);
-    match clip_range_inner(&state, &reporter, params).await {
+    match clip_range_inner(&state, &reporter, params.clone()).await {
         Ok(video) => {
             reporter.finish(true, "切片完成").await;
             state
@@ -373,6 +375,68 @@ pub async fn clip_range(
                     }
                 } else {
                     log::error!("Generate video subtitle error: {}", result.err().unwrap());
+                }
+            }
+            if let Some(webhook_poster) = (*state.webhook_poster.read().await).clone() {
+                let live = state.db.get_record(params.room_id, &params.live_id).await?;
+                let room_info = state
+                    .recorder_manager
+                    .get_recorder_info(
+                        PlatformType::from_str(&params.platform).unwrap(),
+                        params.room_id,
+                    )
+                    .await;
+                let mut user_info = events::UserObject {
+                    user_id: "".to_string(),
+                    user_name: "".to_string(),
+                    user_avatar: "".to_string(),
+                };
+                if let Some(room_info) = room_info {
+                    user_info = events::UserObject {
+                        user_id: room_info.user_info.user_id.to_string(),
+                        user_name: room_info.user_info.user_name,
+                        user_avatar: room_info.user_info.user_avatar,
+                    };
+                } else {
+                    log::error!(
+                        "Get recorder info failed: {} {}",
+                        params.platform,
+                        params.room_id
+                    );
+                }
+                if let Err(e) = webhook_poster
+                    .post_event(&events::new_webhook_event(
+                        "clip_finished",
+                        events::Payload::Clip(events::ClipObject {
+                            clip_id: video.id.to_string(),
+                            live: events::LiveObject {
+                                live_id: params.live_id.clone(),
+                                room: events::RoomObject {
+                                    room_id: video.room_id.to_string(),
+                                    platform: params.platform,
+                                    room_title: live.title,
+                                    room_cover: live.cover.unwrap_or("".to_string()),
+                                    room_owner: user_info,
+                                },
+                                start_time: None,
+                                end_time: None,
+                            },
+                            range: events::Range {
+                                start: params.range.as_ref().unwrap().start,
+                                end: params.range.as_ref().unwrap().end,
+                            },
+                            note: video.note.clone(),
+                            cover: video.cover.clone(),
+                            file: video.file.clone(),
+                            size: video.size,
+                            length: video.length,
+                            with_danmaku: params.danmu,
+                            with_subtitle: false,
+                        }),
+                    ))
+                    .await
+                {
+                    log::error!("Post webhook event error: {}", e);
                 }
             }
             Ok(video)

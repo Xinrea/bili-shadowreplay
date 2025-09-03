@@ -1,3 +1,5 @@
+use uuid::Uuid;
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct WebhookEvent {
     pub id: String,
@@ -25,7 +27,7 @@ pub struct UserObject {
 pub struct RoomObject {
     pub room_id: String,
     pub platform: String,
-    pub room_name: String,
+    pub room_title: String,
     pub room_cover: String,
     pub room_owner: UserObject,
 }
@@ -40,8 +42,8 @@ pub struct LiveObject {
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct Range {
-    pub start: i64,
-    pub end: i64,
+    pub start: f64,
+    pub end: f64,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -56,4 +58,13 @@ pub struct ClipObject {
     pub length: i64,
     pub with_danmaku: bool,
     pub with_subtitle: bool,
+}
+
+pub fn new_webhook_event(event_type: &str, payload: Payload) -> WebhookEvent {
+    WebhookEvent {
+        id: Uuid::new_v4().to_string(),
+        event: event_type.to_string(),
+        payload,
+        timestamp: chrono::Utc::now().timestamp(),
+    }
 }

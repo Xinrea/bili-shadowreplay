@@ -7,18 +7,6 @@
 //!
 //! ## Basic Usage
 //! ```rust,no_run
-//! use bili_shadowreplay::webhook::{poster::create_webhook_poster, events::WebhookEvent};
-//!
-//! # async fn example() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-//! let poster = create_webhook_poster("https://your-webhook-url.com/endpoint")?;
-//! let event = WebhookEvent { /* ... */ };
-//! poster.post_event(&event).await?;
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! ## With Custom Headers
-//! ```rust,no_run
 //! use std::collections::HashMap;
 //! use bili_shadowreplay::webhook::poster::create_webhook_poster_with_headers;
 //!
@@ -83,6 +71,7 @@ impl Default for WebhookConfig {
 }
 
 /// Webhook event poster for sending events to specified URLs
+#[derive(Clone)]
 pub struct WebhookPoster {
     client: Client,
     config: WebhookConfig,
@@ -149,6 +138,8 @@ impl WebhookPoster {
             }
         }
 
+        log::debug!("Sending webhook request to: {}", self.config.url);
+
         // Set content type to JSON
         request = request.header("Content-Type", "application/json");
 
@@ -212,6 +203,7 @@ pub fn create_webhook_poster(
         headers,
         ..Default::default()
     };
+    log::info!("Creating webhook poster with URL: {}", url);
     WebhookPoster::new(config)
 }
 
@@ -252,7 +244,7 @@ mod tests {
         let room = RoomObject {
             room_id: "456".to_string(),
             platform: "bilibili".to_string(),
-            room_name: "test_room".to_string(),
+            room_title: "test_room".to_string(),
             room_cover: "cover_url".to_string(),
             room_owner: user,
         };

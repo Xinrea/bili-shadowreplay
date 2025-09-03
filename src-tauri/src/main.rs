@@ -377,6 +377,15 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     };
     db_clone.set(sqlite_pool.unwrap().clone()).await;
     db_clone.finish_pending_tasks().await?;
+    let webhook_poster = if config.read().await.webhook_url.is_empty() {
+        None
+    } else {
+        use crate::webhook::poster::create_webhook_poster;
+
+        Some(create_webhook_poster(&config.read().await.webhook_url, None).unwrap())
+    };
+
+    let webhook_poster = Arc::new(RwLock::new(webhook_poster));
 
     let recorder_manager = Arc::new(RecorderManager::new(
         app.app_handle().clone(),
@@ -394,6 +403,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
             config,
             recorder_manager,
             app_handle: app.handle().clone(),
+            webhook_poster,
         });
     }
 
@@ -464,6 +474,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         config,
         recorder_manager,
         app_handle: app.handle().clone(),
+        webhook_poster,
     })
 }
 
@@ -534,6 +545,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::config::update_whisper_language,
         crate::handlers::config::update_user_agent,
         crate::handlers::config::update_cleanup_source_flv,
+        crate::handlers::config::update_webhook_url,
         crate::handlers::message::get_messages,
         crate::handlers::message::read_message,
         crate::handlers::message::delete_message,

@@ -236,7 +236,11 @@
                     Webhook URL
                   </h3>
                   <p class="text-sm text-gray-500 dark:text-gray-400">
-                    设置 Webhook URL，用于接收直播状态变化、切片完成等事件通知
+                    设置 Webhook
+                    URL，用于接收直播状态变化、切片完成等事件通知，见文档<a
+                      href="https://bsr.xinrea.cn/usage/features/webhook.html"
+                      target="_blank">Webhook</a
+                    >
                   </p>
                 </div>
                 <div class="flex items-center space-x-2">

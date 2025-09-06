@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::state::State;
 use crate::state_type;
@@ -371,6 +371,36 @@ pub fn sanitize_filename_advanced(name: &str, max_length: Option<usize>) -> Stri
 
     // 如果没有扩展名或扩展名太长，直接截断
     cleaned.chars().take(max_len).collect()
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_cover(
+    state: state_type!(),
+    cover_type: String,
+    cover_path: String,
+) -> Result<Vec<u8>, String> {
+    log::debug!("Get cover: {} {}", cover_type, cover_path);
+    match cover_type.as_str() {
+        "video" => {
+            // read cover file from output directory
+            let cover_file_path =
+                Path::new(state.config.read().await.output.as_str()).join(&cover_path);
+            let cover = tokio::fs::read(cover_file_path)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(cover)
+        }
+        "live" => {
+            // read cover file from cache directory
+            let cover_file_path =
+                Path::new(state.config.read().await.cache.as_str()).join(&cover_path);
+            let cover = tokio::fs::read(&cover_file_path)
+                .await
+                .map_err(|e| format!("{}: {}", e.to_string(), cover_file_path.display()))?;
+            Ok(cover)
+        }
+        _ => Err(format!("Invalid cover type: {}", cover_type)),
+    }
 }
 
 #[cfg(test)]

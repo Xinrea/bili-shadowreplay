@@ -1,7 +1,6 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod archive_migration;
 mod config;
 mod constants;
 mod danmu2ass;
@@ -10,7 +9,6 @@ mod ffmpeg;
 mod handlers;
 #[cfg(feature = "headless")]
 mod http_server;
-#[cfg(feature = "headless")]
 mod migration;
 mod progress_manager;
 mod progress_reporter;
@@ -22,11 +20,13 @@ mod subtitle_generator;
 mod tray;
 mod webhook;
 
-use archive_migration::try_rebuild_archives;
 use async_std::fs;
 use chrono::Utc;
 use config::Config;
 use database::Database;
+use migration::migration_methods::try_convert_clip_covers;
+use migration::migration_methods::try_convert_live_covers;
+use migration::migration_methods::try_rebuild_archives;
 use recorder::bilibili::client::BiliClient;
 use recorder::PlatformType;
 use recorder_manager::RecorderManager;
@@ -329,6 +329,8 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     }
 
     let _ = try_rebuild_archives(&db, config.read().await.cache.clone().into()).await;
+    let _ = try_convert_live_covers(&db, config.read().await.cache.clone().into()).await;
+    let _ = try_convert_clip_covers(&db, config.read().await.output.clone().into()).await;
 
     Ok(State {
         db,
@@ -402,7 +404,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         });
     }
 
-    // update account infos
+    // update account info
     for account in accounts {
         let platform = PlatformType::from_str(&account.platform).unwrap();
 
@@ -459,9 +461,12 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
 
     // try to rebuild archive table
     let cache_path = config_clone.read().await.cache.clone();
-    if let Err(e) = try_rebuild_archives(&db_clone, cache_path.into()).await {
+    let output_path = config_clone.read().await.output.clone();
+    if let Err(e) = try_rebuild_archives(&db_clone, cache_path.clone().into()).await {
         log::warn!("Rebuilding archive table failed: {}", e);
     }
+    let _ = try_convert_live_covers(&db_clone, cache_path.into()).await;
+    let _ = try_convert_clip_covers(&db_clone, output_path.into()).await;
 
     Ok(State {
         db,
@@ -597,6 +602,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::utils::open_log_folder,
         crate::handlers::utils::console_log,
         crate::handlers::utils::list_folder,
+        crate::handlers::utils::get_cover,
     ])
 }
 

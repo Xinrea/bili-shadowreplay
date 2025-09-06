@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke } from "../lib/invoker";
+  import { get_cover, invoke } from "../lib/invoker";
   import type { RecorderList, DiskInfo } from "../lib/interface";
   import type { RecordItem } from "../lib/db";
   const INTERVAL = 5000;
@@ -88,6 +88,10 @@
       offset: hasNewRecords ? 0 : offset,
       limit: RECORDS_PER_PAGE,
     })) as RecordItem[];
+
+    for (const record of newRecords) {
+      record.cover = await get_cover("live", record.cover);
+    }
 
     if (hasNewRecords) {
       recent_records = newRecords;
@@ -391,6 +395,10 @@
                   src={record.cover}
                   class="w-32 h-18 rounded-lg object-cover"
                   alt="Gaming stream thumbnail"
+                  on:load={() =>
+                    console.log("Image loaded in template:", record.cover)}
+                  on:error={(e) =>
+                    console.error("Image error in template:", record.cover, e)}
                 />
               {:else}
                 <div

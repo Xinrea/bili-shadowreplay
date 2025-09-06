@@ -1,3 +1,5 @@
+pub mod migration_methods;
+
 use sqlx::migrate::MigrationType;
 
 #[derive(Debug)]

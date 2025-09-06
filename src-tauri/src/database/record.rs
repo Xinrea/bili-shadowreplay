@@ -105,6 +105,20 @@ impl Database {
         Ok(())
     }
 
+    pub async fn update_record_cover(
+        &self,
+        live_id: &str,
+        cover: Option<String>,
+    ) -> Result<(), DatabaseError> {
+        let lock = self.db.read().await.clone().unwrap();
+        sqlx::query("UPDATE records SET cover = $1 WHERE live_id = $2")
+            .bind(cover)
+            .bind(live_id)
+            .execute(&lock)
+            .await?;
+        Ok(())
+    }
+
     pub async fn get_total_length(&self) -> Result<i64, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         let result: (i64,) = sqlx::query_as("SELECT SUM(length) FROM records;")

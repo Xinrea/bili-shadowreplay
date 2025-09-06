@@ -9,7 +9,6 @@ use super::response::VideoSubmitData;
 use crate::database::account::AccountRow;
 use crate::progress_reporter::ProgressReporter;
 use crate::progress_reporter::ProgressReporterTrait;
-use base64::Engine;
 use chrono::TimeZone;
 use pct_str::PctString;
 use pct_str::URIReserved;

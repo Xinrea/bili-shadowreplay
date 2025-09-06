@@ -3,12 +3,8 @@ use std::fmt::{self, Display};
 use crate::{
     config::Config,
     database::{
-        account::AccountRow,
-        message::MessageRow,
-        record::RecordRow,
-        recorder::RecorderRow,
-        task::TaskRow,
-        video::{VideoNoCover, VideoRow},
+        account::AccountRow, message::MessageRow, record::RecordRow, recorder::RecorderRow,
+        task::TaskRow, video::VideoRow,
     },
     handlers::{
         account::{
@@ -18,7 +14,8 @@ use crate::{
             get_config, update_auto_generate, update_clip_name_format, update_notify,
             update_openai_api_endpoint, update_openai_api_key, update_status_check_interval,
             update_subtitle_generator_type, update_subtitle_setting, update_user_agent,
-            update_whisper_language, update_whisper_model, update_whisper_prompt,
+            update_webhook_url, update_whisper_language, update_whisper_model,
+            update_whisper_prompt,
         },
         message::{delete_message, get_messages, read_message},
         recorder::{
@@ -333,6 +330,22 @@ async fn handler_update_whisper_prompt(
     update_whisper_prompt(state.0, whisper_prompt.whisper_prompt)
         .await
         .expect("Failed to update whisper prompt");
+    Ok(Json(ApiResponse::success(())))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateWebhookUrlRequest {
+    webhook_url: String,
+}
+
+async fn handler_update_webhook_url(
+    state: axum::extract::State<State>,
+    Json(param): Json<UpdateWebhookUrlRequest>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    update_webhook_url(state.0, param.webhook_url)
+        .await
+        .expect("Failed to update webhook url");
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -763,14 +776,14 @@ struct GetVideosRequest {
 async fn handler_get_videos(
     state: axum::extract::State<State>,
     Json(param): Json<GetVideosRequest>,
-) -> Result<Json<ApiResponse<Vec<VideoNoCover>>>, ApiError> {
+) -> Result<Json<ApiResponse<Vec<VideoRow>>>, ApiError> {
     let videos = get_videos(state.0, param.room_id).await?;
     Ok(Json(ApiResponse::success(videos)))
 }
 
 async fn handler_get_all_videos(
     state: axum::extract::State<State>,
-) -> Result<Json<ApiResponse<Vec<VideoNoCover>>>, ApiError> {
+) -> Result<Json<ApiResponse<Vec<VideoRow>>>, ApiError> {
     // 先扫描导入目录中的新文件并自动导入
     match scan_imported_directory(state.0.clone()).await {
         Ok(new_files) => {
@@ -1958,6 +1971,7 @@ pub async fn start_api_server(state: State) {
                 "/api/update_whisper_language",
                 post(handler_update_whisper_language),
             )
+            .route("/api/update_webhook_url", post(handler_update_webhook_url))
             .route("/api/update_user_agent", post(handler_update_user_agent))
             // 批量导入相关的 API 端点
             .route(

@@ -8,6 +8,7 @@ pub enum MigrationKind {
     Down,
 }
 
+#[cfg(feature = "headless")]
 #[derive(Debug)]
 pub struct Migration {
     pub version: i64,

@@ -301,7 +301,6 @@ pub async fn update_cleanup_source_flv(state: state_type!(), cleanup: bool) -> R
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
-#[cfg(feature = "gui")]
 pub async fn update_webhook_url(state: state_type!(), webhook_url: String) -> Result<(), ()> {
     log::info!("Updating webhook url to {}", webhook_url);
     let _ =

@@ -139,31 +139,32 @@ async function convertFileSrc(filePath: string) {
   return `${ENDPOINT}/output/${filePath}`;
 }
 
-async function convertCoverSrc(coverPath: string, videoId?: number) {
-  if (TAURI_ENV) {
-    // 在客户端模式下，如果是base64数据URL，需要特殊处理
-    if (coverPath && coverPath.startsWith("data:image/")) {
-      // 对于base64数据，直接返回，让浏览器处理
-      return coverPath;
+const coverCache: Map<string, string> = new Map();
+
+async function get_cover(coverType: string, coverPath: string) {
+  const config = (await invoke("get_config")) as any;
+  if (coverType === "live") {
+    const absolutePath = `${config.cache}/${coverPath}`;
+    if (coverCache.has(absolutePath)) {
+      return coverCache.get(absolutePath);
     }
-    // 对于文件路径（缩略图等），需要获取config来构建绝对路径
-    try {
-      const config = (await invoke("get_config")) as any;
-      const absolutePath = `${config.output}/${coverPath}`;
-      return tauri_convert(absolutePath);
-    } catch (error) {
-      console.error("Failed to get config for cover path conversion:", error);
-      return tauri_convert(coverPath);
-    }
+    const url = tauri_convert(absolutePath);
+    coverCache.set(absolutePath, url);
+    return url;
   }
 
-  // 如果是base64数据URL，使用专门的API端点
-  if (coverPath && coverPath.startsWith("data:image/") && videoId) {
-    return `${ENDPOINT}/api/image/${videoId}`;
+  if (coverType === "video") {
+    const absolutePath = `${config.output}/${coverPath}`;
+    if (coverCache.has(absolutePath)) {
+      return coverCache.get(absolutePath);
+    }
+    const url = tauri_convert(absolutePath);
+    coverCache.set(absolutePath, url);
+    return url;
   }
 
-  // 普通文件路径
-  return `${ENDPOINT}/output/${coverPath}`;
+  // exception
+  throw new Error(`Invalid cover type: ${coverType}`);
 }
 
 let event_source: EventSource | null = null;
@@ -262,7 +263,6 @@ export {
   set_title,
   TAURI_ENV,
   convertFileSrc,
-  convertCoverSrc,
   ENDPOINT,
   listen,
   open,
@@ -270,4 +270,5 @@ export {
   close_window,
   onOpenUrl,
   onConnectionRestore,
+  get_cover,
 };

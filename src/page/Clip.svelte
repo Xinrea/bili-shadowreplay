@@ -1,10 +1,5 @@
 <script lang="ts">
-  import {
-    invoke,
-    convertCoverSrc,
-    TAURI_ENV,
-    convertFileSrc,
-  } from "../lib/invoker";
+  import { invoke, TAURI_ENV, convertFileSrc, get_cover } from "../lib/invoker";
   import type { VideoItem } from "../lib/interface";
   import ImportVideoDialog from "../lib/components/ImportVideoDialog.svelte";
   import { onMount, onDestroy, tick } from "svelte";
@@ -54,8 +49,6 @@
   onDestroy(() => {
     stopProgressPolling();
   });
-
-  let cover_cache: Map<number, string> = new Map();
 
   let importProgressInfo = null;
   let progressPollingTimer = null;
@@ -157,22 +150,6 @@
   async function loadVideos() {
     loading = true;
     try {
-      // 扫描导入目录中的新文件
-      const scanResult = await scanAndImportNewFiles();
-
-      // 如果有进行中的转换任务，设置进度信息
-      if (scanResult.hasProgress && scanResult.progressInfo) {
-        importProgressInfo = scanResult.progressInfo;
-        loading = true;
-        // 启动轮询检查进度
-        startProgressPolling();
-        return; // 提前返回，保持loading状态
-      } else {
-        importProgressInfo = null;
-        stopProgressPolling();
-      }
-
-      // 2. 加载视频列表
       await loadVideoList();
     } catch (error) {
       console.error("Failed to load videos:", error);
@@ -194,15 +171,7 @@
       const tempVideos = await invoke<VideoItem[]>("get_all_videos");
 
       for (const video of tempVideos) {
-        if (cover_cache.has(video.id)) {
-          video.cover = cover_cache.get(video.id) || "";
-        } else {
-          const rawCover = await invoke<string>("get_video_cover", {
-            id: video.id,
-          });
-          video.cover = await convertCoverSrc(rawCover, video.id);
-          cover_cache.set(video.id, video.cover);
-        }
+        video.cover = await get_cover("video", video.cover);
       }
 
       for (const video of tempVideos) {
@@ -230,6 +199,7 @@
    * @returns 返回扫描结果，包含是否有转换任务正在进行
    */
   async function scanAndImportNewFiles() {
+    return;
     try {
       // 扫描导入目录
       const scanResponse = await invoke<{ newFiles: string[] }>(
@@ -237,7 +207,6 @@
       );
 
       const newFiles = scanResponse.newFiles;
-
       if (newFiles.length === 0) {
         return {
           hasProgress: false,

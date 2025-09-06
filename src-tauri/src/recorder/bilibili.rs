@@ -120,9 +120,18 @@ impl BiliRecorder {
         if room_info.live_status == 1 {
             live_status = true;
 
+            let room_cover_path = Path::new(PlatformType::BiliBili.as_str())
+                .join(options.room_id.to_string())
+                .join("cover.jpg");
+            let full_room_cover_path =
+                Path::new(&options.config.read().await.cache).join(&room_cover_path);
             // Get cover image
-            if let Ok(cover_base64) = client.get_cover_base64(&room_info.room_cover_url).await {
-                cover = Some(cover_base64);
+            if (client
+                .download_file(&room_info.room_cover_url, &full_room_cover_path)
+                .await)
+                .is_ok()
+            {
+                cover = Some(room_cover_path.to_str().unwrap().to_string());
             }
         }
 
@@ -214,14 +223,21 @@ impl BiliRecorder {
                         }
 
                         // Get cover image
-                        if let Ok(cover_base64) = self
+                        let room_cover_path = Path::new(PlatformType::BiliBili.as_str())
+                            .join(self.room_id.to_string())
+                            .join("cover.jpg");
+                        let full_room_cover_path =
+                            Path::new(&self.config.read().await.cache).join(&room_cover_path);
+                        if (self
                             .client
                             .read()
                             .await
-                            .get_cover_base64(&room_info.room_cover_url)
-                            .await
+                            .download_file(&room_info.room_cover_url, &full_room_cover_path)
+                            .await)
+                            .is_ok()
                         {
-                            *self.cover.write().await = Some(cover_base64);
+                            *self.cover.write().await =
+                                Some(room_cover_path.to_str().unwrap().to_string());
                         }
                     } else if self.config.read().await.live_end_notify {
                         #[cfg(feature = "gui")]
@@ -662,6 +678,17 @@ impl BiliRecorder {
                     }
                     header.size = size;
 
+                    if self.cover.read().await.is_some() {
+                        let current_cover_full_path = Path::new(&self.config.read().await.cache)
+                            .join(self.cover.read().await.clone().unwrap());
+                        // copy current cover to work_dir
+                        let _ = tokio::fs::copy(
+                            current_cover_full_path,
+                            &format!("{}/{}", work_dir, "cover.jpg"),
+                        )
+                        .await;
+                    }
+
                     // Now that download succeeded, create the record and setup stores
                     self.db
                         .add_record(
@@ -669,7 +696,14 @@ impl BiliRecorder {
                             timestamp.to_string().as_str(),
                             self.room_id,
                             &self.room_info.read().await.room_title,
-                            self.cover.read().await.clone(),
+                            format!(
+                                "{}/{}/{}/{}",
+                                PlatformType::BiliBili.as_str(),
+                                self.room_id,
+                                timestamp,
+                                "cover.jpg"
+                            )
+                            .into(),
                             None,
                         )
                         .await?;

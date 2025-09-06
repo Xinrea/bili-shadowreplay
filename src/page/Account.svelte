@@ -1,8 +1,7 @@
 <script lang="ts">
-  import { invoke } from "../lib/invoker";
+  import { get, invoke } from "../lib/invoker";
   import { scale, fade } from "svelte/transition";
   import { Textarea } from "flowbite-svelte";
-  import Image from "../lib/components/Image.svelte";
   import QRCode from "qrcode";
   import type { AccountItem, AccountInfo } from "../lib/db";
   import { Ellipsis, Plus } from "lucide-svelte";
@@ -12,7 +11,13 @@
   };
 
   async function update_accounts() {
-    account_info = await invoke("get_accounts");
+    let new_account_info = (await invoke("get_accounts")) as AccountInfo;
+    for (const account of new_account_info.accounts) {
+      const avatar_response = await get(account.avatar);
+      const avatar_blob = await avatar_response.blob();
+      account.avatar = URL.createObjectURL(avatar_blob);
+    }
+    account_info = new_account_info;
   }
 
   update_accounts();
@@ -152,8 +157,9 @@
           <div class="flex items-center justify-between">
             <div class="flex items-center space-x-4">
               <div class="relative shrink-0">
-                <Image
-                  iclass="w-12 h-12 rounded-full object-cover"
+                <img
+                  alt="avatar"
+                  class="w-12 h-12 rounded-full object-cover"
                   src={account.avatar}
                 />
               </div>

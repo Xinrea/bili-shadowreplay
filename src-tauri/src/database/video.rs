@@ -21,28 +21,10 @@ pub struct VideoRow {
     pub platform: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
-pub struct VideoNoCover {
-    pub id: i64,
-    pub room_id: u64,
-    pub file: String,
-    pub note: String,
-    pub length: i64,
-    pub size: i64,
-    pub status: i64,
-    pub bvid: String,
-    pub title: String,
-    pub desc: String,
-    pub tags: String,
-    pub area: i64,
-    pub created_at: String,
-    pub platform: String,
-}
-
 impl Database {
-    pub async fn get_videos(&self, room_id: u64) -> Result<Vec<VideoNoCover>, DatabaseError> {
+    pub async fn get_videos(&self, room_id: u64) -> Result<Vec<VideoRow>, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
-        let videos = sqlx::query_as::<_, VideoNoCover>("SELECT * FROM videos WHERE room_id = $1;")
+        let videos = sqlx::query_as::<_, VideoRow>("SELECT * FROM videos WHERE room_id = $1;")
             .bind(room_id as i64)
             .fetch_all(&lock)
             .await?;
@@ -120,10 +102,10 @@ impl Database {
         Ok(())
     }
 
-    pub async fn get_all_videos(&self) -> Result<Vec<VideoNoCover>, DatabaseError> {
+    pub async fn get_all_videos(&self) -> Result<Vec<VideoRow>, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         let videos =
-            sqlx::query_as::<_, VideoNoCover>("SELECT * FROM videos ORDER BY created_at DESC;")
+            sqlx::query_as::<_, VideoRow>("SELECT * FROM videos ORDER BY created_at DESC;")
                 .fetch_all(&lock)
                 .await?;
         Ok(videos)

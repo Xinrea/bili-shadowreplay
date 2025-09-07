@@ -4,7 +4,7 @@ use crate::recorder::PlatformType;
 use chrono::Utc;
 /// Recorder in database is pretty simple
 /// because many room infos are collected in realtime
-#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, sqlx::FromRow)]
 pub struct RecorderRow {
     pub room_id: u64,
     pub created_at: String,
@@ -42,8 +42,13 @@ impl Database {
         Ok(recorder)
     }
 
-    pub async fn remove_recorder(&self, room_id: u64) -> Result<(), DatabaseError> {
+    pub async fn remove_recorder(&self, room_id: u64) -> Result<RecorderRow, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
+        let recorder =
+            sqlx::query_as::<_, RecorderRow>("SELECT * FROM recorders WHERE room_id = $1")
+                .bind(room_id as i64)
+                .fetch_one(&lock)
+                .await?;
         let sql = sqlx::query("DELETE FROM recorders WHERE room_id = $1")
             .bind(room_id as i64)
             .execute(&lock)
@@ -54,7 +59,7 @@ impl Database {
 
         // remove related archive
         let _ = self.remove_archive(room_id).await;
-        Ok(())
+        Ok(recorder)
     }
 
     pub async fn get_recorders(&self) -> Result<Vec<RecorderRow>, DatabaseError> {

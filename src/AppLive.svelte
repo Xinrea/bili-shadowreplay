@@ -346,6 +346,7 @@
       fix_encoding,
     })) as VideoItem;
     await get_video_list();
+    new_video.cover = await get_cover("video", new_video.cover);
     video_selected = new_video.id;
     selected_video = videos.find((v) => {
       return v.value == new_video.id;

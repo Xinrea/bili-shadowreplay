@@ -7,6 +7,7 @@ use crate::recorder::RecorderInfo;
 use crate::recorder_manager::RecorderList;
 use crate::state::State;
 use crate::state_type;
+use crate::webhook::events;
 
 #[cfg(feature = "gui")]
 use tauri::State as TauriState;
@@ -60,6 +61,14 @@ pub async fn add_recorder(
                     .db
                     .new_message("添加直播间", &format!("添加了新直播间 {}", room_id))
                     .await?;
+                // post webhook event
+                let event = events::new_webhook_event(
+                    events::RECORDER_ADDED,
+                    events::Payload::Recorder(room.clone()),
+                );
+                if let Err(e) = state.webhook_poster.post_event(&event).await {
+                    log::error!("Post webhook event error: {}", e);
+                }
                 Ok(room)
             }
             Err(e) => {
@@ -87,11 +96,19 @@ pub async fn remove_recorder(
         .remove_recorder(platform, room_id)
         .await
     {
-        Ok(()) => {
+        Ok(recorder) => {
             state
                 .db
                 .new_message("移除直播间", &format!("移除了直播间 {}", room_id))
                 .await?;
+            // post webhook event
+            let event = events::new_webhook_event(
+                events::RECORDER_REMOVED,
+                events::Payload::Recorder(recorder),
+            );
+            if let Err(e) = state.webhook_poster.post_event(&event).await {
+                log::error!("Post webhook event error: {}", e);
+            }
             log::info!("Removed recorder: {} {}", platform.as_str(), room_id);
             Ok(())
         }
@@ -195,7 +212,7 @@ pub async fn delete_archive(
     if platform.is_none() {
         return Err("Unsupported platform".to_string());
     }
-    state
+    let to_delete = state
         .recorder_manager
         .delete_archive(platform.unwrap(), room_id, &live_id)
         .await?;
@@ -206,6 +223,12 @@ pub async fn delete_archive(
             &format!("删除了房间 {} 的历史缓存 {}", room_id, live_id),
         )
         .await?;
+    // post webhook event
+    let event =
+        events::new_webhook_event(events::ARCHIVE_DELETED, events::Payload::Archive(to_delete));
+    if let Err(e) = state.webhook_poster.post_event(&event).await {
+        log::error!("Post webhook event error: {}", e);
+    }
     Ok(())
 }
 
@@ -220,7 +243,7 @@ pub async fn delete_archives(
     if platform.is_none() {
         return Err("Unsupported platform".to_string());
     }
-    state
+    let to_deletes = state
         .recorder_manager
         .delete_archives(
             platform.unwrap(),
@@ -235,6 +258,14 @@ pub async fn delete_archives(
             &format!("删除了房间 {} 的历史缓存 {}", room_id, live_ids.join(", ")),
         )
         .await?;
+    for to_delete in to_deletes {
+        // post webhook event
+        let event =
+            events::new_webhook_event(events::ARCHIVE_DELETED, events::Payload::Archive(to_delete));
+        if let Err(e) = state.webhook_poster.post_event(&event).await {
+            log::error!("Post webhook event error: {}", e);
+        }
+    }
     Ok(())
 }
 

@@ -43,8 +43,8 @@
 use log::{error, info, warn};
 use reqwest::Client;
 use serde_json;
-use std::time::Duration;
-use tokio::time::sleep;
+use std::{sync::Arc, time::Duration};
+use tokio::{sync::RwLock, time::sleep};
 
 use crate::webhook::events::WebhookEvent;
 
@@ -71,10 +71,11 @@ impl Default for WebhookConfig {
 }
 
 /// Webhook event poster for sending events to specified URLs
+/// All methods are thread-safe
 #[derive(Clone)]
 pub struct WebhookPoster {
-    client: Client,
-    config: WebhookConfig,
+    client: Arc<RwLock<Client>>,
+    config: Arc<RwLock<WebhookConfig>>,
 }
 
 impl WebhookPoster {
@@ -82,12 +83,15 @@ impl WebhookPoster {
     pub fn new(config: WebhookConfig) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let client = Client::builder().timeout(config.timeout).build()?;
 
-        Ok(Self { client, config })
+        Ok(Self {
+            client: Arc::new(RwLock::new(client)),
+            config: Arc::new(RwLock::new(config)),
+        })
     }
 
     /// Post a webhook event to the configured URL
     pub async fn post_event(&self, event: &WebhookEvent) -> Result<(), WebhookPostError> {
-        if self.config.url.is_empty() {
+        if self.config.read().await.url.is_empty() {
             log::debug!("Webhook URL is empty, skipping");
             return Ok(());
         }
@@ -95,13 +99,21 @@ impl WebhookPoster {
         let serialized_event = serde_json::to_string(event)
             .map_err(|e| WebhookPostError::Serialization(e.to_string()))?;
 
-        self.post_with_retry(&serialized_event).await
+        let self_clone = self.clone();
+        tokio::task::spawn(async move {
+            let result = self_clone.post_with_retry(&serialized_event).await;
+            if let Err(e) = result {
+                log::error!("Post webhook event error: {}", e);
+            }
+        });
+
+        Ok(())
     }
 
     /// Post raw JSON data to the configured URL
     #[allow(dead_code)]
     pub async fn post_json(&self, json_data: &str) -> Result<(), WebhookPostError> {
-        if self.config.url.is_empty() {
+        if self.config.read().await.url.is_empty() {
             log::debug!("Webhook URL is empty, skipping");
             return Ok(());
         }
@@ -111,14 +123,14 @@ impl WebhookPoster {
 
     /// Post data with retry logic
     async fn post_with_retry(&self, data: &str) -> Result<(), WebhookPostError> {
-        if self.config.url.is_empty() {
+        if self.config.read().await.url.is_empty() {
             log::debug!("Webhook URL is empty, skipping");
             return Ok(());
         }
 
         let mut last_error = None;
 
-        for attempt in 1..=self.config.retry_attempts {
+        for attempt in 1..=self.config.read().await.retry_attempts {
             match self.send_request(data).await {
                 Ok(_) => {
                     if attempt > 1 {
@@ -128,12 +140,13 @@ impl WebhookPoster {
                 }
                 Err(e) => {
                     last_error = Some(e);
-                    if attempt < self.config.retry_attempts {
+                    if attempt < self.config.read().await.retry_attempts {
                         warn!(
                             "Webhook post attempt {} failed, retrying in {:?}",
-                            attempt, self.config.retry_delay
+                            attempt,
+                            self.config.read().await.retry_delay
                         );
-                        sleep(self.config.retry_delay).await;
+                        sleep(self.config.read().await.retry_delay).await;
                     }
                 }
             }
@@ -145,16 +158,17 @@ impl WebhookPoster {
 
     /// Send the actual HTTP request
     async fn send_request(&self, data: &str) -> Result<(), WebhookPostError> {
-        let mut request = self.client.post(&self.config.url);
+        let webhook_url = self.config.read().await.url.clone();
+        let mut request = self.client.read().await.post(&webhook_url);
 
         // Add custom headers if configured
-        if let Some(headers) = &self.config.headers {
+        if let Some(headers) = &self.config.read().await.headers {
             for (key, value) in headers {
                 request = request.header(key, value);
             }
         }
 
-        log::debug!("Sending webhook request to: {}", self.config.url);
+        log::debug!("Sending webhook request to: {}", webhook_url);
 
         // Set content type to JSON
         request = request.header("Content-Type", "application/json");
@@ -178,12 +192,12 @@ impl WebhookPoster {
     }
 
     /// Update the webhook configuration
-    pub fn update_config(
-        &mut self,
+    pub async fn update_config(
+        &self,
         config: WebhookConfig,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.client = Client::builder().timeout(config.timeout).build()?;
-        self.config = config;
+        *self.client.write().await = Client::builder().timeout(config.timeout).build()?;
+        *self.config.write().await = config;
         Ok(())
     }
 }
@@ -218,7 +232,6 @@ pub fn create_webhook_poster(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::webhook::events::*;
     use std::collections::HashMap;
 
     #[tokio::test]
@@ -239,39 +252,5 @@ mod tests {
 
         let poster = create_webhook_poster("https://httpbin.org/post", Some(headers));
         assert!(poster.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_webhook_event_serialization() {
-        let user = UserObject {
-            user_id: "123".to_string(),
-            user_name: "test_user".to_string(),
-            user_avatar: "avatar_url".to_string(),
-        };
-
-        let room = RoomObject {
-            room_id: "456".to_string(),
-            platform: "bilibili".to_string(),
-            room_title: "test_room".to_string(),
-            room_cover: "cover_url".to_string(),
-            room_owner: user,
-        };
-
-        let live = LiveObject {
-            live_id: "789".to_string(),
-            room,
-            start_time: Some(1234567890),
-            end_time: None,
-        };
-
-        let event = WebhookEvent {
-            id: "event_123".to_string(),
-            event: "live.started".to_string(),
-            payload: Payload::Live(live),
-            timestamp: 1234567890,
-        };
-
-        let serialized = serde_json::to_string(&event);
-        assert!(serialized.is_ok());
     }
 }

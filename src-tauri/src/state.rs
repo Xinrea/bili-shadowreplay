@@ -22,7 +22,7 @@ pub struct State {
     pub db: Arc<Database>,
     pub client: Arc<BiliClient>,
     pub config: Arc<RwLock<Config>>,
-    pub webhook_poster: Arc<RwLock<WebhookPoster>>,
+    pub webhook_poster: WebhookPoster,
     pub recorder_manager: Arc<RecorderManager>,
     #[cfg(not(feature = "headless"))]
     pub app_handle: tauri::AppHandle,

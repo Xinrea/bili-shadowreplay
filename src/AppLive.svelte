@@ -304,7 +304,7 @@
       return v.value == id;
     });
     if (target_video) {
-      target_video.cover = await get_cover("video", target_video.cover);
+      target_video.cover = await get_cover("output", target_video.cover);
     }
     selected_video = target_video;
   }
@@ -346,7 +346,7 @@
       fix_encoding,
     })) as VideoItem;
     await get_video_list();
-    new_video.cover = await get_cover("video", new_video.cover);
+    new_video.cover = await get_cover("output", new_video.cover);
     video_selected = new_video.id;
     selected_video = videos.find((v) => {
       return v.value == new_video.id;

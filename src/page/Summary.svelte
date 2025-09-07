@@ -90,7 +90,7 @@
     })) as RecordItem[];
 
     for (const record of newRecords) {
-      record.cover = await get_cover("live", record.cover);
+      record.cover = await get_cover("cache", record.cover);
     }
 
     if (hasNewRecords) {

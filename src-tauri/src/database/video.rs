@@ -92,7 +92,7 @@ impl Database {
         Ok(video)
     }
 
-    pub async fn update_video_cover(&self, id: i64, cover: String) -> Result<(), DatabaseError> {
+    pub async fn update_video_cover(&self, id: i64, cover: &str) -> Result<(), DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         sqlx::query("UPDATE videos SET cover = $1 WHERE id = $2")
             .bind(cover)

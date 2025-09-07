@@ -733,7 +733,20 @@ pub async fn update_video_cover(
     id: i64,
     cover: String,
 ) -> Result<(), String> {
-    Ok(state.db.update_video_cover(id, cover).await?)
+    let video = state.db.get_video(id).await?;
+    let output_path = Path::new(state.config.read().await.output.as_str()).join(&video.file);
+    let cover_path = output_path.with_extension("jpg");
+    // decode cover and write into file
+    let base64 = cover.split("base64,").nth(1).unwrap();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64)
+        .unwrap();
+    tokio::fs::write(&cover_path, bytes)
+        .await
+        .map_err(|e| e.to_string())?;
+    let cover_file_name = cover_path.file_name().unwrap().to_str().unwrap();
+    log::debug!("Update video cover: {} {}", id, cover_file_name);
+    Ok(state.db.update_video_cover(id, cover_file_name).await?)
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]

@@ -120,12 +120,7 @@ pub async fn try_convert_clip_covers(
             // update record
             db.update_video_cover(
                 video.id,
-                cover_file_path
-                    .file_name()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .to_string(),
+                cover_file_path.file_name().unwrap().to_str().unwrap(),
             )
             .await?;
         }

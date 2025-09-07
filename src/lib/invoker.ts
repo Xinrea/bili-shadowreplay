@@ -144,7 +144,7 @@ const coverCache: Map<string, string> = new Map();
 async function get_cover(coverType: string, coverPath: string) {
   const config = (await invoke("get_config")) as any;
   if (TAURI_ENV) {
-    if (coverType === "live") {
+    if (coverType === "cache") {
       const absolutePath = `${config.cache}/${coverPath}`;
       if (coverCache.has(absolutePath)) {
         return coverCache.get(absolutePath);
@@ -154,7 +154,7 @@ async function get_cover(coverType: string, coverPath: string) {
       return url;
     }
 
-    if (coverType === "video") {
+    if (coverType === "output") {
       const absolutePath = `${config.output}/${coverPath}`;
       if (coverCache.has(absolutePath)) {
         return coverCache.get(absolutePath);

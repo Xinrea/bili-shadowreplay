@@ -121,7 +121,7 @@
 
       for (const archive of new_archives) {
         console.log(archive.cover);
-        archive.cover = await get_cover("output", archive.cover);
+        archive.cover = await get_cover("cache", archive.cover);
       }
 
       // 如果是第一页，直接替换；否则追加数据

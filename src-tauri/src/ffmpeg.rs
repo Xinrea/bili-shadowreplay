@@ -77,8 +77,8 @@ pub async fn clip_from_m3u8(
     if fix_encoding {
         child_command
             .args(["-c:v", "libx264"])
-            .args(["-c:a", "aac"])
-            .args(["-preset", "fast"]);
+            .args(["-c:a", "copy"])
+            .args(["-b:v", "6000k"]);
     } else {
         child_command.args(["-c", "copy"]);
     }
@@ -416,6 +416,7 @@ pub async fn encode_video_subtitle(
         .args(["-vf", vf.as_str()])
         .args(["-c:v", "libx264"])
         .args(["-c:a", "copy"])
+        .args(["-b:v", "6000k"])
         .args([output_path.to_str().unwrap()])
         .args(["-y"])
         .args(["-progress", "pipe:2"])
@@ -507,6 +508,7 @@ pub async fn encode_video_danmu(
         .args(["-vf", &format!("ass={}", subtitle)])
         .args(["-c:v", "libx264"])
         .args(["-c:a", "copy"])
+        .args(["-b:v", "6000k"])
         .args([output_file_path.to_str().unwrap()])
         .args(["-y"])
         .args(["-progress", "pipe:2"])
@@ -846,8 +848,7 @@ pub async fn clip_from_video_file(
         .args(["-t", &duration.to_string()])
         .args(["-c:v", "libx264"])
         .args(["-c:a", "aac"])
-        .args(["-preset", "fast"])
-        .args(["-crf", "23"])
+        .args(["-b:v", "6000k"])
         .args(["-avoid_negative_ts", "make_zero"])
         .args(["-y", output_path.to_str().unwrap()])
         .args(["-progress", "pipe:2"])

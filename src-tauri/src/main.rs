@@ -270,9 +270,14 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
 
     let progress_manager = Arc::new(ProgressManager::new());
     let emitter = EventEmitter::new(progress_manager.get_event_sender());
-    let recorder_manager = Arc::new(RecorderManager::new(emitter, db.clone(), config.clone()));
     let webhook_poster =
         webhook::poster::create_webhook_poster(&config.read().await.webhook_url, None).unwrap();
+    let recorder_manager = Arc::new(RecorderManager::new(
+        emitter,
+        db.clone(),
+        config.clone(),
+        webhook_poster.clone(),
+    ));
 
     // Update account infos for headless mode
     let accounts = db.get_accounts().await?;

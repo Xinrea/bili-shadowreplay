@@ -24,8 +24,8 @@ struct DanmakuPosition {
     time: f64,
 }
 
-const PLAY_RES_X: f64 = 1920.0;
-const PLAY_RES_Y: f64 = 1080.0;
+const PLAY_RES_X: f64 = 1280.0;
+const PLAY_RES_Y: f64 = 720.0;
 const BOTTOM_RESERVED: f64 = 50.0;
 const R2L_TIME: f64 = 8.0;
 const MAX_DELAY: f64 = 6.0;
@@ -36,20 +36,20 @@ pub fn danmu_to_ass(danmus: Vec<DanmuEntry>) -> String {
 Title: Bilibili Danmaku
 ScriptType: v4.00+
 Collisions: Normal
-PlayResX: 1920
-PlayResY: 1080
+PlayResX: 1280
+PlayResY: 720
 Timer: 10.0000
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Microsoft YaHei,48,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,20,20,2,0
+Style: Default,Microsoft YaHei,36,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,20,20,2,0
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 "#;
 
     let mut normal = normal_danmaku();
-    let font_size = 48.0; // Default font size
+    let font_size = 36.0; // Default font size
 
     // Convert danmus to ASS events
     let events = danmus
@@ -76,7 +76,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 "Dialogue: 0,{},{},Default,,0,0,0,,{{\\move({},{},{},{})}}{}",
                 start_time,
                 end_time,
-                PLAY_RES_X,
+                PLAY_RES_X + text_width / 2.0,
                 pos.top + font_size, // Start position
                 -text_width,
                 pos.top + font_size, // End position

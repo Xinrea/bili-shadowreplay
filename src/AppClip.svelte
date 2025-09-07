@@ -59,7 +59,7 @@
   async function handleVideoChange(newVideo: VideoItem) {
     if (newVideo) {
       if (newVideo.cover && newVideo.cover.trim() !== "") {
-        newVideo.cover = await get_cover("video", newVideo.cover);
+        newVideo.cover = await get_cover("output", newVideo.cover);
       } else {
         newVideo.cover = "";
       }

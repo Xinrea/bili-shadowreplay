@@ -171,7 +171,7 @@
       const tempVideos = await invoke<VideoItem[]>("get_all_videos");
 
       for (const video of tempVideos) {
-        video.cover = await get_cover("video", video.cover);
+        video.cover = await get_cover("output", video.cover);
       }
 
       for (const video of tempVideos) {

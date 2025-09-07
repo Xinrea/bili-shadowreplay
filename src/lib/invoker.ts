@@ -143,28 +143,32 @@ const coverCache: Map<string, string> = new Map();
 
 async function get_cover(coverType: string, coverPath: string) {
   const config = (await invoke("get_config")) as any;
-  if (coverType === "live") {
-    const absolutePath = `${config.cache}/${coverPath}`;
-    if (coverCache.has(absolutePath)) {
-      return coverCache.get(absolutePath);
+  if (TAURI_ENV) {
+    if (coverType === "live") {
+      const absolutePath = `${config.cache}/${coverPath}`;
+      if (coverCache.has(absolutePath)) {
+        return coverCache.get(absolutePath);
+      }
+      const url = tauri_convert(absolutePath);
+      coverCache.set(absolutePath, url);
+      return url;
     }
-    const url = tauri_convert(absolutePath);
-    coverCache.set(absolutePath, url);
-    return url;
+
+    if (coverType === "video") {
+      const absolutePath = `${config.output}/${coverPath}`;
+      if (coverCache.has(absolutePath)) {
+        return coverCache.get(absolutePath);
+      }
+      const url = tauri_convert(absolutePath);
+      coverCache.set(absolutePath, url);
+      return url;
+    }
+
+    // exception
+    throw new Error(`Invalid cover type: ${coverType}`);
   }
 
-  if (coverType === "video") {
-    const absolutePath = `${config.output}/${coverPath}`;
-    if (coverCache.has(absolutePath)) {
-      return coverCache.get(absolutePath);
-    }
-    const url = tauri_convert(absolutePath);
-    coverCache.set(absolutePath, url);
-    return url;
-  }
-
-  // exception
-  throw new Error(`Invalid cover type: ${coverType}`);
+  return `${ENDPOINT}/${coverType}/${coverPath}`;
 }
 
 let event_source: EventSource | null = null;

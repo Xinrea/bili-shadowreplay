@@ -303,15 +303,13 @@ pub async fn update_cleanup_source_flv(state: state_type!(), cleanup: bool) -> R
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_webhook_url(state: state_type!(), webhook_url: String) -> Result<(), ()> {
     log::info!("Updating webhook url to {}", webhook_url);
-    let _ =
-        state
-            .webhook_poster
-            .write()
-            .await
-            .update_config(crate::webhook::poster::WebhookConfig {
-                url: webhook_url.clone(),
-                ..Default::default()
-            });
+    let _ = state
+        .webhook_poster
+        .update_config(crate::webhook::poster::WebhookConfig {
+            url: webhook_url.clone(),
+            ..Default::default()
+        })
+        .await;
     state.config.write().await.webhook_url = webhook_url;
     state.config.write().await.save();
     Ok(())

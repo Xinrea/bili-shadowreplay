@@ -271,9 +271,8 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     let progress_manager = Arc::new(ProgressManager::new());
     let emitter = EventEmitter::new(progress_manager.get_event_sender());
     let recorder_manager = Arc::new(RecorderManager::new(emitter, db.clone(), config.clone()));
-    let webhook_poster = Arc::new(RwLock::new(
-        webhook::poster::create_webhook_poster(&config.read().await.webhook_url, None).unwrap(),
-    ));
+    let webhook_poster =
+        webhook::poster::create_webhook_poster(&config.read().await.webhook_url, None).unwrap();
 
     // Update account infos for headless mode
     let accounts = db.get_accounts().await?;
@@ -386,13 +385,12 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     let webhook_poster =
         webhook::poster::create_webhook_poster(&config.read().await.webhook_url, None).unwrap();
 
-    let webhook_poster = Arc::new(RwLock::new(webhook_poster));
-
     let recorder_manager = Arc::new(RecorderManager::new(
         app.app_handle().clone(),
         emitter,
         db.clone(),
         config.clone(),
+        webhook_poster.clone(),
     ));
 
     let accounts = db_clone.get_accounts().await?;

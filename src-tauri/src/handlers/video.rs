@@ -9,6 +9,7 @@ use crate::recorder::bilibili::profile::Profile;
 use crate::recorder_manager::ClipRangeParams;
 use crate::subtitle_generator::item_to_srt;
 use crate::webhook::events;
+use base64::Engine;
 use chrono::{Local, Utc};
 use serde_json::json;
 use std::fs::File;
@@ -395,7 +396,7 @@ pub async fn clip_range(
     let event =
         events::new_webhook_event(events::CLIP_GENERATED, events::Payload::Clip(video.clone()));
 
-    if let Err(e) = state.webhook_poster.read().await.post_event(&event).await {
+    if let Err(e) = state.webhook_poster.post_event(&event).await {
         log::error!("Post webhook event error: {}", e);
     }
 
@@ -434,6 +435,16 @@ async fn clip_range_inner(
         log::error!("Get file metadata error: {} {}", e, file.display());
         e.to_string()
     })?;
+    let cover_file = file.with_extension("jpg");
+    let base64 = params.cover.split("base64,").nth(1).unwrap();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64)
+        .unwrap();
+    // write cover file to fs
+    tokio::fs::write(&cover_file, bytes).await.map_err(|e| {
+        log::error!("Write cover file error: {} {}", e, cover_file.display());
+        e.to_string()
+    })?;
     // get filename from path
     let filename = Path::new(&file)
         .file_name()
@@ -448,7 +459,12 @@ async fn clip_range_inner(
             status: 0,
             room_id: params.room_id,
             created_at: Local::now().to_rfc3339(),
-            cover: params.cover.clone(),
+            cover: cover_file
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string(),
             file: filename.into(),
             note: params.note.clone(),
             length: params.range.as_ref().map_or(0.0, |r| r.duration()) as i64,
@@ -653,7 +669,7 @@ pub async fn delete_video(state: state_type!(), id: i64) -> Result<(), String> {
     // Emit webhook events
     let event =
         events::new_webhook_event(events::CLIP_DELETED, events::Payload::Clip(video.clone()));
-    if let Err(e) = state.webhook_poster.read().await.post_event(&event).await {
+    if let Err(e) = state.webhook_poster.post_event(&event).await {
         log::error!("Post webhook event error: {}", e);
     }
 

@@ -5,76 +5,7 @@
 
 ## 设置 Webhook
 
-1. 打开 BSR 设置页面
-2. 找到 Webhook 设置
-3. 输入 Webhook URL
-4. 点击保存
-
-## Basic Objects
-
-### UserObject
-
-```json
-{
-  "user_id": "123456",
-  "user_name": "测试主播",
-  "user_avatar": "https://example.com/avatar.jpg"
-}
-```
-
-### RoomObject
-
-```json
-{
-  "room_id": 123456,
-  "platform": "bilibili",
-  "room_title": "测试直播间",
-  "room_cover": "https://example.com/cover.jpg",
-  "room_owner": UserObject
-}
-```
-
-### LiveObject
-
-```json
-{
-  "live_id": "123456",
-  "room": RoomObject,
-  "start_time": 1719849600,
-  "end_time": 1719849600
-}
-```
-
-### ClipObject
-
-```json
-{
-  "clip_id": 123456,
-  "live": LiveObject,
-  "range": {
-    "start": 0,
-    "end": 0
-  },
-  "note": "测试切片",
-  "cover": "https://example.com/cover.jpg",
-  "file": "test.mp4",
-  "size": 123456,
-  "length": 33,
-  "with_danmaku": false,
-  "with_subtitle": false
-}
-```
-
-### EventObject
-
-```json
-{
-  "id": "23dd6c5d-c33b-4023-8b00-ec60e8abee3c",
-  "event": "room.added",
-  "payload": Object,
-  "timestamp": 1719849600
-}
-```
+打开 BSR 设置页面，在基础设置中设置 Webhook 地址。
 
 ## Webhook Events
 
@@ -84,20 +15,16 @@
 
 ```json
 {
-  "id": "23dd6c5d-c33b-4023-8b00-ec60e8abee3c",
-  "event": "room.added",
+  "id": "a96a5e9f-9857-4c13-b889-91da2ace208a",
+  "event": "recorder.added",
   "payload": {
-    "room_id": 123456,
+    "room_id": 26966466,
+    "created_at": "2025-09-07T03:33:14.258796+00:00",
     "platform": "bilibili",
-    "room_title": "测试直播间",
-    "room_cover": "https://example.com/cover.jpg",
-    "room_owner": {
-      "user_id": "123456",
-      "user_name": "测试主播",
-      "user_avatar": "https://example.com/avatar.jpg"
-    }
+    "auto_start": true,
+    "extra": ""
   },
-  "timestamp": 1719849600
+  "timestamp": 1757215994
 }
 ```
 
@@ -105,20 +32,16 @@
 
 ```json
 {
-  "id": "23dd6c5d-c33b-4023-8b00-ec60e8abee3c",
-  "event": "room.removed",
+  "id": "e33623d4-e040-4390-88f5-d351ceeeace7",
+  "event": "recorder.removed",
   "payload": {
-    "room_id": 123456,
+    "room_id": 27183290,
+    "created_at": "2025-08-30T10:54:18.569198+00:00",
     "platform": "bilibili",
-    "room_title": "测试直播间",
-    "room_cover": "https://example.com/cover.jpg",
-    "room_owner": {
-      "user_id": "123456",
-      "user_name": "测试主播",
-      "user_avatar": "https://example.com/avatar.jpg"
-    }
+    "auto_start": true,
+    "extra": ""
   },
-  "timestamp": 1719849600
+  "timestamp": 1757217015
 }
 ```
 
@@ -131,25 +54,28 @@
 
 ```json
 {
-  "id": "23dd6c5d-c33b-4023-8b00-ec60e8abee3c",
+  "id": "f12f3424-f7d8-4b2f-a8b7-55477411482e",
   "event": "live.started",
   "payload": {
-    "live_id": "123456",
-    "room": {
-      "room_id": 123456,
-      "platform": "bilibili",
-      "room_title": "测试直播间",
-      "room_cover": "https://example.com/cover.jpg",
-      "room_owner": {
-        "user_id": "123456",
-        "user_name": "测试主播",
-        "user_avatar": "https://example.com/avatar.jpg"
-      }
+    "room_id": 843610,
+    "room_info": {
+      "room_id": 843610,
+      "room_title": "登顶！",
+      "room_cover": "https://i0.hdslb.com/bfs/live/new_room_cover/73aea43f4b4624c314d62fea4b424822fb506dfb.jpg"
     },
-    "start_time": 1719849600,
-    "end_time": null
+    "user_info": {
+      "user_id": "475210",
+      "user_name": "Xinrea",
+      "user_avatar": "https://i1.hdslb.com/bfs/face/91beb3bf444b295fe12bae1f3dc6d9fc4fe4c224.jpg"
+    },
+    "total_length": 0,
+    "current_live_id": "",
+    "live_status": false,
+    "is_recording": false,
+    "auto_start": true,
+    "platform": "bilibili"
   },
-  "timestamp": 1719849600
+  "timestamp": 1757217190
 }
 ```
 
@@ -157,25 +83,28 @@
 
 ```json
 {
-  "id": "23dd6c5d-c33b-4023-8b00-ec60e8abee3c",
+  "id": "e8b0756a-02f9-4655-b5ae-a170bf9547bd",
   "event": "live.ended",
   "payload": {
-    "live_id": "123456",
-    "room": {
-      "room_id": 123456,
-      "platform": "bilibili",
-      "room_title": "测试直播间",
-      "room_cover": "https://example.com/cover.jpg",
-      "room_owner": {
-        "user_id": "123456",
-        "user_name": "测试主播",
-        "user_avatar": "https://example.com/avatar.jpg"
-      }
+    "room_id": 843610,
+    "room_info": {
+      "room_id": 843610,
+      "room_title": "登顶！",
+      "room_cover": "https://i0.hdslb.com/bfs/live/new_room_cover/73aea43f4b4624c314d62fea4b424822fb506dfb.jpg"
     },
-    "start_time": 1719849600,
-    "end_time": 1719849600
+    "user_info": {
+      "user_id": "475210",
+      "user_name": "Xinrea",
+      "user_avatar": "https://i1.hdslb.com/bfs/face/91beb3bf444b295fe12bae1f3dc6d9fc4fe4c224.jpg"
+    },
+    "total_length": 0,
+    "current_live_id": "",
+    "live_status": true,
+    "is_recording": false,
+    "auto_start": true,
+    "platform": "bilibili"
   },
-  "timestamp": 1719849600
+  "timestamp": 1757217365
 }
 ```
 
@@ -185,25 +114,28 @@
 
 ```json
 {
-  "id": "23dd6c5d-c33b-4023-8b00-ec60e8abee3c",
-  "event": "stream.started",
+  "id": "5ec1ea10-2b31-48fd-8deb-f2d7d2ea5985",
+  "event": "record.started",
   "payload": {
-    "live_id": "123456",
-    "room": {
-      "room_id": 123456,
-      "platform": "bilibili",
-      "room_title": "测试直播间",
-      "room_cover": "https://example.com/cover.jpg",
-      "room_owner": {
-        "user_id": "123456",
-        "user_name": "测试主播",
-        "user_avatar": "https://example.com/avatar.jpg"
-      }
+    "room_id": 26966466,
+    "room_info": {
+      "room_id": 26966466,
+      "room_title": "早安獭獭栞！下播前抽fufu",
+      "room_cover": "https://i0.hdslb.com/bfs/live/user_cover/b810c36855168034557e905e5916b1dba1761fa4.jpg"
     },
-    "start_time": 1719849600,
-    "end_time": null
+    "user_info": {
+      "user_id": "1609526545",
+      "user_name": "栞栞Shiori",
+      "user_avatar": "https://i1.hdslb.com/bfs/face/47e8dbabb895de44ec6cace085d4dc1d40307277.jpg"
+    },
+    "total_length": 0,
+    "current_live_id": "1757216045412",
+    "live_status": true,
+    "is_recording": false,
+    "auto_start": true,
+    "platform": "bilibili"
   },
-  "timestamp": 1719849600
+  "timestamp": 1757216045
 }
 ```
 
@@ -211,51 +143,48 @@
 
 ```json
 {
-  "id": "23dd6c5d-c33b-4023-8b00-ec60e8abee3c",
-  "event": "stream.ended",
+  "id": "56fd03e5-3965-4c2e-a6a9-bb6932347eb3",
+  "event": "record.ended",
   "payload": {
-    "live_id": "123456",
-    "room": {
-      "room_id": 123456,
-      "platform": "bilibili",
-      "room_title": "测试直播间",
-      "room_cover": "https://example.com/cover.jpg",
-      "room_owner": {
-        "user_id": "123456",
-        "user_name": "测试主播",
-        "user_avatar": "https://example.com/avatar.jpg"
-      }
+    "room_id": 26966466,
+    "room_info": {
+      "room_id": 26966466,
+      "room_title": "早安獭獭栞！下播前抽fufu",
+      "room_cover": "https://i0.hdslb.com/bfs/live/user_cover/b810c36855168034557e905e5916b1dba1761fa4.jpg"
     },
-    "start_time": 1719849600,
-    "end_time": 1719849600
+    "user_info": {
+      "user_id": "1609526545",
+      "user_name": "栞栞Shiori",
+      "user_avatar": "https://i1.hdslb.com/bfs/face/47e8dbabb895de44ec6cace085d4dc1d40307277.jpg"
+    },
+    "total_length": 52.96700000000001,
+    "current_live_id": "1757215994597",
+    "live_status": true,
+    "is_recording": true,
+    "auto_start": true,
+    "platform": "bilibili"
   },
-  "timestamp": 1719849600
+  "timestamp": 1757216040
 }
 ```
 
-#### 删除录制
+#### 删除录播
 
 ```json
 {
-  "id": "23dd6c5d-c33b-4023-8b00-ec60e8abee3c",
-  "event": "stream.deleted",
+  "id": "c32bc811-ab4b-49fd-84c7-897727905d16",
+  "event": "archive.deleted",
   "payload": {
-    "live_id": "123456",
-    "room": {
-      "room_id": 123456,
-      "platform": "bilibili",
-      "room_title": "测试直播间",
-      "room_cover": "https://example.com/cover.jpg",
-      "room_owner": {
-        "user_id": "123456",
-        "user_name": "测试主播",
-        "user_avatar": "https://example.com/avatar.jpg"
-      }
-    }
-    "start_time": 1719849600,
-    "end_time": 1719849600
+    "platform": "bilibili",
+    "live_id": "1756607084705",
+    "room_id": 1967212929,
+    "title": "灶台O.o",
+    "length": 9,
+    "size": 1927112,
+    "created_at": "2025-08-31T02:24:44.728616+00:00",
+    "cover": "bilibili/1967212929/1756607084705/cover.jpg"
   },
-  "timestamp": 1719849600
+  "timestamp": 1757176219
 }
 ```
 
@@ -265,27 +194,26 @@
 
 ```json
 {
-  "id": "23dd6c5d-c33b-4023-8b00-ec60e8abee3c",
+  "id": "f542e0e1-688b-4f1a-8ce1-e5e51530cf5d",
   "event": "clip.generated",
   "payload": {
-    "live_id": "123456",
-    "room": {
-      "room_id": 123456,
-      "platform": "bilibili",
-      "room_title": "测试直播间",
-      "room_cover": "https://example.com/cover.jpg",
-      "room_owner": {
-        "user_id": "123456",
-        "user_name": "测试主播",
-        "user_avatar": "https://example.com/avatar.jpg"
-      }
-    },
-    "clip_id": 123456,
-    "clip_title": "测试切片",
-    "clip_file": "test.mp4",
-    "clip_length": 33
+    "id": 316,
+    "room_id": 27183290,
+    "cover": "[27183290][1757172501727][一起看凡人修仙传][2025-09-07_00-16-11].jpg",
+    "file": "[27183290][1757172501727][一起看凡人修仙传][2025-09-07_00-16-11].mp4",
+    "note": "",
+    "length": 121,
+    "size": 53049119,
+    "status": 0,
+    "bvid": "",
+    "title": "",
+    "desc": "",
+    "tags": "",
+    "area": 0,
+    "created_at": "2025-09-07T00:16:11.747461+08:00",
+    "platform": "bilibili"
   },
-  "timestamp": 1719849600
+  "timestamp": 1757175371
 }
 ```
 
@@ -293,26 +221,25 @@
 
 ```json
 {
-  "id": "23dd6c5d-c33b-4023-8b00-ec60e8abee3c",
+  "id": "5c7ca728-753d-4a7d-a0b4-02c997ad2f92",
   "event": "clip.deleted",
   "payload": {
-    "live_id": "123456",
-    "room": {
-      "room_id": 123456,
-      "platform": "bilibili",
-      "room_title": "测试直播间",
-      "room_cover": "https://example.com/cover.jpg",
-      "room_owner": {
-        "user_id": "123456",
-        "user_name": "测试主播",
-        "user_avatar": "https://example.com/avatar.jpg"
-      }
-    },
-    "clip_id": 123456,
-    "clip_title": "测试切片",
-    "clip_file": "test.mp4",
-    "clip_length": 33
+    "id": 313,
+    "room_id": 27183290,
+    "cover": "[27183290][1756903953470][不出非洲之心不下播][2025-09-03_21-10-54].jpg",
+    "file": "[27183290][1756903953470][不出非洲之心不下播][2025-09-03_21-10-54].mp4",
+    "note": "",
+    "length": 32,
+    "size": 18530098,
+    "status": 0,
+    "bvid": "",
+    "title": "",
+    "desc": "",
+    "tags": "",
+    "area": 0,
+    "created_at": "2025-09-03T21:10:54.943682+08:00",
+    "platform": "bilibili"
   },
-  "timestamp": 1719849600
+  "timestamp": 1757147617
 }
 ```

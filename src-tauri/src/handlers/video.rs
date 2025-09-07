@@ -685,38 +685,17 @@ pub async fn delete_video(state: state_type!(), id: i64) -> Result<(), String> {
         log::info!("已删除视频文件: {}", file.display());
     }
 
-    // delete subtitle files
+    // delete all related files
     let srt_path = file.with_extension("srt");
-    let _ = std::fs::remove_file(srt_path);
+    let _ = tokio::fs::remove_file(srt_path).await;
     let wav_path = file.with_extension("wav");
-    let _ = std::fs::remove_file(wav_path);
+    let _ = tokio::fs::remove_file(wav_path).await;
     let mp3_path = file.with_extension("mp3");
-    let _ = std::fs::remove_file(mp3_path);
-
-    // delete thumbnail file based on video type
-    delete_video_thumbnail(&config.output, &video).await;
+    let _ = tokio::fs::remove_file(mp3_path).await;
+    let cover_path = Path::new(&config.output).join(&video.cover);
+    let _ = tokio::fs::remove_file(cover_path).await;
 
     Ok(())
-}
-
-// 根据视频类型删除对应的缩略图文件
-async fn delete_video_thumbnail(output_dir: &str, video: &VideoRow) {
-    if video.cover.is_empty() {
-        return; // 没有缩略图，无需删除
-    }
-
-    // 构建缩略图完整路径
-    let thumbnail_path = Path::new(output_dir).join(&video.cover);
-
-    if thumbnail_path.exists() {
-        if let Err(e) = std::fs::remove_file(&thumbnail_path) {
-            log::warn!("删除缩略图失败: {} - {}", thumbnail_path.display(), e);
-        } else {
-            log::info!("已删除缩略图: {}", thumbnail_path.display());
-        }
-    } else {
-        log::debug!("缩略图文件不存在: {}", thumbnail_path.display());
-    }
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]

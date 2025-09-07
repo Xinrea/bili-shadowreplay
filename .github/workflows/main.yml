@@ -93,6 +93,7 @@ jobs:
           fi
           echo "previous_tag=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
           echo "current_tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        shell: bash
 
       - uses: tauri-apps/tauri-action@v0
         env:

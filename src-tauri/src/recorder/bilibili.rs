@@ -9,6 +9,7 @@ use crate::database::account::AccountRow;
 use crate::ffmpeg::get_video_resolution;
 use crate::progress_manager::Event;
 use crate::progress_reporter::EventEmitter;
+use crate::recorder::Recorder;
 use crate::recorder_manager::RecorderEvent;
 use crate::subtitle_generator::item_to_srt;
 
@@ -66,7 +67,7 @@ pub struct BiliRecorder {
     quit: Arc<Mutex<bool>>,
     live_stream: Arc<RwLock<Option<BiliStream>>>,
     danmu_storage: Arc<RwLock<Option<DanmuStorage>>>,
-    live_end_channel: broadcast::Sender<RecorderEvent>,
+    event_channel: broadcast::Sender<RecorderEvent>,
     enabled: Arc<RwLock<bool>>,
     last_segment_offset: Arc<RwLock<Option<i64>>>, // 保存上次处理的最后一个片段的偏移
     current_header_info: Arc<RwLock<Option<HeaderInfo>>>, // 保存当前的分辨率
@@ -120,9 +121,18 @@ impl BiliRecorder {
         if room_info.live_status == 1 {
             live_status = true;
 
+            let room_cover_path = Path::new(PlatformType::BiliBili.as_str())
+                .join(options.room_id.to_string())
+                .join("cover.jpg");
+            let full_room_cover_path =
+                Path::new(&options.config.read().await.cache).join(&room_cover_path);
             // Get cover image
-            if let Ok(cover_base64) = client.get_cover_base64(&room_info.room_cover_url).await {
-                cover = Some(cover_base64);
+            if (client
+                .download_file(&room_info.room_cover_url, &full_room_cover_path)
+                .await)
+                .is_ok()
+            {
+                cover = Some(room_cover_path.to_str().unwrap().to_string());
             }
         }
 
@@ -146,7 +156,7 @@ impl BiliRecorder {
             quit: Arc::new(Mutex::new(false)),
             live_stream: Arc::new(RwLock::new(None)),
             danmu_storage: Arc::new(RwLock::new(None)),
-            live_end_channel: options.channel,
+            event_channel: options.channel,
             enabled: Arc::new(RwLock::new(options.auto_start)),
             last_segment_offset: Arc::new(RwLock::new(None)),
             current_header_info: Arc::new(RwLock::new(None)),
@@ -214,31 +224,43 @@ impl BiliRecorder {
                         }
 
                         // Get cover image
-                        if let Ok(cover_base64) = self
+                        let room_cover_path = Path::new(PlatformType::BiliBili.as_str())
+                            .join(self.room_id.to_string())
+                            .join("cover.jpg");
+                        let full_room_cover_path =
+                            Path::new(&self.config.read().await.cache).join(&room_cover_path);
+                        if (self
                             .client
                             .read()
                             .await
-                            .get_cover_base64(&room_info.room_cover_url)
-                            .await
+                            .download_file(&room_info.room_cover_url, &full_room_cover_path)
+                            .await)
+                            .is_ok()
                         {
-                            *self.cover.write().await = Some(cover_base64);
+                            *self.cover.write().await =
+                                Some(room_cover_path.to_str().unwrap().to_string());
                         }
-                    } else if self.config.read().await.live_end_notify {
-                        #[cfg(feature = "gui")]
-                        self.app_handle
-                            .notification()
-                            .builder()
-                            .title("BiliShadowReplay - 直播结束")
-                            .body(format!(
-                                "{} 的直播结束了",
-                                self.user_info.read().await.user_name
-                            ))
-                            .show()
-                            .unwrap();
-                        let _ = self.live_end_channel.send(RecorderEvent::LiveEnd {
+                        let _ = self.event_channel.send(RecorderEvent::LiveStart {
+                            recorder: self.info().await,
+                        });
+                    } else {
+                        if self.config.read().await.live_end_notify {
+                            #[cfg(feature = "gui")]
+                            self.app_handle
+                                .notification()
+                                .builder()
+                                .title("BiliShadowReplay - 直播结束")
+                                .body(format!(
+                                    "{} 的直播结束了",
+                                    self.user_info.read().await.user_name
+                                ))
+                                .show()
+                                .unwrap();
+                        }
+                        let _ = self.event_channel.send(RecorderEvent::LiveEnd {
                             platform: PlatformType::BiliBili,
                             room_id: self.room_id,
-                            live_id: self.live_id.read().await.clone(),
+                            recorder: self.info().await,
                         });
                     }
 
@@ -662,6 +684,17 @@ impl BiliRecorder {
                     }
                     header.size = size;
 
+                    if self.cover.read().await.is_some() {
+                        let current_cover_full_path = Path::new(&self.config.read().await.cache)
+                            .join(self.cover.read().await.clone().unwrap());
+                        // copy current cover to work_dir
+                        let _ = tokio::fs::copy(
+                            current_cover_full_path,
+                            &format!("{}/{}", work_dir, "cover.jpg"),
+                        )
+                        .await;
+                    }
+
                     // Now that download succeeded, create the record and setup stores
                     self.db
                         .add_record(
@@ -669,7 +702,14 @@ impl BiliRecorder {
                             timestamp.to_string().as_str(),
                             self.room_id,
                             &self.room_info.read().await.room_title,
-                            self.cover.read().await.clone(),
+                            format!(
+                                "{}/{}/{}/{}",
+                                PlatformType::BiliBili.as_str(),
+                                self.room_id,
+                                timestamp,
+                                "cover.jpg"
+                            )
+                            .into(),
                             None,
                         )
                         .await?;
@@ -701,6 +741,10 @@ impl BiliRecorder {
                     *self.current_header_info.write().await = Some(HeaderInfo {
                         url: header_url.clone(),
                         resolution: new_resolution,
+                    });
+
+                    let _ = self.event_channel.send(RecorderEvent::RecordStart {
+                        recorder: self.info().await,
                     });
                 }
                 Err(e) => {
@@ -1211,6 +1255,11 @@ impl super::Recorder for BiliRecorder {
                     }
 
                     // whatever error happened during update entries, reset to start another recording.
+                    if self_clone.current_header_info.read().await.is_some() {
+                        let _ = self_clone.event_channel.send(RecorderEvent::RecordEnd {
+                            recorder: self_clone.info().await,
+                        });
+                    }
                     *self_clone.is_recording.write().await = false;
                     self_clone.reset().await;
                     // go check status again after random 2-5 secs

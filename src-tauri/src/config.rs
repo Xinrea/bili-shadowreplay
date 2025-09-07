@@ -39,6 +39,8 @@ pub struct Config {
     pub user_agent: String,
     #[serde(default = "default_cleanup_source_flv")]
     pub cleanup_source_flv_after_import: bool,
+    #[serde(default = "default_webhook_url")]
+    pub webhook_url: String,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -98,6 +100,10 @@ fn default_cleanup_source_flv() -> bool {
     false
 }
 
+fn default_webhook_url() -> String {
+    "".to_string()
+}
+
 impl Config {
     pub fn load(
         config_path: &PathBuf,
@@ -137,6 +143,7 @@ impl Config {
             whisper_language: default_whisper_language(),
             user_agent: default_user_agent(),
             cleanup_source_flv_after_import: default_cleanup_source_flv(),
+            webhook_url: default_webhook_url(),
         };
 
         config.save();

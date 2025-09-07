@@ -4,9 +4,9 @@
     set_title,
     TAURI_ENV,
     convertFileSrc,
-    convertCoverSrc,
     listen,
     log,
+    get_cover,
   } from "./lib/invoker";
   import Player from "./lib/components/Player.svelte";
   import type { RecordItem } from "./lib/db";
@@ -67,11 +67,11 @@
 
     visible_start_index = Math.max(
       0,
-      Math.floor(scroll_top / danmu_item_height) - buffer,
+      Math.floor(scroll_top / danmu_item_height) - buffer
     );
     visible_end_index = Math.min(
       filtered_danmu.length,
-      Math.ceil((scroll_top + container_height) / danmu_item_height) + buffer,
+      Math.ceil((scroll_top + container_height) / danmu_item_height) + buffer
     );
   }
 
@@ -190,7 +190,7 @@
         }
         current_clip_event_id = null;
       }
-    },
+    }
   );
 
   onDestroy(() => {
@@ -266,7 +266,7 @@
     (a: RecordItem) => {
       archive = a;
       set_title(`[${room_id}]${archive.title}`);
-    },
+    }
   );
 
   function update_clip_prompt(str: string) {
@@ -290,7 +290,7 @@
           file: await convertFileSrc(v.file),
           cover: v.cover,
         };
-      }),
+      })
     );
   }
 
@@ -304,8 +304,7 @@
       return v.value == id;
     });
     if (target_video) {
-      const rawCover = (await invoke("get_video_cover", { id: id })) as string;
-      target_video.cover = await convertCoverSrc(rawCover, id);
+      target_video.cover = await get_cover("output", target_video.cover);
     }
     selected_video = target_video;
   }
@@ -347,6 +346,7 @@
       fix_encoding,
     })) as VideoItem;
     await get_video_list();
+    new_video.cover = await get_cover("output", new_video.cover);
     video_selected = new_video.id;
     selected_video = videos.find((v) => {
       return v.value == new_video.id;
@@ -381,13 +381,13 @@
   let markers: Marker[] = [];
   // load markers from local storage
   markers = JSON.parse(
-    window.localStorage.getItem(`markers:${room_id}:${live_id}`) || "[]",
+    window.localStorage.getItem(`markers:${room_id}:${live_id}`) || "[]"
   );
   $: {
     // makers changed, save to local storage
     window.localStorage.setItem(
       `markers:${room_id}:${live_id}`,
-      JSON.stringify(markers),
+      JSON.stringify(markers)
     );
   }
 

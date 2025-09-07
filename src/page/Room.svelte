@@ -1,10 +1,9 @@
 <script lang="ts">
-  import { invoke, open, onOpenUrl } from "../lib/invoker";
+  import { invoke, open, onOpenUrl, get_cover, get } from "../lib/invoker";
   import { message } from "@tauri-apps/plugin-dialog";
   import { fade, scale } from "svelte/transition";
   import { Dropdown, DropdownItem } from "flowbite-svelte";
   import type { RecorderList, RecorderInfo } from "../lib/interface";
-  import Image from "../lib/components/Image.svelte";
   import type { RecordItem } from "../lib/db";
   import {
     Ellipsis,
@@ -57,6 +56,17 @@
       return 0;
     });
 
+    // process room cover
+    for (const room of new_summary.recorders) {
+      const cover_response = await get(room.room_info.room_cover);
+      const cover_blob = await cover_response.blob();
+      room.room_info.room_cover = URL.createObjectURL(cover_blob);
+
+      const avatar_response = await get(room.user_info.user_avatar);
+      const avatar_blob = await avatar_response.blob();
+      room.user_info.user_avatar = URL.createObjectURL(avatar_blob);
+    }
+
     summary = new_summary;
   }
   update_summary();
@@ -108,6 +118,11 @@
         offset: currentPage * pageSize,
         limit: pageSize,
       })) as RecordItem[];
+
+      for (const archive of new_archives) {
+        console.log(archive.cover);
+        archive.cover = await get_cover("cache", archive.cover);
+      }
 
       // 如果是第一页，直接替换；否则追加数据
       if (currentPage === 0) {
@@ -343,9 +358,10 @@
           class="p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 hover:border-blue-500 dark:hover:border-blue-400 transition-colors"
         >
           <div class="relative">
-            <Image
+            <img
               src={room.room_info.room_cover}
-              iclass={"w-full h-40 object-cover rounded-lg " +
+              alt="cover"
+              class={"w-full h-40 object-cover rounded-lg " +
                 (room.live_status ? "" : "brightness-75")}
             />
             <!-- Room ID watermark -->
@@ -438,9 +454,10 @@
                     openUserUrl(room);
                   }}
                 >
-                  <Image
+                  <img
                     src={room.user_info.user_avatar}
-                    iclass="w-8 h-8 rounded-full"
+                    alt="avatar"
+                    class="w-8 h-8 rounded-full"
                   />
                   <span>{room.user_info.user_name}</span>
                 </button>
@@ -757,9 +774,10 @@
                     <td class="px-4 py-3">
                       <div class="flex items-center space-x-3">
                         {#if archive.cover}
-                          <Image
+                          <img
                             src={archive.cover}
-                            iclass="w-12 h-8 rounded object-cover"
+                            alt="cover"
+                            class="w-12 h-8 rounded object-cover"
                           />
                         {/if}
                         <span class="text-sm text-gray-900 dark:text-white"

@@ -1,5 +1,5 @@
 use crate::database::task::TaskRow;
-use crate::database::video::{VideoNoCover, VideoRow};
+use crate::database::video::VideoRow;
 use crate::ffmpeg::{self, generate_thumbnail};
 use crate::handlers::utils::get_disk_info_inner;
 use crate::progress_reporter::{
@@ -8,6 +8,8 @@ use crate::progress_reporter::{
 use crate::recorder::bilibili::profile::Profile;
 use crate::recorder_manager::ClipRangeParams;
 use crate::subtitle_generator::item_to_srt;
+use crate::webhook::events;
+use base64::Engine;
 use chrono::{Local, Utc};
 use serde_json::json;
 use std::fs::File;
@@ -328,12 +330,14 @@ pub async fn clip_range(
         let cwd = std::env::current_dir().unwrap();
         output = cwd.join(output);
     }
+
     if let Ok(disk_info) = get_disk_info_inner(output).await {
         // if free space is less than 1GB, return error
         if disk_info.free < 1024 * 1024 * 1024 {
             return Err("Storage space is not enough, clip canceled".to_string());
         }
     }
+
     #[cfg(feature = "gui")]
     let emitter = EventEmitter::new(state.app_handle.clone());
     #[cfg(feature = "headless")]
@@ -352,40 +356,51 @@ pub async fn clip_range(
         .to_string(),
         created_at: Utc::now().to_rfc3339(),
     };
+
     state.db.add_task(&task).await?;
     log::info!("Create task: {} {}", task.id, task.task_type);
-    match clip_range_inner(&state, &reporter, params).await {
-        Ok(video) => {
-            reporter.finish(true, "切片完成").await;
-            state
-                .db
-                .update_task(&event_id, "success", "切片完成", None)
-                .await?;
-            if state.config.read().await.auto_subtitle {
-                // generate a subtitle task event id
-                let subtitle_event_id = format!("{}_subtitle", event_id);
-                let result =
-                    generate_video_subtitle(state.clone(), subtitle_event_id, video.id).await;
-                if let Ok(subtitle) = result {
-                    let result = update_video_subtitle(state.clone(), video.id, subtitle).await;
-                    if let Err(e) = result {
-                        log::error!("Update video subtitle error: {}", e);
-                    }
-                } else {
-                    log::error!("Generate video subtitle error: {}", result.err().unwrap());
-                }
+
+    let clip_result = clip_range_inner(&state, &reporter, params.clone()).await;
+    if let Err(e) = clip_result {
+        reporter.finish(false, &format!("切片失败: {}", e)).await;
+        state
+            .db
+            .update_task(&event_id, "failed", &format!("切片失败: {}", e), None)
+            .await?;
+        return Err(e);
+    }
+
+    let video = clip_result.unwrap();
+
+    reporter.finish(true, "切片完成").await;
+    state
+        .db
+        .update_task(&event_id, "success", "切片完成", None)
+        .await?;
+
+    if state.config.read().await.auto_subtitle {
+        // generate a subtitle task event id
+        let subtitle_event_id = format!("{}_subtitle", event_id);
+        let result = generate_video_subtitle(state.clone(), subtitle_event_id, video.id).await;
+        if let Ok(subtitle) = result {
+            let result = update_video_subtitle(state.clone(), video.id, subtitle).await;
+            if let Err(e) = result {
+                log::error!("Update video subtitle error: {}", e);
             }
-            Ok(video)
-        }
-        Err(e) => {
-            reporter.finish(false, &format!("切片失败: {}", e)).await;
-            state
-                .db
-                .update_task(&event_id, "failed", &format!("切片失败: {}", e), None)
-                .await?;
-            Err(e)
+        } else {
+            log::error!("Generate video subtitle error: {}", result.err().unwrap());
         }
     }
+
+    // Emit webhook events
+    let event =
+        events::new_webhook_event(events::CLIP_GENERATED, events::Payload::Clip(video.clone()));
+
+    if let Err(e) = state.webhook_poster.post_event(&event).await {
+        log::error!("Post webhook event error: {}", e);
+    }
+
+    Ok(video)
 }
 
 async fn clip_range_inner(
@@ -420,6 +435,16 @@ async fn clip_range_inner(
         log::error!("Get file metadata error: {} {}", e, file.display());
         e.to_string()
     })?;
+    let cover_file = file.with_extension("jpg");
+    let base64 = params.cover.split("base64,").nth(1).unwrap();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64)
+        .unwrap();
+    // write cover file to fs
+    tokio::fs::write(&cover_file, bytes).await.map_err(|e| {
+        log::error!("Write cover file error: {} {}", e, cover_file.display());
+        e.to_string()
+    })?;
     // get filename from path
     let filename = Path::new(&file)
         .file_name()
@@ -434,7 +459,12 @@ async fn clip_range_inner(
             status: 0,
             room_id: params.room_id,
             created_at: Local::now().to_rfc3339(),
-            cover: params.cover.clone(),
+            cover: cover_file
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string(),
             file: filename.into(),
             note: params.note.clone(),
             length: params.range.as_ref().map_or(0.0, |r| r.duration()) as i64,
@@ -608,7 +638,7 @@ pub async fn get_video(state: state_type!(), id: i64) -> Result<VideoRow, String
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn get_videos(state: state_type!(), room_id: u64) -> Result<Vec<VideoNoCover>, String> {
+pub async fn get_videos(state: state_type!(), room_id: u64) -> Result<Vec<VideoRow>, String> {
     state
         .db
         .get_videos(room_id)
@@ -617,7 +647,7 @@ pub async fn get_videos(state: state_type!(), room_id: u64) -> Result<Vec<VideoN
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn get_all_videos(state: state_type!()) -> Result<Vec<VideoNoCover>, String> {
+pub async fn get_all_videos(state: state_type!()) -> Result<Vec<VideoRow>, String> {
     state.db.get_all_videos().await.map_err(|e| e.to_string())
 }
 
@@ -635,6 +665,13 @@ pub async fn delete_video(state: state_type!(), id: i64) -> Result<(), String> {
     // get video info from db
     let video = state.db.get_video(id).await?;
     let config = state.config.read().await;
+
+    // Emit webhook events
+    let event =
+        events::new_webhook_event(events::CLIP_DELETED, events::Payload::Clip(video.clone()));
+    if let Err(e) = state.webhook_poster.post_event(&event).await {
+        log::error!("Post webhook event error: {}", e);
+    }
 
     // delete video from db
     state.db.delete_video(id).await?;

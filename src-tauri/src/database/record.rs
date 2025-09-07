@@ -4,7 +4,7 @@ use super::Database;
 use super::DatabaseError;
 use chrono::Utc;
 
-#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, sqlx::FromRow)]
 pub struct RecordRow {
     pub platform: String,
     pub live_id: String,
@@ -80,13 +80,17 @@ impl Database {
         Ok(record)
     }
 
-    pub async fn remove_record(&self, live_id: &str) -> Result<(), DatabaseError> {
+    pub async fn remove_record(&self, live_id: &str) -> Result<RecordRow, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
+        let to_delete = sqlx::query_as::<_, RecordRow>("SELECT * FROM records WHERE live_id = $1")
+            .bind(live_id)
+            .fetch_one(&lock)
+            .await?;
         sqlx::query("DELETE FROM records WHERE live_id = $1")
             .bind(live_id)
             .execute(&lock)
             .await?;
-        Ok(())
+        Ok(to_delete)
     }
 
     pub async fn update_record(
@@ -99,6 +103,20 @@ impl Database {
         sqlx::query("UPDATE records SET length = $1, size = $2 WHERE live_id = $3")
             .bind(length)
             .bind(size as i64)
+            .bind(live_id)
+            .execute(&lock)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn update_record_cover(
+        &self,
+        live_id: &str,
+        cover: Option<String>,
+    ) -> Result<(), DatabaseError> {
+        let lock = self.db.read().await.clone().unwrap();
+        sqlx::query("UPDATE records SET cover = $1 WHERE live_id = $2")
+            .bind(cover)
             .bind(live_id)
             .execute(&lock)
             .await?;

@@ -9,7 +9,6 @@ use super::response::VideoSubmitData;
 use crate::database::account::AccountRow;
 use crate::progress_reporter::ProgressReporter;
 use crate::progress_reporter::ProgressReporterTrait;
-use base64::Engine;
 use chrono::TimeZone;
 use pct_str::PctString;
 use pct_str::URIReserved;
@@ -360,15 +359,17 @@ impl BiliClient {
         })
     }
 
-    /// Get and encode response data into base64
-    pub async fn get_cover_base64(&self, url: &str) -> Result<String, BiliClientError> {
+    /// Download file from url to path
+    pub async fn download_file(&self, url: &str, path: &Path) -> Result<(), BiliClientError> {
+        if !path.parent().unwrap().exists() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        }
         let response = self.client.get(url).send().await?;
         let bytes = response.bytes().await?;
-        let base64 = base64::engine::general_purpose::STANDARD.encode(bytes);
-        let mime_type = mime_guess::from_path(url)
-            .first_or_octet_stream()
-            .to_string();
-        Ok(format!("data:{};base64,{}", mime_type, base64))
+        let mut file = tokio::fs::File::create(&path).await?;
+        let mut content = std::io::Cursor::new(bytes);
+        tokio::io::copy(&mut content, &mut file).await?;
+        Ok(())
     }
 
     pub async fn get_index_content(

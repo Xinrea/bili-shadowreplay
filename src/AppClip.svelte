@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke, convertFileSrc, convertCoverSrc } from "./lib/invoker";
+  import { invoke, convertFileSrc, get_cover } from "./lib/invoker";
   import { onMount } from "svelte";
   import VideoPreview from "./lib/components/VideoPreview.svelte";
   import type { Config, VideoItem } from "./lib/interface";
@@ -27,16 +27,20 @@
         set_title((videoData as VideoItem).file);
         // 获取房间下的所有视频列表
         if (roomId !== null && roomId !== undefined) {
-          const videoList = (await invoke("get_videos", { roomId: roomId })) as VideoItem[];
-          videos = await Promise.all(videoList.map(async (v) => {
-            return {
-              id: v.id,
-              value: v.id,
-              name: v.file,
-              file: await convertFileSrc(v.file),
-              cover: v.cover,
-            };
-          }));
+          const videoList = (await invoke("get_videos", {
+            roomId: roomId,
+          })) as VideoItem[];
+          videos = await Promise.all(
+            videoList.map(async (v) => {
+              return {
+                id: v.id,
+                value: v.id,
+                name: v.file,
+                file: await convertFileSrc(v.file),
+                cover: v.cover,
+              };
+            })
+          );
         }
 
         // find video in videos
@@ -54,12 +58,8 @@
 
   async function handleVideoChange(newVideo: VideoItem) {
     if (newVideo) {
-      // get cover from video
-      const cover = await invoke("get_video_cover", { id: newVideo.id }) as string;
-      
-      // 对于非空的封面路径，使用convertCoverSrc转换
-      if (cover && cover.trim() !== "") {
-        newVideo.cover = await convertCoverSrc(cover, newVideo.id);
+      if (newVideo.cover && newVideo.cover.trim() !== "") {
+        newVideo.cover = await get_cover("output", newVideo.cover);
       } else {
         newVideo.cover = "";
       }
@@ -70,20 +70,22 @@
   async function handleVideoListUpdate() {
     if (roomId !== null && roomId !== undefined) {
       const videosData = await invoke("get_videos", { roomId });
-      videos = await Promise.all((videosData as VideoItem[]).map(async (v) => {
-        return {
-          id: v.id,
-          value: v.id,
-          name: v.file,
-          file: await convertFileSrc(v.file),
-          cover: v.cover, // 这里保持原样，因为get_videos返回的是VideoNoCover类型，不包含完整封面数据
-        };
-      }));
+      videos = await Promise.all(
+        (videosData as VideoItem[]).map(async (v) => {
+          return {
+            id: v.id,
+            value: v.id,
+            name: v.file,
+            file: await convertFileSrc(v.file),
+            cover: v.cover,
+          };
+        })
+      );
     }
   }
 </script>
 
-{#if showVideoPreview && video && (roomId !== null && roomId !== undefined)}
+{#if showVideoPreview && video && roomId !== null && roomId !== undefined}
   <VideoPreview
     bind:show={showVideoPreview}
     {video}

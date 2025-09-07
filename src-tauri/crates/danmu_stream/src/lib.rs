@@ -2,16 +2,24 @@ pub mod danmu_stream;
 mod http_client;
 pub mod provider;
 
-use custom_error::custom_error;
+use thiserror::Error;
 
-custom_error! {pub DanmuStreamError
-    HttpError {err: reqwest::Error} = "HttpError {err}",
-    ParseError {err: url::ParseError} = "ParseError {err}",
-    WebsocketError {err: String } = "WebsocketError {err}",
-    PackError {err: String} = "PackError {err}",
-    UnsupportProto {proto: u16} = "UnsupportProto {proto}",
-    MessageParseError {err: String} = "MessageParseError {err}",
-    InvalidIdentifier {err: String} = "InvalidIdentifier {err}"
+#[derive(Error, Debug)]
+pub enum DanmuStreamError {
+    #[error("HttpError {0:?}")]
+    HttpError(#[from] reqwest::Error),
+    #[error("ParseError {0:?}")]
+    ParseError(#[from] url::ParseError),
+    #[error("WebsocketError {err}")]
+    WebsocketError { err: String },
+    #[error("PackError {err}")]
+    PackError { err: String },
+    #[error("UnsupportProto {proto}")]
+    UnsupportProto { proto: u16 },
+    #[error("MessageParseError {err}")]
+    MessageParseError { err: String },
+    #[error("InvalidIdentifier {err}")]
+    InvalidIdentifier { err: String },
 }
 
 #[derive(Debug)]

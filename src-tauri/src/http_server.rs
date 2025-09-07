@@ -3,12 +3,8 @@ use std::fmt::{self, Display};
 use crate::{
     config::Config,
     database::{
-        account::AccountRow,
-        message::MessageRow,
-        record::RecordRow,
-        recorder::RecorderRow,
-        task::TaskRow,
-        video::{VideoNoCover, VideoRow},
+        account::AccountRow, message::MessageRow, record::RecordRow, recorder::RecorderRow,
+        task::TaskRow, video::VideoRow,
     },
     handlers::{
         account::{
@@ -18,7 +14,8 @@ use crate::{
             get_config, update_auto_generate, update_clip_name_format, update_notify,
             update_openai_api_endpoint, update_openai_api_key, update_status_check_interval,
             update_subtitle_generator_type, update_subtitle_setting, update_user_agent,
-            update_whisper_language, update_whisper_model, update_whisper_prompt,
+            update_webhook_url, update_whisper_language, update_whisper_model,
+            update_whisper_prompt,
         },
         message::{delete_message, get_messages, read_message},
         recorder::{
@@ -64,7 +61,6 @@ use axum::{
 use futures::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tokio::io::AsyncSeekExt;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 
@@ -333,6 +329,22 @@ async fn handler_update_whisper_prompt(
     update_whisper_prompt(state.0, whisper_prompt.whisper_prompt)
         .await
         .expect("Failed to update whisper prompt");
+    Ok(Json(ApiResponse::success(())))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateWebhookUrlRequest {
+    webhook_url: String,
+}
+
+async fn handler_update_webhook_url(
+    state: axum::extract::State<State>,
+    Json(param): Json<UpdateWebhookUrlRequest>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    update_webhook_url(state.0, param.webhook_url)
+        .await
+        .expect("Failed to update webhook url");
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -763,14 +775,14 @@ struct GetVideosRequest {
 async fn handler_get_videos(
     state: axum::extract::State<State>,
     Json(param): Json<GetVideosRequest>,
-) -> Result<Json<ApiResponse<Vec<VideoNoCover>>>, ApiError> {
+) -> Result<Json<ApiResponse<Vec<VideoRow>>>, ApiError> {
     let videos = get_videos(state.0, param.room_id).await?;
     Ok(Json(ApiResponse::success(videos)))
 }
 
 async fn handler_get_all_videos(
     state: axum::extract::State<State>,
-) -> Result<Json<ApiResponse<Vec<VideoNoCover>>>, ApiError> {
+) -> Result<Json<ApiResponse<Vec<VideoRow>>>, ApiError> {
     // 先扫描导入目录中的新文件并自动导入
     match scan_imported_directory(state.0.clone()).await {
         Ok(new_files) => {
@@ -1656,141 +1668,6 @@ async fn handler_hls(
     Ok(response)
 }
 
-async fn handler_output(
-    state: axum::extract::State<State>,
-    headers: axum::http::HeaderMap,
-    Path(uri): Path<String>,
-) -> Result<impl IntoResponse, StatusCode> {
-    // Validate path and get file
-    if uri.contains("..") {
-        return Err(StatusCode::NOT_FOUND);
-    }
-    let output_path = state.config.read().await.output.clone();
-    let path = std::path::Path::new(&output_path).join(uri);
-    if !path.exists() {
-        return Err(StatusCode::NOT_FOUND);
-    }
-
-    let mut file = tokio::fs::File::open(&path)
-        .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
-
-    let metadata = file.metadata().await.map_err(|_| StatusCode::NOT_FOUND)?;
-    let file_size = metadata.len();
-
-    // Parse range header if present
-    let range_header = headers.get(axum::http::header::RANGE);
-    let (start, end) = if let Some(range) = range_header {
-        let range_str = range.to_str().map_err(|_| StatusCode::BAD_REQUEST)?;
-        let range = range_str
-            .strip_prefix("bytes=")
-            .ok_or(StatusCode::BAD_REQUEST)?;
-        let parts: Vec<&str> = range.split('-').collect();
-        if parts.len() != 2 {
-            return Err(StatusCode::BAD_REQUEST);
-        }
-        let start = parts[0]
-            .parse::<u64>()
-            .map_err(|_| StatusCode::BAD_REQUEST)?;
-        let end = if parts[1].is_empty() {
-            file_size - 1
-        } else {
-            parts[1]
-                .parse::<u64>()
-                .map_err(|_| StatusCode::BAD_REQUEST)?
-        };
-        if start > end || end >= file_size {
-            return Err(StatusCode::RANGE_NOT_SATISFIABLE);
-        }
-        (start, end)
-    } else {
-        (0, file_size - 1)
-    };
-
-    // Seek to the start position
-    file.seek(std::io::SeekFrom::Start(start))
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    // Create a stream for the requested range
-    let stream = tokio_util::io::ReaderStream::new(file);
-    let body = axum::body::Body::from_stream(stream);
-
-    // Create response with appropriate headers
-    let mut response = axum::response::Response::new(body);
-
-    // Set content type based on file extension
-    let content_type = match path.extension().and_then(|ext| ext.to_str()) {
-        Some("mp4") => "video/mp4",
-        Some("webm") => "video/webm",
-        Some("m4v") => "video/x-m4v",
-        Some("mkv") => "video/x-matroska",
-        Some("avi") => "video/x-msvideo",
-        Some("jpg") | Some("jpeg") => "image/jpeg",
-        Some("png") => "image/png",
-        Some("gif") => "image/gif",
-        Some("webp") => "image/webp",
-        Some("svg") => "image/svg+xml",
-        _ => "application/octet-stream",
-    };
-
-    // Set headers
-    {
-        let headers = response.headers_mut();
-        headers.insert(
-            axum::http::header::CONTENT_TYPE,
-            content_type.parse().unwrap(),
-        );
-
-        // Only set Content-Disposition for non-media files to allow inline playback/display
-        if !matches!(
-            content_type,
-            "video/mp4"
-                | "video/webm"
-                | "video/x-m4v"
-                | "video/x-matroska"
-                | "video/x-msvideo"
-                | "image/jpeg"
-                | "image/png"
-                | "image/gif"
-                | "image/webp"
-                | "image/svg+xml"
-        ) {
-            let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-            headers.insert(
-                axum::http::header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{}\"", filename)
-                    .parse()
-                    .unwrap(),
-            );
-        }
-
-        let content_length = end - start + 1;
-        headers.insert(
-            axum::http::header::CONTENT_LENGTH,
-            content_length.to_string().parse().unwrap(),
-        );
-
-        headers.insert(axum::http::header::ACCEPT_RANGES, "bytes".parse().unwrap());
-
-        // Set partial content status and range headers if needed
-        if range_header.is_some() {
-            headers.insert(
-                axum::http::header::CONTENT_RANGE,
-                format!("bytes {}-{}/{}", start, end, file_size)
-                    .parse()
-                    .unwrap(),
-            );
-        }
-    }
-
-    if range_header.is_some() {
-        *response.status_mut() = StatusCode::PARTIAL_CONTENT;
-    }
-
-    Ok(response)
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ServerEvent {
@@ -1958,6 +1835,7 @@ pub async fn start_api_server(state: State) {
                 "/api/update_whisper_language",
                 post(handler_update_whisper_language),
             )
+            .route("/api/update_webhook_url", post(handler_update_webhook_url))
             .route("/api/update_user_agent", post(handler_update_user_agent))
             // 批量导入相关的 API 端点
             .route(
@@ -1984,6 +1862,9 @@ pub async fn start_api_server(state: State) {
     } else {
         log::info!("Running in readonly mode, some api routes are disabled");
     }
+
+    let cache_path = state.config.read().await.cache.clone();
+    let output_path = state.config.read().await.output.clone();
 
     app = app
         // Config commands
@@ -2032,8 +1913,9 @@ pub async fn start_api_server(state: State) {
         .route("/api/upload_file", post(handler_upload_file))
         .route("/api/image/:video_id", get(handler_image_base64))
         .route("/hls/*uri", get(handler_hls))
-        .route("/output/*uri", get(handler_output))
-        .route("/api/sse", get(handler_sse));
+        .route("/api/sse", get(handler_sse))
+        .nest_service("/output", ServeDir::new(output_path))
+        .nest_service("/cache", ServeDir::new(cache_path));
 
     let router = app
         .layer(cors)

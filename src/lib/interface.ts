@@ -139,6 +139,7 @@ export interface Config {
   whisper_language: string;
   user_agent: string;
   cleanup_source_flv_after_import: boolean;
+  webhook_url: string;
 }
 
 export interface AutoGenerateConfig {
@@ -229,7 +230,7 @@ export function parseSubtitleStyle(style: SubtitleStyle): string {
   return `FontName=${style.fontName},FontSize=${
     style.fontSize
   },PrimaryColour=${hexToAssColor(
-    style.fontColor,
+    style.fontColor
   )},OutlineColour=${hexToAssColor(style.outlineColor)},Outline=${
     style.outlineWidth
   },Alignment=${style.alignment},MarginV=${style.marginV},MarginL=${

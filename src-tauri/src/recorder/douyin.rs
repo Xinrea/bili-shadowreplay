@@ -183,7 +183,7 @@ impl DouyinRecorder {
                         let _ = self.live_end_channel.send(RecorderEvent::LiveEnd {
                             platform: PlatformType::Douyin,
                             room_id: self.room_id,
-                            live_id: self.live_id.read().await.clone(),
+                            recorder: self.info().await,
                         });
                     }
 

@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "bili-shadowreplay"
-version = "2.11.7"
+version = "2.12.0"
 description = "BiliBili ShadowReplay"
 authors = ["Xinrea"]
 license = ""
@@ -52,6 +52,7 @@ tokio-util = { version = "0.7", features = ["io"] }
 clap = { version = "4.5.37", features = ["derive"] }
 url = "2.5.4"
 srtparse = "0.2.0"
+thiserror = "1.0"
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem

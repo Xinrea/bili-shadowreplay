@@ -1,3 +1,5 @@
+pub mod migration_methods;
+
 use sqlx::migrate::MigrationType;
 
 #[derive(Debug)]
@@ -6,6 +8,7 @@ pub enum MigrationKind {
     Down,
 }
 
+#[cfg(feature = "headless")]
 #[derive(Debug)]
 pub struct Migration {
     pub version: i64,

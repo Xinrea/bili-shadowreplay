@@ -1,7 +1,6 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod archive_migration;
 mod config;
 mod constants;
 mod danmu2ass;
@@ -10,7 +9,6 @@ mod ffmpeg;
 mod handlers;
 #[cfg(feature = "headless")]
 mod http_server;
-#[cfg(feature = "headless")]
 mod migration;
 mod progress_manager;
 mod progress_reporter;
@@ -20,12 +18,15 @@ mod state;
 mod subtitle_generator;
 #[cfg(feature = "gui")]
 mod tray;
+mod webhook;
 
-use archive_migration::try_rebuild_archives;
 use async_std::fs;
 use chrono::Utc;
 use config::Config;
 use database::Database;
+use migration::migration_methods::try_convert_clip_covers;
+use migration::migration_methods::try_convert_live_covers;
+use migration::migration_methods::try_rebuild_archives;
 use recorder::bilibili::client::BiliClient;
 use recorder::PlatformType;
 use recorder_manager::RecorderManager;
@@ -269,7 +270,14 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
 
     let progress_manager = Arc::new(ProgressManager::new());
     let emitter = EventEmitter::new(progress_manager.get_event_sender());
-    let recorder_manager = Arc::new(RecorderManager::new(emitter, db.clone(), config.clone()));
+    let webhook_poster =
+        webhook::poster::create_webhook_poster(&config.read().await.webhook_url, None).unwrap();
+    let recorder_manager = Arc::new(RecorderManager::new(
+        emitter,
+        db.clone(),
+        config.clone(),
+        webhook_poster.clone(),
+    ));
 
     // Update account infos for headless mode
     let accounts = db.get_accounts().await?;
@@ -328,11 +336,14 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     }
 
     let _ = try_rebuild_archives(&db, config.read().await.cache.clone().into()).await;
+    let _ = try_convert_live_covers(&db, config.read().await.cache.clone().into()).await;
+    let _ = try_convert_clip_covers(&db, config.read().await.output.clone().into()).await;
 
     Ok(State {
         db,
         client,
         config,
+        webhook_poster,
         recorder_manager,
         progress_manager,
         readonly: args.readonly,
@@ -376,12 +387,15 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     };
     db_clone.set(sqlite_pool.unwrap().clone()).await;
     db_clone.finish_pending_tasks().await?;
+    let webhook_poster =
+        webhook::poster::create_webhook_poster(&config.read().await.webhook_url, None).unwrap();
 
     let recorder_manager = Arc::new(RecorderManager::new(
         app.app_handle().clone(),
         emitter,
         db.clone(),
         config.clone(),
+        webhook_poster.clone(),
     ));
 
     let accounts = db_clone.get_accounts().await?;
@@ -393,10 +407,11 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
             config,
             recorder_manager,
             app_handle: app.handle().clone(),
+            webhook_poster,
         });
     }
 
-    // update account infos
+    // update account info
     for account in accounts {
         let platform = PlatformType::from_str(&account.platform).unwrap();
 
@@ -453,9 +468,12 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
 
     // try to rebuild archive table
     let cache_path = config_clone.read().await.cache.clone();
-    if let Err(e) = try_rebuild_archives(&db_clone, cache_path.into()).await {
+    let output_path = config_clone.read().await.output.clone();
+    if let Err(e) = try_rebuild_archives(&db_clone, cache_path.clone().into()).await {
         log::warn!("Rebuilding archive table failed: {}", e);
     }
+    let _ = try_convert_live_covers(&db_clone, cache_path.into()).await;
+    let _ = try_convert_clip_covers(&db_clone, output_path.into()).await;
 
     Ok(State {
         db,
@@ -463,6 +481,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         config,
         recorder_manager,
         app_handle: app.handle().clone(),
+        webhook_poster,
     })
 }
 
@@ -533,6 +552,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::config::update_whisper_language,
         crate::handlers::config::update_user_agent,
         crate::handlers::config::update_cleanup_source_flv,
+        crate::handlers::config::update_webhook_url,
         crate::handlers::message::get_messages,
         crate::handlers::message::read_message,
         crate::handlers::message::delete_message,

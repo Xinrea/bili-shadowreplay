@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::danmu2ass;
+use crate::database::recorder::RecorderRow;
 use crate::database::video::VideoRow;
 use crate::database::{account::AccountRow, record::RecordRow};
 use crate::database::{Database, DatabaseError};
@@ -12,6 +13,8 @@ use crate::recorder::errors::RecorderError;
 use crate::recorder::PlatformType;
 use crate::recorder::Recorder;
 use crate::recorder::RecorderInfo;
+use crate::webhook::events::{self, Payload};
+use crate::webhook::poster::WebhookPoster;
 use chrono::Utc;
 use custom_error::custom_error;
 use serde::{Deserialize, Serialize};
@@ -50,13 +53,23 @@ pub struct ClipRangeParams {
 
 #[derive(Debug, Clone)]
 pub enum RecorderEvent {
+    LiveStart {
+        recorder: RecorderInfo,
+    },
     LiveEnd {
-        platform: PlatformType,
         room_id: u64,
-        live_id: String,
+        platform: PlatformType,
+        recorder: RecorderInfo,
+    },
+    RecordStart {
+        recorder: RecorderInfo,
+    },
+    RecordEnd {
+        recorder: RecorderInfo,
     },
 }
 
+#[derive(Clone)]
 pub struct RecorderManager {
     #[cfg(not(feature = "headless"))]
     app_handle: AppHandle,
@@ -67,6 +80,7 @@ pub struct RecorderManager {
     to_remove: Arc<RwLock<HashSet<String>>>,
     event_tx: broadcast::Sender<RecorderEvent>,
     is_migrating: Arc<AtomicBool>,
+    webhook_poster: WebhookPoster,
 }
 
 custom_error! {pub RecorderManagerError
@@ -111,6 +125,7 @@ impl RecorderManager {
         emitter: EventEmitter,
         db: Arc<Database>,
         config: Arc<RwLock<Config>>,
+        webhook_poster: WebhookPoster,
     ) -> RecorderManager {
         let (event_tx, _) = broadcast::channel(100);
         let manager = RecorderManager {
@@ -123,6 +138,7 @@ impl RecorderManager {
             to_remove: Arc::new(RwLock::new(HashSet::new())),
             event_tx,
             is_migrating: Arc::new(AtomicBool::new(false)),
+            webhook_poster,
         };
 
         // Start event listener
@@ -139,20 +155,6 @@ impl RecorderManager {
         manager
     }
 
-    pub fn clone(&self) -> Self {
-        RecorderManager {
-            #[cfg(not(feature = "headless"))]
-            app_handle: self.app_handle.clone(),
-            emitter: self.emitter.clone(),
-            db: self.db.clone(),
-            config: self.config.clone(),
-            recorders: self.recorders.clone(),
-            to_remove: self.to_remove.clone(),
-            event_tx: self.event_tx.clone(),
-            is_migrating: self.is_migrating.clone(),
-        }
-    }
-
     pub fn get_event_sender(&self) -> broadcast::Sender<RecorderEvent> {
         self.event_tx.clone()
     }
@@ -161,25 +163,46 @@ impl RecorderManager {
         let mut rx = self.event_tx.subscribe();
         while let Ok(event) = rx.recv().await {
             match event {
+                RecorderEvent::LiveStart { recorder } => {
+                    let event =
+                        events::new_webhook_event(events::LIVE_STARTED, Payload::Room(recorder));
+                    let _ = self.webhook_poster.post_event(&event).await;
+                }
                 RecorderEvent::LiveEnd {
                     platform,
                     room_id,
-                    live_id,
+                    recorder,
                 } => {
-                    self.handle_live_end(platform, room_id, &live_id).await;
+                    let event = events::new_webhook_event(
+                        events::LIVE_ENDED,
+                        Payload::Room(recorder.clone()),
+                    );
+                    let _ = self.webhook_poster.post_event(&event).await;
+                    self.handle_live_end(platform, room_id, &recorder).await;
+                }
+                RecorderEvent::RecordStart { recorder } => {
+                    let event =
+                        events::new_webhook_event(events::RECORD_STARTED, Payload::Room(recorder));
+                    let _ = self.webhook_poster.post_event(&event).await;
+                }
+                RecorderEvent::RecordEnd { recorder } => {
+                    let event =
+                        events::new_webhook_event(events::RECORD_ENDED, Payload::Room(recorder));
+                    let _ = self.webhook_poster.post_event(&event).await;
                 }
             }
         }
     }
 
-    async fn handle_live_end(&self, platform: PlatformType, room_id: u64, live_id: &str) {
+    async fn handle_live_end(&self, platform: PlatformType, room_id: u64, recorder: &RecorderInfo) {
         if !self.config.read().await.auto_generate.enabled {
             return;
         }
 
         let recorder_id = format!("{}:{}", platform.as_str(), room_id);
         log::info!("Start auto generate for {}", recorder_id);
-        let live_record = self.db.get_record(room_id, live_id).await;
+        let live_id = recorder.current_live_id.clone();
+        let live_record = self.db.get_record(room_id, &live_id).await;
         if live_record.is_err() {
             log::error!("Live not found in record: {} {}", room_id, live_id);
             return;
@@ -406,7 +429,7 @@ impl RecorderManager {
         &self,
         platform: PlatformType,
         room_id: u64,
-    ) -> Result<(), RecorderManagerError> {
+    ) -> Result<RecorderRow, RecorderManagerError> {
         // check recorder exists
         let recorder_id = format!("{}:{}", platform.as_str(), room_id);
         if !self.recorders.read().await.contains_key(&recorder_id) {
@@ -414,7 +437,7 @@ impl RecorderManager {
         }
 
         // remove from db
-        self.db.remove_recorder(room_id).await?;
+        let recorder = self.db.remove_recorder(room_id).await?;
 
         // add to to_remove
         log::debug!("Add to to_remove: {}", recorder_id);
@@ -445,7 +468,7 @@ impl RecorderManager {
         let _ = tokio::fs::remove_dir_all(cache_folder).await;
         log::info!("Recorder {} cache folder removed", room_id);
 
-        Ok(())
+        Ok(recorder)
     }
 
     pub async fn clip_range(
@@ -672,7 +695,7 @@ impl RecorderManager {
         platform: PlatformType,
         room_id: u64,
         live_id: &str,
-    ) -> Result<(), RecorderManagerError> {
+    ) -> Result<RecordRow, RecorderManagerError> {
         log::info!("Deleting {}:{}", room_id, live_id);
         // check if this is still recording
         let recorder_id = format!("{}:{}", platform.as_str(), room_id);
@@ -684,13 +707,13 @@ impl RecorderManager {
                 });
             }
         }
-        self.db.remove_record(live_id).await?;
+        let to_delete = self.db.remove_record(live_id).await?;
         let cache_folder = Path::new(self.config.read().await.cache.as_str())
             .join(platform.as_str())
             .join(room_id.to_string())
             .join(live_id);
         let _ = tokio::fs::remove_dir_all(cache_folder).await;
-        Ok(())
+        Ok(to_delete)
     }
 
     pub async fn delete_archives(
@@ -698,12 +721,14 @@ impl RecorderManager {
         platform: PlatformType,
         room_id: u64,
         live_ids: &[&str],
-    ) -> Result<(), RecorderManagerError> {
+    ) -> Result<Vec<RecordRow>, RecorderManagerError> {
         log::info!("Deleting archives in batch: {:?}", live_ids);
+        let mut to_deletes = Vec::new();
         for live_id in live_ids {
-            self.delete_archive(platform, room_id, live_id).await?;
+            let to_delete = self.delete_archive(platform, room_id, live_id).await?;
+            to_deletes.push(to_delete);
         }
-        Ok(())
+        Ok(to_deletes)
     }
 
     pub async fn get_danmu(

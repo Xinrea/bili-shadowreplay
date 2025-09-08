@@ -16,10 +16,10 @@ jobs:
             args: "--target x86_64-apple-darwin"
           - platform: "ubuntu-22.04"
             args: ""
-          - platform: "windows-latest"
+          - platform: "self-hosted"
             args: "--features cuda"
             features: "cuda"
-          - platform: "windows-latest"
+          - platform: "self-hosted"
             args: ""
             features: "cpu"
 

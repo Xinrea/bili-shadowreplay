@@ -17,7 +17,9 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 #[derive(Debug)]
 pub struct VideoMetadata {
     pub duration: f64,
+    #[allow(unused)]
     pub width: u32,
+    #[allow(unused)]
     pub height: u32,
 }
 

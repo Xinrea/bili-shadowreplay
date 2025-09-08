@@ -28,12 +28,11 @@ use crate::{
         task::{delete_task, get_tasks},
         utils::{console_log, get_disk_info, list_folder, sanitize_filename_advanced, DiskInfo},
         video::{
-            batch_import_external_videos, batch_import_in_place, cancel, clip_range, clip_video,
-            delete_video, encode_video_subtitle, generate_video_subtitle, generic_ffmpeg_command,
-            get_all_videos, get_file_size, get_import_progress, get_video, get_video_cover,
-            get_video_subtitle, get_video_typelist, get_videos, import_external_video,
-            scan_imported_directory, update_video_cover, update_video_note, update_video_subtitle,
-            upload_procedure,
+            batch_import_external_videos, cancel, clip_range, clip_video, delete_video,
+            encode_video_subtitle, generate_video_subtitle, generic_ffmpeg_command, get_all_videos,
+            get_file_size, get_import_progress, get_video, get_video_cover, get_video_subtitle,
+            get_video_typelist, get_videos, import_external_video, update_video_cover,
+            update_video_note, update_video_subtitle, upload_procedure,
         },
         AccountInfo,
     },
@@ -783,23 +782,6 @@ async fn handler_get_videos(
 async fn handler_get_all_videos(
     state: axum::extract::State<State>,
 ) -> Result<Json<ApiResponse<Vec<VideoRow>>>, ApiError> {
-    // 先扫描导入目录中的新文件并自动导入
-    match scan_imported_directory(state.0.clone()).await {
-        Ok(new_files) => {
-            if !new_files.is_empty() {
-                log::info!("发现{}个新视频文件，正在自动导入", new_files.len());
-                // 批量就地导入新文件，使用默认房间ID 0
-                if let Err(e) = batch_import_in_place(state.0.clone(), new_files, 0).await {
-                    log::error!("自动导入新文件失败: {}", e);
-                }
-            }
-        }
-        Err(e) => {
-            log::warn!("扫描导入目录失败: {}", e);
-        }
-    }
-
-    // 返回所有视频列表
     let videos = get_all_videos(state.0).await?;
     Ok(Json(ApiResponse::success(videos)))
 }
@@ -1084,24 +1066,6 @@ async fn handler_get_file_size(
 ) -> Result<Json<ApiResponse<u64>>, ApiError> {
     let file_size = get_file_size(param.file_path).await?;
     Ok(Json(ApiResponse::success(file_size)))
-}
-
-// 批量导入相关的 API 处理器
-async fn handler_scan_imported_directory(
-    state: axum::extract::State<State>,
-) -> Result<Json<ApiResponse<ScanImportedDirectoryResponse>>, ApiError> {
-    let new_files = scan_imported_directory(state.0).await?;
-    Ok(Json(ApiResponse::success(ScanImportedDirectoryResponse {
-        new_files,
-    })))
-}
-
-async fn handler_batch_import_in_place(
-    state: axum::extract::State<State>,
-    Json(param): Json<BatchImportInPlaceRequest>,
-) -> Result<Json<ApiResponse<serde_json::Value>>, ApiError> {
-    let result = batch_import_in_place(state.0, param.file_paths, param.room_id).await?;
-    Ok(Json(ApiResponse::success(result)))
 }
 
 async fn handler_batch_import_external_videos(
@@ -1837,15 +1801,6 @@ pub async fn start_api_server(state: State) {
             )
             .route("/api/update_webhook_url", post(handler_update_webhook_url))
             .route("/api/update_user_agent", post(handler_update_user_agent))
-            // 批量导入相关的 API 端点
-            .route(
-                "/api/scan_imported_directory",
-                post(handler_scan_imported_directory),
-            )
-            .route(
-                "/api/batch_import_in_place",
-                post(handler_batch_import_in_place),
-            )
             .route(
                 "/api/batch_import_external_videos",
                 post(handler_batch_import_external_videos),

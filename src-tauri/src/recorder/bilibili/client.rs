@@ -339,14 +339,17 @@ impl BiliClient {
         let live_start_time = if live_start_time_str == "0000-00-00 00:00:00" {
             0
         } else {
+            // this is a fixed Asia/Shanghai datetime str
             let naive =
                 chrono::NaiveDateTime::parse_from_str(live_start_time_str, "%Y-%m-%d %H:%M:%S")
                     .map_err(|_| BiliClientError::InvalidValue)?;
-            chrono::Local
+            // parse as UTC datetime and convert to timestamp
+            chrono::Utc
                 .from_local_datetime(&naive)
                 .earliest()
                 .ok_or(BiliClientError::InvalidValue)?
                 .timestamp()
+                - 8 * 3600
         };
         Ok(RoomInfo {
             room_id,

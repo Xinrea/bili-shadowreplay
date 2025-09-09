@@ -454,11 +454,16 @@ impl DouyinRecorder {
                             // Create database record
                             let room_info = room_info.as_ref().unwrap();
                             let cover_url = room_info.cover.clone();
-                            let cover = if let Some(url) = cover_url {
-                                Some(self.client.get_cover_base64(&url).await.unwrap_or_default())
-                            } else {
-                                None
-                            };
+                            let room_cover_path = Path::new(PlatformType::Douyin.as_str())
+                                .join(self.room_id.to_string())
+                                .join("cover.jpg");
+                            if let Some(url) = cover_url {
+                                let full_room_cover_path =
+                                    Path::new(&self.config.read().await.cache)
+                                        .join(&room_cover_path);
+                                let _ =
+                                    self.client.download_file(&url, &full_room_cover_path).await;
+                            }
 
                             if let Err(e) = self
                                 .db
@@ -467,7 +472,7 @@ impl DouyinRecorder {
                                     self.live_id.read().await.as_str(),
                                     self.room_id,
                                     &room_info.room_title,
-                                    cover,
+                                    Some(room_cover_path.to_str().unwrap().to_string()),
                                     None,
                                 )
                                 .await

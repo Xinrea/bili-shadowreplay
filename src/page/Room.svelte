@@ -58,13 +58,19 @@
 
     // process room cover
     for (const room of new_summary.recorders) {
-      const cover_response = await get(room.room_info.room_cover);
-      const cover_blob = await cover_response.blob();
-      room.room_info.room_cover = URL.createObjectURL(cover_blob);
+      if (room.room_info.room_cover != "") {
+        const cover_response = await get(room.room_info.room_cover);
+        const cover_blob = await cover_response.blob();
+        room.room_info.room_cover = URL.createObjectURL(cover_blob);
+      } else {
+        room.room_info.room_cover = "public/imgs/douyin.png";
+      }
 
-      const avatar_response = await get(room.user_info.user_avatar);
-      const avatar_blob = await avatar_response.blob();
-      room.user_info.user_avatar = URL.createObjectURL(avatar_blob);
+      if (room.user_info.user_avatar != "") {
+        const avatar_response = await get(room.user_info.user_avatar);
+        const avatar_blob = await avatar_response.blob();
+        room.user_info.user_avatar = URL.createObjectURL(avatar_blob);
+      }
     }
 
     summary = new_summary;

@@ -408,7 +408,6 @@ impl DanmuProvider for DouyinDanmu {
         tx: mpsc::UnboundedSender<DanmuMessageType>,
     ) -> Result<(), DanmuStreamError> {
         let mut retry_count = 0;
-        const MAX_RETRIES: u32 = 5;
         const RETRY_DELAY: Duration = Duration::from_secs(5);
         info!(
             "Douyin WebSocket connection started, room_id: {}",
@@ -422,28 +421,25 @@ impl DanmuProvider for DouyinDanmu {
 
             match self.connect_and_handle(tx.clone()).await {
                 Ok(_) => {
-                    info!("Douyin WebSocket connection closed normally");
-                    break;
+                    info!(
+                        "Douyin WebSocket connection closed normally, room_id: {}",
+                        self.room_id
+                    );
+                    retry_count = 0;
                 }
                 Err(e) => {
                     error!("Douyin WebSocket connection error: {}", e);
                     retry_count += 1;
-
-                    if retry_count >= MAX_RETRIES {
-                        return Err(DanmuStreamError::WebsocketError {
-                            err: format!("Failed to connect after {} retries", MAX_RETRIES),
-                        });
-                    }
-
-                    info!(
-                        "Retrying connection in {} seconds... (Attempt {}/{})",
-                        RETRY_DELAY.as_secs(),
-                        retry_count,
-                        MAX_RETRIES
-                    );
-                    tokio::time::sleep(RETRY_DELAY).await;
                 }
             }
+
+            info!(
+                "Retrying connection in {} seconds... (Attempt {}), room_id: {}",
+                RETRY_DELAY.as_secs(),
+                retry_count,
+                self.room_id
+            );
+            tokio::time::sleep(RETRY_DELAY).await;
         }
 
         Ok(())

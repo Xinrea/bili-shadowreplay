@@ -86,7 +86,7 @@ impl DanmuProvider for BiliDanmu {
                         "Bilibili WebSocket connection closed normally, room_id: {}",
                         self.room_id
                     );
-                    break;
+                    retry_count = 0;
                 }
                 Err(e) => {
                     error!(

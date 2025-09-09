@@ -56,10 +56,6 @@ jobs:
           # Those targets are only used on macos runners so it's in an `if` to slightly speed up windows and linux builds.
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
-      - name: Install CUDA toolkit (Windows CUDA only)
-        if: matrix.platform == 'self-hosted' && matrix.features == 'cuda'
-        uses: Jimver/cuda-toolkit@v0.2.24
-
       - name: Setup ffmpeg
         if: matrix.platform == 'self-hosted'
         working-directory: ./

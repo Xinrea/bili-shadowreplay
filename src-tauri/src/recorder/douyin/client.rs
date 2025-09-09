@@ -10,6 +10,7 @@ pub enum DouyinClientError {
     Network(String),
     Io(std::io::Error),
     Playlist(String),
+    H5NotLive(String),
 }
 
 impl fmt::Display for DouyinClientError {
@@ -18,6 +19,7 @@ impl fmt::Display for DouyinClientError {
             Self::Network(e) => write!(f, "Network error: {}", e),
             Self::Io(e) => write!(f, "IO error: {}", e),
             Self::Playlist(e) => write!(f, "Playlist error: {}", e),
+            Self::H5NotLive(e) => write!(f, "H5 live not started: {}", e),
         }
     }
 }
@@ -213,7 +215,7 @@ impl DouyinClient {
 
             // If that fails, try to parse as a generic JSON to see what we got
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&text) {
-                log::error!(
+                log::debug!(
                     "Unexpected response structure: {}",
                     serde_json::to_string_pretty(&json_value).unwrap_or_default()
                 );
@@ -222,9 +224,14 @@ impl DouyinClient {
                 if let Some(status_code) = json_value.get("status_code").and_then(|v| v.as_i64()) {
                     if status_code != 0 {
                         let error_msg = json_value
-                            .get("status_message")
-                            .and_then(|v| v.as_str())
+                            .get("data")
+                            .and_then(|v| v.get("message").and_then(|v| v.as_str()))
                             .unwrap_or("Unknown error");
+
+                        if status_code == 10011 {
+                            return Err(DouyinClientError::H5NotLive(error_msg.to_string()));
+                        }
+
                         return Err(DouyinClientError::Network(format!(
                             "API returned error status_code: {} - {}",
                             status_code, error_msg

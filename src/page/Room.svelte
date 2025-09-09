@@ -63,7 +63,7 @@
         const cover_blob = await cover_response.blob();
         room.room_info.room_cover = URL.createObjectURL(cover_blob);
       } else {
-        room.room_info.room_cover = "public/imgs/douyin.png";
+        room.room_info.room_cover = "/imgs/douyin.png";
       }
 
       if (room.user_info.user_avatar != "") {

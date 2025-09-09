@@ -227,6 +227,10 @@ impl DouyinRecorder {
                 true
             }
             Err(e) => {
+                if let DouyinClientError::H5NotLive(e) = e {
+                    log::warn!("[{}]Live maybe not started: {}", self.room_id, e);
+                    return false;
+                }
                 log::error!("[{}]Update room status failed: {}", self.room_id, e);
                 *self.live_status.read().await == LiveStatus::Live
             }

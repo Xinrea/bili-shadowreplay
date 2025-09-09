@@ -345,7 +345,12 @@ impl RecorderManager {
                     .add_recorder(&account, platform, room_id, extra, *auto_start)
                     .await
                 {
-                    log::error!("Failed to add recorder: {}", e);
+                    log::error!(
+                        "Failed to add recorder: {} {} {}",
+                        platform.as_str(),
+                        room_id,
+                        e
+                    );
                 }
             }
             interval.tick().await;

@@ -185,6 +185,7 @@ impl DouyinRecorder {
                             room_id: self.room_id,
                             recorder: self.info().await,
                         });
+                        *self.live_id.write().await = String::new();
                     }
 
                     self.reset().await;
@@ -282,7 +283,6 @@ impl DouyinRecorder {
 
     async fn reset(&self) {
         *self.entry_store.write().await = None;
-        *self.live_id.write().await = String::new();
         *self.danmu_room_id.write().await = String::new();
         *self.last_update.write().await = Utc::now().timestamp();
         *self.stream_url.write().await = None;

@@ -170,7 +170,6 @@ impl BiliRecorder {
 
     pub async fn reset(&self) {
         *self.entry_store.write().await = None;
-        *self.live_id.write().await = String::new();
         *self.live_stream.write().await = None;
         *self.last_update.write().await = Utc::now().timestamp();
         *self.danmu_storage.write().await = None;
@@ -262,6 +261,7 @@ impl BiliRecorder {
                             room_id: self.room_id,
                             recorder: self.info().await,
                         });
+                        *self.live_id.write().await = String::new();
                     }
 
                     // just doing reset, cuz live status is changed

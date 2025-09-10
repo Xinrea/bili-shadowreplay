@@ -14,12 +14,12 @@ jobs:
         include:
           - platform: "macos-latest" # for Intel based macs.
             args: "--target x86_64-apple-darwin"
-          - platform: "self-linux"
+          - platform: "ubuntu-22.04"
             args: ""
-          - platform: "self-windows"
+          - platform: "windows-latest"
             args: "--features cuda"
             features: "cuda"
-          - platform: "self-windows"
+          - platform: "windows-latest"
             args: ""
             features: "cpu"
 
@@ -44,7 +44,6 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: setup node
-        if: matrix.platform != 'self-windows'
         uses: actions/setup-node@v4
         with:
           node-version: lts/*
@@ -56,8 +55,12 @@ jobs:
           # Those targets are only used on macos runners so it's in an `if` to slightly speed up windows and linux builds.
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
+      - name: Install CUDA toolkit (Windows CUDA only)
+        if: matrix.platform == 'windows-latest' && matrix.features == 'cuda'
+        uses: Jimver/cuda-toolkit@v0.2.24
+
       - name: Setup ffmpeg
-        if: matrix.platform == 'self-windows'
+        if: matrix.platform == 'windows-latest'
         working-directory: ./
         shell: pwsh
         # running script ffmpeg_setup.ps1 to install ffmpeg on windows.
@@ -69,7 +72,7 @@ jobs:
         run: yarn install # change this to npm or pnpm depending on which one you use.
 
       - name: Copy CUDA DLLs (Windows CUDA only)
-        if: matrix.platform == 'self-windows' && matrix.features == 'cuda'
+        if: matrix.platform == 'windows-latest' && matrix.features == 'cuda'
         shell: pwsh
         run: |
           $cudaPath = "$env:CUDA_PATH\bin"
@@ -104,5 +107,4 @@ jobs:
           releaseBody: "> [!NOTE]\n> 如果你是第一次下载安装，请参考 [安装准备](https://bsr.xinrea.cn/getting-started/installation/desktop.html) 选择合适的版本。\n> Changelog: https://github.com/Xinrea/bili-shadowreplay/compare/${{ steps.get_previous_tag.outputs.previous_tag }}...${{ steps.get_previous_tag.outputs.current_tag }}"
           releaseDraft: true
           prerelease: false
-          args: ${{ matrix.args }} ${{ matrix.platform == 'self-windows' && matrix.features == 'cuda' && '--config src-tauri/tauri.windows.cuda.conf.json' || '' }}
-          includeDebug: true
+          args: ${{ matrix.args }} ${{ matrix.platform == 'windows-latest' && matrix.features == 'cuda' && '--config src-tauri/tauri.windows.cuda.conf.json' || '' }}

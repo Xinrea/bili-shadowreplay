@@ -3,11 +3,9 @@ use deno_core::JsRuntime;
 use deno_core::RuntimeOptions;
 use m3u8_rs::{MediaPlaylist, Playlist};
 use reqwest::{Client, Error as ReqwestError};
-use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use super::response::DouyinRoomInfoResponse;
-use std::sync::Arc;
 use std::{fmt, path::Path};
 
 #[derive(Debug)]

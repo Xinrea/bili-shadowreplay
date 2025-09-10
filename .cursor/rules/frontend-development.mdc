@@ -17,8 +17,10 @@
 ## Component Structure
 
 - **Page components**: Located in [src/page/](mdc:src/page/) directory
-- **Reusable components**: Located in [src/lib/components/](mdc:src/lib/components/) directory
-- **Layout components**: [src/App.svelte](mdc:src/App.svelte), [src/AppClip.svelte](mdc:src/AppClip.svelte), [src/AppLive.svelte](mdc:src/AppLive.svelte)
+- **Reusable components**: Located in [src/lib/components/](mdc:src/lib/components/)
+  directory
+- **Layout components**: [src/App.svelte](mdc:src/App.svelte),
+  [src/AppClip.svelte](mdc:src/AppClip.svelte), [src/AppLive.svelte](mdc:src/AppLive.svelte)
 
 ## Styling
 

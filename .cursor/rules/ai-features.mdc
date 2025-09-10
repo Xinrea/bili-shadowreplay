@@ -2,20 +2,27 @@
 
 ## AI Components
 
-- **LangChain Integration**: Uses `@langchain/core`, `@langchain/deepseek`, `@langchain/langgraph`, `@langchain/ollama`
-- **Whisper Transcription**: Local and online transcription via `whisper-rs` in Rust backend
+- **LangChain Integration**: Uses `@langchain/core`, `@langchain/deepseek`,
+  `@langchain/langgraph`, `@langchain/ollama`
+- **Whisper Transcription**: Local and online transcription via `whisper-rs` in
+  Rust backend
 - **AI Agent**: Located in [src/lib/agent/](mdc:src/lib/agent/) directory
 
 ## Frontend AI Features
 
 - **AI Page**: [src/page/AI.svelte](mdc:src/page/AI.svelte) - Main AI interface
 - **Agent Logic**: [src/lib/agent/](mdc:src/lib/agent/) - AI agent implementation
-- **Interface**: [src/lib/interface.ts](mdc:src/lib/interface.ts) - AI communication layer
+- **Interface**: [src/lib/interface.ts](mdc:src/lib/interface.ts)
+  \- AI communication layer
 
 ## Backend AI Features
 
-- **Subtitle Generation**: [src-tauri/src/subtitle_generator/](mdc:src-tauri/src/subtitle_generator/) - AI-powered subtitle creation
-- **Whisper Integration**: [src-tauri/src/subtitle_generator.rs](mdc:src-tauri/src/subtitle_generator.rs) - Speech-to-text processing
+- **Subtitle Generation**:
+  [src-tauri/src/subtitle_generator/](mdc:src-tauri/src/subtitle_generator/) -
+  AI-powered subtitle creation
+- **Whisper Integration**:
+  [src-tauri/src/subtitle_generator.rs](mdc:src-tauri/src/subtitle_generator.rs)
+  \- Speech-to-text processing
 - **CUDA Support**: Optional CUDA acceleration for Whisper via feature flag
 
 ## AI Workflows

@@ -2,16 +2,22 @@
 
 ## Project Structure
 
-- **Main entry**: [src-tauri/src/main.rs](mdc:src-tauri/src/main.rs) - Application entry point
+- **Main entry**: [src-tauri/src/main.rs](mdc:src-tauri/src/main.rs)
+  \- Application entry point
 - **Core modules**:
-  - [src-tauri/src/recorder/](mdc:src-tauri/src/recorder/) - Stream recording and management
-  - [src-tauri/src/database/](mdc:src-tauri/src/database/) - SQLite database operations
-  - [src-tauri/src/handlers/](mdc:src-tauri/src/handlers/) - Tauri command handlers
-  - [src-tauri/src/subtitle_generator/](mdc:src-tauri/src/subtitle_generator/) - AI-powered subtitle generation
+  - [src-tauri/src/recorder/](mdc:src-tauri/src/recorder/)
+    \- Stream recording and management
+  - [src-tauri/src/database/](mdc:src-tauri/src/database/)
+    \- SQLite database operations
+  - [src-tauri/src/handlers/](mdc:src-tauri/src/handlers/)
+    \- Tauri command handlers
+  - [src-tauri/src/subtitle_generator/](mdc:src-tauri/src/subtitle_generator/)
+    \- AI-powered subtitle generation
 
 ## Custom Crates
 
-- **danmu_stream**: [src-tauri/crates/danmu_stream/](mdc:src-tauri/crates/danmu_stream/) - Danmaku stream processing library
+- **danmu_stream**: [src-tauri/crates/danmu_stream/](mdc:src-tauri/crates/danmu_stream/)
+  \- Danmaku stream processing library
 
 ## Dependencies
 
@@ -23,9 +29,12 @@
 
 ## Configuration
 
-- **Cargo.toml**: [src-tauri/Cargo.toml](mdc:src-tauri/Cargo.toml) - Dependencies and features
-- **Tauri config**: [src-tauri/tauri.conf.json](mdc:src-tauri/tauri.conf.json) - App configuration
-- **Example config**: [src-tauri/config.example.toml](mdc:src-tauri/config.example.toml) - User configuration template
+- **Cargo.toml**: [src-tauri/Cargo.toml](mdc:src-tauri/Cargo.toml)
+  \- Dependencies and features
+- **Tauri config**: [src-tauri/tauri.conf.json](mdc:src-tauri/tauri.conf.json)
+  \- App configuration
+- **Example config**: [src-tauri/config.example.toml](mdc:src-tauri/config.example.toml)
+  \- User configuration template
 
 ## Features
 

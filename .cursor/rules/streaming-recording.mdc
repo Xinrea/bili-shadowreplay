@@ -2,9 +2,12 @@
 
 ## Core Recording Components
 
-- **Recorder Manager**: [src-tauri/src/recorder_manager.rs](mdc:src-tauri/src/recorder_manager.rs) - Main recording orchestration
-- **Recorder**: [src-tauri/src/recorder/](mdc:src-tauri/src/recorder/) - Individual stream recording logic
-- **Danmaku Stream**: [src-tauri/crates/danmu_stream/](mdc:src-tauri/crates/danmu_stream/) - Custom crate for bullet comment processing
+- **Recorder Manager**: [src-tauri/src/recorder_manager.rs](mdc:src-tauri/src/recorder_manager.rs)
+  \- Main recording orchestration
+- **Recorder**: [src-tauri/src/recorder/](mdc:src-tauri/src/recorder/)
+  \- Individual stream recording logic
+- **Danmaku Stream**: [src-tauri/crates/danmu_stream/](mdc:src-tauri/crates/danmu_stream/)
+  \- Custom crate for bullet comment processing
 
 ## Supported Platforms
 
@@ -21,10 +24,14 @@
 
 ## Frontend Interfaces
 
-- **Live Mode**: [src/AppLive.svelte](mdc:src/AppLive.svelte) - Live streaming interface
-- **Clip Mode**: [src/AppClip.svelte](mdc:src/AppClip.svelte) - Video editing and clipping
-- **Room Management**: [src/page/Room.svelte](mdc:src/page/Room.svelte) - Stream room configuration
-- **Task Management**: [src/page/Task.svelte](mdc:src/page/Task.svelte) - Recording task monitoring
+- **Live Mode**: [src/AppLive.svelte](mdc:src/AppLive.svelte)
+  \- Live streaming interface
+- **Clip Mode**: [src/AppClip.svelte](mdc:src/AppClip.svelte)
+  \- Video editing and clipping
+- **Room Management**: [src/page/Room.svelte](mdc:src/page/Room.svelte)
+  \- Stream room configuration
+- **Task Management**: [src/page/Task.svelte](mdc:src/page/Task.svelte)
+  \- Recording task monitoring
 
 ## Technical Implementation
 

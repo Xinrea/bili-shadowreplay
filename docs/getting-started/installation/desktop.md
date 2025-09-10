@@ -2,7 +2,7 @@
 
 桌面端目前提供了 Windows、Linux 和 MacOS 三个平台的安装包。
 
-安装包分为两个版本，普通版和 debug 版，普通版适合大部分用户使用，debug 版包含了更多的调试信息，适合开发者使用；由于程序会对账号等敏感信息进行管理，请从信任的来源进行下载；所有版本均可在 [GitHub Releases](https://github.com/Xinrea/bili-shadowreplay/releases) 页面下载安装。
+由于程序会对账号等敏感信息进行管理，请从信任的来源进行下载；所有版本均可在 [GitHub Releases](https://github.com/Xinrea/bili-shadowreplay/releases) 页面下载安装。
 
 ## Windows
 

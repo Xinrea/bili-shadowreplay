@@ -240,7 +240,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
             return Err(e.into());
         }
     };
-    let client = Arc::new(BiliClient::new(&config.user_agent)?);
+    let client = Arc::new(BiliClient::new()?);
     let config = Arc::new(RwLock::new(config));
     let db = Arc::new(Database::new());
     // connect to sqlite database
@@ -306,7 +306,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
         } else if platform == PlatformType::Douyin {
             // Update Douyin account info
             use crate::recorder::douyin::client::DouyinClient;
-            let douyin_client = DouyinClient::new(&config.read().await.user_agent, &account);
+            let douyin_client = DouyinClient::new(&account);
             match douyin_client.get_user_info().await {
                 Ok(user_info) => {
                     let avatar_url = user_info
@@ -372,7 +372,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         }
     };
 
-    let client = Arc::new(BiliClient::new(&config.user_agent)?);
+    let client = Arc::new(BiliClient::new()?);
     let config = Arc::new(RwLock::new(config));
     let config_clone = config.clone();
     let dbs = app.state::<tauri_plugin_sql::DbInstances>().inner();
@@ -437,7 +437,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         } else if platform == PlatformType::Douyin {
             // Update Douyin account info
             use crate::recorder::douyin::client::DouyinClient;
-            let douyin_client = DouyinClient::new(&config_clone.read().await.user_agent, &account);
+            let douyin_client = DouyinClient::new(&account);
             match douyin_client.get_user_info().await {
                 Ok(user_info) => {
                     let avatar_url = user_info
@@ -550,7 +550,6 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::config::update_auto_generate,
         crate::handlers::config::update_status_check_interval,
         crate::handlers::config::update_whisper_language,
-        crate::handlers::config::update_user_agent,
         crate::handlers::config::update_cleanup_source_flv,
         crate::handlers::config::update_webhook_url,
         crate::handlers::message::get_messages,

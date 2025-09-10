@@ -137,7 +137,6 @@ export interface Config {
   auto_generate: AutoGenerateConfig;
   status_check_interval: number;
   whisper_language: string;
-  user_agent: string;
   cleanup_source_flv_after_import: boolean;
   webhook_url: string;
 }

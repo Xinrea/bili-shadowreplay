@@ -286,13 +286,6 @@ pub async fn update_whisper_language(
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn update_user_agent(state: state_type!(), user_agent: String) -> Result<(), ()> {
-    log::info!("Updating user agent to {}", user_agent);
-    state.config.write().await.set_user_agent(&user_agent);
-    Ok(())
-}
-
-#[cfg_attr(feature = "gui", tauri::command)]
 #[cfg(feature = "gui")]
 pub async fn update_cleanup_source_flv(state: state_type!(), cleanup: bool) -> Result<(), ()> {
     log::info!("Updating cleanup source FLV after import to {}", cleanup);

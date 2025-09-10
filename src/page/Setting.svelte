@@ -37,7 +37,6 @@
     },
     status_check_interval: 30, // 默认30秒
     whisper_language: "",
-    user_agent: "",
     cleanup_source_flv_after_import: false,
     webhook_url: "",
   };
@@ -201,30 +200,6 @@
                     class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-24"
                     bind:value={setting_model.status_check_interval}
                     on:blur={update_status_check_interval}
-                  />
-                </div>
-              </div>
-            </div>
-            <div class="p-4">
-              <div class="flex items-center justify-between">
-                <div>
-                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">
-                    User-Agent
-                  </h3>
-                  <p class="text-sm text-gray-500 dark:text-gray-400">
-                    当出现风控问题时，可以尝试修改此项来解决，改动需要重启程序才能生效
-                  </p>
-                </div>
-                <div class="flex items-center space-x-2">
-                  <input
-                    type="text"
-                    class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
-                    bind:value={setting_model.user_agent}
-                    on:change={async () => {
-                      await invoke("update_user_agent", {
-                        userAgent: setting_model.user_agent,
-                      });
-                    }}
                   />
                 </div>
               </div>

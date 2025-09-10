@@ -109,7 +109,7 @@ struct HeaderInfo {
 
 impl BiliRecorder {
     pub async fn new(options: BiliRecorderOptions) -> Result<Self, super::errors::RecorderError> {
-        let client = BiliClient::new(&options.config.read().await.user_agent)?;
+        let client = BiliClient::new()?;
         let room_info = client
             .get_room_info(&options.account, options.room_id)
             .await?;
@@ -796,6 +796,12 @@ impl BiliRecorder {
                         ),
                     });
                 }
+
+                // update current header info
+                *self.current_header_info.write().await = Some(HeaderInfo {
+                    url: header_url,
+                    resolution: new_resolution,
+                });
             }
         }
 

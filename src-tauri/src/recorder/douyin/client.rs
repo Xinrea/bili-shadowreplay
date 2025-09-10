@@ -1,4 +1,4 @@
-use crate::database::account::AccountRow;
+use crate::{database::account::AccountRow, recorder::user_agent_generator};
 use m3u8_rs::{MediaPlaylist, Playlist};
 use reqwest::{Client, Error as ReqwestError};
 
@@ -57,12 +57,19 @@ pub struct DouyinClient {
 }
 
 impl DouyinClient {
-    pub fn new(user_agent: &str, account: &AccountRow) -> Self {
-        let client = Client::builder().user_agent(user_agent).build().unwrap();
+    pub fn new(account: &AccountRow) -> Self {
+        let client = Client::builder().build().unwrap();
         Self {
             client,
             account: account.clone(),
         }
+    }
+
+    pub fn generate_user_agent_header(&self) -> reqwest::header::HeaderMap {
+        let user_agent = user_agent_generator::UserAgentGenerator::new().generate();
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("user-agent", user_agent.parse().unwrap());
+        headers
     }
 
     pub async fn get_room_info(
@@ -75,13 +82,11 @@ impl DouyinClient {
             room_id
         );
 
-        let resp = self
-            .client
-            .get(&url)
-            .header("Referer", "https://live.douyin.com/")
-            .header("Cookie", self.account.cookies.clone())
-            .send()
-            .await?;
+        let mut headers = self.generate_user_agent_header();
+        headers.insert("Referer", "https://live.douyin.com/".parse().unwrap());
+        headers.insert("Cookie", self.account.cookies.clone().parse().unwrap());
+
+        let resp = self.client.get(&url).headers(headers).send().await?;
 
         let status = resp.status();
         let text = resp.text().await?;
@@ -160,14 +165,11 @@ impl DouyinClient {
 
         log::info!("get_room_info_h5: {}", url);
 
-        let resp = self
-            .client
-            .get(&url)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
-            .header("Referer", "https://live.douyin.com/")
-            .header("Cookie", self.account.cookies.clone())
-            .send()
-            .await?;
+        let mut headers = self.generate_user_agent_header();
+        headers.insert("Referer", "https://live.douyin.com/".parse().unwrap());
+        headers.insert("Cookie", self.account.cookies.clone().parse().unwrap());
+
+        let resp = self.client.get(&url).headers(headers).send().await?;
 
         let status = resp.status();
         let text = resp.text().await?;
@@ -273,13 +275,11 @@ impl DouyinClient {
     pub async fn get_user_info(&self) -> Result<super::response::User, DouyinClientError> {
         // Use the IM spotlight relation API to get user info
         let url = "https://www.douyin.com/aweme/v1/web/im/spotlight/relation/";
-        let resp = self
-            .client
-            .get(url)
-            .header("Referer", "https://www.douyin.com/")
-            .header("Cookie", self.account.cookies.clone())
-            .send()
-            .await?;
+        let mut headers = self.generate_user_agent_header();
+        headers.insert("Referer", "https://www.douyin.com/".parse().unwrap());
+        headers.insert("Cookie", self.account.cookies.clone().parse().unwrap());
+
+        let resp = self.client.get(url).headers(headers).send().await?;
 
         let status = resp.status();
         let text = resp.text().await?;

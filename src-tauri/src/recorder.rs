@@ -2,6 +2,7 @@ pub mod bilibili;
 pub mod danmu;
 pub mod douyin;
 pub mod errors;
+mod user_agent_generator;
 
 mod entry;
 

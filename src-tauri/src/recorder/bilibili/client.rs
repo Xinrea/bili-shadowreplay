@@ -9,6 +9,7 @@ use super::response::VideoSubmitData;
 use crate::database::account::AccountRow;
 use crate::progress_reporter::ProgressReporter;
 use crate::progress_reporter::ProgressReporterTrait;
+use crate::recorder::user_agent_generator;
 use chrono::TimeZone;
 use pct_str::PctString;
 use pct_str::URIReserved;
@@ -70,7 +71,6 @@ pub struct QrStatus {
 /// BiliClient is thread safe
 pub struct BiliClient {
     client: Client,
-    headers: reqwest::header::HeaderMap,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -142,22 +142,27 @@ impl BiliStream {
 }
 
 impl BiliClient {
-    pub fn new(user_agent: &str) -> Result<BiliClient, BiliClientError> {
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert("user-agent", user_agent.parse().unwrap());
-
+    pub fn new() -> Result<BiliClient, BiliClientError> {
         if let Ok(client) = Client::builder().timeout(Duration::from_secs(10)).build() {
-            Ok(BiliClient { client, headers })
+            Ok(BiliClient { client })
         } else {
             Err(BiliClientError::InitClientError)
         }
     }
 
+    fn generate_user_agent_header(&self) -> reqwest::header::HeaderMap {
+        let user_agent = user_agent_generator::UserAgentGenerator::new().generate();
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("user-agent", user_agent.parse().unwrap());
+        headers
+    }
+
     pub async fn get_qr(&self) -> Result<QrInfo, BiliClientError> {
+        let headers = self.generate_user_agent_header();
         let res: serde_json::Value = self
             .client
             .get("https://passport.bilibili.com/x/passport-login/web/qrcode/generate")
-            .headers(self.headers.clone())
+            .headers(headers)
             .send()
             .await?
             .json()
@@ -175,13 +180,14 @@ impl BiliClient {
     }
 
     pub async fn get_qr_status(&self, qrcode_key: &str) -> Result<QrStatus, BiliClientError> {
+        let headers = self.generate_user_agent_header();
         let res: serde_json::Value = self
             .client
             .get(format!(
                 "https://passport.bilibili.com/x/passport-login/web/qrcode/poll?qrcode_key={}",
                 qrcode_key
             ))
-            .headers(self.headers.clone())
+            .headers(headers)
             .send()
             .await?
             .json()
@@ -200,8 +206,8 @@ impl BiliClient {
     }
 
     pub async fn logout(&self, account: &AccountRow) -> Result<(), BiliClientError> {
+        let mut headers = self.generate_user_agent_header();
         let url = "https://passport.bilibili.com/login/exit/v2";
-        let mut headers = self.headers.clone();
         if let Ok(cookies) = account.cookies.parse() {
             headers.insert("cookie", cookies);
         } else {
@@ -232,7 +238,7 @@ impl BiliClient {
             "w_webid": "",
         });
         let params = self.get_sign(params).await?;
-        let mut headers = self.headers.clone();
+        let mut headers = self.generate_user_agent_header();
         if let Ok(cookies) = account.cookies.parse() {
             headers.insert("cookie", cookies);
         } else {
@@ -278,7 +284,7 @@ impl BiliClient {
         account: &AccountRow,
         room_id: u64,
     ) -> Result<RoomInfo, BiliClientError> {
-        let mut headers = self.headers.clone();
+        let mut headers = self.generate_user_agent_header();
         if let Ok(cookies) = account.cookies.parse() {
             headers.insert("cookie", cookies);
         } else {
@@ -380,7 +386,7 @@ impl BiliClient {
         account: &AccountRow,
         url: &String,
     ) -> Result<String, BiliClientError> {
-        let mut headers = self.headers.clone();
+        let mut headers = self.generate_user_agent_header();
         if let Ok(cookies) = account.cookies.parse() {
             headers.insert("cookie", cookies);
         } else {
@@ -405,7 +411,7 @@ impl BiliClient {
         let res = self
             .client
             .get(url)
-            .headers(self.headers.clone())
+            .headers(self.generate_user_agent_header())
             .send()
             .await?;
         let mut file = tokio::fs::File::create(file_path).await?;
@@ -426,7 +432,7 @@ impl BiliClient {
         let nav_info: Value = self
             .client
             .get("https://api.bilibili.com/x/web-interface/nav")
-            .headers(self.headers.clone())
+            .headers(self.generate_user_agent_header())
             .send()
             .await?
             .json()
@@ -501,7 +507,7 @@ impl BiliClient {
         account: &AccountRow,
         video_file: &Path,
     ) -> Result<PreuploadResponse, BiliClientError> {
-        let mut headers = self.headers.clone();
+        let mut headers = self.generate_user_agent_header();
         if let Ok(cookies) = account.cookies.parse() {
             headers.insert("cookie", cookies);
         } else {
@@ -744,7 +750,7 @@ impl BiliClient {
         profile_template: &Profile,
         video: &profile::Video,
     ) -> Result<VideoSubmitData, BiliClientError> {
-        let mut headers = self.headers.clone();
+        let mut headers = self.generate_user_agent_header();
         if let Ok(cookies) = account.cookies.parse() {
             headers.insert("cookie", cookies);
         } else {
@@ -794,7 +800,7 @@ impl BiliClient {
             "https://member.bilibili.com/x/vu/web/cover/up?ts={}",
             chrono::Local::now().timestamp(),
         );
-        let mut headers = self.headers.clone();
+        let mut headers = self.generate_user_agent_header();
         if let Ok(cookies) = account.cookies.parse() {
             headers.insert("cookie", cookies);
         } else {
@@ -836,7 +842,7 @@ impl BiliClient {
         message: &str,
     ) -> Result<(), BiliClientError> {
         let url = "https://api.live.bilibili.com/msg/send".to_string();
-        let mut headers = self.headers.clone();
+        let mut headers = self.generate_user_agent_header();
         if let Ok(cookies) = account.cookies.parse() {
             headers.insert("cookie", cookies);
         } else {
@@ -870,7 +876,7 @@ impl BiliClient {
         account: &AccountRow,
     ) -> Result<Vec<response::Typelist>, BiliClientError> {
         let url = "https://member.bilibili.com/x/vupre/web/archive/pre?lang=cn";
-        let mut headers = self.headers.clone();
+        let mut headers = self.generate_user_agent_header();
         if let Ok(cookies) = account.cookies.parse() {
             headers.insert("cookie", cookies);
         } else {

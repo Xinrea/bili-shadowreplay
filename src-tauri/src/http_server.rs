@@ -13,9 +13,8 @@ use crate::{
         config::{
             get_config, update_auto_generate, update_clip_name_format, update_notify,
             update_openai_api_endpoint, update_openai_api_key, update_status_check_interval,
-            update_subtitle_generator_type, update_subtitle_setting, update_user_agent,
-            update_webhook_url, update_whisper_language, update_whisper_model,
-            update_whisper_prompt,
+            update_subtitle_generator_type, update_subtitle_setting, update_webhook_url,
+            update_whisper_language, update_whisper_model, update_whisper_prompt,
         },
         message::{delete_message, get_messages, read_message},
         recorder::{
@@ -271,22 +270,6 @@ async fn handler_update_whisper_language(
 #[serde(rename_all = "camelCase")]
 struct UpdateSubtitleSettingRequest {
     auto_subtitle: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct UpdateUserAgentRequest {
-    user_agent: String,
-}
-
-async fn handler_update_user_agent(
-    state: axum::extract::State<State>,
-    Json(user_agent): Json<UpdateUserAgentRequest>,
-) -> Result<Json<ApiResponse<()>>, ApiError> {
-    update_user_agent(state.0, user_agent.user_agent)
-        .await
-        .expect("Failed to update user agent");
-    Ok(Json(ApiResponse::success(())))
 }
 
 async fn handler_update_subtitle_setting(
@@ -1800,7 +1783,6 @@ pub async fn start_api_server(state: State) {
                 post(handler_update_whisper_language),
             )
             .route("/api/update_webhook_url", post(handler_update_webhook_url))
-            .route("/api/update_user_agent", post(handler_update_user_agent))
             .route(
                 "/api/batch_import_external_videos",
                 post(handler_batch_import_external_videos),

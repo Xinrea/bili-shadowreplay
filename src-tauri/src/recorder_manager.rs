@@ -16,12 +16,12 @@ use crate::recorder::RecorderInfo;
 use crate::webhook::events::{self, Payload};
 use crate::webhook::poster::WebhookPoster;
 use chrono::Utc;
-use custom_error::custom_error;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use thiserror::Error;
 use tokio::fs::{remove_file, write};
 use tokio::sync::broadcast;
 use tokio::sync::RwLock;
@@ -83,39 +83,31 @@ pub struct RecorderManager {
     webhook_poster: WebhookPoster,
 }
 
-custom_error! {pub RecorderManagerError
-    AlreadyExisted { room_id: u64 } = "房间 {room_id} 已存在",
-    NotFound {room_id: u64 } = "房间 {room_id} 不存在",
-    InvalidPlatformType { platform: String } = "不支持的平台: {platform}",
-    RecorderError { err: RecorderError } = "录播器错误: {err}",
-    IOError {err: std::io::Error } = "IO 错误: {err}",
-    HLSError { err: String } = "HLS 服务器错误: {err}",
-    DatabaseError { err: DatabaseError } = "数据库错误: {err}",
-    Recording { live_id: String } = "无法删除正在录制的直播 {live_id}",
-    ClipError { err: String } = "切片错误: {err}",
-}
-
-impl From<std::io::Error> for RecorderManagerError {
-    fn from(value: std::io::Error) -> Self {
-        RecorderManagerError::IOError { err: value }
-    }
-}
-
-impl From<RecorderError> for RecorderManagerError {
-    fn from(value: RecorderError) -> Self {
-        RecorderManagerError::RecorderError { err: value }
-    }
-}
-
-impl From<DatabaseError> for RecorderManagerError {
-    fn from(value: DatabaseError) -> Self {
-        RecorderManagerError::DatabaseError { err: value }
-    }
+#[derive(Error, Debug)]
+pub enum RecorderManagerError {
+    #[error("Recorder already exists: {room_id}")]
+    AlreadyExisted { room_id: u64 },
+    #[error("Recorder not found: {room_id}")]
+    NotFound { room_id: u64 },
+    #[error("Invalid platform type: {platform}")]
+    InvalidPlatformType { platform: String },
+    #[error("Recorder error: {0}")]
+    RecorderError(#[from] RecorderError),
+    #[error("IO error: {0}")]
+    IOError(#[from] std::io::Error),
+    #[error("HLS error: {err}")]
+    HLSError { err: String },
+    #[error("Database error: {0}")]
+    DatabaseError(#[from] DatabaseError),
+    #[error("Recording: {live_id}")]
+    Recording { live_id: String },
+    #[error("Clip error: {err}")]
+    ClipError { err: String },
 }
 
 impl From<RecorderManagerError> for String {
-    fn from(value: RecorderManagerError) -> Self {
-        value.to_string()
+    fn from(err: RecorderManagerError) -> Self {
+        err.to_string()
     }
 }
 

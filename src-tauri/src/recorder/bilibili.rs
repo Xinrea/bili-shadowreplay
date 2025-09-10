@@ -20,7 +20,6 @@ use client::{BiliClient, BiliStream, RoomInfo, StreamType, UserInfo};
 use danmu_stream::danmu_stream::DanmuStream;
 use danmu_stream::provider::ProviderType;
 use danmu_stream::DanmuMessageType;
-use errors::BiliClientError;
 use m3u8_rs::{Playlist, QuotedOrUnquoted, VariantStream};
 use rand::seq::SliceRandom;
 use regex::Regex;
@@ -34,7 +33,7 @@ use tokio::task::JoinHandle;
 use url::Url;
 
 use crate::config::Config;
-use crate::database::{Database, DatabaseError};
+use crate::database::Database;
 
 use async_trait::async_trait;
 
@@ -75,18 +74,6 @@ pub struct BiliRecorder {
     danmu_task: Arc<Mutex<Option<JoinHandle<()>>>>,
     record_task: Arc<Mutex<Option<JoinHandle<()>>>>,
     master_manifest: Arc<RwLock<Option<String>>>,
-}
-
-impl From<DatabaseError> for super::errors::RecorderError {
-    fn from(value: DatabaseError) -> Self {
-        super::errors::RecorderError::InvalidDBOP { err: value }
-    }
-}
-
-impl From<BiliClientError> for super::errors::RecorderError {
-    fn from(value: BiliClientError) -> Self {
-        super::errors::RecorderError::BiliClientError { err: value }
-    }
 }
 
 pub struct BiliRecorderOptions {
@@ -416,7 +403,7 @@ impl BiliRecorder {
         if danmu_stream.is_err() {
             let err = danmu_stream.err().unwrap();
             log::error!("[{}]Failed to create danmu stream: {}", self.room_id, err);
-            return Err(super::errors::RecorderError::DanmuStreamError { err });
+            return Err(super::errors::RecorderError::DanmuStreamError(err));
         }
         let danmu_stream = danmu_stream.unwrap();
 
@@ -443,11 +430,11 @@ impl BiliRecorder {
                 }
             } else {
                 log::error!("[{}]Failed to receive danmu message", self.room_id);
-                return Err(super::errors::RecorderError::DanmuStreamError {
-                    err: danmu_stream::DanmuStreamError::WebsocketError {
+                return Err(super::errors::RecorderError::DanmuStreamError(
+                    danmu_stream::DanmuStreamError::WebsocketError {
                         err: "Failed to receive danmu message".to_string(),
                     },
-                });
+                ));
             }
         }
     }
@@ -491,7 +478,7 @@ impl BiliRecorder {
                     self.room_id,
                     self.master_manifest.read().await.as_ref().unwrap()
                 );
-                Err(super::errors::RecorderError::BiliClientError { err: e })
+                Err(super::errors::RecorderError::BiliClientError(e))
             }
         }
     }
@@ -541,7 +528,7 @@ impl BiliRecorder {
         log::debug!("Get resolution from {}", header_url);
         let resolution = get_video_resolution(header_url)
             .await
-            .map_err(|e| super::errors::RecorderError::FfmpegError { err: e })?;
+            .map_err(super::errors::RecorderError::FfmpegError)?;
         Ok(resolution)
     }
 
@@ -652,7 +639,7 @@ impl BiliRecorder {
             // Create work directory before download
             tokio::fs::create_dir_all(&work_dir)
                 .await
-                .map_err(|e| super::errors::RecorderError::IoError { err: e })?;
+                .map_err(super::errors::RecorderError::IoError)?;
 
             // Download header
             match self
@@ -917,7 +904,7 @@ impl BiliRecorder {
                         // Create work directory before first ts download
                         tokio::fs::create_dir_all(&work_dir)
                             .await
-                            .map_err(|e| super::errors::RecorderError::IoError { err: e })?;
+                            .map_err(super::errors::RecorderError::IoError)?;
                         work_dir_created_for_non_fmp4 = true;
                     }
 
@@ -1242,7 +1229,7 @@ impl super::Recorder for BiliRecorder {
                             }
                             Err(e) => {
                                 log::error!("[{}]Update entries error: {}", self_clone.room_id, e);
-                                if let RecorderError::BiliClientError { err: _ } = e {
+                                if let RecorderError::BiliClientError(_) = e {
                                     connection_fail_count =
                                         std::cmp::min(5, connection_fail_count + 1);
                                 }

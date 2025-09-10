@@ -2,43 +2,27 @@ use crate::{database::account::AccountRow, recorder::user_agent_generator};
 use deno_core::JsRuntime;
 use deno_core::RuntimeOptions;
 use m3u8_rs::{MediaPlaylist, Playlist};
-use reqwest::{Client, Error as ReqwestError};
+use reqwest::{Client};
 use uuid::Uuid;
 
+use thiserror::Error;
 use super::response::DouyinRoomInfoResponse;
-use std::{fmt, path::Path};
+use std::{path::Path};
 
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub enum DouyinClientError {
+    #[error("Network error: {0}")]
     Network(String),
-    Io(std::io::Error),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("Playlist error: {0}")]
     Playlist(String),
+    #[error("H5 live not started: {0}")]
     H5NotLive(String),
+    #[error("JS runtime error: {0}")]
     JsRuntimeError(String),
-}
-
-impl fmt::Display for DouyinClientError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Network(e) => write!(f, "Network error: {}", e),
-            Self::Io(e) => write!(f, "IO error: {}", e),
-            Self::Playlist(e) => write!(f, "Playlist error: {}", e),
-            Self::H5NotLive(e) => write!(f, "H5 live not started: {}", e),
-            Self::JsRuntimeError(e) => write!(f, "JS runtime error: {}", e),
-        }
-    }
-}
-
-impl From<ReqwestError> for DouyinClientError {
-    fn from(err: ReqwestError) -> Self {
-        DouyinClientError::Network(err.to_string())
-    }
-}
-
-impl From<std::io::Error> for DouyinClientError {
-    fn from(err: std::io::Error) -> Self {
-        DouyinClientError::Io(err)
-    }
+    #[error("Reqwest error: {0}")]
+    ReqwestError(#[from] reqwest::Error),
 }
 
 #[derive(Debug, Clone)]

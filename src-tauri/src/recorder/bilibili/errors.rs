@@ -1,38 +1,43 @@
-use custom_error::custom_error;
+use thiserror::Error;
 
-custom_error! {pub BiliClientError
-    InvalidResponse = "Invalid response",
-    InitClientError = "Client init error",
-    InvalidResponseStatus{ status: reqwest::StatusCode } = "Invalid response status: {status}",
-    InvalidResponseJson{ resp: serde_json::Value } = "Invalid response json: {resp}",
-    InvalidMessageCode{ code: u64 } = "Invalid message code: {code}",
-    InvalidValue = "Invalid value",
-    InvalidUrl = "Invalid url",
-    InvalidFormat = "Invalid stream format",
-    InvalidStream = "Invalid stream",
-    InvalidCookie = "Invalid cookie",
-    UploadError{err: String} = "Upload error: {err}",
-    UploadCancelled = "Upload was cancelled by user",
-    EmptyCache = "Empty cache",
-    ClientError{err: reqwest::Error} = "Client error: {err}",
-    IOError{err: std::io::Error} = "IO error: {err}",
-    SecurityControlError = "Security control error",
-}
-
-impl From<reqwest::Error> for BiliClientError {
-    fn from(e: reqwest::Error) -> Self {
-        BiliClientError::ClientError { err: e }
-    }
-}
-
-impl From<std::io::Error> for BiliClientError {
-    fn from(e: std::io::Error) -> Self {
-        BiliClientError::IOError { err: e }
-    }
+#[derive(Error, Debug)]
+pub enum BiliClientError {
+    #[error("Invalid response")]
+    InvalidResponse,
+    #[error("Client init error")]
+    InitClientError,
+    #[error("Invalid response status: {status}")]
+    InvalidResponseStatus { status: reqwest::StatusCode },
+    #[error("Invalid response json: {resp}")]
+    InvalidResponseJson { resp: serde_json::Value },
+    #[error("Invalid message code: {code}")]
+    InvalidMessageCode { code: u64 },
+    #[error("Invalid value")]
+    InvalidValue,
+    #[error("Invalid url")]
+    InvalidUrl,
+    #[error("Invalid stream format")]
+    InvalidFormat,
+    #[error("Invalid stream")]
+    InvalidStream,
+    #[error("Invalid cookie")]
+    InvalidCookie,
+    #[error("Upload error: {err}")]
+    UploadError { err: String },
+    #[error("Upload was cancelled by user")]
+    UploadCancelled,
+    #[error("Empty cache")]
+    EmptyCache,
+    #[error("Client error: {0}")]
+    ClientError(#[from] reqwest::Error),
+    #[error("IO error: {0}")]
+    IOError(#[from] std::io::Error),
+    #[error("Security control error")]
+    SecurityControlError,
 }
 
 impl From<BiliClientError> for String {
-    fn from(value: BiliClientError) -> Self {
-        value.to_string()
+    fn from(err: BiliClientError) -> Self {
+        err.to_string()
     }
 }

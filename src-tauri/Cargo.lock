@@ -553,7 +553,6 @@ dependencies = [
  "base64 0.21.7",
  "chrono",
  "clap",
- "custom_error",
  "danmu_stream",
  "dashmap",
  "deno_core",
@@ -590,7 +589,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-sql",
  "tauri-utils",
- "thiserror 1.0.69",
+ "thiserror 2.0.12",
  "tokio",
  "tokio-util",
  "toml 0.7.8",
@@ -1285,12 +1284,6 @@ dependencies = [
  "quote",
  "syn 2.0.104",
 ]
-
-[[package]]
-name = "custom_error"
-version = "1.9.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f8a51dd197fa6ba5b4dc98a990a43cc13693c23eb0089ebb0fcc1f04152bca6"
 
 [[package]]
 name = "danmu_stream"

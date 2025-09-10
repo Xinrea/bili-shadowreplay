@@ -1,4 +1,3 @@
-use custom_error::custom_error;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -10,12 +9,6 @@ use crate::webhook::poster::WebhookPoster;
 
 #[cfg(feature = "headless")]
 use crate::progress_manager::ProgressManager;
-
-custom_error! {
-    StateError
-    RecorderAlreadyExists = "Recorder already exists",
-    RecorderCreateError = "Recorder create error",
-}
 
 #[derive(Clone)]
 pub struct State {

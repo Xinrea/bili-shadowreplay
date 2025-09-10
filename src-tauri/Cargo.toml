@@ -25,7 +25,6 @@ async-std = "1.12.0"
 async-ffmpeg-sidecar = "0.0.1"
 chrono = { version = "0.4.24", features = ["serde"] }
 toml = "0.7.3"
-custom_error = "1.9.2"
 regex = "1.7.3"
 tokio = { version = "1.27.0", features = ["process"] }
 platform-dirs = "0.3.0"
@@ -52,7 +51,7 @@ tokio-util = { version = "0.7", features = ["io"] }
 clap = { version = "4.5.37", features = ["derive"] }
 url = "2.5.4"
 srtparse = "0.2.0"
-thiserror = "1.0"
+thiserror = "2"
 deno_core = "0.355"
 
 [features]

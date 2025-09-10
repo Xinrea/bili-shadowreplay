@@ -1,6 +1,6 @@
-use custom_error::custom_error;
 use sqlx::Pool;
 use sqlx::Sqlite;
+use thiserror::Error;
 use tokio::sync::RwLock;
 
 pub mod account;
@@ -14,23 +14,23 @@ pub struct Database {
     db: RwLock<Option<Pool<Sqlite>>>,
 }
 
-custom_error! { pub DatabaseError
-    InsertError = "Entry insert failed",
-    NotFoundError = "Entry not found",
-    InvalidCookiesError = "Cookies are invalid",
-    DBError {err: sqlx::Error } = "DB error: {err}",
-    SQLError { sql: String } = "SQL is incorret: {sql}"
+#[derive(Error, Debug)]
+pub enum DatabaseError {
+    #[error("Entry insert failed")]
+    Insert,
+    #[error("Entry not found")]
+    NotFound,
+    #[error("Cookies are invalid")]
+    InvalidCookies,
+    #[error("DB error: {0}")]
+    DB(#[from] sqlx::Error),
+    #[error("SQL is incorret: {sql}")]
+    Sql { sql: String },
 }
 
 impl From<DatabaseError> for String {
-    fn from(value: DatabaseError) -> Self {
-        value.to_string()
-    }
-}
-
-impl From<sqlx::Error> for DatabaseError {
-    fn from(value: sqlx::Error) -> Self {
-        DatabaseError::DBError { err: value }
+    fn from(err: DatabaseError) -> Self {
+        err.to_string()
     }
 }
 

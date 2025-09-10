@@ -48,7 +48,7 @@ impl Database {
         };
 
         if csrf.is_none() {
-            return Err(DatabaseError::InvalidCookiesError);
+            return Err(DatabaseError::InvalidCookies);
         }
 
         // parse uid and id_str based on platform
@@ -65,7 +65,7 @@ impl Database {
                 .unwrap()
                 .to_string()
                 .parse::<u64>()
-                .map_err(|_| DatabaseError::InvalidCookiesError)?;
+                .map_err(|_| DatabaseError::InvalidCookies)?;
             (uid, None)
         } else {
             // For Douyin, use temporary uid and will set id_str later with real sec_uid
@@ -97,7 +97,7 @@ impl Database {
             .execute(&lock)
             .await?;
         if sql.rows_affected() != 1 {
-            return Err(DatabaseError::NotFoundError);
+            return Err(DatabaseError::NotFound);
         }
         Ok(())
     }
@@ -120,7 +120,7 @@ impl Database {
         .execute(&lock)
         .await?;
         if sql.rows_affected() != 1 {
-            return Err(DatabaseError::NotFoundError);
+            return Err(DatabaseError::NotFound);
         }
         Ok(())
     }
@@ -200,7 +200,7 @@ impl Database {
                 .fetch_all(&lock)
                 .await?;
         if accounts.is_empty() {
-            return Err(DatabaseError::NotFoundError);
+            return Err(DatabaseError::NotFound);
         }
         // randomly select one account
         let account = accounts.choose(&mut rand::thread_rng()).unwrap();

@@ -54,7 +54,7 @@ impl Database {
             .execute(&lock)
             .await?;
         if sql.rows_affected() != 1 {
-            return Err(DatabaseError::NotFoundError);
+            return Err(DatabaseError::NotFound);
         }
 
         // remove related archive

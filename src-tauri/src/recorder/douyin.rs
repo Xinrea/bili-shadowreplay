@@ -38,18 +38,6 @@ pub enum LiveStatus {
     Offline,
 }
 
-impl From<std::io::Error> for RecorderError {
-    fn from(err: std::io::Error) -> Self {
-        RecorderError::IoError { err }
-    }
-}
-
-impl From<DouyinClientError> for RecorderError {
-    fn from(err: DouyinClientError) -> Self {
-        RecorderError::DouyinClientError { err }
-    }
-}
-
 #[derive(Clone)]
 pub struct DouyinRecorder {
     #[cfg(not(feature = "headless"))]
@@ -250,7 +238,7 @@ impl DouyinRecorder {
         if danmu_stream.is_err() {
             let err = danmu_stream.err().unwrap();
             log::error!("Failed to create danmu stream: {}", err);
-            return Err(super::errors::RecorderError::DanmuStreamError { err });
+            return Err(super::errors::RecorderError::DanmuStreamError(err));
         }
         let danmu_stream = danmu_stream.unwrap();
 
@@ -276,11 +264,11 @@ impl DouyinRecorder {
                 }
             } else {
                 log::error!("Failed to receive danmu message");
-                return Err(super::errors::RecorderError::DanmuStreamError {
-                    err: danmu_stream::DanmuStreamError::WebsocketError {
+                return Err(super::errors::RecorderError::DanmuStreamError(
+                    danmu_stream::DanmuStreamError::WebsocketError {
                         err: "Failed to receive danmu message".to_string(),
                     },
-                });
+                ));
             }
         }
     }
@@ -707,7 +695,7 @@ impl Recorder for DouyinRecorder {
                             }
                             Err(e) => {
                                 log::error!("[{}]Update entries error: {}", self_clone.room_id, e);
-                                if let RecorderError::DouyinClientError { err: _e } = e {
+                                if let RecorderError::DouyinClientError(_) = e {
                                     connection_fail_count =
                                         std::cmp::min(5, connection_fail_count + 1);
                                 }

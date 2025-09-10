@@ -14,7 +14,7 @@ jobs:
         include:
           - platform: "macos-latest" # for Intel based macs.
             args: "--target x86_64-apple-darwin"
-          - platform: "ubuntu-22.04"
+          - platform: "self-linux"
             args: ""
           - platform: "self-hosted"
             args: "--features cuda"

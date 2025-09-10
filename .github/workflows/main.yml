@@ -44,7 +44,7 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: setup node
-        if: matrix.platform != 'self-hosted'
+        if: matrix.platform != 'self-windows'
         uses: actions/setup-node@v4
         with:
           node-version: lts/*
@@ -57,7 +57,7 @@ jobs:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Setup ffmpeg
-        if: matrix.platform == 'self-hosted'
+        if: matrix.platform == 'self-windows'
         working-directory: ./
         shell: pwsh
         # running script ffmpeg_setup.ps1 to install ffmpeg on windows.
@@ -69,7 +69,7 @@ jobs:
         run: yarn install # change this to npm or pnpm depending on which one you use.
 
       - name: Copy CUDA DLLs (Windows CUDA only)
-        if: matrix.platform == 'self-hosted' && matrix.features == 'cuda'
+        if: matrix.platform == 'self-windows' && matrix.features == 'cuda'
         shell: pwsh
         run: |
           $cudaPath = "$env:CUDA_PATH\bin"
@@ -104,5 +104,5 @@ jobs:
           releaseBody: "> [!NOTE]\n> 如果你是第一次下载安装，请参考 [安装准备](https://bsr.xinrea.cn/getting-started/installation/desktop.html) 选择合适的版本。\n> Changelog: https://github.com/Xinrea/bili-shadowreplay/compare/${{ steps.get_previous_tag.outputs.previous_tag }}...${{ steps.get_previous_tag.outputs.current_tag }}"
           releaseDraft: true
           prerelease: false
-          args: ${{ matrix.args }} ${{ matrix.platform == 'self-hosted' && matrix.features == 'cuda' && '--config src-tauri/tauri.windows.cuda.conf.json' || '' }}
+          args: ${{ matrix.args }} ${{ matrix.platform == 'self-windows' && matrix.features == 'cuda' && '--config src-tauri/tauri.windows.cuda.conf.json' || '' }}
           includeDebug: true

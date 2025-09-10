@@ -16,10 +16,10 @@ jobs:
             args: "--target x86_64-apple-darwin"
           - platform: "self-linux"
             args: ""
-          - platform: "self-hosted"
+          - platform: "self-windows"
             args: "--features cuda"
             features: "cuda"
-          - platform: "self-hosted"
+          - platform: "self-windows"
             args: ""
             features: "cpu"
 

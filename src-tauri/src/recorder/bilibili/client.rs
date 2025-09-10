@@ -737,7 +737,7 @@ impl BiliClient {
             .to_str()
             .unwrap();
         Ok(profile::Video {
-            title: "".to_string(),
+            title: filename.to_string(),
             filename: filename.to_string(),
             desc: "".to_string(),
             cid: preupload.biz_id,

@@ -556,6 +556,7 @@ dependencies = [
  "custom_error",
  "danmu_stream",
  "dashmap",
+ "deno_core",
  "fix-path-env",
  "futures",
  "futures-core",

@@ -1,8 +1,13 @@
 use crate::{database::account::AccountRow, recorder::user_agent_generator};
+use deno_core::JsRuntime;
+use deno_core::RuntimeOptions;
 use m3u8_rs::{MediaPlaylist, Playlist};
 use reqwest::{Client, Error as ReqwestError};
+use tokio::sync::RwLock;
+use uuid::Uuid;
 
 use super::response::DouyinRoomInfoResponse;
+use std::sync::Arc;
 use std::{fmt, path::Path};
 
 #[derive(Debug)]
@@ -11,6 +16,7 @@ pub enum DouyinClientError {
     Io(std::io::Error),
     Playlist(String),
     H5NotLive(String),
+    JsRuntimeError(String),
 }
 
 impl fmt::Display for DouyinClientError {
@@ -20,6 +26,7 @@ impl fmt::Display for DouyinClientError {
             Self::Io(e) => write!(f, "IO error: {}", e),
             Self::Playlist(e) => write!(f, "Playlist error: {}", e),
             Self::H5NotLive(e) => write!(f, "H5 live not started: {}", e),
+            Self::JsRuntimeError(e) => write!(f, "JS runtime error: {}", e),
         }
     }
 }
@@ -56,6 +63,23 @@ pub struct DouyinClient {
     account: AccountRow,
 }
 
+fn setup_js_runtime() -> Result<JsRuntime, DouyinClientError> {
+    // Create a new V8 runtime
+    let mut runtime = JsRuntime::new(RuntimeOptions::default());
+
+    // Add global CryptoJS object
+    let crypto_js = include_str!("js/a_bogus.js");
+    runtime
+        .execute_script(
+            "<a_bogus.js>",
+            deno_core::FastString::from_static(crypto_js),
+        )
+        .map_err(|e| {
+            DouyinClientError::JsRuntimeError(format!("Failed to execute crypto-js: {}", e))
+        })?;
+    Ok(runtime)
+}
+
 impl DouyinClient {
     pub fn new(account: &AccountRow) -> Self {
         let client = Client::builder().build().unwrap();
@@ -63,6 +87,36 @@ impl DouyinClient {
             client,
             account: account.clone(),
         }
+    }
+
+    async fn generate_a_bogus(
+        &self,
+        params: &str,
+        user_agent: &str,
+    ) -> Result<String, DouyinClientError> {
+        let mut runtime = setup_js_runtime()?;
+        // Call the get_wss_url function
+        let sign_call = format!("generate_a_bogus(\"{}\", \"{}\")", params, user_agent);
+        let result = runtime
+            .execute_script("<sign_call>", deno_core::FastString::from(sign_call))
+            .map_err(|e| {
+                DouyinClientError::JsRuntimeError(format!("Failed to execute JavaScript: {}", e))
+            })?;
+
+        // Get the result from the V8 runtime
+        let mut scope = runtime.handle_scope();
+        let local = deno_core::v8::Local::new(&mut scope, result);
+        let url = local
+            .to_string(&mut scope)
+            .unwrap()
+            .to_rust_string_lossy(&mut scope);
+        Ok(url)
+    }
+
+    async fn generate_ms_token(&self) -> String {
+        // generate a random 32 characters uuid string
+        let uuid = Uuid::new_v4();
+        uuid.to_string()
     }
 
     pub fn generate_user_agent_header(&self) -> reqwest::header::HeaderMap {
@@ -77,14 +131,30 @@ impl DouyinClient {
         room_id: u64,
         sec_user_id: &str,
     ) -> Result<DouyinBasicRoomInfo, DouyinClientError> {
-        let url = format!(
-            "https://live.douyin.com/webcast/room/web/enter/?aid=6383&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&enter_from=web_live&a_bogus=0&cookie_enabled=true&screen_width=1920&screen_height=1080&browser_language=zh-CN&browser_platform=MacIntel&browser_name=Chrome&browser_version=122.0.0.0&web_rid={}",
-            room_id
-        );
-
         let mut headers = self.generate_user_agent_header();
         headers.insert("Referer", "https://live.douyin.com/".parse().unwrap());
         headers.insert("Cookie", self.account.cookies.clone().parse().unwrap());
+        let ms_token = self.generate_ms_token().await;
+        let user_agent = headers.get("user-agent").unwrap().to_str().unwrap();
+        let params = format!(
+            "aid=6383&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&enter_from=web_live&cookie_enabled=true&screen_width=1920&screen_height=1080&browser_language=zh-CN&browser_platform=MacIntel&browser_name=Chrome&browser_version=122.0.0.0&web_rid={}&ms_token={}", 
+            room_id, 
+            ms_token);
+        let a_bogus = self
+            .generate_a_bogus(
+                &params,
+                user_agent,
+            )
+            .await?;
+        log::debug!("params: {}", params);
+        log::debug!("user_agent: {}", user_agent);
+        log::debug!("a_bogus: {}", a_bogus);
+        let url = format!(
+            "https://live.douyin.com/webcast/room/web/enter/?aid=6383&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&enter_from=web_live&cookie_enabled=true&screen_width=1920&screen_height=1080&browser_language=zh-CN&browser_platform=MacIntel&browser_name=Chrome&browser_version=122.0.0.0&web_rid={}&ms_token={}&a_bogus={}",
+            room_id,
+            ms_token,
+            a_bogus
+        );
 
         let resp = self.client.get(&url).headers(headers).send().await?;
 

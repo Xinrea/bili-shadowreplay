@@ -53,6 +53,7 @@ clap = { version = "4.5.37", features = ["derive"] }
 url = "2.5.4"
 srtparse = "0.2.0"
 thiserror = "1.0"
+deno_core = "0.355"
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem

@@ -35,7 +35,7 @@ use crate::{
         },
         AccountInfo,
     },
-    progress_manager::Event,
+    progress::progress_manager::Event,
     recorder::{
         bilibili::{
             client::{QrInfo, QrStatus},

@@ -5,7 +5,7 @@ use crate::database::video::VideoRow;
 use crate::database::{account::AccountRow, record::RecordRow};
 use crate::database::{Database, DatabaseError};
 use crate::ffmpeg::{clip_from_m3u8, encode_video_danmu, Range};
-use crate::progress_reporter::{EventEmitter, ProgressReporter};
+use crate::progress::progress_reporter::{EventEmitter, ProgressReporter};
 use crate::recorder::bilibili::{BiliRecorder, BiliRecorderOptions};
 use crate::recorder::danmu::DanmuEntry;
 use crate::recorder::douyin::DouyinRecorder;

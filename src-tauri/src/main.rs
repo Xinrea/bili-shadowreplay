@@ -10,8 +10,7 @@ mod handlers;
 #[cfg(feature = "headless")]
 mod http_server;
 mod migration;
-mod progress_manager;
-mod progress_reporter;
+mod progress;
 mod recorder;
 mod recorder_manager;
 mod state;
@@ -225,8 +224,8 @@ impl MigrationSource<'static> for MigrationList {
 async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Error>> {
     use std::path::PathBuf;
 
-    use progress_manager::ProgressManager;
-    use progress_reporter::EventEmitter;
+    use progress::progress_manager::ProgressManager;
+    use progress::progress_reporter::EventEmitter;
 
     setup_logging(Path::new("./")).await?;
     log::info!("Setting up server state...");
@@ -353,7 +352,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
 #[cfg(feature = "gui")]
 async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::Error>> {
     use platform_dirs::AppDirs;
-    use progress_reporter::EventEmitter;
+    use progress::progress_reporter::EventEmitter;
 
     let log_dir = app.path().app_log_dir()?;
     setup_logging(&log_dir).await?;

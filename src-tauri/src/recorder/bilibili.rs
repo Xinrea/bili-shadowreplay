@@ -7,8 +7,8 @@ use super::errors::RecorderError;
 use super::PlatformType;
 use crate::database::account::AccountRow;
 use crate::ffmpeg::get_video_resolution;
-use crate::progress_manager::Event;
-use crate::progress_reporter::EventEmitter;
+use crate::progress::progress_manager::Event;
+use crate::progress::progress_reporter::EventEmitter;
 use crate::recorder::Recorder;
 use crate::recorder_manager::RecorderEvent;
 use crate::subtitle_generator::item_to_srt;
@@ -1433,7 +1433,7 @@ impl super::Recorder for BiliRecorder {
         // generate a tmp clip file
         let clip_file_path = format!("{}/{}", work_dir, "tmp.mp4");
         if let Err(e) = crate::ffmpeg::clip_from_m3u8(
-            None::<&crate::progress_reporter::ProgressReporter>,
+            None::<&crate::progress::progress_reporter::ProgressReporter>,
             Path::new(&m3u8_index_file_path),
             Path::new(&clip_file_path),
             None,

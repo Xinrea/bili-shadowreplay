@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use crate::{
-    progress_reporter::ProgressReporterTrait,
+    progress::progress_reporter::ProgressReporterTrait,
     subtitle_generator::{GenerateResult, SubtitleGeneratorType},
 };
 use async_std::sync::{Arc, RwLock};

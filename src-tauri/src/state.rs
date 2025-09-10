@@ -8,7 +8,7 @@ use crate::recorder_manager::RecorderManager;
 use crate::webhook::poster::WebhookPoster;
 
 #[cfg(feature = "headless")]
-use crate::progress_manager::ProgressManager;
+use crate::progress::progress_manager::ProgressManager;
 
 #[derive(Clone)]
 pub struct State {

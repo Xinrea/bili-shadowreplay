@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use crate::constants;
-use crate::progress_reporter::{ProgressReporter, ProgressReporterTrait};
+use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
 use crate::subtitle_generator::whisper_online;
 use crate::subtitle_generator::{
     whisper_cpp, GenerateResult, SubtitleGenerator, SubtitleGeneratorType,

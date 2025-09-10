@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 use tokio::sync::RwLock;
 
-use crate::progress_manager::Event;
+use crate::progress::progress_manager::Event;
 
 #[cfg(feature = "gui")]
 use {

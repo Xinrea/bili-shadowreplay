@@ -7,8 +7,8 @@ use super::{
     UserInfo,
 };
 use crate::database::Database;
-use crate::progress_manager::Event;
-use crate::progress_reporter::EventEmitter;
+use crate::progress::progress_manager::Event;
+use crate::progress::progress_reporter::EventEmitter;
 use crate::recorder_manager::RecorderEvent;
 use crate::subtitle_generator::item_to_srt;
 use crate::{config::Config, database::account::AccountRow};
@@ -786,7 +786,7 @@ impl Recorder for DouyinRecorder {
         // generate a tmp clip file
         let clip_file_path = format!("{}/{}", work_dir, "tmp.mp4");
         if let Err(e) = crate::ffmpeg::clip_from_m3u8(
-            None::<&crate::progress_reporter::ProgressReporter>,
+            None::<&crate::progress::progress_reporter::ProgressReporter>,
             Path::new(&m3u8_index_file_path),
             Path::new(&clip_file_path),
             None,

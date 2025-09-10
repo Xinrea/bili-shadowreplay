@@ -5,7 +5,7 @@ use std::path::Path;
 use tokio::fs;
 
 use crate::{
-    progress_reporter::ProgressReporterTrait,
+    progress::progress_reporter::ProgressReporterTrait,
     subtitle_generator::{GenerateResult, SubtitleGenerator, SubtitleGeneratorType},
 };
 

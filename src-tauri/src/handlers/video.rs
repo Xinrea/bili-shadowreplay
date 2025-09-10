@@ -2,7 +2,7 @@ use crate::database::task::TaskRow;
 use crate::database::video::VideoRow;
 use crate::ffmpeg;
 use crate::handlers::utils::get_disk_info_inner;
-use crate::progress_reporter::{
+use crate::progress::progress_reporter::{
     cancel_progress, EventEmitter, ProgressReporter, ProgressReporterTrait,
 };
 use crate::recorder::bilibili::profile::Profile;

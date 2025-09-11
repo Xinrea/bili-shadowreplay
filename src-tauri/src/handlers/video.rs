@@ -95,12 +95,12 @@ async fn copy_file_with_progress(
     dest: &Path,
     reporter: &ProgressReporter,
 ) -> Result<(), String> {
-    let mut source_file = File::open(source).map_err(|e| format!("无法打开源文件: {}", e))?;
-    let mut dest_file = File::create(dest).map_err(|e| format!("无法创建目标文件: {}", e))?;
+    let mut source_file = File::open(source).map_err(|e| format!("无法打开源文件: {e}"))?;
+    let mut dest_file = File::create(dest).map_err(|e| format!("无法创建目标文件: {e}"))?;
 
     let total_size = source_file
         .metadata()
-        .map_err(|e| format!("无法获取文件大小: {}", e))?
+        .map_err(|e| format!("无法获取文件大小: {e}"))?
         .len();
     let mut copied = 0u64;
 
@@ -114,14 +114,14 @@ async fn copy_file_with_progress(
     loop {
         let bytes_read = source_file
             .read(&mut buffer)
-            .map_err(|e| format!("读取文件失败: {}", e))?;
+            .map_err(|e| format!("读取文件失败: {e}"))?;
         if bytes_read == 0 {
             break;
         }
 
         dest_file
             .write_all(&buffer[..bytes_read])
-            .map_err(|e| format!("写入文件失败: {}", e))?;
+            .map_err(|e| format!("写入文件失败: {e}"))?;
         copied += bytes_read as u64;
 
         // 计算进度百分比，只在变化时更新
@@ -135,14 +135,14 @@ async fn copy_file_with_progress(
         let report_threshold = 1; // 每1%报告一次
 
         if percent != last_reported_percent && (percent % report_threshold == 0 || percent == 100) {
-            reporter.update(&format!("正在复制视频文件... {}%", percent));
+            reporter.update(&format!("正在复制视频文件... {percent}%"));
             last_reported_percent = percent;
         }
     }
 
     dest_file
         .flush()
-        .map_err(|e| format!("刷新文件缓冲区失败: {}", e))?;
+        .map_err(|e| format!("刷新文件缓冲区失败: {e}"))?;
     Ok(())
 }
 
@@ -191,7 +191,7 @@ async fn copy_then_convert_strategy(
 
     // 确保临时目录存在
     if let Some(parent) = temp_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("创建临时目录失败: {}", e))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建临时目录失败: {e}"))?;
     }
 
     // 第一步：将网络文件复制到本地临时位置（使用优化的缓冲区）
@@ -220,12 +220,12 @@ async fn copy_file_with_network_optimization(
     dest: &Path,
     reporter: &ProgressReporter,
 ) -> Result<(), String> {
-    let mut source_file = File::open(source).map_err(|e| format!("无法打开网络源文件: {}", e))?;
-    let mut dest_file = File::create(dest).map_err(|e| format!("无法创建本地临时文件: {}", e))?;
+    let mut source_file = File::open(source).map_err(|e| format!("无法打开网络源文件: {e}"))?;
+    let mut dest_file = File::create(dest).map_err(|e| format!("无法创建本地临时文件: {e}"))?;
 
     let total_size = source_file
         .metadata()
-        .map_err(|e| format!("无法获取文件大小: {}", e))?
+        .map_err(|e| format!("无法获取文件大小: {e}"))?
         .len();
     let mut copied = 0u64;
 
@@ -249,7 +249,7 @@ async fn copy_file_with_network_optimization(
 
                 dest_file
                     .write_all(&buffer[..bytes_read])
-                    .map_err(|e| format!("写入临时文件失败: {}", e))?;
+                    .map_err(|e| format!("写入临时文件失败: {e}"))?;
                 copied += bytes_read as u64;
 
                 // 计算并报告进度
@@ -272,22 +272,16 @@ async fn copy_file_with_network_optimization(
             }
             Err(e) => {
                 consecutive_errors += 1;
-                log::warn!(
-                    "网络读取错误 (尝试 {}/{}): {}",
-                    consecutive_errors,
-                    MAX_RETRIES,
-                    e
-                );
+                log::warn!("网络读取错误 (尝试 {consecutive_errors}/{MAX_RETRIES}): {e}");
 
                 if consecutive_errors >= MAX_RETRIES {
-                    return Err(format!("网络文件读取失败，已重试{}次: {}", MAX_RETRIES, e));
+                    return Err(format!("网络文件读取失败，已重试{MAX_RETRIES}次: {e}"));
                 }
 
                 // 等待一小段时间后重试
                 tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
                 reporter.update(&format!(
-                    "网络连接中断，正在重试... ({}/{})",
-                    consecutive_errors, MAX_RETRIES
+                    "网络连接中断，正在重试... ({consecutive_errors}/{MAX_RETRIES})"
                 ));
             }
         }
@@ -295,7 +289,7 @@ async fn copy_file_with_network_optimization(
 
     dest_file
         .flush()
-        .map_err(|e| format!("刷新临时文件缓冲区失败: {}", e))?;
+        .map_err(|e| format!("刷新临时文件缓冲区失败: {e}"))?;
     reporter.update("网络文件复制完成");
     Ok(())
 }
@@ -307,7 +301,7 @@ struct ClipMetadata {
     end_time: f64,
     clip_source: String,
     original_platform: String,
-    original_room_id: u64,
+    original_room_id: i64,
 }
 
 #[cfg(feature = "gui")]
@@ -341,12 +335,12 @@ pub async fn clip_range(
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
     let reporter = ProgressReporter::new(&emitter, &event_id).await?;
     let mut params_without_cover = params.clone();
-    params_without_cover.cover = "".to_string();
+    params_without_cover.cover = String::new();
     let task = TaskRow {
         id: event_id.clone(),
         task_type: "clip_range".to_string(),
         status: "pending".to_string(),
-        message: "".to_string(),
+        message: String::new(),
         metadata: json!({
             "params": params_without_cover,
         })
@@ -359,10 +353,10 @@ pub async fn clip_range(
 
     let clip_result = clip_range_inner(&state, &reporter, params.clone()).await;
     if let Err(e) = clip_result {
-        reporter.finish(false, &format!("切片失败: {}", e)).await;
+        reporter.finish(false, &format!("切片失败: {e}")).await;
         state
             .db
-            .update_task(&event_id, "failed", &format!("切片失败: {}", e), None)
+            .update_task(&event_id, "failed", &format!("切片失败: {e}"), None)
             .await?;
         return Err(e);
     }
@@ -377,12 +371,12 @@ pub async fn clip_range(
 
     if state.config.read().await.auto_subtitle {
         // generate a subtitle task event id
-        let subtitle_event_id = format!("{}_subtitle", event_id);
+        let subtitle_event_id = format!("{event_id}_subtitle");
         let result = generate_video_subtitle(state.clone(), subtitle_event_id, video.id).await;
         if let Ok(subtitle) = result {
             let result = update_video_subtitle(state.clone(), video.id, subtitle).await;
             if let Err(e) = result {
-                log::error!("Update video subtitle error: {}", e);
+                log::error!("Update video subtitle error: {e}");
             }
         } else {
             log::error!("Generate video subtitle error: {}", result.err().unwrap());
@@ -394,7 +388,7 @@ pub async fn clip_range(
         events::new_webhook_event(events::CLIP_GENERATED, events::Payload::Clip(video.clone()));
 
     if let Err(e) = state.webhook_poster.post_event(&event).await {
-        log::error!("Post webhook event error: {}", e);
+        log::error!("Post webhook event error: {e}");
     }
 
     Ok(video)
@@ -449,6 +443,13 @@ async fn clip_range_inner(
         .to_str()
         .ok_or("Invalid file path")?;
     // add video to db
+    let Ok(size) = i64::try_from(metadata.len()) else {
+        log::error!(
+            "Failed to convert metadata length to i64: {}",
+            metadata.len()
+        );
+        return Err("Failed to convert metadata length to i64".to_string());
+    };
     let video = state
         .db
         .add_video(&VideoRow {
@@ -464,12 +465,15 @@ async fn clip_range_inner(
                 .to_string(),
             file: filename.into(),
             note: params.note.clone(),
-            length: params.range.as_ref().map_or(0.0, |r| r.duration()) as i64,
-            size: metadata.len() as i64,
-            bvid: "".into(),
-            title: "".into(),
-            desc: "".into(),
-            tags: "".into(),
+            length: params
+                .range
+                .as_ref()
+                .map_or(0.0, super::super::ffmpeg::Range::duration) as i64,
+            size,
+            bvid: String::new(),
+            title: String::new(),
+            desc: String::new(),
+            tags: String::new(),
             area: 0,
             platform: params.platform.clone(),
         })
@@ -481,7 +485,10 @@ async fn clip_range_inner(
             &format!(
                 "生成了房间 {} 的切片，长度 {}s：{}",
                 params.room_id,
-                params.range.as_ref().map_or(0.0, |r| r.duration()),
+                params
+                    .range
+                    .as_ref()
+                    .map_or(0.0, super::super::ffmpeg::Range::duration),
                 filename
             ),
         )
@@ -510,8 +517,8 @@ async fn clip_range_inner(
 pub async fn upload_procedure(
     state: state_type!(),
     event_id: String,
-    uid: u64,
-    room_id: u64,
+    uid: i64,
+    room_id: i64,
     video_id: i64,
     cover: String,
     profile: Profile,
@@ -525,7 +532,7 @@ pub async fn upload_procedure(
         id: event_id.clone(),
         task_type: "upload_procedure".to_string(),
         status: "pending".to_string(),
-        message: "".to_string(),
+        message: String::new(),
         metadata: json!({
             "uid": uid,
             "room_id": room_id,
@@ -536,7 +543,7 @@ pub async fn upload_procedure(
         created_at: Utc::now().to_rfc3339(),
     };
     state.db.add_task(&task).await?;
-    log::info!("Create task: {:?}", task);
+    log::info!("Create task: {task:?}");
     match upload_procedure_inner(&state, &reporter, uid, room_id, video_id, cover, profile).await {
         Ok(bvid) => {
             reporter.finish(true, "投稿成功").await;
@@ -547,10 +554,10 @@ pub async fn upload_procedure(
             Ok(bvid)
         }
         Err(e) => {
-            reporter.finish(false, &format!("投稿失败: {}", e)).await;
+            reporter.finish(false, &format!("投稿失败: {e}")).await;
             state
                 .db
-                .update_task(&event_id, "failed", &format!("投稿失败: {}", e), None)
+                .update_task(&event_id, "failed", &format!("投稿失败: {e}"), None)
                 .await?;
             Err(e)
         }
@@ -560,8 +567,8 @@ pub async fn upload_procedure(
 async fn upload_procedure_inner(
     state: &state_type!(),
     reporter: &ProgressReporter,
-    uid: u64,
-    room_id: u64,
+    uid: i64,
+    room_id: i64,
     video_id: i64,
     cover: String,
     mut profile: Profile,
@@ -578,7 +585,7 @@ async fn upload_procedure_inner(
 
     match state.client.prepare_video(reporter, &account, path).await {
         Ok(video) => {
-            profile.cover = cover_url.await.unwrap_or("".to_string());
+            profile.cover = cover_url.await.unwrap_or(String::new());
             if let Ok(ret) = state.client.submit_video(&account, &profile, &video).await {
                 // update video status and details
                 // 1 means uploaded
@@ -616,9 +623,9 @@ async fn upload_procedure_inner(
         }
         Err(e) => {
             reporter
-                .finish(false, &format!("Preload video failed: {}", e))
+                .finish(false, &format!("Preload video failed: {e}"))
                 .await;
-            Err(format!("Preload video failed: {}", e))
+            Err(format!("Preload video failed: {e}"))
         }
     }
 }
@@ -635,7 +642,7 @@ pub async fn get_video(state: state_type!(), id: i64) -> Result<VideoRow, String
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn get_videos(state: state_type!(), room_id: u64) -> Result<Vec<VideoRow>, String> {
+pub async fn get_videos(state: state_type!(), room_id: i64) -> Result<Vec<VideoRow>, String> {
     state
         .db
         .get_videos(room_id)
@@ -667,7 +674,7 @@ pub async fn delete_video(state: state_type!(), id: i64) -> Result<(), String> {
     let event =
         events::new_webhook_event(events::CLIP_DELETED, events::Payload::Clip(video.clone()));
     if let Err(e) = state.webhook_poster.post_event(&event).await {
-        log::error!("Post webhook event error: {}", e);
+        log::error!("Post webhook event error: {e}");
     }
 
     // delete video from db
@@ -721,13 +728,13 @@ pub async fn update_video_cover(
         .await
         .map_err(|e| e.to_string())?;
     let cover_file_name = cover_path.file_name().unwrap().to_str().unwrap();
-    log::debug!("Update video cover: {} {}", id, cover_file_name);
+    log::debug!("Update video cover: {id} {cover_file_name}");
     Ok(state.db.update_video_cover(id, cover_file_name).await?)
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_video_subtitle(state: state_type!(), id: i64) -> Result<String, String> {
-    log::debug!("Get video subtitle: {}", id);
+    log::debug!("Get video subtitle: {id}");
     let video = state.db.get_video(id).await?;
     let filepath = Path::new(state.config.read().await.output.as_str()).join(&video.file);
     let file = Path::new(&filepath);
@@ -735,7 +742,7 @@ pub async fn get_video_subtitle(state: state_type!(), id: i64) -> Result<String,
     if let Ok(content) = std::fs::read_to_string(file.with_extension("srt")) {
         Ok(content)
     } else {
-        Ok("".to_string())
+        Ok(String::new())
     }
 }
 
@@ -754,7 +761,7 @@ pub async fn generate_video_subtitle(
         id: event_id.clone(),
         task_type: "generate_video_subtitle".to_string(),
         status: "pending".to_string(),
-        message: "".to_string(),
+        message: String::new(),
         metadata: json!({
             "video_id": id,
         })
@@ -762,7 +769,7 @@ pub async fn generate_video_subtitle(
         created_at: Utc::now().to_rfc3339(),
     };
     state.db.add_task(&task).await?;
-    log::info!("Create task: {:?}", task);
+    log::info!("Create task: {task:?}");
     let config = state.config.read().await;
     let generator_type = config.subtitle_generator_type.as_str();
     let whisper_model = config.whisper_model.clone();
@@ -812,22 +819,19 @@ pub async fn generate_video_subtitle(
                 .subtitle_content
                 .iter()
                 .map(item_to_srt)
-                .collect::<Vec<String>>()
-                .join("");
+                .collect::<String>();
 
             let result = update_video_subtitle(state.clone(), id, subtitle.clone()).await;
             if let Err(e) = result {
-                log::error!("Update video subtitle error: {}", e);
+                log::error!("Update video subtitle error: {e}");
             }
             Ok(subtitle)
         }
         Err(e) => {
-            reporter
-                .finish(false, &format!("字幕生成失败: {}", e))
-                .await;
+            reporter.finish(false, &format!("字幕生成失败: {e}")).await;
             state
                 .db
-                .update_task(&event_id, "failed", &format!("字幕生成失败: {}", e), None)
+                .update_task(&event_id, "failed", &format!("字幕生成失败: {e}"), None)
                 .await?;
             Err(e)
         }
@@ -845,14 +849,14 @@ pub async fn update_video_subtitle(
     let file = Path::new(&filepath);
     let subtitle_path = file.with_extension("srt");
     if let Err(e) = std::fs::write(subtitle_path, subtitle) {
-        log::warn!("Update video subtitle error: {}", e);
+        log::warn!("Update video subtitle error: {e}");
     }
     Ok(())
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_video_note(state: state_type!(), id: i64, note: String) -> Result<(), String> {
-    log::info!("Update video note: {} -> {}", id, note);
+    log::info!("Update video note: {id} -> {note}");
     let mut video = state.db.get_video(id).await?;
     video.note = note;
     state.db.update_video(&video).await?;
@@ -875,7 +879,7 @@ pub async fn encode_video_subtitle(
         id: event_id.clone(),
         task_type: "encode_video_subtitle".to_string(),
         status: "pending".to_string(),
-        message: "".to_string(),
+        message: String::new(),
         metadata: json!({
             "video_id": id,
             "srt_style": srt_style,
@@ -884,7 +888,7 @@ pub async fn encode_video_subtitle(
         created_at: Utc::now().to_rfc3339(),
     };
     state.db.add_task(&task).await?;
-    log::info!("Create task: {:?}", task);
+    log::info!("Create task: {task:?}");
     match encode_video_subtitle_inner(&state, &reporter, id, srt_style).await {
         Ok(video) => {
             reporter.finish(true, "字幕编码完成").await;
@@ -895,12 +899,10 @@ pub async fn encode_video_subtitle(
             Ok(video)
         }
         Err(e) => {
-            reporter
-                .finish(false, &format!("字幕编码失败: {}", e))
-                .await;
+            reporter.finish(false, &format!("字幕编码失败: {e}")).await;
             state
                 .db
-                .update_task(&event_id, "failed", &format!("字幕编码失败: {}", e), None)
+                .update_task(&event_id, "failed", &format!("字幕编码失败: {e}"), None)
                 .await?;
             Err(e)
         }
@@ -950,7 +952,7 @@ pub async fn generic_ffmpeg_command(
     _state: state_type!(),
     args: Vec<String>,
 ) -> Result<String, String> {
-    let args_str: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let args_str: Vec<&str> = args.iter().map(std::string::String::as_str).collect();
     ffmpeg::generic_ffmpeg_command(&args_str).await
 }
 
@@ -960,7 +962,7 @@ pub async fn import_external_video(
     event_id: String,
     file_path: String,
     title: String,
-    room_id: u64,
+    room_id: i64,
 ) -> Result<VideoRow, String> {
     #[cfg(feature = "gui")]
     let emitter = EventEmitter::new(state.app_handle.clone());
@@ -1027,13 +1029,29 @@ pub async fn import_external_video(
         match ffmpeg::generate_thumbnail(&final_target_full_path, thumbnail_timestamp).await {
             Ok(path) => path.file_name().unwrap().to_str().unwrap().to_string(),
             Err(e) => {
-                log::warn!("生成缩略图失败: {}", e);
-                "".to_string() // 使用空字符串，前端会显示默认图标
+                log::warn!("生成缩略图失败: {e}");
+                String::new() // 使用空字符串，前端会显示默认图标
             }
         };
 
     // 步骤4: 保存到数据库
     reporter.update("正在保存视频信息...");
+
+    let Ok(size) = i64::try_from(
+        final_target_full_path
+            .metadata()
+            .map_err(|e| e.to_string())?
+            .len(),
+    ) else {
+        log::error!(
+            "Failed to convert metadata length to i64: {}",
+            final_target_full_path
+                .metadata()
+                .map_err(|e| e.to_string())?
+                .len()
+        );
+        return Err("Failed to convert metadata length to i64".to_string());
+    };
 
     // 添加到数据库
     let video = VideoRow {
@@ -1042,17 +1060,14 @@ pub async fn import_external_video(
         platform: "imported".to_string(),
         title,
         file: target_filename,
-        note: "".to_string(),
+        note: String::new(),
         length: metadata.duration as i64,
-        size: final_target_full_path
-            .metadata()
-            .map_err(|e| e.to_string())?
-            .len() as i64,
+        size,
         status: 1, // 导入完成
         cover: cover_path,
-        desc: "".to_string(),
-        tags: "".to_string(),
-        bvid: "".to_string(),
+        desc: String::new(),
+        tags: String::new(),
+        bvid: String::new(),
         area: 0,
         created_at: Utc::now().to_rfc3339(),
     };
@@ -1096,7 +1111,7 @@ pub async fn clip_video(
         id: event_id.clone(),
         task_type: "clip_video".to_string(),
         status: "pending".to_string(),
-        message: "".to_string(),
+        message: String::new(),
         metadata: json!({
             "parent_video_id": parent_video_id,
             "start_time": start_time,
@@ -1127,10 +1142,10 @@ pub async fn clip_video(
             Ok(video)
         }
         Err(e) => {
-            reporter.finish(false, &format!("切片失败: {}", e)).await;
+            reporter.finish(false, &format!("切片失败: {e}")).await;
             state
                 .db
-                .update_task(&event_id, "failed", &format!("切片失败: {}", e), None)
+                .update_task(&event_id, "failed", &format!("切片失败: {e}"), None)
                 .await?;
             Err(e)
         }
@@ -1208,8 +1223,8 @@ async fn clip_video_inner(
                 .unwrap()
                 .to_string(),
             Err(e) => {
-                log::warn!("生成切片缩略图失败: {}", e);
-                "".to_string() // 使用空字符串，前端会显示默认图标
+                log::warn!("生成切片缩略图失败: {e}");
+                String::new() // 使用空字符串，前端会显示默认图标
             }
         };
 
@@ -1221,14 +1236,14 @@ async fn clip_video_inner(
         platform: "clip".to_string(),
         title: clip_title,
         file: output_filename,
-        note: "".to_string(),
+        note: String::new(),
         length: (end_time - start_time) as i64,
-        size: file_metadata.len() as i64,
+        size: i64::try_from(file_metadata.len()).map_err(|e| e.to_string())?,
         status: 1,
         cover: clip_cover_path,
-        desc: "".to_string(),
-        tags: "".to_string(),
-        bvid: "".to_string(),
+        desc: String::new(),
+        tags: String::new(),
+        bvid: String::new(),
         area: parent_video.area,
         created_at: Local::now().to_rfc3339(),
     };
@@ -1250,7 +1265,7 @@ pub async fn get_file_size(file_path: String) -> Result<u64, String> {
     let path = Path::new(&file_path);
     match std::fs::metadata(path) {
         Ok(metadata) => Ok(metadata.len()),
-        Err(e) => Err(format!("无法获取文件信息: {}", e)),
+        Err(e) => Err(format!("无法获取文件信息: {e}")),
     }
 }
 
@@ -1291,7 +1306,7 @@ pub async fn batch_import_external_videos(
     state: state_type!(),
     event_id: String,
     file_paths: Vec<String>,
-    room_id: u64,
+    room_id: i64,
 ) -> Result<BatchImportResult, String> {
     if file_paths.is_empty() {
         return Ok(BatchImportResult {
@@ -1326,12 +1341,11 @@ pub async fn batch_import_external_videos(
 
         // 更新批量进度，只显示进度信息
         batch_reporter.update(&format!(
-            "正在导入第{}个，共{}个文件",
-            current_index, total_files
+            "正在导入第{current_index}个，共{total_files}个文件"
         ));
 
         // 为每个文件创建独立的事件ID
-        let file_event_id = format!("{}_file_{}", event_id, index);
+        let file_event_id = format!("{event_id}_file_{index}");
 
         // 从文件名生成标题（去掉扩展名）
         let title = file_name.clone();
@@ -1352,22 +1366,19 @@ pub async fn batch_import_external_videos(
                 log::info!("批量导入成功: {} (ID: {})", file_path, video.id);
             }
             Err(e) => {
-                let error_msg = format!("导入失败 {}: {}", file_path, e);
+                let error_msg = format!("导入失败 {file_path}: {e}");
                 errors.push(error_msg.clone());
                 failed_imports += 1;
-                log::error!("批量导入失败: {}", error_msg);
+                log::error!("批量导入失败: {error_msg}");
             }
         }
     }
 
     // 完成批量导入
     let result_msg = if failed_imports == 0 {
-        format!("批量导入完成：成功导入{}个文件", successful_imports)
+        format!("批量导入完成：成功导入{successful_imports}个文件")
     } else {
-        format!(
-            "批量导入完成：成功{}个，失败{}个",
-            successful_imports, failed_imports
-        )
+        format!("批量导入完成：成功{successful_imports}个，失败{failed_imports}个")
     };
     batch_reporter
         .finish(failed_imports == 0, &result_msg)
@@ -1407,7 +1418,7 @@ pub async fn get_import_progress(
             return Ok(Some(serde_json::json!({
                 "task_id": task.id,
                 "file_name": metadata.get("file_name").and_then(|v| v.as_str()).unwrap_or("未知文件"),
-                "file_size": metadata.get("file_size").and_then(|v| v.as_u64()).unwrap_or(0),
+                "file_size": metadata.get("file_size").and_then(serde_json::Value::as_u64).unwrap_or(0),
                 "message": task.message,
                 "status": task.status,
                 "created_at": task.created_at

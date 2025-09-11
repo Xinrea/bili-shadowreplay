@@ -109,10 +109,10 @@ pub async fn get_disk_info(state: state_type!()) -> Result<DiskInfo, ()> {
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn console_log(_state: state_type!(), level: &str, message: &str) -> Result<(), ()> {
     match level {
-        "error" => log::error!("[frontend] {}", message),
-        "warn" => log::warn!("[frontend] {}", message),
-        "info" => log::info!("[frontend] {}", message),
-        _ => log::debug!("[frontend] {}", message),
+        "error" => log::error!("[frontend] {message}"),
+        "warn" => log::warn!("[frontend] {message}"),
+        "info" => log::info!("[frontend] {message}"),
+        _ => log::debug!("[frontend] {message}"),
     }
     Ok(())
 }
@@ -148,7 +148,7 @@ pub async fn get_disk_info_inner(target: PathBuf) -> Result<DiskInfo, ()> {
         let disks = sysinfo::Disks::new_with_refreshed_list();
         // get target disk info
         let mut disk_info = DiskInfo {
-            disk: "".into(),
+            disk: String::new(),
             total: 0,
             free: 0,
         };
@@ -157,11 +157,11 @@ pub async fn get_disk_info_inner(target: PathBuf) -> Result<DiskInfo, ()> {
         let mut longest_match = 0;
         for disk in disks.list() {
             let mount_point = disk.mount_point().to_str().unwrap();
-            if target.starts_with(mount_point) && mount_point.split("/").count() > longest_match {
+            if target.starts_with(mount_point) && mount_point.split('/').count() > longest_match {
                 disk_info.disk = mount_point.into();
                 disk_info.total = disk.total_space();
                 disk_info.free = disk.available_space();
-                longest_match = mount_point.split("/").count();
+                longest_match = mount_point.split('/').count();
             }
         }
 
@@ -187,10 +187,10 @@ pub async fn export_to_file(
     }
     let mut file = file.unwrap();
     if let Err(e) = file.write_all(content.as_bytes()).await {
-        return Err(format!("Write file failed: {}", e));
+        return Err(format!("Write file failed: {e}"));
     }
     if let Err(e) = file.flush().await {
-        return Err(format!("Flush file failed: {}", e));
+        return Err(format!("Flush file failed: {e}"));
     }
     Ok(())
 }
@@ -211,10 +211,10 @@ pub async fn open_log_folder(state: state_type!()) -> Result<(), String> {
 pub async fn open_live(
     state: state_type!(),
     platform: String,
-    room_id: u64,
+    room_id: i64,
     live_id: String,
 ) -> Result<(), String> {
-    log::info!("Open player window: {} {}", room_id, live_id);
+    log::info!("Open player window: {room_id} {live_id}");
     #[cfg(feature = "gui")]
     {
         let platform = PlatformType::from_str(&platform).unwrap();
@@ -225,7 +225,7 @@ pub async fn open_live(
             .unwrap();
         let builder = tauri::WebviewWindowBuilder::new(
             &state.app_handle,
-            format!("Live:{}:{}", room_id, live_id),
+            format!("Live:{room_id}:{live_id}"),
             tauri::WebviewUrl::App(
                 format!(
                     "index_live.html?platform={}&room_id={}&live_id={}",
@@ -253,7 +253,7 @@ pub async fn open_live(
         });
 
         if let Err(e) = builder.decorations(true).build() {
-            log::error!("live window build failed: {}", e);
+            log::error!("live window build failed: {e}");
         }
     }
 
@@ -263,13 +263,13 @@ pub async fn open_live(
 #[cfg(feature = "gui")]
 #[tauri::command]
 pub async fn open_clip(state: state_type!(), video_id: i64) -> Result<(), String> {
-    log::info!("Open clip window: {}", video_id);
+    log::info!("Open clip window: {video_id}");
     let builder = tauri::WebviewWindowBuilder::new(
         &state.app_handle,
-        format!("Clip:{}", video_id),
-        tauri::WebviewUrl::App(format!("index_clip.html?id={}", video_id).into()),
+        format!("Clip:{video_id}"),
+        tauri::WebviewUrl::App(format!("index_clip.html?id={video_id}").into()),
     )
-    .title(format!("Clip window:{}", video_id))
+    .title(format!("Clip window:{video_id}"))
     .theme(Some(Theme::Light))
     .inner_size(1200.0, 800.0)
     .effects(WindowEffectsConfig {
@@ -283,7 +283,7 @@ pub async fn open_clip(state: state_type!(), video_id: i64) -> Result<(), String
     });
 
     if let Err(e) = builder.decorations(true).build() {
-        log::error!("clip window build failed: {}", e);
+        log::error!("clip window build failed: {e}");
     }
 
     Ok(())

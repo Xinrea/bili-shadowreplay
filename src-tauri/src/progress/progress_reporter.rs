@@ -98,7 +98,7 @@ impl EventEmitter {
                 Event::DanmuReceived { room, ts, content } => {
                     self.app_handle
                         .emit(
-                            &format!("danmu:{}", room),
+                            &format!("danmu:{room}"),
                             DanmuEntry {
                                 ts: *ts,
                                 content: content.clone(),
@@ -117,7 +117,7 @@ impl ProgressReporter {
     pub async fn new(emitter: &EventEmitter, event_id: &str) -> Result<Self, String> {
         // if already exists, return
         if CANCEL_FLAG_MAP.read().await.get(event_id).is_some() {
-            log::error!("Task already exists: {}", event_id);
+            log::error!("Task already exists: {event_id}");
             emitter.emit(&Event::ProgressFinished {
                 id: event_id.to_string(),
                 success: false,

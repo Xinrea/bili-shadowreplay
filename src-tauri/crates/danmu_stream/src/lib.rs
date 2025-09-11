@@ -29,7 +29,7 @@ pub enum DanmuMessageType {
 
 #[derive(Debug, Clone)]
 pub struct DanmuMessage {
-    pub room_id: u64,
+    pub room_id: i64,
     pub user_id: u64,
     pub user_name: String,
     pub message: String,

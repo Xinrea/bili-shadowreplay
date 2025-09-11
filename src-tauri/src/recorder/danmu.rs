@@ -38,7 +38,7 @@ impl DanmuStorage {
             let parts: Vec<&str> = line.split(':').collect();
             let ts: i64 = parts[0].parse().unwrap();
             let content = parts[1].to_string();
-            preload_cache.push(DanmuEntry { ts, content })
+            preload_cache.push(DanmuEntry { ts, content });
         }
         let file = OpenOptions::new()
             .append(true)
@@ -61,7 +61,7 @@ impl DanmuStorage {
             .file
             .write()
             .await
-            .write(format!("{}:{}\n", ts, content).as_bytes())
+            .write(format!("{ts}:{content}\n").as_bytes())
             .await;
     }
 

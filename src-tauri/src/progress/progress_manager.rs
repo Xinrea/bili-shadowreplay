@@ -15,7 +15,7 @@ pub enum Event {
         message: String,
     },
     DanmuReceived {
-        room: u64,
+        room: i64,
         ts: i64,
         content: String,
     },

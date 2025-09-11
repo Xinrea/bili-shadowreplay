@@ -47,7 +47,7 @@ impl Hash for PlatformType {
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
 pub struct RecorderInfo {
-    pub room_id: u64,
+    pub room_id: i64,
     pub room_info: RoomInfo,
     pub user_info: UserInfo,
     pub total_length: f64,
@@ -60,7 +60,7 @@ pub struct RecorderInfo {
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
 pub struct RoomInfo {
-    pub room_id: u64,
+    pub room_id: i64,
     pub room_title: String,
     pub room_cover: String,
 }

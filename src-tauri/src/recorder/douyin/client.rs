@@ -2,12 +2,12 @@ use crate::{database::account::AccountRow, recorder::user_agent_generator};
 use deno_core::JsRuntime;
 use deno_core::RuntimeOptions;
 use m3u8_rs::{MediaPlaylist, Playlist};
-use reqwest::{Client};
+use reqwest::Client;
 use uuid::Uuid;
 
-use thiserror::Error;
 use super::response::DouyinRoomInfoResponse;
-use std::{path::Path};
+use std::path::Path;
+use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum DouyinClientError {
@@ -57,7 +57,7 @@ fn setup_js_runtime() -> Result<JsRuntime, DouyinClientError> {
             deno_core::FastString::from_static(crypto_js),
         )
         .map_err(|e| {
-            DouyinClientError::JsRuntimeError(format!("Failed to execute crypto-js: {}", e))
+            DouyinClientError::JsRuntimeError(format!("Failed to execute crypto-js: {e}"))
         })?;
     Ok(runtime)
 }
@@ -78,11 +78,11 @@ impl DouyinClient {
     ) -> Result<String, DouyinClientError> {
         let mut runtime = setup_js_runtime()?;
         // Call the get_wss_url function
-        let sign_call = format!("generate_a_bogus(\"{}\", \"{}\")", params, user_agent);
+        let sign_call = format!("generate_a_bogus(\"{params}\", \"{user_agent}\")");
         let result = runtime
             .execute_script("<sign_call>", deno_core::FastString::from(sign_call))
             .map_err(|e| {
-                DouyinClientError::JsRuntimeError(format!("Failed to execute JavaScript: {}", e))
+                DouyinClientError::JsRuntimeError(format!("Failed to execute JavaScript: {e}"))
             })?;
 
         // Get the result from the V8 runtime
@@ -110,7 +110,7 @@ impl DouyinClient {
 
     pub async fn get_room_info(
         &self,
-        room_id: u64,
+        room_id: i64,
         sec_user_id: &str,
     ) -> Result<DouyinBasicRoomInfo, DouyinClientError> {
         let mut headers = self.generate_user_agent_header();
@@ -119,23 +119,13 @@ impl DouyinClient {
         let ms_token = self.generate_ms_token().await;
         let user_agent = headers.get("user-agent").unwrap().to_str().unwrap();
         let params = format!(
-            "aid=6383&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&enter_from=web_live&cookie_enabled=true&screen_width=1920&screen_height=1080&browser_language=zh-CN&browser_platform=MacIntel&browser_name=Chrome&browser_version=122.0.0.0&web_rid={}&ms_token={}", 
-            room_id, 
-            ms_token);
-        let a_bogus = self
-            .generate_a_bogus(
-                &params,
-                user_agent,
-            )
-            .await?;
-        log::debug!("params: {}", params);
-        log::debug!("user_agent: {}", user_agent);
-        log::debug!("a_bogus: {}", a_bogus);
+            "aid=6383&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&enter_from=web_live&cookie_enabled=true&screen_width=1920&screen_height=1080&browser_language=zh-CN&browser_platform=MacIntel&browser_name=Chrome&browser_version=122.0.0.0&web_rid={room_id}&ms_token={ms_token}");
+        let a_bogus = self.generate_a_bogus(&params, user_agent).await?;
+        log::debug!("params: {params}");
+        log::debug!("user_agent: {user_agent}");
+        log::debug!("a_bogus: {a_bogus}");
         let url = format!(
-            "https://live.douyin.com/webcast/room/web/enter/?aid=6383&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&enter_from=web_live&cookie_enabled=true&screen_width=1920&screen_height=1080&browser_language=zh-CN&browser_platform=MacIntel&browser_name=Chrome&browser_version=122.0.0.0&web_rid={}&ms_token={}&a_bogus={}",
-            room_id,
-            ms_token,
-            a_bogus
+            "https://live.douyin.com/webcast/room/web/enter/?aid=6383&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&enter_from=web_live&cookie_enabled=true&screen_width=1920&screen_height=1080&browser_language=zh-CN&browser_platform=MacIntel&browser_name=Chrome&browser_version=122.0.0.0&web_rid={room_id}&ms_token={ms_token}&a_bogus={a_bogus}"
         );
 
         let resp = self.client.get(&url).headers(headers).send().await?;
@@ -175,19 +165,18 @@ impl DouyinClient {
                         .map(|s| s.live_core_sdk_data.pull_data.stream_data.clone())
                         .unwrap_or_default(),
                 });
-            } else {
-                log::error!("Failed to parse room info response: {}", text);
-                return self.get_room_info_h5(room_id, sec_user_id).await;
             }
+            log::error!("Failed to parse room info response: {text}");
+            return self.get_room_info_h5(room_id, sec_user_id).await;
         }
 
-        log::error!("Failed to get room info: {}", status);
+        log::error!("Failed to get room info: {status}");
         return self.get_room_info_h5(room_id, sec_user_id).await;
     }
 
     pub async fn get_room_info_h5(
         &self,
-        room_id: u64,
+        room_id: i64,
         sec_user_id: &str,
     ) -> Result<DouyinBasicRoomInfo, DouyinClientError> {
         // 参考biliup实现，构建完整的URL参数
@@ -207,15 +196,12 @@ impl DouyinClient {
         // 构建URL
         let query_string = url_params
             .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
+            .map(|(k, v)| format!("{k}={v}"))
             .collect::<Vec<_>>()
             .join("&");
-        let url = format!(
-            "https://webcast.amemv.com/webcast/room/reflow/info/?{}",
-            query_string
-        );
+        let url = format!("https://webcast.amemv.com/webcast/room/reflow/info/?{query_string}");
 
-        log::info!("get_room_info_h5: {}", url);
+        log::info!("get_room_info_h5: {url}");
 
         let mut headers = self.generate_user_agent_header();
         headers.insert("Referer", "https://live.douyin.com/".parse().unwrap());
@@ -275,7 +261,10 @@ impl DouyinClient {
                 );
 
                 // Check if it's an error response
-                if let Some(status_code) = json_value.get("status_code").and_then(|v| v.as_i64()) {
+                if let Some(status_code) = json_value
+                    .get("status_code")
+                    .and_then(serde_json::Value::as_i64)
+                {
                     if status_code != 0 {
                         let error_msg = json_value
                             .get("data")
@@ -287,8 +276,7 @@ impl DouyinClient {
                         }
 
                         return Err(DouyinClientError::Network(format!(
-                            "API returned error status_code: {} - {}",
-                            status_code, error_msg
+                            "API returned error status_code: {status_code} - {error_msg}"
                         )));
                     }
                 }
@@ -305,22 +293,18 @@ impl DouyinClient {
                 }
 
                 return Err(DouyinClientError::Network(format!(
-                    "Failed to parse h5 room info response: {}",
-                    text
-                )));
-            } else {
-                log::error!("Failed to parse h5 room info response: {}", text);
-                return Err(DouyinClientError::Network(format!(
-                    "Failed to parse h5 room info response: {}",
-                    text
+                    "Failed to parse h5 room info response: {text}"
                 )));
             }
+            log::error!("Failed to parse h5 room info response: {text}");
+            return Err(DouyinClientError::Network(format!(
+                "Failed to parse h5 room info response: {text}"
+            )));
         }
 
-        log::error!("Failed to get h5 room info: {}", status);
+        log::error!("Failed to get h5 room info: {status}");
         Err(DouyinClientError::Network(format!(
-            "Failed to get h5 room info: {} {}",
-            status, text
+            "Failed to get h5 room info: {status} {text}"
         )))
     }
 
@@ -353,7 +337,7 @@ impl DouyinClient {
                                     avatar_thumb: following.avatar_thumb.clone(),
                                     follow_info: super::response::FollowInfo::default(),
                                     foreign_user: 0,
-                                    open_id_str: "".to_string(),
+                                    open_id_str: String::new(),
                                 };
                                 return Ok(user);
                             }
@@ -362,26 +346,25 @@ impl DouyinClient {
 
                     // If not found in followings, create a minimal user info from owner_sec_uid
                     let user = super::response::User {
-                        id_str: "".to_string(), // We don't have the numeric UID
+                        id_str: String::new(), // We don't have the numeric UID
                         sec_uid: owner_sec_uid.clone(),
                         nickname: "抖音用户".to_string(), // Default nickname
                         avatar_thumb: super::response::AvatarThumb { url_list: vec![] },
                         follow_info: super::response::FollowInfo::default(),
                         foreign_user: 0,
-                        open_id_str: "".to_string(),
+                        open_id_str: String::new(),
                     };
                     return Ok(user);
                 }
             } else {
-                log::error!("Failed to parse user info response: {}", text);
+                log::error!("Failed to parse user info response: {text}");
                 return Err(DouyinClientError::Network(format!(
-                    "Failed to parse user info response: {}",
-                    text
+                    "Failed to parse user info response: {text}"
                 )));
             }
         }
 
-        log::error!("Failed to get user info: {}", status);
+        log::error!("Failed to get user info: {status}");
 
         Err(DouyinClientError::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -412,7 +395,7 @@ impl DouyinClient {
         // #EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=2560000
         // http://7167739a741646b4651b6949b2f3eb8e.livehwc3.cn/pull-hls-l26.douyincdn.com/third/stream-693342996808860134_or4.m3u8?sub_m3u8=true&user_session_id=16090eb45ab8a2f042f7c46563936187&major_anchor_level=common&edge_slice=true&expire=67d944ec&sign=47b95cc6e8de20d82f3d404412fa8406
         if content.contains("BANDWIDTH") {
-            log::info!("Master manifest with playlist URL: {}", url);
+            log::info!("Master manifest with playlist URL: {url}");
             let new_url = content.lines().last().unwrap();
             return Box::pin(self.get_m3u8_content(new_url)).await;
         }
@@ -431,7 +414,7 @@ impl DouyinClient {
 
         if response.status() != reqwest::StatusCode::OK {
             let error = response.error_for_status().unwrap_err();
-            log::error!("HTTP error: {} for URL: {}", error, url);
+            log::error!("HTTP error: {error} for URL: {url}");
             return Err(DouyinClientError::Network(error.to_string()));
         }
 

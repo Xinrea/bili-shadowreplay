@@ -11,6 +11,13 @@ license = ""
 repository = ""
 edition = "2021"
 
+[lints.clippy]
+correctness="deny"
+suspicious="deny"
+complexity="deny"
+style="deny"
+perf="deny"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]

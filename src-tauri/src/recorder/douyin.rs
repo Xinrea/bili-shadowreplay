@@ -46,7 +46,7 @@ pub struct DouyinRecorder {
     client: client::DouyinClient,
     db: Arc<Database>,
     account: AccountRow,
-    room_id: u64,
+    room_id: i64,
     sec_user_id: String,
     room_info: Arc<RwLock<Option<client::DouyinBasicRoomInfo>>>,
     stream_url: Arc<RwLock<Option<String>>>,
@@ -67,12 +67,48 @@ pub struct DouyinRecorder {
     record_task: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
+fn get_best_stream_url(room_info: &client::DouyinBasicRoomInfo) -> Option<String> {
+    let stream_data = room_info.stream_data.clone();
+    // parse stream_data into stream_info
+    let stream_info = serde_json::from_str::<stream_info::StreamInfo>(&stream_data);
+    if let Ok(stream_info) = stream_info {
+        // find the best stream url
+        if stream_info.data.origin.main.hls.is_empty() {
+            log::error!("No stream url found in stream_data: {stream_data}");
+            return None;
+        }
+
+        Some(stream_info.data.origin.main.hls)
+    } else {
+        let err = stream_info.unwrap_err();
+        log::error!("Failed to parse stream data: {err} {stream_data}");
+        None
+    }
+}
+
+fn parse_stream_url(stream_url: &str) -> (String, String) {
+    // Parse stream URL to extract base URL and query parameters
+    // Example: http://7167739a741646b4651b6949b2f3eb8e.livehwc3.cn/pull-hls-l26.douyincdn.com/third/stream-693342996808860134_or4.m3u8?sub_m3u8=true&user_session_id=16090eb45ab8a2f042f7c46563936187&major_anchor_level=common&edge_slice=true&expire=67d944ec&sign=47b95cc6e8de20d82f3d404412fa8406
+
+    let base_url = stream_url
+        .rfind('/')
+        .map_or(stream_url, |i| &stream_url[..=i])
+        .to_string();
+
+    let query_params = stream_url
+        .find('?')
+        .map_or("", |i| &stream_url[i..])
+        .to_string();
+
+    (base_url, query_params)
+}
+
 impl DouyinRecorder {
     #[allow(clippy::too_many_arguments)]
     pub async fn new(
         #[cfg(not(feature = "headless"))] app_handle: AppHandle,
         emitter: EventEmitter,
-        room_id: u64,
+        room_id: i64,
         sec_user_id: &str,
         config: Arc<RwLock<Config>>,
         account: &AccountRow,
@@ -201,15 +237,15 @@ impl DouyinRecorder {
                 if !info.hls_url.is_empty() {
                     // Only set stream URL, don't create record yet
                     // Record will be created when first ts download succeeds
-                    let new_stream_url = self.get_best_stream_url(&info).await;
+                    let new_stream_url = get_best_stream_url(&info);
                     if new_stream_url.is_none() {
-                        log::error!("No stream url found in room_info: {:#?}", info);
+                        log::error!("No stream url found in room_info: {info:#?}");
                         return false;
                     }
 
                     log::info!("New douyin stream URL: {}", new_stream_url.clone().unwrap());
                     *self.stream_url.write().await = Some(new_stream_url.unwrap());
-                    *self.danmu_room_id.write().await = info.room_id_str.clone();
+                    (*self.danmu_room_id.write().await).clone_from(&info.room_id_str);
                 }
 
                 true
@@ -232,12 +268,12 @@ impl DouyinRecorder {
             .read()
             .await
             .clone()
-            .parse::<u64>()
+            .parse::<i64>()
             .unwrap_or(0);
         let danmu_stream = DanmuStream::new(ProviderType::Douyin, &cookies, danmu_room_id).await;
         if danmu_stream.is_err() {
             let err = danmu_stream.err().unwrap();
-            log::error!("Failed to create danmu stream: {}", err);
+            log::error!("Failed to create danmu stream: {err}");
             return Err(super::errors::RecorderError::DanmuStreamError(err));
         }
         let danmu_stream = danmu_stream.unwrap();
@@ -289,44 +325,6 @@ impl DouyinRecorder {
         )
     }
 
-    async fn get_best_stream_url(&self, room_info: &client::DouyinBasicRoomInfo) -> Option<String> {
-        let stream_data = room_info.stream_data.clone();
-        // parse stream_data into stream_info
-        let stream_info = serde_json::from_str::<stream_info::StreamInfo>(&stream_data);
-        if let Ok(stream_info) = stream_info {
-            // find the best stream url
-            if stream_info.data.origin.main.hls.is_empty() {
-                log::error!("No stream url found in stream_data: {}", stream_data);
-                return None;
-            }
-
-            Some(stream_info.data.origin.main.hls)
-        } else {
-            let err = stream_info.unwrap_err();
-            log::error!("Failed to parse stream data: {} {}", err, stream_data);
-            None
-        }
-    }
-
-    fn parse_stream_url(&self, stream_url: &str) -> (String, String) {
-        // Parse stream URL to extract base URL and query parameters
-        // Example: http://7167739a741646b4651b6949b2f3eb8e.livehwc3.cn/pull-hls-l26.douyincdn.com/third/stream-693342996808860134_or4.m3u8?sub_m3u8=true&user_session_id=16090eb45ab8a2f042f7c46563936187&major_anchor_level=common&edge_slice=true&expire=67d944ec&sign=47b95cc6e8de20d82f3d404412fa8406
-
-        let base_url = stream_url
-            .rfind('/')
-            .map(|i| &stream_url[..=i])
-            .unwrap_or(stream_url)
-            .to_string();
-
-        let query_params = stream_url
-            .find('?')
-            .map(|i| &stream_url[i..])
-            .unwrap_or("")
-            .to_string();
-
-        (base_url, query_params)
-    }
-
     async fn update_entries(&self) -> Result<u128, RecorderError> {
         let task_begin_time = std::time::Instant::now();
 
@@ -374,14 +372,11 @@ impl DouyinRecorder {
                 .last_sequence
         };
 
-        for segment in playlist.segments.iter() {
+        for segment in &playlist.segments {
             let formated_ts_name = segment.uri.clone();
             let sequence = extract_sequence_from(&formated_ts_name);
             if sequence.is_none() {
-                log::error!(
-                    "No timestamp extracted from douyin ts name: {}",
-                    formated_ts_name
-                );
+                log::error!("No timestamp extracted from douyin ts name: {formated_ts_name}");
                 continue;
             }
 
@@ -397,7 +392,7 @@ impl DouyinRecorder {
                 uri.clone()
             } else {
                 // Parse the stream URL to extract base URL and query parameters
-                let (base_url, query_params) = self.parse_stream_url(&stream_url);
+                let (base_url, query_params) = parse_stream_url(&stream_url);
 
                 // Check if the segment URI already has query parameters
                 if uri.contains('?') {
@@ -405,7 +400,7 @@ impl DouyinRecorder {
                     format!("{}{}&{}", base_url, uri, &query_params[1..]) // Remove leading ? from query_params
                 } else {
                     // If segment URI has no query params, append m3u8 query params with ?
-                    format!("{}{}{}", base_url, uri, query_params)
+                    format!("{base_url}{uri}{query_params}")
                 }
             };
 
@@ -416,14 +411,14 @@ impl DouyinRecorder {
             let mut work_dir_created = false;
 
             while retry_count < max_retries && !download_success {
-                let file_name = format!("{}.ts", sequence);
-                let file_path = format!("{}/{}", work_dir, file_name);
+                let file_name = format!("{sequence}.ts");
+                let file_path = format!("{work_dir}/{file_name}");
 
                 // If this is the first segment, create work directory before first download attempt
                 if is_first_segment && !work_dir_created {
                     // Create work directory only when we're about to download
                     if let Err(e) = tokio::fs::create_dir_all(&work_dir).await {
-                        log::error!("Failed to create work directory: {}", e);
+                        log::error!("Failed to create work directory: {e}");
                         return Err(e.into());
                     }
                     work_dir_created = true;
@@ -432,7 +427,7 @@ impl DouyinRecorder {
                 match self.client.download_ts(&ts_url, &file_path).await {
                     Ok(size) => {
                         if size == 0 {
-                            log::error!("Download segment failed (empty response): {}", ts_url);
+                            log::error!("Download segment failed (empty response): {ts_url}");
                             retry_count += 1;
                             if retry_count < max_retries {
                                 tokio::time::sleep(Duration::from_millis(500)).await;
@@ -469,7 +464,7 @@ impl DouyinRecorder {
                                 )
                                 .await
                             {
-                                log::error!("Failed to add record: {}", e);
+                                log::error!("Failed to add record: {e}");
                             }
 
                             // Setup entry store
@@ -493,7 +488,7 @@ impl DouyinRecorder {
                             let live_id = self.live_id.read().await.clone();
                             let self_clone = self.clone();
                             *self.danmu_task.lock().await = Some(tokio::spawn(async move {
-                                log::info!("Start fetching danmu for live {}", live_id);
+                                log::info!("Start fetching danmu for live {live_id}");
                                 let _ = self_clone.danmu().await;
                             }));
 
@@ -503,7 +498,7 @@ impl DouyinRecorder {
                         let ts_entry = TsEntry {
                             url: file_name,
                             sequence,
-                            length: segment.duration as f64,
+                            length: f64::from(segment.duration),
                             size,
                             ts: Utc::now().timestamp_millis(),
                             is_header: false,
@@ -537,8 +532,7 @@ impl DouyinRecorder {
                         // If all retries failed, check if it's a 400 error
                         if e.to_string().contains("400") {
                             log::error!(
-                                "HTTP 400 error for segment, stream URL may be expired: {}",
-                                ts_url
+                                "HTTP 400 error for segment, stream URL may be expired: {ts_url}"
                             );
                             *self.stream_url.write().await = None;
 
@@ -547,9 +541,7 @@ impl DouyinRecorder {
                                 if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await
                                 {
                                     log::warn!(
-                                        "Failed to cleanup empty work directory {}: {}",
-                                        work_dir,
-                                        cleanup_err
+                                        "Failed to cleanup empty work directory {work_dir}: {cleanup_err}"
                                     );
                                 }
                             }
@@ -561,9 +553,7 @@ impl DouyinRecorder {
                         if is_first_segment && work_dir_created {
                             if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
                                 log::warn!(
-                                    "Failed to cleanup empty work directory {}: {}",
-                                    work_dir,
-                                    cleanup_err
+                                    "Failed to cleanup empty work directory {work_dir}: {cleanup_err}"
                                 );
                             }
                         }
@@ -574,24 +564,16 @@ impl DouyinRecorder {
             }
 
             if !download_success {
-                log::error!(
-                    "Failed to download segment after {} retries: {}",
-                    max_retries,
-                    ts_url
-                );
+                log::error!("Failed to download segment after {max_retries} retries: {ts_url}");
 
                 // Clean up empty directory if first segment failed after all retries
                 if is_first_segment && work_dir_created {
                     if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
                         log::warn!(
-                            "Failed to cleanup empty work directory {}: {}",
-                            work_dir,
-                            cleanup_err
+                            "Failed to cleanup empty work directory {work_dir}: {cleanup_err}"
                         );
                     }
                 }
-
-                continue;
             }
         }
 
@@ -626,7 +608,7 @@ impl DouyinRecorder {
             )
             .await
         {
-            log::error!("Failed to update record: {}", e);
+            log::error!("Failed to update record: {e}");
         }
     }
 
@@ -680,8 +662,10 @@ impl Recorder for DouyinRecorder {
                         match self_clone.update_entries().await {
                             Ok(ms) => {
                                 if ms < 1000 {
-                                    tokio::time::sleep(Duration::from_millis(1000 - ms as u64))
-                                        .await;
+                                    tokio::time::sleep(Duration::from_millis(
+                                        (1000 - ms).try_into().unwrap(),
+                                    ))
+                                    .await;
                                 }
                                 if ms >= 3000 {
                                     log::warn!(
@@ -724,13 +708,13 @@ impl Recorder for DouyinRecorder {
         *self.running.write().await = false;
         // stop 3 tasks
         if let Some(danmu_task) = self.danmu_task.lock().await.as_mut() {
-            let _ = danmu_task.abort();
+            let () = danmu_task.abort();
         }
         if let Some(danmu_stream_task) = self.danmu_stream_task.lock().await.as_mut() {
-            let _ = danmu_stream_task.abort();
+            let () = danmu_stream_task.abort();
         }
         if let Some(record_task) = self.record_task.lock().await.as_mut() {
-            let _ = record_task.abort();
+            let () = record_task.abort();
         }
         log::info!("Recorder for room {} quit.", self.room_id);
     }
@@ -747,7 +731,8 @@ impl Recorder for DouyinRecorder {
             self.first_segment_ts(live_id).await / 1000
         )
         .as_str();
-        m3u8_content += &format!("playlist.m3u8?start={}&end={}\n", start, end);
+        use std::fmt::Write;
+        writeln!(&mut m3u8_content, "playlist.m3u8?start={start}&end={end}").unwrap();
         m3u8_content
     }
 
@@ -822,8 +807,7 @@ impl Recorder for DouyinRecorder {
             .subtitle_content
             .iter()
             .map(item_to_srt)
-            .collect::<Vec<String>>()
-            .join("");
+            .collect::<String>();
         subtitle_file.write_all(subtitle_content.as_bytes()).await?;
 
         // remove tmp file
@@ -910,7 +894,7 @@ impl Recorder for DouyinRecorder {
                 live_id,
                 "danmu.txt"
             );
-            log::debug!("loading danmu cache from {}", cache_file_path);
+            log::debug!("loading danmu cache from {cache_file_path}");
             let storage = DanmuStorage::new(&cache_file_path).await;
             if storage.is_none() {
                 return Ok(Vec::new());

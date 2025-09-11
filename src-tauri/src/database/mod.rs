@@ -22,6 +22,8 @@ pub enum DatabaseError {
     NotFound,
     #[error("Cookies are invalid")]
     InvalidCookies,
+    #[error("Number exceed i64 range")]
+    NumberExceedI64Range,
     #[error("DB error: {0}")]
     DB(#[from] sqlx::Error),
     #[error("SQL is incorret: {sql}")]

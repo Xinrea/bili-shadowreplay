@@ -23,7 +23,7 @@ pub async fn add_account(
 ) -> Result<AccountRow, String> {
     // check if cookies is valid
     if let Err(e) = cookies.parse::<HeaderValue>() {
-        return Err(format!("Invalid cookies: {}", e));
+        return Err(format!("Invalid cookies: {e}"));
     }
     let account = state.db.add_account(&platform, cookies).await?;
     if platform == "bilibili" {
@@ -61,7 +61,7 @@ pub async fn add_account(
                     .await?;
             }
             Err(e) => {
-                log::warn!("Failed to get Douyin user info: {}", e);
+                log::warn!("Failed to get Douyin user info: {e}");
                 // Keep the account but with default values
             }
         }
@@ -73,7 +73,7 @@ pub async fn add_account(
 pub async fn remove_account(
     state: state_type!(),
     platform: String,
-    uid: u64,
+    uid: i64,
 ) -> Result<(), String> {
     if platform == "bilibili" {
         let account = state.db.get_account(&platform, uid).await?;

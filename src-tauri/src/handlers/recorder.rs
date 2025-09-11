@@ -24,10 +24,10 @@ pub async fn get_recorder_list(state: state_type!()) -> Result<RecorderList, ()>
 pub async fn add_recorder(
     state: state_type!(),
     platform: String,
-    room_id: u64,
+    room_id: i64,
     extra: String,
 ) -> Result<RecorderRow, String> {
-    log::info!("Add recorder: {} {}", platform, room_id);
+    log::info!("Add recorder: {platform} {room_id}");
     let platform = PlatformType::from_str(&platform).unwrap();
     let account = match platform {
         PlatformType::BiliBili => {
@@ -59,7 +59,7 @@ pub async fn add_recorder(
                 let room = state.db.add_recorder(platform, room_id, &extra).await?;
                 state
                     .db
-                    .new_message("添加直播间", &format!("添加了新直播间 {}", room_id))
+                    .new_message("添加直播间", &format!("添加了新直播间 {room_id}"))
                     .await?;
                 // post webhook event
                 let event = events::new_webhook_event(
@@ -67,18 +67,18 @@ pub async fn add_recorder(
                     events::Payload::Recorder(room.clone()),
                 );
                 if let Err(e) = state.webhook_poster.post_event(&event).await {
-                    log::error!("Post webhook event error: {}", e);
+                    log::error!("Post webhook event error: {e}");
                 }
                 Ok(room)
             }
             Err(e) => {
-                log::error!("Failed to add recorder: {}", e);
-                Err(format!("添加失败: {}", e))
+                log::error!("Failed to add recorder: {e}");
+                Err(format!("添加失败: {e}"))
             }
         },
         Err(e) => {
-            log::error!("Failed to add recorder: {}", e);
-            Err(format!("添加失败: {}", e))
+            log::error!("Failed to add recorder: {e}");
+            Err(format!("添加失败: {e}"))
         }
     }
 }
@@ -87,9 +87,9 @@ pub async fn add_recorder(
 pub async fn remove_recorder(
     state: state_type!(),
     platform: String,
-    room_id: u64,
+    room_id: i64,
 ) -> Result<(), String> {
-    log::info!("Remove recorder: {} {}", platform, room_id);
+    log::info!("Remove recorder: {platform} {room_id}");
     let platform = PlatformType::from_str(&platform).unwrap();
     match state
         .recorder_manager
@@ -99,7 +99,7 @@ pub async fn remove_recorder(
         Ok(recorder) => {
             state
                 .db
-                .new_message("移除直播间", &format!("移除了直播间 {}", room_id))
+                .new_message("移除直播间", &format!("移除了直播间 {room_id}"))
                 .await?;
             // post webhook event
             let event = events::new_webhook_event(
@@ -107,13 +107,13 @@ pub async fn remove_recorder(
                 events::Payload::Recorder(recorder),
             );
             if let Err(e) = state.webhook_poster.post_event(&event).await {
-                log::error!("Post webhook event error: {}", e);
+                log::error!("Post webhook event error: {e}");
             }
             log::info!("Removed recorder: {} {}", platform.as_str(), room_id);
             Ok(())
         }
         Err(e) => {
-            log::error!("Failed to remove recorder: {}", e);
+            log::error!("Failed to remove recorder: {e}");
             Err(e.to_string())
         }
     }
@@ -123,7 +123,7 @@ pub async fn remove_recorder(
 pub async fn get_room_info(
     state: state_type!(),
     platform: String,
-    room_id: u64,
+    room_id: i64,
 ) -> Result<RecorderInfo, String> {
     let platform = PlatformType::from_str(&platform).unwrap();
     if let Some(info) = state
@@ -138,16 +138,16 @@ pub async fn get_room_info(
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn get_archive_disk_usage(state: state_type!()) -> Result<u64, String> {
+pub async fn get_archive_disk_usage(state: state_type!()) -> Result<i64, String> {
     Ok(state.recorder_manager.get_archive_disk_usage().await?)
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_archives(
     state: state_type!(),
-    room_id: u64,
-    offset: u64,
-    limit: u64,
+    room_id: i64,
+    offset: i64,
+    limit: i64,
 ) -> Result<Vec<RecordRow>, String> {
     Ok(state
         .recorder_manager
@@ -158,7 +158,7 @@ pub async fn get_archives(
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_archive(
     state: state_type!(),
-    room_id: u64,
+    room_id: i64,
     live_id: String,
 ) -> Result<RecordRow, String> {
     Ok(state
@@ -171,7 +171,7 @@ pub async fn get_archive(
 pub async fn get_archive_subtitle(
     state: state_type!(),
     platform: String,
-    room_id: u64,
+    room_id: i64,
     live_id: String,
 ) -> Result<String, String> {
     let platform = PlatformType::from_str(&platform);
@@ -188,7 +188,7 @@ pub async fn get_archive_subtitle(
 pub async fn generate_archive_subtitle(
     state: state_type!(),
     platform: String,
-    room_id: u64,
+    room_id: i64,
     live_id: String,
 ) -> Result<String, String> {
     let platform = PlatformType::from_str(&platform);
@@ -205,7 +205,7 @@ pub async fn generate_archive_subtitle(
 pub async fn delete_archive(
     state: state_type!(),
     platform: String,
-    room_id: u64,
+    room_id: i64,
     live_id: String,
 ) -> Result<(), String> {
     let platform = PlatformType::from_str(&platform);
@@ -220,14 +220,14 @@ pub async fn delete_archive(
         .db
         .new_message(
             "删除历史缓存",
-            &format!("删除了房间 {} 的历史缓存 {}", room_id, live_id),
+            &format!("删除了房间 {room_id} 的历史缓存 {live_id}"),
         )
         .await?;
     // post webhook event
     let event =
         events::new_webhook_event(events::ARCHIVE_DELETED, events::Payload::Archive(to_delete));
     if let Err(e) = state.webhook_poster.post_event(&event).await {
-        log::error!("Post webhook event error: {}", e);
+        log::error!("Post webhook event error: {e}");
     }
     Ok(())
 }
@@ -236,7 +236,7 @@ pub async fn delete_archive(
 pub async fn delete_archives(
     state: state_type!(),
     platform: String,
-    room_id: u64,
+    room_id: i64,
     live_ids: Vec<String>,
 ) -> Result<(), String> {
     let platform = PlatformType::from_str(&platform);
@@ -248,7 +248,10 @@ pub async fn delete_archives(
         .delete_archives(
             platform.unwrap(),
             room_id,
-            &live_ids.iter().map(|s| s.as_str()).collect::<Vec<&str>>(),
+            &live_ids
+                .iter()
+                .map(std::string::String::as_str)
+                .collect::<Vec<&str>>(),
         )
         .await?;
     state
@@ -263,7 +266,7 @@ pub async fn delete_archives(
         let event =
             events::new_webhook_event(events::ARCHIVE_DELETED, events::Payload::Archive(to_delete));
         if let Err(e) = state.webhook_poster.post_event(&event).await {
-            log::error!("Post webhook event error: {}", e);
+            log::error!("Post webhook event error: {e}");
         }
     }
     Ok(())
@@ -273,7 +276,7 @@ pub async fn delete_archives(
 pub async fn get_danmu_record(
     state: state_type!(),
     platform: String,
-    room_id: u64,
+    room_id: i64,
     live_id: String,
 ) -> Result<Vec<DanmuEntry>, String> {
     let platform = PlatformType::from_str(&platform);
@@ -290,7 +293,7 @@ pub async fn get_danmu_record(
 #[serde(rename_all = "camelCase")]
 pub struct ExportDanmuOptions {
     platform: String,
-    room_id: u64,
+    room_id: i64,
     live_id: String,
     x: i64,
     y: i64,
@@ -335,8 +338,8 @@ pub async fn export_danmu(
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn send_danmaku(
     state: state_type!(),
-    uid: u64,
-    room_id: u64,
+    uid: i64,
+    room_id: i64,
     message: String,
 ) -> Result<(), String> {
     let account = state.db.get_account("bilibili", uid).await?;
@@ -351,7 +354,7 @@ pub async fn send_danmaku(
 pub async fn get_total_length(state: state_type!()) -> Result<i64, String> {
     match state.db.get_total_length().await {
         Ok(total_length) => Ok(total_length),
-        Err(e) => Err(format!("Failed to get total length: {}", e)),
+        Err(e) => Err(format!("Failed to get total length: {e}")),
     }
 }
 
@@ -359,20 +362,20 @@ pub async fn get_total_length(state: state_type!()) -> Result<i64, String> {
 pub async fn get_today_record_count(state: state_type!()) -> Result<i64, String> {
     match state.db.get_today_record_count().await {
         Ok(count) => Ok(count),
-        Err(e) => Err(format!("Failed to get today record count: {}", e)),
+        Err(e) => Err(format!("Failed to get today record count: {e}")),
     }
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_recent_record(
     state: state_type!(),
-    room_id: u64,
-    offset: u64,
-    limit: u64,
+    room_id: i64,
+    offset: i64,
+    limit: i64,
 ) -> Result<Vec<RecordRow>, String> {
     match state.db.get_recent_record(room_id, offset, limit).await {
         Ok(records) => Ok(records),
-        Err(e) => Err(format!("Failed to get recent record: {}", e)),
+        Err(e) => Err(format!("Failed to get recent record: {e}")),
     }
 }
 
@@ -380,7 +383,7 @@ pub async fn get_recent_record(
 pub async fn set_enable(
     state: state_type!(),
     platform: String,
-    room_id: u64,
+    room_id: i64,
     enabled: bool,
 ) -> Result<(), String> {
     log::info!("Set enable for recorder {platform} {room_id} {enabled}");

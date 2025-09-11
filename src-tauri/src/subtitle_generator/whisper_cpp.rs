@@ -22,7 +22,7 @@ pub async fn new(model: &Path, prompt: &str) -> Result<WhisperCPP, String> {
         WhisperContextParameters::default(),
     )
     .map_err(|e| {
-        log::error!("Create whisper context failed: {}", e);
+        log::error!("Create whisper context failed: {e}");
         e.to_string()
     })?;
 
@@ -65,7 +65,7 @@ impl SubtitleGenerator for WhisperCPP {
         params.set_print_timestamps(false);
 
         params.set_progress_callback_safe(move |p| {
-            log::info!("Progress: {}%", p);
+            log::info!("Progress: {p}%");
         });
 
         let mut inter_samples = vec![Default::default(); samples.len()];
@@ -88,7 +88,7 @@ impl SubtitleGenerator for WhisperCPP {
             reporter.update("生成字幕中");
         }
         if let Err(e) = state.full(params, &samples[..]) {
-            log::error!("failed to run model: {}", e);
+            log::error!("failed to run model: {e}");
             return Err(e.to_string());
         }
 
@@ -107,10 +107,7 @@ impl SubtitleGenerator for WhisperCPP {
                 let milliseconds = ((timestamp - hours * 3600.0 - minutes * 60.0 - seconds)
                     * 1000.0)
                     .floor() as u32;
-                format!(
-                    "{:02}:{:02}:{:02},{:03}",
-                    hours, minutes, seconds, milliseconds
-                )
+                format!("{hours:02}:{minutes:02}:{seconds:02},{milliseconds:03}")
             };
 
             let line = format!(
@@ -126,12 +123,12 @@ impl SubtitleGenerator for WhisperCPP {
 
         log::info!("Time taken: {} seconds", start_time.elapsed().as_secs_f64());
 
-        let subtitle_content = srtparse::from_str(&subtitle)
-            .map_err(|e| format!("Failed to parse subtitle: {}", e))?;
+        let subtitle_content =
+            srtparse::from_str(&subtitle).map_err(|e| format!("Failed to parse subtitle: {e}"))?;
 
         Ok(GenerateResult {
             generator_type: SubtitleGeneratorType::Whisper,
-            subtitle_id: "".to_string(),
+            subtitle_id: String::new(),
             subtitle_content,
         })
     }
@@ -154,14 +151,14 @@ mod tests {
     #[async_trait]
     impl ProgressReporterTrait for MockReporter {
         fn update(&self, message: &str) {
-            println!("Mock update: {}", message);
+            println!("Mock update: {message}");
         }
 
         async fn finish(&self, success: bool, message: &str) {
             if success {
-                println!("Mock finish: {}", message);
+                println!("Mock finish: {message}");
             } else {
-                println!("Mock error: {}", message);
+                println!("Mock error: {message}");
             }
         }
     }
@@ -189,7 +186,7 @@ mod tests {
             .generate_subtitle(Some(&reporter), audio_path, "auto")
             .await;
         if let Err(e) = result {
-            println!("Error: {}", e);
+            println!("Error: {e}");
             panic!("Failed to generate subtitle");
         }
     }

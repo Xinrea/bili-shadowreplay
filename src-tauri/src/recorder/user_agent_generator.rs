@@ -37,8 +37,7 @@ impl UserAgentGenerator {
         let webkit_version = webkit_versions.choose(&mut self.rng).unwrap();
 
         format!(
-            "Mozilla/5.0 ({}) AppleWebKit/{} (KHTML, like Gecko) Chrome/{} Safari/{}",
-            os, webkit_version, chrome_version, webkit_version
+            "Mozilla/5.0 ({os}) AppleWebKit/{webkit_version} (KHTML, like Gecko) Chrome/{chrome_version} Safari/{webkit_version}"
         )
     }
 
@@ -48,10 +47,7 @@ impl UserAgentGenerator {
         let os = self.get_random_os_firefox();
         let firefox_version = firefox_versions.choose(&mut self.rng).unwrap();
 
-        format!(
-            "Mozilla/5.0 ({}; rv:{}) Gecko/20100101 Firefox/{}",
-            os, firefox_version, firefox_version
-        )
+        format!("Mozilla/5.0 ({os}; rv:{firefox_version}) Gecko/20100101 Firefox/{firefox_version}")
     }
 
     fn generate_safari(&mut self) -> String {
@@ -72,16 +68,14 @@ impl UserAgentGenerator {
                 .unwrap();
 
             format!(
-                "Mozilla/5.0 ({} {} like Mac OS X) AppleWebKit/{} (KHTML, like Gecko) Version/{} Mobile/15E148 Safari/{}",
-                device, ios_version, webkit_version, safari_version, webkit_version
+                "Mozilla/5.0 ({device} {ios_version} like Mac OS X) AppleWebKit/{webkit_version} (KHTML, like Gecko) Version/{safari_version} Mobile/15E148 Safari/{webkit_version}"
             )
         } else {
             let macos_versions = ["14_1", "13_6", "12_7"];
             let macos_version = macos_versions.choose(&mut self.rng).unwrap();
 
             format!(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X {}) AppleWebKit/{} (KHTML, like Gecko) Version/{} Safari/{}",
-                macos_version, webkit_version, safari_version, webkit_version
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X {macos_version}) AppleWebKit/{webkit_version} (KHTML, like Gecko) Version/{safari_version} Safari/{webkit_version}"
             )
         }
     }
@@ -95,8 +89,7 @@ impl UserAgentGenerator {
         let chrome_version = chrome_versions.choose(&mut self.rng).unwrap();
 
         format!(
-            "Mozilla/5.0 ({}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{} Safari/537.36 Edg/{}",
-            os, chrome_version, edge_version
+            "Mozilla/5.0 ({os}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{chrome_version} Safari/537.36 Edg/{edge_version}"
         )
     }
 

@@ -103,7 +103,7 @@ impl WebhookPoster {
         tokio::task::spawn(async move {
             let result = self_clone.post_with_retry(&serialized_event).await;
             if let Err(e) = result {
-                log::error!("Post webhook event error: {}", e);
+                log::error!("Post webhook event error: {e}");
             }
         });
 
@@ -132,9 +132,9 @@ impl WebhookPoster {
 
         for attempt in 1..=self.config.read().await.retry_attempts {
             match self.send_request(data).await {
-                Ok(_) => {
+                Ok(()) => {
                     if attempt > 1 {
-                        info!("Webhook posted successfully on attempt {}", attempt);
+                        info!("Webhook posted successfully on attempt {attempt}");
                     }
                     return Ok(());
                 }
@@ -168,7 +168,7 @@ impl WebhookPoster {
             }
         }
 
-        log::debug!("Sending webhook request to: {}", webhook_url);
+        log::debug!("Sending webhook request to: {webhook_url}");
 
         // Set content type to JSON
         request = request.header("Content-Type", "application/json");
@@ -225,7 +225,7 @@ pub fn create_webhook_poster(
         headers,
         ..Default::default()
     };
-    log::info!("Creating webhook poster with URL: {}", url);
+    log::info!("Creating webhook poster with URL: {url}");
     WebhookPoster::new(config)
 }
 

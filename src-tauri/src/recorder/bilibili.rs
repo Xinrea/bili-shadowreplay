@@ -40,10 +40,10 @@ use async_trait::async_trait;
 #[cfg(feature = "gui")]
 use {tauri::AppHandle, tauri_plugin_notification::NotificationExt};
 
-/// A recorder for BiliBili live streams
+/// A recorder for `BiliBili` live streams
 ///
-/// This recorder fetches, caches and serves TS entries, currently supporting only StreamType::FMP4.
-/// As high-quality streams are accessible only to logged-in users, the use of a BiliClient, which manages cookies, is required.
+/// This recorder fetches, caches and serves TS entries, currently supporting only `StreamType::FMP4`.
+/// As high-quality streams are accessible only to logged-in users, the use of a `BiliClient`, which manages cookies, is required.
 // TODO implement StreamType::TS
 #[derive(Clone)]
 pub struct BiliRecorder {
@@ -54,7 +54,7 @@ pub struct BiliRecorder {
     db: Arc<Database>,
     account: AccountRow,
     config: Arc<RwLock<Config>>,
-    room_id: u64,
+    room_id: i64,
     room_info: Arc<RwLock<RoomInfo>>,
     user_info: Arc<RwLock<UserInfo>>,
     live_status: Arc<RwLock<bool>>,
@@ -81,7 +81,7 @@ pub struct BiliRecorderOptions {
     pub app_handle: AppHandle,
     pub emitter: EventEmitter,
     pub db: Arc<Database>,
-    pub room_id: u64,
+    pub room_id: i64,
     pub account: AccountRow,
     pub config: Arc<RwLock<Config>>,
     pub auto_start: bool,
@@ -298,30 +298,27 @@ impl BiliRecorder {
                 }
 
                 let master_manifest = master_manifest.unwrap();
-                let variant = match master_manifest {
-                    Playlist::MasterPlaylist(playlist) => {
-                        let variants = playlist.variants.clone();
-                        variants
-                            .into_iter()
-                            .filter(|variant| {
-                                if let Some(other_attributes) = &variant.other_attributes {
-                                    if let Some(QuotedOrUnquoted::Quoted(bili_display)) =
-                                        other_attributes.get("BILI-DISPLAY")
-                                    {
-                                        bili_display == "原画"
-                                    } else {
-                                        false
-                                    }
+                let variant = if let Playlist::MasterPlaylist(playlist) = master_manifest {
+                    let variants = playlist.variants.clone();
+                    variants
+                        .into_iter()
+                        .filter(|variant| {
+                            if let Some(other_attributes) = &variant.other_attributes {
+                                if let Some(QuotedOrUnquoted::Quoted(bili_display)) =
+                                    other_attributes.get("BILI-DISPLAY")
+                                {
+                                    bili_display == "原画"
                                 } else {
                                     false
                                 }
-                            })
-                            .collect::<Vec<_>>()
-                    }
-                    _ => {
-                        log::error!("[{}]Master manifest is not a media playlist", self.room_id);
-                        vec![]
-                    }
+                            } else {
+                                false
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    log::error!("[{}]Master manifest is not a media playlist", self.room_id);
+                    vec![]
                 };
 
                 if variant.is_empty() {
@@ -505,7 +502,7 @@ impl BiliRecorder {
             });
         }
 
-        let mut header_url = String::from("");
+        let mut header_url = String::new();
         let re = Regex::new(r"h.*\.m4s").unwrap();
         if let Some(captures) = re.captures(&index_content) {
             header_url = captures.get(0).unwrap().as_str().to_string();
@@ -525,7 +522,7 @@ impl BiliRecorder {
         &self,
         header_url: &str,
     ) -> Result<String, super::errors::RecorderError> {
-        log::debug!("Get resolution from {}", header_url);
+        log::debug!("Get resolution from {header_url}");
         let resolution = get_video_resolution(header_url)
             .await
             .map_err(super::errors::RecorderError::FfmpegError)?;
@@ -646,7 +643,7 @@ impl BiliRecorder {
                 .client
                 .read()
                 .await
-                .download_ts(&full_header_url, &format!("{}/{}", work_dir, file_name))
+                .download_ts(&full_header_url, &format!("{work_dir}/{file_name}"))
                 .await
             {
                 Ok(size) => {
@@ -794,7 +791,7 @@ impl BiliRecorder {
 
         match playlist {
             Playlist::MasterPlaylist(pl) => {
-                log::debug!("[{}]Master playlist:\n{:?}", self.room_id, pl)
+                log::debug!("[{}]Master playlist:\n{:?}", self.room_id, pl);
             }
             Playlist::MediaPlaylist(pl) => {
                 let mut new_segment_fetched = false;
@@ -803,12 +800,11 @@ impl BiliRecorder {
                     .read()
                     .await
                     .as_ref()
-                    .map(|store| store.last_sequence)
-                    .unwrap_or(0); // For first-time recording, start from 0
+                    .map_or(0, |store| store.last_sequence); // For first-time recording, start from 0
 
                 // Parse BILI-AUX offsets to calculate precise durations for FMP4
                 let mut segment_offsets = Vec::new();
-                for ts in pl.segments.iter() {
+                for ts in &pl.segments {
                     let mut seg_offset: i64 = 0;
                     for tag in &ts.unknown_tags {
                         if tag.tag == "BILI-AUX" {
@@ -865,7 +861,7 @@ impl BiliRecorder {
 
                     // encode segment offset into filename
                     let file_name = ts.uri.split('/').next_back().unwrap_or(&ts.uri);
-                    let ts_length = pl.target_duration as f64;
+                    let ts_length = f64::from(pl.target_duration);
 
                     // Calculate precise duration from BILI-AUX offsets for FMP4
                     let precise_length_from_aux =
@@ -933,7 +929,7 @@ impl BiliRecorder {
                         match client
                             .read()
                             .await
-                            .download_ts(&ts_url, &format!("{}/{}", work_dir, file_name))
+                            .download_ts(&ts_url, &format!("{work_dir}/{file_name}"))
                             .await
                         {
                             Ok(size) => {
@@ -996,7 +992,7 @@ impl BiliRecorder {
                                     aux_duration
                                 } else if current_stream.format != StreamType::FMP4 {
                                     // For regular TS segments, use direct ffprobe
-                                    let file_path = format!("{}/{}", work_dir, file_name);
+                                    let file_path = format!("{work_dir}/{file_name}");
                                     match crate::ffmpeg::get_segment_duration(std::path::Path::new(
                                         &file_path,
                                     ))
@@ -1166,13 +1162,13 @@ impl BiliRecorder {
             range = Some(Range {
                 x: start as f32,
                 y: end as f32,
-            })
+            });
         }
 
         entry_store.manifest(true, true, range)
     }
 
-    /// if fetching live/last stream m3u8, all entries are cached in memory, so it will be much faster than read_dir
+    /// if fetching live/last stream m3u8, all entries are cached in memory, so it will be much faster than `read_dir`
     async fn generate_live_m3u8(&self, start: i64, end: i64) -> String {
         let live_status = *self.live_status.read().await;
         let range = if start != 0 || end != 0 {
@@ -1274,10 +1270,10 @@ impl super::Recorder for BiliRecorder {
         log::debug!("[{}]Stop recorder", self.room_id);
         *self.quit.lock().await = true;
         if let Some(danmu_task) = self.danmu_task.lock().await.as_mut() {
-            let _ = danmu_task.abort();
+            let () = danmu_task.abort();
         }
         if let Some(record_task) = self.record_task.lock().await.as_mut() {
-            let _ = record_task.abort();
+            let () = record_task.abort();
         }
         log::info!("[{}]Recorder quit.", self.room_id);
     }
@@ -1303,7 +1299,7 @@ impl super::Recorder for BiliRecorder {
             "#EXT-X-STREAM-INF:BANDWIDTH=1280000,RESOLUTION=1920x1080,CODECS={},DANMU={}\n",
             "\"avc1.64001F,mp4a.40.2\"", offset
         );
-        m3u8_content += &format!("playlist.m3u8?start={}&end={}\n", start, end);
+        m3u8_content += &format!("playlist.m3u8?start={start}&end={end}\n");
         m3u8_content
     }
 
@@ -1475,8 +1471,7 @@ impl super::Recorder for BiliRecorder {
             .subtitle_content
             .iter()
             .map(item_to_srt)
-            .collect::<Vec<String>>()
-            .join("");
+            .collect::<String>();
         subtitle_file.write_all(subtitle_content.as_bytes()).await?;
         log::info!("[{}]Subtitle file written", self.room_id);
         // remove tmp file

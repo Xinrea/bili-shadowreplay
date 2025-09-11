@@ -68,7 +68,7 @@ fn default_openai_api_endpoint() -> String {
 }
 
 fn default_openai_api_key() -> String {
-    "".to_string()
+    String::new()
 }
 
 fn default_clip_name_format() -> String {
@@ -95,7 +95,7 @@ fn default_cleanup_source_flv() -> bool {
 }
 
 fn default_webhook_url() -> String {
-    "".to_string()
+    String::new()
 }
 
 impl Config {

@@ -37,7 +37,7 @@ pub async fn new(
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(300)) // 5 minutes timeout
         .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+        .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
 
     let api_url = api_url.unwrap_or("https://api.openai.com/v1");
     let api_url = api_url.to_string() + "/audio/transcriptions";
@@ -45,8 +45,8 @@ pub async fn new(
     Ok(WhisperOnline {
         client,
         api_url: api_url.to_string(),
-        api_key: api_key.map(|k| k.to_string()),
-        prompt: prompt.map(|p| p.to_string()),
+        api_key: api_key.map(std::string::ToString::to_string),
+        prompt: prompt.map(std::string::ToString::to_string),
     })
 }
 
@@ -67,7 +67,7 @@ impl SubtitleGenerator for WhisperOnline {
         }
         let audio_data = fs::read(audio_path)
             .await
-            .map_err(|e| format!("Failed to read audio file: {}", e))?;
+            .map_err(|e| format!("Failed to read audio file: {e}"))?;
 
         // Get file extension for proper MIME type
         let file_extension = audio_path
@@ -86,7 +86,7 @@ impl SubtitleGenerator for WhisperOnline {
         // Build form data with proper file part
         let file_part = reqwest::multipart::Part::bytes(audio_data)
             .mime_str(mime_type)
-            .map_err(|e| format!("Failed to set MIME type: {}", e))?
+            .map_err(|e| format!("Failed to set MIME type: {e}"))?
             .file_name(
                 audio_path
                     .file_name()
@@ -111,7 +111,7 @@ impl SubtitleGenerator for WhisperOnline {
         let mut req_builder = self.client.post(&self.api_url);
 
         if let Some(api_key) = &self.api_key {
-            req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
+            req_builder = req_builder.header("Authorization", format!("Bearer {api_key}"));
         }
 
         if let Some(reporter) = reporter {
@@ -122,15 +122,14 @@ impl SubtitleGenerator for WhisperOnline {
             .multipart(form)
             .send()
             .await
-            .map_err(|e| format!("HTTP request failed: {}", e))?;
+            .map_err(|e| format!("HTTP request failed: {e}"))?;
 
         let status = response.status();
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            log::error!("API request failed with status {}: {}", status, error_text);
+            log::error!("API request failed with status {status}: {error_text}");
             return Err(format!(
-                "API request failed with status {}: {}",
-                status, error_text
+                "API request failed with status {status}: {error_text}"
             ));
         }
 
@@ -138,17 +137,14 @@ impl SubtitleGenerator for WhisperOnline {
         let response_text = response
             .text()
             .await
-            .map_err(|e| format!("Failed to get response text: {}", e))?;
+            .map_err(|e| format!("Failed to get response text: {e}"))?;
 
         // Try to parse as JSON
         let whisper_response: WhisperResponse =
             serde_json::from_str(&response_text).map_err(|e| {
-                println!("{}", response_text);
-                log::error!(
-                    "Failed to parse JSON response. Raw response: {}",
-                    response_text
-                );
-                format!("Failed to parse response: {}", e)
+                println!("{response_text}");
+                log::error!("Failed to parse JSON response. Raw response: {response_text}");
+                format!("Failed to parse response: {e}")
             })?;
 
         // Generate SRT format subtitle
@@ -161,10 +157,7 @@ impl SubtitleGenerator for WhisperOnline {
                 let milliseconds = ((timestamp - hours * 3600.0 - minutes * 60.0 - seconds)
                     * 1000.0)
                     .floor() as u32;
-                format!(
-                    "{:02}:{:02}:{:02},{:03}",
-                    hours, minutes, seconds, milliseconds
-                )
+                format!("{hours:02}:{minutes:02}:{seconds:02},{milliseconds:03}")
             };
 
             let line = format!(
@@ -180,12 +173,12 @@ impl SubtitleGenerator for WhisperOnline {
 
         log::info!("Time taken: {} seconds", start_time.elapsed().as_secs_f64());
 
-        let subtitle_content = srtparse::from_str(&subtitle)
-            .map_err(|e| format!("Failed to parse subtitle: {}", e))?;
+        let subtitle_content =
+            srtparse::from_str(&subtitle).map_err(|e| format!("Failed to parse subtitle: {e}"))?;
 
         Ok(GenerateResult {
             generator_type: SubtitleGeneratorType::WhisperOnline,
-            subtitle_id: "".to_string(),
+            subtitle_id: String::new(),
             subtitle_content,
         })
     }
@@ -203,14 +196,14 @@ mod tests {
     #[async_trait]
     impl ProgressReporterTrait for MockReporter {
         fn update(&self, message: &str) {
-            println!("Mock update: {}", message);
+            println!("Mock update: {message}");
         }
 
         async fn finish(&self, success: bool, message: &str) {
             if success {
-                println!("Mock finish: {}", message);
+                println!("Mock finish: {message}");
             } else {
-                println!("Mock error: {}", message);
+                println!("Mock error: {message}");
             }
         }
     }
@@ -240,7 +233,7 @@ mod tests {
                 "auto",
             )
             .await;
-        println!("{:?}", result);
+        println!("{result:?}");
         assert!(result.is_ok());
         let result = result.unwrap();
         println!("{:?}", result.subtitle_content);

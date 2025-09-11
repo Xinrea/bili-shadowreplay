@@ -32,7 +32,7 @@ const MAX_DELAY: f64 = 6.0;
 
 pub fn danmu_to_ass(danmus: Vec<DanmuEntry>) -> String {
     // ASS header
-    let header = r#"[Script Info]
+    let header = r"[Script Info]
 Title: Bilibili Danmaku
 ScriptType: v4.00+
 Collisions: Normal
@@ -46,7 +46,7 @@ Style: Default,微软雅黑,36,&H7fFFFFFF,&H7fFFFFFF,&H7f000000,&H7f000000,0,0,0
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"#;
+";
 
     let mut normal = normal_danmaku();
     let font_size = 36.0; // Default font size
@@ -87,22 +87,22 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         .join("\n");
 
     // Combine header and events
-    format!("{}\n{}", header, events)
+    format!("{header}\n{events}")
 }
 
 fn format_time(seconds: f64) -> String {
     let hours = (seconds / 3600.0) as i32;
     let minutes = ((seconds % 3600.0) / 60.0) as i32;
     let seconds = seconds % 60.0;
-    format!("{}:{:02}:{:05.2}", hours, minutes, seconds)
+    format!("{hours}:{minutes:02}:{seconds:05.2}")
 }
 
 fn escape_text(text: &str) -> String {
-    text.replace("\\", "\\\\")
-        .replace("{", "｛")
-        .replace("}", "｝")
-        .replace("\r", "")
-        .replace("\n", "\\N")
+    text.replace('\\', "\\\\")
+        .replace('{', "｛")
+        .replace('}', "｝")
+        .replace('\r', "")
+        .replace('\n', "\\N")
 }
 
 fn normal_danmaku() -> impl FnMut(f64, f64, f64, bool) -> Option<DanmakuPosition> {
@@ -144,8 +144,8 @@ fn normal_danmaku() -> impl FnMut(f64, f64, f64, bool) -> Option<DanmakuPosition
 
             let p = space.m;
             let m = p + hv;
-            let mut tas = t0s;
-            let mut tal = t0l;
+            let mut time_actual_start = t0s;
+            let mut time_actual_leave = t0l;
 
             for other in &used {
                 if other.p >= m || other.m <= p {
@@ -154,13 +154,13 @@ fn normal_danmaku() -> impl FnMut(f64, f64, f64, bool) -> Option<DanmakuPosition
                 if other.b && b {
                     continue;
                 }
-                tas = tas.max(other.tf);
-                tal = tal.max(other.td);
+                time_actual_start = time_actual_start.max(other.tf);
+                time_actual_leave = time_actual_leave.max(other.td);
             }
 
             suggestions.push(PositionSuggestion {
                 p,
-                r: (tas - t0s).max(tal - t0l),
+                r: (time_actual_start - t0s).max(time_actual_leave - t0l),
             });
         }
 

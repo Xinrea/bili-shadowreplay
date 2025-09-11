@@ -43,13 +43,13 @@ pub async fn try_rebuild_archives(
                         PlatformType::from_str(room.platform.as_str()).unwrap(),
                         live_id,
                         room_id,
-                        &format!("UnknownLive {}", live_id),
+                        &format!("UnknownLive {live_id}"),
                         None,
                         Some(&created_at),
                     )
                     .await?;
 
-                log::info!("rebuild archive {:?}", record);
+                log::info!("rebuild archive {record:?}");
             }
         }
     }
@@ -64,7 +64,7 @@ pub async fn try_convert_live_covers(
     for room in rooms {
         let room_id = room.room_id;
         let room_cache_path = cache_path.join(format!("{}/{}", room.platform, room_id));
-        let records = db.get_records(room_id, 0, 999999999).await?;
+        let records = db.get_records(room_id, 0, 999_999_999).await?;
         for record in &records {
             let record_path = room_cache_path.join(record.live_id.clone());
             let cover = record.cover.clone();

@@ -92,7 +92,7 @@ pub async fn clip_from_m3u8(
         .spawn();
 
     if let Err(e) = child {
-        return Err(format!("Spawn ffmpeg process failed: {}", e));
+        return Err(format!("Spawn ffmpeg process failed: {e}"));
     }
 
     let mut child = child.unwrap();
@@ -110,17 +110,17 @@ pub async fn clip_from_m3u8(
                 log::debug!("Clip progress: {}", p.time);
                 reporter
                     .unwrap()
-                    .update(format!("编码中：{}", p.time).as_str())
+                    .update(format!("编码中：{}", p.time).as_str());
             }
             FfmpegEvent::LogEOF => break,
             FfmpegEvent::Log(level, content) => {
                 // log error if content contains error
                 if content.contains("error") || level == LogLevel::Error {
-                    log::error!("Clip error: {}", content);
+                    log::error!("Clip error: {content}");
                 }
             }
             FfmpegEvent::Error(e) => {
-                log::error!("Clip error: {}", e);
+                log::error!("Clip error: {e}");
                 clip_error = Some(e.to_string());
             }
             _ => {}
@@ -128,12 +128,12 @@ pub async fn clip_from_m3u8(
     }
 
     if let Err(e) = child.wait().await {
-        log::error!("Clip error: {}", e);
+        log::error!("Clip error: {e}");
         return Err(e.to_string());
     }
 
     if let Some(error) = clip_error {
-        log::error!("Clip error: {}", error);
+        log::error!("Clip error: {error}");
         Err(error)
     } else {
         log::info!("Clip task end: {}", output_path.display());
@@ -152,29 +152,25 @@ pub async fn extract_audio_chunks(file: &Path, format: &str) -> Result<PathBuf, 
 
     // First, get the duration of the input file
     let duration = get_audio_duration(file).await?;
-    log::info!("Audio duration: {} seconds", duration);
+    log::info!("Audio duration: {duration} seconds");
 
     // Split into chunks of 30 seconds
     let chunk_duration = 30;
-    let chunk_count = (duration as f64 / chunk_duration as f64).ceil() as usize;
-    log::info!(
-        "Splitting into {} chunks of {} seconds each",
-        chunk_count,
-        chunk_duration
-    );
+    let chunk_count = (duration as f64 / f64::from(chunk_duration)).ceil() as usize;
+    log::info!("Splitting into {chunk_count} chunks of {chunk_duration} seconds each");
 
     // Create output directory for chunks
     let output_dir = output_path.parent().unwrap();
     let base_name = output_path.file_stem().unwrap().to_str().unwrap();
-    let chunk_dir = output_dir.join(format!("{}_chunks", base_name));
+    let chunk_dir = output_dir.join(format!("{base_name}_chunks"));
 
     if !chunk_dir.exists() {
         std::fs::create_dir_all(&chunk_dir)
-            .map_err(|e| format!("Failed to create chunk directory: {}", e))?;
+            .map_err(|e| format!("Failed to create chunk directory: {e}"))?;
     }
 
     // Use ffmpeg segment feature to split audio into chunks
-    let segment_pattern = chunk_dir.join(format!("{}_%03d.{}", base_name, format));
+    let segment_pattern = chunk_dir.join(format!("{base_name}_%03d.{format}"));
 
     // 构建优化的ffmpeg命令参数
     let file_str = file.to_str().unwrap();
@@ -240,7 +236,7 @@ pub async fn extract_audio_chunks(file: &Path, format: &str) -> Result<PathBuf, 
     while let Ok(event) = parser.parse_next_event().await {
         match event {
             FfmpegEvent::Error(e) => {
-                log::error!("Extract audio error: {}", e);
+                log::error!("Extract audio error: {e}");
                 extract_error = Some(e.to_string());
             }
             FfmpegEvent::LogEOF => break,
@@ -250,12 +246,12 @@ pub async fn extract_audio_chunks(file: &Path, format: &str) -> Result<PathBuf, 
     }
 
     if let Err(e) = child.wait().await {
-        log::error!("Extract audio error: {}", e);
+        log::error!("Extract audio error: {e}");
         return Err(e.to_string());
     }
 
     if let Some(error) = extract_error {
-        log::error!("Extract audio error: {}", error);
+        log::error!("Extract audio error: {error}");
         Err(error)
     } else {
         log::info!(
@@ -284,7 +280,7 @@ async fn get_audio_duration(file: &Path) -> Result<u64, String> {
         .spawn();
 
     if let Err(e) = child {
-        return Err(format!("Failed to spawn ffprobe process: {}", e));
+        return Err(format!("Failed to spawn ffprobe process: {e}"));
     }
 
     let mut child = child.unwrap();
@@ -300,7 +296,7 @@ async fn get_audio_duration(file: &Path) -> Result<u64, String> {
                 // The new command outputs duration directly as a float
                 if let Ok(seconds_f64) = content.trim().parse::<f64>() {
                     duration = Some(seconds_f64.ceil() as u64);
-                    log::debug!("Parsed duration: {} seconds", seconds_f64);
+                    log::debug!("Parsed duration: {seconds_f64} seconds");
                 }
             }
             _ => {}
@@ -308,7 +304,7 @@ async fn get_audio_duration(file: &Path) -> Result<u64, String> {
     }
 
     if let Err(e) = child.wait().await {
-        log::error!("Failed to get duration: {}", e);
+        log::error!("Failed to get duration: {e}");
         return Err(e.to_string());
     }
 
@@ -332,10 +328,7 @@ pub async fn get_segment_duration(file: &Path) -> Result<f64, String> {
         .spawn();
 
     if let Err(e) = child {
-        return Err(format!(
-            "Failed to spawn ffprobe process for segment: {}",
-            e
-        ));
+        return Err(format!("Failed to spawn ffprobe process for segment: {e}"));
     }
 
     let mut child = child.unwrap();
@@ -351,7 +344,7 @@ pub async fn get_segment_duration(file: &Path) -> Result<f64, String> {
                 // Parse the exact duration as f64 for precise timing
                 if let Ok(seconds_f64) = content.trim().parse::<f64>() {
                     duration = Some(seconds_f64);
-                    log::debug!("Parsed segment duration: {} seconds", seconds_f64);
+                    log::debug!("Parsed segment duration: {seconds_f64} seconds");
                 }
             }
             _ => {}
@@ -359,7 +352,7 @@ pub async fn get_segment_duration(file: &Path) -> Result<f64, String> {
     }
 
     if let Err(e) = child.wait().await {
-        log::error!("Failed to get segment duration: {}", e);
+        log::error!("Failed to get segment duration: {e}");
         return Err(e.to_string());
     }
 
@@ -375,7 +368,7 @@ pub async fn encode_video_subtitle(
 ) -> Result<String, String> {
     // ffmpeg -i fixed_\[30655190\]1742887114_0325084106_81.5.mp4 -vf "subtitles=test.srt:force_style='FontSize=24'" -c:v libx264 -c:a copy output.mp4
     log::info!("Encode video subtitle task start: {}", file.display());
-    log::info!("SRT style: {}", srt_style);
+    log::info!("SRT style: {srt_style}");
     // output path is file with prefix [subtitle]
     let output_filename = format!(
         "{}{}",
@@ -400,14 +393,14 @@ pub async fn encode_video_subtitle(
         let subtitle = subtitle
             .to_str()
             .unwrap()
-            .replace("\\", "\\\\")
-            .replace(":", "\\:");
-        format!("'{}'", subtitle)
+            .replace('\\', "\\\\")
+            .replace(':', "\\:");
+        format!("'{subtitle}'")
     } else {
         format!("'{}'", subtitle.display())
     };
-    let vf = format!("subtitles={}:force_style='{}'", subtitle, srt_style);
-    log::info!("vf: {}", vf);
+    let vf = format!("subtitles={subtitle}:force_style='{srt_style}'");
+    log::info!("vf: {vf}");
 
     let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
     #[cfg(target_os = "windows")]
@@ -437,7 +430,7 @@ pub async fn encode_video_subtitle(
     while let Ok(event) = parser.parse_next_event().await {
         match event {
             FfmpegEvent::Error(e) => {
-                log::error!("Encode video subtitle error: {}", e);
+                log::error!("Encode video subtitle error: {e}");
                 command_error = Some(e.to_string());
             }
             FfmpegEvent::Progress(p) => {
@@ -451,12 +444,12 @@ pub async fn encode_video_subtitle(
     }
 
     if let Err(e) = child.wait().await {
-        log::error!("Encode video subtitle error: {}", e);
+        log::error!("Encode video subtitle error: {e}");
         return Err(e.to_string());
     }
 
     if let Some(error) = command_error {
-        log::error!("Encode video subtitle error: {}", error);
+        log::error!("Encode video subtitle error: {error}");
         Err(error)
     } else {
         log::info!("Encode video subtitle task end: {}", output_path.display());
@@ -494,9 +487,9 @@ pub async fn encode_video_danmu(
         let subtitle = subtitle
             .to_str()
             .unwrap()
-            .replace("\\", "\\\\")
-            .replace(":", "\\:");
-        format!("'{}'", subtitle)
+            .replace('\\', "\\\\")
+            .replace(':', "\\:");
+        format!("'{subtitle}'")
     } else {
         format!("'{}'", subtitle.display())
     };
@@ -507,7 +500,7 @@ pub async fn encode_video_danmu(
 
     let child = ffmpeg_process
         .args(["-i", file.to_str().unwrap()])
-        .args(["-vf", &format!("ass={}", subtitle)])
+        .args(["-vf", &format!("ass={subtitle}")])
         .args(["-c:v", "libx264"])
         .args(["-c:a", "copy"])
         .args(["-b:v", "6000k"])
@@ -529,7 +522,7 @@ pub async fn encode_video_danmu(
     while let Ok(event) = parser.parse_next_event().await {
         match event {
             FfmpegEvent::Error(e) => {
-                log::error!("Encode video danmu error: {}", e);
+                log::error!("Encode video danmu error: {e}");
                 command_error = Some(e.to_string());
             }
             FfmpegEvent::Progress(p) => {
@@ -548,12 +541,12 @@ pub async fn encode_video_danmu(
     }
 
     if let Err(e) = child.wait().await {
-        log::error!("Encode video danmu error: {}", e);
+        log::error!("Encode video danmu error: {e}");
         return Err(e.to_string());
     }
 
     if let Some(error) = command_error {
-        log::error!("Encode video danmu error: {}", error);
+        log::error!("Encode video danmu error: {error}");
         Err(error)
     } else {
         log::info!(
@@ -592,7 +585,7 @@ pub async fn generic_ffmpeg_command(args: &[&str]) -> Result<String, String> {
     }
 
     if let Err(e) = child.wait().await {
-        log::error!("Generic ffmpeg command error: {}", e);
+        log::error!("Generic ffmpeg command error: {e}");
         return Err(e.to_string());
     }
 
@@ -620,17 +613,17 @@ pub async fn generate_video_subtitle(
                 let chunk_dir = extract_audio_chunks(file, "wav").await?;
 
                 let mut full_result = GenerateResult {
-                    subtitle_id: "".to_string(),
+                    subtitle_id: String::new(),
                     subtitle_content: vec![],
                     generator_type: SubtitleGeneratorType::Whisper,
                 };
 
                 let mut chunk_paths = vec![];
                 for entry in std::fs::read_dir(&chunk_dir)
-                    .map_err(|e| format!("Failed to read chunk directory: {}", e))?
+                    .map_err(|e| format!("Failed to read chunk directory: {e}"))?
                 {
                     let entry =
-                        entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
+                        entry.map_err(|e| format!("Failed to read directory entry: {e}"))?;
                     let path = entry.path();
                     chunk_paths.push(path);
                 }
@@ -676,17 +669,17 @@ pub async fn generate_video_subtitle(
                 let chunk_dir = extract_audio_chunks(file, "mp3").await?;
 
                 let mut full_result = GenerateResult {
-                    subtitle_id: "".to_string(),
+                    subtitle_id: String::new(),
                     subtitle_content: vec![],
                     generator_type: SubtitleGeneratorType::WhisperOnline,
                 };
 
                 let mut chunk_paths = vec![];
                 for entry in std::fs::read_dir(&chunk_dir)
-                    .map_err(|e| format!("Failed to read chunk directory: {}", e))?
+                    .map_err(|e| format!("Failed to read chunk directory: {e}"))?
                 {
                     let entry =
-                        entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
+                        entry.map_err(|e| format!("Failed to read directory entry: {e}"))?;
                     let path = entry.path();
                     chunk_paths.push(path);
                 }
@@ -717,10 +710,7 @@ pub async fn generate_video_subtitle(
                 Err("Failed to initialize Whisper Online".to_string())
             }
         }
-        _ => Err(format!(
-            "Unknown subtitle generator type: {}",
-            generator_type
-        )),
+        _ => Err(format!("Unknown subtitle generator type: {generator_type}")),
     }
 }
 
@@ -802,7 +792,7 @@ pub async fn get_video_resolution(file: &str) -> Result<String, String> {
         return Err("Failed to parse resolution from output".into());
     }
     let line = line.unwrap();
-    let resolution = line.split("x").collect::<Vec<&str>>();
+    let resolution = line.split('x').collect::<Vec<&str>>();
     if resolution.len() != 2 {
         return Err("Failed to parse resolution from output".into());
     }
@@ -858,7 +848,7 @@ pub async fn clip_from_video_file(
         .spawn();
 
     if let Err(e) = child {
-        return Err(format!("启动ffmpeg进程失败: {}", e));
+        return Err(format!("启动ffmpeg进程失败: {e}"));
     }
 
     let mut child = child.unwrap();
@@ -877,11 +867,11 @@ pub async fn clip_from_video_file(
             FfmpegEvent::LogEOF => break,
             FfmpegEvent::Log(level, content) => {
                 if content.contains("error") || level == LogLevel::Error {
-                    log::error!("切片错误: {}", content);
+                    log::error!("切片错误: {content}");
                 }
             }
             FfmpegEvent::Error(e) => {
-                log::error!("切片错误: {}", e);
+                log::error!("切片错误: {e}");
                 clip_error = Some(e.to_string());
             }
             _ => {}
@@ -926,7 +916,7 @@ pub async fn extract_video_metadata(file_path: &Path) -> Result<VideoMetadata, S
         ])
         .output()
         .await
-        .map_err(|e| format!("执行ffprobe失败: {}", e))?;
+        .map_err(|e| format!("执行ffprobe失败: {e}"))?;
 
     if !output.status.success() {
         return Err(format!(
@@ -937,7 +927,7 @@ pub async fn extract_video_metadata(file_path: &Path) -> Result<VideoMetadata, S
 
     let json_str = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value =
-        serde_json::from_str(&json_str).map_err(|e| format!("解析ffprobe输出失败: {}", e))?;
+        serde_json::from_str(&json_str).map_err(|e| format!("解析ffprobe输出失败: {e}"))?;
 
     // 解析视频流信息
     let streams = json["streams"].as_array().ok_or("未找到视频流信息")?;
@@ -986,7 +976,7 @@ pub async fn generate_thumbnail(video_full_path: &Path, timestamp: f64) -> Resul
         .args(["-y", thumbnail_full_path.to_str().unwrap()])
         .output()
         .await
-        .map_err(|e| format!("生成缩略图失败: {}", e))?;
+        .map_err(|e| format!("生成缩略图失败: {e}"))?;
 
     if !output.status.success() {
         return Err(format!(
@@ -1022,7 +1012,7 @@ pub async fn execute_ffmpeg_conversion(
     let mut child = cmd
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("启动FFmpeg进程失败: {}", e))?;
+        .map_err(|e| format!("启动FFmpeg进程失败: {e}"))?;
 
     let stderr = child.stderr.take().unwrap();
     let reader = BufReader::new(stderr);
@@ -1052,15 +1042,15 @@ pub async fn execute_ffmpeg_conversion(
     let status = child
         .wait()
         .await
-        .map_err(|e| format!("等待FFmpeg进程失败: {}", e))?;
+        .map_err(|e| format!("等待FFmpeg进程失败: {e}"))?;
 
     if !status.success() {
         let error_msg = conversion_error
             .unwrap_or_else(|| format!("FFmpeg退出码: {}", status.code().unwrap_or(-1)));
-        return Err(format!("视频格式转换失败 ({}): {}", mode_name, error_msg));
+        return Err(format!("视频格式转换失败 ({mode_name}): {error_msg}"));
     }
 
-    reporter.update(&format!("视频格式转换完成 100% ({})", mode_name));
+    reporter.update(&format!("视频格式转换完成 100% ({mode_name})"));
     Ok(())
 }
 
@@ -1147,10 +1137,7 @@ pub async fn convert_video_format(
         Ok(()) => Ok(()),
         Err(stream_copy_error) => {
             reporter.update("流复制失败，使用高质量重编码模式...");
-            log::warn!(
-                "Stream copy failed: {}, falling back to re-encoding",
-                stream_copy_error
-            );
+            log::warn!("Stream copy failed: {stream_copy_error}, falling back to re-encoding");
             try_high_quality_conversion(source, dest, reporter).await
         }
     }
@@ -1384,7 +1371,7 @@ mod tests {
         let output_path = test_file.with_extension("wav");
         let output_dir = output_path.parent().unwrap();
         let base_name = output_path.file_stem().unwrap().to_str().unwrap();
-        let chunk_dir = output_dir.join(format!("{}_chunks", base_name));
+        let chunk_dir = output_dir.join(format!("{base_name}_chunks"));
 
         assert!(chunk_dir.to_string_lossy().contains("_chunks"));
         assert!(chunk_dir.to_string_lossy().contains("test"));

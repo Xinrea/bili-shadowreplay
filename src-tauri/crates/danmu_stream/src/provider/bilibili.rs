@@ -36,15 +36,15 @@ type WsWriteType = futures_util::stream::SplitSink<
 
 pub struct BiliDanmu {
     client: ApiClient,
-    room_id: u64,
-    user_id: u64,
+    room_id: i64,
+    user_id: i64,
     stop: Arc<RwLock<bool>>,
     write: Arc<RwLock<Option<WsWriteType>>>,
 }
 
 #[async_trait]
 impl DanmuProvider for BiliDanmu {
-    async fn new(cookie: &str, room_id: u64) -> Result<Self, DanmuStreamError> {
+    async fn new(cookie: &str, room_id: i64) -> Result<Self, DanmuStreamError> {
         // find DedeUserID=<user_id> in cookie str
         let user_id = BiliDanmu::parse_user_id(cookie)?;
         // add buvid3 to cookie
@@ -241,7 +241,7 @@ impl BiliDanmu {
     async fn get_danmu_info(
         &self,
         wbi_key: &str,
-        room_id: u64,
+        room_id: i64,
     ) -> Result<DanmuInfo, DanmuStreamError> {
         let params = self
             .get_sign(
@@ -268,7 +268,7 @@ impl BiliDanmu {
         Ok(resp)
     }
 
-    async fn get_real_room(&self, wbi_key: &str, room_id: u64) -> Result<u64, DanmuStreamError> {
+    async fn get_real_room(&self, wbi_key: &str, room_id: i64) -> Result<i64, DanmuStreamError> {
         let params = self
             .get_sign(
                 wbi_key,
@@ -296,14 +296,14 @@ impl BiliDanmu {
         Ok(resp)
     }
 
-    fn parse_user_id(cookie: &str) -> Result<u64, DanmuStreamError> {
+    fn parse_user_id(cookie: &str) -> Result<i64, DanmuStreamError> {
         let mut user_id = None;
 
         // find DedeUserID=<user_id> in cookie str
         let re = Regex::new(r"DedeUserID=(\d+)").unwrap();
         if let Some(captures) = re.captures(cookie) {
             if let Some(user) = captures.get(1) {
-                user_id = Some(user.as_str().parse::<u64>().unwrap());
+                user_id = Some(user.as_str().parse::<i64>().unwrap());
             }
         }
 
@@ -407,8 +407,8 @@ impl BiliDanmu {
 
 #[derive(Serialize)]
 struct WsSend {
-    uid: u64,
-    roomid: u64,
+    uid: i64,
+    roomid: i64,
     key: String,
     protover: u32,
     platform: String,
@@ -439,5 +439,5 @@ pub struct RoomInit {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct RoomInitData {
-    room_id: u64,
+    room_id: i64,
 }

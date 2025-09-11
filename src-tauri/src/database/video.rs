@@ -5,7 +5,7 @@ use super::DatabaseError;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, sqlx::FromRow)]
 pub struct VideoRow {
     pub id: i64,
-    pub room_id: u64,
+    pub room_id: i64,
     pub cover: String,
     pub file: String,
     pub note: String,
@@ -22,10 +22,10 @@ pub struct VideoRow {
 }
 
 impl Database {
-    pub async fn get_videos(&self, room_id: u64) -> Result<Vec<VideoRow>, DatabaseError> {
+    pub async fn get_videos(&self, room_id: i64) -> Result<Vec<VideoRow>, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         let videos = sqlx::query_as::<_, VideoRow>("SELECT * FROM videos WHERE room_id = $1;")
-            .bind(room_id as i64)
+            .bind(room_id)
             .fetch_all(&lock)
             .await?;
         Ok(videos)
@@ -69,7 +69,7 @@ impl Database {
     pub async fn add_video(&self, video: &VideoRow) -> Result<VideoRow, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         let sql = sqlx::query("INSERT INTO videos (room_id, cover, file, note, length, size, status, bvid, title, desc, tags, area, created_at, platform) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)")
-            .bind(video.room_id as i64)
+            .bind(video.room_id)
             .bind(&video.cover)
             .bind(&video.file)
             .bind(&video.note)

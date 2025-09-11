@@ -33,7 +33,7 @@ type WsWriteType =
     futures_util::stream::SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, WsMessage>;
 
 pub struct DouyinDanmu {
-    room_id: u64,
+    room_id: i64,
     cookie: String,
     stop: Arc<RwLock<bool>>,
     write: Arc<RwLock<Option<WsWriteType>>>,
@@ -268,7 +268,7 @@ impl DouyinDanmu {
 async fn handle_binary_message(
     data: &[u8],
     tx: &mpsc::UnboundedSender<DanmuMessageType>,
-    room_id: u64,
+    room_id: i64,
 ) -> Result<Option<PushFrame>, DanmuStreamError> {
     // First decode the PushFrame
     let push_frame = PushFrame::decode(Bytes::from(data.to_vec())).map_err(|e| {
@@ -394,7 +394,7 @@ async fn handle_binary_message(
 
 #[async_trait]
 impl DanmuProvider for DouyinDanmu {
-    async fn new(identifier: &str, room_id: u64) -> Result<Self, DanmuStreamError> {
+    async fn new(identifier: &str, room_id: i64) -> Result<Self, DanmuStreamError> {
         Ok(Self {
             room_id,
             cookie: identifier.to_string(),

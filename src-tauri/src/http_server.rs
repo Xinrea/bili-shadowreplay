@@ -447,7 +447,7 @@ async fn handler_get_recorder_list(
 #[serde(rename_all = "camelCase")]
 struct AddRecorderRequest {
     platform: String,
-    room_id: u64,
+    room_id: i64,
     extra: String,
 }
 
@@ -465,7 +465,7 @@ async fn handler_add_recorder(
 #[serde(rename_all = "camelCase")]
 struct RemoveRecorderRequest {
     platform: String,
-    room_id: u64,
+    room_id: i64,
 }
 
 async fn handler_remove_recorder(
@@ -482,7 +482,7 @@ async fn handler_remove_recorder(
 #[serde(rename_all = "camelCase")]
 struct GetRoomInfoRequest {
     platform: String,
-    room_id: u64,
+    room_id: i64,
 }
 
 async fn handler_get_room_info(
@@ -503,7 +503,7 @@ async fn handler_get_archive_disk_usage(
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GetArchivesRequest {
-    room_id: u64,
+    room_id: i64,
     offset: u64,
     limit: u64,
 }
@@ -519,7 +519,7 @@ async fn handler_get_archives(
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GetArchiveRequest {
-    room_id: u64,
+    room_id: i64,
     live_id: String,
 }
 
@@ -535,7 +535,7 @@ async fn handler_get_archive(
 #[serde(rename_all = "camelCase")]
 struct GetArchiveSubtitleRequest {
     platform: String,
-    room_id: u64,
+    room_id: i64,
     live_id: String,
 }
 
@@ -552,7 +552,7 @@ async fn handler_get_archive_subtitle(
 #[serde(rename_all = "camelCase")]
 struct GenerateArchiveSubtitleRequest {
     platform: String,
-    room_id: u64,
+    room_id: i64,
     live_id: String,
 }
 
@@ -569,7 +569,7 @@ async fn handler_generate_archive_subtitle(
 #[serde(rename_all = "camelCase")]
 struct DeleteArchiveRequest {
     platform: String,
-    room_id: u64,
+    room_id: i64,
     live_id: String,
 }
 
@@ -585,7 +585,7 @@ async fn handler_delete_archive(
 #[serde(rename_all = "camelCase")]
 struct DeleteArchivesRequest {
     platform: String,
-    room_id: u64,
+    room_id: i64,
     live_ids: Vec<String>,
 }
 
@@ -601,7 +601,7 @@ async fn handler_delete_archives(
 #[serde(rename_all = "camelCase")]
 struct GetDanmuRecordRequest {
     platform: String,
-    room_id: u64,
+    room_id: i64,
     live_id: String,
 }
 
@@ -618,7 +618,7 @@ async fn handler_get_danmu_record(
 #[serde(rename_all = "camelCase")]
 struct SendDanmakuRequest {
     uid: u64,
-    room_id: u64,
+    room_id: i64,
     message: String,
 }
 
@@ -647,7 +647,7 @@ async fn handler_get_today_record_count(
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GetRecentRecordRequest {
-    room_id: u64,
+    room_id: i64,
     offset: u64,
     limit: u64,
 }
@@ -665,7 +665,7 @@ async fn handler_get_recent_record(
 #[serde(rename_all = "camelCase")]
 struct SetEnableRequest {
     platform: String,
-    room_id: u64,
+    room_id: i64,
     enabled: bool,
 }
 
@@ -697,7 +697,7 @@ async fn handler_clip_range(
 struct UploadProcedureRequest {
     event_id: String,
     uid: u64,
-    room_id: u64,
+    room_id: i64,
     video_id: i64,
     cover: String,
     profile: Profile,
@@ -751,7 +751,7 @@ async fn handler_get_video(
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GetVideosRequest {
-    room_id: u64,
+    room_id: i64,
 }
 
 async fn handler_get_videos(
@@ -960,7 +960,7 @@ struct ImportExternalVideoRequest {
     event_id: String,
     file_path: String,
     title: String,
-    room_id: u64,
+    room_id: i64,
 }
 
 async fn handler_import_external_video(
@@ -1021,7 +1021,7 @@ struct ScanImportedDirectoryResponse {
 #[serde(rename_all = "camelCase")]
 struct BatchImportInPlaceRequest {
     file_paths: Vec<String>,
-    room_id: u64,
+    room_id: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1029,7 +1029,7 @@ struct BatchImportInPlaceRequest {
 struct BatchImportExternalVideosRequest {
     event_id: String,
     file_paths: Vec<String>,
-    room_id: u64,
+    room_id: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1117,7 +1117,7 @@ struct UploadedFileInfo {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UploadAndImportRequest {
-    room_id: u64,
+    room_id: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

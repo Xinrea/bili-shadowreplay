@@ -129,67 +129,67 @@ fn get_migrations() -> Vec<Migration> {
         Migration {
             version: 1,
             description: "create_initial_tables",
-            sql: r#"
+            sql: r"
                 CREATE TABLE accounts (uid INTEGER, platform TEXT NOT NULL DEFAULT 'bilibili', name TEXT, avatar TEXT, csrf TEXT, cookies TEXT, created_at TEXT, PRIMARY KEY(uid, platform));
                 CREATE TABLE recorders (room_id INTEGER PRIMARY KEY, platform TEXT NOT NULL DEFAULT 'bilibili', created_at TEXT);
                 CREATE TABLE records (live_id TEXT PRIMARY KEY, platform TEXT NOT NULL DEFAULT 'bilibili', room_id INTEGER, title TEXT, length INTEGER, size INTEGER, cover BLOB, created_at TEXT);
                 CREATE TABLE danmu_statistics (live_id TEXT PRIMARY KEY, room_id INTEGER, value INTEGER, time_point TEXT);
                 CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, content TEXT, read INTEGER, created_at TEXT);
                 CREATE TABLE videos (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER, cover TEXT, file TEXT, length INTEGER, size INTEGER, status INTEGER, bvid TEXT, title TEXT, desc TEXT, tags TEXT, area INTEGER, created_at TEXT);
-                "#,
+                ",
             kind: MigrationKind::Up,
         },
         Migration {
             version: 2,
             description: "add_auto_start_column",
-            sql: r#"ALTER TABLE recorders ADD COLUMN auto_start INTEGER NOT NULL DEFAULT 1;"#,
+            sql: r"ALTER TABLE recorders ADD COLUMN auto_start INTEGER NOT NULL DEFAULT 1;",
             kind: MigrationKind::Up,
         },
         // add platform column to videos table
         Migration {
             version: 3,
             description: "add_platform_column",
-            sql: r#"ALTER TABLE videos ADD COLUMN platform TEXT;"#,
+            sql: r"ALTER TABLE videos ADD COLUMN platform TEXT;",
             kind: MigrationKind::Up,
         },
         // add task table to record encode/upload task
         Migration {
             version: 4,
             description: "add_task_table",
-            sql: r#"CREATE TABLE tasks (id TEXT PRIMARY KEY, type TEXT, status TEXT, message TEXT, metadata TEXT, created_at TEXT);"#,
+            sql: r"CREATE TABLE tasks (id TEXT PRIMARY KEY, type TEXT, status TEXT, message TEXT, metadata TEXT, created_at TEXT);",
             kind: MigrationKind::Up,
         },
         // add id_str column to support string IDs like Douyin sec_uid while keeping uid for Bilibili compatibility
         Migration {
             version: 5,
             description: "add_id_str_column",
-            sql: r#"ALTER TABLE accounts ADD COLUMN id_str TEXT;"#,
+            sql: r"ALTER TABLE accounts ADD COLUMN id_str TEXT;",
             kind: MigrationKind::Up,
         },
         // add extra column to recorders
         Migration {
             version: 6,
             description: "add_extra_column_to_recorders",
-            sql: r#"ALTER TABLE recorders ADD COLUMN extra TEXT;"#,
+            sql: r"ALTER TABLE recorders ADD COLUMN extra TEXT;",
             kind: MigrationKind::Up,
         },
         // add indexes
         Migration {
             version: 7,
             description: "add_indexes",
-            sql: r#"
+            sql: r"
                 CREATE INDEX idx_records_live_id ON records (room_id, live_id);
                 CREATE INDEX idx_records_created_at ON records (room_id, created_at);
                 CREATE INDEX idx_videos_room_id ON videos (room_id);
                 CREATE INDEX idx_videos_created_at ON videos (created_at);
-            "#,
+            ",
             kind: MigrationKind::Up,
         },
         // add note column for video
         Migration {
             version: 8,
             description: "add_note_column_for_video",
-            sql: r#"ALTER TABLE videos ADD COLUMN note TEXT;"#,
+            sql: r"ALTER TABLE videos ADD COLUMN note TEXT;",
             kind: MigrationKind::Up,
         },
     ]
@@ -362,7 +362,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     let config_path = app_dirs.config_dir.join("Conf.toml");
     let cache_path = app_dirs.cache_dir.join("cache");
     let output_path = app_dirs.data_dir.join("output");
-    log::info!("Loading config from {:?}", config_path);
+    log::info!("Loading config from {config_path:?}");
     let config = match Config::load(&config_path, &cache_path, &output_path) {
         Ok(config) => config,
         Err(e) => {
@@ -426,11 +426,11 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
                         )
                         .await
                     {
-                        log::error!("Error when updating Bilibili account info {}", e);
+                        log::error!("Error when updating Bilibili account info {e}");
                     }
                 }
                 Err(e) => {
-                    log::error!("Get Bilibili user info failed {}", e);
+                    log::error!("Get Bilibili user info failed {e}");
                 }
             }
         } else if platform == PlatformType::Douyin {
@@ -455,11 +455,11 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
                         )
                         .await
                     {
-                        log::error!("Error when updating Douyin account info {}", e);
+                        log::error!("Error when updating Douyin account info {e}");
                     }
                 }
                 Err(e) => {
-                    log::error!("Get Douyin user info failed {}", e);
+                    log::error!("Get Douyin user info failed {e}");
                 }
             }
         }
@@ -469,7 +469,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     let cache_path = config_clone.read().await.cache.clone();
     let output_path = config_clone.read().await.output.clone();
     if let Err(e) = try_rebuild_archives(&db_clone, cache_path.clone().into()).await {
-        log::warn!("Rebuilding archive table failed: {}", e);
+        log::warn!("Rebuilding archive table failed: {e}");
     }
     let _ = try_convert_live_covers(&db_clone, cache_path.into()).await;
     let _ = try_convert_clip_covers(&db_clone, output_path.into()).await;

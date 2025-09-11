@@ -39,16 +39,16 @@ struct UploadParams<'a> {
 pub struct RoomInfo {
     pub live_status: u8,
     pub room_cover_url: String,
-    pub room_id: u64,
+    pub room_id: i64,
     pub room_keyframe_url: String,
     pub room_title: String,
-    pub user_id: u64,
+    pub user_id: i64,
     pub live_start_time: i64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct UserInfo {
-    pub user_id: u64,
+    pub user_id: i64,
     pub user_name: String,
     pub user_sign: String,
     pub user_avatar_url: String,
@@ -68,7 +68,7 @@ pub struct QrStatus {
     pub cookies: String,
 }
 
-/// BiliClient is thread safe
+/// `BiliClient` is thread safe
 pub struct BiliClient {
     client: Client,
 }
@@ -105,7 +105,7 @@ impl BiliStream {
             host: host.into(),
             path: BiliStream::get_path(base_url),
             extra: extra.into(),
-            expire: BiliStream::get_expire(extra).unwrap_or(600000),
+            expire: BiliStream::get_expire(extra).unwrap_or(600_000),
         }
     }
 
@@ -125,7 +125,7 @@ impl BiliStream {
 
     pub fn get_path(base_url: &str) -> String {
         match base_url.rfind('/') {
-            Some(pos) => base_url[..pos + 1].to_string(),
+            Some(pos) => base_url[..=pos].to_string(),
             None => base_url.to_string(),
         }
     }
@@ -184,8 +184,7 @@ impl BiliClient {
         let res: serde_json::Value = self
             .client
             .get(format!(
-                "https://passport.bilibili.com/x/passport-login/web/qrcode/poll?qrcode_key={}",
-                qrcode_key
+                "https://passport.bilibili.com/x/passport-login/web/qrcode/poll?qrcode_key={qrcode_key}"
             ))
             .headers(headers)
             .send()
@@ -193,7 +192,7 @@ impl BiliClient {
             .json()
             .await?;
         let code: u8 = res["data"]["code"].as_u64().unwrap_or(400) as u8;
-        let mut cookies: String = "".to_string();
+        let mut cookies: String = String::new();
         if code == 0 {
             let url = res["data"]["url"]
                 .as_str()
@@ -228,7 +227,7 @@ impl BiliClient {
     pub async fn get_user_info(
         &self,
         account: &AccountRow,
-        user_id: u64,
+        user_id: i64,
     ) -> Result<UserInfo, BiliClientError> {
         let params: Value = json!({
             "mid": user_id.to_string(),
@@ -247,8 +246,7 @@ impl BiliClient {
         let resp = self
             .client
             .get(format!(
-                "https://api.bilibili.com/x/space/wbi/acc/info?{}",
-                params
+                "https://api.bilibili.com/x/space/wbi/acc/info?{params}"
             ))
             .headers(headers)
             .send()
@@ -268,7 +266,7 @@ impl BiliClient {
             .as_u64()
             .ok_or(BiliClientError::InvalidResponseJson { resp: res.clone() })?;
         if code != 0 {
-            log::error!("Get user info failed {}", code);
+            log::error!("Get user info failed {code}");
             return Err(BiliClientError::InvalidMessageCode { code });
         }
         Ok(UserInfo {
@@ -282,7 +280,7 @@ impl BiliClient {
     pub async fn get_room_info(
         &self,
         account: &AccountRow,
-        room_id: u64,
+        room_id: i64,
     ) -> Result<RoomInfo, BiliClientError> {
         let mut headers = self.generate_user_agent_header();
         if let Ok(cookies) = account.cookies.parse() {
@@ -293,8 +291,7 @@ impl BiliClient {
         let response = self
             .client
             .get(format!(
-                "https://api.live.bilibili.com/room/v1/Room/get_info?room_id={}",
-                room_id
+                "https://api.live.bilibili.com/room/v1/Room/get_info?room_id={room_id}"
             ))
             .headers(headers)
             .send()
@@ -318,7 +315,7 @@ impl BiliClient {
         }
 
         let room_id = res["data"]["room_id"]
-            .as_u64()
+            .as_i64()
             .ok_or(BiliClientError::InvalidValue)?;
         let room_title = res["data"]["title"]
             .as_str()
@@ -333,7 +330,7 @@ impl BiliClient {
             .ok_or(BiliClientError::InvalidValue)?
             .to_string();
         let user_id = res["data"]["uid"]
-            .as_u64()
+            .as_i64()
             .ok_or(BiliClientError::InvalidValue)?;
         let live_status = res["data"]["live_status"]
             .as_u64()
@@ -358,12 +355,12 @@ impl BiliClient {
                 - 8 * 3600
         };
         Ok(RoomInfo {
-            room_id,
-            room_title,
-            room_cover_url,
-            room_keyframe_url,
-            user_id,
             live_status,
+            room_cover_url,
+            room_id,
+            room_keyframe_url,
+            room_title,
+            user_id,
             live_start_time,
         })
     }
@@ -450,13 +447,13 @@ impl BiliClient {
             .get(1)
             .unwrap()
             .as_str();
-        let raw_string = format!("{}{}", img, sub);
+        let raw_string = format!("{img}{sub}");
         let mut encoded = Vec::new();
-        table.into_iter().for_each(|x| {
+        for x in table {
             if x < raw_string.len() {
                 encoded.push(raw_string.as_bytes()[x]);
             }
-        });
+        }
         // only keep 32 bytes of encoded
         encoded = encoded[0..32].to_vec();
         let encoded = String::from_utf8(encoded).unwrap();
@@ -474,12 +471,12 @@ impl BiliClient {
             .as_object()
             .unwrap()
             .keys()
-            .map(|x| x.to_owned())
+            .map(std::borrow::ToOwned::to_owned)
             .collect::<Vec<String>>();
         // sort keys
         keys.sort();
         let mut params = String::new();
-        keys.iter().for_each(|x| {
+        for x in &keys {
             params.push_str(x);
             params.push('=');
             // Value filters !'()* characters
@@ -495,10 +492,10 @@ impl BiliClient {
             if x != keys.last().unwrap() {
                 params.push('&');
             }
-        });
+        }
         // md5 params+encoded
         let w_rid = md5::compute(params.to_string() + encoded.as_str());
-        let params = params + format!("&w_rid={:x}", w_rid).as_str();
+        let params = params + format!("&w_rid={w_rid:x}").as_str();
         Ok(params)
     }
 
@@ -576,7 +573,7 @@ impl BiliClient {
             }
 
             read_total += size;
-            log::debug!("size: {}, total: {}", size, read_total);
+            log::debug!("size: {size}, total: {read_total}");
             if size > 0 && (read_total as u64) < chunk_size {
                 continue;
             }
@@ -638,7 +635,7 @@ impl BiliClient {
                         }
                     }
                     Err(e) => {
-                        log::error!("Upload error: {}", e);
+                        log::error!("Upload error: {e}");
                         retry_count += 1;
                         if retry_count < max_retries {
                             tokio::time::sleep(Duration::from_secs(2u64.pow(retry_count as u32)))
@@ -650,10 +647,7 @@ impl BiliClient {
 
             if !success {
                 return Err(BiliClientError::UploadError {
-                    err: format!(
-                        "Failed to upload chunk {} after {} retries",
-                        chunk, max_retries
-                    ),
+                    err: format!("Failed to upload chunk {chunk} after {max_retries} retries"),
                 });
             }
 
@@ -718,9 +712,9 @@ impl BiliClient {
     ) -> Result<profile::Video, BiliClientError> {
         log::info!("Start Preparing Video: {}", video_file.to_str().unwrap());
         let preupload = self.preupload_video(account, video_file).await?;
-        log::info!("Preupload Response: {:?}", preupload);
+        log::info!("Preupload Response: {preupload:?}");
         let metaposted = self.post_video_meta(&preupload, video_file).await?;
-        log::info!("Post Video Meta Response: {:?}", metaposted);
+        log::info!("Post Video Meta Response: {metaposted:?}");
         let uploaded = self
             .upload_video(UploadParams {
                 reporter,
@@ -729,7 +723,7 @@ impl BiliClient {
                 video_file,
             })
             .await?;
-        log::info!("Uploaded: {}", uploaded);
+        log::info!("Uploaded: {uploaded}");
         self.end_upload(&preupload, &metaposted, uploaded).await?;
         let filename = Path::new(&metaposted.key)
             .file_stem()
@@ -739,7 +733,7 @@ impl BiliClient {
         Ok(profile::Video {
             title: filename.to_string(),
             filename: filename.to_string(),
-            desc: "".to_string(),
+            desc: String::new(),
             cid: preupload.biz_id,
         })
     }
@@ -768,7 +762,7 @@ impl BiliClient {
             .post(&url)
             .headers(headers)
             .header("Content-Type", "application/json; charset=UTF-8")
-            .body(serde_json::ser::to_string(&preprofile).unwrap_or("".to_string()))
+            .body(serde_json::ser::to_string(&preprofile).unwrap_or_default())
             .send()
             .await
         {
@@ -780,12 +774,12 @@ impl BiliClient {
                         _ => Err(BiliClientError::InvalidResponse),
                     }
                 } else {
-                    log::error!("Parse response failed: {}", json);
+                    log::error!("Parse response failed: {json}");
                     Err(BiliClientError::InvalidResponse)
                 }
             }
             Err(e) => {
-                log::error!("Send failed {}", e);
+                log::error!("Send failed {e}");
                 Err(BiliClientError::InvalidResponse)
             }
         }
@@ -824,12 +818,12 @@ impl BiliClient {
                         _ => Err(BiliClientError::InvalidResponse),
                     }
                 } else {
-                    log::error!("Parse response failed: {}", json);
+                    log::error!("Parse response failed: {json}");
                     Err(BiliClientError::InvalidResponse)
                 }
             }
             Err(e) => {
-                log::error!("Send failed {}", e);
+                log::error!("Send failed {e}");
                 Err(BiliClientError::InvalidResponse)
             }
         }
@@ -838,7 +832,7 @@ impl BiliClient {
     pub async fn send_danmaku(
         &self,
         account: &AccountRow,
-        room_id: u64,
+        room_id: i64,
         message: &str,
     ) -> Result<(), BiliClientError> {
         let url = "https://api.live.bilibili.com/msg/send".to_string();
@@ -856,7 +850,7 @@ impl BiliClient {
             ("fontsize", "25"),
             ("room_type", "0"),
             ("rnd", &format!("{}", chrono::Local::now().timestamp())),
-            ("roomid", &format!("{}", room_id)),
+            ("roomid", &format!("{room_id}")),
             ("csrf", &account.csrf),
             ("csrf_token", &account.csrf),
         ];

@@ -8,7 +8,7 @@ use chrono::Utc;
 pub struct RecordRow {
     pub platform: String,
     pub live_id: String,
-    pub room_id: u64,
+    pub room_id: i64,
     pub title: String,
     pub length: i64,
     pub size: i64,
@@ -20,31 +20,31 @@ pub struct RecordRow {
 impl Database {
     pub async fn get_records(
         &self,
-        room_id: u64,
-        offset: u64,
-        limit: u64,
+        room_id: i64,
+        offset: i64,
+        limit: i64,
     ) -> Result<Vec<RecordRow>, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         Ok(sqlx::query_as::<_, RecordRow>(
             "SELECT * FROM records WHERE room_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
         )
-        .bind(room_id as i64)
-        .bind(limit as i64)
-        .bind(offset as i64)
+        .bind(room_id)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&lock)
         .await?)
     }
 
     pub async fn get_record(
         &self,
-        room_id: u64,
+        room_id: i64,
         live_id: &str,
     ) -> Result<RecordRow, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         Ok(sqlx::query_as::<_, RecordRow>(
             "SELECT * FROM records WHERE room_id = $1 and live_id = $2",
         )
-        .bind(room_id as i64)
+        .bind(room_id)
         .bind(live_id)
         .fetch_one(&lock)
         .await?)
@@ -54,7 +54,7 @@ impl Database {
         &self,
         platform: PlatformType,
         live_id: &str,
-        room_id: u64,
+        room_id: i64,
         title: &str,
         cover: Option<String>,
         created_at: Option<&str>,
@@ -71,7 +71,7 @@ impl Database {
             cover,
         };
         if let Err(e) = sqlx::query("INSERT INTO records (live_id, room_id, title, length, size, cover, created_at, platform) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)").bind(record.live_id.clone())
-            .bind(record.room_id as i64).bind(&record.title).bind(0).bind(0).bind(&record.cover).bind(&record.created_at).bind(platform.as_str().to_string()).execute(&lock).await {
+            .bind(record.room_id).bind(&record.title).bind(0).bind(0).bind(&record.cover).bind(&record.created_at).bind(platform.as_str().to_string()).execute(&lock).await {
                 // if the record already exists, return the existing record
                 if e.to_string().contains("UNIQUE constraint failed") {
                     return self.get_record(room_id, live_id).await;
@@ -100,9 +100,10 @@ impl Database {
         size: u64,
     ) -> Result<(), DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
+        let size = i64::try_from(size).map_err(|_| DatabaseError::NumberExceedI64Range)?;
         sqlx::query("UPDATE records SET length = $1, size = $2 WHERE live_id = $3")
             .bind(length)
-            .bind(size as i64)
+            .bind(size)
             .bind(live_id)
             .execute(&lock)
             .await?;
@@ -148,36 +149,36 @@ impl Database {
 
     pub async fn get_recent_record(
         &self,
-        room_id: u64,
-        offset: u64,
-        limit: u64,
+        room_id: i64,
+        offset: i64,
+        limit: i64,
     ) -> Result<Vec<RecordRow>, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         if room_id == 0 {
             Ok(sqlx::query_as::<_, RecordRow>(
                 "SELECT * FROM records ORDER BY created_at DESC LIMIT $1 OFFSET $2",
             )
-            .bind(limit as i64)
-            .bind(offset as i64)
+            .bind(limit)
+            .bind(offset)
             .fetch_all(&lock)
             .await?)
         } else {
             Ok(sqlx::query_as::<_, RecordRow>(
                 "SELECT * FROM records WHERE room_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
             )
-            .bind(room_id as i64)
-            .bind(limit as i64)
-            .bind(offset as i64)
+            .bind(room_id)
+            .bind(limit)
+            .bind(offset)
             .fetch_all(&lock)
             .await?)
         }
     }
 
-    pub async fn get_record_disk_usage(&self) -> Result<u64, DatabaseError> {
+    pub async fn get_record_disk_usage(&self) -> Result<i64, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         let result: (i64,) = sqlx::query_as("SELECT SUM(size) FROM records;")
             .fetch_one(&lock)
             .await?;
-        Ok(result.0 as u64)
+        Ok(result.0)
     }
 }

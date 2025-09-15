@@ -34,7 +34,7 @@ pub fn copy_dir_all(
 
 #[cfg(feature = "gui")]
 #[cfg_attr(feature = "gui", tauri::command)]
-pub fn show_in_folder(path: String) {
+pub async fn show_in_folder(path: String) {
     #[cfg(target_os = "windows")]
     {
         Command::new("explorer")
@@ -144,7 +144,7 @@ pub async fn get_disk_info_inner(target: PathBuf) -> Result<DiskInfo, ()> {
         let total = parts[1].parse::<u64>().unwrap() * 1024;
         let free = parts[3].parse::<u64>().unwrap() * 1024;
 
-        Ok(DiskInfo { disk, total, free });
+        Ok(DiskInfo { disk, total, free })
     }
 
     #[cfg(any(target_os = "windows", target_os = "macos"))]

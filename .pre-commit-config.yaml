@@ -1,0 +1,50 @@
+fail_fast: true
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+
+  - repo: https://github.com/crate-ci/typos
+    rev: v1.36.2
+    hooks:
+      - id: typos
+
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --manifest-path src-tauri/Cargo.toml --
+        language: system
+        types: [rust]
+        pass_filenames: false # This makes it a lot faster
+
+      - id: cargo-clippy
+        name: cargo clippy
+        language: system
+        types: [rust]
+        pass_filenames: false
+        entry: cargo clippy --manifest-path src-tauri/Cargo.toml
+
+      - id: cargo-clippy-headless
+        name: cargo clippy headless
+        language: system
+        types: [rust]
+        pass_filenames: false
+        entry: cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features --features headless
+
+      - id: cargo-test
+        name: cargo test
+        language: system
+        types: [rust]
+        pass_filenames: false
+        entry: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - id: cargo-test-headless
+        name: cargo test headless
+        language: system
+        types: [rust]
+        pass_filenames: false
+        entry: cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features headless

@@ -1,16 +1,12 @@
 name: Check
 
 on:
-  pull_request:
-    branches: [ "main" ]
-    paths:
-      - 'src-tauri/**'
-      - '.github/workflows/check.yml'
+  push:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
-    
+    runs-on: self-linux
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -18,7 +14,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: rustfmt clippy
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -38,6 +34,18 @@ jobs:
         run: cargo fmt --check
         working-directory: src-tauri
 
+      - name: Check clippy
+        run: cargo clippy
+        working-directory: src-tauri
+
+      - name: Check clippy (headless)
+        run: cargo clippy --no-default-features --features headless
+        working-directory: src-tauri
+
       - name: Check tests
-        run: cargo test -v && cargo test --no-default-features --features headless -v
+        run: cargo test -v
+        working-directory: src-tauri
+
+      - name: Check tests (headless)
+        run: cargo test --no-default-features --features headless -v
         working-directory: src-tauri

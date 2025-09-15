@@ -57,7 +57,11 @@ pub fn show_in_folder(path: String) {
                     path2.into_os_string().into_string().unwrap()
                 }
             };
-            Command::new("xdg-open").arg(&new_path).spawn().unwrap();
+            Command::new("xdg-open")
+                .arg(&new_path)
+                .spawn()
+                .unwrap()
+                .wait();
         } else {
             Command::new("dbus-send")
                 .args([
@@ -70,7 +74,8 @@ pub fn show_in_folder(path: String) {
                     "string:\"\"",
                 ])
                 .spawn()
-                .unwrap();
+                .unwrap()
+                .wait();
         }
     }
 

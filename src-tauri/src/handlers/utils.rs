@@ -57,13 +57,13 @@ pub fn show_in_folder(path: String) {
                     path2.into_os_string().into_string().unwrap()
                 }
             };
-            Command::new("xdg-open")
+            let _ = Command::new("xdg-open")
                 .arg(&new_path)
                 .spawn()
                 .unwrap()
                 .wait();
         } else {
-            Command::new("dbus-send")
+            let _ = Command::new("dbus-send")
                 .args([
                     "--session",
                     "--dest=org.freedesktop.FileManager1",

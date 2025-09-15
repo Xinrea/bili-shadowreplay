@@ -13,10 +13,3 @@ use crate::database::account::AccountRow;
 pub struct AccountInfo {
     pub accounts: Vec<AccountRow>,
 }
-
-#[derive(serde::Serialize)]
-pub struct DiskInfo {
-    pub disk: String,
-    pub total: u64,
-    pub free: u64,
-}

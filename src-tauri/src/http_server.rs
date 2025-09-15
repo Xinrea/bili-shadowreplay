@@ -145,7 +145,7 @@ async fn handler_add_account(
 #[serde(rename_all = "camelCase")]
 struct RemoveAccountRequest {
     platform: String,
-    uid: u64,
+    uid: i64,
 }
 
 async fn handler_remove_account(
@@ -495,7 +495,7 @@ async fn handler_get_room_info(
 
 async fn handler_get_archive_disk_usage(
     state: axum::extract::State<State>,
-) -> Result<Json<ApiResponse<u64>>, ApiError> {
+) -> Result<Json<ApiResponse<i64>>, ApiError> {
     let disk_usage = get_archive_disk_usage(state.0).await?;
     Ok(Json(ApiResponse::success(disk_usage)))
 }
@@ -504,8 +504,8 @@ async fn handler_get_archive_disk_usage(
 #[serde(rename_all = "camelCase")]
 struct GetArchivesRequest {
     room_id: i64,
-    offset: u64,
-    limit: u64,
+    offset: i64,
+    limit: i64,
 }
 
 async fn handler_get_archives(
@@ -617,7 +617,7 @@ async fn handler_get_danmu_record(
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SendDanmakuRequest {
-    uid: u64,
+    uid: i64,
     room_id: i64,
     message: String,
 }
@@ -648,8 +648,8 @@ async fn handler_get_today_record_count(
 #[serde(rename_all = "camelCase")]
 struct GetRecentRecordRequest {
     room_id: i64,
-    offset: u64,
-    limit: u64,
+    offset: i64,
+    limit: i64,
 }
 
 async fn handler_get_recent_record(
@@ -696,7 +696,7 @@ async fn handler_clip_range(
 #[serde(rename_all = "camelCase")]
 struct UploadProcedureRequest {
     event_id: String,
-    uid: u64,
+    uid: i64,
     room_id: i64,
     video_id: i64,
     cover: String,
@@ -1202,7 +1202,7 @@ async fn handler_upload_and_import_files(
     mut multipart: Multipart,
 ) -> Result<Json<ApiResponse<UploadAndImportResponse>>, ApiError> {
     let mut uploaded_files = Vec::new();
-    let mut room_id = 0u64;
+    let mut room_id = 0i64;
     let upload_dir = std::env::temp_dir().join("bsr_uploads");
 
     // 确保上传目录存在
@@ -1475,7 +1475,7 @@ async fn handler_upload_file(
     let mut file_name = String::new();
     let mut uploaded_file_path: Option<PathBuf> = None;
     let mut file_size = 0u64;
-    let mut _room_id = 0u64;
+    let mut _room_id = 0i64;
 
     while let Some(mut field) = multipart.next_field().await.map_err(|e| e.to_string())? {
         let name = field.name().unwrap_or("").to_string();

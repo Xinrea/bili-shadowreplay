@@ -57,7 +57,11 @@ pub fn show_in_folder(path: String) {
                     path2.into_os_string().into_string().unwrap()
                 }
             };
-            Command::new("xdg-open").arg(&new_path).spawn().unwrap();
+            Command::new("xdg-open")
+                .arg(&new_path)
+                .spawn()
+                .unwrap()
+                .await;
         } else {
             Command::new("dbus-send")
                 .args([
@@ -70,7 +74,8 @@ pub fn show_in_folder(path: String) {
                     "string:\"\"",
                 ])
                 .spawn()
-                .unwrap();
+                .unwrap()
+                .await;
         }
     }
 
@@ -139,7 +144,7 @@ pub async fn get_disk_info_inner(target: PathBuf) -> Result<DiskInfo, ()> {
         let total = parts[1].parse::<u64>().unwrap() * 1024;
         let free = parts[3].parse::<u64>().unwrap() * 1024;
 
-        return Ok(DiskInfo { disk, total, free });
+        Ok(DiskInfo { disk, total, free });
     }
 
     #[cfg(any(target_os = "windows", target_os = "macos"))]

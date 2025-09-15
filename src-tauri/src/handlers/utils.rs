@@ -34,7 +34,7 @@ pub fn copy_dir_all(
 
 #[cfg(feature = "gui")]
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn show_in_folder(path: String) {
+pub fn show_in_folder(path: String) {
     #[cfg(target_os = "windows")]
     {
         Command::new("explorer")
@@ -57,11 +57,7 @@ pub async fn show_in_folder(path: String) {
                     path2.into_os_string().into_string().unwrap()
                 }
             };
-            Command::new("xdg-open")
-                .arg(&new_path)
-                .spawn()
-                .unwrap()
-                .await;
+            Command::new("xdg-open").arg(&new_path).spawn().unwrap();
         } else {
             Command::new("dbus-send")
                 .args([
@@ -74,8 +70,7 @@ pub async fn show_in_folder(path: String) {
                     "string:\"\"",
                 ])
                 .spawn()
-                .unwrap()
-                .await;
+                .unwrap();
         }
     }
 

@@ -2,15 +2,12 @@ name: Check
 
 on:
   pull_request:
-    branches: [ "main" ]
-    paths:
-      - 'src-tauri/**'
-      - '.github/workflows/check.yml'
+  push:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
-    
+    runs-on: self-linux
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -39,5 +36,9 @@ jobs:
         working-directory: src-tauri
 
       - name: Check tests
-        run: cargo test -v && cargo test --no-default-features --features headless -v
+        run: cargo test -v
+        working-directory: src-tauri
+
+      - name: Check tests (headless)
+        run: cargo test --no-default-features --features headless -v
         working-directory: src-tauri

@@ -35,6 +35,14 @@ jobs:
         run: cargo fmt --check
         working-directory: src-tauri
 
+      - name: Check clippy
+        run: cargo clippy
+        working-directory: src-tauri
+
+      - name: Check clippy (headless)
+        run: cargo clippy --no-default-features --features headless
+        working-directory: src-tauri
+
       - name: Check tests
         run: cargo test -v
         working-directory: src-tauri

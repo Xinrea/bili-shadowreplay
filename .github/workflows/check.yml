@@ -16,15 +16,6 @@ jobs:
         with:
           components: rustfmt clippy
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            src-tauri/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
       - name: Install dependencies (ubuntu only)
         run: |
           sudo apt-get update

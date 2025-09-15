@@ -366,7 +366,7 @@ impl BiliRecorder {
             }
             Err(e) => {
                 log::error!("[{}]Update room status failed: {}", self.room_id, e);
-                // may encouter internet issues, not sure whether the stream is closed or started, just remain
+                // may encounter internet issues, not sure whether the stream is closed or started, just remain
                 *self.live_status.read().await
             }
         }
@@ -758,8 +758,7 @@ impl BiliRecorder {
 
         // check resolution change
         let current_header_info = self.current_header_info.read().await.clone();
-        if current_header_info.is_some() {
-            let current_header_info = current_header_info.unwrap();
+        if let Some(current_header_info) = current_header_info {
             if current_header_info.url != header_url {
                 let new_resolution = self.get_resolution(&full_header_url).await?;
                 log::debug!(

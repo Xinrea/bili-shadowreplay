@@ -249,28 +249,34 @@ impl RecorderManager {
                     );
                     return;
                 };
-                match self
-                    .db
-                    .add_video(&VideoRow {
-                        id: 0,
-                        status: 0,
-                        room_id,
-                        created_at: Utc::now().to_rfc3339(),
-                        cover: String::new(),
-                        file: f.file_name().unwrap().to_str().unwrap().to_string(),
-                        note: String::new(),
-                        length: live_record.length,
-                        size,
-                        bvid: String::new(),
-                        title: String::new(),
-                        desc: String::new(),
-                        tags: String::new(),
-                        area: 0,
-                        platform: live_record.platform.clone(),
-                    })
-                    .await
-                {
-                    Ok(_) => {}
+                let new_video = &VideoRow {
+                    id: 0,
+                    status: 0,
+                    room_id,
+                    created_at: Utc::now().to_rfc3339(),
+                    cover: String::new(),
+                    file: f.file_name().unwrap().to_str().unwrap().to_string(),
+                    note: String::new(),
+                    length: live_record.length,
+                    size,
+                    bvid: String::new(),
+                    title: String::new(),
+                    desc: String::new(),
+                    tags: String::new(),
+                    area: 0,
+                    platform: live_record.platform.clone(),
+                };
+                match self.db.add_video(new_video).await {
+                    Ok(_) => {
+                        let event = events::new_webhook_event(
+                            events::CLIP_GENERATED,
+                            events::Payload::Clip(new_video.clone()),
+                        );
+
+                        if let Err(e) = self.webhook_poster.post_event(&event).await {
+                            log::error!("Post webhook event error: {e}");
+                        }
+                    }
                     Err(e) => {
                         log::error!("Add auto generate clip record failed: {e}");
                     }

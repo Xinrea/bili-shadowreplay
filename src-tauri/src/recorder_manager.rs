@@ -521,6 +521,8 @@ impl RecorderManager {
             manifest_content += "\n#EXT-X-ENDLIST\n";
         }
 
+        let is_fmp4 = manifest_content.contains("#EXT-X-MAP:URI=");
+
         let cache_path = self.config.read().await.cache.clone();
         let cache_path = Path::new(&cache_path);
         let random_filename = format!("manifest_{}.m3u8", uuid::Uuid::new_v4());
@@ -537,6 +539,7 @@ impl RecorderManager {
 
         if let Err(e) = clip_from_m3u8(
             reporter,
+            is_fmp4,
             &tmp_manifest_file_path,
             &clip_file,
             params.range.as_ref(),

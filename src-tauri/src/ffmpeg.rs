@@ -49,6 +49,7 @@ impl Range {
 
 pub async fn clip_from_m3u8(
     reporter: Option<&impl ProgressReporterTrait>,
+    is_fmp4: bool,
     m3u8_index: &Path,
     output_path: &Path,
     range: Option<&Range>,
@@ -68,24 +69,35 @@ pub async fn clip_from_m3u8(
     #[cfg(target_os = "windows")]
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
-    let child_command = ffmpeg_process.args(["-i", &format!("{}", m3u8_index.display())]);
+    if is_fmp4 {
+        // using output seek for fmp4 stream
+        ffmpeg_process.args(["-i", &format!("{}", m3u8_index.display())]);
+        if let Some(range) = range {
+            ffmpeg_process
+                .args(["-ss", &range.start.to_string()])
+                .args(["-t", &range.duration().to_string()]);
+        }
+    } else {
+        // using input seek for ts stream
+        if let Some(range) = range {
+            ffmpeg_process
+                .args(["-ss", &range.start.to_string()])
+                .args(["-t", &range.duration().to_string()]);
+        }
 
-    if let Some(range) = range {
-        child_command
-            .args(["-ss", &range.start.to_string()])
-            .args(["-t", &range.duration().to_string()]);
+        ffmpeg_process.args(["-i", &format!("{}", m3u8_index.display())]);
     }
 
     if fix_encoding {
-        child_command
+        ffmpeg_process
             .args(["-c:v", "libx264"])
             .args(["-c:a", "copy"])
             .args(["-b:v", "6000k"]);
     } else {
-        child_command.args(["-c", "copy"]);
+        ffmpeg_process.args(["-c", "copy"]);
     }
 
-    let child = child_command
+    let child = ffmpeg_process
         .args(["-y", output_path.to_str().unwrap()])
         .args(["-progress", "pipe:2"])
         .stderr(Stdio::piped())

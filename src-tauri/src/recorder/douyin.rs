@@ -59,7 +59,7 @@ pub struct DouyinRecorder {
     running: Arc<RwLock<bool>>,
     last_update: Arc<RwLock<i64>>,
     config: Arc<RwLock<Config>>,
-    live_end_channel: broadcast::Sender<RecorderEvent>,
+    event_channel: broadcast::Sender<RecorderEvent>,
     enabled: Arc<RwLock<bool>>,
 
     danmu_stream_task: Arc<Mutex<Option<JoinHandle<()>>>>,
@@ -144,7 +144,7 @@ impl DouyinRecorder {
             enabled: Arc::new(RwLock::new(enabled)),
             last_update: Arc::new(RwLock::new(Utc::now().timestamp())),
             config,
-            live_end_channel: channel,
+            event_channel: channel,
 
             danmu_stream_task: Arc::new(Mutex::new(None)),
             danmu_task: Arc::new(Mutex::new(None)),
@@ -192,6 +192,10 @@ impl DouyinRecorder {
                             ))
                             .show()
                             .unwrap();
+
+                        let _ = self.event_channel.send(RecorderEvent::LiveStart {
+                            recorder: self.info().await,
+                        });
                     } else {
                         #[cfg(not(feature = "headless"))]
                         self.app_handle
@@ -204,7 +208,7 @@ impl DouyinRecorder {
                             ))
                             .show()
                             .unwrap();
-                        let _ = self.live_end_channel.send(RecorderEvent::LiveEnd {
+                        let _ = self.event_channel.send(RecorderEvent::LiveEnd {
                             platform: PlatformType::Douyin,
                             room_id: self.room_id,
                             recorder: self.info().await,
@@ -373,10 +377,10 @@ impl DouyinRecorder {
         };
 
         for segment in &playlist.segments {
-            let formated_ts_name = segment.uri.clone();
-            let sequence = extract_sequence_from(&formated_ts_name);
+            let formatted_ts_name = segment.uri.clone();
+            let sequence = extract_sequence_from(&formatted_ts_name);
             if sequence.is_none() {
-                log::error!("No timestamp extracted from douyin ts name: {formated_ts_name}");
+                log::error!("No timestamp extracted from douyin ts name: {formatted_ts_name}");
                 continue;
             }
 
@@ -466,6 +470,10 @@ impl DouyinRecorder {
                             {
                                 log::error!("Failed to add record: {e}");
                             }
+
+                            let _ = self.event_channel.send(RecorderEvent::RecordStart {
+                                recorder: self.info().await,
+                            });
 
                             // Setup entry store
                             let entry_store = EntryStore::new(&work_dir).await;
@@ -687,7 +695,13 @@ impl Recorder for DouyinRecorder {
                             }
                         }
                     }
+                    if *self_clone.is_recording.read().await {
+                        let _ = self_clone.event_channel.send(RecorderEvent::RecordEnd {
+                            recorder: self_clone.info().await,
+                        });
+                    }
                     *self_clone.is_recording.write().await = false;
+                    self_clone.reset().await;
                     // Check status again after some seconds
                     let secs = random::<u64>() % 5;
                     tokio::time::sleep(Duration::from_secs(

@@ -13,6 +13,7 @@ use crate::recorder::user_agent_generator;
 use chrono::TimeZone;
 use pct_str::PctString;
 use pct_str::URIReserved;
+use rand::seq::SliceRandom;
 use regex::Regex;
 use reqwest::Client;
 use serde::Deserialize;
@@ -73,65 +74,133 @@ pub struct BiliClient {
     client: Client,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum StreamType {
+#[derive(Clone, Debug)]
+pub struct BiliStream {
+    pub format: Format,
+    pub codec: Codec,
+    pub base_url: String,
+    pub url_info: Vec<UrlInfo>,
+    pub drm: bool,
+    pub master_url: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct UrlInfo {
+    pub host: String,
+    pub extra: String,
+}
+
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub enum Protocol {
+    HttpStream,
+    HttpHls,
+}
+
+impl fmt::Display for Protocol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Format {
+    Flv,
     TS,
     FMP4,
 }
 
+impl fmt::Display for Format {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
 #[derive(Clone, Debug)]
-pub struct BiliStream {
-    pub format: StreamType,
-    pub host: String,
-    pub path: String,
-    pub extra: String,
-    pub expire: i64,
+pub enum Codec {
+    Avc,
+    Hevc,
+}
+
+impl fmt::Display for Codec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+// 30000	杜比
+// 20000	4K
+// 15000    2K
+// 10000	原画
+// 400	蓝光
+// 250	超清
+// 150	高清
+// 80	流畅
+
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub enum Qn {
+    Dolby = 30000,
+    Q4K = 20000,
+    Q2K = 15000,
+    Q1080PH = 10000,
+    Q1080P = 400,
+    Q720P = 250,
+    Hd = 150,
+    Smooth = 80,
+}
+
+impl fmt::Display for Qn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
 }
 
 impl fmt::Display for BiliStream {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "type: {:?}, host: {}, path: {}, extra: {}, expire: {}",
-            self.format, self.host, self.path, self.extra, self.expire
+            "type: {:?}, codec: {:?}, base_url: {}, url_info: {:?}, drm: {}, master_url: {:?}",
+            self.format, self.codec, self.base_url, self.url_info, self.drm, self.master_url
         )
     }
 }
 
 impl BiliStream {
-    pub fn new(format: StreamType, base_url: &str, host: &str, extra: &str) -> BiliStream {
+    pub fn new(
+        format: Format,
+        codec: Codec,
+        base_url: &str,
+        url_info: Vec<UrlInfo>,
+        drm: bool,
+        master_url: Option<String>,
+    ) -> BiliStream {
         BiliStream {
             format,
-            host: host.into(),
-            path: BiliStream::get_path(base_url),
-            extra: extra.into(),
-            expire: BiliStream::get_expire(extra).unwrap_or(600_000),
+            codec,
+            base_url: base_url.into(),
+            url_info,
+            drm,
+            master_url,
         }
     }
 
     pub fn index(&self) -> String {
-        format!(
-            "https://{}/{}/{}?{}",
-            self.host, self.path, "index.m3u8", self.extra
-        )
+        // random choose a url_info
+        let url_info = self.url_info.choose(&mut rand::thread_rng()).unwrap();
+        format!("{}{}{}", url_info.host, self.base_url, url_info.extra)
     }
 
     pub fn ts_url(&self, seg_name: &str) -> String {
-        format!(
-            "https://{}/{}/{}?{}",
-            self.host, self.path, seg_name, self.extra
-        )
+        let m3u8_filename = self.base_url.split('/').next_back().unwrap();
+        let base_url = self.base_url.replace(m3u8_filename, seg_name);
+        let url_info = self.url_info.choose(&mut rand::thread_rng()).unwrap();
+        format!("{}{}?{}", url_info.host, base_url, url_info.extra)
     }
 
-    pub fn get_path(base_url: &str) -> String {
-        match base_url.rfind('/') {
-            Some(pos) => base_url[..=pos].to_string(),
-            None => base_url.to_string(),
-        }
-    }
-
-    pub fn get_expire(extra: &str) -> Option<i64> {
-        extra.split('&').find_map(|param| {
+    pub fn get_expire(&self) -> Option<i64> {
+        let url_info = self.url_info.choose(&mut rand::thread_rng()).unwrap();
+        url_info.extra.split('&').find_map(|param| {
             if param.starts_with("expires=") {
                 param.split('=').nth(1)?.parse().ok()
             } else {
@@ -362,6 +431,127 @@ impl BiliClient {
             room_title,
             user_id,
             live_start_time,
+        })
+    }
+
+    /// Get stream info from room id
+    ///
+    /// https://socialsisteryi.github.io/bilibili-API-collect/docs/live/info.html#%E8%8E%B7%E5%8F%96%E7%9B%B4%E6%92%AD%E9%97%B4%E4%BF%A1%E6%81%AF-1
+    /// https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?room_id=31368705&protocol=1&format=1&codec=0&qn=10000&platform=h5
+    pub async fn get_stream_info(
+        &self,
+        account: &AccountRow,
+        room_id: i64,
+        protocol: Protocol,
+        format: Format,
+        codec: Codec,
+        qn: Qn,
+    ) -> Result<BiliStream, BiliClientError> {
+        let url = format!(
+            "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?room_id={}&protocol={}&format={}&codec={}&qn={}&platform=h5",
+            room_id,
+            protocol.clone() as u8,
+            format.clone() as u8,
+            codec.clone() as u8,
+            qn as i64,
+        );
+        let mut headers = self.generate_user_agent_header();
+        if let Ok(cookies) = account.cookies.parse() {
+            headers.insert("cookie", cookies);
+        } else {
+            return Err(BiliClientError::InvalidCookie);
+        }
+        let response = self.client.get(url).headers(headers).send().await?;
+        let res: serde_json::Value = response.json().await?;
+
+        let code = res["code"].as_u64().unwrap_or(0);
+        let message = res["message"].as_str().unwrap_or("");
+        if code != 0 {
+            return Err(BiliClientError::ApiError(format!(
+                "Code {} not found, message: {}",
+                code, message
+            )));
+        }
+
+        log::debug!("Get stream info response: {res}");
+
+        // Parse the new API response structure
+        let playurl_info = &res["data"]["playurl_info"]["playurl"];
+        let empty_vec = vec![];
+        let streams = playurl_info["stream"].as_array().unwrap_or(&empty_vec);
+
+        if streams.is_empty() {
+            return Err(BiliClientError::ApiError(
+                "No streams available".to_string(),
+            ));
+        }
+
+        // Find the matching protocol
+        let target_protocol = match protocol {
+            Protocol::HttpStream => "http_stream",
+            Protocol::HttpHls => "http_hls",
+        };
+
+        let stream = streams
+            .iter()
+            .find(|s| s["protocol_name"].as_str() == Some(target_protocol))
+            .ok_or_else(|| {
+                BiliClientError::ApiError(format!("Protocol {} not found", target_protocol))
+            })?;
+
+        // Find the matching format
+        let target_format = match format {
+            Format::Flv => "flv",
+            Format::TS => "ts",
+            Format::FMP4 => "fmp4",
+        };
+
+        let empty_vec = vec![];
+        let format_info = stream["format"]
+            .as_array()
+            .unwrap_or(&empty_vec)
+            .iter()
+            .find(|f| f["format_name"].as_str() == Some(target_format))
+            .ok_or_else(|| {
+                BiliClientError::ApiError(format!("Format {} not found", target_format))
+            })?;
+
+        // Find the matching codec
+        let target_codec = match codec {
+            Codec::Avc => "avc",
+            Codec::Hevc => "hevc",
+        };
+
+        let codec_info = format_info["codec"]
+            .as_array()
+            .unwrap_or(&empty_vec)
+            .iter()
+            .find(|c| c["codec_name"].as_str() == Some(target_codec))
+            .ok_or_else(|| {
+                BiliClientError::ApiError(format!("Codec {} not found", target_codec))
+            })?;
+
+        let url_info = codec_info["url_info"].as_array().unwrap_or(&empty_vec);
+
+        let url_info = url_info
+            .iter()
+            .map(|u| UrlInfo {
+                host: u["host"].as_str().unwrap_or("").to_string(),
+                extra: u["extra"].as_str().unwrap_or("").to_string(),
+            })
+            .collect();
+
+        let drm = codec_info["drm"].as_bool().unwrap_or(false);
+        let base_url = codec_info["base_url"].as_str().unwrap_or("").to_string();
+        let master_url = format_info["master_url"].as_str().map(|s| s.to_string());
+
+        Ok(BiliStream {
+            format,
+            codec,
+            base_url,
+            url_info,
+            drm,
+            master_url,
         })
     }
 

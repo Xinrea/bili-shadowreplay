@@ -9,6 +9,7 @@ use crate::database::account::AccountRow;
 use crate::ffmpeg::get_video_resolution;
 use crate::progress::progress_manager::Event;
 use crate::progress::progress_reporter::EventEmitter;
+use crate::recorder::bilibili::client::{Codec, Protocol, Qn};
 use crate::recorder::Recorder;
 use crate::recorder_manager::RecorderEvent;
 use crate::subtitle_generator::item_to_srt;
@@ -16,13 +17,11 @@ use crate::subtitle_generator::item_to_srt;
 use super::danmu::{DanmuEntry, DanmuStorage};
 use super::entry::TsEntry;
 use chrono::Utc;
-use client::{BiliClient, BiliStream, RoomInfo, StreamType, UserInfo};
+use client::{BiliClient, BiliStream, Format, RoomInfo, UserInfo};
 use danmu_stream::danmu_stream::DanmuStream;
 use danmu_stream::provider::ProviderType;
 use danmu_stream::DanmuMessageType;
-use m3u8_rs::{Playlist, QuotedOrUnquoted, VariantStream};
-use rand::seq::SliceRandom;
-use regex::Regex;
+use m3u8_rs::Playlist;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -44,7 +43,6 @@ use {tauri::AppHandle, tauri_plugin_notification::NotificationExt};
 ///
 /// This recorder fetches, caches and serves TS entries, currently supporting only `StreamType::FMP4`.
 /// As high-quality streams are accessible only to logged-in users, the use of a `BiliClient`, which manages cookies, is required.
-// TODO implement StreamType::TS
 #[derive(Clone)]
 pub struct BiliRecorder {
     #[cfg(feature = "gui")]
@@ -68,12 +66,10 @@ pub struct BiliRecorder {
     danmu_storage: Arc<RwLock<Option<DanmuStorage>>>,
     event_channel: broadcast::Sender<RecorderEvent>,
     enabled: Arc<RwLock<bool>>,
-    last_segment_offset: Arc<RwLock<Option<i64>>>, // 保存上次处理的最后一个片段的偏移
-    current_header_info: Arc<RwLock<Option<HeaderInfo>>>, // 保存当前的分辨率
+    current_resolution: Arc<RwLock<Option<String>>>,
 
     danmu_task: Arc<Mutex<Option<JoinHandle<()>>>>,
     record_task: Arc<Mutex<Option<JoinHandle<()>>>>,
-    master_manifest: Arc<RwLock<Option<String>>>,
 }
 
 pub struct BiliRecorderOptions {
@@ -86,12 +82,6 @@ pub struct BiliRecorderOptions {
     pub config: Arc<RwLock<Config>>,
     pub auto_start: bool,
     pub channel: broadcast::Sender<RecorderEvent>,
-}
-
-#[derive(Debug, Clone)]
-struct HeaderInfo {
-    url: String,
-    resolution: String,
 }
 
 impl BiliRecorder {
@@ -145,23 +135,45 @@ impl BiliRecorder {
             danmu_storage: Arc::new(RwLock::new(None)),
             event_channel: options.channel,
             enabled: Arc::new(RwLock::new(options.auto_start)),
-            last_segment_offset: Arc::new(RwLock::new(None)),
-            current_header_info: Arc::new(RwLock::new(None)),
             danmu_task: Arc::new(Mutex::new(None)),
             record_task: Arc::new(Mutex::new(None)),
-            master_manifest: Arc::new(RwLock::new(None)),
+            current_resolution: Arc::new(RwLock::new(None)),
         };
         log::info!("Recorder for room {} created.", options.room_id);
         Ok(recorder)
     }
 
     pub async fn reset(&self) {
+        // if record is ended, send event
+        if !self.live_id.read().await.is_empty() && self.current_resolution.read().await.is_some() {
+            let _ = self.event_channel.send(RecorderEvent::RecordEnd {
+                recorder: self.info().await,
+            });
+        }
+        // if record is empty, remove record
+        if !self.live_id.read().await.is_empty() && self.current_resolution.read().await.is_none() {
+            // no entries, remove work dir
+            log::warn!("[{}]No entries, remove empty record", self.room_id);
+            *self.danmu_storage.write().await = None;
+            if let Err(e) = self
+                .db
+                .remove_record(self.live_id.read().await.as_str())
+                .await
+            {
+                log::warn!("[{}]Failed to remove empty record: {}", self.room_id, e);
+            }
+            let work_dir = self.get_work_dir(self.live_id.read().await.as_str()).await;
+
+            if let Err(e) = tokio::fs::remove_dir_all(self.get_full_path(&work_dir).await).await {
+                log::warn!("[{}]Failed to remove empty work dir: {}", self.room_id, e);
+            }
+        }
         *self.entry_store.write().await = None;
         *self.live_stream.write().await = None;
         *self.last_update.write().await = Utc::now().timestamp();
         *self.danmu_storage.write().await = None;
-        *self.last_segment_offset.write().await = None;
-        *self.current_header_info.write().await = None;
+        *self.current_resolution.write().await = None;
+        *self.live_id.write().await = String::new();
     }
 
     async fn should_record(&self) -> bool {
@@ -271,65 +283,20 @@ impl BiliRecorder {
 
                 // current_record => update stream
                 // auto_start+is_new_stream => update stream and current_record=true
-                let master_manifest = self.client.read().await.get_index_content(&self.account, &format!("https://api.live.bilibili.com/xlive/play-gateway/master/url?cid={}&pt=h5&p2p_type=-1&net=0&free_type=0&build=0&feature=2&qn=10000", self.room_id)).await;
-                if master_manifest.is_err() {
-                    log::error!(
-                        "[{}]Fetch master manifest failed: {}",
+                let new_stream = self
+                    .client
+                    .read()
+                    .await
+                    .get_stream_info(
+                        &self.account,
                         self.room_id,
-                        master_manifest.err().unwrap()
-                    );
-                    return true;
-                }
+                        Protocol::HttpHls,
+                        Format::TS,
+                        Codec::Avc,
+                        Qn::Q4K,
+                    )
+                    .await;
 
-                let master_manifest = master_manifest.unwrap();
-                *self.master_manifest.write().await = Some(master_manifest.clone());
-
-                let master_manifest = m3u8_rs::parse_playlist_res(master_manifest.as_bytes())
-                    .map_err(|_| super::errors::RecorderError::M3u8ParseFailed {
-                        content: master_manifest.clone(),
-                    });
-                if master_manifest.is_err() {
-                    log::error!(
-                        "[{}]Parse master manifest failed: {}",
-                        self.room_id,
-                        master_manifest.err().unwrap()
-                    );
-                    return true;
-                }
-
-                let master_manifest = master_manifest.unwrap();
-                let variant = if let Playlist::MasterPlaylist(playlist) = master_manifest {
-                    let variants = playlist.variants.clone();
-                    variants
-                        .into_iter()
-                        .filter(|variant| {
-                            if let Some(other_attributes) = &variant.other_attributes {
-                                if let Some(QuotedOrUnquoted::Quoted(bili_display)) =
-                                    other_attributes.get("BILI-DISPLAY")
-                                {
-                                    bili_display == "原画"
-                                } else {
-                                    false
-                                }
-                            } else {
-                                false
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                } else {
-                    log::error!("[{}]Master manifest is not a media playlist", self.room_id);
-                    vec![]
-                };
-
-                if variant.is_empty() {
-                    log::error!("[{}]No variant found", self.room_id);
-                    return true;
-                }
-
-                // random select a variant
-                let variant = variant.choose(&mut rand::thread_rng()).unwrap();
-
-                let new_stream = self.stream_from_variant(variant).await;
                 if new_stream.is_err() {
                     log::error!(
                         "[{}]Fetch stream failed: {}",
@@ -339,27 +306,15 @@ impl BiliRecorder {
                     return true;
                 }
 
-                let stream = new_stream.unwrap();
-
-                let new_stream = self.fetch_real_stream(&stream).await;
-                if new_stream.is_err() {
-                    log::error!(
-                        "[{}]Fetch real stream failed: {}",
-                        self.room_id,
-                        new_stream.err().unwrap()
-                    );
-                    return true;
-                }
-
                 let new_stream = new_stream.unwrap();
-                *self.live_stream.write().await = Some(new_stream);
+                *self.live_stream.write().await = Some(new_stream.clone());
                 *self.last_update.write().await = Utc::now().timestamp();
 
                 log::info!(
                     "[{}]Update to a new stream: {:?} => {}",
                     self.room_id,
                     self.live_stream.read().await.clone(),
-                    stream
+                    new_stream
                 );
 
                 true
@@ -370,27 +325,6 @@ impl BiliRecorder {
                 *self.live_status.read().await
             }
         }
-    }
-
-    async fn stream_from_variant(
-        &self,
-        variant: &VariantStream,
-    ) -> Result<BiliStream, super::errors::RecorderError> {
-        let url = variant.uri.clone();
-        // example url: https://cn-hnld-ct-01-47.bilivideo.com/live-bvc/931676/live_1789460279_3538985/index.m3u8?expires=1745927098&len=0&oi=3729149990&pt=h5&qn=10000&trid=10075ceab17d4c9498264eb76d572b6810ad&sigparams=cdn,expires,len,oi,pt,qn,trid&cdn=cn-gotcha01&sign=686434f3ad01d33e001c80bfb7e1713d&site=3124fc9e0fabc664ace3d1b33638f7f2&free_type=0&mid=0&sche=ban&bvchls=1&sid=cn-hnld-ct-01-47&chash=0&bmt=1&sg=lr&trace=25&isp=ct&rg=East&pv=Shanghai&sk=28cc07215ff940102a1d60dade11467e&codec=0&pp=rtmp&hdr_type=0&hot_cdn=57345&suffix=origin&flvsk=c9154f5b3c6b14808bc5569329cf7f94&origin_bitrate=1281767&score=1&source=puv3_master&p2p_type=-1&deploy_env=prod&sl=1&info_source=origin&vd=nc&zoneid_l=151355393&sid_l=stream_name_cold&src=puv3&order=1
-        // extract host: cn-hnld-ct-01-47.bilivideo.com
-        let host = url.split('/').nth(2).unwrap_or_default();
-        let extra = url.split('?').nth(1).unwrap_or_default();
-        // extract base url: live-bvc/931676/live_1789460279_3538985/
-        let base_url = url
-            .split('/')
-            .skip(3)
-            .take(3)
-            .collect::<Vec<&str>>()
-            .join("/")
-            + "/";
-        let stream = BiliStream::new(StreamType::FMP4, base_url.as_str(), host, extra);
-        Ok(stream)
     }
 
     async fn danmu(&self) -> Result<(), super::errors::RecorderError> {
@@ -470,115 +404,24 @@ impl BiliRecorder {
                     self.room_id,
                     stream.index()
                 );
-                log::error!(
-                    "[{}]Master manifest: {}",
-                    self.room_id,
-                    self.master_manifest.read().await.as_ref().unwrap()
-                );
                 Err(super::errors::RecorderError::BiliClientError(e))
             }
         }
     }
 
-    async fn get_header_url(&self) -> Result<String, super::errors::RecorderError> {
-        let stream = self.live_stream.read().await.clone();
-        if stream.is_none() {
-            return Err(super::errors::RecorderError::NoStreamAvailable);
-        }
-        let stream = stream.unwrap();
-
-        let index_content = self
-            .client
-            .read()
-            .await
-            .get_index_content(&self.account, &stream.index())
-            .await?;
-        if index_content.is_empty() {
-            return Err(super::errors::RecorderError::InvalidStream { stream });
-        }
-        if index_content.contains("Not Found") {
-            return Err(super::errors::RecorderError::IndexNotFound {
-                url: stream.index(),
-            });
-        }
-
-        let mut header_url = String::new();
-        let re = Regex::new(r"h.*\.m4s").unwrap();
-        if let Some(captures) = re.captures(&index_content) {
-            header_url = captures.get(0).unwrap().as_str().to_string();
-        }
-        if header_url.is_empty() {
-            log::warn!(
-                "[{}]Parse header url failed: {}",
-                self.room_id,
-                index_content
-            );
-        }
-
-        Ok(header_url)
-    }
-
-    async fn get_resolution(
-        &self,
-        header_url: &str,
-    ) -> Result<String, super::errors::RecorderError> {
-        log::debug!("Get resolution from {header_url}");
-        let resolution = get_video_resolution(header_url)
+    async fn get_resolution(&self, ts_path: &str) -> Result<String, super::errors::RecorderError> {
+        let resolution = get_video_resolution(ts_path)
             .await
             .map_err(super::errors::RecorderError::FfmpegError)?;
         Ok(resolution)
     }
 
-    async fn fetch_real_stream(
-        &self,
-        stream: &BiliStream,
-    ) -> Result<BiliStream, super::errors::RecorderError> {
-        let index_content = self
-            .client
-            .read()
-            .await
-            .get_index_content(&self.account, &stream.index())
-            .await?;
-        if index_content.is_empty() {
-            return Err(super::errors::RecorderError::InvalidStream {
-                stream: stream.clone(),
-            });
-        }
-        if index_content.contains("Not Found") {
-            return Err(super::errors::RecorderError::IndexNotFound {
-                url: stream.index(),
-            });
-        }
-        if index_content.contains("BANDWIDTH") {
-            // this index content provides another m3u8 url
-            // example: https://765b047cec3b099771d4b1851136046f.v.smtcdns.net/d1--cn-gotcha204-3.bilivideo.com/live-bvc/246284/live_1323355750_55526594/index.m3u8?expires=1741318366&len=0&oi=1961017843&pt=h5&qn=10000&trid=1007049a5300422eeffd2d6995d67b67ca5a&sigparams=cdn,expires,len,oi,pt,qn,trid&cdn=cn-gotcha204&sign=7ef1241439467ef27d3c804c1eda8d4d&site=1c89ef99adec13fab3a3592ee4db26d3&free_type=0&mid=475210&sche=ban&bvchls=1&trace=16&isp=ct&rg=East&pv=Shanghai&source=puv3_onetier&p2p_type=-1&score=1&suffix=origin&deploy_env=prod&flvsk=e5c4d6fb512ed7832b706f0a92f7a8c8&sk=246b3930727a89629f17520b1b551a2f&pp=rtmp&hot_cdn=57345&origin_bitrate=657300&sl=1&info_source=cache&vd=bc&src=puv3&order=1&TxLiveCode=cold_stream&TxDispType=3&svr_type=live_oc&tencent_test_client_ip=116.226.193.243&dispatch_from=OC_MGR61.170.74.11&utime=1741314857497
-            let new_url = index_content.lines().last().unwrap();
-
-            // extract host: cn-gotcha204-3.bilivideo.com
-            let host = new_url.split('/').nth(2).unwrap_or_default();
-            let extra = new_url.split('?').nth(1).unwrap_or_default();
-            // extract base url: live-bvc/246284/live_1323355750_55526594/
-            let base_url = new_url
-                .split('/')
-                .skip(3)
-                .take_while(|&part| !part.contains('?') && part != "index.m3u8")
-                .collect::<Vec<&str>>()
-                .join("/")
-                + "/";
-
-            let new_stream = BiliStream::new(StreamType::FMP4, base_url.as_str(), host, extra);
-            return Box::pin(self.fetch_real_stream(&new_stream)).await;
-        }
-        Ok(stream.clone())
+    async fn get_full_path(&self, relative_path: &str) -> String {
+        format!("{}/{}", self.config.read().await.cache, relative_path)
     }
 
     async fn get_work_dir(&self, live_id: &str) -> String {
-        format!(
-            "{}/bilibili/{}/{}/",
-            self.config.read().await.cache,
-            self.room_id,
-            live_id
-        )
+        format!("bilibili/{}/{}/", self.room_id, live_id)
     }
 
     async fn update_entries(&self) -> Result<u128, super::errors::RecorderError> {
@@ -595,197 +438,58 @@ impl BiliRecorder {
 
         let playlist = parsed.unwrap();
 
-        let mut timestamp: i64 = self.live_id.read().await.parse::<i64>().unwrap_or(0);
-        let mut work_dir;
-        let mut is_first_record = false;
-
-        // Get url from EXT-X-MAP
-        let header_url = self.get_header_url().await?;
-        if header_url.is_empty() {
-            return Err(super::errors::RecorderError::EmptyHeader);
-        }
-        let full_header_url = current_stream.ts_url(&header_url);
-
-        // Check header if None
-        if (self.entry_store.read().await.as_ref().is_none()
-            || self
-                .entry_store
+        let mut timestamp = Utc::now().timestamp_millis();
+        if !self.live_id.read().await.is_empty() {
+            timestamp = self
+                .live_id
                 .read()
                 .await
-                .as_ref()
-                .unwrap()
-                .get_header()
-                .is_none())
-            && current_stream.format == StreamType::FMP4
-        {
-            timestamp = Utc::now().timestamp_millis();
+                .parse::<i64>()
+                .unwrap_or(timestamp);
+        }
+
+        let work_dir = self.get_work_dir(&timestamp.to_string()).await;
+        let is_first_record = self.entry_store.read().await.is_none();
+
+        if is_first_record {
+            log::info!("[{}]New record started: {}", self.room_id, timestamp);
             *self.live_id.write().await = timestamp.to_string();
-            work_dir = self.get_work_dir(timestamp.to_string().as_str()).await;
-            is_first_record = true;
-
-            let file_name = header_url.split('/').next_back().unwrap();
-            let mut header = TsEntry {
-                url: file_name.to_string(),
-                sequence: 0,
-                length: 0.0,
-                size: 0,
-                ts: timestamp,
-                is_header: true,
-            };
-
-            // Create work directory before download
-            tokio::fs::create_dir_all(&work_dir)
+            tokio::fs::create_dir_all(self.get_full_path(&work_dir).await)
                 .await
                 .map_err(super::errors::RecorderError::IoError)?;
 
-            // Download header
-            match self
-                .client
-                .read()
+            *self.entry_store.write().await =
+                Some(EntryStore::new(&self.get_full_path(&work_dir).await).await);
+
+            let danmu_path = format!("{work_dir}/danmu.txt");
+            let danmu_full_path = self.get_full_path(&danmu_path).await;
+            *self.danmu_storage.write().await = DanmuStorage::new(&danmu_full_path).await;
+
+            let cover_path = format!("{work_dir}/cover.jpg");
+            let cover_full_path = self.get_full_path(&cover_path).await;
+
+            let room_cover = self.cover.read().await.clone().unwrap();
+            let room_cover_full_path = format!("{}/{}", self.config.read().await.cache, room_cover);
+            log::debug!(
+                "[{}]Copy cover to: {} {}",
+                self.room_id,
+                room_cover_full_path,
+                cover_full_path
+            );
+            tokio::fs::copy(room_cover_full_path, &cover_full_path)
                 .await
-                .download_ts(&full_header_url, &format!("{work_dir}/{file_name}"))
-                .await
-            {
-                Ok(size) => {
-                    if size == 0 {
-                        log::error!(
-                            "[{}]Download header failed: {}",
-                            self.room_id,
-                            full_header_url
-                        );
-                        // Clean up empty directory since header download failed
-                        if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
-                            log::warn!(
-                                "[{}]Failed to cleanup empty work directory {}: {}",
-                                self.room_id,
-                                work_dir,
-                                cleanup_err
-                            );
-                        }
-                        return Err(super::errors::RecorderError::InvalidStream {
-                            stream: current_stream,
-                        });
-                    }
-                    header.size = size;
+                .map_err(super::errors::RecorderError::IoError)?;
 
-                    if self.cover.read().await.is_some() {
-                        let current_cover_full_path = Path::new(&self.config.read().await.cache)
-                            .join(self.cover.read().await.clone().unwrap());
-                        // copy current cover to work_dir
-                        let _ = tokio::fs::copy(
-                            current_cover_full_path,
-                            &format!("{}/{}", work_dir, "cover.jpg"),
-                        )
-                        .await;
-                    }
-
-                    // Now that download succeeded, create the record and setup stores
-                    self.db
-                        .add_record(
-                            PlatformType::BiliBili,
-                            timestamp.to_string().as_str(),
-                            self.room_id,
-                            &self.room_info.read().await.room_title,
-                            format!(
-                                "{}/{}/{}/{}",
-                                PlatformType::BiliBili.as_str(),
-                                self.room_id,
-                                timestamp,
-                                "cover.jpg"
-                            )
-                            .into(),
-                            None,
-                        )
-                        .await?;
-
-                    let entry_store = EntryStore::new(&work_dir).await;
-                    *self.entry_store.write().await = Some(entry_store);
-
-                    // danmu file
-                    let danmu_file_path = format!("{}{}", work_dir, "danmu.txt");
-                    *self.danmu_storage.write().await = DanmuStorage::new(&danmu_file_path).await;
-
-                    self.entry_store
-                        .write()
-                        .await
-                        .as_mut()
-                        .unwrap()
-                        .add_entry(header)
-                        .await;
-
-                    let new_resolution = self.get_resolution(&full_header_url).await?;
-
-                    log::info!(
-                        "[{}] Initial header resolution: {} {}",
-                        self.room_id,
-                        header_url,
-                        new_resolution
-                    );
-
-                    *self.current_header_info.write().await = Some(HeaderInfo {
-                        url: header_url.clone(),
-                        resolution: new_resolution,
-                    });
-
-                    let _ = self.event_channel.send(RecorderEvent::RecordStart {
-                        recorder: self.info().await,
-                    });
-                }
-                Err(e) => {
-                    log::error!("[{}]Download header failed: {}", self.room_id, e);
-                    // Clean up empty directory since header download failed
-                    if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
-                        log::warn!(
-                            "[{}]Failed to cleanup empty work directory {}: {}",
-                            self.room_id,
-                            work_dir,
-                            cleanup_err
-                        );
-                    }
-                    return Err(e.into());
-                }
-            }
-        } else {
-            work_dir = self.get_work_dir(timestamp.to_string().as_str()).await;
-            // For non-FMP4 streams, check if we need to initialize
-            if self.entry_store.read().await.as_ref().is_none() {
-                timestamp = Utc::now().timestamp_millis();
-                *self.live_id.write().await = timestamp.to_string();
-                work_dir = self.get_work_dir(timestamp.to_string().as_str()).await;
-                is_first_record = true;
-            }
-        }
-
-        // check resolution change
-        let current_header_info = self.current_header_info.read().await.clone();
-        if let Some(current_header_info) = current_header_info {
-            if current_header_info.url != header_url {
-                let new_resolution = self.get_resolution(&full_header_url).await?;
-                log::debug!(
-                    "[{}] Header url changed: {} => {}, resolution: {} => {}",
+            self.db
+                .add_record(
+                    PlatformType::BiliBili,
+                    timestamp.to_string().as_str(),
                     self.room_id,
-                    current_header_info.url,
-                    header_url,
-                    current_header_info.resolution,
-                    new_resolution
-                );
-                if current_header_info.resolution != new_resolution {
-                    self.reset().await;
-
-                    return Err(super::errors::RecorderError::ResolutionChanged {
-                        err: format!(
-                            "Resolution changed: {} => {}",
-                            current_header_info.resolution, new_resolution
-                        ),
-                    });
-                }
-
-                // update current header info
-                *self.current_header_info.write().await = Some(HeaderInfo {
-                    url: header_url,
-                    resolution: new_resolution,
-                });
-            }
+                    &self.room_info.read().await.room_title,
+                    Some(cover_path),
+                    None,
+                )
+                .await?;
         }
 
         match playlist {
@@ -800,33 +504,6 @@ impl BiliRecorder {
                     .await
                     .as_ref()
                     .map_or(0, |store| store.last_sequence); // For first-time recording, start from 0
-
-                // Parse BILI-AUX offsets to calculate precise durations for FMP4
-                let mut segment_offsets = Vec::new();
-                for ts in &pl.segments {
-                    let mut seg_offset: i64 = 0;
-                    for tag in &ts.unknown_tags {
-                        if tag.tag == "BILI-AUX" {
-                            if let Some(rest) = &tag.rest {
-                                let parts: Vec<&str> = rest.split('|').collect();
-                                if !parts.is_empty() {
-                                    let offset_hex = parts.first().unwrap();
-                                    if let Ok(offset) = i64::from_str_radix(offset_hex, 16) {
-                                        seg_offset = offset;
-                                    }
-                                }
-                            }
-                            break;
-                        }
-                    }
-                    segment_offsets.push(seg_offset);
-                }
-
-                // Extract stream start timestamp from header if available for FMP4
-                let stream_start_timestamp = self.room_info.read().await.live_start_time;
-
-                // Get the last segment offset from previous processing
-                let mut last_offset = *self.last_segment_offset.read().await;
 
                 for (i, ts) in pl.segments.iter().enumerate() {
                     let sequence = pl.media_sequence + i as u64;
@@ -846,91 +523,27 @@ impl BiliRecorder {
                     }
 
                     // Calculate precise timestamp from stream start + BILI-AUX offset for FMP4
-                    let ts_mili = if current_stream.format == StreamType::FMP4
-                        && stream_start_timestamp > 0
-                        && i < segment_offsets.len()
-                    {
-                        let seg_offset = segment_offsets[i];
-
-                        stream_start_timestamp * 1000 + seg_offset
-                    } else {
-                        // Fallback to current time if parsing fails or not FMP4
-                        Utc::now().timestamp_millis()
-                    };
+                    let ts_mili = ts
+                        .program_date_time
+                        .map(|dt| dt.timestamp_millis())
+                        .unwrap_or_else(|| Utc::now().timestamp_millis());
 
                     // encode segment offset into filename
                     let file_name = ts.uri.split('/').next_back().unwrap_or(&ts.uri);
                     let ts_length = f64::from(pl.target_duration);
 
-                    // Calculate precise duration from BILI-AUX offsets for FMP4
-                    let precise_length_from_aux =
-                        if current_stream.format == StreamType::FMP4 && i < segment_offsets.len() {
-                            let current_offset = segment_offsets[i];
-
-                            // Get the previous offset for duration calculation
-                            let prev_offset = if i > 0 {
-                                // Use previous segment in current M3U8
-                                Some(segment_offsets[i - 1])
-                            } else {
-                                // Use saved last offset from previous M3U8 processing
-                                last_offset
-                            };
-
-                            if let Some(prev) = prev_offset {
-                                let duration_ms = current_offset - prev;
-                                if duration_ms > 0 {
-                                    Some(duration_ms as f64 / 1000.0) // Convert ms to seconds
-                                } else {
-                                    None
-                                }
-                            } else {
-                                // No previous offset available, use target duration
-                                None
-                            }
-                        } else {
-                            None
-                        };
                     let client = self.client.clone();
                     let mut retry = 0;
-                    let mut work_dir_created_for_non_fmp4 = false;
-
-                    // For non-FMP4 streams, create record on first successful ts download
-                    if is_first_record && current_stream.format != StreamType::FMP4 {
-                        // Create work directory before first ts download
-                        tokio::fs::create_dir_all(&work_dir)
-                            .await
-                            .map_err(super::errors::RecorderError::IoError)?;
-                        work_dir_created_for_non_fmp4 = true;
-                    }
 
                     loop {
                         if retry > 3 {
                             log::error!("[{}]Download ts failed after retry", self.room_id);
 
-                            // Clean up empty directory if first ts download failed for non-FMP4
-                            if is_first_record
-                                && current_stream.format != StreamType::FMP4
-                                && work_dir_created_for_non_fmp4
-                            {
-                                if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await
-                                {
-                                    log::warn!(
-                                        "[{}]Failed to cleanup empty work directory {}: {}",
-                                        self.room_id,
-                                        work_dir,
-                                        cleanup_err
-                                    );
-                                }
-                            }
-
                             break;
                         }
-                        match client
-                            .read()
-                            .await
-                            .download_ts(&ts_url, &format!("{work_dir}/{file_name}"))
-                            .await
-                        {
+                        let full_path =
+                            self.get_full_path(&format!("{work_dir}/{file_name}")).await;
+                        match client.read().await.download_ts(&ts_url, &full_path).await {
                             Ok(size) => {
                                 if size == 0 {
                                     log::error!(
@@ -938,93 +551,43 @@ impl BiliRecorder {
                                         self.room_id
                                     );
 
-                                    // Clean up empty directory if first ts download failed for non-FMP4
-                                    if is_first_record
-                                        && current_stream.format != StreamType::FMP4
-                                        && work_dir_created_for_non_fmp4
-                                    {
-                                        if let Err(cleanup_err) =
-                                            tokio::fs::remove_dir_all(&work_dir).await
-                                        {
-                                            log::warn!(
-                                                "[{}]Failed to cleanup empty work directory {}: {}",
-                                                self.room_id,
-                                                work_dir,
-                                                cleanup_err
-                                            );
-                                        }
-                                    }
-
                                     return Err(super::errors::RecorderError::InvalidStream {
                                         stream: current_stream,
                                     });
                                 }
 
-                                // Create record and setup stores on first successful download for non-FMP4
-                                if is_first_record && current_stream.format != StreamType::FMP4 {
-                                    self.db
-                                        .add_record(
-                                            PlatformType::BiliBili,
-                                            timestamp.to_string().as_str(),
-                                            self.room_id,
-                                            &self.room_info.read().await.room_title,
-                                            self.cover.read().await.clone(),
-                                            None,
-                                        )
-                                        .await?;
-
-                                    let entry_store = EntryStore::new(&work_dir).await;
-                                    *self.entry_store.write().await = Some(entry_store);
-
-                                    // danmu file
-                                    let danmu_file_path = format!("{}{}", work_dir, "danmu.txt");
-                                    *self.danmu_storage.write().await =
-                                        DanmuStorage::new(&danmu_file_path).await;
-
-                                    is_first_record = false;
+                                let resolution_result = self.get_resolution(&full_path).await;
+                                if resolution_result.is_err() {
+                                    return Err(resolution_result.err().unwrap());
                                 }
-
-                                // Get precise duration - prioritize BILI-AUX for FMP4, fallback to ffprobe if needed
-                                let precise_length = if let Some(aux_duration) =
-                                    precise_length_from_aux
-                                {
-                                    aux_duration
-                                } else if current_stream.format != StreamType::FMP4 {
-                                    // For regular TS segments, use direct ffprobe
-                                    let file_path = format!("{work_dir}/{file_name}");
-                                    match crate::ffmpeg::get_segment_duration(std::path::Path::new(
-                                        &file_path,
-                                    ))
-                                    .await
-                                    {
-                                        Ok(duration) => {
-                                            log::debug!(
-                                                "[{}]Precise TS segment duration: {}s (original: {}s)",
-                                                self.room_id,
-                                                duration,
-                                                ts_length
-                                            );
-                                            duration
-                                        }
-                                        Err(e) => {
-                                            log::warn!(
-                                                "[{}]Failed to get precise TS duration for {}: {}, using fallback",
-                                                self.room_id,
-                                                file_name,
-                                                e
-                                            );
-                                            ts_length
-                                        }
+                                let resolution = resolution_result.unwrap();
+                                let current_resolution =
+                                    self.current_resolution.read().await.clone();
+                                if let Some(current_resolution) = current_resolution {
+                                    if current_resolution != resolution {
+                                        log::warn!(
+                                            "[{}]Resolution changed: {} => {}",
+                                            self.room_id,
+                                            current_resolution,
+                                            resolution
+                                        );
+                                        return Err(
+                                            super::errors::RecorderError::ResolutionChanged {
+                                                err: format!(
+                                                    "Resolution changed: {} => {}",
+                                                    current_resolution, resolution
+                                                ),
+                                            },
+                                        );
                                     }
                                 } else {
-                                    // FMP4 segment without BILI-AUX info, use fallback
-                                    log::debug!(
-                                        "[{}]No BILI-AUX data available for FMP4 segment {}, using target duration",
-                                        self.room_id,
-                                        file_name
-                                    );
-                                    ts_length
-                                };
+                                    // first segment, set current resolution
+                                    *self.current_resolution.write().await = Some(resolution);
+
+                                    let _ = self.event_channel.send(RecorderEvent::RecordStart {
+                                        recorder: self.info().await,
+                                    });
+                                }
 
                                 self.entry_store
                                     .write()
@@ -1034,19 +597,12 @@ impl BiliRecorder {
                                     .add_entry(TsEntry {
                                         url: file_name.into(),
                                         sequence,
-                                        length: precise_length,
+                                        length: ts_length,
                                         size,
                                         ts: ts_mili,
                                         is_header: false,
                                     })
                                     .await;
-
-                                // Update last offset for next segment calculation
-                                if current_stream.format == StreamType::FMP4
-                                    && i < segment_offsets.len()
-                                {
-                                    last_offset = Some(segment_offsets[i]);
-                                }
 
                                 new_segment_fetched = true;
                                 break;
@@ -1061,24 +617,6 @@ impl BiliRecorder {
                                 );
                                 log::warn!("[{}]file_name: {}", self.room_id, file_name);
                                 log::warn!("[{}]ts_url: {}", self.room_id, ts_url);
-
-                                // If this is the last retry and it's the first record for non-FMP4, clean up
-                                if retry > 3
-                                    && is_first_record
-                                    && current_stream.format != StreamType::FMP4
-                                    && work_dir_created_for_non_fmp4
-                                {
-                                    if let Err(cleanup_err) =
-                                        tokio::fs::remove_dir_all(&work_dir).await
-                                    {
-                                        log::warn!(
-                                            "[{}]Failed to cleanup empty work directory {}: {}",
-                                            self.room_id,
-                                            work_dir,
-                                            cleanup_err
-                                        );
-                                    }
-                                }
                             }
                         }
                     }
@@ -1086,11 +624,6 @@ impl BiliRecorder {
 
                 if new_segment_fetched {
                     *self.last_update.write().await = Utc::now().timestamp();
-
-                    // Save the last offset for next M3U8 processing
-                    if current_stream.format == StreamType::FMP4 {
-                        *self.last_segment_offset.write().await = last_offset;
-                    }
 
                     self.db
                         .update_record(
@@ -1140,10 +673,9 @@ impl BiliRecorder {
         let pre_offset = rand::random::<u64>() % 181 + 120; // Random number between 120 and 300
                                                             // no need to update stream as it's not expired yet
         let current_stream = self.live_stream.read().await.clone();
-        if current_stream
-            .as_ref()
-            .is_some_and(|s| s.expire - Utc::now().timestamp() < pre_offset as i64)
-        {
+        if current_stream.as_ref().is_some_and(|s| {
+            s.get_expire().unwrap_or(0) - Utc::now().timestamp() < pre_offset as i64
+        }) {
             log::info!("[{}]Stream is nearly expired", self.room_id);
             return Err(super::errors::RecorderError::StreamExpired {
                 stream: current_stream.unwrap(),
@@ -1155,7 +687,7 @@ impl BiliRecorder {
 
     async fn generate_archive_m3u8(&self, live_id: &str, start: i64, end: i64) -> String {
         let work_dir = self.get_work_dir(live_id).await;
-        let entry_store = EntryStore::new(&work_dir).await;
+        let entry_store = EntryStore::new(&self.get_full_path(&work_dir).await).await;
         let mut range = None;
         if start != 0 || end != 0 {
             range = Some(Range {
@@ -1205,6 +737,7 @@ impl super::Recorder for BiliRecorder {
                 if self_clone.check_status().await {
                     // Live status is ok, start recording.
                     let mut continue_record = false;
+                    let mut resolution_changed = false;
                     while self_clone.should_record().await {
                         match self_clone.update_entries().await {
                             Ok(ms) => {
@@ -1232,6 +765,11 @@ impl super::Recorder for BiliRecorder {
                                 if let RecorderError::StreamExpired { stream: _ } = e {
                                     continue_record = true;
                                 }
+
+                                if let RecorderError::ResolutionChanged { err: _ } = e {
+                                    resolution_changed = true;
+                                }
+
                                 break;
                             }
                         }
@@ -1242,14 +780,12 @@ impl super::Recorder for BiliRecorder {
                         continue;
                     }
 
-                    // whatever error happened during update entries, reset to start another recording.
-                    if self_clone.current_header_info.read().await.is_some() {
-                        let _ = self_clone.event_channel.send(RecorderEvent::RecordEnd {
-                            recorder: self_clone.info().await,
-                        });
-                    }
                     *self_clone.is_recording.write().await = false;
                     self_clone.reset().await;
+                    if resolution_changed {
+                        log::info!("[{}]Resolution changed, reset recorder", self_clone.room_id);
+                        continue;
+                    }
                     // go check status again after random 2-5 secs
                     let secs = rand::random::<u64>() % 4 + 2;
                     tokio::time::sleep(Duration::from_secs(
@@ -1312,7 +848,10 @@ impl super::Recorder for BiliRecorder {
             }
         } else {
             let work_dir = self.get_work_dir(live_id).await;
-            EntryStore::new(&work_dir).await.first_ts().unwrap_or(0)
+            EntryStore::new(&self.get_full_path(&work_dir).await)
+                .await
+                .first_ts()
+                .unwrap_or(0)
         }
     }
 
@@ -1394,7 +933,7 @@ impl super::Recorder for BiliRecorder {
         // read subtitle file under work_dir
         let work_dir = self.get_work_dir(live_id).await;
         let subtitle_file_path = format!("{}/{}", work_dir, "subtitle.srt");
-        let subtitle_file = File::open(subtitle_file_path).await;
+        let subtitle_file = File::open(self.get_full_path(&subtitle_file_path).await).await;
         if subtitle_file.is_err() {
             return Err(super::errors::RecorderError::SubtitleNotFound {
                 live_id: live_id.to_string(),
@@ -1414,7 +953,7 @@ impl super::Recorder for BiliRecorder {
         // generate subtitle file under work_dir
         let work_dir = self.get_work_dir(live_id).await;
         let subtitle_file_path = format!("{}/{}", work_dir, "subtitle.srt");
-        let mut subtitle_file = File::create(subtitle_file_path).await?;
+        let mut subtitle_file = File::create(self.get_full_path(&subtitle_file_path).await).await?;
         // first generate a tmp clip file
         // generate a tmp m3u8 index file
         let m3u8_index_file_path = format!("{}/{}", work_dir, "tmp.m3u8");

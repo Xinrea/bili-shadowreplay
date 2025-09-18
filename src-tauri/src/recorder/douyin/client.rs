@@ -121,9 +121,9 @@ impl DouyinClient {
         let params = format!(
             "aid=6383&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&enter_from=web_live&cookie_enabled=true&screen_width=1920&screen_height=1080&browser_language=zh-CN&browser_platform=MacIntel&browser_name=Chrome&browser_version=122.0.0.0&web_rid={room_id}&ms_token={ms_token}");
         let a_bogus = self.generate_a_bogus(&params, user_agent).await?;
-        log::debug!("params: {params}");
-        log::debug!("user_agent: {user_agent}");
-        log::debug!("a_bogus: {a_bogus}");
+        // log::debug!("params: {params}");
+        // log::debug!("user_agent: {user_agent}");
+        // log::debug!("a_bogus: {a_bogus}");
         let url = format!(
             "https://live.douyin.com/webcast/room/web/enter/?aid=6383&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&enter_from=web_live&cookie_enabled=true&screen_width=1920&screen_height=1080&browser_language=zh-CN&browser_platform=MacIntel&browser_name=Chrome&browser_version=122.0.0.0&web_rid={room_id}&ms_token={ms_token}&a_bogus={a_bogus}"
         );

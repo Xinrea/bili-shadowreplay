@@ -311,54 +311,6 @@ async fn get_audio_duration(file: &Path) -> Result<u64, String> {
     duration.ok_or_else(|| "Failed to parse duration".to_string())
 }
 
-/// Get the precise duration of a video segment (TS/MP4) in seconds
-pub async fn get_segment_duration(file: &Path) -> Result<f64, String> {
-    // Use ffprobe to get the exact duration of the segment
-    let mut ffprobe_process = tokio::process::Command::new(ffprobe_path());
-    #[cfg(target_os = "windows")]
-    ffprobe_process.creation_flags(CREATE_NO_WINDOW);
-
-    let child = ffprobe_process
-        .args(["-v", "quiet"])
-        .args(["-show_entries", "format=duration"])
-        .args(["-of", "csv=p=0"])
-        .args(["-i", file.to_str().unwrap()])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn();
-
-    if let Err(e) = child {
-        return Err(format!("Failed to spawn ffprobe process for segment: {e}"));
-    }
-
-    let mut child = child.unwrap();
-    let stdout = child.stdout.take().unwrap();
-    let reader = BufReader::new(stdout);
-    let mut parser = FfmpegLogParser::new(reader);
-
-    let mut duration = None;
-    while let Ok(event) = parser.parse_next_event().await {
-        match event {
-            FfmpegEvent::LogEOF => break,
-            FfmpegEvent::Log(_level, content) => {
-                // Parse the exact duration as f64 for precise timing
-                if let Ok(seconds_f64) = content.trim().parse::<f64>() {
-                    duration = Some(seconds_f64);
-                    log::debug!("Parsed segment duration: {seconds_f64} seconds");
-                }
-            }
-            _ => {}
-        }
-    }
-
-    if let Err(e) = child.wait().await {
-        log::error!("Failed to get segment duration: {e}");
-        return Err(e.to_string());
-    }
-
-    duration.ok_or_else(|| "Failed to parse segment duration".to_string())
-}
-
 /// Encode video subtitle using ffmpeg, output is file name with prefix [subtitle]
 pub async fn encode_video_subtitle(
     reporter: &impl ProgressReporterTrait,
@@ -721,7 +673,7 @@ pub async fn check_ffmpeg() -> Result<String, String> {
         .stdout(Stdio::piped())
         .spawn();
     if let Err(e) = child {
-        log::error!("Faild to spwan ffmpeg process: {e}");
+        log::error!("Failed to spawn ffmpeg process: {e}");
         return Err(e.to_string());
     }
 
@@ -773,7 +725,7 @@ pub async fn get_video_resolution(file: &str) -> Result<String, String> {
         .stdout(Stdio::piped())
         .spawn();
     if let Err(e) = child {
-        log::error!("Faild to spwan ffprobe process: {e}");
+        log::error!("Failed to spawn ffprobe process: {e}");
         return Err(e.to_string());
     }
 

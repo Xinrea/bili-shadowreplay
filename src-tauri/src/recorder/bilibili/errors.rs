@@ -34,6 +34,8 @@ pub enum BiliClientError {
     IOError(#[from] std::io::Error),
     #[error("Security control error")]
     SecurityControlError,
+    #[error("API error: {0}")]
+    ApiError(String),
 }
 
 impl From<BiliClientError> for String {

@@ -100,8 +100,8 @@ impl Display for TsEntry {
     }
 }
 
-/// `EntryStore` is used to management stream segments, which is basicly a simple version of hls manifest,
-/// and of course, provids methods to generate hls manifest for frontend player.
+/// `EntryStore` is used to management stream segments, which is basically a simple version of hls manifest,
+/// and of course, provides methods to generate hls manifest for frontend player.
 pub struct EntryStore {
     // append only log file
     log_file: File,
@@ -186,10 +186,6 @@ impl EntryStore {
 
         self.total_duration += entry.length;
         self.total_size += entry.size;
-    }
-
-    pub fn get_header(&self) -> Option<&TsEntry> {
-        self.header.as_ref()
     }
 
     pub fn total_duration(&self) -> f64 {

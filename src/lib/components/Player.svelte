@@ -53,15 +53,22 @@
 
   async function loadGlobalOffset(url: string) {
     const response = await fetch(url);
-    const text = await response.text();
-    const offsetRegex = /DANMU=(\d+)/;
-    const match = text.match(offsetRegex);
-    if (match && match[1]) {
-      global_offset = parseInt(match[1], 10);
-      console.log("DANMU OFFSET found", global_offset);
+    const m3u8Content = await response.text();
+    const firstSegmentDatetime = m3u8Content
+      .split("\n")
+      .find((line) => line.startsWith("#EXT-X-PROGRAM-DATE-TIME:"));
+    if (firstSegmentDatetime) {
+      if (global_offset == 0) {
+        const date_str = firstSegmentDatetime.replace(
+          "#EXT-X-PROGRAM-DATE-TIME:",
+          ""
+        );
+        global_offset = new Date(date_str).getTime() / 1000;
+      }
     } else {
-      console.warn("No DANMU OFFSET found");
-      console.log(text);
+      if (global_offset == 0) {
+        global_offset = parseInt(live_id) / 1000;
+      }
     }
   }
 
@@ -88,15 +95,22 @@
 
           if (is_m3u8) {
             let m3u8Content = new TextDecoder().decode(uint8Array);
-            if (global_offset == 0) {
-              const offsetRegex = /DANMU=(\d+)/;
-              const match = m3u8Content.match(offsetRegex);
-
-              if (match && match[1]) {
-                global_offset = parseInt(match[1], 10);
-                console.log("DANMU OFFSET found", global_offset);
-              } else {
-                console.warn("No DANMU OFFSET found");
+            // get first segment DATETIME
+            // #EXT-X-PROGRAM-DATE-TIME:2025-09-20T20:04:39.000+08:00
+            const firstSegmentDatetime = m3u8Content
+              .split("\n")
+              .find((line) => line.startsWith("#EXT-X-PROGRAM-DATE-TIME:"));
+            if (firstSegmentDatetime) {
+              if (global_offset == 0) {
+                const date_str = firstSegmentDatetime.replace(
+                  "#EXT-X-PROGRAM-DATE-TIME:",
+                  ""
+                );
+                global_offset = new Date(date_str).getTime() / 1000;
+              }
+            } else {
+              if (global_offset == 0) {
+                global_offset = parseInt(live_id) / 1000;
               }
             }
           }
@@ -122,13 +136,13 @@
           resolve(response);
         })
         .catch((error) => {
-          log.error("Network error:", error);
+          log.error("tauriNetworkPlugin error for URI:", uri, error);
           reject(
             new shaka.util.Error(
               shaka.util.Error.Severity.CRITICAL,
               shaka.util.Error.Category.NETWORK,
               shaka.util.Error.Code.OPERATION_ABORTED,
-              error.message || "Network request failed"
+              error.message || error || "Network request failed"
             )
           );
         });
@@ -213,7 +227,7 @@
     });
 
     try {
-      const url = `${ENDPOINT ? ENDPOINT : window.location.origin}/hls/${platform}/${room_id}/${live_id}/master.m3u8?start=${focus_start}&end=${focus_end}`;
+      const url = `${ENDPOINT ? ENDPOINT : window.location.origin}/hls/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`;
       if (!TAURI_ENV) {
         await loadGlobalOffset(url);
       }
@@ -284,8 +298,6 @@
 
     console.log("danmu loaded:", danmu_records.length);
 
-    let ts = parseInt(live_id);
-
     let danmu_displayed = {};
     // history danmaku sender
     setInterval(() => {
@@ -299,7 +311,7 @@
       }
 
       const cur = Math.floor(
-        (video.currentTime + focus_start + local_offset) * 1000
+        (video.currentTime + focus_start + local_offset + global_offset) * 1000
       );
 
       let danmus = danmu_records.filter((v) => {
@@ -358,7 +370,6 @@
               await invoke("send_danmaku", {
                 uid,
                 roomId: room_id,
-                ts,
                 message: value,
               });
               danmakuInput.value = "";
@@ -381,10 +392,7 @@
           return;
         }
 
-        let danmu_record = {
-          ...event.payload,
-          ts: event.payload.ts - global_offset * 1000,
-        };
+        let danmu_record = event.payload;
         // if not enabled or playback is not keep up with live, ignore the danmaku
         if (!danmu_enabled || get_total() - video.currentTime > 5) {
           danmu_records = [...danmu_records, danmu_record];

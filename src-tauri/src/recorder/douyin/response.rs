@@ -56,8 +56,8 @@ pub struct StreamUrl {
     #[serde(rename = "live_core_sdk_data")]
     pub live_core_sdk_data: LiveCoreSdkData,
     pub extra: Extra,
-    #[serde(rename = "pull_datas")]
-    pub pull_datas: PullDatas,
+    #[serde(rename = "pull_data")]
+    pub pull_data: PullData,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -182,10 +182,7 @@ pub struct Extra {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PullDatas {}
-
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct Owner {
     #[serde(rename = "id_str")]
     pub id_str: String,
@@ -234,6 +231,7 @@ pub struct Subscribe {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct RoomAuth {
     #[serde(rename = "Chat")]
     pub chat: bool,
@@ -383,6 +381,7 @@ pub struct RoomAuth {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct SpecialStyle {
     #[serde(rename = "Chat")]
     pub chat: Chat,
@@ -392,6 +391,7 @@ pub struct SpecialStyle {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct Chat {
     #[serde(rename = "UnableStyle")]
     pub unable_style: i64,
@@ -407,6 +407,7 @@ pub struct Chat {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct Like {
     #[serde(rename = "UnableStyle")]
     pub unable_style: i64,
@@ -422,6 +423,7 @@ pub struct Like {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct Stats {
     #[serde(rename = "total_user_desp")]
     pub total_user_desp: String,
@@ -435,10 +437,12 @@ pub struct Stats {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct LinkerMap {}
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct LinkerDetail {
     #[serde(rename = "linker_play_modes")]
     pub linker_play_modes: Vec<Value>,
@@ -476,14 +480,17 @@ pub struct LinkerDetail {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct LinkerMapStr {}
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct PlaymodeDetail {}
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct RoomViewStats {
     #[serde(rename = "is_hidden")]
     pub is_hidden: bool,
@@ -510,6 +517,7 @@ pub struct RoomViewStats {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct SceneTypeInfo {
     #[serde(rename = "is_union_live_room")]
     pub is_union_live_room: bool,
@@ -529,6 +537,7 @@ pub struct SceneTypeInfo {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct EntranceList {
     #[serde(rename = "group_id")]
     pub group_id: i64,
@@ -549,6 +558,7 @@ pub struct EntranceList {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct Icon {
     #[serde(rename = "url_list")]
     pub url_list: Vec<String>,
@@ -770,6 +780,7 @@ pub struct H5Owner {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct H5AvatarThumb {
     #[serde(rename = "url_list")]
     pub url_list: Vec<String>,

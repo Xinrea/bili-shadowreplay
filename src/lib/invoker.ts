@@ -40,7 +40,7 @@ const log = {
 
 async function invoke<T>(
   command: string,
-  args?: Record<string, any>,
+  args?: Record<string, any>
 ): Promise<T> {
   try {
     if (TAURI_ENV) {
@@ -53,7 +53,7 @@ async function invoke<T>(
       // open new page to live_index.html
       window.open(
         `index_live.html?platform=${args.platform}&room_id=${args.roomId}&live_id=${args.liveId}`,
-        "_blank",
+        "_blank"
       );
       return;
     }
@@ -74,7 +74,7 @@ async function invoke<T>(
     // if status is 405, it means the command is not allowed
     if (response.status === 405) {
       throw new Error(
-        `Command ${command} is not allowed, maybe bili-shadowreplay is running in readonly mode or HTTP method mismatch`,
+        `Command ${command} is not allowed, maybe bili-shadowreplay is running in readonly mode or HTTP method mismatch`
       );
     }
     if (!response.ok) {

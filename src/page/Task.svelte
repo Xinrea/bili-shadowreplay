@@ -136,6 +136,8 @@
         return "生成字幕";
       case "encode_video_subtitle":
         return "压制字幕";
+      case "generate_whole_clip":
+        return "生成完整录播";
       default:
         return task_type;
     }

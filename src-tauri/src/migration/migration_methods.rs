@@ -2,9 +2,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use base64::Engine;
-use chrono::Utc;
 
 use crate::database::Database;
+use crate::recorder::entry::EntryStore;
 use crate::recorder::PlatformType;
 
 pub async fn try_rebuild_archives(
@@ -27,25 +27,15 @@ pub async fn try_rebuild_archives(
                     continue;
                 }
 
-                // get created_at from folder metadata
-                let metadata = file.metadata().await?;
-                let created_at = metadata.created();
-                if created_at.is_err() {
-                    continue;
-                }
-                let created_at = created_at.unwrap();
-                let created_at = chrono::DateTime::<Utc>::from(created_at)
-                    .format("%Y-%m-%dT%H:%M:%S.%fZ")
-                    .to_string();
                 // create a record for this live_id
                 let record = db
                     .add_record(
                         PlatformType::from_str(room.platform.as_str()).unwrap(),
                         live_id,
+                        live_id,
                         room_id,
                         &format!("UnknownLive {live_id}"),
                         None,
-                        Some(&created_at),
                     )
                     .await?;
 
@@ -125,5 +115,56 @@ pub async fn try_convert_clip_covers(
             .await?;
         }
     }
+    Ok(())
+}
+
+pub async fn try_add_parent_id_to_records(
+    db: &Arc<Database>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let rooms = db.get_recorders().await?;
+    for room in &rooms {
+        let records = db.get_records(room.room_id, 0, 999_999_999).await?;
+        for record in &records {
+            if record.parent_id.is_empty() {
+                db.update_record_parent_id(record.live_id.as_str(), record.live_id.as_str())
+                    .await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub async fn try_convert_entry_to_m3u8(
+    db: &Arc<Database>,
+    cache_path: PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let rooms = db.get_recorders().await?;
+    for room in &rooms {
+        let records = db.get_records(room.room_id, 0, 999_999_999).await?;
+        for record in &records {
+            let record_path = cache_path.join(format!(
+                "{}/{}/{}",
+                room.platform, room.room_id, record.live_id
+            ));
+            let entry_file = record_path.join("entries.log");
+            let m3u8_file_path = record_path.join("playlist.m3u8");
+            if !entry_file.exists() || m3u8_file_path.exists() {
+                continue;
+            }
+            let entry_store = EntryStore::new(record_path.to_str().unwrap()).await;
+            if entry_store.len() == 0 {
+                continue;
+            }
+            let m3u8_content = entry_store.manifest(true, true, None);
+
+            tokio::fs::write(&m3u8_file_path, m3u8_content).await?;
+            log::info!(
+                "Convert entry to m3u8: {} => {}",
+                entry_file.display(),
+                m3u8_file_path.display()
+            );
+        }
+    }
+
     Ok(())
 }

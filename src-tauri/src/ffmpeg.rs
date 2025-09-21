@@ -11,7 +11,7 @@ use crate::subtitle_generator::{
 use async_ffmpeg_sidecar::event::{FfmpegEvent, LogLevel};
 use async_ffmpeg_sidecar::log_parser::FfmpegLogParser;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 // 视频元数据结构
 #[derive(Debug)]
@@ -1105,6 +1105,98 @@ pub async fn convert_video_format(
             try_high_quality_conversion(source, dest, reporter).await
         }
     }
+}
+
+pub async fn concat_multiple_playlist(
+    reporter: Option<&ProgressReporter>,
+    playlist_paths: Vec<String>,
+    output_path: &Path,
+) -> Result<(), String> {
+    // ffmpeg -i input.m3u8 -vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black" output.mp4
+    let mut cmd = tokio::process::Command::new(ffmpeg_path());
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+
+    // create a tmp filelist for concat
+    let tmp_filelist_path = output_path.with_extension("txt");
+    {
+        let mut filelist = tokio::fs::File::create(&tmp_filelist_path)
+            .await
+            .map_err(|e| e.to_string())?;
+        for playlist_path in playlist_paths.iter() {
+            // write line in the format "file 'path/to/file.m3u8'"
+            // playlist_path might be a relative path, so we need to convert it to an absolute path
+            let playlist_path = Path::new(playlist_path).canonicalize().unwrap();
+            let line = format!("file '{}'\n", playlist_path.display());
+            filelist
+                .write_all(line.as_bytes())
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        // Ensure all data is written to disk before proceeding
+        filelist.flush().await.map_err(|e| e.to_string())?;
+    } // File is automatically closed here
+
+    cmd.args([
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        tmp_filelist_path.to_str().unwrap(),
+    ]);
+
+    let child = cmd.args(["-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black"])
+        .args(["-y", output_path.to_str().unwrap()])
+        .stderr(Stdio::piped())
+        .spawn();
+
+    if let Err(e) = child {
+        return Err(format!("启动ffmpeg进程失败: {e}"));
+    }
+
+    let mut child = child.unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let reader = BufReader::new(stderr);
+    let mut parser = FfmpegLogParser::new(reader);
+
+    let mut clip_error = None;
+    while let Ok(event) = parser.parse_next_event().await {
+        match event {
+            FfmpegEvent::Progress(p) => {
+                log::debug!("Concat progress: {}", p.time);
+                if let Some(reporter) = reporter {
+                    reporter.update(format!("生成中：{}", p.time).as_str());
+                }
+            }
+            FfmpegEvent::LogEOF => break,
+            FfmpegEvent::Log(level, content) => {
+                log::debug!("[{:?}]Concat log: {content}", level);
+            }
+            FfmpegEvent::Error(e) => {
+                log::error!("切片错误: {e}");
+                clip_error = Some(e.to_string());
+            }
+            _ => {}
+        }
+    }
+
+    if let Err(e) = child.wait().await {
+        return Err(e.to_string());
+    }
+
+    // Clean up temporary filelist file
+    if let Err(e) = tokio::fs::remove_file(&tmp_filelist_path).await {
+        log::warn!("Failed to remove temporary filelist: {}", e);
+    }
+
+    if let Some(error) = clip_error {
+        return Err(error);
+    }
+
+    log::info!("Concat task end: {}", output_path.display());
+
+    Ok(())
 }
 
 // tests

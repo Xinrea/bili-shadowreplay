@@ -1,7 +1,7 @@
 pub mod client;
 mod response;
 mod stream_info;
-use super::entry::{EntryStore, Range, TsEntry};
+use super::entry::Range;
 use super::{
     danmu::DanmuEntry, errors::RecorderError, PlatformType, Recorder, RecorderInfo, RoomInfo,
     UserInfo,
@@ -18,6 +18,7 @@ use client::DouyinClientError;
 use danmu_stream::danmu_stream::DanmuStream;
 use danmu_stream::provider::ProviderType;
 use danmu_stream::DanmuMessageType;
+use m3u8_rs::{MediaPlaylist, MediaPlaylistType, MediaSegment};
 use rand::random;
 use std::path::Path;
 use std::sync::Arc;
@@ -50,10 +51,9 @@ pub struct DouyinRecorder {
     sec_user_id: String,
     room_info: Arc<RwLock<Option<client::DouyinBasicRoomInfo>>>,
     stream_url: Arc<RwLock<Option<String>>>,
-    entry_store: Arc<RwLock<Option<EntryStore>>>,
     danmu_store: Arc<RwLock<Option<DanmuStorage>>>,
     live_id: Arc<RwLock<String>>,
-    danmu_room_id: Arc<RwLock<String>>,
+    platform_live_id: Arc<RwLock<String>>,
     live_status: Arc<RwLock<LiveStatus>>,
     is_recording: Arc<RwLock<bool>>,
     running: Arc<RwLock<bool>>,
@@ -65,6 +65,11 @@ pub struct DouyinRecorder {
     danmu_stream_task: Arc<Mutex<Option<JoinHandle<()>>>>,
     danmu_task: Arc<Mutex<Option<JoinHandle<()>>>>,
     record_task: Arc<Mutex<Option<JoinHandle<()>>>>,
+
+    playlist: Arc<RwLock<MediaPlaylist>>,
+    last_sequence: Arc<RwLock<u64>>,
+    total_duration: Arc<RwLock<f64>>,
+    total_size: Arc<RwLock<u64>>,
 }
 
 fn get_best_stream_url(room_info: &client::DouyinBasicRoomInfo) -> Option<String> {
@@ -103,6 +108,17 @@ fn parse_stream_url(stream_url: &str) -> (String, String) {
     (base_url, query_params)
 }
 
+fn default_m3u8_playlist() -> MediaPlaylist {
+    MediaPlaylist {
+        version: Some(6),
+        target_duration: 4.0,
+        end_list: true,
+        playlist_type: Some(MediaPlaylistType::Vod),
+        segments: Vec::new(),
+        ..Default::default()
+    }
+}
+
 impl DouyinRecorder {
     #[allow(clippy::too_many_arguments)]
     pub async fn new(
@@ -132,8 +148,7 @@ impl DouyinRecorder {
             room_id,
             sec_user_id: sec_user_id.to_string(),
             live_id: Arc::new(RwLock::new(String::new())),
-            danmu_room_id: Arc::new(RwLock::new(String::new())),
-            entry_store: Arc::new(RwLock::new(None)),
+            platform_live_id: Arc::new(RwLock::new(String::new())),
             danmu_store: Arc::new(RwLock::new(None)),
             client,
             room_info: Arc::new(RwLock::new(Some(room_info))),
@@ -149,6 +164,11 @@ impl DouyinRecorder {
             danmu_stream_task: Arc::new(Mutex::new(None)),
             danmu_task: Arc::new(Mutex::new(None)),
             record_task: Arc::new(Mutex::new(None)),
+
+            playlist: Arc::new(RwLock::new(default_m3u8_playlist())),
+            last_sequence: Arc::new(RwLock::new(0)),
+            total_duration: Arc::new(RwLock::new(0.0)),
+            total_size: Arc::new(RwLock::new(0)),
         })
     }
 
@@ -249,14 +269,14 @@ impl DouyinRecorder {
 
                     log::info!("New douyin stream URL: {}", new_stream_url.clone().unwrap());
                     *self.stream_url.write().await = Some(new_stream_url.unwrap());
-                    (*self.danmu_room_id.write().await).clone_from(&info.room_id_str);
+                    (*self.platform_live_id.write().await).clone_from(&info.room_id_str);
                 }
 
                 true
             }
             Err(e) => {
                 if let DouyinClientError::H5NotLive(e) = e {
-                    log::warn!("[{}]Live maybe not started: {}", self.room_id, e);
+                    log::debug!("[{}]Live maybe not started: {}", self.room_id, e);
                     return false;
                 }
                 log::error!("[{}]Update room status failed: {}", self.room_id, e);
@@ -268,7 +288,7 @@ impl DouyinRecorder {
     async fn danmu(&self) -> Result<(), super::errors::RecorderError> {
         let cookies = self.account.cookies.clone();
         let danmu_room_id = self
-            .danmu_room_id
+            .platform_live_id
             .read()
             .await
             .clone()
@@ -314,8 +334,12 @@ impl DouyinRecorder {
     }
 
     async fn reset(&self) {
-        *self.entry_store.write().await = None;
-        *self.danmu_room_id.write().await = String::new();
+        let live_id = self.live_id.read().await.clone();
+        if !live_id.is_empty() {
+            self.save_playlist().await;
+        }
+        *self.playlist.write().await = default_m3u8_playlist();
+        *self.platform_live_id.write().await = String::new();
         *self.last_update.write().await = Utc::now().timestamp();
         *self.stream_url.write().await = None;
     }
@@ -327,6 +351,37 @@ impl DouyinRecorder {
             self.room_id,
             live_id
         )
+    }
+
+    async fn load_playlist(
+        &self,
+        live_id: &str,
+    ) -> Result<MediaPlaylist, super::errors::RecorderError> {
+        let playlist_file_path =
+            format!("{}/{}", self.get_work_dir(live_id).await, "playlist.m3u8");
+        let playlist_content = tokio::fs::read(&playlist_file_path).await.unwrap();
+        let playlist = m3u8_rs::parse_media_playlist(&playlist_content).unwrap().1;
+        Ok(playlist)
+    }
+
+    async fn save_playlist(&self) {
+        let playlist = self.playlist.read().await.clone();
+        let mut bytes: Vec<u8> = Vec::new();
+        playlist.write_to(&mut bytes).unwrap();
+        let playlist_file_path = format!(
+            "{}/{}",
+            self.get_work_dir(self.live_id.read().await.as_str()).await,
+            "playlist.m3u8"
+        );
+        tokio::fs::write(&playlist_file_path, bytes).await.unwrap();
+    }
+
+    async fn add_segment(&self, sequence: u64, segment: MediaSegment) {
+        self.playlist.write().await.segments.push(segment);
+        let current_last_sequence = *self.last_sequence.read().await;
+        let new_last_sequence = std::cmp::max(current_last_sequence, sequence);
+        *self.last_sequence.write().await = new_last_sequence;
+        self.save_playlist().await;
     }
 
     async fn update_entries(&self) -> Result<u128, RecorderError> {
@@ -352,7 +407,7 @@ impl DouyinRecorder {
         stream_url = updated_stream_url;
 
         let mut new_segment_fetched = false;
-        let mut is_first_segment = self.entry_store.read().await.is_none();
+        let mut is_first_segment = self.playlist.read().await.segments.is_empty();
         let work_dir;
 
         // If this is the first segment, prepare but don't create directories yet
@@ -365,16 +420,9 @@ impl DouyinRecorder {
             work_dir = self.get_work_dir(self.live_id.read().await.as_str()).await;
         }
 
-        let last_sequence = if is_first_segment {
-            0
-        } else {
-            self.entry_store
-                .read()
-                .await
-                .as_ref()
-                .unwrap()
-                .last_sequence
-        };
+        self.playlist.write().await.target_duration = playlist.target_duration;
+
+        let last_sequence = *self.last_sequence.read().await;
 
         for segment in &playlist.segments {
             let formatted_ts_name = segment.uri.clone();
@@ -460,11 +508,11 @@ impl DouyinRecorder {
                                 .db
                                 .add_record(
                                     PlatformType::Douyin,
+                                    self.platform_live_id.read().await.as_str(),
                                     self.live_id.read().await.as_str(),
                                     self.room_id,
                                     &room_info.room_title,
                                     Some(room_cover_path.to_str().unwrap().to_string()),
-                                    None,
                                 )
                                 .await
                             {
@@ -474,10 +522,6 @@ impl DouyinRecorder {
                             let _ = self.event_channel.send(RecorderEvent::RecordStart {
                                 recorder: self.info().await,
                             });
-
-                            // Setup entry store
-                            let entry_store = EntryStore::new(&work_dir).await;
-                            *self.entry_store.write().await = Some(entry_store);
 
                             // Setup danmu store
                             let danmu_file_path = format!("{}{}", work_dir, "danmu.txt");
@@ -503,22 +547,13 @@ impl DouyinRecorder {
                             is_first_segment = false;
                         }
 
-                        let ts_entry = TsEntry {
-                            url: file_name,
-                            sequence,
-                            length: f64::from(segment.duration),
-                            size,
-                            ts: Utc::now().timestamp_millis(),
-                            is_header: false,
-                        };
+                        let mut pl = segment.clone();
+                        pl.uri = file_name;
 
-                        self.entry_store
-                            .write()
-                            .await
-                            .as_mut()
-                            .unwrap()
-                            .add_entry(ts_entry)
-                            .await;
+                        *self.total_duration.write().await += segment.duration as f64;
+                        *self.total_size.write().await += size;
+
+                        self.add_segment(sequence, pl).await;
 
                         new_segment_fetched = true;
                         download_success = true;
@@ -606,13 +641,8 @@ impl DouyinRecorder {
             .db
             .update_record(
                 self.live_id.read().await.as_str(),
-                self.entry_store
-                    .read()
-                    .await
-                    .as_ref()
-                    .unwrap()
-                    .total_duration() as i64,
-                self.entry_store.read().await.as_ref().unwrap().total_size(),
+                *self.total_duration.read().await as i64,
+                *self.total_size.read().await,
             )
             .await
         {
@@ -621,7 +651,6 @@ impl DouyinRecorder {
     }
 
     async fn generate_m3u8(&self, live_id: &str, start: i64, end: i64) -> String {
-        log::debug!("Generate m3u8 for {live_id}:{start}:{end}");
         let range = if start != 0 || end != 0 {
             Some(Range {
                 x: start as f32,
@@ -633,17 +662,73 @@ impl DouyinRecorder {
 
         // if requires a range, we need to filter entries and only use entries in the range, so m3u8 type is VOD.
         if live_id == *self.live_id.read().await {
-            self.entry_store
-                .read()
-                .await
-                .as_ref()
-                .unwrap()
-                .manifest(range.is_some(), false, range)
+            let mut playlist = self.playlist.read().await.clone();
+            if range.is_some() {
+                playlist.playlist_type = Some(MediaPlaylistType::Vod);
+                playlist.end_list = true;
+
+                let first_segment_ts = playlist
+                    .segments
+                    .first()
+                    .unwrap()
+                    .program_date_time
+                    .unwrap()
+                    .timestamp();
+                playlist.segments = playlist
+                    .segments
+                    .iter()
+                    .filter(|s| {
+                        range.unwrap().is_in(
+                            s.program_date_time.unwrap().timestamp() as f32
+                                - first_segment_ts as f32,
+                        )
+                    })
+                    .cloned()
+                    .collect();
+
+                playlist.end_list = true;
+                playlist.playlist_type = Some(MediaPlaylistType::Vod);
+            } else {
+                playlist.end_list = false;
+                playlist.playlist_type = Some(MediaPlaylistType::Event);
+            }
+            let mut v: Vec<u8> = Vec::new();
+            playlist.write_to(&mut v).unwrap();
+            let m3u8_str: &str = std::str::from_utf8(&v).unwrap();
+            m3u8_str.to_string()
         } else {
-            let work_dir = self.get_work_dir(live_id).await;
-            EntryStore::new(&work_dir)
-                .await
-                .manifest(true, false, range)
+            let playlist = self.load_playlist(live_id).await;
+            if playlist.is_err() {
+                return "#EXTM3U\n#EXT-X-VERSION:6\n".to_string();
+            }
+            let mut playlist = playlist.unwrap();
+            playlist.playlist_type = Some(MediaPlaylistType::Vod);
+            playlist.end_list = true;
+
+            if range.is_some() {
+                let first_segment_ts = playlist
+                    .segments
+                    .first()
+                    .unwrap()
+                    .program_date_time
+                    .unwrap()
+                    .timestamp();
+                playlist.segments = playlist
+                    .segments
+                    .iter()
+                    .filter(|s| {
+                        range.unwrap().is_in(
+                            s.program_date_time.unwrap().timestamp() as f32
+                                - first_segment_ts as f32,
+                        )
+                    })
+                    .cloned()
+                    .collect();
+            }
+            let mut v: Vec<u8> = Vec::new();
+            playlist.write_to(&mut v).unwrap();
+            let m3u8_str: &str = std::str::from_utf8(&v).unwrap();
+            m3u8_str.to_string()
         }
     }
 }
@@ -733,21 +818,8 @@ impl Recorder for DouyinRecorder {
         log::info!("Recorder for room {} quit.", self.room_id);
     }
 
-    async fn m3u8_content(&self, live_id: &str, start: i64, end: i64) -> String {
+    async fn playlist(&self, live_id: &str, start: i64, end: i64) -> String {
         self.generate_m3u8(live_id, start, end).await
-    }
-
-    async fn master_m3u8(&self, live_id: &str, start: i64, end: i64) -> String {
-        let mut m3u8_content = "#EXTM3U\n".to_string();
-        m3u8_content += "#EXT-X-VERSION:6\n";
-        m3u8_content += format!(
-            "#EXT-X-STREAM-INF:BANDWIDTH=1280000,RESOLUTION=1920x1080,CODECS=\"avc1.64001F,mp4a.40.2\",DANMU={}\n",
-            self.first_segment_ts(live_id).await / 1000
-        )
-        .as_str();
-        use std::fmt::Write;
-        writeln!(&mut m3u8_content, "playlist.m3u8?start={start}&end={end}").unwrap();
-        m3u8_content
     }
 
     async fn get_archive_subtitle(
@@ -780,7 +852,7 @@ impl Recorder for DouyinRecorder {
         // first generate a tmp clip file
         // generate a tmp m3u8 index file
         let m3u8_index_file_path = format!("{}/{}", work_dir, "tmp.m3u8");
-        let m3u8_content = self.m3u8_content(live_id, 0, 0).await;
+        let m3u8_content = self.playlist(live_id, 0, 0).await;
         tokio::fs::write(&m3u8_index_file_path, m3u8_content).await?;
         // generate a tmp clip file
         let clip_file_path = format!("{}/{}", work_dir, "tmp.mp4");
@@ -831,18 +903,34 @@ impl Recorder for DouyinRecorder {
         Ok(subtitle_content)
     }
 
-    async fn first_segment_ts(&self, live_id: &str) -> i64 {
-        if *self.live_id.read().await == live_id {
-            let entry_store = self.entry_store.read().await;
-            if entry_store.is_some() {
-                entry_store.as_ref().unwrap().first_ts().unwrap_or(0)
-            } else {
-                0
-            }
-        } else {
-            let work_dir = self.get_work_dir(live_id).await;
-            EntryStore::new(&work_dir).await.first_ts().unwrap_or(0)
+    async fn get_related_playlists(&self, parent_id: &str) -> Vec<(String, String)> {
+        let playlists = self
+            .db
+            .get_archives_by_parent_id(self.room_id, parent_id)
+            .await;
+        if playlists.is_err() {
+            return Vec::new();
         }
+        let ids: Vec<(String, String)> = playlists
+            .unwrap()
+            .iter()
+            .map(|a| (a.title.clone(), a.live_id.clone()))
+            .collect();
+        let playlists = ids
+            .iter()
+            .map(async |a| {
+                (
+                    a.0.clone(),
+                    format!(
+                        "{}/{}",
+                        self.get_work_dir(a.1.as_str()).await,
+                        "playlist.m3u8"
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
+        let playlists = futures::future::join_all(playlists).await;
+        return playlists;
     }
 
     async fn info(&self) -> RecorderInfo {
@@ -876,11 +964,7 @@ impl Recorder for DouyinRecorder {
                     .map(|info| info.user_avatar.clone())
                     .unwrap_or_default(),
             },
-            total_length: if let Some(store) = self.entry_store.read().await.as_ref() {
-                store.total_duration()
-            } else {
-                0.0
-            },
+            total_length: *self.total_duration.read().await,
             current_live_id: self.live_id.read().await.clone(),
             live_status: *self.live_status.read().await == LiveStatus::Live,
             is_recording: *self.is_recording.read().await,
@@ -893,11 +977,7 @@ impl Recorder for DouyinRecorder {
         Ok(if live_id == *self.live_id.read().await {
             // just return current cache content
             match self.danmu_store.read().await.as_ref() {
-                Some(storage) => {
-                    storage
-                        .get_entries(self.first_segment_ts(live_id).await)
-                        .await
-                }
+                Some(storage) => storage.get_entries(0).await,
                 None => Vec::new(),
             }
         } else {
@@ -915,9 +995,7 @@ impl Recorder for DouyinRecorder {
                 return Ok(Vec::new());
             }
             let storage = storage.unwrap();
-            storage
-                .get_entries(self.first_segment_ts(live_id).await)
-                .await
+            storage.get_entries(0).await
         })
     }
 

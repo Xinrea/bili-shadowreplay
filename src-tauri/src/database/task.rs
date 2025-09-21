@@ -13,6 +13,27 @@ pub struct TaskRow {
 }
 
 impl Database {
+    pub async fn generate_task(
+        &self,
+        task_type: &str,
+        message: &str,
+        metadata: &str,
+    ) -> Result<TaskRow, DatabaseError> {
+        let task_id = uuid::Uuid::new_v4().to_string();
+        let task = TaskRow {
+            id: task_id,
+            task_type: task_type.to_string(),
+            status: "pending".to_string(),
+            message: message.to_string(),
+            metadata: metadata.to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+
+        self.add_task(&task).await?;
+
+        Ok(task)
+    }
+
     pub async fn add_task(&self, task: &TaskRow) -> Result<(), DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         let _ = sqlx::query(

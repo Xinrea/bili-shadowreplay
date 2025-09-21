@@ -4,7 +4,7 @@ pub mod douyin;
 pub mod errors;
 mod user_agent_generator;
 
-mod entry;
+pub mod entry;
 
 use async_trait::async_trait;
 use danmu::DanmuEntry;
@@ -76,9 +76,8 @@ pub struct UserInfo {
 pub trait Recorder: Send + Sync + 'static {
     async fn run(&self);
     async fn stop(&self);
-    async fn first_segment_ts(&self, live_id: &str) -> i64;
-    async fn m3u8_content(&self, live_id: &str, start: i64, end: i64) -> String;
-    async fn master_m3u8(&self, live_id: &str, start: i64, end: i64) -> String;
+    async fn playlist(&self, live_id: &str, start: i64, end: i64) -> String;
+    async fn get_related_playlists(&self, parent_id: &str) -> Vec<(String, String)>;
     async fn info(&self) -> RecorderInfo;
     async fn comments(&self, live_id: &str) -> Result<Vec<DanmuEntry>, errors::RecorderError>;
     async fn is_recording(&self, live_id: &str) -> bool;

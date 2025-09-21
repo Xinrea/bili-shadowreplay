@@ -2,8 +2,8 @@ use core::fmt;
 use std::fmt::Display;
 
 use async_std::{
-    fs::{File, OpenOptions},
-    io::{prelude::BufReadExt, BufReader, WriteExt},
+    fs::OpenOptions,
+    io::{prelude::BufReadExt, BufReader},
     path::Path,
     stream::StreamExt,
 };
@@ -58,15 +58,6 @@ impl TsEntry {
         }
     }
 
-    pub fn ts_mili(&self) -> i64 {
-        // if already in ms, return as is
-        if self.ts > 10_000_000_000 {
-            self.ts
-        } else {
-            self.ts * 1000
-        }
-    }
-
     pub fn date_time(&self) -> String {
         let date_str = Utc
             .timestamp_opt(self.ts_seconds(), 0)
@@ -103,8 +94,6 @@ impl Display for TsEntry {
 /// `EntryStore` is used to management stream segments, which is basically a simple version of hls manifest,
 /// and of course, provides methods to generate hls manifest for frontend player.
 pub struct EntryStore {
-    // append only log file
-    log_file: File,
     header: Option<TsEntry>,
     entries: Vec<TsEntry>,
     total_duration: f64,
@@ -118,15 +107,8 @@ impl EntryStore {
         if !Path::new(work_dir).exists().await {
             std::fs::create_dir_all(work_dir).unwrap();
         }
-        // open append only log file
-        let log_file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(format!("{work_dir}/{ENTRY_FILE_NAME}"))
-            .await
-            .unwrap();
+
         let mut entry_store = Self {
-            log_file,
             header: None,
             entries: vec![],
             total_duration: 0.0,
@@ -169,41 +151,8 @@ impl EntryStore {
         }
     }
 
-    pub async fn add_entry(&mut self, entry: TsEntry) {
-        if entry.is_header {
-            self.header = Some(entry.clone());
-        } else {
-            self.entries.push(entry.clone());
-        }
-
-        if let Err(e) = self.log_file.write_all(entry.to_string().as_bytes()).await {
-            log::error!("Failed to write entry to log file: {e}");
-        }
-
-        self.log_file.flush().await.unwrap();
-
-        self.last_sequence = std::cmp::max(self.last_sequence, entry.sequence);
-
-        self.total_duration += entry.length;
-        self.total_size += entry.size;
-    }
-
-    pub fn total_duration(&self) -> f64 {
-        self.total_duration
-    }
-
-    pub fn total_size(&self) -> u64 {
-        self.total_size
-    }
-
-    /// Get first timestamp in milliseconds
-    pub fn first_ts(&self) -> Option<i64> {
-        self.entries.first().map(TsEntry::ts_mili)
-    }
-
-    /// Get last timestamp in milliseconds
-    pub fn last_ts(&self) -> Option<i64> {
-        self.entries.last().map(TsEntry::ts_mili)
+    pub fn len(&self) -> usize {
+        self.entries.len()
     }
 
     /// Generate a hls manifest for selected range.

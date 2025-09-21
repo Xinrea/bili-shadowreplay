@@ -15,6 +15,7 @@ pub struct Data {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct Ld {
     pub main: Main,
 }
@@ -28,6 +29,7 @@ pub struct Main {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct Md {
     pub main: Main,
 }
@@ -40,23 +42,27 @@ pub struct Origin {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct Sd {
     pub main: Main,
 }
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct Hd {
     pub main: Main,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct Ao {
     pub main: Main,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct Uhd {
     pub main: Main,
 }

@@ -811,6 +811,7 @@ impl RecorderManager {
             let recorders = self.recorders.read().await;
             let recorder = recorders.get(&recorder_key);
             if recorder.is_none() {
+                log::warn!("Recorder not found: {recorder_key}");
                 return Err(RecorderManagerError::HLSError {
                     err: "Recorder not found".into(),
                 });
@@ -818,21 +819,8 @@ impl RecorderManager {
             let recorder = recorder.unwrap();
 
             // response with recorder generated m3u8, which contains ts entries that cached in local
-            let m3u8_content = recorder.m3u8_content(live_id, start, end).await;
+            let m3u8_content = recorder.playlist(live_id, start, end).await;
 
-            Ok(m3u8_content.into())
-        } else if path_segs[3] == "master.m3u8" {
-            // get recorder
-            let recorder_key = format!("{platform}:{room_id}");
-            let recorders = self.recorders.read().await;
-            let recorder = recorders.get(&recorder_key);
-            if recorder.is_none() {
-                return Err(RecorderManagerError::HLSError {
-                    err: "Recorder not found".into(),
-                });
-            }
-            let recorder = recorder.unwrap();
-            let m3u8_content = recorder.master_m3u8(live_id, start, end).await;
             Ok(m3u8_content.into())
         } else {
             // try to find requested ts file in recorder's cache
@@ -873,5 +861,103 @@ impl RecorderManager {
                 recorder_ref.disable().await;
             }
         }
+    }
+
+    pub async fn generate_whole_clip(
+        &self,
+        reporter: Option<&ProgressReporter>,
+        platform: String,
+        room_id: i64,
+        parent_id: String,
+    ) -> Result<(), RecorderManagerError> {
+        let recorder_id = format!("{}:{}", platform, room_id);
+        let recorders = self.recorders.read().await;
+        let recorder_ref = recorders.get(&recorder_id);
+        if recorder_ref.is_none() {
+            return Err(RecorderManagerError::NotFound { room_id });
+        };
+
+        let recorder_ref = recorder_ref.unwrap();
+        let playlists = recorder_ref.get_related_playlists(&parent_id).await;
+        if playlists.is_empty() {
+            log::error!("No related playlists found: {parent_id}");
+            return Ok(());
+        }
+
+        let title = playlists.first().unwrap().0.clone();
+        let playlists = playlists
+            .iter()
+            .map(|p| p.1.clone())
+            .collect::<Vec<String>>();
+        let output_filename = format!("[{platform}][{room_id}][{parent_id}]{title}.mp4");
+        let cover_filename = format!("[{platform}][{room_id}][{parent_id}]{title}.jpg");
+        let output_path = format!(
+            "{}/{}",
+            self.config.read().await.output.as_str(),
+            output_filename
+        );
+
+        log::info!("Concat playlists: {playlists:?}");
+        log::info!("Output path: {output_path}");
+
+        if let Err(e) =
+            crate::ffmpeg::concat_multiple_playlist(reporter, playlists, Path::new(&output_path))
+                .await
+        {
+            log::error!("Failed to concat playlists: {e}");
+            return Err(RecorderManagerError::HLSError {
+                err: "Failed to concat playlists".into(),
+            });
+        }
+
+        let metadata = std::fs::metadata(&output_path);
+        if metadata.is_err() {
+            return Err(RecorderManagerError::HLSError {
+                err: "Failed to get file metadata".into(),
+            });
+        }
+        let size = metadata.unwrap().len() as i64;
+
+        let video_metadata = crate::ffmpeg::extract_video_metadata(Path::new(&output_path)).await;
+        let mut length = 0;
+        if let Ok(video_metadata) = video_metadata {
+            length = video_metadata.duration as i64;
+        } else {
+            log::error!(
+                "Failed to get video metadata: {}",
+                video_metadata.err().unwrap()
+            );
+        }
+
+        let _ = crate::ffmpeg::generate_thumbnail(Path::new(&output_path), 0.0).await;
+
+        let video = self
+            .db
+            .add_video(&VideoRow {
+                id: 0,
+                status: 0,
+                room_id,
+                created_at: chrono::Local::now().to_rfc3339(),
+                cover: cover_filename,
+                file: output_filename,
+                note: "".into(),
+                length,
+                size,
+                bvid: String::new(),
+                title: String::new(),
+                desc: String::new(),
+                tags: String::new(),
+                area: 0,
+                platform: platform.clone(),
+            })
+            .await?;
+
+        let event =
+            events::new_webhook_event(events::CLIP_GENERATED, events::Payload::Clip(video.clone()));
+        if let Err(e) = self.webhook_poster.post_event(&event).await {
+            log::error!("Post webhook event error: {e}");
+        }
+
+        Ok(())
     }
 }

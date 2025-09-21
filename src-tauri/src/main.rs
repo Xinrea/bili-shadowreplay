@@ -23,7 +23,9 @@ use async_std::fs;
 use chrono::Utc;
 use config::Config;
 use database::Database;
+use migration::migration_methods::try_add_parent_id_to_records;
 use migration::migration_methods::try_convert_clip_covers;
+use migration::migration_methods::try_convert_entry_to_m3u8;
 use migration::migration_methods::try_convert_live_covers;
 use migration::migration_methods::try_rebuild_archives;
 use recorder::bilibili::client::BiliClient;
@@ -192,6 +194,12 @@ fn get_migrations() -> Vec<Migration> {
             sql: r"ALTER TABLE videos ADD COLUMN note TEXT;",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 9,
+            description: "add_parent_id_column_for_record",
+            sql: r"ALTER TABLE records ADD COLUMN parent_id TEXT;",
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -337,6 +345,8 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     let _ = try_rebuild_archives(&db, config.read().await.cache.clone().into()).await;
     let _ = try_convert_live_covers(&db, config.read().await.cache.clone().into()).await;
     let _ = try_convert_clip_covers(&db, config.read().await.output.clone().into()).await;
+    let _ = try_add_parent_id_to_records(&db).await;
+    let _ = try_convert_entry_to_m3u8(&db, config.read().await.cache.clone().into()).await;
 
     Ok(State {
         db,
@@ -471,8 +481,10 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     if let Err(e) = try_rebuild_archives(&db_clone, cache_path.clone().into()).await {
         log::warn!("Rebuilding archive table failed: {e}");
     }
-    let _ = try_convert_live_covers(&db_clone, cache_path.into()).await;
-    let _ = try_convert_clip_covers(&db_clone, output_path.into()).await;
+    let _ = try_convert_live_covers(&db_clone, cache_path.clone().into()).await;
+    let _ = try_convert_clip_covers(&db_clone, output_path.clone().into()).await;
+    let _ = try_add_parent_id_to_records(&db_clone).await;
+    let _ = try_convert_entry_to_m3u8(&db_clone, cache_path.clone().into()).await;
 
     Ok(State {
         db,
@@ -561,6 +573,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::recorder::get_archive_disk_usage,
         crate::handlers::recorder::get_archives,
         crate::handlers::recorder::get_archive,
+        crate::handlers::recorder::get_archives_by_parent_id,
         crate::handlers::recorder::get_archive_subtitle,
         crate::handlers::recorder::generate_archive_subtitle,
         crate::handlers::recorder::delete_archive,
@@ -573,6 +586,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::recorder::get_recent_record,
         crate::handlers::recorder::set_enable,
         crate::handlers::recorder::fetch_hls,
+        crate::handlers::recorder::generate_whole_clip,
         crate::handlers::video::clip_range,
         crate::handlers::video::upload_procedure,
         crate::handlers::video::cancel,

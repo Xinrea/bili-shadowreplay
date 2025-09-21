@@ -168,7 +168,7 @@
   // 跳转到弹幕时间点
   function seek_to_danmu(danmu: DanmuEntry) {
     if (player) {
-      const time_in_seconds = danmu.ts / 1000;
+      const time_in_seconds = danmu.ts / 1000 - global_offset;
       player.seek(time_in_seconds);
     }
   }
@@ -660,7 +660,7 @@
                             class="text-xs text-gray-400 bg-[#1c1c1e] px-2 py-1 rounded
                                      group-hover:text-[#0A84FF] transition-colors duration-200"
                           >
-                            {format_time(danmu.ts)}
+                            {format_time(danmu.ts - global_offset * 1000)}
                           </span>
                         </div>
                       </div>

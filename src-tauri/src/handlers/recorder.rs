@@ -1,6 +1,10 @@
 use crate::danmu2ass;
 use crate::database::record::RecordRow;
 use crate::database::recorder::RecorderRow;
+use crate::database::task::TaskRow;
+use crate::progress::progress_reporter::EventEmitter;
+use crate::progress::progress_reporter::ProgressReporter;
+use crate::progress::progress_reporter::ProgressReporterTrait;
 use crate::recorder::danmu::DanmuEntry;
 use crate::recorder::PlatformType;
 use crate::recorder::RecorderInfo;
@@ -164,6 +168,18 @@ pub async fn get_archive(
     Ok(state
         .recorder_manager
         .get_archive(room_id, &live_id)
+        .await?)
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_archives_by_parent_id(
+    state: state_type!(),
+    room_id: i64,
+    parent_id: String,
+) -> Result<Vec<RecordRow>, String> {
+    Ok(state
+        .db
+        .get_archives_by_parent_id(room_id, &parent_id)
         .await?)
 }
 
@@ -406,9 +422,70 @@ pub async fn fetch_hls(state: state_type!(), uri: String) -> Result<Vec<u8>, Str
     } else {
         uri
     };
-    state
+    Ok(state
         .recorder_manager
         .handle_hls_request(&uri)
         .await
-        .map_err(|e| e.to_string())
+        .unwrap())
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn generate_whole_clip(
+    state: state_type!(),
+    platform: String,
+    room_id: i64,
+    parent_id: String,
+) -> Result<TaskRow, String> {
+    log::info!("Generate whole clip for {platform} {room_id} {parent_id}");
+
+    let task = state
+        .db
+        .generate_task(
+            "generate_whole_clip",
+            "",
+            &serde_json::json!({
+                "platform": platform,
+                "room_id": room_id,
+                "parent_id": parent_id,
+            })
+            .to_string(),
+        )
+        .await?;
+
+    #[cfg(feature = "gui")]
+    let emitter = EventEmitter::new(state.app_handle.clone());
+    #[cfg(feature = "headless")]
+    let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
+    let reporter = ProgressReporter::new(&emitter, &task.id).await?;
+
+    log::info!("Create task: {} {}", task.id, task.task_type);
+    // create a tokio task to run in background
+    #[cfg(feature = "gui")]
+    let state_clone = (*state).clone();
+    #[cfg(feature = "headless")]
+    let state_clone = state.clone();
+
+    let task_id = task.id.clone();
+    tokio::spawn(async move {
+        if (state_clone
+            .recorder_manager
+            .generate_whole_clip(Some(&reporter), platform, room_id, parent_id)
+            .await)
+            .is_ok()
+        {
+            reporter.finish(true, "切片生成完成").await;
+            let _ = state_clone
+                .db
+                .update_task(&task_id, "success", "切片生成完成", None)
+                .await;
+            return;
+        }
+
+        reporter.finish(false, "切片生成失败").await;
+        let _ = state_clone
+            .db
+            .update_task(&task_id, "failed", "切片生成失败", None)
+            .await;
+    });
+    Ok(task)
 }

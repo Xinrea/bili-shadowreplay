@@ -78,17 +78,6 @@ fn get_optimal_thumbnail_timestamp(duration: f64) -> f64 {
 use crate::state::State;
 use crate::state_type;
 
-// 导入视频相关的数据结构
-#[derive(serde::Serialize, serde::Deserialize)]
-struct ImportedVideoMetadata {
-    original_path: String,
-    import_date: String,
-    original_size: i64,
-    video_format: String,
-    duration: f64,
-    resolution: Option<String>,
-}
-
 // 带进度的文件复制函数
 async fn copy_file_with_progress(
     source: &Path,
@@ -292,16 +281,6 @@ async fn copy_file_with_network_optimization(
         .map_err(|e| format!("刷新临时文件缓冲区失败: {e}"))?;
     reporter.update("网络文件复制完成");
     Ok(())
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-struct ClipMetadata {
-    parent_video_id: i64,
-    start_time: f64,
-    end_time: f64,
-    clip_source: String,
-    original_platform: String,
-    original_room_id: i64,
 }
 
 #[cfg(feature = "gui")]

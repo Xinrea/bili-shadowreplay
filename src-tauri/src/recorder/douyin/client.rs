@@ -134,7 +134,7 @@ impl DouyinClient {
         let text = resp.text().await?;
 
         if text.is_empty() {
-            log::warn!("Empty room info response, trying H5 API");
+            log::debug!("Empty room info response, trying H5 API");
             return self.get_room_info_h5(room_id, sec_user_id).await;
         }
 
@@ -201,8 +201,6 @@ impl DouyinClient {
             .join("&");
         let url = format!("https://webcast.amemv.com/webcast/room/reflow/info/?{query_string}");
 
-        log::info!("get_room_info_h5: {url}");
-
         let mut headers = self.generate_user_agent_header();
         headers.insert("Referer", "https://live.douyin.com/".parse().unwrap());
         headers.insert("Cookie", self.account.cookies.clone().parse().unwrap());
@@ -255,11 +253,6 @@ impl DouyinClient {
 
             // If that fails, try to parse as a generic JSON to see what we got
             if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&text) {
-                log::debug!(
-                    "Unexpected response structure: {}",
-                    serde_json::to_string_pretty(&json_value).unwrap_or_default()
-                );
-
                 // Check if it's an error response
                 if let Some(status_code) = json_value
                     .get("status_code")

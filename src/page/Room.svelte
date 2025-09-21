@@ -9,11 +9,12 @@
     Ellipsis,
     Play,
     Plus,
-    Scissors,
+    FileVideo,
     Search,
     Trash2,
     X,
     History,
+    PlayIcon,
   } from "lucide-svelte";
   import BilibiliIcon from "../lib/components/BilibiliIcon.svelte";
   import DouyinIcon from "../lib/components/DouyinIcon.svelte";
@@ -126,7 +127,6 @@
       })) as RecordItem[];
 
       for (const archive of new_archives) {
-        console.log(archive.cover);
         archive.cover = await get_cover("cache", archive.cover);
       }
 
@@ -211,14 +211,77 @@
   }
 
   function handleModalClickOutside(event) {
-    const modal = document.querySelector(".mac-modal");
-    if (
-      modal &&
-      !modal.contains(event.target) &&
-      !event.target.closest("button")
-    ) {
-      addModal = false;
-      archiveModal = false;
+    // 检查点击是否在任何modal内部
+    const clickedElement = event.target;
+
+    // 检查是否点击了按钮，如果是则不关闭modal
+    if (clickedElement.closest("button")) {
+      return;
+    }
+
+    // 按层级顺序检查modal，优先处理最上层的modal
+    // 如果点击在最上层modal内部，则不处理任何modal关闭
+
+    // 最上层：generateWholeClipModal
+    if (generateWholeClipModal) {
+      const generateWholeClipModalEl = document.querySelector(
+        ".generate-whole-clip-modal"
+      );
+      if (generateWholeClipModalEl) {
+        if (generateWholeClipModalEl.contains(clickedElement)) {
+          // 点击在generateWholeClipModal内部，不关闭任何modal
+          return;
+        } else {
+          // 点击在generateWholeClipModal外部，关闭它
+          generateWholeClipModal = false;
+          return;
+        }
+      }
+    }
+
+    // 第二层：archiveModal
+    if (archiveModal) {
+      const archiveModalEl = document.querySelector(".archive-modal");
+      if (archiveModalEl) {
+        if (archiveModalEl.contains(clickedElement)) {
+          // 点击在archiveModal内部，不关闭任何modal
+          return;
+        } else {
+          // 点击在archiveModal外部，关闭它
+          archiveModal = false;
+          return;
+        }
+      }
+    }
+
+    // 第三层：addModal
+    if (addModal) {
+      const addModalEl = document.querySelector(".add-modal");
+      if (addModalEl) {
+        if (addModalEl.contains(clickedElement)) {
+          // 点击在addModal内部，不关闭任何modal
+          return;
+        } else {
+          // 点击在addModal外部，关闭它
+          addModal = false;
+          return;
+        }
+      }
+    }
+
+    // 第四层：deleteModal
+    if (deleteModal) {
+      const deleteModalEl = document.querySelector(".delete-modal");
+      if (deleteModalEl) {
+        if (deleteModalEl.contains(clickedElement)) {
+          // 点击在deleteModal内部，不关闭任何modal
+          return;
+        } else {
+          // 点击在deleteModal外部，关闭它
+          deleteModal = false;
+          return;
+        }
+      }
     }
   }
 
@@ -269,6 +332,58 @@
       .catch(async (e) => {
         await message(e);
       });
+  }
+
+  let generateWholeClipModal = false;
+  let generateWholeClipArchive = null;
+  let wholeClipArchives: RecordItem[] = [];
+  let isLoadingWholeClip = false;
+
+  async function openGenerateWholeClipModal(archive: RecordItem) {
+    generateWholeClipModal = true;
+    generateWholeClipArchive = archive;
+    await loadWholeClipArchives(archiveRoom.room_id, archive.parent_id);
+  }
+
+  async function loadWholeClipArchives(roomId: number, parentId: string) {
+    if (isLoadingWholeClip) return;
+
+    isLoadingWholeClip = true;
+    try {
+      // 获取与当前archive具有相同parent_id的所有archives
+      let sameParentArchives = (await invoke("get_archives_by_parent_id", {
+        roomId: roomId,
+        parentId: parentId,
+      })) as RecordItem[];
+
+      // 处理封面
+      for (const archive of sameParentArchives) {
+        archive.cover = await get_cover("cache", archive.cover);
+      }
+
+      // 按时间排序
+      sameParentArchives.sort((a, b) => {
+        return (
+          new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+        );
+      });
+
+      wholeClipArchives = sameParentArchives;
+    } catch (error) {
+      console.error("Failed to load whole clip archives:", error);
+      wholeClipArchives = [];
+    } finally {
+      isLoadingWholeClip = false;
+    }
+  }
+
+  async function generateWholeClip() {
+    generateWholeClipModal = false;
+    await invoke("generate_whole_clip", {
+      platform: generateWholeClipArchive.platform,
+      roomId: generateWholeClipArchive.room_id,
+      parentId: generateWholeClipArchive.parent_id,
+    });
   }
 
   onMount(async () => {
@@ -526,7 +641,7 @@
     transition:fade={{ duration: 200 }}
   >
     <div
-      class="mac-modal w-[320px] bg-white dark:bg-[#323234] rounded-xl shadow-xl overflow-hidden"
+      class="mac-modal delete-modal w-[320px] bg-white dark:bg-[#323234] rounded-xl shadow-xl overflow-hidden"
       transition:scale={{ duration: 150, start: 0.95 }}
     >
       <div class="p-6 space-y-4">
@@ -571,7 +686,7 @@
     transition:fade={{ duration: 200 }}
   >
     <div
-      class="mac-modal w-[400px] bg-white dark:bg-[#323234] rounded-xl shadow-xl overflow-hidden"
+      class="mac-modal add-modal w-[400px] bg-white dark:bg-[#323234] rounded-xl shadow-xl overflow-hidden"
       transition:scale={{ duration: 150, start: 0.95 }}
     >
       <!-- Header -->
@@ -704,7 +819,7 @@
     transition:fade={{ duration: 200 }}
   >
     <div
-      class="mac-modal w-[900px] bg-white dark:bg-[#323234] rounded-xl shadow-xl overflow-hidden flex flex-col max-h-[80vh]"
+      class="mac-modal archive-modal w-[900px] bg-white dark:bg-[#323234] rounded-xl shadow-xl overflow-hidden flex flex-col max-h-[80vh]"
       transition:scale={{ duration: 150, start: 0.95 }}
     >
       <!-- Header -->
@@ -802,12 +917,10 @@
                       >{calc_bitrate(archive.size, archive.length)} Kbps</td
                     >
                     <td class="px-4 py-3">
-                      <div
-                        class="flex items-center space-x-2 opacity-0 group-hover:opacity-100 transition-opacity"
-                      >
+                      <div class="flex items-center space-x-2">
                         <button
                           class="p-1.5 rounded-lg hover:bg-blue-500/10 transition-colors"
-                          title="编辑切片"
+                          title="预览录播"
                           on:click={() => {
                             invoke("open_live", {
                               platform: archiveRoom.platform,
@@ -816,7 +929,16 @@
                             });
                           }}
                         >
-                          <Scissors class="w-4 h-4 icon-primary" />
+                          <PlayIcon class="w-4 h-4 icon-primary" />
+                        </button>
+                        <button
+                          class="p-1.5 rounded-lg hover:bg-blue-500/10 transition-colors"
+                          title="生成完整切片"
+                          on:click={() => {
+                            openGenerateWholeClipModal(archive);
+                          }}
+                        >
+                          <FileVideo class="w-4 h-4 icon-primary" />
                         </button>
                         <button
                           class="p-1.5 rounded-lg hover:bg-red-500/10 transition-colors"
@@ -892,6 +1014,155 @@
             {/if}
           </div>
         </div>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if generateWholeClipModal}
+  <div
+    class="fixed inset-0 bg-black/20 dark:bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center"
+    transition:fade={{ duration: 200 }}
+  >
+    <div
+      class="mac-modal generate-whole-clip-modal w-[800px] bg-white dark:bg-[#323234] rounded-xl shadow-xl overflow-hidden flex flex-col max-h-[80vh]"
+      transition:scale={{ duration: 150, start: 0.95 }}
+    >
+      <!-- Header -->
+      <div
+        class="flex justify-between items-center px-6 py-4 border-b border-gray-200 dark:border-gray-700/50"
+      >
+        <div class="flex items-center space-x-3">
+          <h2 class="text-base font-medium text-gray-900 dark:text-white">
+            生成完整直播切片
+          </h2>
+          <span class="text-sm text-gray-500 dark:text-gray-400">
+            {generateWholeClipArchive?.title || "直播片段"}
+          </span>
+        </div>
+        <button
+          class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors"
+          on:click={() => (generateWholeClipModal = false)}
+        >
+          <X class="w-5 h-5 dark:icon-white" />
+        </button>
+      </div>
+
+      <!-- Content -->
+      <div class="flex-1 flex flex-col min-h-0">
+        <!-- Description -->
+        <div class="px-6 pt-6 pb-4">
+          <p class="text-sm text-gray-600 dark:text-gray-400">
+            以下是属于同一场直播的所有片段，将按时间顺序合成为一个完整的视频文件：
+          </p>
+        </div>
+
+        <!-- Scrollable List -->
+        <div class="flex-1 overflow-auto custom-scrollbar-light px-6 min-h-0">
+          {#if isLoadingWholeClip}
+            <div class="flex items-center justify-center py-8">
+              <div
+                class="flex items-center space-x-2 text-gray-500 dark:text-gray-400"
+              >
+                <div
+                  class="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-500"
+                ></div>
+                <span>加载中...</span>
+              </div>
+            </div>
+          {:else if wholeClipArchives.length === 0}
+            <div class="text-center py-8 text-gray-500 dark:text-gray-400">
+              未找到相关片段
+            </div>
+          {:else}
+            <div class="space-y-3 pb-4">
+              {#each wholeClipArchives as archive, index (archive.live_id)}
+                <div
+                  class="flex items-center space-x-4 p-4 rounded-lg bg-gray-50 dark:bg-gray-700/30"
+                >
+                  <div
+                    class="flex-shrink-0 w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white text-sm font-medium"
+                  >
+                    {index + 1}
+                  </div>
+
+                  {#if archive.cover}
+                    <img
+                      src={archive.cover}
+                      alt="cover"
+                      class="w-16 h-10 rounded object-cover flex-shrink-0"
+                    />
+                  {/if}
+
+                  <div class="flex-1 min-w-0">
+                    <div
+                      class="text-sm font-medium text-gray-900 dark:text-white truncate"
+                    >
+                      {archive.title}
+                    </div>
+                    <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      {format_ts(archive.created_at)} · {format_duration(
+                        archive.length
+                      )} · {format_size(archive.size)}
+                    </div>
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+
+        <!-- Fixed Summary -->
+        {#if !isLoadingWholeClip && wholeClipArchives.length > 0}
+          <div class="px-6 pb-6">
+            <div
+              class="p-4 rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800"
+            >
+              <div class="flex items-center space-x-2 mb-2">
+                <FileVideo class="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                <span
+                  class="text-sm font-medium text-blue-900 dark:text-blue-100"
+                  >合成信息</span
+                >
+              </div>
+              <div class="text-sm text-blue-800 dark:text-blue-200">
+                共 {wholeClipArchives.length} 个片段 · 总时长 {format_duration(
+                  wholeClipArchives.reduce(
+                    (sum, archive) => sum + archive.length,
+                    0
+                  )
+                )} · 总大小 {format_size(
+                  wholeClipArchives.reduce(
+                    (sum, archive) => sum + archive.size,
+                    0
+                  )
+                )}
+              </div>
+              <div class="text-sm text-gray-500 dark:text-gray-400">
+                如果片段分辨率不一致，将会消耗更多时间用于重新编码
+              </div>
+            </div>
+          </div>
+        {/if}
+      </div>
+
+      <!-- Footer -->
+      <div
+        class="px-6 py-4 border-t border-gray-200 dark:border-gray-700/50 flex justify-end space-x-3"
+      >
+        <button
+          class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg transition-colors"
+          on:click={() => (generateWholeClipModal = false)}
+        >
+          取消
+        </button>
+        <button
+          class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          disabled={isLoadingWholeClip || wholeClipArchives.length === 0}
+          on:click={generateWholeClip}
+        >
+          开始合成
+        </button>
       </div>
     </div>
   </div>

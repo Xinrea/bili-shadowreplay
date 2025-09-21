@@ -19,10 +19,10 @@ use crate::{
         message::{delete_message, get_messages, read_message},
         recorder::{
             add_recorder, delete_archive, delete_archives, export_danmu, fetch_hls,
-            generate_archive_subtitle, get_archive, get_archive_disk_usage, get_archive_subtitle,
-            get_archives, get_danmu_record, get_recent_record, get_recorder_list, get_room_info,
-            get_today_record_count, get_total_length, remove_recorder, send_danmaku, set_enable,
-            ExportDanmuOptions,
+            generate_archive_subtitle, generate_whole_clip, get_archive, get_archive_disk_usage,
+            get_archive_subtitle, get_archives, get_archives_by_parent_id, get_danmu_record,
+            get_recent_record, get_recorder_list, get_room_info, get_today_record_count,
+            get_total_length, remove_recorder, send_danmaku, set_enable, ExportDanmuOptions,
         },
         task::{delete_task, get_tasks},
         utils::{console_log, get_disk_info, list_folder, sanitize_filename_advanced, DiskInfo},
@@ -48,19 +48,43 @@ use crate::{
     recorder_manager::{ClipRangeParams, RecorderList},
     state::State,
 };
-use axum::{extract::Query, response::sse};
 use axum::{
+    body::Body,
     extract::{DefaultBodyLimit, Json, Multipart, Path},
-    http::StatusCode,
-    response::{IntoResponse, Sse},
+    http::{Request, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response, Sse},
     routing::{get, post},
     Router,
 };
+use axum::{extract::Query, response::sse};
 use futures::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
+
+// Middleware to add keep-alive headers to all responses
+async fn add_keep_alive_headers(request: Request<Body>, next: Next) -> Response {
+    let uri_path = request.uri().path().to_string();
+    let mut response = next.run(request).await;
+
+    // Skip keep-alive for streaming endpoints that might not work well with it
+    let should_skip_keepalive = uri_path.starts_with("/api/sse")
+        || uri_path.starts_with("/hls/")
+        || uri_path.contains(".m3u8")
+        || uri_path.contains(".ts");
+
+    if !should_skip_keepalive {
+        // Add Connection: keep-alive header for regular HTTP responses
+        response.headers_mut().insert(
+            axum::http::header::CONNECTION,
+            axum::http::HeaderValue::from_static("keep-alive"),
+        );
+    }
+
+    response
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1010,18 +1034,35 @@ struct GetFileSizeRequest {
     file_path: String,
 }
 
-// 批量导入相关的数据结构
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ScanImportedDirectoryResponse {
-    new_files: Vec<String>,
+struct GenerateWholeClipRequest {
+    platform: String,
+    room_id: i64,
+    parent_id: String,
+}
+
+async fn handler_generate_whole_clip(
+    state: axum::extract::State<State>,
+    Json(param): Json<GenerateWholeClipRequest>,
+) -> Result<Json<ApiResponse<TaskRow>>, ApiError> {
+    let task = generate_whole_clip(state.0, param.platform, param.room_id, param.parent_id).await?;
+    Ok(Json(ApiResponse::success(task)))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct BatchImportInPlaceRequest {
-    file_paths: Vec<String>,
+struct GetArchivesByParentIdRequest {
     room_id: i64,
+    parent_id: String,
+}
+
+async fn handler_get_archives_by_parent_id(
+    state: axum::extract::State<State>,
+    Json(param): Json<GetArchivesByParentIdRequest>,
+) -> Result<Json<ApiResponse<Vec<RecordRow>>>, ApiError> {
+    let archives = get_archives_by_parent_id(state.0, param.room_id, param.parent_id).await?;
+    Ok(Json(ApiResponse::success(archives)))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1112,12 +1153,6 @@ struct UploadedFileInfo {
     file_path: String,
     original_name: String,
     size: u64,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct UploadAndImportRequest {
-    room_id: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1615,13 +1650,6 @@ async fn handler_hls(
     Ok(response)
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ServerEvent {
-    event: String,
-    data: String,
-}
-
 // 字符串转义工具函数
 fn escape_sse_string(s: &str) -> String {
     s.replace('\\', "\\\\")
@@ -1753,6 +1781,10 @@ pub async fn start_api_server(state: State) {
                 post(handler_import_external_video),
             )
             .route("/api/clip_video", post(handler_clip_video))
+            .route(
+                "/api/generate_whole_clip",
+                post(handler_generate_whole_clip),
+            )
             .route("/api/update_notify", post(handler_update_notify))
             .route(
                 "/api/update_status_check_interval",
@@ -1816,6 +1848,10 @@ pub async fn start_api_server(state: State) {
         .route("/api/get_archives", post(handler_get_archives))
         .route("/api/get_archive", post(handler_get_archive))
         .route(
+            "/api/get_archives_by_parent_id",
+            post(handler_get_archives_by_parent_id),
+        )
+        .route(
             "/api/get_archive_disk_usage",
             post(handler_get_archive_disk_usage),
         )
@@ -1857,6 +1893,7 @@ pub async fn start_api_server(state: State) {
     let router = app
         .layer(cors)
         .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
+        .layer(middleware::from_fn(add_keep_alive_headers))
         .with_state(state);
 
     let addr = "0.0.0.0:3000";

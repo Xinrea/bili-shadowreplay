@@ -2,7 +2,7 @@ pub mod client;
 pub mod errors;
 pub mod profile;
 pub mod response;
-use super::entry::{EntryStore, Range};
+use super::entry::Range;
 use super::errors::RecorderError;
 use super::PlatformType;
 use crate::database::account::AccountRow;
@@ -15,13 +15,12 @@ use crate::recorder_manager::RecorderEvent;
 use crate::subtitle_generator::item_to_srt;
 
 use super::danmu::{DanmuEntry, DanmuStorage};
-use super::entry::TsEntry;
 use chrono::Utc;
 use client::{BiliClient, BiliStream, Format, RoomInfo, UserInfo};
 use danmu_stream::danmu_stream::DanmuStream;
 use danmu_stream::provider::ProviderType;
 use danmu_stream::DanmuMessageType;
-use m3u8_rs::Playlist;
+use m3u8_rs::{MediaPlaylist, MediaPlaylistType, MediaSegment, Playlist};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -56,9 +55,9 @@ pub struct BiliRecorder {
     room_info: Arc<RwLock<RoomInfo>>,
     user_info: Arc<RwLock<UserInfo>>,
     live_status: Arc<RwLock<bool>>,
+    platform_live_id: Arc<RwLock<String>>,
     live_id: Arc<RwLock<String>>,
     cover: Arc<RwLock<Option<String>>>,
-    entry_store: Arc<RwLock<Option<EntryStore>>>,
     is_recording: Arc<RwLock<bool>>,
     last_update: Arc<RwLock<i64>>,
     quit: Arc<Mutex<bool>>,
@@ -70,6 +69,11 @@ pub struct BiliRecorder {
 
     danmu_task: Arc<Mutex<Option<JoinHandle<()>>>>,
     record_task: Arc<Mutex<Option<JoinHandle<()>>>>,
+
+    last_sequence: Arc<RwLock<u64>>,
+    m3u8_playlist: Arc<RwLock<MediaPlaylist>>,
+    total_duration: Arc<RwLock<f64>>,
+    total_size: Arc<RwLock<u64>>,
 }
 
 pub struct BiliRecorderOptions {
@@ -82,6 +86,17 @@ pub struct BiliRecorderOptions {
     pub config: Arc<RwLock<Config>>,
     pub auto_start: bool,
     pub channel: broadcast::Sender<RecorderEvent>,
+}
+
+fn default_m3u8_playlist() -> MediaPlaylist {
+    MediaPlaylist {
+        version: Some(6),
+        target_duration: 4.0,
+        end_list: true,
+        playlist_type: Some(MediaPlaylistType::Vod),
+        segments: Vec::new(),
+        ..Default::default()
+    }
 }
 
 impl BiliRecorder {
@@ -125,8 +140,8 @@ impl BiliRecorder {
             room_info: Arc::new(RwLock::new(room_info)),
             user_info: Arc::new(RwLock::new(user_info)),
             live_status: Arc::new(RwLock::new(live_status)),
-            entry_store: Arc::new(RwLock::new(None)),
             is_recording: Arc::new(RwLock::new(false)),
+            platform_live_id: Arc::new(RwLock::new(String::new())),
             live_id: Arc::new(RwLock::new(String::new())),
             cover: Arc::new(RwLock::new(cover)),
             last_update: Arc::new(RwLock::new(Utc::now().timestamp())),
@@ -138,6 +153,10 @@ impl BiliRecorder {
             danmu_task: Arc::new(Mutex::new(None)),
             record_task: Arc::new(Mutex::new(None)),
             current_resolution: Arc::new(RwLock::new(None)),
+            last_sequence: Arc::new(RwLock::new(0)),
+            m3u8_playlist: Arc::new(RwLock::new(default_m3u8_playlist())),
+            total_duration: Arc::new(RwLock::new(0.0)),
+            total_size: Arc::new(RwLock::new(0)),
         };
         log::info!("Recorder for room {} created.", options.room_id);
         Ok(recorder)
@@ -146,6 +165,9 @@ impl BiliRecorder {
     pub async fn reset(&self) {
         // if record is ended, send event
         if !self.live_id.read().await.is_empty() && self.current_resolution.read().await.is_some() {
+            self.m3u8_playlist.write().await.playlist_type = Some(MediaPlaylistType::Vod);
+            self.m3u8_playlist.write().await.end_list = true;
+            self.save_playlist().await;
             let _ = self.event_channel.send(RecorderEvent::RecordEnd {
                 recorder: self.info().await,
             });
@@ -168,11 +190,13 @@ impl BiliRecorder {
                 log::warn!("[{}]Failed to remove empty work dir: {}", self.room_id, e);
             }
         }
-        *self.entry_store.write().await = None;
+        *self.last_sequence.write().await = 0;
+        *self.m3u8_playlist.write().await = default_m3u8_playlist();
         *self.live_stream.write().await = None;
         *self.last_update.write().await = Utc::now().timestamp();
         *self.danmu_storage.write().await = None;
         *self.current_resolution.write().await = None;
+        *self.platform_live_id.write().await = String::new();
         *self.live_id.write().await = String::new();
     }
 
@@ -182,6 +206,80 @@ impl BiliRecorder {
         }
 
         *self.enabled.read().await
+    }
+
+    async fn add_segment(&self, sequence: u64, segment: MediaSegment) {
+        let current_last_sequence = *self.last_sequence.read().await;
+        let new_last_sequence = std::cmp::max(current_last_sequence, sequence);
+
+        {
+            let mut playlist = self.m3u8_playlist.write().await;
+            playlist.segments.push(segment);
+        }
+
+        *self.last_sequence.write().await = new_last_sequence;
+
+        self.save_playlist().await;
+    }
+
+    async fn load_playlist(
+        &self,
+        live_id: &str,
+    ) -> Result<MediaPlaylist, super::errors::RecorderError> {
+        let playlist_path = format!("{}/playlist.m3u8", self.get_work_dir(live_id).await);
+        let playlist_full_path = self.get_full_path(&playlist_path).await;
+        if !Path::new(&playlist_full_path).exists() {
+            return Err(super::errors::RecorderError::IoError(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Playlist file not found",
+            )));
+        }
+        let mut bytes: Vec<u8> = Vec::new();
+        tokio::fs::File::open(playlist_full_path)
+            .await
+            .unwrap()
+            .read_to_end(&mut bytes)
+            .await
+            .unwrap();
+        if let Result::Ok((_, pl)) = m3u8_rs::parse_media_playlist(&bytes) {
+            return Ok(pl);
+        }
+        Err(super::errors::RecorderError::M3u8ParseFailed {
+            content: String::from_utf8(bytes).unwrap(),
+        })
+    }
+
+    async fn save_playlist(&self) {
+        let (playlist, live_id) = {
+            let playlist = self.m3u8_playlist.read().await.clone();
+            let live_id = self.live_id.read().await.clone();
+            (playlist, live_id)
+        };
+
+        let playlist_path = format!("{}/playlist.m3u8", self.get_work_dir(&live_id).await);
+        let playlist_full_path = self.get_full_path(&playlist_path).await;
+
+        let mut bytes: Vec<u8> = Vec::new();
+        playlist.write_to(&mut bytes).unwrap();
+
+        match tokio::fs::File::create(&playlist_full_path).await {
+            Ok(mut file) => {
+                if let Err(e) = file.write_all(&bytes).await {
+                    log::error!(
+                        "Failed to write playlist file {}: {}",
+                        playlist_full_path,
+                        e
+                    );
+                }
+            }
+            Err(e) => {
+                log::error!(
+                    "Failed to create playlist file {}: {}",
+                    playlist_full_path,
+                    e
+                );
+            }
+        }
     }
 
     async fn check_status(&self) -> bool {
@@ -268,6 +366,7 @@ impl BiliRecorder {
                 }
 
                 *self.live_status.write().await = live_status;
+                *self.platform_live_id.write().await = room_info.live_start_time.to_string();
 
                 if !live_status {
                     // reset cuz live is ended
@@ -449,7 +548,7 @@ impl BiliRecorder {
         }
 
         let work_dir = self.get_work_dir(&timestamp.to_string()).await;
-        let is_first_record = self.entry_store.read().await.is_none();
+        let is_first_record = self.m3u8_playlist.read().await.segments.is_empty();
 
         if is_first_record {
             log::info!("[{}]New record started: {}", self.room_id, timestamp);
@@ -457,9 +556,6 @@ impl BiliRecorder {
             tokio::fs::create_dir_all(self.get_full_path(&work_dir).await)
                 .await
                 .map_err(super::errors::RecorderError::IoError)?;
-
-            *self.entry_store.write().await =
-                Some(EntryStore::new(&self.get_full_path(&work_dir).await).await);
 
             let danmu_path = format!("{work_dir}/danmu.txt");
             let danmu_full_path = self.get_full_path(&danmu_path).await;
@@ -483,11 +579,11 @@ impl BiliRecorder {
             self.db
                 .add_record(
                     PlatformType::BiliBili,
+                    self.platform_live_id.read().await.as_str(),
                     timestamp.to_string().as_str(),
                     self.room_id,
                     &self.room_info.read().await.room_title,
                     Some(cover_path),
-                    None,
                 )
                 .await?;
         }
@@ -498,12 +594,9 @@ impl BiliRecorder {
             }
             Playlist::MediaPlaylist(pl) => {
                 let mut new_segment_fetched = false;
-                let last_sequence = self
-                    .entry_store
-                    .read()
-                    .await
-                    .as_ref()
-                    .map_or(0, |store| store.last_sequence); // For first-time recording, start from 0
+                let last_sequence = *self.last_sequence.read().await;
+
+                self.m3u8_playlist.write().await.target_duration = pl.target_duration;
 
                 for (i, ts) in pl.segments.iter().enumerate() {
                     let sequence = pl.media_sequence + i as u64;
@@ -521,12 +614,6 @@ impl BiliRecorder {
                         );
                         continue;
                     }
-
-                    // Calculate precise timestamp from stream start + BILI-AUX offset for FMP4
-                    let ts_mili = ts
-                        .program_date_time
-                        .map(|dt| dt.timestamp_millis())
-                        .unwrap_or_else(|| Utc::now().timestamp_millis());
 
                     // encode segment offset into filename
                     let file_name = ts.uri.split('/').next_back().unwrap_or(&ts.uri);
@@ -589,20 +676,10 @@ impl BiliRecorder {
                                     });
                                 }
 
-                                self.entry_store
-                                    .write()
-                                    .await
-                                    .as_mut()
-                                    .unwrap()
-                                    .add_entry(TsEntry {
-                                        url: file_name.into(),
-                                        sequence,
-                                        length: ts_length,
-                                        size,
-                                        ts: ts_mili,
-                                        is_header: false,
-                                    })
-                                    .await;
+                                self.add_segment(sequence, ts.clone()).await;
+
+                                *self.total_duration.write().await += ts_length;
+                                *self.total_size.write().await += size;
 
                                 new_segment_fetched = true;
                                 break;
@@ -628,13 +705,8 @@ impl BiliRecorder {
                     self.db
                         .update_record(
                             timestamp.to_string().as_str(),
-                            self.entry_store
-                                .read()
-                                .await
-                                .as_ref()
-                                .unwrap()
-                                .total_duration() as i64,
-                            self.entry_store.read().await.as_ref().unwrap().total_size(),
+                            *self.total_duration.read().await as i64,
+                            *self.total_size.read().await,
                         )
                         .await?;
                 } else {
@@ -647,21 +719,6 @@ impl BiliRecorder {
                         return Err(super::errors::RecorderError::FreezedStream {
                             stream: current_stream,
                         });
-                    }
-                }
-                // check the current stream is too slow or not
-                if let Some(entry_store) = self.entry_store.read().await.as_ref() {
-                    if let Some(last_ts) = entry_store.last_ts() {
-                        if last_ts < Utc::now().timestamp() - 10 {
-                            log::error!(
-                                "[{}]Stream is too slow, last entry ts is at {}",
-                                self.room_id,
-                                last_ts
-                            );
-                            return Err(super::errors::RecorderError::SlowStream {
-                                stream: current_stream,
-                            });
-                        }
                     }
                 }
             }
@@ -686,8 +743,6 @@ impl BiliRecorder {
     }
 
     async fn generate_archive_m3u8(&self, live_id: &str, start: i64, end: i64) -> String {
-        let work_dir = self.get_work_dir(live_id).await;
-        let entry_store = EntryStore::new(&self.get_full_path(&work_dir).await).await;
         let mut range = None;
         if start != 0 || end != 0 {
             range = Some(Range {
@@ -696,7 +751,39 @@ impl BiliRecorder {
             });
         }
 
-        entry_store.manifest(true, true, range)
+        let playlist = self.load_playlist(live_id).await;
+        if playlist.is_err() {
+            return "#EXTM3U\n#EXT-X-VERSION:6\n".to_string();
+        }
+        let mut playlist = playlist.unwrap();
+
+        if range.is_some() {
+            let first_segment_ts = playlist
+                .segments
+                .first()
+                .unwrap()
+                .program_date_time
+                .unwrap()
+                .timestamp();
+            playlist.segments = playlist
+                .segments
+                .iter()
+                .filter(|s| {
+                    range.unwrap().is_in(
+                        s.program_date_time.unwrap().timestamp() as f32 - first_segment_ts as f32,
+                    )
+                })
+                .cloned()
+                .collect();
+        }
+
+        playlist.end_list = true;
+        playlist.playlist_type = Some(MediaPlaylistType::Vod);
+
+        let mut v: Vec<u8> = Vec::new();
+        playlist.write_to(&mut v).unwrap();
+        let m3u8_str: &str = std::str::from_utf8(&v).unwrap();
+        m3u8_str.to_string()
     }
 
     /// if fetching live/last stream m3u8, all entries are cached in memory, so it will be much faster than `read_dir`
@@ -711,12 +798,44 @@ impl BiliRecorder {
             None
         };
 
-        if let Some(entry_store) = self.entry_store.read().await.as_ref() {
-            entry_store.manifest(!live_status || range.is_some(), true, range)
-        } else {
-            // Return empty manifest if entry_store is not initialized yet
-            "#EXTM3U\n#EXT-X-VERSION:3\n".to_string()
+        let mut playlist = self.m3u8_playlist.read().await.clone();
+
+        if playlist.segments.is_empty() {
+            return "#EXTM3U\n#EXT-X-VERSION:6\n".to_string();
         }
+
+        if range.is_some() {
+            let first_segment_ts = playlist
+                .segments
+                .first()
+                .unwrap()
+                .program_date_time
+                .unwrap()
+                .timestamp();
+            playlist.segments = playlist
+                .segments
+                .iter()
+                .filter(|s| {
+                    range.unwrap().is_in(
+                        s.program_date_time.unwrap().timestamp() as f32 - first_segment_ts as f32,
+                    )
+                })
+                .cloned()
+                .collect();
+        }
+
+        (playlist.playlist_type, playlist.end_list) = if live_status && range.is_none() {
+            (Some(MediaPlaylistType::Event), false)
+        } else {
+            (Some(MediaPlaylistType::Vod), true)
+        };
+
+        let mut v: Vec<u8> = Vec::new();
+
+        playlist.write_to(&mut v).unwrap();
+        let m3u8_str: &str = std::str::from_utf8(&v).unwrap();
+
+        m3u8_str.to_string()
     }
 }
 
@@ -813,8 +932,7 @@ impl super::Recorder for BiliRecorder {
         log::info!("[{}]Recorder quit.", self.room_id);
     }
 
-    /// timestamp is the id of live stream
-    async fn m3u8_content(&self, live_id: &str, start: i64, end: i64) -> String {
+    async fn playlist(&self, live_id: &str, start: i64, end: i64) -> String {
         if *self.live_id.read().await == live_id && self.should_record().await {
             self.generate_live_m3u8(start, end).await
         } else {
@@ -822,37 +940,45 @@ impl super::Recorder for BiliRecorder {
         }
     }
 
-    async fn master_m3u8(&self, live_id: &str, start: i64, end: i64) -> String {
-        log::info!(
-            "[{}]Master manifest for {live_id} {start}-{end}",
-            self.room_id
-        );
-        let offset = self.first_segment_ts(live_id).await / 1000;
-        let mut m3u8_content = "#EXTM3U\n".to_string();
-        m3u8_content += "#EXT-X-VERSION:6\n";
-        m3u8_content += &format!(
-            "#EXT-X-STREAM-INF:BANDWIDTH=1280000,RESOLUTION=1920x1080,CODECS={},DANMU={}\n",
-            "\"avc1.64001F,mp4a.40.2\"", offset
-        );
-        m3u8_content += &format!("playlist.m3u8?start={start}&end={end}\n");
-        m3u8_content
-    }
-
-    async fn first_segment_ts(&self, live_id: &str) -> i64 {
-        if *self.live_id.read().await == live_id {
-            let entry_store = self.entry_store.read().await;
-            if entry_store.is_some() {
-                entry_store.as_ref().unwrap().first_ts().unwrap_or(0)
-            } else {
-                0
-            }
-        } else {
-            let work_dir = self.get_work_dir(live_id).await;
-            EntryStore::new(&self.get_full_path(&work_dir).await)
-                .await
-                .first_ts()
-                .unwrap_or(0)
+    async fn get_related_playlists(&self, parent_id: &str) -> Vec<(String, String)> {
+        let archives = self
+            .db
+            .get_archives_by_parent_id(self.room_id, parent_id)
+            .await;
+        if let Err(e) = archives {
+            log::error!(
+                "[{}] Failed to get all related playlists: {} {}",
+                self.room_id,
+                parent_id,
+                e
+            );
+            return Vec::new();
         }
+
+        let archives: Vec<(String, String)> = archives
+            .unwrap()
+            .iter()
+            .map(|a| (a.title.clone(), a.live_id.clone()))
+            .collect();
+
+        let playlists = archives
+            .iter()
+            .map(async |a| {
+                let work_dir = self.get_work_dir(a.1.as_str()).await;
+                (
+                    a.0.clone(),
+                    format!(
+                        "{}/{}",
+                        self.get_full_path(&work_dir).await,
+                        "playlist.m3u8"
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let playlists = futures::future::join_all(playlists).await;
+
+        return playlists;
     }
 
     async fn info(&self) -> super::RecorderInfo {
@@ -870,11 +996,7 @@ impl super::Recorder for BiliRecorder {
                 user_name: user_info.user_name.clone(),
                 user_avatar: user_info.user_avatar_url.clone(),
             },
-            total_length: if let Some(store) = self.entry_store.read().await.as_ref() {
-                store.total_duration()
-            } else {
-                0.0
-            },
+            total_length: *self.total_duration.read().await,
             current_live_id: self.live_id.read().await.clone(),
             live_status: *self.live_status.read().await,
             is_recording: *self.is_recording.read().await,
@@ -890,11 +1012,7 @@ impl super::Recorder for BiliRecorder {
         Ok(if live_id == *self.live_id.read().await {
             // just return current cache content
             match self.danmu_storage.read().await.as_ref() {
-                Some(storage) => {
-                    storage
-                        .get_entries(self.first_segment_ts(live_id).await)
-                        .await
-                }
+                Some(storage) => storage.get_entries(0).await,
                 None => Vec::new(),
             }
         } else {
@@ -916,9 +1034,7 @@ impl super::Recorder for BiliRecorder {
                 return Ok(Vec::new());
             }
             let storage = storage.unwrap();
-            storage
-                .get_entries(self.first_segment_ts(live_id).await)
-                .await
+            storage.get_entries(0).await
         })
     }
 
@@ -957,7 +1073,7 @@ impl super::Recorder for BiliRecorder {
         // first generate a tmp clip file
         // generate a tmp m3u8 index file
         let m3u8_index_file_path = format!("{}/{}", work_dir, "tmp.m3u8");
-        let m3u8_content = self.m3u8_content(live_id, 0, 0).await;
+        let m3u8_content = self.playlist(live_id, 0, 0).await;
         let is_fmp4 = m3u8_content.contains("#EXT-X-MAP:URI=");
         tokio::fs::write(&m3u8_index_file_path, m3u8_content).await?;
         log::info!(

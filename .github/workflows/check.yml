@@ -1,7 +1,11 @@
-name: Check
+name: Rust Check
 
 on:
   push:
+    paths:
+      - "**/*.rs"
+      - "src-tauri/Cargo.toml"
+      - "src-tauri/Cargo.lock"
 
 jobs:
   check:

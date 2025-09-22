@@ -35,8 +35,6 @@ pub struct Config {
     pub config_path: String,
     #[serde(default = "default_whisper_language")]
     pub whisper_language: String,
-    #[serde(default = "default_cleanup_source_flv")]
-    pub cleanup_source_flv_after_import: bool,
     #[serde(default = "default_webhook_url")]
     pub webhook_url: String,
 }
@@ -90,10 +88,6 @@ fn default_whisper_language() -> String {
     "auto".to_string()
 }
 
-fn default_cleanup_source_flv() -> bool {
-    false
-}
-
 fn default_webhook_url() -> String {
     String::new()
 }
@@ -135,7 +129,6 @@ impl Config {
             status_check_interval: default_status_check_interval(),
             config_path: config_path.to_str().unwrap().into(),
             whisper_language: default_whisper_language(),
-            cleanup_source_flv_after_import: default_cleanup_source_flv(),
             webhook_url: default_webhook_url(),
         };
 
@@ -166,12 +159,6 @@ impl Config {
     #[allow(dead_code)]
     pub fn set_whisper_language(&mut self, language: &str) {
         self.whisper_language = language.to_string();
-        self.save();
-    }
-
-    #[allow(dead_code)]
-    pub fn set_cleanup_source_flv(&mut self, cleanup: bool) {
-        self.cleanup_source_flv_after_import = cleanup;
         self.save();
     }
 

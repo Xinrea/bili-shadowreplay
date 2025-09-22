@@ -267,14 +267,6 @@ pub async fn update_whisper_language(
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
-#[cfg(feature = "gui")]
-pub async fn update_cleanup_source_flv(state: state_type!(), cleanup: bool) -> Result<(), ()> {
-    log::info!("Updating cleanup source FLV after import to {cleanup}");
-    state.config.write().await.set_cleanup_source_flv(cleanup);
-    Ok(())
-}
-
-#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_webhook_url(state: state_type!(), webhook_url: String) -> Result<(), ()> {
     log::info!("Updating webhook url to {webhook_url}");
     let _ = state

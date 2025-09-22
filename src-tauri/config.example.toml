@@ -10,9 +10,6 @@ whisper_model = "./whisper_model.bin"
 whisper_prompt = "这是一段中文 你们好"
 openai_api_key = ""
 clip_name_format = "[{room_id}][{live_id}][{title}][{created_at}].mp4"
-# FLV 转换后自动清理源文件
-# 启用后，导入 FLV 视频并自动转换为 MP4 后，会删除原始 FLV 文件以节省存储空间
-cleanup_source_flv_after_import = false
 
 [auto_generate]
 enabled = false

@@ -28,7 +28,7 @@ const get_accounts = tool(
     name: "get_accounts",
     description: "Get all available accounts",
     schema: z.object({}),
-  },
+  }
 );
 
 // @ts-ignore
@@ -47,11 +47,11 @@ const remove_account = tool(
       platform: z
         .string()
         .describe(
-          `The platform of the account. Can be ${platform_list.join(", ")}`,
+          `The platform of the account. Can be ${platform_list.join(", ")}`
         ),
       uid: z.number().describe("The uid of the account"),
     }),
-  },
+  }
 );
 
 // @ts-ignore
@@ -79,16 +79,16 @@ const add_recorder = tool(
       platform: z
         .string()
         .describe(
-          `The platform of the recorder. Can be ${platform_list.join(", ")}`,
+          `The platform of the recorder. Can be ${platform_list.join(", ")}`
         ),
       room_id: z.number().describe("The room id of the recorder"),
       extra: z
         .string()
         .describe(
-          "The extra of the recorder, should be empty for bilibili, and the sec_user_id for douyin",
+          "The extra of the recorder, should be empty for bilibili, and the sec_user_id for douyin"
         ),
     }),
-  },
+  }
 );
 
 // @ts-ignore
@@ -107,11 +107,11 @@ const remove_recorder = tool(
       platform: z
         .string()
         .describe(
-          `The platform of the recorder. Can be ${platform_list.join(", ")}`,
+          `The platform of the recorder. Can be ${platform_list.join(", ")}`
         ),
       room_id: z.number().describe("The room id of the recorder"),
     }),
-  },
+  }
 );
 
 // @ts-ignore
@@ -124,7 +124,7 @@ const get_recorder_list = tool(
     name: "get_recorder_list",
     description: "Get the list of all available recorders",
     schema: z.object({}),
-  },
+  }
 );
 
 // @ts-ignore
@@ -140,7 +140,7 @@ const get_recorder_info = tool(
       platform: z.string().describe("The platform of the room"),
       room_id: z.number().describe("The room id of the room"),
     }),
-  },
+  }
 );
 
 // @ts-ignore
@@ -178,7 +178,7 @@ const get_archives = tool(
       offset: z.number().describe("The offset of the archives"),
       limit: z.number().describe("The limit of the archives"),
     }),
-  },
+  }
 );
 
 // @ts-ignore
@@ -202,7 +202,7 @@ const get_archive = tool(
       room_id: z.number().describe("The room id of the recorder"),
       live_id: z.string().describe("The live id of the archive"),
     }),
-  },
+  }
 );
 
 // @ts-ignore
@@ -230,12 +230,12 @@ const delete_archive = tool(
       platform: z
         .string()
         .describe(
-          `The platform of the recorder. Can be ${platform_list.join(", ")}`,
+          `The platform of the recorder. Can be ${platform_list.join(", ")}`
         ),
       room_id: z.number().describe("The room id of the recorder"),
       live_id: z.string().describe("The live id of the archive"),
     }),
-  },
+  }
 );
 
 // @ts-ignore
@@ -263,12 +263,12 @@ const delete_archives = tool(
       platform: z
         .string()
         .describe(
-          `The platform of the recorder. Can be ${platform_list.join(", ")}`,
+          `The platform of the recorder. Can be ${platform_list.join(", ")}`
         ),
       room_id: z.number().describe("The room id of the recorder"),
       live_ids: z.array(z.string()).describe("The live ids of the archives"),
     }),
-  },
+  }
 );
 
 // @ts-ignore
@@ -288,7 +288,7 @@ const get_background_tasks = tool(
     name: "get_background_tasks",
     description: "Get the list of all background tasks",
     schema: z.object({}),
-  },
+  }
 );
 
 // @ts-ignore
@@ -303,7 +303,7 @@ const delete_background_task = tool(
     schema: z.object({
       id: z.string().describe("The id of the task"),
     }),
-  },
+  }
 );
 
 // @ts-ignore
@@ -325,7 +325,7 @@ const get_videos = tool(
     schema: z.object({
       room_id: z.number().describe("The room id of the room"),
     }),
-  },
+  }
 );
 
 // @ts-ignore
@@ -345,7 +345,7 @@ const get_all_videos = tool(
     name: "get_all_videos",
     description: "Get the list of all videos from all rooms",
     schema: z.object({}),
-  },
+  }
 );
 
 // @ts-ignore
@@ -365,7 +365,7 @@ const get_video = tool(
     schema: z.object({
       id: z.number().describe("The id of the video"),
     }),
-  },
+  }
 );
 
 // @ts-ignore
@@ -382,7 +382,7 @@ const get_video_cover = tool(
     schema: z.object({
       id: z.number().describe("The id of the video"),
     }),
-  },
+  }
 );
 
 // @ts-ignore
@@ -397,7 +397,7 @@ const delete_video = tool(
     schema: z.object({
       id: z.number().describe("The id of the video"),
     }),
-  },
+  }
 );
 
 // @ts-ignore
@@ -411,7 +411,7 @@ const get_video_typelist = tool(
     description:
       "Get the list of all video types（视频分区） that can be selected on bilibili platform",
     schema: z.object({}),
-  },
+  }
 );
 
 // @ts-ignore
@@ -427,7 +427,7 @@ const get_video_subtitle = tool(
     schema: z.object({
       id: z.number().describe("The id of the video"),
     }),
-  },
+  }
 );
 
 // @ts-ignore
@@ -442,7 +442,7 @@ const generate_video_subtitle = tool(
     schema: z.object({
       id: z.number().describe("The id of the video"),
     }),
-  },
+  }
 );
 
 // @ts-ignore
@@ -462,10 +462,10 @@ const encode_video_subtitle = tool(
       srt_style: z
         .string()
         .describe(
-          "The style of the subtitle, it is used for ffmpeg -vf force_style, it must be a valid srt style",
+          "The style of the subtitle, it is used for ffmpeg -vf force_style, it must be a valid srt style"
         ),
     }),
-  },
+  }
 );
 
 // @ts-ignore
@@ -519,7 +519,7 @@ const post_video_to_bilibili = tool(
       uid: z
         .number()
         .describe(
-          "The uid of the user, it should be one of the uid in the bilibili accounts",
+          "The uid of the user, it should be one of the uid in the bilibili accounts"
         ),
       room_id: z.number().describe("The room id of the room"),
       video_id: z.number().describe("The id of the video"),
@@ -528,15 +528,15 @@ const post_video_to_bilibili = tool(
       tag: z
         .string()
         .describe(
-          "The tag of the video, multiple tags should be separated by comma",
+          "The tag of the video, multiple tags should be separated by comma"
         ),
       tid: z
         .number()
         .describe(
-          "The tid of the video, it is the id of the video type, you can use get_video_typelist to get the list of all video types",
+          "The tid of the video, it is the id of the video type, you can use get_video_typelist to get the list of all video types"
         ),
     }),
-  },
+  }
 );
 
 // @ts-ignore
@@ -574,7 +574,7 @@ const get_danmu_record = tool(
       room_id: z.number().describe("The room id of the room"),
       live_id: z.string().describe("The live id of the live"),
     }),
-  },
+  }
 );
 
 // @ts-ignore
@@ -601,7 +601,7 @@ const clip_range = tool(
       reason: z
         .string()
         .describe(
-          "The reason for the clip range, it will be shown to the user. You must offer a summary of the clip range content and why you choose this clip range.",
+          "The reason for the clip range, it will be shown to the user. You must offer a summary of the clip range content and why you choose this clip range."
         ),
       clip_range_params: z.object({
         room_id: z.number().describe("The room id of the room"),
@@ -613,12 +613,12 @@ const clip_range = tool(
         danmu: z
           .boolean()
           .describe(
-            "Whether to encode danmu, encode danmu will take a lot of time, so it is recommended to set it to false",
+            "Whether to encode danmu, encode danmu will take a lot of time, so it is recommended to set it to false"
           ),
         local_offset: z
           .number()
           .describe(
-            "The offset for danmu timestamp, it is used to correct the timestamp of danmu",
+            "The offset for danmu timestamp, it is used to correct the timestamp of danmu"
           ),
         title: z.string().describe("The title of the clip"),
         note: z.string().describe("The note of the clip"),
@@ -627,11 +627,11 @@ const clip_range = tool(
         fix_encoding: z
           .boolean()
           .describe(
-            "Whether to fix the encoding of the clip, it will take a lot of time, so it is recommended to set it to false",
+            "Whether to fix the encoding of the clip, it will take a lot of time, so it is recommended to set it to false"
           ),
       }),
     }),
-  },
+  }
 );
 
 // @ts-ignore
@@ -668,7 +668,7 @@ const get_recent_record = tool(
       offset: z.number().describe("The offset of the records"),
       limit: z.number().describe("The limit of the records"),
     }),
-  },
+  }
 );
 
 // @ts-ignore
@@ -696,7 +696,7 @@ const get_recent_record_all = tool(
       offset: z.number().describe("The offset of the records"),
       limit: z.number().describe("The limit of the records"),
     }),
-  },
+  }
 );
 
 // @ts-ignore
@@ -711,7 +711,7 @@ const generic_ffmpeg_command = tool(
     schema: z.object({
       args: z.array(z.string()).describe("The arguments of the ffmpeg command"),
     }),
-  },
+  }
 );
 
 // @ts-ignore
@@ -726,7 +726,7 @@ const open_clip = tool(
     schema: z.object({
       video_id: z.number().describe("The id of the video"),
     }),
-  },
+  }
 );
 
 // @ts-ignore
@@ -741,7 +741,7 @@ const list_folder = tool(
     schema: z.object({
       path: z.string().describe("The path of the folder"),
     }),
-  },
+  }
 );
 
 // @ts-ignore
@@ -771,7 +771,7 @@ const get_archive_subtitle = tool(
       room_id: z.number().describe("The room id of the archive"),
       live_id: z.string().describe("The live id of the archive"),
     }),
-  },
+  }
 );
 
 // @ts-ignore
@@ -801,7 +801,7 @@ const generate_archive_subtitle = tool(
       room_id: z.number().describe("The room id of the archive"),
       live_id: z.string().describe("The live id of the archive"),
     }),
-  },
+  }
 );
 
 const tools = [
@@ -814,6 +814,7 @@ const tools = [
   get_archives,
   get_archive,
   delete_archive,
+  delete_archives,
   get_background_tasks,
   delete_background_task,
   get_videos,

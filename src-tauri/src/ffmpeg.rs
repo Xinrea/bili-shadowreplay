@@ -17,10 +17,10 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[derive(Debug)]
 pub struct VideoMetadata {
     pub duration: f64,
-    #[allow(unused)]
     pub width: u32,
-    #[allow(unused)]
     pub height: u32,
+    pub video_codec: String,
+    pub audio_codec: String,
 }
 
 #[cfg(target_os = "windows")]
@@ -874,8 +874,6 @@ pub async fn extract_video_metadata(file_path: &Path) -> Result<VideoMetadata, S
             "json",
             "-show_format",
             "-show_streams",
-            "-select_streams",
-            "v:0",
             &format!("{}", file_path.display()),
         ])
         .output()
@@ -900,22 +898,30 @@ pub async fn extract_video_metadata(file_path: &Path) -> Result<VideoMetadata, S
         return Err("未找到视频流".to_string());
     }
 
-    let video_stream = &streams[0];
-    let format = &json["format"];
+    let mut metadata = VideoMetadata {
+        duration: 0.0,
+        width: 0,
+        height: 0,
+        video_codec: String::new(),
+        audio_codec: String::new(),
+    };
 
-    let duration = format["duration"]
-        .as_str()
-        .and_then(|d| d.parse::<f64>().ok())
-        .unwrap_or(0.0);
-
-    let width = video_stream["width"].as_u64().unwrap_or(0) as u32;
-    let height = video_stream["height"].as_u64().unwrap_or(0) as u32;
-
-    Ok(VideoMetadata {
-        duration,
-        width,
-        height,
-    })
+    for stream in streams {
+        let codec_name = stream["codec_type"].as_str().unwrap_or("");
+        if codec_name == "video" {
+            metadata.video_codec = stream["codec_name"].as_str().unwrap_or("").to_owned();
+            metadata.width = stream["width"].as_u64().unwrap_or(0) as u32;
+            metadata.height = stream["height"].as_u64().unwrap_or(0) as u32;
+            metadata.duration = stream["duration"]
+                .as_str()
+                .unwrap_or("0.0")
+                .parse::<f64>()
+                .unwrap_or(0.0);
+        } else if codec_name == "audio" {
+            metadata.audio_codec = stream["codec_name"].as_str().unwrap_or("").to_owned();
+        }
+    }
+    Ok(metadata)
 }
 
 /// Generate thumbnail file from video, capturing a frame at the specified timestamp.
@@ -1107,6 +1113,63 @@ pub async fn convert_video_format(
     }
 }
 
+/// Check if all playlist have same encoding and resolution
+pub async fn check_multiple_playlist(playlist_paths: Vec<String>) -> bool {
+    // check if all playlist paths exist
+    let mut video_codec = "".to_owned();
+    let mut audio_codec = "".to_owned();
+    let mut width = 0;
+    let mut height = 0;
+    for playlist_path in playlist_paths.iter() {
+        if !Path::new(playlist_path).exists() {
+            continue;
+        }
+        let metadata = extract_video_metadata(Path::new(playlist_path)).await;
+        if metadata.is_err() {
+            log::error!(
+                "Failed to extract video metadata: {}",
+                metadata.unwrap_err()
+            );
+            return false;
+        }
+        let metadata = metadata.unwrap();
+
+        // check video codec
+        if !video_codec.is_empty() && metadata.video_codec != video_codec {
+            log::error!("Playlist video codec does not match: {}", playlist_path);
+            return false;
+        } else {
+            video_codec = metadata.video_codec;
+        }
+
+        // check audio codec
+        if !audio_codec.is_empty() && metadata.audio_codec != audio_codec {
+            log::error!("Playlist audio codec does not match: {}", playlist_path);
+            return false;
+        } else {
+            audio_codec = metadata.audio_codec;
+        }
+
+        // check width
+        if width > 0 && metadata.width != width {
+            log::error!("Playlist width does not match: {}", playlist_path);
+            return false;
+        } else {
+            width = metadata.width;
+        }
+
+        // check height
+        if height > 0 && metadata.height != height {
+            log::error!("Playlist height does not match: {}", playlist_path);
+            return false;
+        } else {
+            height = metadata.height;
+        }
+    }
+
+    true
+}
+
 pub async fn concat_multiple_playlist(
     reporter: Option<&ProgressReporter>,
     playlist_paths: Vec<String>,
@@ -1137,6 +1200,8 @@ pub async fn concat_multiple_playlist(
         filelist.flush().await.map_err(|e| e.to_string())?;
     } // File is automatically closed here
 
+    let can_copy_codecs = check_multiple_playlist(playlist_paths.clone()).await;
+
     cmd.args([
         "-f",
         "concat",
@@ -1146,7 +1211,19 @@ pub async fn concat_multiple_playlist(
         tmp_filelist_path.to_str().unwrap(),
     ]);
 
-    let child = cmd.args(["-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black"])
+    if !can_copy_codecs {
+        log::info!("Can not copy codecs, will re-encode");
+        cmd.args(["-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black"])
+        .args(["-c:v", "libx264"])
+        .args(["-c:a", "aac"])
+        .args(["-b:v", "6000k"])
+        .args(["-avoid_negative_ts", "make_zero"]);
+    } else {
+        cmd.args(["-c:v", "copy"]);
+        cmd.args(["-c:a", "copy"]);
+    }
+
+    let child = cmd
         .args(["-y", output_path.to_str().unwrap()])
         .stderr(Stdio::piped())
         .spawn();
@@ -1267,6 +1344,7 @@ mod tests {
         let test_video = Path::new("tests/video/test.mp4");
         if test_video.exists() {
             let metadata = extract_video_metadata(test_video).await.unwrap();
+            println!("metadata: {:?}", metadata);
             assert!(metadata.duration > 0.0);
             assert!(metadata.width > 0);
             assert!(metadata.height > 0);

@@ -8,6 +8,7 @@
     Users,
     Video,
     Brain,
+    History,
   } from "lucide-svelte";
   import { hasNewVersion } from "../stores/version";
   import SidebarItem from "./SidebarItem.svelte";
@@ -37,6 +38,11 @@
     <SidebarItem label="直播间" {activeUrl} on:activeChange={navigate}>
       <div slot="icon">
         <Video class="w-5 h-5" />
+      </div>
+    </SidebarItem>
+    <SidebarItem label="录播" {activeUrl} on:activeChange={navigate}>
+      <div slot="icon">
+        <History class="w-5 h-5" />
       </div>
     </SidebarItem>
     <SidebarItem label="切片" {activeUrl} on:activeChange={navigate}>

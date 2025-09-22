@@ -9,6 +9,7 @@
   import Clip from "./page/Clip.svelte";
   import Task from "./page/Task.svelte";
   import AI from "./page/AI.svelte";
+  import Archive from "./page/Archive.svelte";
   import { onMount } from "svelte";
 
   let active = "总览";
@@ -65,6 +66,9 @@
       </div>
       <div class="page" class:visible={active == "直播间"}>
         <Room />
+      </div>
+      <div class="page" class:visible={active == "录播"}>
+        <Archive />
       </div>
       <div class="page" class:visible={active == "切片"}>
         <Clip />

@@ -11,10 +11,10 @@ use crate::subtitle_generator::{
 use async_ffmpeg_sidecar::event::{FfmpegEvent, LogLevel};
 use async_ffmpeg_sidecar::log_parser::FfmpegLogParser;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 
 // 视频元数据结构
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct VideoMetadata {
     pub duration: f64,
     pub width: u32,
@@ -717,52 +717,6 @@ pub async fn check_ffmpeg() -> Result<String, String> {
     }
 }
 
-pub async fn get_video_resolution(file: &str) -> Result<String, String> {
-    // ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 input.mp4
-    let mut ffprobe_process = tokio::process::Command::new(ffprobe_path());
-    #[cfg(target_os = "windows")]
-    ffprobe_process.creation_flags(CREATE_NO_WINDOW);
-
-    let child = ffprobe_process
-        .arg("-i")
-        .arg(file)
-        .arg("-v")
-        .arg("error")
-        .arg("-select_streams")
-        .arg("v:0")
-        .arg("-show_entries")
-        .arg("stream=width,height")
-        .arg("-of")
-        .arg("csv=s=x:p=0")
-        .stdout(Stdio::piped())
-        .spawn();
-    if let Err(e) = child {
-        log::error!("Failed to spawn ffprobe process: {e}");
-        return Err(e.to_string());
-    }
-
-    let mut child = child.unwrap();
-    let stdout = child.stdout.take();
-    if stdout.is_none() {
-        log::error!("Failed to take ffprobe output");
-        return Err("Failed to take ffprobe output".into());
-    }
-
-    let stdout = stdout.unwrap();
-    let reader = BufReader::new(stdout);
-    let mut lines = reader.lines();
-    let line = lines.next_line().await.unwrap();
-    if line.is_none() {
-        return Err("Failed to parse resolution from output".into());
-    }
-    let line = line.unwrap();
-    let resolution = line.split('x').collect::<Vec<&str>>();
-    if resolution.len() != 2 {
-        return Err("Failed to parse resolution from output".into());
-    }
-    Ok(format!("{}x{}", resolution[0], resolution[1]))
-}
-
 fn ffmpeg_path() -> PathBuf {
     let mut path = Path::new("ffmpeg").to_path_buf();
     if cfg!(windows) {
@@ -1361,16 +1315,6 @@ mod tests {
         }
     }
 
-    // 测试视频分辨率获取
-    #[tokio::test]
-    async fn test_get_video_resolution() {
-        let file = Path::new("tests/video/h_test.m4s");
-        if file.exists() {
-            let resolution = get_video_resolution(file.to_str().unwrap()).await.unwrap();
-            assert_eq!(resolution, "1920x1080");
-        }
-    }
-
     // 测试缩略图生成
     #[tokio::test]
     async fn test_generate_thumbnail() {
@@ -1460,18 +1404,6 @@ mod tests {
             assert_eq!(ffmpeg_path.file_name().unwrap(), "ffmpeg");
             assert_eq!(ffprobe_path.file_name().unwrap(), "ffprobe");
         }
-    }
-
-    // 测试错误处理
-    #[tokio::test]
-    async fn test_error_handling() {
-        // 测试不存在的文件
-        let non_existent_file = Path::new("tests/nonexistent/test.mp4");
-        let result = extract_video_metadata(non_existent_file).await;
-        assert!(result.is_err());
-
-        let result = get_video_resolution("tests/nonexistent/test.mp4").await;
-        assert!(result.is_err());
     }
 
     // 测试文件名和路径处理

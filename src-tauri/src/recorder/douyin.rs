@@ -7,6 +7,7 @@ use super::{
     UserInfo,
 };
 use crate::database::Database;
+use crate::ffmpeg::extract_video_metadata;
 use crate::progress::progress_manager::Event;
 use crate::progress::progress_reporter::EventEmitter;
 use crate::recorder_manager::RecorderEvent;
@@ -550,6 +551,11 @@ impl DouyinRecorder {
                         let mut pl = segment.clone();
                         pl.uri = file_name;
 
+                        let metadata = extract_video_metadata(Path::new(&file_path)).await;
+                        if let Ok(metadata) = metadata {
+                            pl.duration = metadata.duration as f32;
+                        }
+
                         *self.total_duration.write().await += segment.duration as f64;
                         *self.total_size.write().await += size;
 
@@ -663,28 +669,16 @@ impl DouyinRecorder {
         // if requires a range, we need to filter entries and only use entries in the range, so m3u8 type is VOD.
         if live_id == *self.live_id.read().await {
             let mut playlist = self.playlist.read().await.clone();
-            if range.is_some() {
-                playlist.playlist_type = Some(MediaPlaylistType::Vod);
-                playlist.end_list = true;
-
-                let first_segment_ts = playlist
-                    .segments
-                    .first()
-                    .unwrap()
-                    .program_date_time
-                    .unwrap()
-                    .timestamp();
-                playlist.segments = playlist
-                    .segments
-                    .iter()
-                    .filter(|s| {
-                        range.unwrap().is_in(
-                            s.program_date_time.unwrap().timestamp() as f32
-                                - first_segment_ts as f32,
-                        )
-                    })
-                    .cloned()
-                    .collect();
+            if let Some(range) = range {
+                let mut duration = 0.0;
+                let mut segments = Vec::new();
+                for s in playlist.segments {
+                    if range.is_in(duration) || range.is_in(duration + s.duration) {
+                        segments.push(s.clone());
+                    }
+                    duration += s.duration;
+                }
+                playlist.segments = segments;
 
                 playlist.end_list = true;
                 playlist.playlist_type = Some(MediaPlaylistType::Vod);
@@ -705,25 +699,16 @@ impl DouyinRecorder {
             playlist.playlist_type = Some(MediaPlaylistType::Vod);
             playlist.end_list = true;
 
-            if range.is_some() {
-                let first_segment_ts = playlist
-                    .segments
-                    .first()
-                    .unwrap()
-                    .program_date_time
-                    .unwrap()
-                    .timestamp();
-                playlist.segments = playlist
-                    .segments
-                    .iter()
-                    .filter(|s| {
-                        range.unwrap().is_in(
-                            s.program_date_time.unwrap().timestamp() as f32
-                                - first_segment_ts as f32,
-                        )
-                    })
-                    .cloned()
-                    .collect();
+            if let Some(range) = range {
+                let mut duration = 0.0;
+                let mut segments = Vec::new();
+                for s in playlist.segments {
+                    if range.is_in(duration) || range.is_in(duration + s.duration) {
+                        segments.push(s.clone());
+                    }
+                    duration += s.duration;
+                }
+                playlist.segments = segments;
             }
             let mut v: Vec<u8> = Vec::new();
             playlist.write_to(&mut v).unwrap();

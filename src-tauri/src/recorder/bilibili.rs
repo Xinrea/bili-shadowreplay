@@ -6,7 +6,7 @@ use super::entry::Range;
 use super::errors::RecorderError;
 use super::PlatformType;
 use crate::database::account::AccountRow;
-use crate::ffmpeg::get_video_resolution;
+use crate::ffmpeg::{extract_video_metadata, VideoMetadata};
 use crate::progress::progress_manager::Event;
 use crate::progress::progress_reporter::EventEmitter;
 use crate::recorder::bilibili::client::{Codec, Protocol, Qn};
@@ -65,7 +65,7 @@ pub struct BiliRecorder {
     danmu_storage: Arc<RwLock<Option<DanmuStorage>>>,
     event_channel: broadcast::Sender<RecorderEvent>,
     enabled: Arc<RwLock<bool>>,
-    current_resolution: Arc<RwLock<Option<String>>>,
+    current_metadata: Arc<RwLock<Option<VideoMetadata>>>,
 
     danmu_task: Arc<Mutex<Option<JoinHandle<()>>>>,
     record_task: Arc<Mutex<Option<JoinHandle<()>>>>,
@@ -152,7 +152,7 @@ impl BiliRecorder {
             enabled: Arc::new(RwLock::new(options.auto_start)),
             danmu_task: Arc::new(Mutex::new(None)),
             record_task: Arc::new(Mutex::new(None)),
-            current_resolution: Arc::new(RwLock::new(None)),
+            current_metadata: Arc::new(RwLock::new(None)),
             last_sequence: Arc::new(RwLock::new(0)),
             m3u8_playlist: Arc::new(RwLock::new(default_m3u8_playlist())),
             total_duration: Arc::new(RwLock::new(0.0)),
@@ -164,7 +164,7 @@ impl BiliRecorder {
 
     pub async fn reset(&self) {
         // if record is ended, send event
-        if !self.live_id.read().await.is_empty() && self.current_resolution.read().await.is_some() {
+        if !self.live_id.read().await.is_empty() && self.current_metadata.read().await.is_some() {
             self.m3u8_playlist.write().await.playlist_type = Some(MediaPlaylistType::Vod);
             self.m3u8_playlist.write().await.end_list = true;
             self.save_playlist().await;
@@ -173,7 +173,7 @@ impl BiliRecorder {
             });
         }
         // if record is empty, remove record
-        if !self.live_id.read().await.is_empty() && self.current_resolution.read().await.is_none() {
+        if !self.live_id.read().await.is_empty() && self.current_metadata.read().await.is_none() {
             // no entries, remove work dir
             log::warn!("[{}]No entries, remove empty record", self.room_id);
             *self.danmu_storage.write().await = None;
@@ -195,7 +195,7 @@ impl BiliRecorder {
         *self.live_stream.write().await = None;
         *self.last_update.write().await = Utc::now().timestamp();
         *self.danmu_storage.write().await = None;
-        *self.current_resolution.write().await = None;
+        *self.current_metadata.write().await = None;
         *self.platform_live_id.write().await = String::new();
         *self.live_id.write().await = String::new();
     }
@@ -508,11 +508,13 @@ impl BiliRecorder {
         }
     }
 
-    async fn get_resolution(&self, ts_path: &str) -> Result<String, super::errors::RecorderError> {
-        let resolution = get_video_resolution(ts_path)
+    async fn get_metadata(
+        &self,
+        ts_path: &str,
+    ) -> Result<VideoMetadata, super::errors::RecorderError> {
+        extract_video_metadata(Path::new(ts_path))
             .await
-            .map_err(super::errors::RecorderError::FfmpegError)?;
-        Ok(resolution)
+            .map_err(super::errors::RecorderError::FfmpegError)
     }
 
     async fn get_full_path(&self, relative_path: &str) -> String {
@@ -617,7 +619,6 @@ impl BiliRecorder {
 
                     // encode segment offset into filename
                     let file_name = ts.uri.split('/').next_back().unwrap_or(&ts.uri);
-                    let ts_length = f64::from(pl.target_duration);
 
                     let client = self.client.clone();
                     let mut retry = 0;
@@ -643,42 +644,46 @@ impl BiliRecorder {
                                     });
                                 }
 
-                                let resolution_result = self.get_resolution(&full_path).await;
-                                if resolution_result.is_err() {
-                                    return Err(resolution_result.err().unwrap());
+                                let metadata = self.get_metadata(&full_path).await;
+                                if metadata.is_err() {
+                                    return Err(metadata.err().unwrap());
                                 }
-                                let resolution = resolution_result.unwrap();
-                                let current_resolution =
-                                    self.current_resolution.read().await.clone();
-                                if let Some(current_resolution) = current_resolution {
-                                    if current_resolution != resolution {
+                                let metadata = metadata.unwrap();
+                                let current_metadata = self.current_metadata.read().await.clone();
+                                if let Some(current_metadata) = current_metadata {
+                                    if current_metadata.width != metadata.width
+                                        || current_metadata.height != metadata.height
+                                    {
                                         log::warn!(
-                                            "[{}]Resolution changed: {} => {}",
+                                            "[{}]Resolution changed: {:?} => {:?}",
                                             self.room_id,
-                                            current_resolution,
-                                            resolution
+                                            &current_metadata,
+                                            &metadata
                                         );
                                         return Err(
                                             super::errors::RecorderError::ResolutionChanged {
                                                 err: format!(
-                                                    "Resolution changed: {} => {}",
-                                                    current_resolution, resolution
+                                                    "Resolution changed: {:?} => {:?}",
+                                                    &current_metadata, &metadata
                                                 ),
                                             },
                                         );
                                     }
                                 } else {
                                     // first segment, set current resolution
-                                    *self.current_resolution.write().await = Some(resolution);
+                                    *self.current_metadata.write().await = Some(metadata.clone());
 
                                     let _ = self.event_channel.send(RecorderEvent::RecordStart {
                                         recorder: self.info().await,
                                     });
                                 }
 
-                                self.add_segment(sequence, ts.clone()).await;
+                                let mut ts = ts.clone();
+                                ts.duration = metadata.duration as f32;
 
-                                *self.total_duration.write().await += ts_length;
+                                self.add_segment(sequence, ts).await;
+
+                                *self.total_duration.write().await += metadata.duration;
                                 *self.total_size.write().await += size;
 
                                 new_segment_fetched = true;
@@ -757,24 +762,17 @@ impl BiliRecorder {
         }
         let mut playlist = playlist.unwrap();
 
-        if range.is_some() {
-            let first_segment_ts = playlist
-                .segments
-                .first()
-                .unwrap()
-                .program_date_time
-                .unwrap()
-                .timestamp();
-            playlist.segments = playlist
-                .segments
-                .iter()
-                .filter(|s| {
-                    range.unwrap().is_in(
-                        s.program_date_time.unwrap().timestamp() as f32 - first_segment_ts as f32,
-                    )
-                })
-                .cloned()
-                .collect();
+        if let Some(range) = range {
+            // accumulate duration, and filter segments in range
+            let mut duration = 0.0;
+            let mut segments = Vec::new();
+            for s in playlist.segments {
+                if range.is_in(duration) || range.is_in(duration + s.duration) {
+                    segments.push(s.clone());
+                }
+                duration += s.duration;
+            }
+            playlist.segments = segments;
         }
 
         playlist.end_list = true;
@@ -804,24 +802,17 @@ impl BiliRecorder {
             return "#EXTM3U\n#EXT-X-VERSION:6\n".to_string();
         }
 
-        if range.is_some() {
-            let first_segment_ts = playlist
-                .segments
-                .first()
-                .unwrap()
-                .program_date_time
-                .unwrap()
-                .timestamp();
-            playlist.segments = playlist
-                .segments
-                .iter()
-                .filter(|s| {
-                    range.unwrap().is_in(
-                        s.program_date_time.unwrap().timestamp() as f32 - first_segment_ts as f32,
-                    )
-                })
-                .cloned()
-                .collect();
+        if let Some(range) = range {
+            // accumulate duration, and filter segments in range
+            let mut duration = 0.0;
+            let mut segments = Vec::new();
+            for s in playlist.segments {
+                if range.is_in(duration) || range.is_in(duration + s.duration) {
+                    segments.push(s.clone());
+                }
+                duration += s.duration;
+            }
+            playlist.segments = segments;
         }
 
         (playlist.playlist_type, playlist.end_list) = if live_status && range.is_none() {

@@ -745,6 +745,7 @@ impl RecorderManager {
             let recorder = recorder.unwrap();
 
             // response with recorder generated m3u8, which contains ts entries that cached in local
+            log::debug!("Generating m3u8 for {live_id} with start {start} and end {end}");
             let m3u8_content = recorder.playlist(live_id, start, end).await;
 
             Ok(m3u8_content.into())

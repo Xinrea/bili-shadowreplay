@@ -15,7 +15,6 @@ use crate::recorder::Recorder;
 use crate::recorder::RecorderInfo;
 use crate::webhook::events::{self, Payload};
 use crate::webhook::poster::WebhookPoster;
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -199,92 +198,19 @@ impl RecorderManager {
             log::error!("Live not found in record: {room_id} {live_id}");
             return;
         }
-        let recorders = self.recorders.read().await;
-        let Some(recorder) = recorders.get(&recorder_id) else {
-            log::error!("Recorder not found: {recorder_id}");
-            return;
-        };
 
         let live_record = live_record.unwrap();
-        let encode_danmu = self.config.read().await.auto_generate.encode_danmu;
 
-        let clip_config = ClipRangeParams {
-            title: live_record.title,
-            note: String::new(),
-            cover: String::new(),
-            platform: live_record.platform.clone(),
-            room_id,
-            live_id: live_id.to_string(),
-            range: None,
-            danmu: encode_danmu,
-            local_offset: 0,
-            fix_encoding: false,
-        };
-
-        let clip_filename = self.config.read().await.generate_clip_name(&clip_config);
-
-        // add prefix [full] for clip_filename
-        let name_with_prefix = format!(
-            "[full]{}",
-            clip_filename.file_name().unwrap().to_str().unwrap()
-        );
-        let _ = clip_filename.with_file_name(name_with_prefix);
-
-        match self
-            .clip_range_on_recorder(&**recorder, None, clip_filename, &clip_config)
+        if let Err(e) = self
+            .generate_whole_clip(
+                None,
+                platform.as_str().to_string(),
+                room_id,
+                live_record.parent_id,
+            )
             .await
         {
-            Ok(f) => {
-                let metadata = match std::fs::metadata(&f) {
-                    Ok(metadata) => metadata,
-                    Err(e) => {
-                        log::error!("Failed to detect auto generated clip: {e}");
-                        return;
-                    }
-                };
-                let Ok(size) = i64::try_from(metadata.len()) else {
-                    log::error!(
-                        "Failed to convert metadata length to i64: {}",
-                        metadata.len()
-                    );
-                    return;
-                };
-                let new_video = &VideoRow {
-                    id: 0,
-                    status: 0,
-                    room_id,
-                    created_at: Utc::now().to_rfc3339(),
-                    cover: String::new(),
-                    file: f.file_name().unwrap().to_str().unwrap().to_string(),
-                    note: String::new(),
-                    length: live_record.length,
-                    size,
-                    bvid: String::new(),
-                    title: String::new(),
-                    desc: String::new(),
-                    tags: String::new(),
-                    area: 0,
-                    platform: live_record.platform.clone(),
-                };
-                match self.db.add_video(new_video).await {
-                    Ok(_) => {
-                        let event = events::new_webhook_event(
-                            events::CLIP_GENERATED,
-                            events::Payload::Clip(new_video.clone()),
-                        );
-
-                        if let Err(e) = self.webhook_poster.post_event(&event).await {
-                            log::error!("Post webhook event error: {e}");
-                        }
-                    }
-                    Err(e) => {
-                        log::error!("Add auto generate clip record failed: {e}");
-                    }
-                };
-            }
-            Err(e) => {
-                log::error!("Auto generate clip failed: {e}");
-            }
+            log::error!("Failed to generate whole clip: {e}");
         }
     }
 
@@ -889,8 +815,8 @@ impl RecorderManager {
             .iter()
             .map(|p| p.1.clone())
             .collect::<Vec<String>>();
-        let output_filename = format!("[{platform}][{room_id}][{parent_id}]{title}.mp4");
-        let cover_filename = format!("[{platform}][{room_id}][{parent_id}]{title}.jpg");
+        let output_filename = format!("[full][{platform}][{room_id}][{parent_id}]{title}.mp4");
+        let cover_filename = format!("[full][{platform}][{room_id}][{parent_id}]{title}.jpg");
         let output_path = format!(
             "{}/{}",
             self.config.read().await.output.as_str(),

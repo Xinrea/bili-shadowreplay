@@ -15,6 +15,7 @@
   } from "flowbite-svelte-icons";
   import { save } from "@tauri-apps/plugin-dialog";
   const dispatch = createEventDispatcher();
+  const DANMU_STATISTIC_GAP = 5;
 
   interface DanmuEntry {
     ts: number;
@@ -637,8 +638,8 @@
         if (statisticKey != "" && !e.content.includes(statisticKey)) {
           return;
         }
-        const timeSlot =
-          Math.floor((e.ts + local_offset * 1000) / 10000) * 10000; // 将时间戳向下取整到10秒
+        const timestamp = e.ts + local_offset * 1000 - global_offset * 1000;
+        const timeSlot = timestamp - (timestamp % DANMU_STATISTIC_GAP);
         counts[timeSlot] = (counts[timeSlot] || 0) + 1;
       });
       danmu_statistics = [];
@@ -793,16 +794,16 @@
       for (let i = 1; i < points.length; i++) {
         preprocessed.push(points[i - 1]);
         let gap = (points[i].ts - points[i - 1].ts) / 1000;
-        if (gap > 10) {
+        if (gap > DANMU_STATISTIC_GAP) {
           // add zero point to fill gap
           let cnt = 1;
-          while (gap > 10) {
+          while (gap > DANMU_STATISTIC_GAP) {
             preprocessed.push({
-              ts: points[i - 1].ts + cnt * 10 * 1000,
+              ts: points[i - 1].ts + cnt * DANMU_STATISTIC_GAP * 1000,
               count: 0,
             });
             cnt += 1;
-            gap -= 10;
+            gap -= DANMU_STATISTIC_GAP;
           }
         }
       }

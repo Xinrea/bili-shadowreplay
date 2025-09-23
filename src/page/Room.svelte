@@ -40,6 +40,22 @@
     );
   });
 
+  function default_avatar(platform: string) {
+    if (platform === "bilibili") {
+      return "/imgs/bilibili_avatar.png";
+    } else if (platform === "douyin") {
+      return "/imgs/douyin_avatar.png";
+    }
+  }
+
+  function default_cover(platform: string) {
+    if (platform === "bilibili") {
+      return "/imgs/bilibili.png";
+    } else if (platform === "douyin") {
+      return "/imgs/douyin.png";
+    }
+  }
+
   async function update_summary() {
     let new_summary = (await invoke("get_recorder_list")) as RecorderList;
     room_count = new_summary.count;
@@ -64,13 +80,15 @@
         const cover_blob = await cover_response.blob();
         room.room_info.room_cover = URL.createObjectURL(cover_blob);
       } else {
-        room.room_info.room_cover = "/imgs/douyin.png";
+        room.room_info.room_cover = default_cover(room.platform);
       }
 
       if (room.user_info.user_avatar != "") {
         const avatar_response = await get(room.user_info.user_avatar);
         const avatar_blob = await avatar_response.blob();
         room.user_info.user_avatar = URL.createObjectURL(avatar_blob);
+      } else {
+        room.user_info.user_avatar = default_avatar(room.platform);
       }
     }
 

@@ -10,9 +10,9 @@ use crate::recorder::bilibili::{BiliRecorder, BiliRecorderOptions};
 use crate::recorder::danmu::DanmuEntry;
 use crate::recorder::douyin::DouyinRecorder;
 use crate::recorder::errors::RecorderError;
-use crate::recorder::PlatformType;
-use crate::recorder::Recorder;
 use crate::recorder::RecorderInfo;
+use crate::recorder::{PlatformType, RoomInfo};
+use crate::recorder::{Recorder, UserInfo};
 use crate::webhook::events::{self, Payload};
 use crate::webhook::poster::WebhookPoster;
 use serde::{Deserialize, Serialize};
@@ -547,13 +547,52 @@ impl RecorderManager {
 
     pub async fn get_recorder_list(&self) -> RecorderList {
         let mut summary = RecorderList {
-            count: self.recorders.read().await.len(),
+            count: 0,
             recorders: Vec::new(),
         };
 
+        // initialized recorder set
+        let mut recorder_set = HashSet::new();
         for recorder_ref in self.recorders.read().await.iter() {
             let room_info = recorder_ref.1.info().await;
-            summary.recorders.push(room_info);
+            summary.recorders.push(room_info.clone());
+            recorder_set.insert(room_info.room_id);
+        }
+
+        // get recorders from db
+        let recorders = self.db.get_recorders().await;
+        if recorders.is_err() {
+            log::error!(
+                "Failed to get recorders from db: {}",
+                recorders.err().unwrap()
+            );
+            return summary;
+        }
+        let recorders = recorders.unwrap();
+        summary.count = recorders.len();
+        for recorder in recorders {
+            // check if recorder is in recorder_set
+            if !recorder_set.contains(&recorder.room_id) {
+                summary.recorders.push(RecorderInfo {
+                    room_id: recorder.room_id,
+                    platform: recorder.platform,
+                    auto_start: recorder.auto_start,
+                    live_status: false,
+                    is_recording: false,
+                    total_length: 0.0,
+                    current_live_id: "".to_string(),
+                    room_info: RoomInfo {
+                        room_id: recorder.room_id,
+                        room_title: recorder.room_id.to_string(),
+                        room_cover: "".to_string(),
+                    },
+                    user_info: UserInfo {
+                        user_id: "".to_string(),
+                        user_name: "".to_string(),
+                        user_avatar: "".to_string(),
+                    },
+                });
+            }
         }
 
         summary.recorders.sort_by(|a, b| a.room_id.cmp(&b.room_id));

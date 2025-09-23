@@ -1,11 +1,14 @@
 use serde_derive::Deserialize;
 use serde_derive::Serialize;
 use serde_json::Value;
+use std::collections::HashMap;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DouyinRoomInfoResponse {
     pub data: Data,
+    #[serde(default)]
+    pub extra: Option<serde_json::Value>,
     #[serde(rename = "status_code")]
     pub status_code: i64,
 }
@@ -14,9 +17,29 @@ pub struct DouyinRoomInfoResponse {
 #[serde(rename_all = "camelCase")]
 pub struct Data {
     pub data: Vec<Daum>,
+    #[serde(rename = "enter_room_id", default)]
+    pub enter_room_id: Option<String>,
+    #[serde(default)]
+    pub extra: Option<serde_json::Value>,
     pub user: User,
+    #[serde(rename = "qrcode_url", default)]
+    pub qrcode_url: Option<String>,
+    #[serde(rename = "enter_mode", default)]
+    pub enter_mode: Option<i64>,
     #[serde(rename = "room_status")]
     pub room_status: i64,
+    #[serde(rename = "partition_road_map", default)]
+    pub partition_road_map: Option<serde_json::Value>,
+    #[serde(rename = "similar_rooms", default)]
+    pub similar_rooms: Option<Vec<serde_json::Value>>,
+    #[serde(rename = "shark_decision_conf", default)]
+    pub shark_decision_conf: Option<String>,
+    #[serde(rename = "web_stream_url", default)]
+    pub web_stream_url: Option<serde_json::Value>,
+    #[serde(rename = "login_lead", default)]
+    pub login_lead: Option<serde_json::Value>,
+    #[serde(rename = "auth_cert_info", default)]
+    pub auth_cert_info: Option<String>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -28,9 +51,36 @@ pub struct Daum {
     #[serde(rename = "status_str")]
     pub status_str: String,
     pub title: String,
+    #[serde(rename = "user_count_str", default)]
+    pub user_count_str: Option<String>,
     pub cover: Option<Cover>,
     #[serde(rename = "stream_url")]
     pub stream_url: Option<StreamUrl>,
+    #[serde(default)]
+    pub owner: Option<Owner>,
+    #[serde(rename = "room_auth", default)]
+    pub room_auth: Option<RoomAuth>,
+    #[serde(rename = "live_room_mode", default)]
+    pub live_room_mode: Option<i64>,
+    #[serde(default)]
+    pub stats: Option<Stats>,
+    #[serde(rename = "has_commerce_goods", default)]
+    pub has_commerce_goods: Option<bool>,
+    #[serde(rename = "linker_map", default)]
+    pub linker_map: Option<LinkerMap>,
+    #[serde(rename = "linker_detail", default)]
+    pub linker_detail: Option<LinkerDetail>,
+    #[serde(rename = "room_view_stats", default)]
+    pub room_view_stats: Option<RoomViewStats>,
+    #[serde(rename = "scene_type_info", default)]
+    pub scene_type_info: Option<SceneTypeInfo>,
+    #[serde(rename = "like_count", default)]
+    pub like_count: Option<i64>,
+    #[serde(rename = "owner_user_id_str", default)]
+    pub owner_user_id_str: Option<String>,
+    // Many other fields that can be ignored for now
+    #[serde(flatten)]
+    pub other_fields: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -56,8 +106,8 @@ pub struct StreamUrl {
     #[serde(rename = "live_core_sdk_data")]
     pub live_core_sdk_data: LiveCoreSdkData,
     pub extra: Extra,
-    #[serde(rename = "pull_data")]
-    pub pull_data: PullData,
+    #[serde(rename = "pull_datas", default)]
+    pub pull_datas: Option<serde_json::Value>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]

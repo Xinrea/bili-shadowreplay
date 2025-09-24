@@ -512,9 +512,7 @@ impl BiliClient {
             .unwrap_or(&empty_vec)
             .iter()
             .find(|f| f["format_name"].as_str() == Some(target_format))
-            .ok_or_else(|| {
-                BiliClientError::ApiError(format!("Format {} not found", target_format))
-            })?;
+            .ok_or_else(|| BiliClientError::FormatNotFound(target_format.to_owned()))?;
 
         // Find the matching codec
         let target_codec = match codec {
@@ -527,9 +525,7 @@ impl BiliClient {
             .unwrap_or(&empty_vec)
             .iter()
             .find(|c| c["codec_name"].as_str() == Some(target_codec))
-            .ok_or_else(|| {
-                BiliClientError::ApiError(format!("Codec {} not found", target_codec))
-            })?;
+            .ok_or_else(|| BiliClientError::CodecNotFound(target_codec.to_owned()))?;
 
         let url_info = codec_info["url_info"].as_array().unwrap_or(&empty_vec);
 
@@ -594,6 +590,7 @@ impl BiliClient {
         }
     }
 
+    #[allow(unused)]
     pub async fn download_ts(&self, url: &str, file_path: &str) -> Result<u64, BiliClientError> {
         let res = self
             .client
@@ -607,6 +604,12 @@ impl BiliClient {
         let mut content = std::io::Cursor::new(bytes);
         tokio::io::copy(&mut content, &mut file).await?;
         Ok(size)
+    }
+
+    pub async fn download_ts_raw(&self, url: &str) -> Result<Vec<u8>, BiliClientError> {
+        let res = self.client.get(url).send().await?;
+        let bytes = res.bytes().await?;
+        Ok(bytes.to_vec())
     }
 
     // Method from js code

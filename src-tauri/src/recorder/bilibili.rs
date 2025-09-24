@@ -10,17 +10,18 @@ use crate::ffmpeg::{extract_video_metadata, VideoMetadata};
 use crate::progress::progress_manager::Event;
 use crate::progress::progress_reporter::EventEmitter;
 use crate::recorder::bilibili::client::{Codec, Protocol, Qn};
+use crate::recorder::bilibili::errors::BiliClientError;
 use crate::recorder::Recorder;
 use crate::recorder_manager::RecorderEvent;
 use crate::subtitle_generator::item_to_srt;
 
 use super::danmu::{DanmuEntry, DanmuStorage};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use client::{BiliClient, BiliStream, Format, RoomInfo, UserInfo};
 use danmu_stream::danmu_stream::DanmuStream;
 use danmu_stream::provider::ProviderType;
 use danmu_stream::DanmuMessageType;
-use m3u8_rs::{MediaPlaylist, MediaPlaylistType, MediaSegment, Playlist};
+use m3u8_rs::{Map, MediaPlaylist, MediaPlaylistType, MediaSegment, Playlist};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -74,6 +75,12 @@ pub struct BiliRecorder {
     m3u8_playlist: Arc<RwLock<MediaPlaylist>>,
     total_duration: Arc<RwLock<f64>>,
     total_size: Arc<RwLock<u64>>,
+}
+
+struct SegmentBuffer {
+    sequence: u64,
+    representative_segment: MediaSegment,
+    sub_segments: Vec<MediaSegment>,
 }
 
 pub struct BiliRecorderOptions {
@@ -398,27 +405,70 @@ impl BiliRecorder {
                     )
                     .await;
 
-                if new_stream.is_err() {
-                    log::error!(
-                        "[{}]Fetch stream failed: {}",
-                        self.room_id,
-                        new_stream.err().unwrap()
-                    );
-                    return true;
+                match new_stream {
+                    Ok(stream) => {
+                        *self.live_stream.write().await = Some(stream.clone());
+                        *self.last_update.write().await = Utc::now().timestamp();
+
+                        log::info!(
+                            "[{}]Update to a new stream: {:?} => {}",
+                            self.room_id,
+                            self.live_stream.read().await.clone(),
+                            stream
+                        );
+
+                        return true;
+                    }
+                    Err(e) => {
+                        if let BiliClientError::FormatNotFound(format) = e {
+                            log::error!(
+                                "[{}]Format {} not found, try to fmp4",
+                                self.room_id,
+                                format
+                            );
+                        } else {
+                            log::error!("[{}]Fetch stream failed: {}", self.room_id, e);
+
+                            return true;
+                        }
+                    }
                 }
 
-                let new_stream = new_stream.unwrap();
-                *self.live_stream.write().await = Some(new_stream.clone());
-                *self.last_update.write().await = Utc::now().timestamp();
+                // fallback to fmp4
+                let new_stream = self
+                    .client
+                    .read()
+                    .await
+                    .get_stream_info(
+                        &self.account,
+                        self.room_id,
+                        Protocol::HttpHls,
+                        Format::FMP4,
+                        Codec::Avc,
+                        Qn::Q4K,
+                    )
+                    .await;
 
-                log::info!(
-                    "[{}]Update to a new stream: {:?} => {}",
-                    self.room_id,
-                    self.live_stream.read().await.clone(),
-                    new_stream
-                );
+                match new_stream {
+                    Ok(stream) => {
+                        *self.live_stream.write().await = Some(stream.clone());
+                        *self.last_update.write().await = Utc::now().timestamp();
 
-                true
+                        log::info!(
+                            "[{}]Update to a new stream: {:?} => {}",
+                            self.room_id,
+                            self.live_stream.read().await.clone(),
+                            stream
+                        );
+
+                        true
+                    }
+                    Err(e) => {
+                        log::error!("[{}]Fetch stream failed: {}", self.room_id, e);
+
+                        true
+                    }
+                }
             }
             Err(e) => {
                 log::error!("[{}]Update room status failed: {}", self.room_id, e);
@@ -512,9 +562,9 @@ impl BiliRecorder {
 
     async fn get_metadata(
         &self,
-        ts_path: &str,
+        ts_path: &Path,
     ) -> Result<VideoMetadata, super::errors::RecorderError> {
-        extract_video_metadata(Path::new(ts_path))
+        extract_video_metadata(ts_path)
             .await
             .map_err(super::errors::RecorderError::FfmpegError)
     }
@@ -597,113 +647,259 @@ impl BiliRecorder {
                 log::debug!("[{}]Master playlist:\n{:?}", self.room_id, pl);
             }
             Playlist::MediaPlaylist(pl) => {
+                if pl.segments.is_empty() {
+                    log::warn!("[{}]Media playlist is empty", self.room_id);
+                    return Err(super::errors::RecorderError::InvalidStream {
+                        stream: current_stream,
+                    });
+                }
                 let mut new_segment_fetched = false;
-                let last_sequence = *self.last_sequence.read().await;
+                let latest_sequence = *self.last_sequence.read().await;
 
                 self.m3u8_playlist.write().await.target_duration = pl.target_duration;
 
-                for (i, ts) in pl.segments.iter().enumerate() {
-                    let sequence = pl.media_sequence + i as u64;
-                    if sequence <= last_sequence {
-                        continue;
-                    }
+                let is_fmp4 = current_stream.format == Format::FMP4;
+                let mut header_data = Vec::new();
 
-                    let ts_url = current_stream.ts_url(&ts.uri);
-                    if Url::parse(&ts_url).is_err() {
-                        log::error!(
-                            "[{}]Ts url is invalid. ts_url={} original={}",
-                            self.room_id,
-                            ts_url,
-                            ts.uri
-                        );
-                        continue;
-                    }
-
-                    // encode segment offset into filename
-                    let file_name = ts.uri.split('/').next_back().unwrap_or(&ts.uri);
-
-                    let client = self.client.clone();
-                    let mut retry = 0;
-
-                    loop {
-                        if retry > 3 {
-                            log::error!("[{}]Download ts failed after retry", self.room_id);
-
-                            break;
+                if is_fmp4 {
+                    // get fmp4 header from "#EXT-X-MAP:URI="h1758715459.m4s"
+                    let first_segment = pl.segments.first().unwrap();
+                    let mut header_url = first_segment
+                        .unknown_tags
+                        .iter()
+                        .find(|t| t.tag == "X-MAP")
+                        .map(|t| {
+                            let rest = t.rest.clone().unwrap();
+                            rest.split('=').nth(1).unwrap().replace("\\\"", "")
+                        });
+                    if header_url.is_none() {
+                        // map: Some(Map { uri: "h1758725308.m4s"
+                        if let Some(Map { uri, .. }) = &first_segment.map {
+                            header_url = Some(uri.clone());
                         }
-                        let full_path =
-                            self.get_full_path(&format!("{work_dir}/{file_name}")).await;
-                        match client.read().await.download_ts(&ts_url, &full_path).await {
-                            Ok(size) => {
-                                if size == 0 {
-                                    log::error!(
-                                        "[{}]Segment with size 0, stream might be corrupted",
-                                        self.room_id
-                                    );
+                    }
 
-                                    return Err(super::errors::RecorderError::InvalidStream {
-                                        stream: current_stream,
-                                    });
-                                }
+                    if header_url.is_none() {
+                        log::error!("[{}]Fmp4 header not found", self.room_id);
+                        return Err(super::errors::RecorderError::InvalidStream {
+                            stream: current_stream,
+                        });
+                    }
 
-                                let metadata = self.get_metadata(&full_path).await;
-                                if metadata.is_err() {
-                                    return Err(metadata.err().unwrap());
-                                }
-                                let metadata = metadata.unwrap();
-                                let current_metadata = self.current_metadata.read().await.clone();
-                                if let Some(current_metadata) = current_metadata {
-                                    if current_metadata.width != metadata.width
-                                        || current_metadata.height != metadata.height
-                                    {
-                                        log::warn!(
-                                            "[{}]Resolution changed: {:?} => {:?}",
-                                            self.room_id,
-                                            &current_metadata,
-                                            &metadata
-                                        );
-                                        return Err(
-                                            super::errors::RecorderError::ResolutionChanged {
-                                                err: format!(
-                                                    "Resolution changed: {:?} => {:?}",
-                                                    &current_metadata, &metadata
-                                                ),
-                                            },
-                                        );
-                                    }
-                                } else {
-                                    // first segment, set current resolution
-                                    *self.current_metadata.write().await = Some(metadata.clone());
+                    let header_url = header_url.unwrap();
+                    let header_url = current_stream.ts_url(&header_url);
+                    header_data = self
+                        .client
+                        .read()
+                        .await
+                        .download_ts_raw(&header_url)
+                        .await?;
+                }
 
-                                    let _ = self.event_channel.send(RecorderEvent::RecordStart {
-                                        recorder: self.info().await,
-                                    });
-                                }
+                let mut segment_buffers = Vec::new();
+                let mut current_buffer = SegmentBuffer {
+                    sequence: pl.media_sequence,
+                    representative_segment: pl.segments.first().unwrap().clone(),
+                    sub_segments: vec![pl.segments.first().unwrap().clone()],
+                };
 
-                                let mut ts = ts.clone();
-                                ts.duration = metadata.duration as f32;
+                let rest_segments = pl.segments.iter().skip(1).collect::<Vec<_>>();
 
-                                self.add_segment(sequence, ts).await;
+                for (i, segment) in rest_segments.iter().enumerate() {
+                    let is_key = segment
+                        .unknown_tags
+                        .iter()
+                        .find(|t| t.tag == "BILI-AUX")
+                        .map(|t| {
+                            let rest = t.rest.clone().unwrap();
+                            rest.split('|').nth(1).unwrap() == "K"
+                        })
+                        .unwrap_or(true);
 
-                                *self.total_duration.write().await += metadata.duration;
-                                *self.total_size.write().await += size;
+                    if is_key {
+                        // start a new buffer
+                        segment_buffers.push(current_buffer);
+                        current_buffer = SegmentBuffer {
+                            sequence: pl.media_sequence + (i + 1) as u64,
+                            representative_segment: (*segment).clone(),
+                            sub_segments: vec![(*segment).clone()],
+                        };
+                    } else {
+                        current_buffer.sub_segments.push((*segment).clone());
+                    }
+                }
 
-                                new_segment_fetched = true;
+                log::debug!(
+                    "[{}]Segment buffers: {}",
+                    self.room_id,
+                    segment_buffers.len()
+                );
+
+                for buffer in segment_buffers {
+                    if buffer.sequence <= latest_sequence {
+                        continue;
+                    }
+
+                    let mut source_data = Vec::new();
+
+                    for ts in buffer.sub_segments {
+                        let ts_url = current_stream.ts_url(&ts.uri);
+                        if Url::parse(&ts_url).is_err() {
+                            log::error!(
+                                "[{}]Ts url is invalid. ts_url={} original={}",
+                                self.room_id,
+                                ts_url,
+                                ts.uri
+                            );
+                            continue;
+                        }
+
+                        let mut retry = 0;
+                        let client = self.client.clone();
+
+                        loop {
+                            if retry > 3 {
+                                log::error!("[{}]Download ts failed after retry", self.room_id);
+
                                 break;
                             }
-                            Err(e) => {
-                                retry += 1;
-                                log::warn!(
-                                    "[{}]Download ts failed, retry {}: {}",
-                                    self.room_id,
-                                    retry,
-                                    e
-                                );
-                                log::warn!("[{}]file_name: {}", self.room_id, file_name);
-                                log::warn!("[{}]ts_url: {}", self.room_id, ts_url);
+
+                            match client.read().await.download_ts_raw(&ts_url).await {
+                                Ok(data) => {
+                                    if data.is_empty() {
+                                        log::error!(
+                                            "[{}]Segment with size 0, stream might be corrupted",
+                                            self.room_id
+                                        );
+
+                                        return Err(super::errors::RecorderError::InvalidStream {
+                                            stream: current_stream,
+                                        });
+                                    }
+
+                                    source_data.extend_from_slice(&data);
+
+                                    break;
+                                }
+                                Err(e) => {
+                                    retry += 1;
+                                    log::warn!(
+                                        "[{}]Download ts failed, retry {}: {}",
+                                        self.room_id,
+                                        retry,
+                                        e
+                                    );
+                                }
                             }
                         }
                     }
+
+                    let file_name = if is_fmp4 {
+                        buffer
+                            .representative_segment
+                            .uri
+                            .split('/')
+                            .next_back()
+                            .unwrap_or(&buffer.representative_segment.uri)
+                            .to_string()
+                            .replace("m4s", "ts")
+                    } else {
+                        buffer
+                            .representative_segment
+                            .uri
+                            .split('/')
+                            .next_back()
+                            .unwrap_or(&buffer.representative_segment.uri)
+                            .to_string()
+                    };
+
+                    let full_path = self.get_full_path(&format!("{work_dir}/{file_name}")).await;
+                    let full_path = Path::new(&full_path);
+
+                    let mut to_add_segment = buffer.representative_segment.clone();
+                    to_add_segment.uri = file_name.clone();
+
+                    if is_fmp4 {
+                        crate::ffmpeg::convert_fmp4_to_ts_raw(
+                            &header_data,
+                            &source_data,
+                            full_path,
+                        )
+                        .await
+                        .map_err(super::errors::RecorderError::FfmpegError)?;
+                    } else {
+                        // just save the data
+                        let mut file = tokio::fs::File::create(&full_path).await?;
+                        file.write_all(&source_data).await?;
+                    }
+
+                    let metadata = self.get_metadata(full_path).await;
+                    if metadata.is_err() {
+                        return Err(metadata.err().unwrap());
+                    }
+                    let metadata = metadata.unwrap();
+                    let current_metadata = self.current_metadata.read().await.clone();
+                    if let Some(current_metadata) = current_metadata {
+                        if current_metadata.width != metadata.width
+                            || current_metadata.height != metadata.height
+                        {
+                            log::warn!(
+                                "[{}]Resolution changed: {:?} => {:?}",
+                                self.room_id,
+                                &current_metadata,
+                                &metadata
+                            );
+                            return Err(super::errors::RecorderError::ResolutionChanged {
+                                err: format!(
+                                    "Resolution changed: {:?} => {:?}",
+                                    &current_metadata, &metadata
+                                ),
+                            });
+                        }
+                    } else {
+                        // first segment, set current resolution
+                        *self.current_metadata.write().await = Some(metadata.clone());
+
+                        let _ = self.event_channel.send(RecorderEvent::RecordStart {
+                            recorder: self.info().await,
+                        });
+                    }
+
+                    to_add_segment.map = None;
+                    to_add_segment.uri = file_name.clone();
+                    to_add_segment.duration = metadata.duration as f32;
+
+                    if is_fmp4 {
+                        // date time is not provided, should be calculated by offset
+                        let live_start_time = self.room_info.read().await.live_start_time;
+                        let mut seg_offset: i64 = 0;
+                        for tag in &to_add_segment.unknown_tags {
+                            if tag.tag == "BILI-AUX" {
+                                if let Some(rest) = &tag.rest {
+                                    let parts: Vec<&str> = rest.split('|').collect();
+                                    if !parts.is_empty() {
+                                        let offset_hex = parts.first().unwrap();
+                                        if let Ok(offset) = i64::from_str_radix(offset_hex, 16) {
+                                            seg_offset = offset;
+                                        }
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                        to_add_segment.program_date_time = Some(
+                            DateTime::from_timestamp(live_start_time + seg_offset / 1000, 0)
+                                .unwrap()
+                                .into(),
+                        );
+                    }
+                    self.add_segment(buffer.sequence, to_add_segment).await;
+
+                    *self.total_duration.write().await += metadata.duration;
+                    *self.total_size.write().await += source_data.len() as u64;
+                    *self.last_sequence.write().await = buffer.sequence;
+
+                    new_segment_fetched = true;
                 }
 
                 if new_segment_fetched {
@@ -1138,5 +1334,79 @@ impl super::Recorder for BiliRecorder {
 
     async fn disable(&self) {
         *self.enabled.write().await = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn parse_fmp4_playlist() {
+        let content = r#"#EXTM3U
+        #EXT-X-VERSION:7
+        #EXT-X-START:TIME-OFFSET=0
+        #EXT-X-MEDIA-SEQUENCE:323066244
+        #EXT-X-TARGETDURATION:1
+        #EXT-X-MAP:URI=\"h1758715459.m4s\"
+        #EXT-BILI-AUX:97d350|K|7d1e3|fe1425ab
+        #EXTINF:1.00,7d1e3|fe1425ab
+        323066244.m4s
+        #EXT-BILI-AUX:97d706|N|757d4|c9094969
+        #EXTINF:1.00,757d4|c9094969
+        323066245.m4s
+        #EXT-BILI-AUX:97daee|N|8223d|f307566a
+        #EXTINF:1.00,8223d|f307566a
+        323066246.m4s
+        #EXT-BILI-AUX:97dee7|N|775cc|428d567
+        #EXTINF:1.00,775cc|428d567
+        323066247.m4s
+        #EXT-BILI-AUX:97e2df|N|10410|9a62fe61
+        #EXTINF:0.17,10410|9a62fe61
+        323066248.m4s
+        #EXT-BILI-AUX:97e397|K|679d2|8fbee7df
+        #EXTINF:1.00,679d2|8fbee7df
+        323066249.m4s
+        #EXT-BILI-AUX:97e74d|N|8907b|67d1c6ad
+        #EXTINF:1.00,8907b|67d1c6ad
+        323066250.m4s
+        #EXT-BILI-AUX:97eb35|N|87374|f6406797
+        #EXTINF:1.00,87374|f6406797
+        323066251.m4s
+        #EXT-BILI-AUX:97ef2d|N|6b792|b8125097
+        #EXTINF:1.00,6b792|b8125097
+        323066252.m4s
+        #EXT-BILI-AUX:97f326|N|e213|b30c02c6
+        #EXTINF:0.17,e213|b30c02c6
+        323066253.m4s
+        #EXT-BILI-AUX:97f3de|K|65754|7ea6dcc8
+        #EXTINF:1.00,65754|7ea6dcc8
+        323066254.m4s
+        "#;
+        let (_, pl) = m3u8_rs::parse_media_playlist(content.as_bytes()).unwrap();
+        // ExtTag { tag: "X-MAP", rest: Some("URI=\\\"h1758715459.m4s\\\"") }
+        let header_url = pl
+            .segments
+            .first()
+            .unwrap()
+            .unknown_tags
+            .iter()
+            .find(|t| t.tag == "X-MAP")
+            .map(|t| {
+                let rest = t.rest.clone().unwrap();
+                rest.split('=').nth(1).unwrap().replace("\\\"", "")
+            });
+        // #EXT-BILI-AUX:a5e4e0|K|79b3e|ebde469e
+        let is_key = pl
+            .segments
+            .first()
+            .unwrap()
+            .unknown_tags
+            .iter()
+            .find(|t| t.tag == "BILI-AUX")
+            .map(|t| {
+                let rest = t.rest.clone().unwrap();
+                rest.split('|').nth(1).unwrap() == "K"
+            });
+        assert_eq!(is_key, Some(true));
+        assert_eq!(header_url, Some("h1758715459.m4s".to_string()));
     }
 }

@@ -36,6 +36,10 @@ pub enum BiliClientError {
     SecurityControlError,
     #[error("API error: {0}")]
     ApiError(String),
+    #[error("Format not found: {0}")]
+    FormatNotFound(String),
+    #[error("Codec not found: {0}")]
+    CodecNotFound(String),
 }
 
 impl From<BiliClientError> for String {

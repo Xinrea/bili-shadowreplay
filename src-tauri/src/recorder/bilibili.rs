@@ -198,6 +198,8 @@ impl BiliRecorder {
         *self.current_metadata.write().await = None;
         *self.platform_live_id.write().await = String::new();
         *self.live_id.write().await = String::new();
+        *self.total_duration.write().await = 0.0;
+        *self.total_size.write().await = 0;
     }
 
     async fn should_record(&self) -> bool {

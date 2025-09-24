@@ -656,7 +656,7 @@ impl DouyinRecorder {
         }
     }
 
-    async fn generate_m3u8(&self, live_id: &str, start: i64, end: i64) -> String {
+    async fn generate_m3u8(&self, live_id: &str, start: i64, end: i64) -> MediaPlaylist {
         let range = if start != 0 || end != 0 {
             Some(Range {
                 x: start as f32,
@@ -686,14 +686,12 @@ impl DouyinRecorder {
                 playlist.end_list = false;
                 playlist.playlist_type = Some(MediaPlaylistType::Event);
             }
-            let mut v: Vec<u8> = Vec::new();
-            playlist.write_to(&mut v).unwrap();
-            let m3u8_str: &str = std::str::from_utf8(&v).unwrap();
-            m3u8_str.to_string()
+
+            playlist
         } else {
             let playlist = self.load_playlist(live_id).await;
             if playlist.is_err() {
-                return "#EXTM3U\n#EXT-X-VERSION:6\n".to_string();
+                return MediaPlaylist::default();
             }
             let mut playlist = playlist.unwrap();
             playlist.playlist_type = Some(MediaPlaylistType::Vod);
@@ -710,10 +708,8 @@ impl DouyinRecorder {
                 }
                 playlist.segments = segments;
             }
-            let mut v: Vec<u8> = Vec::new();
-            playlist.write_to(&mut v).unwrap();
-            let m3u8_str: &str = std::str::from_utf8(&v).unwrap();
-            m3u8_str.to_string()
+
+            playlist
         }
     }
 }
@@ -803,7 +799,7 @@ impl Recorder for DouyinRecorder {
         log::info!("Recorder for room {} quit.", self.room_id);
     }
 
-    async fn playlist(&self, live_id: &str, start: i64, end: i64) -> String {
+    async fn playlist(&self, live_id: &str, start: i64, end: i64) -> MediaPlaylist {
         self.generate_m3u8(live_id, start, end).await
     }
 
@@ -837,7 +833,10 @@ impl Recorder for DouyinRecorder {
         // first generate a tmp clip file
         // generate a tmp m3u8 index file
         let m3u8_index_file_path = format!("{}/{}", work_dir, "tmp.m3u8");
-        let m3u8_content = self.playlist(live_id, 0, 0).await;
+        let playlist = self.playlist(live_id, 0, 0).await;
+        let mut v: Vec<u8> = Vec::new();
+        playlist.write_to(&mut v).unwrap();
+        let m3u8_content: &str = std::str::from_utf8(&v).unwrap();
         tokio::fs::write(&m3u8_index_file_path, m3u8_content).await?;
         // generate a tmp clip file
         let clip_file_path = format!("{}/{}", work_dir, "tmp.mp4");

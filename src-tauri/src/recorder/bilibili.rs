@@ -747,7 +747,12 @@ impl BiliRecorder {
         Ok(task_begin_time.elapsed().as_millis())
     }
 
-    async fn generate_archive_m3u8(&self, live_id: &str, start: i64, end: i64) -> String {
+    async fn generate_archive_playlist(
+        &self,
+        live_id: &str,
+        start: i64,
+        end: i64,
+    ) -> MediaPlaylist {
         let mut range = None;
         if start != 0 || end != 0 {
             range = Some(Range {
@@ -758,7 +763,7 @@ impl BiliRecorder {
 
         let playlist = self.load_playlist(live_id).await;
         if playlist.is_err() {
-            return "#EXTM3U\n#EXT-X-VERSION:6\n".to_string();
+            return MediaPlaylist::default();
         }
         let mut playlist = playlist.unwrap();
 
@@ -778,14 +783,11 @@ impl BiliRecorder {
         playlist.end_list = true;
         playlist.playlist_type = Some(MediaPlaylistType::Vod);
 
-        let mut v: Vec<u8> = Vec::new();
-        playlist.write_to(&mut v).unwrap();
-        let m3u8_str: &str = std::str::from_utf8(&v).unwrap();
-        m3u8_str.to_string()
+        playlist
     }
 
     /// if fetching live/last stream m3u8, all entries are cached in memory, so it will be much faster than `read_dir`
-    async fn generate_live_m3u8(&self, start: i64, end: i64) -> String {
+    async fn generate_live_playlist(&self, start: i64, end: i64) -> MediaPlaylist {
         let live_status = *self.live_status.read().await;
         let range = if start != 0 || end != 0 {
             Some(Range {
@@ -799,7 +801,7 @@ impl BiliRecorder {
         let mut playlist = self.m3u8_playlist.read().await.clone();
 
         if playlist.segments.is_empty() {
-            return "#EXTM3U\n#EXT-X-VERSION:6\n".to_string();
+            return MediaPlaylist::default();
         }
 
         if let Some(range) = range {
@@ -821,12 +823,7 @@ impl BiliRecorder {
             (Some(MediaPlaylistType::Vod), true)
         };
 
-        let mut v: Vec<u8> = Vec::new();
-
-        playlist.write_to(&mut v).unwrap();
-        let m3u8_str: &str = std::str::from_utf8(&v).unwrap();
-
-        m3u8_str.to_string()
+        playlist
     }
 }
 
@@ -923,12 +920,14 @@ impl super::Recorder for BiliRecorder {
         log::info!("[{}]Recorder quit.", self.room_id);
     }
 
-    async fn playlist(&self, live_id: &str, start: i64, end: i64) -> String {
-        if *self.live_id.read().await == live_id && self.should_record().await {
-            self.generate_live_m3u8(start, end).await
+    async fn playlist(&self, live_id: &str, start: i64, end: i64) -> MediaPlaylist {
+        let playlist = if *self.live_id.read().await == live_id && self.should_record().await {
+            self.generate_live_playlist(start, end).await
         } else {
-            self.generate_archive_m3u8(live_id, start, end).await
-        }
+            self.generate_archive_playlist(live_id, start, end).await
+        };
+
+        playlist
     }
 
     async fn get_related_playlists(&self, parent_id: &str) -> Vec<(String, String)> {
@@ -1064,7 +1063,10 @@ impl super::Recorder for BiliRecorder {
         // first generate a tmp clip file
         // generate a tmp m3u8 index file
         let m3u8_index_file_path = format!("{}/{}", work_dir, "tmp.m3u8");
-        let m3u8_content = self.playlist(live_id, 0, 0).await;
+        let playlist = self.playlist(live_id, 0, 0).await;
+        let mut v: Vec<u8> = Vec::new();
+        playlist.write_to(&mut v).unwrap();
+        let m3u8_content: &str = std::str::from_utf8(&v).unwrap();
         let is_fmp4 = m3u8_content.contains("#EXT-X-MAP:URI=");
         tokio::fs::write(&m3u8_index_file_path, m3u8_content).await?;
         log::info!(

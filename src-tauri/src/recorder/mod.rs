@@ -8,6 +8,7 @@ pub mod entry;
 
 use async_trait::async_trait;
 use danmu::DanmuEntry;
+use m3u8_rs::MediaPlaylist;
 use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,7 +77,7 @@ pub struct UserInfo {
 pub trait Recorder: Send + Sync + 'static {
     async fn run(&self);
     async fn stop(&self);
-    async fn playlist(&self, live_id: &str, start: i64, end: i64) -> String;
+    async fn playlist(&self, live_id: &str, start: i64, end: i64) -> MediaPlaylist;
     async fn get_related_playlists(&self, parent_id: &str) -> Vec<(String, String)>;
     async fn info(&self) -> RecorderInfo;
     async fn comments(&self, live_id: &str) -> Result<Vec<DanmuEntry>, errors::RecorderError>;

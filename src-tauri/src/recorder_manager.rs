@@ -489,8 +489,23 @@ impl RecorderManager {
         }
 
         if !params.danmu {
+            log::info!("Skip danmu encoding");
             return Ok(clip_file);
         }
+
+        let stream_start_timestamp_milis = recorder
+            .playlist(
+                &params.live_id,
+                params.range.as_ref().unwrap().start as i64,
+                params.range.as_ref().unwrap().end as i64,
+            )
+            .await
+            .segments
+            .first()
+            .unwrap()
+            .program_date_time
+            .unwrap()
+            .timestamp_millis();
 
         let danmus = recorder.comments(&params.live_id).await;
         if danmus.is_err() {
@@ -508,11 +523,15 @@ impl RecorderManager {
         );
         let mut danmus = danmus.unwrap();
         log::debug!("First danmu entry: {:?}", danmus.first());
+        log::debug!("Last danmu entry: {:?}", danmus.last());
+        log::debug!("Stream start timestamp: {}", stream_start_timestamp_milis);
+        log::debug!("Local offset: {}", params.local_offset);
+        log::debug!("Range: {:?}", params.range);
 
         if let Some(range) = &params.range {
             // update entry ts to offset and filter danmus in range
             for d in &mut danmus {
-                d.ts -= params.local_offset * 1000 + (range.start * 1000.0).round() as i64;
+                d.ts -= stream_start_timestamp_milis + params.local_offset * 1000;
             }
             if range.duration() > 0.0 {
                 danmus.retain(|x| x.ts >= 0 && x.ts <= (range.duration() * 1000.0).round() as i64);
@@ -785,7 +804,10 @@ impl RecorderManager {
 
             // response with recorder generated m3u8, which contains ts entries that cached in local
             log::debug!("Generating m3u8 for {live_id} with start {start} and end {end}");
-            let m3u8_content = recorder.playlist(live_id, start, end).await;
+            let playlist = recorder.playlist(live_id, start, end).await;
+            let mut v: Vec<u8> = Vec::new();
+            playlist.write_to(&mut v).unwrap();
+            let m3u8_content: &str = std::str::from_utf8(&v).unwrap();
 
             Ok(m3u8_content.into())
         } else {

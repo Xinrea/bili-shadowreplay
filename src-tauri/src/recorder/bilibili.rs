@@ -839,30 +839,33 @@ impl BiliRecorder {
                     }
                     let metadata = metadata.unwrap();
                     let current_metadata = self.current_metadata.read().await.clone();
-                    if let Some(current_metadata) = current_metadata {
-                        if current_metadata.width != metadata.width
-                            || current_metadata.height != metadata.height
-                        {
-                            log::warn!(
-                                "[{}]Resolution changed: {:?} => {:?}",
-                                self.room_id,
-                                &current_metadata,
-                                &metadata
-                            );
-                            return Err(super::errors::RecorderError::ResolutionChanged {
-                                err: format!(
-                                    "Resolution changed: {:?} => {:?}",
-                                    &current_metadata, &metadata
-                                ),
+                    // if Packet Interleaving Stream, video size might be 0, ignore it so that stream is not corrupted
+                    if metadata.width != 0 && metadata.height != 0 {
+                        if let Some(current_metadata) = current_metadata {
+                            if current_metadata.width != metadata.width
+                                || current_metadata.height != metadata.height
+                            {
+                                log::warn!(
+                                    "[{}]Resolution changed: {:?} => {:?}",
+                                    self.room_id,
+                                    &current_metadata,
+                                    &metadata
+                                );
+                                return Err(super::errors::RecorderError::ResolutionChanged {
+                                    err: format!(
+                                        "Resolution changed: {:?} => {:?}",
+                                        &current_metadata, &metadata
+                                    ),
+                                });
+                            }
+                        } else {
+                            // first segment, set current resolution
+                            *self.current_metadata.write().await = Some(metadata.clone());
+
+                            let _ = self.event_channel.send(RecorderEvent::RecordStart {
+                                recorder: self.info().await,
                             });
                         }
-                    } else {
-                        // first segment, set current resolution
-                        *self.current_metadata.write().await = Some(metadata.clone());
-
-                        let _ = self.event_channel.send(RecorderEvent::RecordStart {
-                            recorder: self.info().await,
-                        });
                     }
 
                     to_add_segment.map = None;

@@ -23,7 +23,7 @@ COPY . .
 RUN yarn build
 
 # Build Rust backend
-FROM rust:1.86-slim AS rust-builder
+FROM rust:1.90-slim AS rust-builder
 
 WORKDIR /app
 

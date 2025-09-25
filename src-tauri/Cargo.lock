@@ -570,6 +570,7 @@ dependencies = [
  "rand 0.8.5",
  "regex",
  "reqwest 0.11.27",
+ "sanitize-filename",
  "serde",
  "serde_derive",
  "serde_json",

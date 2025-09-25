@@ -60,6 +60,7 @@ url = "2.5.4"
 srtparse = "0.2.0"
 thiserror = "2"
 deno_core = "0.355"
+sanitize-filename = "0.6.0"
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem

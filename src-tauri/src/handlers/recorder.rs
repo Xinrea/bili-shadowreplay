@@ -467,25 +467,26 @@ pub async fn generate_whole_clip(
 
     let task_id = task.id.clone();
     tokio::spawn(async move {
-        if (state_clone
+        match state_clone
             .recorder_manager
             .generate_whole_clip(Some(&reporter), platform, room_id, parent_id)
-            .await)
-            .is_ok()
+            .await
         {
-            reporter.finish(true, "切片生成完成").await;
-            let _ = state_clone
-                .db
-                .update_task(&task_id, "success", "切片生成完成", None)
-                .await;
-            return;
+            Ok(()) => {
+                reporter.finish(true, "切片生成完成").await;
+                let _ = state_clone
+                    .db
+                    .update_task(&task_id, "success", "切片生成完成", None)
+                    .await;
+            }
+            Err(e) => {
+                reporter.finish(false, &format!("切片生成失败: {e}")).await;
+                let _ = state_clone
+                    .db
+                    .update_task(&task_id, "failed", &format!("切片生成失败: {e}"), None)
+                    .await;
+            }
         }
-
-        reporter.finish(false, "切片生成失败").await;
-        let _ = state_clone
-            .db
-            .update_task(&task_id, "failed", "切片生成失败", None)
-            .await;
     });
     Ok(task)
 }

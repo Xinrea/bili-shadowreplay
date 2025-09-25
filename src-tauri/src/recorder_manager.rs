@@ -877,16 +877,18 @@ impl RecorderManager {
             .iter()
             .map(|p| p.1.clone())
             .collect::<Vec<String>>();
-        let output_filename = format!("[full][{platform}][{room_id}][{parent_id}]{title}.mp4");
-        let cover_filename = format!("[full][{platform}][{room_id}][{parent_id}]{title}.jpg");
-        let output_path = format!(
-            "{}/{}",
-            self.config.read().await.output.as_str(),
-            output_filename
-        );
+
+        let sanitized_filename = sanitize_filename::sanitize(format!(
+            "[full][{platform}][{room_id}][{parent_id}]{title}.mp4"
+        ));
+        let output_filename = Path::new(&sanitized_filename);
+        let cover_filename = output_filename.with_extension("jpg");
+
+        let output_path =
+            Path::new(&self.config.read().await.output.as_str()).join(output_filename);
 
         log::info!("Concat playlists: {playlists:?}");
-        log::info!("Output path: {output_path}");
+        log::info!("Output path: {output_path:?}");
 
         if let Err(e) =
             crate::ffmpeg::concat_multiple_playlist(reporter, playlists, Path::new(&output_path))
@@ -926,8 +928,8 @@ impl RecorderManager {
                 status: 0,
                 room_id,
                 created_at: chrono::Local::now().to_rfc3339(),
-                cover: cover_filename,
-                file: output_filename,
+                cover: cover_filename.to_string_lossy().to_string(),
+                file: output_filename.to_string_lossy().to_string(),
                 note: "".into(),
                 length,
                 size,

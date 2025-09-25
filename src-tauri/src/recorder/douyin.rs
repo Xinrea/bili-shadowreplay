@@ -343,6 +343,8 @@ impl DouyinRecorder {
         *self.platform_live_id.write().await = String::new();
         *self.last_update.write().await = Utc::now().timestamp();
         *self.stream_url.write().await = None;
+        *self.total_duration.write().await = 0.0;
+        *self.total_size.write().await = 0;
     }
 
     async fn get_work_dir(&self, live_id: &str) -> String {

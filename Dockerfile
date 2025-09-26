@@ -56,7 +56,7 @@ RUN wget https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.t
     && rm -rf ffmpeg-*-static ffmpeg-release-amd64-static.tar.xz
 
 # Final stage
-FROM debian:bookworm-slim AS final
+FROM debian:trixie-slim AS final
 
 WORKDIR /app
 

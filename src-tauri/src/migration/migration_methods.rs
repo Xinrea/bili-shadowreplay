@@ -4,7 +4,6 @@ use std::sync::Arc;
 use base64::Engine;
 
 use crate::database::Database;
-use crate::ffmpeg;
 use crate::recorder::entry::EntryStore;
 use crate::recorder::PlatformType;
 
@@ -149,7 +148,7 @@ pub async fn try_convert_entry_to_m3u8(
             ));
             let entry_file = record_path.join("entries.log");
             let m3u8_file_path = record_path.join("playlist.m3u8");
-            if !entry_file.exists() {
+            if !entry_file.exists() || m3u8_file_path.exists() {
                 continue;
             }
             let entry_store = EntryStore::new(record_path.to_str().unwrap()).await;
@@ -164,17 +163,6 @@ pub async fn try_convert_entry_to_m3u8(
                 entry_file.display(),
                 m3u8_file_path.display()
             );
-
-            // convert m3u8 to ts playlist
-            if let Err(e) = ffmpeg::convert_fmp4_to_ts_playlist(&m3u8_file_path).await {
-                log::warn!("Convert m3u8 to ts playlist failed: {}", e);
-                return Ok(());
-            }
-
-            log::info!("Convert m3u8 to ts playlist: {}", m3u8_file_path.display());
-
-            // remove entries.log
-            tokio::fs::remove_file(&entry_file).await?;
         }
     }
 

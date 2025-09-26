@@ -682,6 +682,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(v) => log::info!("Checked ffmpeg version: {v}"),
     }
 
-    http_server::start_api_server(state).await;
+    http_server::api_server::start_api_server(state).await;
     Ok(())
 }

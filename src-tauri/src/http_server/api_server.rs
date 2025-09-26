@@ -1,4 +1,7 @@
-use std::fmt::{self, Display};
+use std::{
+    fmt::{self, Display},
+    path::PathBuf,
+};
 
 use crate::{
     config::Config,
@@ -35,7 +38,7 @@ use crate::{
         },
         AccountInfo,
     },
-    progress::progress_manager::Event,
+    http_server::websocket,
     recorder::{
         bilibili::{
             client::{QrInfo, QrStatus},
@@ -48,19 +51,15 @@ use crate::{
     recorder_manager::{ClipRangeParams, RecorderList},
     state::State,
 };
+use axum::extract::Query;
 use axum::{
-    body::Body,
     extract::{DefaultBodyLimit, Json, Multipart, Path},
-    http::{Request, StatusCode},
-    middleware::{self, Next},
-    response::{IntoResponse, Response, Sse},
+    http::StatusCode,
+    response::IntoResponse,
     routing::{get, post},
     Router,
 };
-use axum::{extract::Query, response::sse};
-use futures::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 
@@ -1628,67 +1627,6 @@ async fn handler_hls(
     Ok(response)
 }
 
-// 字符串转义工具函数
-fn escape_sse_string(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('"', "\\\"")
-}
-
-async fn handler_sse(
-    state: axum::extract::State<State>,
-) -> Sse<impl Stream<Item = Result<sse::Event, axum::Error>>> {
-    let rx = state.progress_manager.subscribe();
-
-    let stream = stream::unfold(rx, move |mut rx| async move {
-        match rx.recv().await {
-            Ok(event) => {
-                let sse_event = match event {
-                    Event::ProgressUpdate { id, content } => {
-                        sse::Event::default().event("progress-update").data(format!(
-                            r#"{{"id":"{}","content":"{}"}}"#,
-                            id,
-                            escape_sse_string(&content)
-                        ))
-                    }
-                    Event::ProgressFinished {
-                        id,
-                        success,
-                        message,
-                    } => sse::Event::default()
-                        .event("progress-finished")
-                        .data(format!(
-                            r#"{{"id":"{}","success":{},"message":"{}"}}"#,
-                            id,
-                            success,
-                            escape_sse_string(&message)
-                        )),
-                    Event::DanmuReceived { room, ts, content } => sse::Event::default()
-                        .event(format!("danmu:{}", room))
-                        .data(format!(
-                            r#"{{"ts":"{}","content":"{}"}}"#,
-                            ts,
-                            escape_sse_string(&content)
-                        )),
-                };
-                Some((Ok(sse_event), rx))
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                // 跳过丢失的事件，继续处理
-                Some((Ok(sse::Event::default().event("keep-alive").data("")), rx))
-            }
-        }
-    });
-
-    Sse::new(stream).keep_alive(
-        sse::KeepAlive::new()
-            .interval(std::time::Duration::from_secs(30))
-            .text("keep-alive"),
-    )
-}
-
 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024 * 1024;
 
 pub async fn start_api_server(state: State) {
@@ -1864,11 +1802,13 @@ pub async fn start_api_server(state: State) {
         .route("/api/upload_file", post(handler_upload_file))
         .route("/api/image/:video_id", get(handler_image_base64))
         .route("/hls/*uri", get(handler_hls))
-        .route("/api/sse", get(handler_sse))
         .nest_service("/output", ServeDir::new(output_path))
         .nest_service("/cache", ServeDir::new(cache_path));
 
+    let websocket_layer = websocket::create_websocket_server(state.clone()).await;
+
     let router = app
+        .layer(websocket_layer)
         .layer(cors)
         .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
         .with_state(state);

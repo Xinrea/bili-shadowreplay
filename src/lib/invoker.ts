@@ -5,6 +5,7 @@ import { convertFileSrc as tauri_convert } from "@tauri-apps/api/core";
 import { listen as tauri_listen } from "@tauri-apps/api/event";
 import { open as tauri_open } from "@tauri-apps/plugin-shell";
 import { onOpenUrl as tauri_onOpenUrl } from "@tauri-apps/plugin-deep-link";
+import { io, Socket } from "socket.io-client";
 
 declare global {
   interface Window {
@@ -171,60 +172,87 @@ async function get_cover(coverType: string, coverPath: string) {
   return `${ENDPOINT}/${coverType}/${coverPath}`;
 }
 
-let event_source: EventSource | null = null;
-let reconnectTimeout: number | null = null;
-const MAX_RECONNECT_ATTEMPTS = 5;
-let reconnectAttempts = 0;
+let socket: Socket | null = null;
 
-// 连接恢复回调列表
-const connectionRestoreCallbacks: Array<() => void> = [];
+// Socket.IO 事件监听器映射
+const eventListeners: Map<string, Array<(data: any) => void>> = new Map();
 
-function createEventSource() {
+function createSocket() {
   if (TAURI_ENV) return;
 
-  if (event_source) {
-    event_source.close();
+  if (socket) {
+    socket.disconnect();
   }
-  event_source = new EventSource(`${ENDPOINT}/api/sse`);
 
-  event_source.onopen = () => {
-    reconnectAttempts = 0;
+  // 构建 Socket.IO URL
+  console.log("endpoint:", ENDPOINT);
+  const socketUrl = ENDPOINT;
+  socket = io(`${socketUrl}/ws`, {
+    transports: ["websocket", "polling"],
+    autoConnect: true,
+    reconnection: true,
+  });
 
-    // 触发连接恢复回调
-    connectionRestoreCallbacks.forEach((callback) => {
-      try {
-        callback();
-      } catch (e) {
-        console.error("[SSE] Connection restore callback error:", e);
-      }
-    });
-  };
+  socket.on("connect", () => {
+    console.log("[Socket.IO] Connected to server");
+  });
 
-  event_source.onerror = (error) => {
-    // 只有在连接真正关闭时才进行重连
-    if (
-      event_source.readyState === EventSource.CLOSED &&
-      reconnectAttempts < MAX_RECONNECT_ATTEMPTS
-    ) {
-      reconnectAttempts++;
-      const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 10000);
+  socket.on("disconnect", (reason) => {
+    console.log("[Socket.IO] Disconnected from server:", reason);
+  });
 
-      reconnectTimeout = window.setTimeout(() => {
-        createEventSource();
-      }, delay);
-    } else {
-      console.error("[SSE] Max reconnection attempts reached, giving up");
+  socket.on("connect_error", (error) => {
+    console.error("[Socket.IO] Connection error:", error);
+  });
+
+  // 监听服务器发送的事件
+  socket.on("progress", (data) => {
+    const eventType = data.event || "message";
+
+    // 触发对应的事件监听器
+    const listeners = eventListeners.get(eventType);
+    if (listeners) {
+      listeners.forEach((callback) => {
+        try {
+          callback({
+            type: eventType,
+            payload: data.data,
+          });
+        } catch (e) {
+          console.error(
+            `[Socket.IO] Event listener error for ${eventType}:`,
+            e
+          );
+        }
+      });
     }
-  };
-}
+  });
 
-// 注册连接恢复回调
-function onConnectionRestore(callback: () => void) {
-  connectionRestoreCallbacks.push(callback);
+  socket.on("danmu", (data) => {
+    const eventType = data.event || "message";
+
+    // 触发对应的事件监听器
+    const listeners = eventListeners.get(eventType);
+    if (listeners) {
+      listeners.forEach((callback) => {
+        try {
+          callback({
+            type: eventType,
+            payload: data.data,
+          });
+        } catch (e) {
+          console.error(
+            `[Socket.IO] Event listener error for ${eventType}:`,
+            e
+          );
+        }
+      });
+    }
+  });
 }
 
 if (!TAURI_ENV) {
-  createEventSource();
+  createSocket();
 }
 
 async function listen<T>(event: string, callback: (data: any) => void) {
@@ -232,13 +260,26 @@ async function listen<T>(event: string, callback: (data: any) => void) {
     return await tauri_listen(event, callback);
   }
 
-  event_source.addEventListener(event, (event_data) => {
-    const data = JSON.parse(event_data.data);
-    callback({
-      type: event,
-      payload: data,
-    });
-  });
+  // 将事件监听器添加到映射中
+  if (!eventListeners.has(event)) {
+    eventListeners.set(event, []);
+  }
+  eventListeners.get(event)!.push(callback);
+
+  // 返回一个清理函数
+  return () => {
+    const listeners = eventListeners.get(event);
+    if (listeners) {
+      const index = listeners.indexOf(callback);
+      if (index > -1) {
+        listeners.splice(index, 1);
+      }
+      // 如果没有监听器了，删除这个事件
+      if (listeners.length === 0) {
+        eventListeners.delete(event);
+      }
+    }
+  };
 }
 
 async function open(url: string) {
@@ -273,6 +314,5 @@ export {
   log,
   close_window,
   onOpenUrl,
-  onConnectionRestore,
   get_cover,
 };

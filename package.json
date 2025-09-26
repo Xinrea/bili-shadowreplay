@@ -30,7 +30,8 @@
     "@tauri-apps/plugin-sql": "~2",
     "lucide-svelte": "^0.479.0",
     "marked": "^16.1.1",
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "socket.io-client": "^4.8.1"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^2.0.0",

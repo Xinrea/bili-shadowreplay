@@ -55,12 +55,14 @@ tower-http = { version = "0.5", features = ["cors", "fs"] }
 futures-core = "0.3"
 futures = "0.3"
 tokio-util = { version = "0.7", features = ["io"] }
+tokio-stream = "0.1"
 clap = { version = "4.5.37", features = ["derive"] }
 url = "2.5.4"
 srtparse = "0.2.0"
 thiserror = "2"
 deno_core = "0.355"
 sanitize-filename = "0.6.0"
+socketioxide = "0.17.2"
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem

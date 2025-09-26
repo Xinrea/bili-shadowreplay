@@ -1,11 +1,5 @@
 <script lang="ts">
-  import {
-    invoke,
-    TAURI_ENV,
-    ENDPOINT,
-    listen,
-    onConnectionRestore,
-  } from "../invoker";
+  import { invoke, TAURI_ENV, ENDPOINT, listen } from "../invoker";
   import { Upload, X, CheckCircle } from "lucide-svelte";
   import { createEventDispatcher, onDestroy } from "svelte";
   import { open } from "@tauri-apps/plugin-dialog";
@@ -118,11 +112,6 @@
     } catch (error) {
       console.error(`[ImportDialog] Failed to check task status:`, error);
     }
-  }
-
-  // 注册连接恢复回调
-  if (!TAURI_ENV) {
-    onConnectionRestore(checkTaskStatus);
   }
 
   onDestroy(() => {

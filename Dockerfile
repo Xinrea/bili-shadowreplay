@@ -48,12 +48,6 @@ COPY src-tauri/crates ./src-tauri/crates
 WORKDIR /app/src-tauri
 RUN rustup component add rustfmt
 RUN cargo build --no-default-features --features headless --release
-# Download and install FFmpeg static build
-RUN wget https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz \
-    && tar xf ffmpeg-release-amd64-static.tar.xz \
-    && mv ffmpeg-*-static/ffmpeg ./  \
-    && mv ffmpeg-*-static/ffprobe ./ \
-    && rm -rf ffmpeg-*-static ffmpeg-release-amd64-static.tar.xz
 
 # Final stage
 FROM debian:trixie-slim AS final
@@ -67,13 +61,13 @@ RUN apt-get update && apt-get install -y \
     fonts-wqy-microhei \
     netbase \
     nscd \
+    ffmpeg \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 
 RUN touch /etc/netgroup
 RUN mkdir -p /var/run/nscd && chmod 755 /var/run/nscd
-RUN nscd
 
 # Add /app to PATH
 ENV PATH="/app:${PATH}"
@@ -83,8 +77,6 @@ COPY --from=frontend-builder /app/dist ./dist
 
 # Copy built Rust binary
 COPY --from=rust-builder /app/src-tauri/target/release/bili-shadowreplay .
-COPY --from=rust-builder /app/src-tauri/ffmpeg ./ffmpeg
-COPY --from=rust-builder /app/src-tauri/ffprobe ./ffprobe
 
 # Expose port
 EXPOSE 3000

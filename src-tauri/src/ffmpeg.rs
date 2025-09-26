@@ -1344,6 +1344,108 @@ pub async fn convert_fmp4_to_ts(header: &Path, source: &Path) -> Result<(), Stri
     convert_fmp4_to_ts_raw(&header_data, &source_data, &output_ts).await
 }
 
+pub async fn convert_fmp4_to_ts_playlist(playlist: &Path) -> Result<(), String> {
+    // ffmpeg -i input.m3u8 \
+    //    -c:v copy \
+    //    -c:a copy \
+    //    -f hls \
+    //    -hls_segment_type mpegts \
+    //    -hls_playlist_type vod \
+    //    -hls_flags  \
+    //    -hls_time 5 \
+    //    -hls_list_size 0 \
+    //    -hls_segment_filename "output_%d.ts" \
+    //    output.m3u8
+
+    let work_dir = playlist.parent().unwrap();
+
+    // check if any m4s file in work_dir
+    let m4s_files_exist = glob::glob(format!("{}/*.m4s", work_dir.to_string_lossy()).as_str())
+        .unwrap()
+        .next()
+        .is_some();
+    if !m4s_files_exist {
+        log::warn!(
+            "No m4s files in work_dir, skip conversion: {}",
+            work_dir.to_string_lossy()
+        );
+        return Ok(());
+    }
+
+    let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
+    #[cfg(target_os = "windows")]
+    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
+
+    let output_playlist = playlist.with_extension("ts.m3u8");
+
+    let child = ffmpeg_process
+        .args(["-i", playlist.to_str().unwrap()])
+        .args(["-c:v", "copy"])
+        .args(["-c:a", "copy"])
+        .args(["-f", "hls"])
+        .args(["-hls_segment_type", "mpegts"])
+        .args(["-hls_playlist_type", "vod"])
+        .args(["-hls_flags", "program_date_time"])
+        .args(["-hls_time", "5"])
+        .args(["-hls_list_size", "0"])
+        .args([
+            "-hls_segment_filename",
+            format!("{}/converted_%d.ts", work_dir.to_string_lossy()).as_str(),
+        ])
+        .args(["-y", output_playlist.to_str().unwrap()])
+        .args(["-progress", "pipe:2"])
+        .stderr(Stdio::piped())
+        .spawn();
+
+    if let Err(e) = child {
+        return Err(format!("Failed to spawn ffmpeg process: {e}"));
+    }
+
+    let mut child = child.unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let reader = BufReader::new(stderr);
+    let mut parser = FfmpegLogParser::new(reader);
+
+    while let Ok(event) = parser.parse_next_event().await {
+        match event {
+            FfmpegEvent::LogEOF => break,
+            FfmpegEvent::Log(level, content) => {
+                if content.contains("error") || level == LogLevel::Error {
+                    log::error!("fMP4 to TS playlist conversion error: {content}");
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| format!("ffmpeg process failed: {e}"))?;
+
+    if !status.success() {
+        return Err(format!("ffmpeg process failed: {status}"));
+    }
+
+    // remove all m4s files in work_dir
+    let m4s_files = glob::glob(format!("{}/*.m4s", work_dir.to_string_lossy()).as_str()).unwrap();
+    for m4s_file in m4s_files.flatten() {
+        let _ = tokio::fs::remove_file(m4s_file).await;
+    }
+
+    // remove playlist, then rename output_playlist to playlist
+    if let Err(e) = tokio::fs::remove_file(playlist).await {
+        log::warn!("Failed to remove old playlist: {}", e);
+        return Err(e.to_string());
+    }
+    if let Err(e) = tokio::fs::rename(output_playlist, playlist).await {
+        log::warn!("Failed to rename output playlist to playlist: {}", e);
+        return Err(e.to_string());
+    }
+
+    Ok(())
+}
+
 // tests
 #[cfg(test)]
 mod tests {

@@ -63,6 +63,7 @@ thiserror = "2"
 deno_core = "0.355"
 sanitize-filename = "0.6.0"
 socketioxide = "0.17.2"
+glob = "0.3.3"
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem

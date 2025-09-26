@@ -64,28 +64,6 @@ use std::path::PathBuf;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 
-// Middleware to add keep-alive headers to all responses
-async fn add_keep_alive_headers(request: Request<Body>, next: Next) -> Response {
-    let uri_path = request.uri().path().to_string();
-    let mut response = next.run(request).await;
-
-    // Skip keep-alive for streaming endpoints that might not work well with it
-    let should_skip_keepalive = uri_path.starts_with("/api/sse")
-        || uri_path.starts_with("/hls/")
-        || uri_path.contains(".m3u8")
-        || uri_path.contains(".ts");
-
-    if !should_skip_keepalive {
-        // Add Connection: keep-alive header for regular HTTP responses
-        response.headers_mut().insert(
-            axum::http::header::CONNECTION,
-            axum::http::HeaderValue::from_static("keep-alive"),
-        );
-    }
-
-    response
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ApiResponse<T> {
@@ -1893,7 +1871,6 @@ pub async fn start_api_server(state: State) {
     let router = app
         .layer(cors)
         .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
-        .layer(middleware::from_fn(add_keep_alive_headers))
         .with_state(state);
 
     let addr = "0.0.0.0:3000";

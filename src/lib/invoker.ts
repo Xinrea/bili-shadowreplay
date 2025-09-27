@@ -204,17 +204,15 @@ function createSocket() {
   });
 
   // 监听服务器发送的事件
-  socket.on("progress", (data) => {
-    const eventType = data.event || "message";
-
+  socket.on("progress-finished", (data) => {
+    const eventType = `progress-finished:${data.id}`;
     // 触发对应的事件监听器
     const listeners = eventListeners.get(eventType);
     if (listeners) {
       listeners.forEach((callback) => {
         try {
           callback({
-            type: eventType,
-            payload: data.data,
+            payload: data,
           });
         } catch (e) {
           console.error(
@@ -226,15 +224,28 @@ function createSocket() {
     }
   });
 
+  socket.on("progress-update", (data) => {
+    const eventType = `progress-update:${data.id}`;
+    const listeners = eventListeners.get(eventType);
+    if (listeners) {
+      listeners.forEach((callback) => {
+        callback({
+          payload: data,
+        });
+      });
+    }
+  });
+
   socket.on("danmu", (data) => {
     // 触发对应的事件监听器
-    const listeners = eventListeners.get("danmu");
+    console.log("danmu:", data);
+    const room_id = data.room;
+    const listeners = eventListeners.get(`danmu:${room_id}`);
     if (listeners) {
       listeners.forEach((callback) => {
         try {
           callback({
-            type: "danmu",
-            payload: data.data,
+            payload: data,
           });
         } catch (e) {
           console.error(`[Socket.IO] Event listener error for danmu:`, e);
@@ -249,6 +260,7 @@ if (!TAURI_ENV) {
 }
 
 async function listen<T>(event: string, callback: (data: any) => void) {
+  log.info("listen to event:", event);
   if (TAURI_ENV) {
     return await tauri_listen(event, callback);
   }

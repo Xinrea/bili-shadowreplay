@@ -178,63 +178,7 @@
     }
   });
 
-  const update_listener = listen<ProgressUpdate>(`progress-update`, (e) => {
-    let event_id = e.payload.id;
-    console.log(e.payload);
-    if (event_id == current_encode_event_id) {
-      update_encode_prompt(e.payload.content);
-    } else if (event_id == current_generate_event_id) {
-      update_generate_prompt(e.payload.content);
-    } else if (event_id === current_post_event_id) {
-      update_post_prompt(e.payload.content);
-    } else if (event_id === current_clip_event_id) {
-      update_clip_prompt(e.payload.content);
-    }
-  });
-
-  const finish_listener = listen<ProgressFinished>(`progress-finished`, (e) => {
-    let event_id = e.payload.id;
-    if (event_id == current_encode_event_id) {
-      update_encode_prompt(`压制字幕`);
-      if (!e.payload.success) {
-        alert("压制失败: " + e.payload.message);
-      }
-      current_encode_event_id = null;
-    } else if (event_id == current_generate_event_id) {
-      update_generate_prompt(`AI 生成字幕`);
-      if (!e.payload.success) {
-        alert("生成字幕失败: " + e.payload.message);
-      }
-      current_generate_event_id = null;
-    } else if (event_id === current_post_event_id) {
-      update_post_prompt(`投稿`);
-      if (!e.payload.success) {
-        alert(e.payload.message);
-      }
-      current_post_event_id = null;
-    } else if (event_id === current_clip_event_id) {
-      update_clip_prompt(`生成切片`);
-      if (e.payload.success) {
-        // 切片生成成功，刷新视频列表
-        if (onVideoListUpdate) {
-          onVideoListUpdate();
-        }
-        // 重置切片设置
-        clipStartTime = 0;
-        clipEndTime = 0;
-        clipTitle = "";
-        clipTimesSet = false; // 重置标记
-      } else {
-        alert("切片生成失败: " + e.payload.message);
-      }
-      current_clip_event_id = null;
-      clipping = false;
-    }
-  });
-
   onDestroy(() => {
-    update_listener?.then((fn) => fn());
-    finish_listener?.then((fn) => fn());
     // 清理窗口关闭事件监听器
     if (windowCloseUnlisten) {
       windowCloseUnlisten();
@@ -272,6 +216,28 @@
     current_post_event_id = event_id;
 
     update_post_prompt(`投稿上传中`);
+
+    const clear_update_listener = await listen(
+      `progress-update:${event_id}`,
+      (e) => {
+        update_post_prompt(e.payload.content);
+      }
+    );
+    const clear_finished_listener = await listen(
+      `progress-finished:${event_id}`,
+      (e) => {
+        update_post_prompt(`投稿`);
+        if (!e.payload.success) {
+          alert(e.payload.message);
+        }
+
+        current_post_event_id = null;
+
+        clear_update_listener();
+        clear_finished_listener();
+      }
+    );
+
     // update profile in local storage
     window.localStorage.setItem("profile-" + roomId, JSON.stringify(profile));
     invoke("upload_procedure", {
@@ -426,6 +392,26 @@
   async function generateSubtitles() {
     if (video?.file) {
       current_generate_event_id = generateEventId();
+      const clear_update_listener = await listen(
+        `progress-update:${current_generate_event_id}`,
+        (e) => {
+          update_generate_prompt(e.payload.content);
+        }
+      );
+      const clear_finished_listener = await listen(
+        `progress-finished:${current_generate_event_id}`,
+        (e) => {
+          update_generate_prompt(`AI 生成字幕`);
+          if (!e.payload.success) {
+            alert("生成字幕失败: " + e.payload.message);
+          }
+
+          current_generate_event_id = null;
+
+          clear_update_listener();
+          clear_finished_listener();
+        }
+      );
       const savedSubtitles = (await invoke("generate_video_subtitle", {
         eventId: current_generate_event_id,
         id: video.id,
@@ -614,6 +600,37 @@
 
     clipping = true;
     current_clip_event_id = generateEventId();
+    const clear_update_listener = await listen(
+      `progress-update:${current_clip_event_id}`,
+      (e) => {
+        update_clip_prompt(e.payload.content);
+      }
+    );
+    const clear_finished_listener = await listen(
+      `progress-finished:${current_clip_event_id}`,
+      (e) => {
+        update_clip_prompt(`生成切片`);
+        if (e.payload.success) {
+          // 切片生成成功，刷新视频列表
+          if (onVideoListUpdate) {
+            onVideoListUpdate();
+          }
+          // 重置切片设置
+          clipStartTime = 0;
+          clipEndTime = 0;
+          clipTitle = "";
+          clipTimesSet = false; // 重置标记
+        } else {
+          alert("切片生成失败: " + e.payload.message);
+        }
+        clipping = false;
+
+        current_clip_event_id = null;
+
+        clear_update_listener();
+        clear_finished_listener();
+      }
+    );
 
     try {
       await invoke("clip_video", {
@@ -1079,6 +1096,26 @@
     await saveSubtitles();
     const event_id = generateEventId();
     current_encode_event_id = event_id;
+    const clear_update_listener = await listen(
+      `progress-update:${event_id}`,
+      (e) => {
+        update_encode_prompt(e.payload.content);
+      }
+    );
+    const clear_finished_listener = await listen(
+      `progress-finished:${event_id}`,
+      (e) => {
+        update_encode_prompt(`压制字幕`);
+        if (!e.payload.success) {
+          alert("压制失败: " + e.payload.message);
+        }
+
+        current_encode_event_id = null;
+
+        clear_update_listener();
+        clear_finished_listener();
+      }
+    );
     const result = await invoke("encode_video_subtitle", {
       eventId: event_id,
       id: video.id,

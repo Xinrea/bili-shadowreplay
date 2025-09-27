@@ -173,30 +173,7 @@
     }
   }
 
-  const update_listener = listen<ProgressUpdate>(`progress-update`, (e) => {
-    let event_id = e.payload.id;
-    if (event_id === current_clip_event_id) {
-      update_clip_prompt(e.payload.content);
-    }
-  });
-  const finished_listener = listen<ProgressFinished>(
-    `progress-finished`,
-    (e) => {
-      let event_id = e.payload.id;
-      if (event_id === current_clip_event_id) {
-        update_clip_prompt(`生成切片`);
-        if (!e.payload.success) {
-          alert("请检查 ffmpeg 是否配置正确：" + e.payload.message);
-        }
-        current_clip_event_id = null;
-      }
-    }
-  );
-
   onDestroy(() => {
-    update_listener?.then((fn) => fn());
-    finished_listener?.then((fn) => fn());
-
     // 清理滚动定时器
     if (scroll_timeout) {
       clearTimeout(scroll_timeout);
@@ -328,6 +305,25 @@
     update_clip_prompt(`切片生成中`);
     let event_id = generateEventId();
     current_clip_event_id = event_id;
+    const clear_update_listener = await listen(
+      `progress-update:${event_id}`,
+      (e) => {
+        update_clip_prompt(e.payload.content);
+      }
+    );
+    const clear_finished_listener = await listen(
+      `progress-finished:${event_id}`,
+      (e) => {
+        update_clip_prompt(`生成切片`);
+        if (!e.payload.success) {
+          alert("请检查 ffmpeg 是否配置正确：" + e.payload.message);
+        }
+        current_clip_event_id = null;
+
+        clear_update_listener();
+        clear_finished_listener();
+      }
+    );
     let new_video = (await clipRange(event_id, {
       title: archive.title,
       note: clip_note,

@@ -76,7 +76,10 @@ impl EventEmitter {
             match event {
                 Event::ProgressUpdate { id, content } => {
                     self.app_handle
-                        .emit("progress-update", UpdateEvent { id, content })
+                        .emit(
+                            &format!("progress-update:{}", id),
+                            UpdateEvent { id, content },
+                        )
                         .unwrap();
                 }
                 Event::ProgressFinished {
@@ -86,7 +89,7 @@ impl EventEmitter {
                 } => {
                     self.app_handle
                         .emit(
-                            "progress-finished",
+                            &format!("progress-finished:{}", id),
                             FinishEvent {
                                 id,
                                 success: *success,

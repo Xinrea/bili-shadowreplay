@@ -29,13 +29,10 @@ pub async fn create_websocket_server(state: State) -> SocketIoLayer {
                     Ok(event) => {
                         let (event_type, message) = match event {
                             Event::ProgressUpdate { id, content } => (
-                                "progress",
+                                "progress-update",
                                 json!({
-                                    "event": "progress-update",
-                                    "data": {
                                         "id": id,
                                         "content": content
-                                    }
                                 }),
                             ),
                             Event::ProgressFinished {
@@ -43,25 +40,19 @@ pub async fn create_websocket_server(state: State) -> SocketIoLayer {
                                 success,
                                 message,
                             } => (
-                                "progress",
+                                "progress-finished",
                                 json!({
-                                    "event": "progress-finished",
-                                    "data": {
                                         "id": id,
                                         "success": success,
                                         "message": message
-                                    }
                                 }),
                             ),
                             Event::DanmuReceived { room, ts, content } => (
                                 "danmu",
                                 json!({
-                                    "event": "danmu-received",
-                                    "data": {
                                         "room": room,
                                         "ts": ts,
                                         "content": content
-                                    }
                                 }),
                             ),
                         };

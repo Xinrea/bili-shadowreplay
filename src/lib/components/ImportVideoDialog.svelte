@@ -55,47 +55,6 @@
     return size.toFixed(decimals) + " " + units[unitIndex];
   }
 
-  // 进度监听器
-  const progressUpdateListener = listen<ProgressUpdate>(
-    "progress-update",
-    (e) => {
-      if (e.payload.id === currentImportEventId) {
-        importProgress = e.payload.content;
-
-        // 从进度文本中提取当前文件索引
-        const match = importProgress.match(/正在导入第(\d+)个/);
-        if (match) {
-          currentFileIndex = parseInt(match[1]);
-        }
-      }
-    }
-  );
-
-  const progressFinishedListener = listen<ProgressFinished>(
-    "progress-finished",
-    (e) => {
-      if (e.payload.id === currentImportEventId) {
-        if (e.payload.success) {
-          // 导入成功，关闭对话框并刷新列表
-          showDialog = false;
-          selectedFilePath = null;
-          selectedFileName = "";
-          selectedFileSize = 0;
-          videoTitle = "";
-          resetBatchImportState();
-          dispatch("imported");
-        } else {
-          alert("导入失败: " + e.payload.message);
-          resetBatchImportState();
-        }
-        // 无论成功失败都要重置状态
-        importing = false;
-        currentImportEventId = null;
-        importProgress = "";
-      }
-    }
-  );
-
   // 连接恢复时检查任务状态
   async function checkTaskStatus() {
     if (!currentImportEventId || !importing) return;
@@ -113,11 +72,6 @@
       console.error(`[ImportDialog] Failed to check task status:`, error);
     }
   }
-
-  onDestroy(() => {
-    progressUpdateListener?.then((fn) => fn());
-    progressFinishedListener?.then((fn) => fn());
-  });
 
   async function handleFileSelect() {
     if (TAURI_ENV) {
@@ -396,13 +350,49 @@
       const eventId = "batch_import_" + Date.now();
       currentImportEventId = eventId;
 
+      const clear_update_listener = await listen(
+        `progress-update:${eventId}`,
+        (e) => {
+          importProgress = e.payload.content;
+
+          // 从进度文本中提取当前文件索引
+          const match = importProgress.match(/正在导入第(\d+)个/);
+          if (match) {
+            currentFileIndex = parseInt(match[1]);
+          }
+        }
+      );
+      const clear_finished_listener = await listen(
+        `progress-finished:${eventId}`,
+        (e) => {
+          if (e.payload.success) {
+            // 导入成功，关闭对话框并刷新列表
+            showDialog = false;
+            selectedFilePath = null;
+            selectedFileName = "";
+            selectedFileSize = 0;
+            videoTitle = "";
+            resetBatchImportState();
+            dispatch("imported");
+          } else {
+            alert("导入失败: " + e.payload.message);
+            resetBatchImportState();
+          }
+          // 无论成功失败都要重置状态
+          importing = false;
+          currentImportEventId = null;
+          importProgress = "";
+
+          clear_update_listener();
+          clear_finished_listener();
+        }
+      );
+
       await invoke("batch_import_external_videos", {
         eventId: eventId,
         filePaths: selectedFiles,
         roomId: roomId || 0,
       });
-
-      // 注意：成功处理在 progressFinishedListener 中进行
     } catch (error) {
       console.error("批量导入失败:", error);
       alert("批量导入失败: " + error);
@@ -432,6 +422,44 @@
     try {
       const eventId = "import_" + Date.now();
       currentImportEventId = eventId;
+
+      const clear_update_listener = await listen(
+        `progress-update:${eventId}`,
+        (e) => {
+          importProgress = e.payload.content;
+
+          // 从进度文本中提取当前文件索引
+          const match = importProgress.match(/正在导入第(\d+)个/);
+          if (match) {
+            currentFileIndex = parseInt(match[1]);
+          }
+        }
+      );
+      const clear_finished_listener = await listen(
+        `progress-finished:${eventId}`,
+        (e) => {
+          if (e.payload.success) {
+            // 导入成功，关闭对话框并刷新列表
+            showDialog = false;
+            selectedFilePath = null;
+            selectedFileName = "";
+            selectedFileSize = 0;
+            videoTitle = "";
+            resetBatchImportState();
+            dispatch("imported");
+          } else {
+            alert("导入失败: " + e.payload.message);
+            resetBatchImportState();
+          }
+          // 无论成功失败都要重置状态
+          importing = false;
+          currentImportEventId = null;
+          importProgress = "";
+
+          clear_update_listener();
+          clear_finished_listener();
+        }
+      );
 
       await invoke("import_external_video", {
         eventId: eventId,

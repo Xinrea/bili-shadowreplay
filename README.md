@@ -28,4 +28,5 @@ BiliBili ShadowReplay 是一个缓存直播并进行实时编辑投稿的工具�
 
 ## 赞助
 
-![donate](docs/public/images/donate.png)
+<!-- markdownlint-disable MD033 -->
+<img src="docs/public/images/donate.png" alt="donate" width="300" style="display: block; margin: 0 auto;">

@@ -413,8 +413,12 @@ ${mediaPlaylistUrl}`;
       }
 
       // listen to danmaku event
-      await listen("danmu:" + room_id, (event: { payload: DanmuEntry }) => {
+      await listen("danmu", (event: { payload: DanmuEntry }) => {
         if (global_offset == 0) {
+          return;
+        }
+
+        if (event.payload.room != room_id) {
           return;
         }
 

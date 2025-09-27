@@ -178,8 +178,6 @@ let socket: Socket | null = null;
 const eventListeners: Map<string, Array<(data: any) => void>> = new Map();
 
 function createSocket() {
-  if (TAURI_ENV) return;
-
   if (socket) {
     socket.disconnect();
   }
@@ -229,22 +227,17 @@ function createSocket() {
   });
 
   socket.on("danmu", (data) => {
-    const eventType = data.event || "message";
-
     // 触发对应的事件监听器
-    const listeners = eventListeners.get(eventType);
+    const listeners = eventListeners.get("danmu");
     if (listeners) {
       listeners.forEach((callback) => {
         try {
           callback({
-            type: eventType,
+            type: "danmu",
             payload: data.data,
           });
         } catch (e) {
-          console.error(
-            `[Socket.IO] Event listener error for ${eventType}:`,
-            e
-          );
+          console.error(`[Socket.IO] Event listener error for danmu:`, e);
         }
       });
     }

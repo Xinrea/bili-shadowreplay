@@ -842,13 +842,11 @@ impl Recorder for DouyinRecorder {
         tokio::fs::write(&m3u8_index_file_path, m3u8_content).await?;
         // generate a tmp clip file
         let clip_file_path = format!("{}/{}", work_dir, "tmp.mp4");
-        if let Err(e) = crate::ffmpeg::clip_from_m3u8(
+        if let Err(e) = crate::ffmpeg::playlist::playlist_to_video(
             None::<&crate::progress::progress_reporter::ProgressReporter>,
-            false,
             Path::new(&m3u8_index_file_path),
             Path::new(&clip_file_path),
             None,
-            false,
         )
         .await
         {

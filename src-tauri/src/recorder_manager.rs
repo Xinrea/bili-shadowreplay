@@ -4,7 +4,7 @@ use crate::database::recorder::RecorderRow;
 use crate::database::video::VideoRow;
 use crate::database::{account::AccountRow, record::RecordRow};
 use crate::database::{Database, DatabaseError};
-use crate::ffmpeg::{clip_from_m3u8, encode_video_danmu, Range};
+use crate::ffmpeg::{encode_video_danmu, transcode, Range};
 use crate::progress::progress_reporter::{EventEmitter, ProgressReporter};
 use crate::recorder::bilibili::{BiliRecorder, BiliRecorderOptions};
 use crate::recorder::danmu::DanmuEntry;
@@ -431,61 +431,43 @@ impl RecorderManager {
         clip_file: PathBuf,
         params: &ClipRangeParams,
     ) -> Result<PathBuf, RecorderManagerError> {
-        let range_m3u8 = format!(
-            "{}/{}/{}/playlist.m3u8",
-            params.platform, params.room_id, params.live_id
-        );
-
-        let manifest_content = self.handle_hls_request(&range_m3u8).await?;
-        let mut manifest_content = String::from_utf8(manifest_content)
-            .map_err(|e| RecorderManagerError::ClipError { err: e.to_string() })?;
-
-        // if manifest is for stream, replace EXT-X-PLAYLIST-TYPE:EVENT to EXT-X-PLAYLIST-TYPE:VOD, and add #EXT-X-ENDLIST
-        if manifest_content.contains("#EXT-X-PLAYLIST-TYPE:EVENT") {
-            manifest_content =
-                manifest_content.replace("#EXT-X-PLAYLIST-TYPE:EVENT", "#EXT-X-PLAYLIST-TYPE:VOD");
-            manifest_content += "\n#EXT-X-ENDLIST\n";
-        }
-
-        let is_fmp4 = manifest_content.contains("#EXT-X-MAP:URI=");
-
         let cache_path = self.config.read().await.cache.clone();
         let cache_path = Path::new(&cache_path);
-        let random_filename = format!("manifest_{}.m3u8", uuid::Uuid::new_v4());
-        let tmp_manifest_file_path = cache_path
-            .join(&params.platform)
+        let playlist_path = cache_path
+            .join(params.platform.clone())
             .join(params.room_id.to_string())
-            .join(&params.live_id)
-            .join(random_filename);
+            .join(params.live_id.clone())
+            .join("playlist.m3u8");
 
-        // Write manifest content to temporary file
-        tokio::fs::write(&tmp_manifest_file_path, manifest_content.as_bytes())
-            .await
-            .map_err(|e| RecorderManagerError::ClipError { err: e.to_string() })?;
-
-        if let Err(e) = clip_from_m3u8(
-            reporter,
-            is_fmp4,
-            &tmp_manifest_file_path,
-            &clip_file,
-            params.range.as_ref(),
-            params.fix_encoding,
-        )
-        .await
-        {
-            log::error!("Failed to generate clip file: {e}");
-            return Err(RecorderManagerError::ClipError { err: e.to_string() });
+        if !playlist_path.exists() {
+            log::error!("Playlist file not found: {}", playlist_path.display());
+            return Err(RecorderManagerError::ClipError {
+                err: "Playlist file not found".to_string(),
+            });
         }
 
-        // remove temp file
-        let _ = tokio::fs::remove_file(tmp_manifest_file_path).await;
+        crate::ffmpeg::playlist::playlist_to_video(
+            reporter,
+            &playlist_path,
+            &clip_file,
+            params.range.clone(),
+        )
+        .await
+        .map_err(|e| RecorderManagerError::ClipError { err: e.to_string() })?;
 
-        // check clip_file exists
-        if !clip_file.exists() {
-            log::error!("Clip file not found: {}", clip_file.display());
-            return Err(RecorderManagerError::ClipError {
-                err: "Clip file not found".into(),
-            });
+        if params.fix_encoding {
+            // transcode clip_file
+            let tmp_clip_file = clip_file.with_extension("tmp.mp4");
+            if let Err(e) = transcode(reporter, &clip_file, &tmp_clip_file, false).await {
+                log::error!("Failed to transcode clip file: {e}");
+                return Err(RecorderManagerError::ClipError { err: e.to_string() });
+            }
+
+            // remove clip_file
+            let _ = tokio::fs::remove_file(&clip_file).await;
+
+            // rename tmp_clip_file to clip_file
+            let _ = tokio::fs::rename(tmp_clip_file, &clip_file).await;
         }
 
         if !params.danmu {
@@ -890,8 +872,16 @@ impl RecorderManager {
         log::info!("Concat playlists: {playlists:?}");
         log::info!("Output path: {output_path:?}");
 
+        let owned_path_bufs: Vec<std::path::PathBuf> =
+            playlists.iter().map(std::path::PathBuf::from).collect();
+
+        let playlists_refs: Vec<&std::path::Path> = owned_path_bufs
+            .iter()
+            .map(std::path::PathBuf::as_path)
+            .collect();
+
         if let Err(e) =
-            crate::ffmpeg::concat_multiple_playlist(reporter, playlists, Path::new(&output_path))
+            crate::ffmpeg::playlist::playlists_to_video(reporter, &playlists_refs, &output_path)
                 .await
         {
             log::error!("Failed to concat playlists: {e}");

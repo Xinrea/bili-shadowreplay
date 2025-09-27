@@ -2,6 +2,9 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+pub mod general;
+pub mod playlist;
+
 use crate::constants;
 use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
 use crate::subtitle_generator::whisper_online;
@@ -45,67 +48,100 @@ impl Range {
     pub fn duration(&self) -> f64 {
         self.end - self.start
     }
+
+    pub fn is_in(&self, v: f64) -> bool {
+        v >= self.start && v <= self.end
+    }
 }
 
-pub async fn clip_from_m3u8(
+pub async fn transcode(
     reporter: Option<&impl ProgressReporterTrait>,
-    is_fmp4: bool,
-    m3u8_index: &Path,
+    file: &Path,
     output_path: &Path,
-    range: Option<&Range>,
-    fix_encoding: bool,
+    copy_codecs: bool,
 ) -> Result<(), String> {
-    // first check output folder exists
-    log::debug!("Clip: is_fmp4: {}", is_fmp4);
-    let output_folder = output_path.parent().unwrap();
-    if !output_folder.exists() {
-        log::warn!(
-            "Output folder does not exist, creating: {}",
-            output_folder.display()
-        );
-        std::fs::create_dir_all(output_folder).unwrap();
-    }
-
+    // ffmpeg -i fixed_\[30655190\]1742887114_0325084106_81.5.mp4 -c:v libx264 -c:a aac -b:v 6000k -b:a 64k -compression_level 0 -threads 0 output.mp3
+    log::info!("Transcode: {} copy: {}", file.display(), copy_codecs);
     let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
     #[cfg(target_os = "windows")]
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
-    if is_fmp4 {
-        // using output seek for fmp4 stream
-        ffmpeg_process.args(["-i", &format!("{}", m3u8_index.display())]);
-        if let Some(range) = range {
-            ffmpeg_process
-                .args(["-ss", &range.start.to_string()])
-                .args(["-t", &range.duration().to_string()]);
-        }
+    ffmpeg_process.args(["-i", file.to_str().unwrap()]);
+
+    if copy_codecs {
+        ffmpeg_process.args(["-c:v", "copy"]).args(["-c:a", "copy"]);
     } else {
-        // using input seek for ts stream
-        if let Some(range) = range {
-            ffmpeg_process
-                .args(["-ss", &range.start.to_string()])
-                .args(["-t", &range.duration().to_string()]);
-        }
-
-        ffmpeg_process.args(["-i", &format!("{}", m3u8_index.display())]);
-    }
-
-    if fix_encoding {
         ffmpeg_process
             .args(["-c:v", "libx264"])
-            .args(["-c:a", "copy"])
-            .args(["-b:v", "6000k"]);
-    } else {
-        ffmpeg_process.args(["-c", "copy"]);
+            .args(["-c:a", "aac"])
+            .args(["-b:v", "6000k"])
+            .args(["-b:a", "128k"])
+            .args(["-threads", "0"]);
     }
 
     let child = ffmpeg_process
-        .args(["-y", output_path.to_str().unwrap()])
-        .args(["-progress", "pipe:2"])
+        .args([output_path.to_str().unwrap()])
+        .args(["-y"])
         .stderr(Stdio::piped())
         .spawn();
-
     if let Err(e) = child {
-        return Err(format!("Spawn ffmpeg process failed: {e}"));
+        return Err(e.to_string());
+    }
+
+    let mut child = child.unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let reader = BufReader::new(stderr);
+    let mut parser = FfmpegLogParser::new(reader);
+    while let Ok(event) = parser.parse_next_event().await {
+        match event {
+            FfmpegEvent::Progress(p) => {
+                if reporter.is_none() {
+                    continue;
+                }
+                reporter
+                    .unwrap()
+                    .update(format!("压制中：{}", p.time).as_str());
+            }
+            FfmpegEvent::LogEOF => break,
+            FfmpegEvent::Error(e) => {
+                log::error!("Transcode error: {e}");
+                return Err(e.to_string());
+            }
+            _ => {}
+        }
+    }
+
+    if let Err(e) = child.wait().await {
+        return Err(e.to_string());
+    }
+
+    Ok(())
+}
+
+pub async fn trim_video(
+    reporter: Option<&impl ProgressReporterTrait>,
+    file: &Path,
+    output_path: &Path,
+    start_time: f64,
+    duration: f64,
+) -> Result<(), String> {
+    // ffmpeg -i fixed_\[30655190\]1742887114_0325084106_81.5.mp4 -ss 0 -t 10 output.mp4
+    log::info!("Trim video task start: {}", file.display());
+    let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
+    #[cfg(target_os = "windows")]
+    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
+
+    ffmpeg_process.args(["-i", file.to_str().unwrap()]);
+    ffmpeg_process.args(["-ss", &start_time.to_string()]);
+    ffmpeg_process.args(["-t", &duration.to_string()]);
+    ffmpeg_process.args(["-c", "copy"]);
+    ffmpeg_process.args([output_path.to_str().unwrap()]);
+    ffmpeg_process.args(["-y"]);
+    ffmpeg_process.args(["-progress", "pipe:2"]);
+    ffmpeg_process.stderr(Stdio::piped());
+    let child = ffmpeg_process.spawn();
+    if let Err(e) = child {
+        return Err(e.to_string());
     }
 
     let mut child = child.unwrap();
@@ -113,45 +149,32 @@ pub async fn clip_from_m3u8(
     let reader = BufReader::new(stderr);
     let mut parser = FfmpegLogParser::new(reader);
 
-    let mut clip_error = None;
     while let Ok(event) = parser.parse_next_event().await {
         match event {
             FfmpegEvent::Progress(p) => {
                 if reporter.is_none() {
                     continue;
                 }
-                log::debug!("Clip progress: {}", p.time);
                 reporter
                     .unwrap()
-                    .update(format!("编码中：{}", p.time).as_str());
+                    .update(format!("切片中：{}", p.time).as_str());
             }
             FfmpegEvent::LogEOF => break,
-            FfmpegEvent::Log(level, content) => {
-                // log error if content contains error
-                if content.contains("error") || level == LogLevel::Error {
-                    log::error!("Clip error: {content}");
-                }
-            }
             FfmpegEvent::Error(e) => {
-                log::error!("Clip error: {e}");
-                clip_error = Some(e.to_string());
+                log::error!("Trim video error: {e}");
+                return Err(e.to_string());
             }
             _ => {}
         }
     }
 
     if let Err(e) = child.wait().await {
-        log::error!("Clip error: {e}");
+        log::error!("Trim video error: {e}");
         return Err(e.to_string());
     }
 
-    if let Some(error) = clip_error {
-        log::error!("Clip error: {error}");
-        Err(error)
-    } else {
-        log::info!("Clip task end: {}", output_path.display());
-        Ok(())
-    }
+    log::info!("Trim video task end: {}", output_path.display());
+    Ok(())
 }
 
 pub async fn extract_audio_chunks(file: &Path, format: &str) -> Result<PathBuf, String> {
@@ -1068,18 +1091,18 @@ pub async fn convert_video_format(
     }
 }
 
-/// Check if all playlist have same encoding and resolution
-pub async fn check_multiple_playlist(playlist_paths: Vec<String>) -> bool {
+/// Check if all videos have same encoding and resolution
+pub async fn check_videos(video_paths: &[&Path]) -> bool {
     // check if all playlist paths exist
     let mut video_codec = "".to_owned();
     let mut audio_codec = "".to_owned();
     let mut width = 0;
     let mut height = 0;
-    for playlist_path in playlist_paths.iter() {
-        if !Path::new(playlist_path).exists() {
+    for video_path in video_paths.iter() {
+        if !Path::new(video_path).exists() {
             continue;
         }
-        let metadata = extract_video_metadata(Path::new(playlist_path)).await;
+        let metadata = extract_video_metadata(Path::new(video_path)).await;
         if metadata.is_err() {
             log::error!(
                 "Failed to extract video metadata: {}",
@@ -1091,7 +1114,7 @@ pub async fn check_multiple_playlist(playlist_paths: Vec<String>) -> bool {
 
         // check video codec
         if !video_codec.is_empty() && metadata.video_codec != video_codec {
-            log::error!("Playlist video codec does not match: {}", playlist_path);
+            log::error!("Video codec does not match: {}", video_path.display());
             return false;
         } else {
             video_codec = metadata.video_codec;
@@ -1099,7 +1122,7 @@ pub async fn check_multiple_playlist(playlist_paths: Vec<String>) -> bool {
 
         // check audio codec
         if !audio_codec.is_empty() && metadata.audio_codec != audio_codec {
-            log::error!("Playlist audio codec does not match: {}", playlist_path);
+            log::error!("Audio codec does not match: {}", video_path.display());
             return false;
         } else {
             audio_codec = metadata.audio_codec;
@@ -1107,7 +1130,7 @@ pub async fn check_multiple_playlist(playlist_paths: Vec<String>) -> bool {
 
         // check width
         if width > 0 && metadata.width != width {
-            log::error!("Playlist width does not match: {}", playlist_path);
+            log::error!("Video width does not match: {}", video_path.display());
             return false;
         } else {
             width = metadata.width;
@@ -1115,7 +1138,7 @@ pub async fn check_multiple_playlist(playlist_paths: Vec<String>) -> bool {
 
         // check height
         if height > 0 && metadata.height != height {
-            log::error!("Playlist height does not match: {}", playlist_path);
+            log::error!("Video height does not match: {}", video_path.display());
             return false;
         } else {
             height = metadata.height;
@@ -1123,112 +1146,6 @@ pub async fn check_multiple_playlist(playlist_paths: Vec<String>) -> bool {
     }
 
     true
-}
-
-pub async fn concat_multiple_playlist(
-    reporter: Option<&ProgressReporter>,
-    playlist_paths: Vec<String>,
-    output_path: &Path,
-) -> Result<(), String> {
-    // ffmpeg -i input.m3u8 -vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black" output.mp4
-    let mut cmd = tokio::process::Command::new(ffmpeg_path());
-    #[cfg(target_os = "windows")]
-    cmd.creation_flags(CREATE_NO_WINDOW);
-
-    // create a tmp filelist for concat
-    let tmp_filelist_path = output_path.with_extension("txt");
-    {
-        let mut filelist = tokio::fs::File::create(&tmp_filelist_path)
-            .await
-            .map_err(|e| e.to_string())?;
-        for playlist_path in playlist_paths.iter() {
-            // write line in the format "file 'path/to/file.m3u8'"
-            // playlist_path might be a relative path, so we need to convert it to an absolute path
-            let playlist_path = Path::new(playlist_path).canonicalize().unwrap();
-            let line = format!("file '{}'\n", playlist_path.display());
-            filelist
-                .write_all(line.as_bytes())
-                .await
-                .map_err(|e| e.to_string())?;
-        }
-        // Ensure all data is written to disk before proceeding
-        filelist.flush().await.map_err(|e| e.to_string())?;
-    } // File is automatically closed here
-
-    let can_copy_codecs = check_multiple_playlist(playlist_paths.clone()).await;
-
-    cmd.args([
-        "-f",
-        "concat",
-        "-safe",
-        "0",
-        "-i",
-        tmp_filelist_path.to_str().unwrap(),
-    ]);
-
-    if !can_copy_codecs {
-        log::info!("Can not copy codecs, will re-encode");
-        cmd.args(["-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black"])
-        .args(["-c:v", "libx264"])
-        .args(["-c:a", "aac"])
-        .args(["-b:v", "6000k"])
-        .args(["-avoid_negative_ts", "make_zero"]);
-    } else {
-        cmd.args(["-c:v", "copy"]);
-        cmd.args(["-c:a", "copy"]);
-    }
-
-    let child = cmd
-        .args(["-y", output_path.to_str().unwrap()])
-        .stderr(Stdio::piped())
-        .spawn();
-
-    if let Err(e) = child {
-        return Err(format!("启动ffmpeg进程失败: {e}"));
-    }
-
-    let mut child = child.unwrap();
-    let stderr = child.stderr.take().unwrap();
-    let reader = BufReader::new(stderr);
-    let mut parser = FfmpegLogParser::new(reader);
-
-    let mut clip_error = None;
-    while let Ok(event) = parser.parse_next_event().await {
-        match event {
-            FfmpegEvent::Progress(p) => {
-                log::debug!("Concat progress: {}", p.time);
-                if let Some(reporter) = reporter {
-                    reporter.update(format!("生成中：{}", p.time).as_str());
-                }
-            }
-            FfmpegEvent::LogEOF => break,
-            FfmpegEvent::Log(level, content) => {
-                log::debug!("[{:?}]Concat log: {content}", level);
-            }
-            FfmpegEvent::Error(e) => {
-                log::error!("切片错误: {e}");
-                clip_error = Some(e.to_string());
-            }
-            _ => {}
-        }
-    }
-
-    if let Err(e) = child.wait().await {
-        return Err(e.to_string());
-    }
-
-    // Clean up temporary filelist file
-    if let Err(e) = tokio::fs::remove_file(&tmp_filelist_path).await {
-        log::warn!("Failed to remove temporary filelist: {}", e);
-    }
-
-    if let Some(error) = clip_error {
-        return Err(error);
-    }
-
-    log::info!("Concat task end: {}", output_path.display());
-
-    Ok(())
 }
 
 pub async fn convert_fmp4_to_ts_raw(

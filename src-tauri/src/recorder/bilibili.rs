@@ -729,12 +729,6 @@ impl BiliRecorder {
                     }
                 }
 
-                log::debug!(
-                    "[{}]Segment buffers: {}",
-                    self.room_id,
-                    segment_buffers.len()
-                );
-
                 for buffer in segment_buffers {
                     if buffer.sequence <= latest_sequence {
                         continue;
@@ -1268,7 +1262,6 @@ impl super::Recorder for BiliRecorder {
         let mut v: Vec<u8> = Vec::new();
         playlist.write_to(&mut v).unwrap();
         let m3u8_content: &str = std::str::from_utf8(&v).unwrap();
-        let is_fmp4 = m3u8_content.contains("#EXT-X-MAP:URI=");
         tokio::fs::write(&m3u8_index_file_path, m3u8_content).await?;
         log::info!(
             "[{}]M3U8 index file generated: {}",
@@ -1277,13 +1270,11 @@ impl super::Recorder for BiliRecorder {
         );
         // generate a tmp clip file
         let clip_file_path = format!("{}/{}", work_dir, "tmp.mp4");
-        if let Err(e) = crate::ffmpeg::clip_from_m3u8(
+        if let Err(e) = crate::ffmpeg::playlist::playlist_to_video(
             None::<&crate::progress::progress_reporter::ProgressReporter>,
-            is_fmp4,
             Path::new(&m3u8_index_file_path),
             Path::new(&clip_file_path),
             None,
-            false,
         )
         .await
         {

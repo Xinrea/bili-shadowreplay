@@ -29,21 +29,21 @@ impl Database {
         let lock = self.db.read().await.clone().unwrap();
         let platform = PlatformType::from_str(platform).unwrap();
 
-        let csrf = if platform == PlatformType::Douyin {
-            Some(String::new())
-        } else {
-            // parse cookies
-            cookies
-                .split(';')
-                .map(str::trim)
-                .find_map(|cookie| -> Option<String> {
-                    if cookie.starts_with("bili_jct=") {
-                        let var_name = &"bili_jct=";
-                        Some(cookie[var_name.len()..].to_string())
-                    } else {
-                        None
-                    }
-                })
+        let csrf = match platform {
+            PlatformType::BiliBili => {
+                cookies
+                    .split(';')
+                    .map(str::trim)
+                    .find_map(|cookie| -> Option<String> {
+                        if cookie.starts_with("bili_jct=") {
+                            let var_name = &"bili_jct=";
+                            Some(cookie[var_name.len()..].to_string())
+                        } else {
+                            None
+                        }
+                    })
+            }
+            _ => Some(String::new()),
         };
 
         if csrf.is_none() {

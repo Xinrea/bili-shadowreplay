@@ -13,6 +13,10 @@
   async function update_accounts() {
     let new_account_info = (await invoke("get_accounts")) as AccountInfo;
     for (const account of new_account_info.accounts) {
+      if (account.avatar === "") {
+        account.avatar = "/imgs/douyin_avatar.png";
+        continue;
+      }
       const avatar_response = await get(account.avatar);
       const avatar_blob = await avatar_response.blob();
       account.avatar = URL.createObjectURL(avatar_blob);
@@ -173,11 +177,7 @@
                   </h3>
                 </div>
                 <p class="text-sm text-gray-600 dark:text-gray-400">
-                  {#if account.platform === "bilibili"}
-                    UID: {account.uid}
-                  {:else if account.platform === "douyin"}
-                    ID: {account.id_str || account.uid} • 仅用于获取直播流
-                  {/if}
+                  UID: {account.id_str || account.uid}
                 </p>
               </div>
             </div>
@@ -298,6 +298,18 @@
             >
               抖音
             </button>
+            <button
+              class="flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform ===
+              'huya'
+                ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white'
+                : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
+              on:click={() => {
+                selectedPlatform = "huya";
+                activeTab = "manual";
+              }}
+            >
+              虎牙
+            </button>
           </div>
         </div>
 
@@ -348,9 +360,7 @@
                   bind:value={cookie_str}
                   rows={4}
                   class="w-full px-3 py-2 bg-[#f5f5f7] dark:bg-[#1c1c1e] border-0 rounded-lg resize-none focus:ring-2 focus:ring-blue-500"
-                  placeholder={selectedPlatform === "bilibili"
-                    ? "请粘贴 BiliBili 账号的 Cookie"
-                    : "请粘贴抖音账号的 Cookie"}
+                  placeholder={`请粘贴 ${selectedPlatform} 账号的 Cookie`}
                 />
               </p>
               <div class="flex justify-end items-center space-x-2">

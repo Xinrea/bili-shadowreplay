@@ -26,6 +26,7 @@ pub async fn add_account(
         return Err(format!("Invalid cookies: {e}"));
     }
     let account = state.db.add_account(&platform, cookies).await?;
+
     if platform == "bilibili" {
         let account_info = state.client.get_user_info(&account, account.uid).await?;
         state
@@ -37,7 +38,10 @@ pub async fn add_account(
                 &account_info.user_avatar_url,
             )
             .await?;
-    } else if platform == "douyin" {
+        return Ok(account);
+    }
+
+    if platform == "douyin" {
         // Get user info from Douyin API
         let douyin_client = crate::recorder::douyin::client::DouyinClient::new(&account);
         match douyin_client.get_user_info().await {
@@ -65,8 +69,33 @@ pub async fn add_account(
                 // Keep the account but with default values
             }
         }
+
+        return Ok(account);
     }
-    Ok(account)
+
+    if platform == "huya" {
+        let huya_client = crate::recorder::huya::client::HuyaClient::new();
+        match huya_client.get_user_info(&account).await {
+            Ok(user_info) => {
+                state
+                    .db
+                    .update_account(
+                        &platform,
+                        user_info.user_id,
+                        &user_info.user_name,
+                        &user_info.user_avatar_url,
+                    )
+                    .await?;
+            }
+            Err(e) => {
+                log::warn!("Failed to get Huya user info: {e}");
+                // Keep the account but with default values
+            }
+        }
+        return Ok(account);
+    }
+
+    todo!("unsupported platform: {platform}");
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]

@@ -52,25 +52,42 @@
     console.log("Saved start and end", start + focus_start, end + focus_start);
   }
 
-  async function loadGlobalOffset(url: string) {
+  async function load_metadata(url: string) {
+    let offset = 0;
+    let is_fmp4 = false;
     const response = await fetch(url);
     const m3u8Content = await response.text();
+
+    // extract offset from m3u8
     const firstSegmentDatetime = m3u8Content
       .split("\n")
       .find((line) => line.startsWith("#EXT-X-PROGRAM-DATE-TIME:"));
     if (firstSegmentDatetime) {
-      if (global_offset == 0) {
-        const date_str = firstSegmentDatetime.replace(
-          "#EXT-X-PROGRAM-DATE-TIME:",
-          ""
-        );
-        global_offset = new Date(date_str).getTime() / 1000;
-      }
+      const date_str = firstSegmentDatetime.replace(
+        "#EXT-X-PROGRAM-DATE-TIME:",
+        ""
+      );
+      offset = new Date(date_str).getTime() / 1000;
     } else {
-      if (global_offset == 0) {
-        global_offset = parseInt(live_id) / 1000;
-      }
+      offset = parseInt(live_id) / 1000;
     }
+
+    // check if fmp4 live
+    if (m3u8Content.includes("#EXT-X-MAP:URI=")) {
+      is_fmp4 = true;
+    }
+
+    return {
+      offset,
+      is_fmp4,
+    };
+  }
+
+  function createMasterPlaylist(mediaPlaylistUrl: string) {
+    return `#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-STREAM-INF:BANDWIDTH=10000000,CODECS="avc1.64002a,mp4a.40.2"
+${mediaPlaylistUrl}`;
   }
 
   function tauriNetworkPlugin(uri, requestType, progressUpdated) {
@@ -228,11 +245,24 @@
     });
 
     try {
-      const url = `${ENDPOINT ? ENDPOINT : window.location.origin}/hls/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`;
+      let direct_url = `${ENDPOINT ? ENDPOINT : window.location.origin}/hls/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`;
       if (!TAURI_ENV) {
-        await loadGlobalOffset(url);
+        const { offset, is_fmp4 } = await load_metadata(direct_url);
+        global_offset = offset;
+        if (is_fmp4) {
+          let master_url = createMasterPlaylist(direct_url);
+          let blob = new Blob([master_url], {
+            type: "application/vnd.apple.mpegurl",
+          });
+          master_url = URL.createObjectURL(blob);
+          await player.load(master_url);
+        } else {
+          await player.load(direct_url);
+        }
+      } else {
+        await player.load(direct_url);
       }
-      await player.load(url);
+
       // This runs if the asynchronous load is successful.
       console.log("The video has now been loaded!");
     } catch (error) {

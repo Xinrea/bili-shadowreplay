@@ -36,25 +36,10 @@
       "identifier": "http:default",
       "allow": [
         {
-          "url": "https://*.hdslb.com/"
+          "url": "https://*.*"
         },
         {
-          "url": "https://afdian.com/"
-        },
-        {
-          "url": "https://*.afdiancdn.com/"
-        },
-        {
-          "url": "https://*.douyin.com/"
-        },
-        {
-          "url": "https://*.douyinpic.com/"
-        },
-        {
-          "url": "http://tauri.localhost/*"
-        },
-        {
-          "url": "http://localhost:8054/*"
+          "url": "http://*.*"
         }
       ]
     },

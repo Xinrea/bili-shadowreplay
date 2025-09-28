@@ -82,6 +82,7 @@ pub async fn transcode(
     let child = ffmpeg_process
         .args([output_path.to_str().unwrap()])
         .args(["-y"])
+        .args(["-progress", "pipe:2"])
         .stderr(Stdio::piped())
         .spawn();
     if let Err(e) = child {

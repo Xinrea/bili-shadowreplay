@@ -132,8 +132,8 @@ pub async fn trim_video(
     #[cfg(target_os = "windows")]
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
-    ffmpeg_process.args(["-i", file.to_str().unwrap()]);
     ffmpeg_process.args(["-ss", &start_time.to_string()]);
+    ffmpeg_process.args(["-i", file.to_str().unwrap()]);
     ffmpeg_process.args(["-t", &duration.to_string()]);
     ffmpeg_process.args(["-c", "copy"]);
     ffmpeg_process.args([output_path.to_str().unwrap()]);
@@ -1166,7 +1166,12 @@ pub async fn convert_fmp4_to_ts_raw(
     let child = ffmpeg_process
         .args(["-f", "mp4"])
         .args(["-i", "-"]) // Read from stdin
-        .args(["-c", "copy"]) // Stream copy (no re-encoding)
+        .args(["-c:v", "libx264"])
+        .args(["-b:v", "6000k"])
+        .args(["-maxrate", "10000k"])
+        .args(["-bufsize", "16000k"])
+        .args(["-c:a", "copy"])
+        .args(["-threads", "0"])
         .args(["-f", "mpegts"])
         .args(["-y", output_ts.to_str().unwrap()]) // Overwrite output
         .args(["-progress", "pipe:2"]) // Progress to stderr

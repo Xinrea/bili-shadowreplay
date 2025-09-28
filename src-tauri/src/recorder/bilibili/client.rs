@@ -444,7 +444,7 @@ impl BiliClient {
         room_id: i64,
         protocol: Protocol,
         format: Format,
-        codec: Codec,
+        codec: &[Codec],
         qn: Qn,
     ) -> Result<BiliStream, BiliClientError> {
         let url = format!(
@@ -452,7 +452,7 @@ impl BiliClient {
             room_id,
             protocol.clone() as u8,
             format.clone() as u8,
-            codec.clone() as u8,
+            codec.iter().map(|c| (c.clone() as u8).to_string()).collect::<Vec<String>>().join(","),
             qn as i64,
         );
         let mut headers = self.generate_user_agent_header();
@@ -515,17 +515,20 @@ impl BiliClient {
             .ok_or_else(|| BiliClientError::FormatNotFound(target_format.to_owned()))?;
 
         // Find the matching codec
-        let target_codec = match codec {
-            Codec::Avc => "avc",
-            Codec::Hevc => "hevc",
-        };
+        let target_codecs = codec
+            .iter()
+            .map(|c| match c {
+                Codec::Avc => "avc",
+                Codec::Hevc => "hevc",
+            })
+            .collect::<Vec<&str>>();
 
         let codec_info = format_info["codec"]
             .as_array()
             .unwrap_or(&empty_vec)
             .iter()
-            .find(|c| c["codec_name"].as_str() == Some(target_codec))
-            .ok_or_else(|| BiliClientError::CodecNotFound(target_codec.to_owned()))?;
+            .find(|c| target_codecs.contains(&c["codec_name"].as_str().unwrap_or("")))
+            .ok_or_else(|| BiliClientError::CodecNotFound(target_codecs.join(",")))?;
 
         let url_info = codec_info["url_info"].as_array().unwrap_or(&empty_vec);
 
@@ -540,6 +543,12 @@ impl BiliClient {
         let drm = codec_info["drm"].as_bool().unwrap_or(false);
         let base_url = codec_info["base_url"].as_str().unwrap_or("").to_string();
         let master_url = format_info["master_url"].as_str().map(|s| s.to_string());
+        let codec = codec_info["codec_name"].as_str().unwrap_or("");
+        let codec = match codec {
+            "avc" => Codec::Avc,
+            "hevc" => Codec::Hevc,
+            _ => return Err(BiliClientError::CodecNotFound(codec.to_string())),
+        };
 
         Ok(BiliStream {
             format,

@@ -400,7 +400,7 @@ impl BiliRecorder {
                         self.room_id,
                         Protocol::HttpHls,
                         Format::FMP4,
-                        Codec::Avc,
+                        &[Codec::Avc, Codec::Hevc],
                         Qn::Q4K,
                     )
                     .await;
@@ -444,7 +444,7 @@ impl BiliRecorder {
                         self.room_id,
                         Protocol::HttpHls,
                         Format::TS,
-                        Codec::Avc,
+                        &[Codec::Avc, Codec::Hevc],
                         Qn::Q4K,
                     )
                     .await;

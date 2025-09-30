@@ -44,38 +44,15 @@ use {tauri::AppHandle, tauri_plugin_notification::NotificationExt};
 /// This recorder fetches, caches and serves TS entries, currently supporting only `StreamType::FMP4`.
 /// As high-quality streams are accessible only to logged-in users, the use of a `BiliClient`, which manages cookies, is required.
 #[derive(Clone)]
-pub struct BiliRecorder {
-    #[cfg(feature = "gui")]
-    app_handle: AppHandle,
-    emitter: EventEmitter,
-    client: Arc<RwLock<BiliClient>>,
-    db: Arc<Database>,
-    account: AccountRow,
-    config: Arc<RwLock<Config>>,
-    room_id: i64,
-    room_info: Arc<RwLock<RoomInfo>>,
-    user_info: Arc<RwLock<UserInfo>>,
+pub struct BiliExtra {
     live_status: Arc<RwLock<bool>>,
     platform_live_id: Arc<RwLock<String>>,
-    live_id: Arc<RwLock<String>>,
     cover: Arc<RwLock<Option<String>>>,
-    is_recording: Arc<RwLock<bool>>,
-    last_update: Arc<RwLock<i64>>,
-    quit: Arc<Mutex<bool>>,
-    live_stream: Arc<RwLock<Option<BiliStream>>>,
-    danmu_storage: Arc<RwLock<Option<DanmuStorage>>>,
-    event_channel: broadcast::Sender<RecorderEvent>,
-    enabled: Arc<RwLock<bool>>,
     current_metadata: Arc<RwLock<Option<VideoMetadata>>>,
-
-    danmu_task: Arc<Mutex<Option<JoinHandle<()>>>>,
-    record_task: Arc<Mutex<Option<JoinHandle<()>>>>,
-
-    last_sequence: Arc<RwLock<u64>>,
-    m3u8_playlist: Arc<RwLock<MediaPlaylist>>,
-    total_duration: Arc<RwLock<f64>>,
-    total_size: Arc<RwLock<u64>>,
+    live_stream: Arc<RwLock<Option<BiliStream>>>,
 }
+
+pub type BiliRecorder = Recorder<BiliExtra>;
 
 struct SegmentBuffer {
     sequence: u64,

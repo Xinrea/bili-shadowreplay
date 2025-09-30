@@ -40,6 +40,8 @@ pub enum HuyaClientError {
     FormatNotFound(String),
     #[error("Codec not found: {0}")]
     CodecNotFound(String),
+    #[error("Extractor error: {0}")]
+    ExtractorError(String),
 }
 
 impl From<HuyaClientError> for String {

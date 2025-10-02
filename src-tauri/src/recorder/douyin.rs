@@ -333,25 +333,23 @@ impl DouyinRecorder {
 
     async fn update_entries(&self) -> Result<(), RecorderError> {
         // Get current room info and stream URL
-        let room_info = self.room_info.read().await;
-
-        if room_info.is_none() {
+        let room_info = self.room_info.read().await.clone();
+        let Some(room_info) = room_info else {
             return Err(RecorderError::NoRoomInfo);
-        }
+        };
 
-        if self.stream_url.read().await.is_none() {
+        let Some(stream_url) = self.stream_url.read().await.clone() else {
             return Err(RecorderError::NoStreamAvailable);
-        }
+        };
 
-        let stream_url = self.stream_url.read().await.as_ref().unwrap().clone();
         let live_id = Utc::now().timestamp_millis().to_string();
-        let work_dir = self.get_work_dir(&live_id).await;
         *self.live_id.write().await = live_id.clone();
 
+        let work_dir = self.get_work_dir(&live_id).await;
         let _ = tokio::fs::create_dir_all(&work_dir).await;
 
         // download cover
-        if let Some(cover_url) = room_info.as_ref().unwrap().cover.clone() {
+        if let Some(cover_url) = room_info.cover.clone() {
             let cover_path = format!("{work_dir}/cover.jpg");
             let _ = self
                 .client
@@ -386,8 +384,8 @@ impl DouyinRecorder {
                 self.platform_live_id.read().await.as_str(),
                 live_id.as_str(),
                 self.room_id,
-                "Douyin",
-                Some("cover.jpg".to_string()),
+                &room_info.room_title,
+                Some(format!("douyin/{}/{}/cover.jpg", self.room_id, live_id)),
             )
             .await;
 

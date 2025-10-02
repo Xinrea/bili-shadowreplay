@@ -9,7 +9,13 @@ pub mod entry;
 use async_trait::async_trait;
 use danmu::DanmuEntry;
 use m3u8_rs::MediaPlaylist;
-use std::hash::{Hash, Hasher};
+use std::{
+    hash::{Hash, Hasher},
+    sync::Arc,
+};
+use tokio::sync::RwLock;
+
+use crate::{database::Database, progress::progress_reporter::ProgressReporterTrait};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlatformType {
@@ -71,6 +77,44 @@ pub struct UserInfo {
     pub user_id: String,
     pub user_name: String,
     pub user_avatar: String,
+}
+
+pub struct FfmpegProgressHandler {
+    db: Arc<Database>,
+    live_id: Arc<RwLock<String>>,
+    total_duration: Arc<RwLock<f64>>,
+}
+
+impl Clone for FfmpegProgressHandler {
+    fn clone(&self) -> Self {
+        Self {
+            db: self.db.clone(),
+            live_id: self.live_id.clone(),
+            total_duration: self.total_duration.clone(),
+        }
+    }
+}
+
+#[async_trait]
+impl ProgressReporterTrait for FfmpegProgressHandler {
+    fn update(&self, content: &str) {
+        if let Ok(duration) = content.parse::<i64>() {
+            let duration_secs = duration as f64 / 1000_000.0;
+            let db = self.db.clone();
+            let live_id = self.live_id.clone();
+            let total_duration = self.total_duration.clone();
+            tokio::spawn(async move {
+                let _ = db
+                    .update_record(live_id.read().await.as_str(), duration_secs as i64, 0)
+                    .await;
+                *total_duration.write().await = duration_secs;
+            });
+        }
+    }
+
+    async fn finish(&self, _success: bool, message: &str) {
+        log::debug!("[FFmpeg Finish] {}", message);
+    }
 }
 
 #[async_trait]

@@ -1,7 +1,6 @@
 use crate::{database::account::AccountRow, recorder::user_agent_generator};
 use deno_core::JsRuntime;
 use deno_core::RuntimeOptions;
-use m3u8_rs::{MediaPlaylist, Playlist};
 use reqwest::Client;
 use uuid::Uuid;
 
@@ -376,46 +375,5 @@ impl DouyinClient {
         let mut content = std::io::Cursor::new(bytes);
         tokio::io::copy(&mut content, &mut file).await?;
         Ok(())
-    }
-
-    pub async fn get_m3u8_content(
-        &self,
-        url: &str,
-    ) -> Result<(MediaPlaylist, String), DouyinClientError> {
-        let content = self.client.get(url).send().await?.text().await?;
-        // m3u8 content: #EXTM3U
-        // #EXT-X-VERSION:3
-        // #EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=2560000
-        // http://7167739a741646b4651b6949b2f3eb8e.livehwc3.cn/pull-hls-l26.douyincdn.com/third/stream-693342996808860134_or4.m3u8?sub_m3u8=true&user_session_id=16090eb45ab8a2f042f7c46563936187&major_anchor_level=common&edge_slice=true&expire=67d944ec&sign=47b95cc6e8de20d82f3d404412fa8406
-        if content.contains("BANDWIDTH") {
-            log::info!("Master manifest with playlist URL: {url}");
-            let new_url = content.lines().last().unwrap();
-            return Box::pin(self.get_m3u8_content(new_url)).await;
-        }
-
-        match m3u8_rs::parse_playlist_res(content.as_bytes()) {
-            Ok(Playlist::MasterPlaylist(_)) => Err(DouyinClientError::Playlist(
-                "Unexpected master playlist".to_string(),
-            )),
-            Ok(Playlist::MediaPlaylist(pl)) => Ok((pl, url.to_string())),
-            Err(e) => Err(DouyinClientError::Playlist(e.to_string())),
-        }
-    }
-
-    pub async fn download_ts(&self, url: &str, path: &str) -> Result<u64, DouyinClientError> {
-        let response = self.client.get(url).send().await?;
-
-        if response.status() != reqwest::StatusCode::OK {
-            let error = response.error_for_status().unwrap_err();
-            log::error!("HTTP error: {error} for URL: {url}");
-            return Err(DouyinClientError::Network(error.to_string()));
-        }
-
-        let mut file = tokio::fs::File::create(path).await?;
-        let bytes = response.bytes().await?;
-        let size = bytes.len() as u64;
-        let mut content = std::io::Cursor::new(bytes);
-        tokio::io::copy(&mut content, &mut file).await?;
-        Ok(size)
     }
 }

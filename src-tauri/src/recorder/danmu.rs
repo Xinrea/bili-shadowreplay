@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::Serialize;
 use tokio::io::AsyncWriteExt;
 use tokio::{
@@ -18,7 +20,7 @@ pub struct DanmuStorage {
 }
 
 impl DanmuStorage {
-    pub async fn new(file_path: &str) -> Option<DanmuStorage> {
+    pub async fn new(file_path: &PathBuf) -> Option<DanmuStorage> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)

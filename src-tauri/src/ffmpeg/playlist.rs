@@ -10,7 +10,11 @@ use crate::{
 
 use super::Range;
 
-pub async fn cache_playlist(reporter: Option<&impl ProgressReporterTrait>, playlist_url: &str, work_dir: &Path) -> Result<(), String> {
+pub async fn cache_playlist(
+    reporter: Option<&impl ProgressReporterTrait>,
+    playlist_url: &str,
+    work_dir: &Path,
+) -> Result<(), String> {
     // ffmpeg -i "http://example.com/live/stream.m3u8" \
     //   -timeout 10 \
     //   -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 10 \
@@ -43,11 +47,7 @@ pub async fn cache_playlist(reporter: Option<&impl ProgressReporterTrait>, playl
         .args(["-progress", "pipe:2"])
         .args(["-y", "playlist.m3u8"]);
 
-    handle_ffmpeg_process(
-        reporter,
-        &mut ffmpeg_process,
-    )
-    .await?;
+    handle_ffmpeg_process(reporter, &mut ffmpeg_process).await?;
 
     Ok(())
 }

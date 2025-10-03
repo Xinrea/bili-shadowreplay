@@ -49,8 +49,8 @@ pub async fn handle_ffmpeg_process(
             }
             FfmpegEvent::LogEOF => break,
             FfmpegEvent::Error(e) => {
-                log::error!("[FFmpeg Error] {}", e.to_string());
-                return Err(e.to_string());
+                log::error!("[FFmpeg Error] {}", e);
+                return Err(e);
             }
             _ => {}
         }

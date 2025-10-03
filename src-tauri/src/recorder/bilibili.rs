@@ -9,7 +9,7 @@ use crate::progress::progress_manager::Event;
 use crate::progress::progress_reporter::EventEmitter;
 use crate::recorder::bilibili::client::{Codec, Protocol, Qn};
 use crate::recorder::bilibili::errors::BiliClientError;
-use crate::recorder::{FfmpegProgressHandler, Recorder};
+use crate::recorder::{CachePath, FfmpegProgressHandler, Recorder};
 use crate::recorder_manager::RecorderEvent;
 use crate::subtitle_generator::item_to_srt;
 
@@ -69,7 +69,6 @@ pub struct BiliRecorder {
 
     total_duration: Arc<RwLock<f64>>,
     total_size: Arc<RwLock<u64>>,
-    record_start_time: Arc<RwLock<i64>>,
 }
 
 pub struct BiliRecorderOptions {
@@ -139,7 +138,6 @@ impl BiliRecorder {
             record_task: Arc::new(Mutex::new(None)),
             total_duration: Arc::new(RwLock::new(0.0)),
             total_size: Arc::new(RwLock::new(0)),
-            record_start_time: Arc::new(RwLock::new(Utc::now().timestamp_millis())),
         };
         log::info!("Recorder for room {} created.", options.room_id);
         Ok(recorder)
@@ -167,8 +165,9 @@ impl BiliRecorder {
         &self,
         live_id: &str,
     ) -> Result<MediaPlaylist, super::errors::RecorderError> {
-        let playlist_path = format!("{}/playlist.m3u8", self.get_work_dir(live_id).await);
-        let playlist_full_path = self.get_full_path(&playlist_path).await;
+        let work_dir = self.work_dir(live_id).await;
+        let playlist_path = work_dir.with_filename("playlist.m3u8");
+        let playlist_full_path = playlist_path.full_path();
         if !Path::new(&playlist_full_path).exists() {
             return Err(super::errors::RecorderError::IoError(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -420,55 +419,37 @@ impl BiliRecorder {
         }
     }
 
-    async fn get_full_path(&self, relative_path: &str) -> String {
-        format!("{}/{}", self.config.read().await.cache, relative_path)
-    }
-
-    async fn get_work_dir(&self, live_id: &str) -> String {
-        format!("bilibili/{}/{}/", self.room_id, live_id)
-    }
-
-    async fn update_entries(&self) -> Result<(), super::errors::RecorderError> {
-        let current_stream = self.live_stream.read().await.clone();
-        if current_stream.is_none() {
-            return Err(super::errors::RecorderError::NoStreamAvailable);
-        }
-        let current_stream = current_stream.unwrap();
-        let mut timestamp = Utc::now().timestamp_millis();
-        *self.record_start_time.write().await = timestamp;
-        if !self.live_id.read().await.is_empty() {
-            timestamp = self
-                .live_id
-                .read()
-                .await
-                .parse::<i64>()
-                .unwrap_or(timestamp);
-        }
-
-        let work_dir = self.get_work_dir(&timestamp.to_string()).await;
-        let full_work_dir = self.get_full_path(&work_dir).await;
-        log::info!("[{}]New record started: {}", self.room_id, timestamp);
-
-        *self.live_id.write().await = timestamp.to_string();
-
-        let _ = tokio::fs::create_dir_all(&full_work_dir).await;
-
-        let danmu_path = format!("{work_dir}/danmu.txt");
-        let danmu_full_path = self.get_full_path(&danmu_path).await;
-        *self.danmu_storage.write().await = DanmuStorage::new(&danmu_full_path).await;
-
-        let cover_path = format!("{work_dir}/cover.jpg");
-        let cover_full_path = self.get_full_path(&cover_path).await;
-
-        let room_cover = self.cover.read().await.clone().unwrap();
-        let room_cover_full_path = format!("{}/{}", self.config.read().await.cache, room_cover);
-        log::debug!(
-            "[{}]Copy cover to: {} {}",
+    async fn work_dir(&self, live_id: &str) -> CachePath {
+        CachePath::new(
+            &self.config.read().await.cache,
+            PlatformType::BiliBili,
             self.room_id,
-            room_cover_full_path,
-            cover_full_path
-        );
-        tokio::fs::copy(room_cover_full_path, &cover_full_path)
+            live_id,
+        )
+    }
+
+    /// Update entries for a new live
+    async fn update_entries(&self, live_id: &str) -> Result<(), super::errors::RecorderError> {
+        let current_stream = self.live_stream.read().await.clone();
+        let Some(current_stream) = current_stream else {
+            return Err(super::errors::RecorderError::NoStreamAvailable);
+        };
+
+        let work_dir = self.work_dir(live_id).await;
+        log::info!("[{}]New record started: {}", self.room_id, live_id);
+
+        let _ = tokio::fs::create_dir_all(&work_dir.full_path()).await;
+
+        let danmu_path = work_dir.with_filename("danmu.txt");
+        *self.danmu_storage.write().await = DanmuStorage::new(&danmu_path.full_path()).await;
+
+        let cover_path = work_dir.with_filename("cover.jpg");
+        let room_cover_path = Path::new(&self.config.read().await.cache)
+            .join(PlatformType::BiliBili.as_str())
+            .join(self.room_id.to_string())
+            .join("cover.jpg");
+
+        tokio::fs::copy(room_cover_path, &cover_path.full_path())
             .await
             .map_err(super::errors::RecorderError::IoError)?;
 
@@ -476,10 +457,10 @@ impl BiliRecorder {
             .add_record(
                 PlatformType::BiliBili,
                 self.platform_live_id.read().await.as_str(),
-                timestamp.to_string().as_str(),
+                live_id,
                 self.room_id,
                 &self.room_info.read().await.room_title,
-                Some(cover_path),
+                Some(cover_path.relative_path().to_str().unwrap().to_string()),
             )
             .await?;
         let _ = self.event_channel.send(RecorderEvent::RecordStart {
@@ -497,7 +478,7 @@ impl BiliRecorder {
         if let Err(e) = crate::ffmpeg::playlist::cache_playlist(
             Some(&reporter),
             &current_stream.index(),
-            Path::new(&full_work_dir),
+            &work_dir.full_path(),
         )
         .await
         {
@@ -605,11 +586,13 @@ impl super::Recorder for BiliRecorder {
                     // Live status is ok, start recording.
                     if self_clone.should_record().await {
                         *self_clone.is_recording.write().await = true;
-                        if let Err(e) = self_clone.update_entries().await {
+                        let live_id = Utc::now().timestamp_millis().to_string();
+
+                        if let Err(e) = self_clone.update_entries(&live_id).await {
                             log::error!("[{}]Update entries error: {}", self_clone.room_id, e);
                         }
 
-                        let _ = self_clone.event_channel.send(RecorderEvent::RecordStart {
+                        let _ = self_clone.event_channel.send(RecorderEvent::RecordEnd {
                             recorder: self_clone.info().await,
                         });
                     }
@@ -674,14 +657,15 @@ impl super::Recorder for BiliRecorder {
         let playlists = archives
             .iter()
             .map(async |a| {
-                let work_dir = self.get_work_dir(a.1.as_str()).await;
+                let work_dir = self.work_dir(a.1.as_str()).await;
                 (
                     a.0.clone(),
-                    format!(
-                        "{}/{}",
-                        self.get_full_path(&work_dir).await,
-                        "playlist.m3u8"
-                    ),
+                    work_dir
+                        .with_filename("playlist.m3u8")
+                        .relative_path()
+                        .to_str()
+                        .unwrap()
+                        .to_string(),
                 )
             })
             .collect::<Vec<_>>();
@@ -696,11 +680,7 @@ impl super::Recorder for BiliRecorder {
         let user_info = self.user_info.read().await;
         let live_status = *self.live_status.read().await;
         let is_recording = *self.is_recording.read().await;
-        let total_length = if is_recording {
-            (Utc::now().timestamp_millis() - *self.record_start_time.read().await) as f64 / 1000.0
-        } else {
-            *self.total_duration.read().await
-        };
+        let total_length = *self.total_duration.read().await;
         super::RecorderInfo {
             room_id: self.room_id,
             room_info: super::RoomInfo {
@@ -726,6 +706,7 @@ impl super::Recorder for BiliRecorder {
         &self,
         live_id: &str,
     ) -> Result<Vec<DanmuEntry>, super::errors::RecorderError> {
+        let work_dir = self.work_dir(live_id).await;
         Ok(if live_id == *self.live_id.read().await {
             // just return current cache content
             match self.danmu_storage.read().await.as_ref() {
@@ -734,19 +715,13 @@ impl super::Recorder for BiliRecorder {
             }
         } else {
             // load disk cache
-            let cache_file_path = format!(
-                "{}/bilibili/{}/{}/{}",
-                self.config.read().await.cache,
-                self.room_id,
-                live_id,
-                "danmu.txt"
-            );
+            let cache_file_path = work_dir.with_filename("danmu.txt");
             log::debug!(
                 "[{}]loading danmu cache from {}",
                 self.room_id,
                 cache_file_path
             );
-            let storage = DanmuStorage::new(&cache_file_path).await;
+            let storage = DanmuStorage::new(&cache_file_path.full_path()).await;
             if storage.is_none() {
                 return Ok(Vec::new());
             }
@@ -764,9 +739,9 @@ impl super::Recorder for BiliRecorder {
         live_id: &str,
     ) -> Result<String, super::errors::RecorderError> {
         // read subtitle file under work_dir
-        let work_dir = self.get_work_dir(live_id).await;
-        let subtitle_file_path = format!("{}/{}", work_dir, "subtitle.srt");
-        let subtitle_file = File::open(self.get_full_path(&subtitle_file_path).await).await;
+        let work_dir = self.work_dir(live_id).await;
+        let subtitle_file_path = work_dir.with_filename("subtitle.srt");
+        let subtitle_file = File::open(subtitle_file_path.full_path()).await;
         if subtitle_file.is_err() {
             return Err(super::errors::RecorderError::SubtitleNotFound {
                 live_id: live_id.to_string(),
@@ -784,28 +759,28 @@ impl super::Recorder for BiliRecorder {
         live_id: &str,
     ) -> Result<String, super::errors::RecorderError> {
         // generate subtitle file under work_dir
-        let work_dir = self.get_work_dir(live_id).await;
-        let subtitle_file_path = format!("{}/{}", work_dir, "subtitle.srt");
-        let mut subtitle_file = File::create(self.get_full_path(&subtitle_file_path).await).await?;
+        let work_dir = self.work_dir(live_id).await;
+        let subtitle_file_path = work_dir.with_filename("subtitle.srt");
+        let mut subtitle_file = File::create(subtitle_file_path.full_path()).await?;
         // first generate a tmp clip file
         // generate a tmp m3u8 index file
-        let m3u8_index_file_path = format!("{}/{}", work_dir, "tmp.m3u8");
+        let m3u8_index_file_path = work_dir.with_filename("tmp.m3u8");
         let playlist = self.playlist(live_id, 0, 0).await;
         let mut v: Vec<u8> = Vec::new();
         playlist.write_to(&mut v).unwrap();
         let m3u8_content: &str = std::str::from_utf8(&v).unwrap();
-        tokio::fs::write(&m3u8_index_file_path, m3u8_content).await?;
+        tokio::fs::write(&m3u8_index_file_path.full_path(), m3u8_content).await?;
         log::info!(
             "[{}]M3U8 index file generated: {}",
             self.room_id,
-            m3u8_index_file_path
+            m3u8_index_file_path.full_path().display()
         );
         // generate a tmp clip file
-        let clip_file_path = format!("{}/{}", work_dir, "tmp.mp4");
+        let clip_file_path = work_dir.with_filename("tmp.mp4");
         if let Err(e) = crate::ffmpeg::playlist::playlist_to_video(
             None::<&crate::progress::progress_reporter::ProgressReporter>,
-            Path::new(&m3u8_index_file_path),
-            Path::new(&clip_file_path),
+            Path::new(&m3u8_index_file_path.full_path()),
+            Path::new(&clip_file_path.full_path()),
             None,
         )
         .await
@@ -823,7 +798,7 @@ impl super::Recorder for BiliRecorder {
         let config = self.config.read().await;
         let result = crate::ffmpeg::generate_video_subtitle(
             None,
-            Path::new(&clip_file_path),
+            Path::new(&clip_file_path.full_path()),
             "whisper",
             &config.whisper_model,
             &config.whisper_prompt,
@@ -848,8 +823,8 @@ impl super::Recorder for BiliRecorder {
         subtitle_file.write_all(subtitle_content.as_bytes()).await?;
         log::info!("[{}]Subtitle file written", self.room_id);
         // remove tmp file
-        tokio::fs::remove_file(&m3u8_index_file_path).await?;
-        tokio::fs::remove_file(&clip_file_path).await?;
+        tokio::fs::remove_file(&m3u8_index_file_path.full_path()).await?;
+        tokio::fs::remove_file(&clip_file_path.full_path()).await?;
         log::info!("[{}]Tmp file removed", self.room_id);
         Ok(subtitle_content)
     }

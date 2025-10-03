@@ -9,7 +9,7 @@ use super::{
 use crate::database::Database;
 use crate::progress::progress_manager::Event;
 use crate::progress::progress_reporter::EventEmitter;
-use crate::recorder::FfmpegProgressHandler;
+use crate::recorder::{CachePath, FfmpegProgressHandler};
 use crate::recorder_manager::RecorderEvent;
 use crate::subtitle_generator::item_to_srt;
 use crate::{config::Config, database::account::AccountRow};
@@ -307,12 +307,12 @@ impl DouyinRecorder {
         *self.total_size.write().await = 0;
     }
 
-    async fn get_work_dir(&self, live_id: &str) -> String {
-        format!(
-            "{}/douyin/{}/{}/",
-            self.config.read().await.cache,
+    async fn work_dir(&self, live_id: &str) -> CachePath {
+        CachePath::new(
+            &self.config.read().await.cache,
+            PlatformType::Douyin,
             self.room_id,
-            live_id
+            live_id,
         )
     }
 
@@ -320,8 +320,7 @@ impl DouyinRecorder {
         &self,
         live_id: &str,
     ) -> Result<MediaPlaylist, super::errors::RecorderError> {
-        let playlist_file_path =
-            format!("{}/{}", self.get_work_dir(live_id).await, "playlist.m3u8");
+        let playlist_file_path = format!("{}/{}", self.work_dir(live_id).await, "playlist.m3u8");
         match tokio::fs::read(&playlist_file_path).await {
             Ok(playlist_content) => {
                 let playlist = m3u8_rs::parse_media_playlist(&playlist_content).unwrap().1;
@@ -345,8 +344,8 @@ impl DouyinRecorder {
         let live_id = Utc::now().timestamp_millis().to_string();
         *self.live_id.write().await = live_id.clone();
 
-        let work_dir = self.get_work_dir(&live_id).await;
-        let _ = tokio::fs::create_dir_all(&work_dir).await;
+        let work_dir = self.work_dir(&live_id).await;
+        let _ = tokio::fs::create_dir_all(&work_dir.full_path()).await;
 
         // download cover
         if let Some(cover_url) = room_info.cover.clone() {
@@ -358,8 +357,8 @@ impl DouyinRecorder {
         }
 
         // Setup danmu store
-        let danmu_file_path = format!("{}{}", work_dir, "danmu.txt");
-        let danmu_store = DanmuStorage::new(&danmu_file_path).await;
+        let danmu_file_path = work_dir.with_filename("danmu.txt");
+        let danmu_store = DanmuStorage::new(&danmu_file_path.full_path()).await;
         *self.danmu_store.write().await = danmu_store;
 
         // Start danmu task
@@ -402,7 +401,7 @@ impl DouyinRecorder {
         if let Err(e) = crate::ffmpeg::playlist::cache_playlist(
             Some(&ffmpeg_progress_handler),
             &stream_url,
-            Path::new(&work_dir),
+            Path::new(&work_dir.full_path()),
         )
         .await
         {
@@ -514,7 +513,7 @@ impl Recorder for DouyinRecorder {
         &self,
         live_id: &str,
     ) -> Result<String, super::errors::RecorderError> {
-        let work_dir = self.get_work_dir(live_id).await;
+        let work_dir = self.work_dir(live_id).await;
         let subtitle_file_path = format!("{}/{}", work_dir, "subtitle.srt");
         let subtitle_file = File::open(subtitle_file_path).await;
         if subtitle_file.is_err() {
@@ -534,7 +533,7 @@ impl Recorder for DouyinRecorder {
         live_id: &str,
     ) -> Result<String, super::errors::RecorderError> {
         // generate subtitle file under work_dir
-        let work_dir = self.get_work_dir(live_id).await;
+        let work_dir = self.work_dir(live_id).await;
         let subtitle_file_path = format!("{}/{}", work_dir, "subtitle.srt");
         let mut subtitle_file = File::create(subtitle_file_path).await?;
         // first generate a tmp clip file
@@ -610,11 +609,7 @@ impl Recorder for DouyinRecorder {
             .map(async |a| {
                 (
                     a.0.clone(),
-                    format!(
-                        "{}/{}",
-                        self.get_work_dir(a.1.as_str()).await,
-                        "playlist.m3u8"
-                    ),
+                    format!("{}/{}", self.work_dir(a.1.as_str()).await, "playlist.m3u8"),
                 )
             })
             .collect::<Vec<_>>();
@@ -663,6 +658,7 @@ impl Recorder for DouyinRecorder {
     }
 
     async fn comments(&self, live_id: &str) -> Result<Vec<DanmuEntry>, RecorderError> {
+        let work_dir = self.work_dir(live_id).await;
         Ok(if live_id == *self.live_id.read().await {
             // just return current cache content
             match self.danmu_store.read().await.as_ref() {
@@ -671,15 +667,9 @@ impl Recorder for DouyinRecorder {
             }
         } else {
             // load disk cache
-            let cache_file_path = format!(
-                "{}/douyin/{}/{}/{}",
-                self.config.read().await.cache,
-                self.room_id,
-                live_id,
-                "danmu.txt"
-            );
+            let cache_file_path = work_dir.with_filename("danmu.txt");
             log::debug!("loading danmu cache from {cache_file_path}");
-            let storage = DanmuStorage::new(&cache_file_path).await;
+            let storage = DanmuStorage::new(&cache_file_path.full_path()).await;
             if storage.is_none() {
                 return Ok(Vec::new());
             }

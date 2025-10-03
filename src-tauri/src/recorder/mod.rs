@@ -10,7 +10,9 @@ use async_trait::async_trait;
 use danmu::DanmuEntry;
 use m3u8_rs::MediaPlaylist;
 use std::{
+    fmt::Display,
     hash::{Hash, Hasher},
+    path::PathBuf,
     sync::Arc,
 };
 use tokio::sync::RwLock;
@@ -99,7 +101,7 @@ impl Clone for FfmpegProgressHandler {
 impl ProgressReporterTrait for FfmpegProgressHandler {
     fn update(&self, content: &str) {
         if let Ok(duration) = content.parse::<i64>() {
-            let duration_secs = duration as f64 / 1000_000.0;
+            let duration_secs = duration as f64 / 1_000_000.0;
             let db = self.db.clone();
             let live_id = self.live_id.clone();
             let total_duration = self.total_duration.clone();
@@ -133,4 +135,65 @@ pub trait Recorder: Send + Sync + 'static {
     ) -> Result<String, errors::RecorderError>;
     async fn enable(&self);
     async fn disable(&self);
+}
+
+/// Cache path is relative to cache path in config
+#[derive(Clone)]
+pub struct CachePath {
+    pub cache_path: String,
+    pub platform: PlatformType,
+    pub room_id: i64,
+    pub live_id: String,
+    pub file_name: Option<String>,
+}
+
+impl CachePath {
+    pub fn new(cache_path: &str, platform: PlatformType, room_id: i64, live_id: &str) -> Self {
+        Self {
+            cache_path: cache_path.to_string(),
+            platform,
+            room_id,
+            live_id: live_id.to_string(),
+            file_name: None,
+        }
+    }
+
+    /// Sanitize filename and set it
+    pub fn with_filename(&self, file_name: &str) -> Self {
+        let sanitized_filename = sanitize_filename::sanitize(file_name);
+        Self {
+            file_name: Some(sanitized_filename),
+            ..self.clone()
+        }
+    }
+
+    /// Get relative path to cache path
+    pub fn relative_path(&self) -> PathBuf {
+        if let Some(file_name) = &self.file_name {
+            return PathBuf::from(format!(
+                "{}/{}/{}/{}",
+                self.platform.as_str(),
+                self.room_id,
+                self.live_id,
+                file_name
+            ));
+        }
+
+        PathBuf::from(format!(
+            "{}/{}/{}",
+            self.platform.as_str(),
+            self.room_id,
+            self.live_id
+        ))
+    }
+
+    pub fn full_path(&self) -> PathBuf {
+        PathBuf::from(self.cache_path.clone()).join(self.relative_path())
+    }
+}
+
+impl Display for CachePath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.full_path().display())
+    }
 }

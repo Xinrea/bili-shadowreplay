@@ -25,7 +25,10 @@ pub async fn handle_ffmpeg_process(
     reporter: Option<&impl ProgressReporterTrait>,
     ffmpeg_process: &mut tokio::process::Command,
 ) -> Result<(), String> {
-    let child = ffmpeg_process.stderr(Stdio::piped()).spawn();
+    let child = ffmpeg_process
+        .stderr(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn();
     if let Err(e) = child {
         return Err(e.to_string());
     }
@@ -35,24 +38,25 @@ pub async fn handle_ffmpeg_process(
     let mut parser = FfmpegLogParser::new(reader);
     while let Ok(event) = parser.parse_next_event().await {
         match event {
-            FfmpegEvent::Progress(p) => {
-                if let Some(reporter) = reporter {
-                    reporter.update(p.time.to_string().as_str());
+            FfmpegEvent::Log(_level, content) => {
+                // if contains "out_time_ms=66654667", by the way, it's actually in us
+                if content.starts_with("out_time_ms") {
+                    let time_str = content.strip_prefix("out_time_ms=").unwrap_or_default();
+                    if let Some(reporter) = reporter {
+                        reporter.update(time_str);
+                    }
                 }
             }
             FfmpegEvent::LogEOF => break,
             FfmpegEvent::Error(e) => {
-                return Err(e.to_string());
+                log::error!("[FFmpeg Error] {}", e);
+                return Err(e);
             }
             _ => {}
         }
     }
     if let Err(e) = child.wait().await {
         return Err(e.to_string());
-    }
-
-    if let Some(reporter) = reporter {
-        reporter.update("合成完成");
     }
 
     Ok(())

@@ -3,25 +3,23 @@ pub mod errors;
 pub mod profile;
 pub mod response;
 use super::entry::Range;
-use super::errors::RecorderError;
 use super::PlatformType;
 use crate::database::account::AccountRow;
-use crate::ffmpeg::{extract_video_metadata, VideoMetadata};
 use crate::progress::progress_manager::Event;
 use crate::progress::progress_reporter::EventEmitter;
 use crate::recorder::bilibili::client::{Codec, Protocol, Qn};
 use crate::recorder::bilibili::errors::BiliClientError;
-use crate::recorder::Recorder;
+use crate::recorder::{CachePath, FfmpegProgressHandler, Recorder};
 use crate::recorder_manager::RecorderEvent;
 use crate::subtitle_generator::item_to_srt;
 
 use super::danmu::{DanmuEntry, DanmuStorage};
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use client::{BiliClient, BiliStream, Format, RoomInfo, UserInfo};
 use danmu_stream::danmu_stream::DanmuStream;
 use danmu_stream::provider::ProviderType;
 use danmu_stream::DanmuMessageType;
-use m3u8_rs::{Map, MediaPlaylist, MediaPlaylistType, MediaSegment, Playlist};
+use m3u8_rs::{MediaPlaylist, MediaPlaylistType};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,7 +27,6 @@ use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio::task::JoinHandle;
-use url::Url;
 
 use crate::config::Config;
 use crate::database::Database;
@@ -66,21 +63,12 @@ pub struct BiliRecorder {
     danmu_storage: Arc<RwLock<Option<DanmuStorage>>>,
     event_channel: broadcast::Sender<RecorderEvent>,
     enabled: Arc<RwLock<bool>>,
-    current_metadata: Arc<RwLock<Option<VideoMetadata>>>,
 
     danmu_task: Arc<Mutex<Option<JoinHandle<()>>>>,
     record_task: Arc<Mutex<Option<JoinHandle<()>>>>,
 
-    last_sequence: Arc<RwLock<u64>>,
-    m3u8_playlist: Arc<RwLock<MediaPlaylist>>,
     total_duration: Arc<RwLock<f64>>,
     total_size: Arc<RwLock<u64>>,
-}
-
-struct SegmentBuffer {
-    sequence: u64,
-    representative_segment: MediaSegment,
-    sub_segments: Vec<MediaSegment>,
 }
 
 pub struct BiliRecorderOptions {
@@ -93,17 +81,6 @@ pub struct BiliRecorderOptions {
     pub config: Arc<RwLock<Config>>,
     pub auto_start: bool,
     pub channel: broadcast::Sender<RecorderEvent>,
-}
-
-fn default_m3u8_playlist() -> MediaPlaylist {
-    MediaPlaylist {
-        version: Some(6),
-        target_duration: 4.0,
-        end_list: true,
-        playlist_type: Some(MediaPlaylistType::Vod),
-        segments: Vec::new(),
-        ..Default::default()
-    }
 }
 
 impl BiliRecorder {
@@ -159,9 +136,6 @@ impl BiliRecorder {
             enabled: Arc::new(RwLock::new(options.auto_start)),
             danmu_task: Arc::new(Mutex::new(None)),
             record_task: Arc::new(Mutex::new(None)),
-            current_metadata: Arc::new(RwLock::new(None)),
-            last_sequence: Arc::new(RwLock::new(0)),
-            m3u8_playlist: Arc::new(RwLock::new(default_m3u8_playlist())),
             total_duration: Arc::new(RwLock::new(0.0)),
             total_size: Arc::new(RwLock::new(0)),
         };
@@ -170,39 +144,22 @@ impl BiliRecorder {
     }
 
     pub async fn reset(&self) {
-        // if record is ended, send event
-        if !self.live_id.read().await.is_empty() && self.current_metadata.read().await.is_some() {
-            self.m3u8_playlist.write().await.playlist_type = Some(MediaPlaylistType::Vod);
-            self.m3u8_playlist.write().await.end_list = true;
-            self.save_playlist().await;
-            let _ = self.event_channel.send(RecorderEvent::RecordEnd {
-                recorder: self.info().await,
-            });
-        }
-        // if record is empty, remove record
-        if !self.live_id.read().await.is_empty() && self.current_metadata.read().await.is_none() {
-            // no entries, remove work dir
-            log::warn!("[{}]No entries, remove empty record", self.room_id);
-            *self.danmu_storage.write().await = None;
-            if let Err(e) = self
-                .db
-                .remove_record(self.live_id.read().await.as_str())
-                .await
-            {
-                log::warn!("[{}]Failed to remove empty record: {}", self.room_id, e);
-            }
-            let work_dir = self.get_work_dir(self.live_id.read().await.as_str()).await;
+        let live_id = self.live_id.read().await.clone();
+        if !live_id.is_empty() && *self.total_duration.read().await == 0.0 {
+            // previous recording is empty, work dir and record needs to be deleted
+            let work_dir = self.work_dir(live_id.as_str()).await;
+            if let Err(e) = tokio::fs::remove_dir_all(&work_dir.full_path()).await {
+                log::error!("[{}]Failed to delete work dir: {}", self.room_id, e);
+            };
 
-            if let Err(e) = tokio::fs::remove_dir_all(self.get_full_path(&work_dir).await).await {
-                log::warn!("[{}]Failed to remove empty work dir: {}", self.room_id, e);
-            }
+            // delete record
+            if let Err(e) = self.db.remove_record(live_id.as_str()).await {
+                log::error!("[{}]Failed to delete record: {}", self.room_id, e);
+            };
         }
-        *self.last_sequence.write().await = 0;
-        *self.m3u8_playlist.write().await = default_m3u8_playlist();
         *self.live_stream.write().await = None;
         *self.last_update.write().await = Utc::now().timestamp();
         *self.danmu_storage.write().await = None;
-        *self.current_metadata.write().await = None;
         *self.platform_live_id.write().await = String::new();
         *self.live_id.write().await = String::new();
         *self.total_duration.write().await = 0.0;
@@ -217,26 +174,13 @@ impl BiliRecorder {
         *self.enabled.read().await
     }
 
-    async fn add_segment(&self, sequence: u64, segment: MediaSegment) {
-        let current_last_sequence = *self.last_sequence.read().await;
-        let new_last_sequence = std::cmp::max(current_last_sequence, sequence);
-
-        {
-            let mut playlist = self.m3u8_playlist.write().await;
-            playlist.segments.push(segment);
-        }
-
-        *self.last_sequence.write().await = new_last_sequence;
-
-        self.save_playlist().await;
-    }
-
     async fn load_playlist(
         &self,
         live_id: &str,
     ) -> Result<MediaPlaylist, super::errors::RecorderError> {
-        let playlist_path = format!("{}/playlist.m3u8", self.get_work_dir(live_id).await);
-        let playlist_full_path = self.get_full_path(&playlist_path).await;
+        let work_dir = self.work_dir(live_id).await;
+        let playlist_path = work_dir.with_filename("playlist.m3u8");
+        let playlist_full_path = playlist_path.full_path();
         if !Path::new(&playlist_full_path).exists() {
             return Err(super::errors::RecorderError::IoError(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -256,39 +200,6 @@ impl BiliRecorder {
         Err(super::errors::RecorderError::M3u8ParseFailed {
             content: String::from_utf8(bytes).unwrap(),
         })
-    }
-
-    async fn save_playlist(&self) {
-        let (playlist, live_id) = {
-            let playlist = self.m3u8_playlist.read().await.clone();
-            let live_id = self.live_id.read().await.clone();
-            (playlist, live_id)
-        };
-
-        let playlist_path = format!("{}/playlist.m3u8", self.get_work_dir(&live_id).await);
-        let playlist_full_path = self.get_full_path(&playlist_path).await;
-
-        let mut bytes: Vec<u8> = Vec::new();
-        playlist.write_to(&mut bytes).unwrap();
-
-        match tokio::fs::File::create(&playlist_full_path).await {
-            Ok(mut file) => {
-                if let Err(e) = file.write_all(&bytes).await {
-                    log::error!(
-                        "Failed to write playlist file {}: {}",
-                        playlist_full_path,
-                        e
-                    );
-                }
-            }
-            Err(e) => {
-                log::error!(
-                    "Failed to create playlist file {}: {}",
-                    playlist_full_path,
-                    e
-                );
-            }
-        }
     }
 
     async fn check_status(&self) -> bool {
@@ -521,425 +432,77 @@ impl BiliRecorder {
         }
     }
 
-    async fn get_playlist(&self) -> Result<Playlist, super::errors::RecorderError> {
-        let stream = self.live_stream.read().await.clone();
-        if stream.is_none() {
-            return Err(super::errors::RecorderError::NoStreamAvailable);
-        }
-        let stream = stream.unwrap();
-        match self
-            .client
-            .read()
-            .await
-            .get_index_content(&self.account, &stream.index())
-            .await
-        {
-            Ok(index_content) => {
-                if index_content.is_empty() {
-                    return Err(super::errors::RecorderError::InvalidStream { stream });
-                }
-                if index_content.contains("Not Found") {
-                    return Err(super::errors::RecorderError::IndexNotFound {
-                        url: stream.index(),
-                    });
-                }
-                m3u8_rs::parse_playlist_res(index_content.as_bytes()).map_err(|_| {
-                    super::errors::RecorderError::M3u8ParseFailed {
-                        content: index_content.clone(),
-                    }
-                })
-            }
-            Err(e) => {
-                log::error!(
-                    "[{}]Failed fetching index content from {}",
-                    self.room_id,
-                    stream.index()
-                );
-                Err(super::errors::RecorderError::BiliClientError(e))
-            }
-        }
+    async fn work_dir(&self, live_id: &str) -> CachePath {
+        CachePath::new(
+            &self.config.read().await.cache,
+            PlatformType::BiliBili,
+            self.room_id,
+            live_id,
+        )
     }
 
-    async fn get_metadata(
-        &self,
-        ts_path: &Path,
-    ) -> Result<VideoMetadata, super::errors::RecorderError> {
-        extract_video_metadata(ts_path)
-            .await
-            .map_err(super::errors::RecorderError::FfmpegError)
-    }
-
-    async fn get_full_path(&self, relative_path: &str) -> String {
-        format!("{}/{}", self.config.read().await.cache, relative_path)
-    }
-
-    async fn get_work_dir(&self, live_id: &str) -> String {
-        format!("bilibili/{}/{}/", self.room_id, live_id)
-    }
-
-    async fn update_entries(&self) -> Result<u128, super::errors::RecorderError> {
-        let task_begin_time = std::time::Instant::now();
+    /// Update entries for a new live
+    async fn update_entries(&self, live_id: &str) -> Result<(), super::errors::RecorderError> {
         let current_stream = self.live_stream.read().await.clone();
-        if current_stream.is_none() {
+        let Some(current_stream) = current_stream else {
             return Err(super::errors::RecorderError::NoStreamAvailable);
-        }
-        let current_stream = current_stream.unwrap();
-        let parsed = self.get_playlist().await;
-        if parsed.is_err() {
-            return Err(parsed.err().unwrap());
-        }
+        };
 
-        let playlist = parsed.unwrap();
+        let work_dir = self.work_dir(live_id).await;
+        log::info!("[{}]New record started: {}", self.room_id, live_id);
 
-        let mut timestamp = Utc::now().timestamp_millis();
-        if !self.live_id.read().await.is_empty() {
-            timestamp = self
-                .live_id
-                .read()
-                .await
-                .parse::<i64>()
-                .unwrap_or(timestamp);
-        }
+        let _ = tokio::fs::create_dir_all(&work_dir.full_path()).await;
 
-        let work_dir = self.get_work_dir(&timestamp.to_string()).await;
-        let is_first_record = self.m3u8_playlist.read().await.segments.is_empty();
+        let danmu_path = work_dir.with_filename("danmu.txt");
+        *self.danmu_storage.write().await = DanmuStorage::new(&danmu_path.full_path()).await;
 
-        if is_first_record {
-            log::info!("[{}]New record started: {}", self.room_id, timestamp);
-            *self.live_id.write().await = timestamp.to_string();
-            tokio::fs::create_dir_all(self.get_full_path(&work_dir).await)
-                .await
-                .map_err(super::errors::RecorderError::IoError)?;
+        let cover_path = work_dir.with_filename("cover.jpg");
+        let room_cover_path = Path::new(&self.config.read().await.cache)
+            .join(PlatformType::BiliBili.as_str())
+            .join(self.room_id.to_string())
+            .join("cover.jpg");
 
-            let danmu_path = format!("{work_dir}/danmu.txt");
-            let danmu_full_path = self.get_full_path(&danmu_path).await;
-            *self.danmu_storage.write().await = DanmuStorage::new(&danmu_full_path).await;
+        tokio::fs::copy(room_cover_path, &cover_path.full_path())
+            .await
+            .map_err(super::errors::RecorderError::IoError)?;
 
-            let cover_path = format!("{work_dir}/cover.jpg");
-            let cover_full_path = self.get_full_path(&cover_path).await;
+        *self.live_id.write().await = live_id.to_string();
 
-            let room_cover = self.cover.read().await.clone().unwrap();
-            let room_cover_full_path = format!("{}/{}", self.config.read().await.cache, room_cover);
-            log::debug!(
-                "[{}]Copy cover to: {} {}",
+        self.db
+            .add_record(
+                PlatformType::BiliBili,
+                self.platform_live_id.read().await.as_str(),
+                live_id,
                 self.room_id,
-                room_cover_full_path,
-                cover_full_path
-            );
-            tokio::fs::copy(room_cover_full_path, &cover_full_path)
-                .await
-                .map_err(super::errors::RecorderError::IoError)?;
+                &self.room_info.read().await.room_title,
+                Some(cover_path.relative_path().to_str().unwrap().to_string()),
+            )
+            .await?;
+        let _ = self.event_channel.send(RecorderEvent::RecordStart {
+            recorder: self.info().await,
+        });
 
-            self.db
-                .add_record(
-                    PlatformType::BiliBili,
-                    self.platform_live_id.read().await.as_str(),
-                    timestamp.to_string().as_str(),
-                    self.room_id,
-                    &self.room_info.read().await.room_title,
-                    Some(cover_path),
-                )
-                .await?;
+        *self.is_recording.write().await = true;
+
+        let reporter = FfmpegProgressHandler {
+            db: self.db.clone(),
+            live_id: self.live_id.clone(),
+            total_duration: self.total_duration.clone(),
+            total_size: self.total_size.clone(),
+            work_dir: work_dir.full_path(),
+        };
+
+        if let Err(e) = crate::ffmpeg::playlist::cache_playlist(
+            Some(&reporter),
+            &current_stream.index(),
+            &work_dir.full_path(),
+        )
+        .await
+        {
+            log::error!("[{}]Failed to cache playlist: {}", self.room_id, e);
         }
 
-        match playlist {
-            Playlist::MasterPlaylist(pl) => {
-                log::debug!("[{}]Master playlist:\n{:?}", self.room_id, pl);
-            }
-            Playlist::MediaPlaylist(pl) => {
-                if pl.segments.is_empty() {
-                    log::warn!("[{}]Media playlist is empty", self.room_id);
-                    return Err(super::errors::RecorderError::InvalidStream {
-                        stream: current_stream,
-                    });
-                }
-                let mut new_segment_fetched = false;
-                let latest_sequence = *self.last_sequence.read().await;
-
-                self.m3u8_playlist.write().await.target_duration = pl.target_duration;
-
-                let is_fmp4 = current_stream.format == Format::FMP4;
-                let mut header_data = Vec::new();
-
-                if is_fmp4 {
-                    // get fmp4 header from "#EXT-X-MAP:URI="h1758715459.m4s"
-                    let first_segment = pl.segments.first().unwrap();
-                    let mut header_url = first_segment
-                        .unknown_tags
-                        .iter()
-                        .find(|t| t.tag == "X-MAP")
-                        .map(|t| {
-                            let rest = t.rest.clone().unwrap();
-                            rest.split('=').nth(1).unwrap().replace("\\\"", "")
-                        });
-                    if header_url.is_none() {
-                        // map: Some(Map { uri: "h1758725308.m4s"
-                        if let Some(Map { uri, .. }) = &first_segment.map {
-                            header_url = Some(uri.clone());
-                        }
-                    }
-
-                    if header_url.is_none() {
-                        log::error!("[{}]Fmp4 header not found", self.room_id);
-                        return Err(super::errors::RecorderError::InvalidStream {
-                            stream: current_stream,
-                        });
-                    }
-
-                    let header_url = header_url.unwrap();
-                    let header_url = current_stream.ts_url(&header_url);
-                    header_data = self
-                        .client
-                        .read()
-                        .await
-                        .download_ts_raw(&header_url)
-                        .await?;
-                }
-
-                let mut segment_buffers = Vec::new();
-                let mut current_buffer = SegmentBuffer {
-                    sequence: pl.media_sequence,
-                    representative_segment: pl.segments.first().unwrap().clone(),
-                    sub_segments: vec![pl.segments.first().unwrap().clone()],
-                };
-
-                let rest_segments = pl.segments.iter().skip(1).collect::<Vec<_>>();
-
-                for (i, segment) in rest_segments.iter().enumerate() {
-                    let is_key = segment
-                        .unknown_tags
-                        .iter()
-                        .find(|t| t.tag == "BILI-AUX")
-                        .map(|t| {
-                            let rest = t.rest.clone().unwrap();
-                            rest.split('|').nth(1).unwrap() == "K"
-                        })
-                        .unwrap_or(true);
-
-                    if is_key {
-                        // start a new buffer
-                        segment_buffers.push(current_buffer);
-                        current_buffer = SegmentBuffer {
-                            sequence: pl.media_sequence + (i + 1) as u64,
-                            representative_segment: (*segment).clone(),
-                            sub_segments: vec![(*segment).clone()],
-                        };
-                    } else {
-                        current_buffer.sub_segments.push((*segment).clone());
-                    }
-                }
-
-                for buffer in segment_buffers {
-                    if buffer.sequence <= latest_sequence {
-                        continue;
-                    }
-
-                    let mut source_data = Vec::new();
-
-                    for ts in buffer.sub_segments {
-                        let ts_url = current_stream.ts_url(&ts.uri);
-                        if Url::parse(&ts_url).is_err() {
-                            log::error!(
-                                "[{}]Ts url is invalid. ts_url={} original={}",
-                                self.room_id,
-                                ts_url,
-                                ts.uri
-                            );
-                            continue;
-                        }
-
-                        let mut retry = 0;
-                        let client = self.client.clone();
-
-                        loop {
-                            if retry > 3 {
-                                log::error!("[{}]Download ts failed after retry", self.room_id);
-
-                                break;
-                            }
-
-                            match client.read().await.download_ts_raw(&ts_url).await {
-                                Ok(data) => {
-                                    if data.is_empty() {
-                                        log::error!(
-                                            "[{}]Segment with size 0, stream might be corrupted",
-                                            self.room_id
-                                        );
-
-                                        return Err(super::errors::RecorderError::InvalidStream {
-                                            stream: current_stream,
-                                        });
-                                    }
-
-                                    source_data.extend_from_slice(&data);
-
-                                    break;
-                                }
-                                Err(e) => {
-                                    retry += 1;
-                                    log::warn!(
-                                        "[{}]Download ts failed, retry {}: {}",
-                                        self.room_id,
-                                        retry,
-                                        e
-                                    );
-                                }
-                            }
-                        }
-                    }
-
-                    let file_name = if is_fmp4 {
-                        buffer
-                            .representative_segment
-                            .uri
-                            .split('/')
-                            .next_back()
-                            .unwrap_or(&buffer.representative_segment.uri)
-                            .to_string()
-                            .replace("m4s", "ts")
-                    } else {
-                        buffer
-                            .representative_segment
-                            .uri
-                            .split('/')
-                            .next_back()
-                            .unwrap_or(&buffer.representative_segment.uri)
-                            .to_string()
-                    };
-
-                    let full_path = self.get_full_path(&format!("{work_dir}/{file_name}")).await;
-                    let full_path = Path::new(&full_path);
-
-                    let mut to_add_segment = buffer.representative_segment.clone();
-                    to_add_segment.uri = file_name.clone();
-
-                    if is_fmp4 {
-                        crate::ffmpeg::convert_fmp4_to_ts_raw(
-                            &header_data,
-                            &source_data,
-                            full_path,
-                        )
-                        .await
-                        .map_err(super::errors::RecorderError::FfmpegError)?;
-                    } else {
-                        // just save the data
-                        let mut file = tokio::fs::File::create(&full_path).await?;
-                        file.write_all(&source_data).await?;
-                    }
-
-                    let metadata = self.get_metadata(full_path).await;
-                    if metadata.is_err() {
-                        return Err(metadata.err().unwrap());
-                    }
-                    let metadata = metadata.unwrap();
-                    let current_metadata = self.current_metadata.read().await.clone();
-                    // if Packet Interleaving Stream, video size might be 0, ignore it so that stream is not corrupted
-                    if metadata.width != 0 && metadata.height != 0 {
-                        if let Some(current_metadata) = current_metadata {
-                            if current_metadata.width != metadata.width
-                                || current_metadata.height != metadata.height
-                            {
-                                log::warn!(
-                                    "[{}]Resolution changed: {:?} => {:?}",
-                                    self.room_id,
-                                    &current_metadata,
-                                    &metadata
-                                );
-                                return Err(super::errors::RecorderError::ResolutionChanged {
-                                    err: format!(
-                                        "Resolution changed: {:?} => {:?}",
-                                        &current_metadata, &metadata
-                                    ),
-                                });
-                            }
-                        } else {
-                            // first segment, set current resolution
-                            *self.current_metadata.write().await = Some(metadata.clone());
-
-                            let _ = self.event_channel.send(RecorderEvent::RecordStart {
-                                recorder: self.info().await,
-                            });
-                        }
-                    }
-
-                    to_add_segment.map = None;
-                    to_add_segment.uri = file_name.clone();
-                    to_add_segment.duration = metadata.duration as f32;
-
-                    if is_fmp4 {
-                        // date time is not provided, should be calculated by offset
-                        let live_start_time = self.room_info.read().await.live_start_time;
-                        let mut seg_offset: i64 = 0;
-                        for tag in &to_add_segment.unknown_tags {
-                            if tag.tag == "BILI-AUX" {
-                                if let Some(rest) = &tag.rest {
-                                    let parts: Vec<&str> = rest.split('|').collect();
-                                    if !parts.is_empty() {
-                                        let offset_hex = parts.first().unwrap();
-                                        if let Ok(offset) = i64::from_str_radix(offset_hex, 16) {
-                                            seg_offset = offset;
-                                        }
-                                    }
-                                }
-                                break;
-                            }
-                        }
-                        to_add_segment.program_date_time = Some(
-                            DateTime::from_timestamp(live_start_time + seg_offset / 1000, 0)
-                                .unwrap()
-                                .into(),
-                        );
-                    }
-                    self.add_segment(buffer.sequence, to_add_segment).await;
-
-                    *self.total_duration.write().await += metadata.duration;
-                    *self.total_size.write().await += source_data.len() as u64;
-                    *self.last_sequence.write().await = buffer.sequence;
-
-                    new_segment_fetched = true;
-                }
-
-                if new_segment_fetched {
-                    *self.last_update.write().await = Utc::now().timestamp();
-
-                    self.db
-                        .update_record(
-                            timestamp.to_string().as_str(),
-                            *self.total_duration.read().await as i64,
-                            *self.total_size.read().await,
-                        )
-                        .await?;
-                } else {
-                    // if index content is not changed for a long time, we should return a error to fetch a new stream
-                    if *self.last_update.read().await < Utc::now().timestamp() - 10 {
-                        log::error!(
-                            "[{}]Stream content is not updating for 10s, maybe not started yet or not closed properly.",
-                            self.room_id
-                        );
-                        return Err(super::errors::RecorderError::FreezedStream {
-                            stream: current_stream,
-                        });
-                    }
-                }
-            }
-        }
-
-        // check stream is nearly expired
-        // WHY: when program started, all stream is fetched nearly at the same time, so they will expire toggether,
-        // this might meet server rate limit. So we add a random offset to make request spread over time.
-        let pre_offset = rand::random::<u64>() % 181 + 120; // Random number between 120 and 300
-                                                            // no need to update stream as it's not expired yet
-        let current_stream = self.live_stream.read().await.clone();
-        if current_stream.as_ref().is_some_and(|s| {
-            s.get_expire().unwrap_or(0) - Utc::now().timestamp() < pre_offset as i64
-        }) {
-            log::info!("[{}]Stream is nearly expired", self.room_id);
-            return Err(super::errors::RecorderError::StreamExpired {
-                stream: current_stream.unwrap(),
-            });
-        }
-
-        Ok(task_begin_time.elapsed().as_millis())
+        Ok(())
     }
 
     async fn generate_archive_playlist(
@@ -993,11 +556,12 @@ impl BiliRecorder {
             None
         };
 
-        let mut playlist = self.m3u8_playlist.read().await.clone();
-
-        if playlist.segments.is_empty() {
+        let live_id = self.live_id.read().await.clone();
+        let playlist = self.load_playlist(&live_id).await;
+        if playlist.is_err() {
             return MediaPlaylist::default();
         }
+        let mut playlist = playlist.unwrap();
 
         if let Some(range) = range {
             // accumulate duration, and filter segments in range
@@ -1035,65 +599,26 @@ impl super::Recorder for BiliRecorder {
         *self.record_task.lock().await = Some(tokio::spawn(async move {
             log::info!("[{}]Start running recorder", self_clone.room_id);
             while !*self_clone.quit.lock().await {
-                let mut connection_fail_count = 0;
                 if self_clone.check_status().await {
                     // Live status is ok, start recording.
-                    let mut continue_record = false;
-                    let mut resolution_changed = false;
-                    while self_clone.should_record().await {
-                        match self_clone.update_entries().await {
-                            Ok(ms) => {
-                                if ms < 1000 {
-                                    tokio::time::sleep(Duration::from_millis((1000 - ms) as u64))
-                                        .await;
-                                }
-                                if ms >= 3000 {
-                                    log::warn!(
-                                        "[{}]Update entries cost too long: {}ms",
-                                        self_clone.room_id,
-                                        ms
-                                    );
-                                }
-                                *self_clone.is_recording.write().await = true;
-                                connection_fail_count = 0;
-                            }
-                            Err(e) => {
-                                log::error!("[{}]Update entries error: {}", self_clone.room_id, e);
-                                if let RecorderError::BiliClientError(_) = e {
-                                    connection_fail_count =
-                                        std::cmp::min(5, connection_fail_count + 1);
-                                }
-                                // if error is stream expired, we should not break, cuz we need to fetch a new stream
-                                if let RecorderError::StreamExpired { stream: _ } = e {
-                                    continue_record = true;
-                                }
+                    if self_clone.should_record().await {
+                        *self_clone.is_recording.write().await = true;
+                        let live_id = Utc::now().timestamp_millis().to_string();
 
-                                if let RecorderError::ResolutionChanged { err: _ } = e {
-                                    resolution_changed = true;
-                                }
-
-                                break;
-                            }
+                        if let Err(e) = self_clone.update_entries(&live_id).await {
+                            log::error!("[{}]Update entries error: {}", self_clone.room_id, e);
                         }
-                    }
 
-                    if continue_record {
-                        log::info!("[{}]Continue recording without reset", self_clone.room_id);
-                        continue;
+                        let _ = self_clone.event_channel.send(RecorderEvent::RecordEnd {
+                            recorder: self_clone.info().await,
+                        });
                     }
 
                     *self_clone.is_recording.write().await = false;
                     self_clone.reset().await;
-                    if resolution_changed {
-                        log::info!("[{}]Resolution changed, reset recorder", self_clone.room_id);
-                        continue;
-                    }
                     // go check status again after random 2-5 secs
                     let secs = rand::random::<u64>() % 4 + 2;
-                    tokio::time::sleep(Duration::from_secs(
-                        secs + 2_u64.pow(connection_fail_count),
-                    ))
-                    .await;
+                    tokio::time::sleep(Duration::from_secs(secs)).await;
                     continue;
                 }
 
@@ -1149,14 +674,15 @@ impl super::Recorder for BiliRecorder {
         let playlists = archives
             .iter()
             .map(async |a| {
-                let work_dir = self.get_work_dir(a.1.as_str()).await;
+                let work_dir = self.work_dir(a.1.as_str()).await;
                 (
                     a.0.clone(),
-                    format!(
-                        "{}/{}",
-                        self.get_full_path(&work_dir).await,
-                        "playlist.m3u8"
-                    ),
+                    work_dir
+                        .with_filename("playlist.m3u8")
+                        .relative_path()
+                        .to_str()
+                        .unwrap()
+                        .to_string(),
                 )
             })
             .collect::<Vec<_>>();
@@ -1169,6 +695,9 @@ impl super::Recorder for BiliRecorder {
     async fn info(&self) -> super::RecorderInfo {
         let room_info = self.room_info.read().await;
         let user_info = self.user_info.read().await;
+        let live_status = *self.live_status.read().await;
+        let is_recording = *self.is_recording.read().await;
+        let total_length = *self.total_duration.read().await;
         super::RecorderInfo {
             room_id: self.room_id,
             room_info: super::RoomInfo {
@@ -1181,10 +710,10 @@ impl super::Recorder for BiliRecorder {
                 user_name: user_info.user_name.clone(),
                 user_avatar: user_info.user_avatar_url.clone(),
             },
-            total_length: *self.total_duration.read().await,
+            total_length,
             current_live_id: self.live_id.read().await.clone(),
-            live_status: *self.live_status.read().await,
-            is_recording: *self.is_recording.read().await,
+            live_status,
+            is_recording,
             auto_start: *self.enabled.read().await,
             platform: PlatformType::BiliBili.as_str().to_string(),
         }
@@ -1194,6 +723,7 @@ impl super::Recorder for BiliRecorder {
         &self,
         live_id: &str,
     ) -> Result<Vec<DanmuEntry>, super::errors::RecorderError> {
+        let work_dir = self.work_dir(live_id).await;
         Ok(if live_id == *self.live_id.read().await {
             // just return current cache content
             match self.danmu_storage.read().await.as_ref() {
@@ -1202,19 +732,13 @@ impl super::Recorder for BiliRecorder {
             }
         } else {
             // load disk cache
-            let cache_file_path = format!(
-                "{}/bilibili/{}/{}/{}",
-                self.config.read().await.cache,
-                self.room_id,
-                live_id,
-                "danmu.txt"
-            );
+            let cache_file_path = work_dir.with_filename("danmu.txt");
             log::debug!(
                 "[{}]loading danmu cache from {}",
                 self.room_id,
                 cache_file_path
             );
-            let storage = DanmuStorage::new(&cache_file_path).await;
+            let storage = DanmuStorage::new(&cache_file_path.full_path()).await;
             if storage.is_none() {
                 return Ok(Vec::new());
             }
@@ -1232,9 +756,9 @@ impl super::Recorder for BiliRecorder {
         live_id: &str,
     ) -> Result<String, super::errors::RecorderError> {
         // read subtitle file under work_dir
-        let work_dir = self.get_work_dir(live_id).await;
-        let subtitle_file_path = format!("{}/{}", work_dir, "subtitle.srt");
-        let subtitle_file = File::open(self.get_full_path(&subtitle_file_path).await).await;
+        let work_dir = self.work_dir(live_id).await;
+        let subtitle_file_path = work_dir.with_filename("subtitle.srt");
+        let subtitle_file = File::open(subtitle_file_path.full_path()).await;
         if subtitle_file.is_err() {
             return Err(super::errors::RecorderError::SubtitleNotFound {
                 live_id: live_id.to_string(),
@@ -1252,28 +776,28 @@ impl super::Recorder for BiliRecorder {
         live_id: &str,
     ) -> Result<String, super::errors::RecorderError> {
         // generate subtitle file under work_dir
-        let work_dir = self.get_work_dir(live_id).await;
-        let subtitle_file_path = format!("{}/{}", work_dir, "subtitle.srt");
-        let mut subtitle_file = File::create(self.get_full_path(&subtitle_file_path).await).await?;
+        let work_dir = self.work_dir(live_id).await;
+        let subtitle_file_path = work_dir.with_filename("subtitle.srt");
+        let mut subtitle_file = File::create(subtitle_file_path.full_path()).await?;
         // first generate a tmp clip file
         // generate a tmp m3u8 index file
-        let m3u8_index_file_path = format!("{}/{}", work_dir, "tmp.m3u8");
+        let m3u8_index_file_path = work_dir.with_filename("tmp.m3u8");
         let playlist = self.playlist(live_id, 0, 0).await;
         let mut v: Vec<u8> = Vec::new();
         playlist.write_to(&mut v).unwrap();
         let m3u8_content: &str = std::str::from_utf8(&v).unwrap();
-        tokio::fs::write(&m3u8_index_file_path, m3u8_content).await?;
+        tokio::fs::write(&m3u8_index_file_path.full_path(), m3u8_content).await?;
         log::info!(
             "[{}]M3U8 index file generated: {}",
             self.room_id,
-            m3u8_index_file_path
+            m3u8_index_file_path.full_path().display()
         );
         // generate a tmp clip file
-        let clip_file_path = format!("{}/{}", work_dir, "tmp.mp4");
+        let clip_file_path = work_dir.with_filename("tmp.mp4");
         if let Err(e) = crate::ffmpeg::playlist::playlist_to_video(
             None::<&crate::progress::progress_reporter::ProgressReporter>,
-            Path::new(&m3u8_index_file_path),
-            Path::new(&clip_file_path),
+            Path::new(&m3u8_index_file_path.full_path()),
+            Path::new(&clip_file_path.full_path()),
             None,
         )
         .await
@@ -1291,7 +815,7 @@ impl super::Recorder for BiliRecorder {
         let config = self.config.read().await;
         let result = crate::ffmpeg::generate_video_subtitle(
             None,
-            Path::new(&clip_file_path),
+            Path::new(&clip_file_path.full_path()),
             "whisper",
             &config.whisper_model,
             &config.whisper_prompt,
@@ -1316,8 +840,8 @@ impl super::Recorder for BiliRecorder {
         subtitle_file.write_all(subtitle_content.as_bytes()).await?;
         log::info!("[{}]Subtitle file written", self.room_id);
         // remove tmp file
-        tokio::fs::remove_file(&m3u8_index_file_path).await?;
-        tokio::fs::remove_file(&clip_file_path).await?;
+        tokio::fs::remove_file(&m3u8_index_file_path.full_path()).await?;
+        tokio::fs::remove_file(&clip_file_path.full_path()).await?;
         log::info!("[{}]Tmp file removed", self.room_id);
         Ok(subtitle_content)
     }

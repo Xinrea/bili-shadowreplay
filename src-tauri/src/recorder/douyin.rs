@@ -7,9 +7,9 @@ use super::{
     UserInfo,
 };
 use crate::database::Database;
-use crate::ffmpeg::extract_video_metadata;
 use crate::progress::progress_manager::Event;
 use crate::progress::progress_reporter::EventEmitter;
+use crate::recorder::{CachePath, FfmpegProgressHandler};
 use crate::recorder_manager::RecorderEvent;
 use crate::subtitle_generator::item_to_srt;
 use crate::{config::Config, database::account::AccountRow};
@@ -19,7 +19,7 @@ use client::DouyinClientError;
 use danmu_stream::danmu_stream::DanmuStream;
 use danmu_stream::provider::ProviderType;
 use danmu_stream::DanmuMessageType;
-use m3u8_rs::{MediaPlaylist, MediaPlaylistType, MediaSegment};
+use m3u8_rs::{MediaPlaylist, MediaPlaylistType};
 use rand::random;
 use std::path::Path;
 use std::sync::Arc;
@@ -58,7 +58,6 @@ pub struct DouyinRecorder {
     live_status: Arc<RwLock<LiveStatus>>,
     is_recording: Arc<RwLock<bool>>,
     running: Arc<RwLock<bool>>,
-    last_update: Arc<RwLock<i64>>,
     config: Arc<RwLock<Config>>,
     event_channel: broadcast::Sender<RecorderEvent>,
     enabled: Arc<RwLock<bool>>,
@@ -67,8 +66,6 @@ pub struct DouyinRecorder {
     danmu_task: Arc<Mutex<Option<JoinHandle<()>>>>,
     record_task: Arc<Mutex<Option<JoinHandle<()>>>>,
 
-    playlist: Arc<RwLock<MediaPlaylist>>,
-    last_sequence: Arc<RwLock<u64>>,
     total_duration: Arc<RwLock<f64>>,
     total_size: Arc<RwLock<u64>>,
 }
@@ -89,34 +86,6 @@ fn get_best_stream_url(room_info: &client::DouyinBasicRoomInfo) -> Option<String
         let err = stream_info.unwrap_err();
         log::error!("Failed to parse stream data: {err} {stream_data}");
         None
-    }
-}
-
-fn parse_stream_url(stream_url: &str) -> (String, String) {
-    // Parse stream URL to extract base URL and query parameters
-    // Example: http://7167739a741646b4651b6949b2f3eb8e.livehwc3.cn/pull-hls-l26.douyincdn.com/third/stream-693342996808860134_or4.m3u8?sub_m3u8=true&user_session_id=16090eb45ab8a2f042f7c46563936187&major_anchor_level=common&edge_slice=true&expire=67d944ec&sign=47b95cc6e8de20d82f3d404412fa8406
-
-    let base_url = stream_url
-        .rfind('/')
-        .map_or(stream_url, |i| &stream_url[..=i])
-        .to_string();
-
-    let query_params = stream_url
-        .find('?')
-        .map_or("", |i| &stream_url[i..])
-        .to_string();
-
-    (base_url, query_params)
-}
-
-fn default_m3u8_playlist() -> MediaPlaylist {
-    MediaPlaylist {
-        version: Some(6),
-        target_duration: 4.0,
-        end_list: true,
-        playlist_type: Some(MediaPlaylistType::Vod),
-        segments: Vec::new(),
-        ..Default::default()
     }
 }
 
@@ -158,7 +127,6 @@ impl DouyinRecorder {
             running: Arc::new(RwLock::new(false)),
             is_recording: Arc::new(RwLock::new(false)),
             enabled: Arc::new(RwLock::new(enabled)),
-            last_update: Arc::new(RwLock::new(Utc::now().timestamp())),
             config,
             event_channel: channel,
 
@@ -166,8 +134,6 @@ impl DouyinRecorder {
             danmu_task: Arc::new(Mutex::new(None)),
             record_task: Arc::new(Mutex::new(None)),
 
-            playlist: Arc::new(RwLock::new(default_m3u8_playlist())),
-            last_sequence: Arc::new(RwLock::new(0)),
             total_duration: Arc::new(RwLock::new(0.0)),
             total_size: Arc::new(RwLock::new(0)),
         })
@@ -336,23 +302,30 @@ impl DouyinRecorder {
 
     async fn reset(&self) {
         let live_id = self.live_id.read().await.clone();
-        if !live_id.is_empty() {
-            self.save_playlist().await;
+        if !live_id.is_empty() && *self.total_duration.read().await == 0.0 {
+            // previous recording is empty, work dir and record needs to be deleted
+            let work_dir = self.work_dir(live_id.as_str()).await;
+            if let Err(e) = tokio::fs::remove_dir_all(&work_dir.full_path()).await {
+                log::error!("[{}]Failed to delete work dir: {}", self.room_id, e);
+            };
+
+            // delete record
+            if let Err(e) = self.db.remove_record(live_id.as_str()).await {
+                log::error!("[{}]Failed to delete record: {}", self.room_id, e);
+            };
         }
-        *self.playlist.write().await = default_m3u8_playlist();
         *self.platform_live_id.write().await = String::new();
-        *self.last_update.write().await = Utc::now().timestamp();
         *self.stream_url.write().await = None;
         *self.total_duration.write().await = 0.0;
         *self.total_size.write().await = 0;
     }
 
-    async fn get_work_dir(&self, live_id: &str) -> String {
-        format!(
-            "{}/douyin/{}/{}/",
-            self.config.read().await.cache,
+    async fn work_dir(&self, live_id: &str) -> CachePath {
+        CachePath::new(
+            &self.config.read().await.cache,
+            PlatformType::Douyin,
             self.room_id,
-            live_id
+            live_id,
         )
     }
 
@@ -360,302 +333,97 @@ impl DouyinRecorder {
         &self,
         live_id: &str,
     ) -> Result<MediaPlaylist, super::errors::RecorderError> {
-        let playlist_file_path =
-            format!("{}/{}", self.get_work_dir(live_id).await, "playlist.m3u8");
-        let playlist_content = tokio::fs::read(&playlist_file_path).await.unwrap();
-        let playlist = m3u8_rs::parse_media_playlist(&playlist_content).unwrap().1;
-        Ok(playlist)
+        let playlist_file_path = format!("{}/{}", self.work_dir(live_id).await, "playlist.m3u8");
+        match tokio::fs::read(&playlist_file_path).await {
+            Ok(playlist_content) => {
+                let playlist = m3u8_rs::parse_media_playlist(&playlist_content).unwrap().1;
+                Ok(playlist)
+            }
+            Err(e) => Err(super::errors::RecorderError::IoError(e)),
+        }
     }
 
-    async fn save_playlist(&self) {
-        let playlist = self.playlist.read().await.clone();
-        let mut bytes: Vec<u8> = Vec::new();
-        playlist.write_to(&mut bytes).unwrap();
-        let playlist_file_path = format!(
-            "{}/{}",
-            self.get_work_dir(self.live_id.read().await.as_str()).await,
-            "playlist.m3u8"
-        );
-        tokio::fs::write(&playlist_file_path, bytes).await.unwrap();
-    }
-
-    async fn add_segment(&self, sequence: u64, segment: MediaSegment) {
-        self.playlist.write().await.segments.push(segment);
-        let current_last_sequence = *self.last_sequence.read().await;
-        let new_last_sequence = std::cmp::max(current_last_sequence, sequence);
-        *self.last_sequence.write().await = new_last_sequence;
-        self.save_playlist().await;
-    }
-
-    async fn update_entries(&self) -> Result<u128, RecorderError> {
-        let task_begin_time = std::time::Instant::now();
-
+    async fn update_entries(&self) -> Result<(), RecorderError> {
         // Get current room info and stream URL
-        let room_info = self.room_info.read().await;
-
-        if room_info.is_none() {
+        let room_info = self.room_info.read().await.clone();
+        let Some(room_info) = room_info else {
             return Err(RecorderError::NoRoomInfo);
-        }
+        };
 
-        if self.stream_url.read().await.is_none() {
+        let Some(stream_url) = self.stream_url.read().await.clone() else {
             return Err(RecorderError::NoStreamAvailable);
+        };
+
+        let live_id = Utc::now().timestamp_millis().to_string();
+        *self.live_id.write().await = live_id.clone();
+
+        let work_dir = self.work_dir(&live_id).await;
+        let _ = tokio::fs::create_dir_all(&work_dir.full_path()).await;
+
+        // download cover
+        if let Some(cover_url) = room_info.cover.clone() {
+            let cover_path = format!("{work_dir}/cover.jpg");
+            let _ = self
+                .client
+                .download_file(&cover_url, Path::new(&cover_path))
+                .await;
         }
 
-        let mut stream_url = self.stream_url.read().await.as_ref().unwrap().clone();
+        // Setup danmu store
+        let danmu_file_path = work_dir.with_filename("danmu.txt");
+        let danmu_store = DanmuStorage::new(&danmu_file_path.full_path()).await;
+        *self.danmu_store.write().await = danmu_store;
 
-        // Get m3u8 playlist
-        let (playlist, updated_stream_url) = self.client.get_m3u8_content(&stream_url).await?;
-
-        *self.stream_url.write().await = Some(updated_stream_url.clone());
-        stream_url = updated_stream_url;
-
-        let mut new_segment_fetched = false;
-        let mut is_first_segment = self.playlist.read().await.segments.is_empty();
-        let work_dir;
-
-        // If this is the first segment, prepare but don't create directories yet
-        if is_first_segment {
-            // Generate live_id for potential use
-            let live_id = Utc::now().timestamp_millis().to_string();
-            *self.live_id.write().await = live_id.clone();
-            work_dir = self.get_work_dir(&live_id).await;
-        } else {
-            work_dir = self.get_work_dir(self.live_id.read().await.as_str()).await;
+        // Start danmu task
+        if let Some(danmu_task) = self.danmu_task.lock().await.as_mut() {
+            danmu_task.abort();
+        }
+        if let Some(danmu_stream_task) = self.danmu_stream_task.lock().await.as_mut() {
+            danmu_stream_task.abort();
         }
 
-        self.playlist.write().await.target_duration = playlist.target_duration;
+        let self_clone = self.clone();
+        log::info!("Start fetching danmu for live {live_id}");
+        *self.danmu_task.lock().await = Some(tokio::spawn(async move {
+            let _ = self_clone.danmu().await;
+        }));
 
-        let last_sequence = *self.last_sequence.read().await;
-
-        for segment in &playlist.segments {
-            let formatted_ts_name = segment.uri.clone();
-            let sequence = extract_sequence_from(&formatted_ts_name);
-            if sequence.is_none() {
-                log::error!("No timestamp extracted from douyin ts name: {formatted_ts_name}");
-                continue;
-            }
-
-            let sequence = sequence.unwrap();
-            if sequence <= last_sequence {
-                continue;
-            }
-
-            // example: pull-l3.douyincdn.com_stream-405850027547689439_or4-1752675567719.ts
-            let uri = segment.uri.clone();
-
-            let ts_url = if uri.starts_with("http") {
-                uri.clone()
-            } else {
-                // Parse the stream URL to extract base URL and query parameters
-                let (base_url, query_params) = parse_stream_url(&stream_url);
-
-                // Check if the segment URI already has query parameters
-                if uri.contains('?') {
-                    // If segment URI has query params, append m3u8 query params with &
-                    format!("{}{}&{}", base_url, uri, &query_params[1..]) // Remove leading ? from query_params
-                } else {
-                    // If segment URI has no query params, append m3u8 query params with ?
-                    format!("{base_url}{uri}{query_params}")
-                }
-            };
-
-            // Download segment with retry mechanism
-            let mut retry_count = 0;
-            let max_retries = 3;
-            let mut download_success = false;
-            let mut work_dir_created = false;
-
-            while retry_count < max_retries && !download_success {
-                let file_name = format!("{sequence}.ts");
-                let file_path = format!("{work_dir}/{file_name}");
-
-                // If this is the first segment, create work directory before first download attempt
-                if is_first_segment && !work_dir_created {
-                    // Create work directory only when we're about to download
-                    if let Err(e) = tokio::fs::create_dir_all(&work_dir).await {
-                        log::error!("Failed to create work directory: {e}");
-                        return Err(e.into());
-                    }
-                    work_dir_created = true;
-                }
-
-                match self.client.download_ts(&ts_url, &file_path).await {
-                    Ok(size) => {
-                        if size == 0 {
-                            log::error!("Download segment failed (empty response): {ts_url}");
-                            retry_count += 1;
-                            if retry_count < max_retries {
-                                tokio::time::sleep(Duration::from_millis(500)).await;
-                                continue;
-                            }
-                            break;
-                        }
-
-                        // If this is the first successful download, create record and initialize stores
-                        if is_first_segment {
-                            // Create database record
-                            let room_info = room_info.as_ref().unwrap();
-                            let cover_url = room_info.cover.clone();
-                            let room_cover_path = Path::new(PlatformType::Douyin.as_str())
-                                .join(self.room_id.to_string())
-                                .join("cover.jpg");
-                            if let Some(url) = cover_url {
-                                let full_room_cover_path =
-                                    Path::new(&self.config.read().await.cache)
-                                        .join(&room_cover_path);
-                                let _ =
-                                    self.client.download_file(&url, &full_room_cover_path).await;
-                            }
-
-                            if let Err(e) = self
-                                .db
-                                .add_record(
-                                    PlatformType::Douyin,
-                                    self.platform_live_id.read().await.as_str(),
-                                    self.live_id.read().await.as_str(),
-                                    self.room_id,
-                                    &room_info.room_title,
-                                    Some(room_cover_path.to_str().unwrap().to_string()),
-                                )
-                                .await
-                            {
-                                log::error!("Failed to add record: {e}");
-                            }
-
-                            let _ = self.event_channel.send(RecorderEvent::RecordStart {
-                                recorder: self.info().await,
-                            });
-
-                            // Setup danmu store
-                            let danmu_file_path = format!("{}{}", work_dir, "danmu.txt");
-                            let danmu_store = DanmuStorage::new(&danmu_file_path).await;
-                            *self.danmu_store.write().await = danmu_store;
-
-                            // Start danmu task
-                            if let Some(danmu_task) = self.danmu_task.lock().await.as_mut() {
-                                danmu_task.abort();
-                            }
-                            if let Some(danmu_stream_task) =
-                                self.danmu_stream_task.lock().await.as_mut()
-                            {
-                                danmu_stream_task.abort();
-                            }
-                            let live_id = self.live_id.read().await.clone();
-                            let self_clone = self.clone();
-                            *self.danmu_task.lock().await = Some(tokio::spawn(async move {
-                                log::info!("Start fetching danmu for live {live_id}");
-                                let _ = self_clone.danmu().await;
-                            }));
-
-                            is_first_segment = false;
-                        }
-
-                        let mut pl = segment.clone();
-                        pl.uri = file_name;
-
-                        let metadata = extract_video_metadata(Path::new(&file_path)).await;
-                        if let Ok(metadata) = metadata {
-                            pl.duration = metadata.duration as f32;
-                        }
-
-                        *self.total_duration.write().await += segment.duration as f64;
-                        *self.total_size.write().await += size;
-
-                        self.add_segment(sequence, pl).await;
-
-                        new_segment_fetched = true;
-                        download_success = true;
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "Failed to download segment (attempt {}/{}): {} - URL: {}",
-                            retry_count + 1,
-                            max_retries,
-                            e,
-                            ts_url
-                        );
-                        retry_count += 1;
-                        if retry_count < max_retries {
-                            tokio::time::sleep(Duration::from_millis(1000 * retry_count as u64))
-                                .await;
-                            continue;
-                        }
-                        // If all retries failed, check if it's a 400 error
-                        if e.to_string().contains("400") {
-                            log::error!(
-                                "HTTP 400 error for segment, stream URL may be expired: {ts_url}"
-                            );
-                            *self.stream_url.write().await = None;
-
-                            // Clean up empty directory if first segment failed
-                            if is_first_segment && work_dir_created {
-                                if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await
-                                {
-                                    log::warn!(
-                                        "Failed to cleanup empty work directory {work_dir}: {cleanup_err}"
-                                    );
-                                }
-                            }
-
-                            return Err(RecorderError::NoStreamAvailable);
-                        }
-
-                        // Clean up empty directory if first segment failed
-                        if is_first_segment && work_dir_created {
-                            if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
-                                log::warn!(
-                                    "Failed to cleanup empty work directory {work_dir}: {cleanup_err}"
-                                );
-                            }
-                        }
-
-                        return Err(e.into());
-                    }
-                }
-            }
-
-            if !download_success {
-                log::error!("Failed to download segment after {max_retries} retries: {ts_url}");
-
-                // Clean up empty directory if first segment failed after all retries
-                if is_first_segment && work_dir_created {
-                    if let Err(cleanup_err) = tokio::fs::remove_dir_all(&work_dir).await {
-                        log::warn!(
-                            "Failed to cleanup empty work directory {work_dir}: {cleanup_err}"
-                        );
-                    }
-                }
-            }
-        }
-
-        if new_segment_fetched {
-            *self.last_update.write().await = Utc::now().timestamp();
-            self.update_record().await;
-        }
-
-        // if no new segment fetched for 10 seconds
-        if *self.last_update.read().await + 10 < Utc::now().timestamp() {
-            log::warn!("No new segment fetched for 10 seconds");
-            *self.stream_url.write().await = None;
-            *self.last_update.write().await = Utc::now().timestamp();
-            return Err(RecorderError::NoStreamAvailable);
-        }
-
-        Ok(task_begin_time.elapsed().as_millis())
-    }
-
-    async fn update_record(&self) {
-        if let Err(e) = self
+        // add db record
+        let _ = self
             .db
-            .update_record(
-                self.live_id.read().await.as_str(),
-                *self.total_duration.read().await as i64,
-                *self.total_size.read().await,
+            .add_record(
+                PlatformType::Douyin,
+                self.platform_live_id.read().await.as_str(),
+                live_id.as_str(),
+                self.room_id,
+                &room_info.room_title,
+                Some(format!("douyin/{}/{}/cover.jpg", self.room_id, live_id)),
             )
-            .await
+            .await;
+
+        let _ = self.event_channel.send(RecorderEvent::RecordStart {
+            recorder: self.info().await,
+        });
+
+        let ffmpeg_progress_handler = FfmpegProgressHandler {
+            db: self.db.clone(),
+            live_id: self.live_id.clone(),
+            total_duration: self.total_duration.clone(),
+            total_size: self.total_size.clone(),
+            work_dir: work_dir.full_path(),
+        };
+
+        if let Err(e) = crate::ffmpeg::playlist::cache_playlist(
+            Some(&ffmpeg_progress_handler),
+            &stream_url,
+            Path::new(&work_dir.full_path()),
+        )
+        .await
         {
-            log::error!("Failed to update record: {e}");
+            log::error!("[{}]Failed to cache playlist: {}", self.room_id, e);
         }
+
+        Ok(())
     }
 
     async fn generate_m3u8(&self, live_id: &str, start: i64, end: i64) -> MediaPlaylist {
@@ -668,59 +436,37 @@ impl DouyinRecorder {
             None
         };
 
-        // if requires a range, we need to filter entries and only use entries in the range, so m3u8 type is VOD.
-        if live_id == *self.live_id.read().await {
-            let mut playlist = self.playlist.read().await.clone();
-            if let Some(range) = range {
-                let mut duration = 0.0;
-                let mut segments = Vec::new();
-                for s in playlist.segments {
-                    if range.is_in(duration) || range.is_in(duration + s.duration) {
-                        segments.push(s.clone());
-                    }
-                    duration += s.duration;
-                }
-                playlist.segments = segments;
-
-                playlist.end_list = true;
-                playlist.playlist_type = Some(MediaPlaylistType::Vod);
-            } else {
-                playlist.end_list = false;
-                playlist.playlist_type = Some(MediaPlaylistType::Event);
-            }
-
-            playlist
-        } else {
-            let playlist = self.load_playlist(live_id).await;
-            if playlist.is_err() {
-                return MediaPlaylist::default();
-            }
-            let mut playlist = playlist.unwrap();
-            playlist.playlist_type = Some(MediaPlaylistType::Vod);
-            playlist.end_list = true;
-
-            if let Some(range) = range {
-                let mut duration = 0.0;
-                let mut segments = Vec::new();
-                for s in playlist.segments {
-                    if range.is_in(duration) || range.is_in(duration + s.duration) {
-                        segments.push(s.clone());
-                    }
-                    duration += s.duration;
-                }
-                playlist.segments = segments;
-            }
-
-            playlist
+        let playlist = self.load_playlist(live_id).await;
+        if playlist.is_err() {
+            return MediaPlaylist::default();
         }
-    }
-}
+        let mut playlist = playlist.unwrap();
+        if let Some(range) = range {
+            let mut duration = 0.0;
+            let mut segments = Vec::new();
+            for s in playlist.segments {
+                if range.is_in(duration) || range.is_in(duration + s.duration) {
+                    segments.push(s.clone());
+                }
+                duration += s.duration;
+            }
+            playlist.segments = segments;
 
-fn extract_sequence_from(name: &str) -> Option<u64> {
-    use regex::Regex;
-    let re = Regex::new(r"(\d+)\.ts").ok()?;
-    let captures = re.captures(name)?;
-    captures.get(1)?.as_str().parse().ok()
+            playlist.end_list = true;
+            playlist.playlist_type = Some(MediaPlaylistType::Vod);
+
+            return playlist;
+        }
+
+        if live_id == *self.live_id.read().await {
+            playlist.end_list = false;
+            playlist.playlist_type = Some(MediaPlaylistType::Event);
+
+            return playlist;
+        }
+
+        playlist
+    }
 }
 
 #[async_trait]
@@ -731,36 +477,12 @@ impl Recorder for DouyinRecorder {
         let self_clone = self.clone();
         *self.record_task.lock().await = Some(tokio::spawn(async move {
             while *self_clone.running.read().await {
-                let mut connection_fail_count = 0;
                 if self_clone.check_status().await {
                     // Live status is ok, start recording
-                    while self_clone.should_record().await {
-                        match self_clone.update_entries().await {
-                            Ok(ms) => {
-                                if ms < 1000 {
-                                    tokio::time::sleep(Duration::from_millis(
-                                        (1000 - ms).try_into().unwrap(),
-                                    ))
-                                    .await;
-                                }
-                                if ms >= 3000 {
-                                    log::warn!(
-                                        "[{}]Update entries cost too long: {}ms",
-                                        self_clone.room_id,
-                                        ms
-                                    );
-                                }
-                                *self_clone.is_recording.write().await = true;
-                                connection_fail_count = 0;
-                            }
-                            Err(e) => {
-                                log::error!("[{}]Update entries error: {}", self_clone.room_id, e);
-                                if let RecorderError::DouyinClientError(_) = e {
-                                    connection_fail_count =
-                                        std::cmp::min(5, connection_fail_count + 1);
-                                }
-                                break;
-                            }
+                    if self_clone.should_record().await {
+                        *self_clone.is_recording.write().await = true;
+                        if let Err(e) = self_clone.update_entries().await {
+                            log::error!("[{}]Update entries error: {}", self_clone.room_id, e);
                         }
                     }
                     if *self_clone.is_recording.read().await {
@@ -772,10 +494,7 @@ impl Recorder for DouyinRecorder {
                     self_clone.reset().await;
                     // Check status again after some seconds
                     let secs = random::<u64>() % 5;
-                    tokio::time::sleep(Duration::from_secs(
-                        secs + 2_u64.pow(connection_fail_count),
-                    ))
-                    .await;
+                    tokio::time::sleep(Duration::from_secs(secs)).await;
                     continue;
                 }
 
@@ -809,7 +528,7 @@ impl Recorder for DouyinRecorder {
         &self,
         live_id: &str,
     ) -> Result<String, super::errors::RecorderError> {
-        let work_dir = self.get_work_dir(live_id).await;
+        let work_dir = self.work_dir(live_id).await;
         let subtitle_file_path = format!("{}/{}", work_dir, "subtitle.srt");
         let subtitle_file = File::open(subtitle_file_path).await;
         if subtitle_file.is_err() {
@@ -829,7 +548,7 @@ impl Recorder for DouyinRecorder {
         live_id: &str,
     ) -> Result<String, super::errors::RecorderError> {
         // generate subtitle file under work_dir
-        let work_dir = self.get_work_dir(live_id).await;
+        let work_dir = self.work_dir(live_id).await;
         let subtitle_file_path = format!("{}/{}", work_dir, "subtitle.srt");
         let mut subtitle_file = File::create(subtitle_file_path).await?;
         // first generate a tmp clip file
@@ -905,11 +624,7 @@ impl Recorder for DouyinRecorder {
             .map(async |a| {
                 (
                     a.0.clone(),
-                    format!(
-                        "{}/{}",
-                        self.get_work_dir(a.1.as_str()).await,
-                        "playlist.m3u8"
-                    ),
+                    format!("{}/{}", self.work_dir(a.1.as_str()).await, "playlist.m3u8"),
                 )
             })
             .collect::<Vec<_>>();
@@ -958,6 +673,7 @@ impl Recorder for DouyinRecorder {
     }
 
     async fn comments(&self, live_id: &str) -> Result<Vec<DanmuEntry>, RecorderError> {
+        let work_dir = self.work_dir(live_id).await;
         Ok(if live_id == *self.live_id.read().await {
             // just return current cache content
             match self.danmu_store.read().await.as_ref() {
@@ -966,15 +682,9 @@ impl Recorder for DouyinRecorder {
             }
         } else {
             // load disk cache
-            let cache_file_path = format!(
-                "{}/douyin/{}/{}/{}",
-                self.config.read().await.cache,
-                self.room_id,
-                live_id,
-                "danmu.txt"
-            );
+            let cache_file_path = work_dir.with_filename("danmu.txt");
             log::debug!("loading danmu cache from {cache_file_path}");
-            let storage = DanmuStorage::new(&cache_file_path).await;
+            let storage = DanmuStorage::new(&cache_file_path.full_path()).await;
             if storage.is_none() {
                 return Ok(Vec::new());
             }

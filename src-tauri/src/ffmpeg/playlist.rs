@@ -3,9 +3,54 @@ use std::path::Path;
 use m3u8_rs::Map;
 use tokio::io::AsyncWriteExt;
 
-use crate::progress::progress_reporter::ProgressReporterTrait;
+use crate::{
+    ffmpeg::{ffmpeg_path, general::handle_ffmpeg_process},
+    progress::progress_reporter::ProgressReporterTrait,
+};
 
 use super::Range;
+
+pub async fn cache_playlist(
+    reporter: Option<&impl ProgressReporterTrait>,
+    playlist_url: &str,
+    work_dir: &Path,
+) -> Result<(), String> {
+    // ffmpeg -i "http://example.com/live/stream.m3u8" \
+    //   -timeout 10 \
+    //   -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 10 \
+    //   -hls_list_size 0 \
+    //   -hls_time 10 \
+    //   -hls_flags append_list+program_date_time \
+    //   -hls_segment_filename "cache_%Y%m%d_%H%M%S_%03d.ts" \
+    //   -strftime 1 \
+    //   -c copy \
+    //   playlist.m3u8
+
+    let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
+    #[cfg(target_os = "windows")]
+    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
+
+    // set work_dir
+    ffmpeg_process.current_dir(work_dir);
+
+    ffmpeg_process
+        .args(["-reconnect", "0"])
+        .args(["-reconnect_streamed", "0"])
+        .args(["-rw_timeout", "5000000"])
+        .args(["-i", playlist_url])
+        .args(["-hls_list_size", "0"])
+        .args(["-hls_time", "5"])
+        .args(["-hls_flags", "append_list+program_date_time"])
+        .args(["-hls_segment_filename", "%Y%m%d_%H%M%S.ts"])
+        .args(["-strftime", "1"])
+        .args(["-c", "copy"])
+        .args(["-progress", "pipe:2"])
+        .args(["-y", "playlist.m3u8"]);
+
+    handle_ffmpeg_process(reporter, &mut ffmpeg_process).await?;
+
+    Ok(())
+}
 
 pub async fn playlist_to_video(
     reporter: Option<&impl ProgressReporterTrait>,

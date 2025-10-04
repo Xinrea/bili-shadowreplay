@@ -573,54 +573,6 @@ impl BiliClient {
         Ok(())
     }
 
-    pub async fn get_index_content(
-        &self,
-        account: &AccountRow,
-        url: &String,
-    ) -> Result<String, BiliClientError> {
-        let mut headers = self.generate_user_agent_header();
-        if let Ok(cookies) = account.cookies.parse() {
-            headers.insert("cookie", cookies);
-        } else {
-            return Err(BiliClientError::InvalidCookie);
-        }
-        let response = self
-            .client
-            .get(url.to_owned())
-            .headers(headers)
-            .send()
-            .await?;
-
-        if response.status().is_success() {
-            Ok(response.text().await?)
-        } else {
-            log::error!("get_index_content failed: {}", response.status());
-            Err(BiliClientError::InvalidStream)
-        }
-    }
-
-    #[allow(unused)]
-    pub async fn download_ts(&self, url: &str, file_path: &str) -> Result<u64, BiliClientError> {
-        let res = self
-            .client
-            .get(url)
-            .headers(self.generate_user_agent_header())
-            .send()
-            .await?;
-        let mut file = tokio::fs::File::create(file_path).await?;
-        let bytes = res.bytes().await?;
-        let size = bytes.len() as u64;
-        let mut content = std::io::Cursor::new(bytes);
-        tokio::io::copy(&mut content, &mut file).await?;
-        Ok(size)
-    }
-
-    pub async fn download_ts_raw(&self, url: &str) -> Result<Vec<u8>, BiliClientError> {
-        let res = self.client.get(url).send().await?;
-        let bytes = res.bytes().await?;
-        Ok(bytes.to_vec())
-    }
-
     // Method from js code
     pub async fn get_sign(&self, mut parameters: Value) -> Result<String, BiliClientError> {
         let table = vec![

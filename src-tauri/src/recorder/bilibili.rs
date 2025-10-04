@@ -144,6 +144,19 @@ impl BiliRecorder {
     }
 
     pub async fn reset(&self) {
+        let live_id = self.live_id.read().await.clone();
+        if !live_id.is_empty() && *self.total_duration.read().await == 0.0 {
+            // previous recording is empty, work dir and record needs to be deleted
+            let work_dir = self.work_dir(live_id.as_str()).await;
+            if let Err(e) = tokio::fs::remove_dir_all(&work_dir.full_path()).await {
+                log::error!("[{}]Failed to delete work dir: {}", self.room_id, e);
+            };
+
+            // delete record
+            if let Err(e) = self.db.remove_record(live_id.as_str()).await {
+                log::error!("[{}]Failed to delete record: {}", self.room_id, e);
+            };
+        }
         *self.live_stream.write().await = None;
         *self.last_update.write().await = Utc::now().timestamp();
         *self.danmu_storage.write().await = None;

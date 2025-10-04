@@ -466,6 +466,8 @@ impl BiliRecorder {
             .await
             .map_err(super::errors::RecorderError::IoError)?;
 
+        *self.live_id.write().await = live_id.to_string();
+
         self.db
             .add_record(
                 PlatformType::BiliBili,
@@ -486,6 +488,8 @@ impl BiliRecorder {
             db: self.db.clone(),
             live_id: self.live_id.clone(),
             total_duration: self.total_duration.clone(),
+            total_size: self.total_size.clone(),
+            work_dir: work_dir.full_path(),
         };
 
         if let Err(e) = crate::ffmpeg::playlist::cache_playlist(

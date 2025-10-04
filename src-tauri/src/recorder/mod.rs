@@ -85,6 +85,8 @@ pub struct FfmpegProgressHandler {
     db: Arc<Database>,
     live_id: Arc<RwLock<String>>,
     total_duration: Arc<RwLock<f64>>,
+    total_size: Arc<RwLock<u64>>,
+    work_dir: PathBuf,
 }
 
 impl Clone for FfmpegProgressHandler {
@@ -93,6 +95,8 @@ impl Clone for FfmpegProgressHandler {
             db: self.db.clone(),
             live_id: self.live_id.clone(),
             total_duration: self.total_duration.clone(),
+            total_size: self.total_size.clone(),
+            work_dir: self.work_dir.clone(),
         }
     }
 }
@@ -105,11 +109,26 @@ impl ProgressReporterTrait for FfmpegProgressHandler {
             let db = self.db.clone();
             let live_id = self.live_id.clone();
             let total_duration = self.total_duration.clone();
+            let total_size = self.total_size.clone();
+            let work_dir = self.work_dir.clone();
             tokio::spawn(async move {
+                // get all ts files in work_dir
+                let mut entries = tokio::fs::read_dir(&work_dir).await.unwrap();
+                let mut file_size: u64 = 0;
+                while let Some(entry) = entries.next_entry().await.unwrap() {
+                    if let Ok(metadata) = entry.metadata().await {
+                        file_size += metadata.len();
+                    }
+                }
                 let _ = db
-                    .update_record(live_id.read().await.as_str(), duration_secs as i64, 0)
+                    .update_record(
+                        live_id.read().await.as_str(),
+                        duration_secs as i64,
+                        file_size,
+                    )
                     .await;
                 *total_duration.write().await = duration_secs;
+                *total_size.write().await = file_size;
             });
         }
     }

@@ -409,6 +409,8 @@ impl DouyinRecorder {
             db: self.db.clone(),
             live_id: self.live_id.clone(),
             total_duration: self.total_duration.clone(),
+            total_size: self.total_size.clone(),
+            work_dir: work_dir.full_path(),
         };
 
         if let Err(e) = crate::ffmpeg::playlist::cache_playlist(

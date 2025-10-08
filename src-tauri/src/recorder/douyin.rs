@@ -607,28 +607,44 @@ impl Recorder for DouyinRecorder {
     }
 
     async fn get_related_playlists(&self, parent_id: &str) -> Vec<(String, String)> {
-        let playlists = self
+        let archives = self
             .db
             .get_archives_by_parent_id(self.room_id, parent_id)
             .await;
-        if playlists.is_err() {
+        if let Err(e) = archives {
+            log::error!(
+                "[{}] Failed to get all related playlists: {} {}",
+                self.room_id,
+                parent_id,
+                e
+            );
             return Vec::new();
         }
-        let ids: Vec<(String, String)> = playlists
+
+        let archives: Vec<(String, String)> = archives
             .unwrap()
             .iter()
             .map(|a| (a.title.clone(), a.live_id.clone()))
             .collect();
-        let playlists = ids
+
+        let playlists = archives
             .iter()
             .map(async |a| {
+                let work_dir = self.work_dir(a.1.as_str()).await;
                 (
                     a.0.clone(),
-                    format!("{}/{}", self.work_dir(a.1.as_str()).await, "playlist.m3u8"),
+                    work_dir
+                        .with_filename("playlist.m3u8")
+                        .full_path()
+                        .to_str()
+                        .unwrap()
+                        .to_string(),
                 )
             })
             .collect::<Vec<_>>();
+
         let playlists = futures::future::join_all(playlists).await;
+
         return playlists;
     }
 

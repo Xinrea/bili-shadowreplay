@@ -679,7 +679,7 @@ impl super::Recorder for BiliRecorder {
                     a.0.clone(),
                     work_dir
                         .with_filename("playlist.m3u8")
-                        .relative_path()
+                        .full_path()
                         .to_str()
                         .unwrap()
                         .to_string(),

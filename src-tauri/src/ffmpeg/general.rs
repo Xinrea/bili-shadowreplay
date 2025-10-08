@@ -103,7 +103,7 @@ pub async fn concat_videos(
         output_folder.join(&filelist_filename).to_str().unwrap(),
     ]);
     if should_encode {
-        ffmpeg_process.args(["-vf", "scale=1920:1080"]);
+        ffmpeg_process.args(["-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2"]);
         ffmpeg_process.args(["-r", "60"]);
         ffmpeg_process.args(["-c", "libx264"]);
         ffmpeg_process.args(["-c:a", "aac"]);

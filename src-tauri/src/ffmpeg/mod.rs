@@ -72,6 +72,7 @@ pub async fn transcode(
         ffmpeg_process.args(["-c:v", "copy"]).args(["-c:a", "copy"]);
     } else {
         ffmpeg_process
+            .args(["-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2"])
             .args(["-c:v", "libx264"])
             .args(["-c:a", "aac"])
             .args(["-b:v", "6000k"])

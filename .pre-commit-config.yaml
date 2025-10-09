@@ -12,6 +12,7 @@ repos:
     rev: v1.36.2
     hooks:
       - id: typos
+        exclude: public/
 
   - repo: local
     hooks:

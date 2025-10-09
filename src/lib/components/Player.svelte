@@ -305,7 +305,7 @@ ${mediaPlaylistUrl}`;
     const selfSeekbar = document.createElement("div");
     selfSeekbar.className = "shaka-seek-bar shaka-no-propagation";
     selfSeekbar.innerHTML = `
-          <div class="shaka-seek-bar-container self-defined" style="background-color: gray; margin: 4px 10px 4px 10px;">
+          <div class="shaka-seek-bar-container self-defined" style="background-color: gray; margin: 0px 10px; box-sizing: initial; top: -8px;">
             <div class="shaka-seek-bar shaka-no-propagation">
               <div class="shaka-seek-bar-buffered" style="width: 0%;"></div>
               <div class="shaka-seek-bar-played" style="width: 0%;"></div>
@@ -669,6 +669,9 @@ ${mediaPlaylistUrl}`;
           return;
         }
         const timestamp = e.ts + local_offset * 1000 - global_offset * 1000;
+        if (timestamp < 0) {
+          return;
+        }
         const timeSlot = timestamp - (timestamp % DANMU_STATISTIC_GAP);
         counts[timeSlot] = (counts[timeSlot] || 0) + 1;
       });
@@ -809,7 +812,7 @@ ${mediaPlaylistUrl}`;
     ) as HTMLCanvasElement;
     statisticGraph.style.pointerEvents = "none";
     statisticGraph.style.position = "absolute";
-    statisticGraph.style.bottom = "11px";
+    statisticGraph.style.bottom = "8px";
     statisticGraph.style.zIndex = "20";
     const canvas = statisticGraph.getContext("2d");
     seekbarContainer.appendChild(statisticGraph);

@@ -845,9 +845,9 @@ ${mediaPlaylistUrl}`;
       }
       const scale = window.devicePixelRatio || 1;
       statisticGraph.width = seekbarContainer.clientWidth * scale;
-      statisticGraph.height = 30 * scale;
+      statisticGraph.height = 16 * scale;
       statisticGraph.style.width = `${seekbarContainer.clientWidth}px`;
-      statisticGraph.style.height = "30px";
+      statisticGraph.style.height = "16px";
       const canvasHeight = statisticGraph.height;
       const canvasWidth = statisticGraph.width;
       // find value range

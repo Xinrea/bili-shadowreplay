@@ -23,6 +23,8 @@
     Edit,
   } from "lucide-svelte";
   import { AnnotationOutline } from "flowbite-svelte-icons";
+  import BilibiliIcon from "../lib/components/BilibiliIcon.svelte";
+  import DouyinIcon from "../lib/components/DouyinIcon.svelte";
 
   let videos: VideoItem[] = [];
   let filteredVideos: VideoItem[] = [];
@@ -559,22 +561,6 @@
           </button>
           <button
             class="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors {sortBy ===
-            'platform'
-              ? 'bg-blue-500 text-white'
-              : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
-            on:click={() => toggleSort("platform")}
-          >
-            平台
-            {#if sortBy === "platform"}
-              {#if sortOrder === "asc"}
-                <ChevronUp class="w-3 h-3 inline ml-1" />
-              {:else}
-                <ChevronDown class="w-3 h-3 inline ml-1" />
-              {/if}
-            {/if}
-          </button>
-          <button
-            class="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors {sortBy ===
             'length'
               ? 'bg-blue-500 text-white'
               : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
@@ -713,11 +699,7 @@
                   />
                 </th>
                 <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-20"
-                  >平台</th
-                >
-                <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-24"
+                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-28"
                   >直播间</th
                 >
                 <th
@@ -725,7 +707,7 @@
                   >视频</th
                 >
                 <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-32"
+                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-20"
                   >备注</th
                 >
                 <th
@@ -764,32 +746,54 @@
                     />
                   </td>
 
-                  <td class="px-4 py-3 w-20">
+                  <td class="px-4 py-3 w-28">
                     <div class="flex items-center space-x-2">
                       {#if video.platform === "imported"}
                         <FileVideo class="table-icon text-gray-400" />
+                        <span class="text-sm text-gray-800 dark:text-gray-200"
+                          >外部视频</span
+                        >
                       {:else if video.platform === "clip"}
                         <Scissors class="table-icon text-gray-400" />
+                        <span class="text-sm text-gray-800 dark:text-gray-200"
+                          >视频切片</span
+                        >
+                      {:else if video.platform === "bilibili"}
+                        <BilibiliIcon class="w-4 h-4 flex-shrink-0" />
+                        {#if getRoomUrl(video.platform, video.room_id)}
+                          <a
+                            href={getRoomUrl(video.platform, video.room_id)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="text-blue-500 hover:text-blue-700 text-sm"
+                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
+                          >
+                            {video.room_id}
+                          </a>
+                        {:else}
+                          <span class="text-sm text-gray-900 dark:text-white"
+                            >{video.room_id}</span
+                          >
+                        {/if}
+                      {:else if video.platform === "douyin"}
+                        <DouyinIcon class="w-4 h-4 flex-shrink-0" />
+                        {#if getRoomUrl(video.platform, video.room_id)}
+                          <a
+                            href={getRoomUrl(video.platform, video.room_id)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="text-blue-500 hover:text-blue-700 text-sm"
+                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
+                          >
+                            {video.room_id}
+                          </a>
+                        {:else}
+                          <span class="text-sm text-gray-900 dark:text-white"
+                            >{video.room_id}</span
+                          >
+                        {/if}
                       {:else}
                         <Globe class="table-icon text-gray-400" />
-                      {/if}
-                      <span class="text-sm text-gray-800 truncate"
-                        >{formatPlatform(video.platform)}</span
-                      >
-                    </div>
-                  </td>
-
-                  <td class="px-4 py-3 w-24">
-                    <div class="flex items-center space-x-2">
-                      {#if video.platform === "imported" || video.platform === "clip"}
-                        <FileVideo class="table-icon text-gray-400" />
-                        <span class="text-sm text-gray-800">
-                          {video.platform === "imported"
-                            ? "外部视频"
-                            : "视频切片"}
-                        </span>
-                      {:else}
-                        <Home class="table-icon text-gray-400" />
                         {#if getRoomUrl(video.platform, video.room_id)}
                           <a
                             href={getRoomUrl(video.platform, video.room_id)}
@@ -913,39 +917,39 @@
                   </td>
 
                   <td class="px-4 py-3 w-28">
-                    <div class="flex items-center space-x-1">
+                    <div class="flex items-center space-x-2">
                       <button
-                        class="p-1.5 text-gray-600 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded transition-colors"
+                        class="p-1.5 rounded-lg hover:bg-blue-500/10 transition-colors"
                         title="播放"
                         on:click={() => playVideo(video)}
                       >
-                        <Play class="table-icon" />
+                        <Play class="w-4 h-4 text-blue-500" />
                       </button>
                       <button
-                        class="p-1.5 text-gray-600 dark:text-gray-400 hover:text-green-600 dark:hover:text-green-400 hover:bg-green-50 dark:hover:bg-green-900/20 rounded transition-colors"
+                        class="p-1.5 rounded-lg hover:bg-green-500/10 transition-colors"
                         title="编辑备注"
                         on:click={() => openEditNoteDialog(video)}
                       >
-                        <Edit class="table-icon" />
+                        <Edit class="w-4 h-4 text-green-500" />
                       </button>
                       {#if !TAURI_ENV}
                         <button
-                          class="p-1.5 text-gray-600 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded transition-colors"
+                          class="p-1.5 rounded-lg hover:bg-blue-500/10 transition-colors"
                           title="导出"
                           on:click={async () => await exportVideo(video)}
                         >
-                          <Download class="table-icon" />
+                          <Download class="w-4 h-4 text-blue-500" />
                         </button>
                       {/if}
                       <button
-                        class="p-1.5 text-gray-600 dark:text-gray-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors"
+                        class="p-1.5 rounded-lg hover:bg-red-500/10 transition-colors"
                         title="删除"
                         on:click={() => {
                           videoToDelete = video;
                           showDeleteConfirm = true;
                         }}
                       >
-                        <Trash2 class="table-icon" />
+                        <Trash2 class="w-4 h-4 text-red-500" />
                       </button>
                     </div>
                   </td>

@@ -753,7 +753,9 @@
               bind:checked={fix_encoding}
               class="h-4 w-4 rounded border-white/30 bg-[#2c2c2e] text-[#0A84FF] accent-[#0A84FF] focus:outline-none focus:ring-2 focus:ring-[#0A84FF]/40"
             />
-            <span class="text-[13px] text-white/80">修复编码</span>
+            <span class="text-[13px] text-white/80"
+              >修复编码（直播分辨率变化或切片异常时使用）</span
+            >
           </label>
         </div>
       </div>

@@ -310,7 +310,7 @@ impl BiliRecorder {
                         &self.account,
                         self.room_id,
                         Protocol::HttpHls,
-                        Format::FMP4,
+                        Format::TS,
                         &[Codec::Avc, Codec::Hevc],
                         Qn::Q4K,
                     )
@@ -333,7 +333,7 @@ impl BiliRecorder {
                     Err(e) => {
                         if let BiliClientError::FormatNotFound(format) = e {
                             log::error!(
-                                "[{}]Format {} not found, try to fallback to ts",
+                                "[{}]Format {} not found, try to fallback to fmp4",
                                 self.room_id,
                                 format
                             );
@@ -354,7 +354,7 @@ impl BiliRecorder {
                         &self.account,
                         self.room_id,
                         Protocol::HttpHls,
-                        Format::TS,
+                        Format::FMP4,
                         &[Codec::Avc, Codec::Hevc],
                         Qn::Q4K,
                     )

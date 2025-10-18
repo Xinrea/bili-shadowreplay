@@ -6,22 +6,26 @@ use crate::database::{account::AccountRow, record::RecordRow};
 use crate::database::{Database, DatabaseError};
 use crate::ffmpeg::{encode_video_danmu, transcode, Range};
 use crate::progress::progress_reporter::{EventEmitter, ProgressReporter};
-use crate::recorder::bilibili::BiliRecorder;
-use crate::recorder::danmu::{DanmuEntry, DanmuStorage};
-use crate::recorder::douyin::DouyinRecorder;
-use crate::recorder::errors::RecorderError;
-use crate::recorder::traits::RecorderTrait;
-use crate::recorder::UserInfo;
-use crate::recorder::{CachePath, RecorderInfo};
-use crate::recorder::{PlatformType, RoomInfo};
 use crate::subtitle_generator::item_to_srt;
 use crate::webhook::events::{self, Payload};
 use crate::webhook::poster::WebhookPoster;
 use chrono::DateTime;
 use m3u8_rs::{MediaPlaylist, MediaPlaylistType};
+use recorder::account::Account;
+use recorder::danmu::{DanmuEntry, DanmuStorage};
+use recorder::errors::RecorderError;
+use recorder::events::RecorderEvent;
+use recorder::platforms::bilibili::BiliRecorder;
+use recorder::platforms::douyin::DouyinRecorder;
+use recorder::platforms::PlatformType;
+use recorder::traits::RecorderTrait;
+use recorder::RoomInfo;
+use recorder::UserInfo;
+use recorder::{CachePath, RecorderInfo};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use thiserror::Error;
@@ -53,38 +57,6 @@ pub struct ClipRangeParams {
     pub local_offset: i64,
     /// Fix encoding after clip
     pub fix_encoding: bool,
-}
-
-#[derive(Debug, Clone)]
-pub enum RecorderEvent {
-    LiveStart {
-        recorder: RecorderInfo,
-    },
-    LiveEnd {
-        room_id: i64,
-        platform: PlatformType,
-        recorder: RecorderInfo,
-    },
-    RecordStart {
-        recorder: RecorderInfo,
-    },
-    RecordEnd {
-        recorder: RecorderInfo,
-    },
-    ProgressUpdate {
-        id: String,
-        content: String,
-    },
-    ProgressFinished {
-        id: String,
-        success: bool,
-        message: String,
-    },
-    DanmuReceived {
-        room: i64,
-        ts: i64,
-        content: String,
-    },
 }
 
 pub enum RecorderType {
@@ -407,13 +379,34 @@ impl RecorderManager {
         let cache_dir = self.config.read().await.cache.clone();
         let cache_dir = PathBuf::from(&cache_dir);
 
+        let recorder_account = Account {
+            platform: platform.as_str().to_string(),
+            id: if account.id_str.is_some() {
+                account.id_str.as_ref().unwrap().clone()
+            } else {
+                account.uid.to_string()
+            },
+            name: account.name.clone(),
+            avatar: account.avatar.clone(),
+            csrf: account.csrf.clone(),
+            cookies: account.cookies.clone(),
+        };
+
         let event_tx = self.get_event_sender();
         let recorder: RecorderType = match platform {
             PlatformType::BiliBili => RecorderType::BiliBili(
-                BiliRecorder::new(room_id, account, cache_dir, event_tx, enabled).await?,
+                BiliRecorder::new(room_id, &recorder_account, cache_dir, event_tx, enabled).await?,
             ),
             PlatformType::Douyin => RecorderType::Douyin(
-                DouyinRecorder::new(room_id, extra, account, cache_dir, event_tx, enabled).await?,
+                DouyinRecorder::new(
+                    room_id,
+                    extra,
+                    &recorder_account,
+                    cache_dir,
+                    event_tx,
+                    enabled,
+                )
+                .await?,
             ),
             _ => {
                 return Err(RecorderManagerError::InvalidPlatformType {
@@ -719,7 +712,7 @@ impl RecorderManager {
             return Ok(clip_file);
         }
 
-        let Some(platform) = PlatformType::from_str(&params.platform) else {
+        let Ok(platform) = PlatformType::from_str(&params.platform) else {
             return Err(RecorderManagerError::InvalidPlatformType {
                 platform: params.platform.clone(),
             });
@@ -1070,10 +1063,11 @@ impl RecorderManager {
             0
         };
 
-        let platform =
-            PlatformType::from_str(platform).ok_or(RecorderManagerError::InvalidPlatformType {
+        let platform = PlatformType::from_str(platform).map_err(|_| {
+            RecorderManagerError::InvalidPlatformType {
                 platform: platform.to_string(),
-            })?;
+            }
+        })?;
 
         let range = if start != 0 || end != 0 {
             Some(Range {
@@ -1138,8 +1132,11 @@ impl RecorderManager {
         room_id: i64,
         parent_id: String,
     ) -> Result<(), RecorderManagerError> {
-        let platform = PlatformType::from_str(&platform)
-            .ok_or(RecorderManagerError::InvalidPlatformType { platform })?;
+        let platform = PlatformType::from_str(&platform).map_err(|_| {
+            RecorderManagerError::InvalidPlatformType {
+                platform: platform.to_string(),
+            }
+        })?;
 
         let playlists = self
             .get_related_playlists(&platform, room_id, &parent_id)

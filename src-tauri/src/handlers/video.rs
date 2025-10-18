@@ -5,13 +5,13 @@ use crate::handlers::utils::get_disk_info_inner;
 use crate::progress::progress_reporter::{
     cancel_progress, EventEmitter, ProgressReporter, ProgressReporterTrait,
 };
-use crate::recorder::bilibili;
-use crate::recorder::bilibili::profile::Profile;
 use crate::recorder_manager::ClipRangeParams;
 use crate::subtitle_generator::item_to_srt;
 use crate::webhook::events;
 use base64::Engine;
 use chrono::{Local, Utc};
+use recorder::platforms::bilibili;
+use recorder::platforms::bilibili::profile::Profile;
 use serde_json::json;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -561,13 +561,14 @@ async fn upload_procedure_inner(
     let file = Path::new(&output).join(&video_row.file);
     let path = Path::new(&file);
     let client = reqwest::Client::new();
-    let cover_url = bilibili::api::upload_cover(&client, &account, &cover).await;
+    let cover_url = bilibili::api::upload_cover(&client, &account.to_account(), &cover).await;
     reporter.update("投稿预处理中");
 
-    match bilibili::api::prepare_video(&client, reporter, &account, path).await {
+    match bilibili::api::prepare_video(&client, &account.to_account(), path).await {
         Ok(video) => {
             profile.cover = cover_url.unwrap_or(String::new());
-            if let Ok(ret) = bilibili::api::submit_video(&client, &account, &profile, &video).await
+            if let Ok(ret) =
+                bilibili::api::submit_video(&client, &account.to_account(), &profile, &video).await
             {
                 // update video status and details
                 // 1 means uploaded
@@ -687,10 +688,10 @@ pub async fn delete_video(state: state_type!(), id: i64) -> Result<(), String> {
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_video_typelist(
     state: state_type!(),
-) -> Result<Vec<crate::recorder::bilibili::response::Typelist>, String> {
+) -> Result<Vec<bilibili::response::Typelist>, String> {
     let account = state.db.get_account_by_platform("bilibili").await?;
     let client = reqwest::Client::new();
-    match bilibili::api::get_video_typelist(&client, &account).await {
+    match bilibili::api::get_video_typelist(&client, &account.to_account()).await {
         Ok(typelist) => Ok(typelist),
         Err(e) => Err(e.to_string()),
     }

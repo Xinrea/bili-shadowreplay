@@ -39,15 +39,6 @@ use crate::{
         AccountInfo,
     },
     http_server::websocket,
-    recorder::{
-        bilibili::{
-            api::{QrInfo, QrStatus},
-            profile::Profile,
-            response::Typelist,
-        },
-        danmu::DanmuEntry,
-        RecorderInfo,
-    },
     recorder_manager::{ClipRangeParams, RecorderList},
     state::State,
 };
@@ -58,6 +49,15 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
     Router,
+};
+use recorder::{
+    danmu::DanmuEntry,
+    platforms::bilibili::{
+        api::{QrInfo, QrStatus},
+        profile::Profile,
+        response::Typelist,
+    },
+    RecorderInfo,
 };
 use serde::{Deserialize, Serialize};
 use tower_http::cors::{Any, CorsLayer};

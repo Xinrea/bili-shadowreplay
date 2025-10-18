@@ -1,19 +1,18 @@
-pub mod bilibili;
+pub mod account;
 pub mod danmu;
-pub mod douyin;
+pub mod entry;
 pub mod errors;
+pub mod events;
+mod ffmpeg;
+pub mod platforms;
 pub mod traits;
-use crate::{
-    database::account::AccountRow, recorder::danmu::DanmuStorage, recorder_manager::RecorderEvent,
-};
+use crate::danmu::DanmuStorage;
+use crate::events::RecorderEvent;
+use crate::{account::Account, platforms::PlatformType};
 mod user_agent_generator;
 
-pub mod entry;
-
-use async_trait::async_trait;
 use std::{
     fmt::Display,
-    hash::{Hash, Hasher},
     path::PathBuf,
     sync::{atomic, Arc},
 };
@@ -21,43 +20,6 @@ use tokio::{
     sync::{broadcast, Mutex, RwLock},
     task::JoinHandle,
 };
-
-use crate::{database::Database, progress::progress_reporter::ProgressReporterTrait};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlatformType {
-    BiliBili,
-    Douyin,
-    Huya,
-    Youtube,
-}
-
-impl PlatformType {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            PlatformType::BiliBili => "bilibili",
-            PlatformType::Douyin => "douyin",
-            PlatformType::Huya => "huya",
-            PlatformType::Youtube => "youtube",
-        }
-    }
-
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "bilibili" => Some(PlatformType::BiliBili),
-            "douyin" => Some(PlatformType::Douyin),
-            "huya" => Some(PlatformType::Huya),
-            "youtube" => Some(PlatformType::Youtube),
-            _ => None,
-        }
-    }
-}
-
-impl Hash for PlatformType {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        std::mem::discriminant(self).hash(state);
-    }
-}
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
 pub struct RecorderInfo {
@@ -97,7 +59,7 @@ where
     platform: PlatformType,
     room_id: i64,
     /// The account for the recorder
-    account: AccountRow,
+    account: Account,
     /// The client for the recorder
     client: reqwest::Client,
     /// The event channel for the recorder
@@ -147,7 +109,7 @@ impl<T: Send + Sync> traits::RecorderBasicTrait<T> for Recorder<T> {
         self.room_id
     }
 
-    fn account(&self) -> &AccountRow {
+    fn account(&self) -> &Account {
         &self.account
     }
 
@@ -221,63 +183,6 @@ impl<T: Send + Sync> traits::RecorderBasicTrait<T> for Recorder<T> {
 
     fn extra(&self) -> &T {
         &self.extra
-    }
-}
-
-pub struct FfmpegProgressHandler {
-    db: Arc<Database>,
-    live_id: Arc<RwLock<String>>,
-    total_duration: Arc<RwLock<f64>>,
-    total_size: Arc<RwLock<u64>>,
-    work_dir: PathBuf,
-}
-
-impl Clone for FfmpegProgressHandler {
-    fn clone(&self) -> Self {
-        Self {
-            db: self.db.clone(),
-            live_id: self.live_id.clone(),
-            total_duration: self.total_duration.clone(),
-            total_size: self.total_size.clone(),
-            work_dir: self.work_dir.clone(),
-        }
-    }
-}
-
-#[async_trait]
-impl ProgressReporterTrait for FfmpegProgressHandler {
-    fn update(&self, content: &str) {
-        if let Ok(duration) = content.parse::<i64>() {
-            let duration_secs = duration as f64 / 1_000_000.0;
-            let db = self.db.clone();
-            let live_id = self.live_id.clone();
-            let total_duration = self.total_duration.clone();
-            let total_size = self.total_size.clone();
-            let work_dir = self.work_dir.clone();
-            tokio::spawn(async move {
-                // get all ts files in work_dir
-                let mut entries = tokio::fs::read_dir(&work_dir).await.unwrap();
-                let mut file_size: u64 = 0;
-                while let Some(entry) = entries.next_entry().await.unwrap() {
-                    if let Ok(metadata) = entry.metadata().await {
-                        file_size += metadata.len();
-                    }
-                }
-                let _ = db
-                    .update_record(
-                        live_id.read().await.as_str(),
-                        duration_secs as i64,
-                        file_size,
-                    )
-                    .await;
-                *total_duration.write().await = duration_secs;
-                *total_size.write().await = file_size;
-            });
-        }
-    }
-
-    async fn finish(&self, _success: bool, message: &str) {
-        log::debug!("[FFmpeg Finish] {}", message);
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::recorder_manager::RecorderEvent;
+use recorder::events::RecorderEvent;
 use tokio::sync::broadcast;
 
 pub struct ProgressManager {

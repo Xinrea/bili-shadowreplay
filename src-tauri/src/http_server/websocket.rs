@@ -6,8 +6,8 @@ use socketioxide::{
 };
 use tokio::sync::broadcast;
 
-use crate::recorder_manager::RecorderEvent;
 use crate::state::State;
+use recorder::events::RecorderEvent;
 
 pub async fn create_websocket_server(state: State) -> SocketIoLayer {
     let (layer, io) = SocketIo::new_layer();

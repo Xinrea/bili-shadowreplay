@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/danmu_stream"]
+members = ["crates/danmu_stream", "crates/recorder"]
 resolver = "2"
 
 [package]
@@ -22,8 +22,9 @@ perf="deny"
 
 [dependencies]
 danmu_stream = { path = "crates/danmu_stream" }
+recorder = { path = "crates/recorder" }
 serde_json = "1.0"
-reqwest = { version = "0.11", features = ["blocking", "json", "multipart"] }
+reqwest = { workspace = true}
 serde_derive = "1.0.158"
 serde = "1.0.158"
 sysinfo = "0.32.0"
@@ -150,3 +151,6 @@ whisper-rs = { version = "0.14.2", default-features = false }
 [target.'cfg(darwin)'.dependencies.whisper-rs]
 version = "0.14.2"
 features = ["metal"]
+
+[workspace.dependencies]
+reqwest = { version = "0.11", features = ["blocking", "json", "multipart"] }

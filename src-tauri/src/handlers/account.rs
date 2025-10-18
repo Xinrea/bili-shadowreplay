@@ -1,8 +1,8 @@
 use crate::database::account::AccountRow;
-use crate::recorder::bilibili::api::{QrInfo, QrStatus};
-use crate::recorder::{bilibili, douyin};
 use crate::state::State;
 use crate::state_type;
+use recorder::platforms::bilibili::api::{QrInfo, QrStatus};
+use recorder::platforms::{bilibili, douyin};
 
 use hyper::header::HeaderValue;
 #[cfg(feature = "gui")]
@@ -30,13 +30,13 @@ pub async fn add_account(
     let client = reqwest::Client::new();
 
     if platform == "bilibili" {
-        let account_info = match bilibili::api::get_user_info(&client, &account, account.uid).await
-        {
-            Ok(account_info) => account_info,
-            Err(e) => {
-                return Err(e.to_string());
-            }
-        };
+        let account_info =
+            match bilibili::api::get_user_info(&client, &account.to_account(), account.uid).await {
+                Ok(account_info) => account_info,
+                Err(e) => {
+                    return Err(e.to_string());
+                }
+            };
         state
             .db
             .update_account(
@@ -51,7 +51,7 @@ pub async fn add_account(
 
     if platform == "douyin" {
         // Get user info from Douyin API
-        match douyin::api::get_user_info(&client, &account).await {
+        match douyin::api::get_user_info(&client, &account.to_account()).await {
             Ok(user_info) => {
                 // For Douyin, use sec_uid as the primary identifier in id_str field
                 let avatar_url = user_info
@@ -114,7 +114,7 @@ pub async fn remove_account(
     if platform == "bilibili" {
         let account = state.db.get_account(&platform, uid).await?;
         let client = reqwest::Client::new();
-        return match bilibili::api::logout(&client, &account).await {
+        return match bilibili::api::logout(&client, &account.to_account()).await {
             Ok(()) => Ok(()),
             Err(e) => Err(e.to_string()),
         };

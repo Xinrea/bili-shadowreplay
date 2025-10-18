@@ -1,9 +1,10 @@
 use uuid::Uuid;
 
-use crate::{
-    database::{account::AccountRow, record::RecordRow, recorder::RecorderRow, video::VideoRow},
-    recorder::RecorderInfo,
+use crate::database::{
+    account::AccountRow, record::RecordRow, recorder::RecorderRow, video::VideoRow,
 };
+
+use recorder::RecorderInfo;
 
 pub const CLIP_GENERATED: &str = "clip.generated";
 pub const CLIP_DELETED: &str = "clip.deleted";

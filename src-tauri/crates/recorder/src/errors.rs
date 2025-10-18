@@ -1,5 +1,5 @@
-use super::bilibili::api::BiliStream;
-use super::douyin::stream_info::DouyinStream;
+use super::platforms::bilibili::api::BiliStream;
+use super::platforms::douyin::stream_info::DouyinStream;
 use thiserror::Error;
 
 #[derive(Debug, Clone)]
@@ -34,8 +34,6 @@ pub enum RecorderError {
     EmptyHeader,
     #[error("Header timestamp is invalid")]
     InvalidTimestamp,
-    #[error("Database error: {0}")]
-    InvalidDBOP(#[from] crate::database::DatabaseError),
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
     #[error("Danmu stream error: {0}")]

@@ -1,7 +1,7 @@
 use super::Database;
 use super::DatabaseError;
-use crate::recorder::PlatformType;
 use chrono::Utc;
+use recorder::platforms::PlatformType;
 /// Recorder in database is pretty simple
 /// because many room infos are collected in realtime
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, sqlx::FromRow)]

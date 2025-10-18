@@ -3,10 +3,10 @@ use std::{
     sync::{atomic, Arc},
 };
 
+use crate::platforms::PlatformType;
 use crate::{
-    database::account::AccountRow,
-    recorder::{danmu::DanmuStorage, CachePath, PlatformType, RecorderInfo, RoomInfo, UserInfo},
-    recorder_manager::RecorderEvent,
+    account::Account, danmu::DanmuStorage, events::RecorderEvent, CachePath, RecorderInfo,
+    RoomInfo, UserInfo,
 };
 use async_trait::async_trait;
 use tokio::{
@@ -18,7 +18,7 @@ use tokio::{
 pub trait RecorderBasicTrait<T> {
     fn platform(&self) -> PlatformType;
     fn room_id(&self) -> i64;
-    fn account(&self) -> &AccountRow;
+    fn account(&self) -> &Account;
     fn client(&self) -> &reqwest::Client;
     fn event_channel(&self) -> &broadcast::Sender<RecorderEvent>;
     fn cache_dir(&self) -> PathBuf;
@@ -58,7 +58,7 @@ pub trait RecorderTrait<T>: RecorderBasicTrait<T> {
 
         self.enabled().load(atomic::Ordering::Relaxed)
     }
-    #[allow(dead_code)]
+
     async fn work_dir(&self, live_id: &str) -> CachePath {
         CachePath::new(self.cache_dir(), self.platform(), self.room_id(), live_id)
     }

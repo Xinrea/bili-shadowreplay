@@ -5,7 +5,7 @@ use crate::state_type;
 
 #[cfg(feature = "gui")]
 use {
-    crate::recorder::PlatformType,
+    recorder::platforms::PlatformType,
     std::process::Command,
     tauri::State as TauriState,
     tauri::{Manager, Theme},
@@ -222,7 +222,9 @@ pub async fn open_live(
     log::info!("Open player window: {room_id} {live_id}");
     #[cfg(feature = "gui")]
     {
-        let platform = PlatformType::from_str(&platform).unwrap();
+        use std::str::FromStr;
+
+        let platform = PlatformType::from_str(&platform)?;
         let recorder_info = state
             .recorder_manager
             .get_recorder_info(platform, room_id)

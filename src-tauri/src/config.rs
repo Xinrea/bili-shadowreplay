@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 
-use crate::{recorder::PlatformType, recorder_manager::ClipRangeParams};
+use crate::recorder_manager::ClipRangeParams;
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Config {
@@ -163,8 +163,6 @@ impl Config {
     }
 
     pub fn generate_clip_name(&self, params: &ClipRangeParams) -> PathBuf {
-        let platform = PlatformType::from_str(&params.platform).unwrap();
-
         // get format config
         // filter special characters from title to make sure file name is valid
         let title = params
@@ -174,7 +172,7 @@ impl Config {
             .collect::<String>();
         let format_config = self.clip_name_format.clone();
         let format_config = format_config.replace("{title}", &title);
-        let format_config = format_config.replace("{platform}", platform.as_str());
+        let format_config = format_config.replace("{platform}", &params.platform);
         let format_config = format_config.replace("{room_id}", &params.room_id.to_string());
         let format_config = format_config.replace("{live_id}", &params.live_id);
         let format_config = format_config.replace(

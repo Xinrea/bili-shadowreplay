@@ -1,12 +1,12 @@
 pub mod api;
 mod response;
 pub mod stream_info;
-use super::{errors::RecorderError, PlatformType, Recorder, RoomInfo, UserInfo};
-use crate::database::account::AccountRow;
-use crate::recorder::douyin::stream_info::DouyinStream;
-use crate::recorder::traits::RecorderTrait;
-use crate::recorder::{CachePath, FfmpegProgressHandler};
-use crate::recorder_manager::RecorderEvent;
+use crate::account::Account;
+use crate::errors::RecorderError;
+use crate::events::RecorderEvent;
+use crate::platforms::douyin::stream_info::DouyinStream;
+use crate::traits::RecorderTrait;
+use crate::{Recorder, RoomInfo, UserInfo};
 use async_trait::async_trait;
 use chrono::Utc;
 use danmu_stream::danmu_stream::DanmuStream;
@@ -18,7 +18,8 @@ use std::sync::{atomic, Arc};
 use std::time::Duration;
 use tokio::sync::{broadcast, Mutex, RwLock};
 
-use super::danmu::DanmuStorage;
+use crate::danmu::DanmuStorage;
+use crate::platforms::PlatformType;
 
 pub type DouyinRecorder = Recorder<DouyinExtra>;
 
@@ -42,11 +43,11 @@ impl DouyinRecorder {
     pub async fn new(
         room_id: i64,
         sec_user_id: &str,
-        account: &AccountRow,
+        account: &Account,
         cache_dir: PathBuf,
         channel: broadcast::Sender<RecorderEvent>,
         enabled: bool,
-    ) -> Result<Self, super::errors::RecorderError> {
+    ) -> Result<Self, crate::errors::RecorderError> {
         Ok(Self {
             platform: PlatformType::Douyin,
             room_id,
@@ -167,7 +168,7 @@ impl DouyinRecorder {
         }
     }
 
-    async fn danmu(&self) -> Result<(), super::errors::RecorderError> {
+    async fn danmu(&self) -> Result<(), crate::errors::RecorderError> {
         let cookies = self.account.cookies.clone();
         let danmu_room_id = self
             .platform_live_id
@@ -180,7 +181,7 @@ impl DouyinRecorder {
         if danmu_stream.is_err() {
             let err = danmu_stream.err().unwrap();
             log::error!("Failed to create danmu stream: {err}");
-            return Err(super::errors::RecorderError::DanmuStreamError(err));
+            return Err(crate::errors::RecorderError::DanmuStreamError(err));
         }
         let danmu_stream = danmu_stream.unwrap();
 
@@ -207,7 +208,7 @@ impl DouyinRecorder {
                 }
             } else {
                 log::error!("Failed to receive danmu message");
-                return Err(super::errors::RecorderError::DanmuStreamError(
+                return Err(crate::errors::RecorderError::DanmuStreamError(
                     danmu_stream::DanmuStreamError::WebsocketError {
                         err: "Failed to receive danmu message".to_string(),
                     },
@@ -224,15 +225,6 @@ impl DouyinRecorder {
         self.total_duration.store(0, atomic::Ordering::Relaxed);
         self.total_size.store(0, atomic::Ordering::Relaxed);
         *self.extra.live_stream.write().await = None;
-    }
-
-    async fn work_dir(&self, live_id: &str) -> CachePath {
-        CachePath::new(
-            self.cache_dir.clone(),
-            PlatformType::Douyin,
-            self.room_id,
-            live_id,
-        )
     }
 
     async fn update_entries(&self, live_id: &str) -> Result<(), RecorderError> {
@@ -276,12 +268,8 @@ impl DouyinRecorder {
             recorder: self.info().await,
         });
 
-        if let Err(e) = crate::ffmpeg::playlist::cache_playlist(
-            None::<&FfmpegProgressHandler>,
-            &stream_url,
-            &work_dir.full_path(),
-        )
-        .await
+        if let Err(e) =
+            crate::ffmpeg::playlist::cache_playlist(&stream_url, &work_dir.full_path()).await
         {
             log::error!("[{}]Failed to cache playlist: {}", self.room_id, e);
         }
@@ -291,7 +279,7 @@ impl DouyinRecorder {
 }
 
 #[async_trait]
-impl super::traits::RecorderTrait<DouyinExtra> for DouyinRecorder {
+impl crate::traits::RecorderTrait<DouyinExtra> for DouyinRecorder {
     async fn run(&self) {
         let self_clone = self.clone();
         *self.record_task.lock().await = Some(tokio::spawn(async move {

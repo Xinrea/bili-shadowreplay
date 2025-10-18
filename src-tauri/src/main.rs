@@ -11,7 +11,6 @@ mod handlers;
 mod http_server;
 mod migration;
 mod progress;
-mod recorder;
 mod recorder_manager;
 mod state;
 mod subtitle_generator;

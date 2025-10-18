@@ -1,4 +1,7 @@
-use crate::recorder::PlatformType;
+use std::str::FromStr;
+
+use recorder::account::Account;
+use recorder::platforms::PlatformType;
 
 use super::Database;
 use super::DatabaseError;
@@ -16,6 +19,23 @@ pub struct AccountRow {
     pub csrf: String,
     pub cookies: String,
     pub created_at: String,
+}
+
+impl AccountRow {
+    pub fn to_account(&self) -> Account {
+        Account {
+            platform: self.platform.clone(),
+            id: if let Some(id) = self.id_str.as_ref() {
+                id.clone()
+            } else {
+                self.uid.to_string()
+            },
+            name: self.name.clone(),
+            avatar: self.avatar.clone(),
+            csrf: self.csrf.clone(),
+            cookies: self.cookies.clone(),
+        }
+    }
 }
 
 // accounts

@@ -4,11 +4,11 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 use tokio::sync::RwLock;
 
-use crate::recorder_manager::RecorderEvent;
+use recorder::events::RecorderEvent;
 
 #[cfg(feature = "gui")]
 use {
-    crate::recorder::danmu::DanmuEntry,
+    recorder::danmu::DanmuEntry,
     serde::Serialize,
     tauri::{AppHandle, Emitter},
 };

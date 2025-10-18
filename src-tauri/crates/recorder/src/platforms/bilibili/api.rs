@@ -5,15 +5,13 @@ use super::response::GeneralResponse;
 use super::response::PostVideoMetaResponse;
 use super::response::PreuploadResponse;
 use super::response::VideoSubmitData;
-use crate::database::account::AccountRow;
-use crate::progress::progress_reporter::ProgressReporter;
-use crate::progress::progress_reporter::ProgressReporterTrait;
-use crate::recorder::errors::RecorderError;
-use crate::recorder::user_agent_generator;
+use crate::account::Account;
+use crate::errors::RecorderError;
+use crate::user_agent_generator;
 use chrono::TimeZone;
 use pct_str::PctString;
 use pct_str::URIReserved;
-use rand::seq::SliceRandom;
+use rand::seq::IndexedRandom;
 use regex::Regex;
 use reqwest::Client;
 use serde::Deserialize;
@@ -30,7 +28,6 @@ use tokio::time::Instant;
 
 #[derive(Clone)]
 struct UploadParams<'a> {
-    reporter: &'a ProgressReporter,
     preupload_response: &'a PreuploadResponse,
     post_video_meta_response: &'a PostVideoMetaResponse,
     video_file: &'a Path,
@@ -182,19 +179,19 @@ impl BiliStream {
 
     pub fn index(&self) -> String {
         // random choose a url_info
-        let url_info = self.url_info.choose(&mut rand::thread_rng()).unwrap();
+        let url_info = self.url_info.choose(&mut rand::rng()).unwrap();
         format!("{}{}{}", url_info.host, self.base_url, url_info.extra)
     }
 
     pub fn ts_url(&self, seg_name: &str) -> String {
         let m3u8_filename = self.base_url.split('/').next_back().unwrap();
         let base_url = self.base_url.replace(m3u8_filename, seg_name);
-        let url_info = self.url_info.choose(&mut rand::thread_rng()).unwrap();
+        let url_info = self.url_info.choose(&mut rand::rng()).unwrap();
         format!("{}{}?{}", url_info.host, base_url, url_info.extra)
     }
 
     pub fn get_expire(&self) -> Option<i64> {
-        let url_info = self.url_info.choose(&mut rand::thread_rng()).unwrap();
+        let url_info = self.url_info.choose(&mut rand::rng()).unwrap();
         url_info.extra.split('&').find_map(|param| {
             if param.starts_with("expires=") {
                 param.split('=').nth(1)?.parse().ok()
@@ -257,7 +254,7 @@ pub async fn get_qr_status(client: &Client, qrcode_key: &str) -> Result<QrStatus
     Ok(QrStatus { code, cookies })
 }
 
-pub async fn logout(client: &Client, account: &AccountRow) -> Result<(), RecorderError> {
+pub async fn logout(client: &Client, account: &Account) -> Result<(), RecorderError> {
     let mut headers = generate_user_agent_header();
     let url = "https://passport.bilibili.com/login/exit/v2";
     if let Ok(cookies) = account.cookies.parse() {
@@ -278,7 +275,7 @@ pub async fn logout(client: &Client, account: &AccountRow) -> Result<(), Recorde
 
 pub async fn get_user_info(
     client: &Client,
-    account: &AccountRow,
+    account: &Account,
     user_id: i64,
 ) -> Result<UserInfo, RecorderError> {
     let params: Value = json!({
@@ -330,7 +327,7 @@ pub async fn get_user_info(
 
 pub async fn get_room_info(
     client: &Client,
-    account: &AccountRow,
+    account: &Account,
     room_id: i64,
 ) -> Result<RoomInfo, RecorderError> {
     let mut headers = generate_user_agent_header();
@@ -420,7 +417,7 @@ pub async fn get_room_info(
 /// https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?room_id=31368705&protocol=1&format=1&codec=0&qn=10000&platform=h5
 pub async fn get_stream_info(
     client: &Client,
-    account: &AccountRow,
+    account: &Account,
     room_id: i64,
     protocol: Protocol,
     format: Format,
@@ -641,7 +638,7 @@ pub async fn get_sign(client: &Client, mut parameters: Value) -> Result<String, 
 
 async fn preupload_video(
     client: &Client,
-    account: &AccountRow,
+    account: &Account,
     video_file: &Path,
 ) -> Result<PreuploadResponse, RecorderError> {
     let mut headers = generate_user_agent_header();
@@ -701,15 +698,6 @@ async fn upload_video(client: &Client, params: UploadParams<'_>) -> Result<usize
     let timeout = Duration::from_secs(30);
 
     while let Ok(size) = file.read(&mut buffer[read_total..]).await {
-        // Check for cancellation
-        if params
-            .reporter
-            .cancel
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            return Err(RecorderError::UploadCancelled);
-        }
-
         read_total += size;
         log::debug!("size: {size}, total: {read_total}");
         if size > 0 && (read_total as u64) < chunk_size {
@@ -723,15 +711,6 @@ async fn upload_video(client: &Client, params: UploadParams<'_>) -> Result<usize
         let mut success = false;
 
         while retry_count < max_retries && !success {
-            // Check for cancellation before each retry
-            if params
-                .reporter
-                .cancel
-                .load(std::sync::atomic::Ordering::Relaxed)
-            {
-                return Err(RecorderError::UploadCancelled);
-            }
-
             let url = format!(
                     "https:{}{}?partNumber={}&uploadId={}&chunk={}&chunks={}&size={}&start={}&end={}&total={}",
                     params.preupload_response.endpoint,
@@ -793,17 +772,6 @@ async fn upload_video(client: &Client, params: UploadParams<'_>) -> Result<usize
                 / start.elapsed().as_secs_f64()
                 / 1024.0
         );
-
-        params.reporter.update(
-            format!(
-                "{:.1}% | {:.1} KiB/s",
-                (chunk * 100) as f64 / total_chunks as f64,
-                (chunk * params.preupload_response.chunk_size) as f64
-                    / start.elapsed().as_secs_f64()
-                    / 1024.0
-            )
-            .as_str(),
-        );
     }
     Ok(total_chunks)
 }
@@ -840,8 +808,7 @@ async fn end_upload(
 
 pub async fn prepare_video(
     client: &Client,
-    reporter: &ProgressReporter,
-    account: &AccountRow,
+    account: &Account,
     video_file: &Path,
 ) -> Result<profile::Video, RecorderError> {
     log::info!("Start Preparing Video: {}", video_file.to_str().unwrap());
@@ -852,7 +819,6 @@ pub async fn prepare_video(
     let uploaded = upload_video(
         client,
         UploadParams {
-            reporter,
             preupload_response: &preupload,
             post_video_meta_response: &metaposted,
             video_file,
@@ -876,7 +842,7 @@ pub async fn prepare_video(
 
 pub async fn submit_video(
     client: &Client,
-    account: &AccountRow,
+    account: &Account,
     profile_template: &Profile,
     video: &profile::Video,
 ) -> Result<VideoSubmitData, RecorderError> {
@@ -922,7 +888,7 @@ pub async fn submit_video(
 
 pub async fn upload_cover(
     client: &Client,
-    account: &AccountRow,
+    account: &Account,
     cover: &str,
 ) -> Result<String, RecorderError> {
     let url = format!(
@@ -965,7 +931,7 @@ pub async fn upload_cover(
 
 pub async fn send_danmaku(
     client: &Client,
-    account: &AccountRow,
+    account: &Account,
     room_id: i64,
     message: &str,
 ) -> Result<(), RecorderError> {
@@ -1000,7 +966,7 @@ pub async fn send_danmaku(
 
 pub async fn get_video_typelist(
     client: &Client,
-    account: &AccountRow,
+    account: &Account,
 ) -> Result<Vec<response::Typelist>, RecorderError> {
     let url = "https://member.bilibili.com/x/vupre/web/archive/pre?lang=cn";
     let mut headers = generate_user_agent_header();

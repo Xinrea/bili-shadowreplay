@@ -1,15 +1,15 @@
 pub mod api;
 pub mod profile;
 pub mod response;
-use super::PlatformType;
-use crate::database::account::AccountRow;
-use crate::recorder::bilibili::api::{Codec, Protocol, Qn};
-use crate::recorder::traits::RecorderTrait;
-use crate::recorder::{CachePath, FfmpegProgressHandler, Recorder, RoomInfo, UserInfo};
-use crate::recorder_manager::RecorderEvent;
+use crate::account::Account;
+use crate::events::RecorderEvent;
+use crate::platforms::bilibili::api::{Codec, Protocol, Qn};
+use crate::platforms::PlatformType;
+use crate::traits::RecorderTrait;
+use crate::{Recorder, RoomInfo, UserInfo};
 
-use super::danmu::DanmuStorage;
-use crate::recorder::bilibili::api::{BiliStream, Format};
+use crate::danmu::DanmuStorage;
+use crate::platforms::bilibili::api::{BiliStream, Format};
 use chrono::Utc;
 use danmu_stream::danmu_stream::DanmuStream;
 use danmu_stream::provider::ProviderType;
@@ -36,11 +36,11 @@ pub type BiliRecorder = Recorder<BiliExtra>;
 impl BiliRecorder {
     pub async fn new(
         room_id: i64,
-        account: &AccountRow,
+        account: &Account,
         cache_dir: PathBuf,
         event_channel: broadcast::Sender<RecorderEvent>,
         enabled: bool,
-    ) -> Result<Self, super::errors::RecorderError> {
+    ) -> Result<Self, crate::errors::RecorderError> {
         let client = reqwest::Client::new();
         let extra = BiliExtra {
             cover: Arc::new(RwLock::new(None)),
@@ -204,7 +204,7 @@ impl BiliRecorder {
                         return true;
                     }
                     Err(e) => {
-                        if let super::errors::RecorderError::FormatNotFound { format } = e {
+                        if let crate::errors::RecorderError::FormatNotFound { format } = e {
                             log::error!(
                                 "[{}]Format {} not found, try to fallback to fMP4",
                                 self.room_id,
@@ -261,14 +261,14 @@ impl BiliRecorder {
         }
     }
 
-    async fn danmu(&self) -> Result<(), super::errors::RecorderError> {
+    async fn danmu(&self) -> Result<(), crate::errors::RecorderError> {
         let cookies = self.account.cookies.clone();
         let room_id = self.room_id;
         let danmu_stream = DanmuStream::new(ProviderType::BiliBili, &cookies, room_id).await;
         if danmu_stream.is_err() {
             let err = danmu_stream.err().unwrap();
             log::error!("[{}]Failed to create danmu stream: {}", self.room_id, err);
-            return Err(super::errors::RecorderError::DanmuStreamError(err));
+            return Err(crate::errors::RecorderError::DanmuStreamError(err));
         }
         let danmu_stream = danmu_stream.unwrap();
 
@@ -295,7 +295,7 @@ impl BiliRecorder {
                 }
             } else {
                 log::error!("[{}]Failed to receive danmu message", self.room_id);
-                return Err(super::errors::RecorderError::DanmuStreamError(
+                return Err(crate::errors::RecorderError::DanmuStreamError(
                     danmu_stream::DanmuStreamError::WebsocketError {
                         err: "Failed to receive danmu message".to_string(),
                     },
@@ -304,20 +304,11 @@ impl BiliRecorder {
         }
     }
 
-    async fn work_dir(&self, live_id: &str) -> CachePath {
-        CachePath::new(
-            self.cache_dir.clone(),
-            PlatformType::BiliBili,
-            self.room_id,
-            live_id,
-        )
-    }
-
     /// Update entries for a new live
-    async fn update_entries(&self, live_id: &str) -> Result<(), super::errors::RecorderError> {
+    async fn update_entries(&self, live_id: &str) -> Result<(), crate::errors::RecorderError> {
         let current_stream = self.extra.live_stream.read().await.clone();
         let Some(current_stream) = current_stream else {
-            return Err(super::errors::RecorderError::NoStreamAvailable);
+            return Err(crate::errors::RecorderError::NoStreamAvailable);
         };
 
         let work_dir = self.work_dir(live_id).await;
@@ -337,7 +328,7 @@ impl BiliRecorder {
 
         tokio::fs::copy(room_cover_path, &cover_path.full_path())
             .await
-            .map_err(super::errors::RecorderError::IoError)?;
+            .map_err(crate::errors::RecorderError::IoError)?;
 
         *self.live_id.write().await = live_id.to_string();
 
@@ -347,12 +338,9 @@ impl BiliRecorder {
         });
 
         self.is_recording.store(true, atomic::Ordering::Relaxed);
-        if let Err(e) = crate::ffmpeg::playlist::cache_playlist(
-            None::<&FfmpegProgressHandler>,
-            &current_stream.index(),
-            &work_dir.full_path(),
-        )
-        .await
+        if let Err(e) =
+            crate::ffmpeg::playlist::cache_playlist(&current_stream.index(), &work_dir.full_path())
+                .await
         {
             log::error!("[{}]Failed to cache playlist: {}", self.room_id, e);
         }
@@ -362,7 +350,7 @@ impl BiliRecorder {
 }
 
 #[async_trait]
-impl super::traits::RecorderTrait<BiliExtra> for BiliRecorder {
+impl crate::traits::RecorderTrait<BiliExtra> for BiliRecorder {
     async fn run(&self) {
         let self_clone = self.clone();
         let danmu_task = tokio::spawn(async move {

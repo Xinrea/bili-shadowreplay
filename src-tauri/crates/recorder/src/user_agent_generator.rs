@@ -6,11 +6,11 @@ pub struct UserAgentGenerator {
 
 impl UserAgentGenerator {
     pub fn new() -> Self {
-        Self { rng: thread_rng() }
+        Self { rng: rand::rng() }
     }
 
     pub fn generate(&mut self) -> String {
-        let browser_type = self.rng.gen_range(0..4);
+        let browser_type = self.rng.random_range(0..4);
 
         match browser_type {
             0 => self.generate_chrome(),
@@ -58,7 +58,7 @@ impl UserAgentGenerator {
         let webkit_version = webkit_versions.choose(&mut self.rng).unwrap();
 
         // Safari 只在 macOS 和 iOS 上
-        let is_mobile = self.rng.gen_bool(0.3);
+        let is_mobile = self.rng.random_bool(0.3);
 
         if is_mobile {
             let ios_versions = ["17_1", "16_7", "16_6", "15_7"];

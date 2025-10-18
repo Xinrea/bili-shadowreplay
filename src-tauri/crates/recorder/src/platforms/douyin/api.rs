@@ -1,5 +1,6 @@
-use crate::recorder::errors::RecorderError;
-use crate::{database::account::AccountRow, recorder::user_agent_generator};
+use crate::account::Account;
+use crate::errors::RecorderError;
+use crate::user_agent_generator;
 use deno_core::JsRuntime;
 use deno_core::RuntimeOptions;
 use reqwest::Client;
@@ -70,7 +71,7 @@ pub fn generate_user_agent_header() -> reqwest::header::HeaderMap {
 
 pub async fn get_room_info(
     client: &Client,
-    account: &AccountRow,
+    account: &Account,
     room_id: i64,
     sec_user_id: &str,
 ) -> Result<DouyinBasicRoomInfo, RecorderError> {
@@ -137,7 +138,7 @@ pub async fn get_room_info(
 
 pub async fn get_room_info_h5(
     client: &Client,
-    account: &AccountRow,
+    account: &Account,
     room_id: i64,
     sec_user_id: &str,
 ) -> Result<DouyinBasicRoomInfo, RecorderError> {
@@ -268,7 +269,7 @@ pub async fn get_room_info_h5(
 
 pub async fn get_user_info(
     client: &Client,
-    account: &AccountRow,
+    account: &Account,
 ) -> Result<super::response::User, RecorderError> {
     // Use the IM spotlight relation API to get user info
     let url = "https://www.douyin.com/aweme/v1/web/im/spotlight/relation/";

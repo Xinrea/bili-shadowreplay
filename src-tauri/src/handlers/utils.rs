@@ -308,6 +308,15 @@ pub async fn list_folder(_state: state_type!(), path: String) -> Result<Vec<Stri
     Ok(files)
 }
 
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn file_exists(_state: state_type!(), path: String) -> Result<bool, String> {
+    let path = PathBuf::from(path);
+    match std::fs::metadata(&path) {
+        Ok(metadata) => Ok(metadata.is_file()),
+        Err(_) => Ok(false),
+    }
+}
+
 /// 高级文件名清理函数，全面处理各种危险字符和控制字符
 ///
 /// 适用于需要严格文件名清理的场景，支持中文字符

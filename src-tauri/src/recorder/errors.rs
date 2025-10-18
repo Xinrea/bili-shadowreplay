@@ -1,6 +1,12 @@
-use super::bilibili::client::BiliStream;
-use super::douyin::client::DouyinClientError;
+use super::bilibili::api::BiliStream;
+use super::douyin::stream_info::DouyinStream;
 use thiserror::Error;
+
+#[derive(Debug, Clone)]
+pub enum Stream {
+    BiliBili(BiliStream),
+    Douyin(DouyinStream),
+}
 
 #[derive(Error, Debug)]
 pub enum RecorderError {
@@ -14,26 +20,22 @@ pub enum RecorderError {
     M3u8ParseFailed { content: String },
     #[error("No available stream provided")]
     NoStreamAvailable,
-    #[error("Stream is freezed: {stream}")]
-    FreezedStream { stream: BiliStream },
-    #[error("Stream is nearly expired: {stream}")]
-    StreamExpired { stream: BiliStream },
+    #[error("Stream is freezed: {stream:#?}")]
+    FreezedStream { stream: Stream },
+    #[error("Stream is nearly expired: {stream:#?}")]
+    StreamExpired { stream: Stream },
     #[error("No room info provided")]
     NoRoomInfo,
-    #[error("Invalid stream: {stream}")]
-    InvalidStream { stream: BiliStream },
-    #[error("Stream is too slow: {stream}")]
-    SlowStream { stream: BiliStream },
+    #[error("Invalid stream: {stream:#?}")]
+    InvalidStream { stream: Stream },
+    #[error("Stream is too slow: {stream:#?}")]
+    SlowStream { stream: Stream },
     #[error("Header url is empty")]
     EmptyHeader,
     #[error("Header timestamp is invalid")]
     InvalidTimestamp,
     #[error("Database error: {0}")]
     InvalidDBOP(#[from] crate::database::DatabaseError),
-    #[error("BiliClient error: {0}")]
-    BiliClientError(#[from] super::bilibili::errors::BiliClientError),
-    #[error("DouyinClient error: {0}")]
-    DouyinClientError(#[from] DouyinClientError),
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
     #[error("Danmu stream error: {0}")]
@@ -46,4 +48,30 @@ pub enum RecorderError {
     ResolutionChanged { err: String },
     #[error("Ffmpeg error: {0}")]
     FfmpegError(String),
+    #[error("Format not found: {format}")]
+    FormatNotFound { format: String },
+    #[error("Codec not found: {codecs}")]
+    CodecNotFound { codecs: String },
+    #[error("Invalid cookies")]
+    InvalidCookies,
+    #[error("API error: {error}")]
+    ApiError { error: String },
+    #[error("Invalid value")]
+    InvalidValue,
+    #[error("Invalid response")]
+    InvalidResponse,
+    #[error("Invalid response json: {resp}")]
+    InvalidResponseJson { resp: serde_json::Value },
+    #[error("Invalid response status: {status}")]
+    InvalidResponseStatus { status: reqwest::StatusCode },
+    #[error("Upload cancelled")]
+    UploadCancelled,
+    #[error("Upload error: {err}")]
+    UploadError { err: String },
+    #[error("Client error: {0}")]
+    ClientError(#[from] reqwest::Error),
+    #[error("Security control error")]
+    SecurityControlError,
+    #[error("JavaScript runtime error: {0}")]
+    JsRuntimeError(String),
 }

@@ -1,5 +1,6 @@
 use crate::database::account::AccountRow;
-use crate::recorder::bilibili::client::{QrInfo, QrStatus};
+use crate::recorder::bilibili::api::{QrInfo, QrStatus};
+use crate::recorder::{bilibili, douyin};
 use crate::state::State;
 use crate::state_type;
 
@@ -26,9 +27,16 @@ pub async fn add_account(
         return Err(format!("Invalid cookies: {e}"));
     }
     let account = state.db.add_account(&platform, cookies).await?;
+    let client = reqwest::Client::new();
 
     if platform == "bilibili" {
-        let account_info = state.client.get_user_info(&account, account.uid).await?;
+        let account_info = match bilibili::api::get_user_info(&client, &account, account.uid).await
+        {
+            Ok(account_info) => account_info,
+            Err(e) => {
+                return Err(e.to_string());
+            }
+        };
         state
             .db
             .update_account(
@@ -43,8 +51,7 @@ pub async fn add_account(
 
     if platform == "douyin" {
         // Get user info from Douyin API
-        let douyin_client = crate::recorder::douyin::client::DouyinClient::new(&account);
-        match douyin_client.get_user_info().await {
+        match douyin::api::get_user_info(&client, &account).await {
             Ok(user_info) => {
                 // For Douyin, use sec_uid as the primary identifier in id_str field
                 let avatar_url = user_info
@@ -73,27 +80,27 @@ pub async fn add_account(
         return Ok(account);
     }
 
-    if platform == "huya" {
-        let huya_client = crate::recorder::huya::client::HuyaClient::new();
-        match huya_client.get_user_info(&account).await {
-            Ok(user_info) => {
-                state
-                    .db
-                    .update_account(
-                        &platform,
-                        user_info.user_id,
-                        &user_info.user_name,
-                        &user_info.user_avatar_url,
-                    )
-                    .await?;
-            }
-            Err(e) => {
-                log::warn!("Failed to get Huya user info: {e}");
-                // Keep the account but with default values
-            }
-        }
-        return Ok(account);
-    }
+    // if platform == "huya" {
+    //     let huya_client = crate::recorder::huya::client::HuyaClient::new();
+    //     match huya_client.get_user_info(&account).await {
+    //         Ok(user_info) => {
+    //             state
+    //                 .db
+    //                 .update_account(
+    //                     &platform,
+    //                     user_info.user_id,
+    //                     &user_info.user_name,
+    //                     &user_info.user_avatar_url,
+    //                 )
+    //                 .await?;
+    //         }
+    //         Err(e) => {
+    //             log::warn!("Failed to get Huya user info: {e}");
+    //             // Keep the account but with default values
+    //         }
+    //     }
+    //     return Ok(account);
+    // }
 
     todo!("unsupported platform: {platform}");
 }
@@ -106,7 +113,11 @@ pub async fn remove_account(
 ) -> Result<(), String> {
     if platform == "bilibili" {
         let account = state.db.get_account(&platform, uid).await?;
-        state.client.logout(&account).await?;
+        let client = reqwest::Client::new();
+        return match bilibili::api::logout(&client, &account).await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        };
     }
     Ok(state.db.remove_account(&platform, uid).await?)
 }
@@ -117,16 +128,18 @@ pub async fn get_account_count(state: state_type!()) -> Result<u64, String> {
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn get_qr_status(state: state_type!(), qrcode_key: &str) -> Result<QrStatus, ()> {
-    match state.client.get_qr_status(qrcode_key).await {
+pub async fn get_qr_status(_state: state_type!(), qrcode_key: &str) -> Result<QrStatus, ()> {
+    let client = reqwest::Client::new();
+    match bilibili::api::get_qr_status(&client, qrcode_key).await {
         Ok(qr_status) => Ok(qr_status),
         Err(_e) => Err(()),
     }
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn get_qr(state: state_type!()) -> Result<QrInfo, ()> {
-    match state.client.get_qr().await {
+pub async fn get_qr(_state: state_type!()) -> Result<QrInfo, ()> {
+    let client = reqwest::Client::new();
+    match bilibili::api::get_qr(&client).await {
         Ok(qr_info) => Ok(qr_info),
         Err(_e) => Err(()),
     }

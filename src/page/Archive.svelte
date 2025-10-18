@@ -85,7 +85,7 @@
       for (const room of allRooms) {
         try {
           const roomArchives = await invoke<RecordItem[]>("get_archives", {
-            roomId: room.room_id,
+            roomId: parseInt(room.room_info.room_id),
             offset: 0,
             limit: 100, // 每个直播间获取更多数据
           });
@@ -97,10 +97,7 @@
 
           allArchives = [...allArchives, ...roomArchives];
         } catch (error) {
-          console.warn(
-            `Failed to load archives for room ${room.room_id}:`,
-            error
-          );
+          console.warn(`Failed to load archives for room ${room}:`, error);
         }
       }
 

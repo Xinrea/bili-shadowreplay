@@ -1,25 +1,5 @@
-use serde::{Deserialize, Serialize};
-
 #[cfg(feature = "headless")]
 use tokio::sync::broadcast;
-
-#[derive(Clone, Serialize, Deserialize)]
-pub enum Event {
-    ProgressUpdate {
-        id: String,
-        content: String,
-    },
-    ProgressFinished {
-        id: String,
-        success: bool,
-        message: String,
-    },
-    DanmuReceived {
-        room: i64,
-        ts: i64,
-        content: String,
-    },
-}
 
 #[cfg(feature = "headless")]
 pub struct ProgressManager {

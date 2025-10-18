@@ -5,6 +5,7 @@ use crate::handlers::utils::get_disk_info_inner;
 use crate::progress::progress_reporter::{
     cancel_progress, EventEmitter, ProgressReporter, ProgressReporterTrait,
 };
+use crate::recorder::bilibili;
 use crate::recorder::bilibili::profile::Profile;
 use crate::recorder_manager::ClipRangeParams;
 use crate::subtitle_generator::item_to_srt;
@@ -397,7 +398,7 @@ async fn clip_range_inner(
 
     let file = state
         .recorder_manager
-        .clip_range(reporter, clip_file, &params)
+        .clip_range(Some(reporter), clip_file, &params)
         .await?;
     log::info!("Clip range done, doing post processing");
     // get file metadata from fs
@@ -559,13 +560,15 @@ async fn upload_procedure_inner(
     let output = state.config.read().await.output.clone();
     let file = Path::new(&output).join(&video_row.file);
     let path = Path::new(&file);
-    let cover_url = state.client.upload_cover(&account, &cover);
+    let client = reqwest::Client::new();
+    let cover_url = bilibili::api::upload_cover(&client, &account, &cover).await;
     reporter.update("投稿预处理中");
 
-    match state.client.prepare_video(reporter, &account, path).await {
+    match bilibili::api::prepare_video(&client, reporter, &account, path).await {
         Ok(video) => {
-            profile.cover = cover_url.await.unwrap_or(String::new());
-            if let Ok(ret) = state.client.submit_video(&account, &profile, &video).await {
+            profile.cover = cover_url.unwrap_or(String::new());
+            if let Ok(ret) = bilibili::api::submit_video(&client, &account, &profile, &video).await
+            {
                 // update video status and details
                 // 1 means uploaded
                 video_row.status = 1;
@@ -686,7 +689,11 @@ pub async fn get_video_typelist(
     state: state_type!(),
 ) -> Result<Vec<crate::recorder::bilibili::response::Typelist>, String> {
     let account = state.db.get_account_by_platform("bilibili").await?;
-    Ok(state.client.get_video_typelist(&account).await?)
+    let client = reqwest::Client::new();
+    match bilibili::api::get_video_typelist(&client, &account).await {
+        Ok(typelist) => Ok(typelist),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]

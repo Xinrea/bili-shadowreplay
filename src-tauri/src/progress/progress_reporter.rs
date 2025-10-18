@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 use tokio::sync::RwLock;
 
-use crate::progress::progress_manager::Event;
+use crate::recorder_manager::RecorderEvent;
 
 #[cfg(feature = "gui")]
 use {
@@ -39,7 +39,7 @@ pub struct EventEmitter {
     #[cfg(feature = "gui")]
     app_handle: AppHandle,
     #[cfg(feature = "headless")]
-    sender: broadcast::Sender<Event>,
+    sender: broadcast::Sender<RecorderEvent>,
 }
 
 #[cfg(feature = "gui")]
@@ -60,7 +60,7 @@ struct FinishEvent<'a> {
 impl EventEmitter {
     pub fn new(
         #[cfg(feature = "gui")] app_handle: AppHandle,
-        #[cfg(feature = "headless")] sender: broadcast::Sender<Event>,
+        #[cfg(feature = "headless")] sender: broadcast::Sender<RecorderEvent>,
     ) -> Self {
         Self {
             #[cfg(feature = "gui")]
@@ -70,11 +70,11 @@ impl EventEmitter {
         }
     }
 
-    pub fn emit(&self, event: &Event) {
+    pub fn emit(&self, event: &RecorderEvent) {
         #[cfg(feature = "gui")]
         {
             match event {
-                Event::ProgressUpdate { id, content } => {
+                RecorderEvent::ProgressUpdate { id, content } => {
                     self.app_handle
                         .emit(
                             &format!("progress-update:{}", id),
@@ -82,7 +82,7 @@ impl EventEmitter {
                         )
                         .unwrap();
                 }
-                Event::ProgressFinished {
+                RecorderEvent::ProgressFinished {
                     id,
                     success,
                     message,
@@ -98,7 +98,7 @@ impl EventEmitter {
                         )
                         .unwrap();
                 }
-                Event::DanmuReceived { room, ts, content } => {
+                RecorderEvent::DanmuReceived { room, ts, content } => {
                     self.app_handle
                         .emit(
                             &format!("danmu:{room}"),
@@ -109,6 +109,7 @@ impl EventEmitter {
                         )
                         .unwrap();
                 }
+                _ => {}
             }
         }
 
@@ -121,7 +122,7 @@ impl ProgressReporter {
         // if already exists, return
         if CANCEL_FLAG_MAP.read().await.get(event_id).is_some() {
             log::error!("Task already exists: {event_id}");
-            emitter.emit(&Event::ProgressFinished {
+            emitter.emit(&RecorderEvent::ProgressFinished {
                 id: event_id.to_string(),
                 success: false,
                 message: "任务已经存在".to_string(),
@@ -146,14 +147,14 @@ impl ProgressReporter {
 #[async_trait]
 impl ProgressReporterTrait for ProgressReporter {
     fn update(&self, content: &str) {
-        self.emitter.emit(&Event::ProgressUpdate {
+        self.emitter.emit(&RecorderEvent::ProgressUpdate {
             id: self.event_id.clone(),
             content: content.to_string(),
         });
     }
 
     async fn finish(&self, success: bool, message: &str) {
-        self.emitter.emit(&Event::ProgressFinished {
+        self.emitter.emit(&RecorderEvent::ProgressFinished {
             id: self.event_id.clone(),
             success,
             message: message.to_string(),

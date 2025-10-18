@@ -2,21 +2,25 @@ pub mod bilibili;
 pub mod danmu;
 pub mod douyin;
 pub mod errors;
-pub mod huya;
+pub mod traits;
+use crate::{
+    database::account::AccountRow, recorder::danmu::DanmuStorage, recorder_manager::RecorderEvent,
+};
 mod user_agent_generator;
 
 pub mod entry;
 
 use async_trait::async_trait;
-use danmu::DanmuEntry;
-use m3u8_rs::MediaPlaylist;
 use std::{
     fmt::Display,
     hash::{Hash, Hasher},
     path::PathBuf,
-    sync::Arc,
+    sync::{atomic, Arc},
 };
-use tokio::sync::RwLock;
+use tokio::{
+    sync::{broadcast, Mutex, RwLock},
+    task::JoinHandle,
+};
 
 use crate::{database::Database, progress::progress_reporter::ProgressReporterTrait};
 
@@ -57,29 +61,167 @@ impl Hash for PlatformType {
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
 pub struct RecorderInfo {
-    pub room_id: i64,
     pub room_info: RoomInfo,
     pub user_info: UserInfo,
-    pub total_length: f64,
-    pub current_live_id: String,
-    pub live_status: bool,
-    pub is_recording: bool,
-    pub auto_start: bool,
-    pub platform: String,
+    pub platform_live_id: String,
+    pub live_id: String,
+    pub recording: bool,
+    pub enabled: bool,
 }
 
-#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Default)]
 pub struct RoomInfo {
-    pub room_id: i64,
+    pub platform: String,
+    pub room_id: String,
     pub room_title: String,
     pub room_cover: String,
+    /// Whether the room is live
+    pub status: bool,
 }
 
-#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Default)]
 pub struct UserInfo {
     pub user_id: String,
     pub user_name: String,
     pub user_avatar: String,
+}
+
+/// `Recorder` is the base struct for all recorders
+/// It contains the basic information for a recorder
+/// and the extra information for the recorder
+#[derive(Clone)]
+pub struct Recorder<T>
+where
+    T: Send + Sync,
+{
+    platform: PlatformType,
+    room_id: i64,
+    /// The account for the recorder
+    account: AccountRow,
+    /// The client for the recorder
+    client: reqwest::Client,
+    /// The event channel for the recorder
+    event_channel: broadcast::Sender<RecorderEvent>,
+    /// The cache directory for the recorder
+    cache_dir: PathBuf,
+    /// Whether the recorder is quitting
+    quit: Arc<atomic::AtomicBool>,
+    /// Whether the recorder is enabled
+    enabled: Arc<atomic::AtomicBool>,
+    /// Whether the recorder is recording
+    is_recording: Arc<atomic::AtomicBool>,
+    /// The room info for the recorder
+    room_info: Arc<RwLock<RoomInfo>>,
+    /// The user info for the recorder
+    user_info: Arc<RwLock<UserInfo>>,
+
+    /// The platform live id for the current recording
+    platform_live_id: Arc<RwLock<String>>,
+    /// The live id for the current recording, generally is the timestamp of the recording start time
+    live_id: Arc<RwLock<String>>,
+    /// The danmu task for the current recording
+    danmu_task: Arc<Mutex<Option<JoinHandle<()>>>>,
+    /// The record task for the current recording
+    record_task: Arc<Mutex<Option<JoinHandle<()>>>>,
+    /// The danmu storage for the current recording
+    danmu_storage: Arc<RwLock<Option<DanmuStorage>>>,
+    /// The last update time of the current recording
+    last_update: Arc<atomic::AtomicI64>,
+    /// The last sequence of the current recording
+    last_sequence: Arc<atomic::AtomicU64>,
+    /// The total duration of the current recording in milliseconds
+    total_duration: Arc<atomic::AtomicU64>,
+    /// The total size of the current recording in bytes
+    total_size: Arc<atomic::AtomicU64>,
+
+    /// The extra information for the recorder
+    extra: T,
+}
+
+impl<T: Send + Sync> traits::RecorderBasicTrait<T> for Recorder<T> {
+    fn platform(&self) -> PlatformType {
+        self.platform
+    }
+
+    fn room_id(&self) -> i64 {
+        self.room_id
+    }
+
+    fn account(&self) -> &AccountRow {
+        &self.account
+    }
+
+    fn client(&self) -> &reqwest::Client {
+        &self.client
+    }
+
+    fn event_channel(&self) -> &broadcast::Sender<RecorderEvent> {
+        &self.event_channel
+    }
+
+    fn cache_dir(&self) -> PathBuf {
+        self.cache_dir.clone()
+    }
+
+    fn quit(&self) -> &atomic::AtomicBool {
+        &self.quit
+    }
+
+    fn enabled(&self) -> &atomic::AtomicBool {
+        &self.enabled
+    }
+
+    fn is_recording(&self) -> &atomic::AtomicBool {
+        &self.is_recording
+    }
+
+    fn room_info(&self) -> Arc<RwLock<RoomInfo>> {
+        self.room_info.clone()
+    }
+
+    fn user_info(&self) -> Arc<RwLock<UserInfo>> {
+        self.user_info.clone()
+    }
+
+    fn platform_live_id(&self) -> Arc<RwLock<String>> {
+        self.platform_live_id.clone()
+    }
+
+    fn live_id(&self) -> Arc<RwLock<String>> {
+        self.live_id.clone()
+    }
+
+    fn danmu_task(&self) -> Arc<Mutex<Option<JoinHandle<()>>>> {
+        self.danmu_task.clone()
+    }
+
+    fn record_task(&self) -> Arc<Mutex<Option<JoinHandle<()>>>> {
+        self.record_task.clone()
+    }
+
+    fn danmu_storage(&self) -> Arc<RwLock<Option<DanmuStorage>>> {
+        self.danmu_storage.clone()
+    }
+
+    fn last_update(&self) -> &atomic::AtomicI64 {
+        &self.last_update
+    }
+
+    fn last_sequence(&self) -> &atomic::AtomicU64 {
+        &self.last_sequence
+    }
+
+    fn total_duration(&self) -> &atomic::AtomicU64 {
+        &self.total_duration
+    }
+
+    fn total_size(&self) -> &atomic::AtomicU64 {
+        &self.total_size
+    }
+
+    fn extra(&self) -> &T {
+        &self.extra
+    }
 }
 
 pub struct FfmpegProgressHandler {
@@ -139,28 +281,10 @@ impl ProgressReporterTrait for FfmpegProgressHandler {
     }
 }
 
-#[async_trait]
-pub trait Recorder: Send + Sync + 'static {
-    async fn run(&self);
-    async fn stop(&self);
-    async fn playlist(&self, live_id: &str, start: i64, end: i64) -> MediaPlaylist;
-    async fn get_related_playlists(&self, parent_id: &str) -> Vec<(String, String)>;
-    async fn info(&self) -> RecorderInfo;
-    async fn comments(&self, live_id: &str) -> Result<Vec<DanmuEntry>, errors::RecorderError>;
-    async fn is_recording(&self, live_id: &str) -> bool;
-    async fn get_archive_subtitle(&self, live_id: &str) -> Result<String, errors::RecorderError>;
-    async fn generate_archive_subtitle(
-        &self,
-        live_id: &str,
-    ) -> Result<String, errors::RecorderError>;
-    async fn enable(&self);
-    async fn disable(&self);
-}
-
 /// Cache path is relative to cache path in config
 #[derive(Clone)]
 pub struct CachePath {
-    pub cache_path: String,
+    pub cache_path: PathBuf,
     pub platform: PlatformType,
     pub room_id: i64,
     pub live_id: String,
@@ -168,9 +292,9 @@ pub struct CachePath {
 }
 
 impl CachePath {
-    pub fn new(cache_path: &str, platform: PlatformType, room_id: i64, live_id: &str) -> Self {
+    pub fn new(cache_path: PathBuf, platform: PlatformType, room_id: i64, live_id: &str) -> Self {
         Self {
-            cache_path: cache_path.to_string(),
+            cache_path,
             platform,
             room_id,
             live_id: live_id.to_string(),
@@ -208,7 +332,7 @@ impl CachePath {
     }
 
     pub fn full_path(&self) -> PathBuf {
-        PathBuf::from(self.cache_path.clone()).join(self.relative_path())
+        self.cache_path.clone().join(self.relative_path())
     }
 }
 

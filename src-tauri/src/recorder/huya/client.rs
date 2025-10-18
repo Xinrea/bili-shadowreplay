@@ -3,6 +3,8 @@ use super::errors::HuyaClientError;
 use crate::database::account::AccountRow;
 
 use crate::recorder::user_agent_generator;
+use crate::recorder::RoomInfo;
+use crate::recorder::UserInfo;
 
 use reqwest::Client;
 use scraper::Html;
@@ -13,7 +15,7 @@ use std::path::Path;
 use std::time::Duration;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct UserInfo {
+pub struct HuyaUserInfo {
     pub user_id: i64,
     pub user_name: String,
     pub user_sign: String,
@@ -22,6 +24,14 @@ pub struct UserInfo {
 
 pub struct HuyaClient {
     client: Client,
+}
+
+#[derive(Clone, Debug)]
+pub struct StreamInfo {
+    pub stream_url: String,
+    pub stream_type: String,
+    pub stream_quality: String,
+    pub stream_codec: String,
 }
 
 impl HuyaClient {
@@ -41,7 +51,10 @@ impl HuyaClient {
         headers
     }
 
-    pub async fn get_user_info(&self, account: &AccountRow) -> Result<UserInfo, HuyaClientError> {
+    pub async fn get_user_info(
+        &self,
+        account: &AccountRow,
+    ) -> Result<HuyaUserInfo, HuyaClientError> {
         // https://m.huya.com/video/u/2246697169
         let mut headers = self.generate_user_agent_header();
         if let Ok(cookies) = account.cookies.parse() {
@@ -88,12 +101,88 @@ impl HuyaClient {
             .map(|p| p.text().collect::<String>().trim().to_string())
             .filter(|s| !s.is_empty());
 
-        Ok(UserInfo {
+        Ok(HuyaUserInfo {
             user_id: account.uid,
             user_name: name.unwrap_or_default(),
             user_sign: sign.unwrap_or_default(),
             user_avatar_url: avatar.unwrap_or_default(),
         })
+    }
+
+    pub async fn get_room_info(
+        &self,
+        account: &AccountRow,
+        room_id: i64,
+    ) -> Result<(UserInfo, RoomInfo, StreamInfo), HuyaClientError> {
+        let mut headers = self.generate_user_agent_header();
+        if let Ok(cookies) = account.cookies.parse() {
+            headers.insert("cookie", cookies);
+        } else {
+            return Err(HuyaClientError::InvalidCookie);
+        }
+        headers.insert("Referer", "https://huya.com/".parse().unwrap());
+        let url = format!("https://huya.com/{}", room_id);
+        let response = self.client.get(url).headers(headers).send().await?;
+        let raw_content = response.text().await?;
+        let (tt_room_data, tt_profile_info, hy_player_config) =
+            super::extractor::LiveStreamExtractor::extract_variables(&raw_content)?;
+        Ok((
+            UserInfo {
+                user_id: tt_profile_info
+                    .get("uid")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0)
+                    .to_string(),
+                user_name: tt_profile_info
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                user_avatar: tt_profile_info
+                    .get("avatar")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            },
+            RoomInfo {
+                room_id: tt_room_data
+                    .get("room_id")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+                room_title: tt_room_data
+                    .get("room_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                room_cover: tt_room_data
+                    .get("room_cover")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            },
+            StreamInfo {
+                stream_url: hy_player_config
+                    .get("stream_url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                stream_type: hy_player_config
+                    .get("stream_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                stream_quality: hy_player_config
+                    .get("stream_quality")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                stream_codec: hy_player_config
+                    .get("stream_codec")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            },
+        ))
     }
 
     /// Download file from url to path

@@ -36,7 +36,7 @@
     return (
       room.room_info.room_title.toLowerCase().includes(query) ||
       room.user_info.user_name.toLowerCase().includes(query) ||
-      room.room_id.toString().includes(query)
+      room.room_info.room_id.toString().includes(query)
     );
   });
 
@@ -60,16 +60,16 @@
     let new_summary = (await invoke("get_recorder_list")) as RecorderList;
     room_count = new_summary.count;
     room_active = new_summary.recorders.filter(
-      (room) => room.live_status
+      (room) => room.room_info.status
     ).length;
     room_inactive = new_summary.recorders.filter(
-      (room) => !room.live_status
+      (room) => !room.room_info.status
     ).length;
 
     // sort new_summary.recorders by live_status
     new_summary.recorders.sort((a, b) => {
-      if (a.live_status && !b.live_status) return -1;
-      if (!a.live_status && b.live_status) return 1;
+      if (a.room_info.status && !b.room_info.status) return -1;
+      if (!a.room_info.status && b.room_info.status) return 1;
       return 0;
     });
 
@@ -80,7 +80,7 @@
         const cover_blob = await cover_response.blob();
         room.room_info.room_cover = URL.createObjectURL(cover_blob);
       } else {
-        room.room_info.room_cover = default_cover(room.platform);
+        room.room_info.room_cover = default_cover(room.room_info.platform);
       }
 
       if (room.user_info.user_avatar != "") {
@@ -88,7 +88,7 @@
         const avatar_blob = await avatar_response.blob();
         room.user_info.user_avatar = URL.createObjectURL(avatar_blob);
       } else {
-        room.user_info.user_avatar = default_avatar(room.platform);
+        room.user_info.user_avatar = default_avatar(room.room_info.platform);
       }
     }
 
@@ -109,7 +109,7 @@
   let selectedPlatform = "bilibili";
 
   let archiveModal = false;
-  let archiveRoom = null;
+  let archiveRoom: RecorderInfo = null;
   let archives: RecordItem[] = [];
 
   // 分页相关状态
@@ -139,13 +139,16 @@
 
     try {
       let new_archives = (await invoke("get_archives", {
-        roomId: archiveRoom.room_id,
+        roomId: Number(archiveRoom.room_info.room_id),
         offset: currentPage * pageSize,
         limit: pageSize,
       })) as RecordItem[];
 
       for (const archive of new_archives) {
-        archive.cover = await get_cover("cache", archive.cover);
+        archive.cover = await get_cover(
+          "cache",
+          `${archive.platform}/${archive.room_id}/${archive.live_id}/cover.jpg`
+        );
       }
 
       // 如果是第一页，直接替换；否则追加数据
@@ -306,28 +309,28 @@
   // Function to toggle auto-record state
   function toggleEnabled(room: RecorderInfo) {
     invoke("set_enable", {
-      roomId: room.room_id,
-      platform: room.platform,
-      enabled: !room.auto_start,
+      roomId: Number(room.room_info.room_id),
+      platform: room.room_info.platform,
+      enabled: !room.enabled,
     });
   }
 
   function openUserUrl(room: RecorderInfo) {
-    if (room.platform === "bilibili") {
+    if (room.room_info.platform === "bilibili") {
       open("https://space.bilibili.com/" + room.user_info.user_id);
-    } else if (room.platform === "douyin") {
+    } else if (room.room_info.platform === "douyin") {
       console.log(room.user_info);
       open("https://www.douyin.com/user/" + room.user_info.user_id);
     }
   }
 
   function openLiveUrl(room: RecorderInfo) {
-    if (room.platform === "bilibili") {
-      open("https://live.bilibili.com/" + room.room_id);
+    if (room.room_info.platform === "bilibili") {
+      open("https://live.bilibili.com/" + room.room_info.room_id);
     }
 
-    if (room.platform === "douyin") {
-      open("https://live.douyin.com/" + room.room_id);
+    if (room.room_info.platform === "douyin") {
+      open("https://live.douyin.com/" + room.room_info.room_id);
     }
   }
 
@@ -353,14 +356,17 @@
   }
 
   let generateWholeClipModal = false;
-  let generateWholeClipArchive = null;
+  let generateWholeClipArchive: RecordItem = null;
   let wholeClipArchives: RecordItem[] = [];
   let isLoadingWholeClip = false;
 
   async function openGenerateWholeClipModal(archive: RecordItem) {
     generateWholeClipModal = true;
     generateWholeClipArchive = archive;
-    await loadWholeClipArchives(archiveRoom.room_id, archive.parent_id);
+    await loadWholeClipArchives(
+      Number(archiveRoom.room_info.room_id),
+      archive.parent_id
+    );
   }
 
   async function loadWholeClipArchives(roomId: number, parentId: string) {
@@ -376,7 +382,10 @@
 
       // 处理封面
       for (const archive of sameParentArchives) {
-        archive.cover = await get_cover("cache", archive.cover);
+        archive.cover = await get_cover(
+          "cache",
+          `${archive.platform}/${archive.room_id}/${archive.live_id}/cover.jpg`
+        );
       }
 
       // 按时间排序
@@ -399,7 +408,7 @@
     generateWholeClipModal = false;
     await invoke("generate_whole_clip", {
       platform: generateWholeClipArchive.platform,
-      roomId: generateWholeClipArchive.room_id,
+      roomId: Number(generateWholeClipArchive.room_id),
       parentId: generateWholeClipArchive.parent_id,
     });
   }
@@ -492,7 +501,7 @@
     <!-- Room Grid -->
     <div class="grid grid-cols-3 gap-4">
       <!-- Active Room Card -->
-      {#each filteredRecorders as room (room.room_id)}
+      {#each filteredRecorders as room (room.room_info.room_id)}
         <div
           class="p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 hover:border-blue-500 dark:hover:border-blue-400 transition-colors"
         >
@@ -501,28 +510,29 @@
               src={room.room_info.room_cover}
               alt="cover"
               class={"w-full h-40 object-cover rounded-lg " +
-                (room.live_status ? "" : "brightness-75")}
+                (room.room_info.status ? "" : "brightness-75")}
             />
             <!-- Room ID watermark -->
             <div
               class="absolute bottom-2 left-2 px-2 py-1 rounded-md bg-black/30 backdrop-blur-sm flex items-center"
             >
               <span class="text-xs text-white/80 font-mono"
-                >{room.platform.toUpperCase()}#{room.room_id}</span
+                >{room.room_info.platform.toUpperCase()}#{room.room_info
+                  .room_id}</span
               >
             </div>
-            {#if room.auto_start}
+            {#if room.enabled}
               <div
                 class={"absolute top-2 left-2 p-1.5 px-2 rounded-md text-white text-xs flex items-center justify-center " +
-                  (room.is_recording ? "bg-red-500" : "bg-gray-700/90")}
+                  (room.recording ? "bg-red-500" : "bg-gray-700/90")}
               >
                 <AutoRecordIcon class="w-4 h-4 text-white" />
-                {#if room.is_recording}
+                {#if room.recording}
                   <span class="text-white ml-1">录制中</span>
                 {/if}
               </div>
             {/if}
-            {#if !room.live_status}
+            {#if !room.room_info.status}
               <div
                 class={"absolute bottom-2 right-2 p-1.5 px-2 rounded-md text-white text-xs flex items-center justify-center bg-gray-700"}
               >
@@ -550,7 +560,7 @@
                   >启用直播间</span
                 >
                 <label class="toggle-switch ml-1">
-                  <input type="checkbox" checked={room.auto_start} />
+                  <input type="checkbox" checked={room.enabled} />
                   <span class="toggle-slider"></span>
                 </label>
               </button>
@@ -572,9 +582,9 @@
             <div class="flex items-start justify-between">
               <div>
                 <div class="flex items-center space-x-2">
-                  {#if room.platform === "bilibili"}
+                  {#if room.room_info.platform === "bilibili"}
                     <BilibiliIcon class="w-4 h-4" />
-                  {:else if room.platform === "douyin"}
+                  {:else if room.room_info.platform === "douyin"}
                     <DouyinIcon class="w-4 h-4" />
                   {/if}
                   <h3 class="font-medium text-gray-900 dark:text-white">
@@ -602,14 +612,14 @@
                 </button>
               </div>
               <div class="flex items-center space-x-1">
-                {#if room.is_recording}
+                {#if room.recording}
                   <button
                     class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
                     on:click={() => {
                       invoke("open_live", {
-                        platform: room.platform,
-                        roomId: room.room_id,
-                        liveId: room.current_live_id,
+                        platform: room.room_info.platform,
+                        roomId: Number(room.room_info.room_id),
+                        liveId: room.live_id,
                       });
                     }}
                   >
@@ -620,7 +630,7 @@
                   class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
                   on:click={() => {
                     archiveRoom = room;
-                    showArchives(room.room_id);
+                    showArchives(Number(room.room_info.room_id));
                   }}
                 >
                   <History class="w-5 h-5 dark:icon-white" />
@@ -684,8 +694,8 @@
             class="w-24 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors"
             on:click={async () => {
               await invoke("remove_recorder", {
-                roomId: deleteRoom.room_id,
-                platform: deleteRoom.platform,
+                roomId: deleteRoom.room_info.room_id,
+                platform: deleteRoom.room_info.platform,
               });
               deleteModal = false;
             }}
@@ -849,7 +859,8 @@
             直播间记录
           </h2>
           <span class="text-sm text-gray-500 dark:text-gray-400">
-            {archiveRoom?.user_info.user_name} · {archiveRoom?.room_id}
+            {archiveRoom?.user_info.user_name} · {archiveRoom?.room_info
+              .room_id}
           </span>
         </div>
         <button
@@ -912,13 +923,11 @@
                     </td>
                     <td class="px-4 py-3">
                       <div class="flex items-center space-x-3">
-                        {#if archive.cover}
-                          <img
-                            src={archive.cover}
-                            alt="cover"
-                            class="w-12 h-8 rounded object-cover"
-                          />
-                        {/if}
+                        <img
+                          src={archive.cover}
+                          alt="cover"
+                          class="w-12 h-8 rounded object-cover"
+                        />
                         <span class="text-sm text-gray-900 dark:text-white"
                           >{archive.title}</span
                         >
@@ -941,8 +950,8 @@
                           title="预览录播"
                           on:click={() => {
                             invoke("open_live", {
-                              platform: archiveRoom.platform,
-                              roomId: archiveRoom.room_id,
+                              platform: archiveRoom.room_info.platform,
+                              roomId: Number(archiveRoom.room_info.room_id),
                               liveId: archive.live_id,
                             });
                           }}
@@ -963,8 +972,8 @@
                           title="删除记录"
                           on:click={() => {
                             invoke("delete_archive", {
-                              platform: archiveRoom.platform,
-                              roomId: archiveRoom.room_id,
+                              platform: archiveRoom.room_info.platform,
+                              roomId: Number(archiveRoom.room_info.room_id),
                               liveId: archive.live_id,
                             })
                               .then(async () => {

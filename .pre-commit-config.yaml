@@ -8,12 +8,6 @@ repos:
       - id: end-of-file-fixer
         exclude: '(\.json$|public/)'
 
-  - repo: https://github.com/crate-ci/typos
-    rev: v1.36.2
-    hooks:
-      - id: typos
-        exclude: public/
-
   - repo: local
     hooks:
       - id: cargo-fmt

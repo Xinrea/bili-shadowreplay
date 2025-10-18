@@ -5,6 +5,7 @@ use crate::database::task::TaskRow;
 use crate::progress::progress_reporter::EventEmitter;
 use crate::progress::progress_reporter::ProgressReporter;
 use crate::progress::progress_reporter::ProgressReporterTrait;
+use crate::recorder::bilibili;
 use crate::recorder::danmu::DanmuEntry;
 use crate::recorder::PlatformType;
 use crate::recorder::RecorderInfo;
@@ -295,13 +296,12 @@ pub async fn get_danmu_record(
     room_id: i64,
     live_id: String,
 ) -> Result<Vec<DanmuEntry>, String> {
-    let platform = PlatformType::from_str(&platform);
-    if platform.is_none() {
+    let Some(platform) = PlatformType::from_str(&platform) else {
         return Err("Unsupported platform".to_string());
-    }
+    };
     Ok(state
         .recorder_manager
-        .get_danmu(platform.unwrap(), room_id, &live_id)
+        .load_danmus(platform, room_id, &live_id)
         .await?)
 }
 
@@ -321,13 +321,12 @@ pub async fn export_danmu(
     state: state_type!(),
     options: ExportDanmuOptions,
 ) -> Result<String, String> {
-    let platform = PlatformType::from_str(&options.platform);
-    if platform.is_none() {
+    let Some(platform) = PlatformType::from_str(&options.platform) else {
         return Err("Unsupported platform".to_string());
-    }
+    };
     let mut danmus = state
         .recorder_manager
-        .get_danmu(platform.unwrap(), options.room_id, &options.live_id)
+        .load_danmus(platform, options.room_id, &options.live_id)
         .await?;
 
     log::debug!("First danmu entry: {:?}", danmus.first());
@@ -359,11 +358,11 @@ pub async fn send_danmaku(
     message: String,
 ) -> Result<(), String> {
     let account = state.db.get_account("bilibili", uid).await?;
-    state
-        .client
-        .send_danmaku(&account, room_id, &message)
-        .await?;
-    Ok(())
+    let client = reqwest::Client::new();
+    match bilibili::api::send_danmaku(&client, &account, room_id, &message).await {
+        Ok(()) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -422,11 +421,11 @@ pub async fn fetch_hls(state: state_type!(), uri: String) -> Result<Vec<u8>, Str
     } else {
         uri
     };
-    Ok(state
+    state
         .recorder_manager
         .handle_hls_request(&uri)
         .await
-        .unwrap())
+        .map_err(|e| e.to_string())
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]

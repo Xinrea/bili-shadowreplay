@@ -17,6 +17,7 @@ use crate::recorder::{PlatformType, RoomInfo};
 use crate::subtitle_generator::item_to_srt;
 use crate::webhook::events::{self, Payload};
 use crate::webhook::poster::WebhookPoster;
+use chrono::DateTime;
 use m3u8_rs::{MediaPlaylist, MediaPlaylistType};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -170,6 +171,8 @@ pub enum RecorderManagerError {
     SubtitleNotFound { live_id: String },
     #[error("Subtitle generation failed: {error}")]
     SubtitleGenerationFailed { error: String },
+    #[error("Invalid playlist without date time")]
+    InvalidPlaylistWithoutDateTime,
 }
 
 impl From<RecorderManagerError> for String {
@@ -564,13 +567,32 @@ impl RecorderManager {
         if playlist.segments.is_empty() {
             return Err(RecorderManagerError::EmptyPlaylist);
         }
-        Ok(playlist
-            .segments
-            .first()
+
+        let first_segment = playlist.segments.first().unwrap();
+        if let Some(program_date_time) = first_segment.program_date_time {
+            return Ok(program_date_time.timestamp_millis());
+        }
+
+        // else, find in unknown tags
+        let program_date_time = first_segment
+            .unknown_tags
+            .iter()
+            .find(|t| t.tag == "X-PROGRAM-DATE-TIME");
+
+        let Some(program_date_time) = program_date_time else {
+            return Err(RecorderManagerError::InvalidPlaylistWithoutDateTime);
+        };
+
+        let Some(value) = &program_date_time.rest else {
+            return Err(RecorderManagerError::InvalidPlaylistWithoutDateTime);
+        };
+
+        // example: "2025-10-18T17:18:17.004+0800"
+        // convert to timestamp
+        let timestamp = DateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.3f%z")
             .unwrap()
-            .program_date_time
-            .unwrap()
-            .timestamp_millis())
+            .timestamp_millis();
+        Ok(timestamp)
     }
 
     pub async fn load_danmus(

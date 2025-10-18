@@ -396,8 +396,6 @@
                   src={record.cover}
                   class="w-32 h-18 rounded-lg object-cover"
                   alt="Gaming stream thumbnail"
-                  on:load={() =>
-                    console.log("Image loaded in template:", record.cover)}
                   on:error={(e) =>
                     console.error("Image error in template:", record.cover, e)}
                 />

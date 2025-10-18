@@ -245,7 +245,6 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
             return Err(e.into());
         }
     };
-    let client = Arc::new(BiliApiCollection::new()?);
     let config = Arc::new(RwLock::new(config));
     let db = Arc::new(Database::new());
     // connect to sqlite database
@@ -284,62 +283,6 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
         webhook_poster.clone(),
     ));
 
-    // Update account infos for headless mode
-    let accounts = db.get_accounts().await?;
-    for account in accounts {
-        let platform = PlatformType::from_str(&account.platform).unwrap();
-
-        if platform == PlatformType::BiliBili {
-            match client.get_user_info(&account, account.uid).await {
-                Ok(account_info) => {
-                    if let Err(e) = db
-                        .update_account(
-                            &account.platform,
-                            account_info.user_id,
-                            &account_info.user_name,
-                            &account_info.user_avatar_url,
-                        )
-                        .await
-                    {
-                        log::error!("Error when updating Bilibili account info {}", e);
-                    }
-                }
-                Err(e) => {
-                    log::error!("Get Bilibili user info failed {}", e);
-                }
-            }
-        } else if platform == PlatformType::Douyin {
-            // Update Douyin account info
-            use crate::recorder::douyin::api::DouyinClient;
-            let douyin_client = DouyinClient::new(&account);
-            match douyin_client.get_user_info().await {
-                Ok(user_info) => {
-                    let avatar_url = user_info
-                        .avatar_thumb
-                        .url_list
-                        .first()
-                        .cloned()
-                        .unwrap_or_default();
-
-                    if let Err(e) = db
-                        .update_account_with_id_str(
-                            &account,
-                            &user_info.sec_uid,
-                            &user_info.nickname,
-                            &avatar_url,
-                        )
-                        .await
-                    {
-                        log::error!("Error when updating Douyin account info {}", e);
-                    }
-                }
-                Err(e) => {
-                    log::error!("Get Douyin user info failed {}", e);
-                }
-            }
-        }
-    }
-
     let _ = try_rebuild_archives(&db, config.read().await.cache.clone().into()).await;
     let _ = try_convert_live_covers(&db, config.read().await.cache.clone().into()).await;
     let _ = try_convert_clip_covers(&db, config.read().await.output.clone().into()).await;
@@ -348,7 +291,6 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
 
     Ok(State {
         db,
-        client,
         config,
         webhook_poster,
         recorder_manager,
@@ -573,7 +515,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(())
             })
         })
-        .run(tauri::generate_context!())?;
+        .build(tauri::generate_context!())?
+        .run(|app_handle: &tauri::AppHandle, event| {
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                // stop all recorders
+                let recorder_manager = app_handle.state::<State>().recorder_manager.clone();
+                log::info!("Stopping all recorders...");
+                tauri::async_runtime::block_on(async move {
+                    recorder_manager.stop_all().await;
+                });
+                log::info!("All recorders stopped successfully.");
+            }
+        });
 
     Ok(())
 }

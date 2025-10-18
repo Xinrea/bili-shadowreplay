@@ -3,7 +3,6 @@ pub mod profile;
 pub mod response;
 use super::PlatformType;
 use crate::database::account::AccountRow;
-use crate::ffmpeg::VideoMetadata;
 use crate::recorder::bilibili::api::{Codec, Protocol, Qn};
 use crate::recorder::traits::RecorderTrait;
 use crate::recorder::{CachePath, FfmpegProgressHandler, Recorder, RoomInfo, UserInfo};
@@ -29,7 +28,6 @@ use async_trait::async_trait;
 #[derive(Clone)]
 pub struct BiliExtra {
     cover: Arc<RwLock<Option<String>>>,
-    current_metadata: Arc<RwLock<Option<VideoMetadata>>>,
     live_stream: Arc<RwLock<Option<BiliStream>>>,
 }
 
@@ -46,7 +44,6 @@ impl BiliRecorder {
         let client = reqwest::Client::new();
         let extra = BiliExtra {
             cover: Arc::new(RwLock::new(None)),
-            current_metadata: Arc::new(RwLock::new(None)),
             live_stream: Arc::new(RwLock::new(None)),
         };
 

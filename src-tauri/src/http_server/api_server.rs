@@ -41,7 +41,7 @@ use crate::{
     http_server::websocket,
     recorder::{
         bilibili::{
-            client::{QrInfo, QrStatus},
+            api::{QrInfo, QrStatus},
             profile::Profile,
             response::Typelist,
         },

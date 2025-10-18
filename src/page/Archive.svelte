@@ -92,7 +92,10 @@
 
           // 处理封面
           for (const archive of roomArchives) {
-            archive.cover = await get_cover("cache", archive.cover);
+            archive.cover = await get_cover(
+              "cache",
+              `${archive.platform}/${archive.room_id}/${archive.live_id}/cover.jpg`
+            );
           }
 
           allArchives = [...allArchives, ...roomArchives];

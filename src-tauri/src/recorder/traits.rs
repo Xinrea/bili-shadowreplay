@@ -5,10 +5,7 @@ use std::{
 
 use crate::{
     database::account::AccountRow,
-    recorder::{
-        danmu::{DanmuEntry, DanmuStorage},
-        errors, CachePath, PlatformType, RecorderInfo, RoomInfo, UserInfo,
-    },
+    recorder::{danmu::DanmuStorage, CachePath, PlatformType, RecorderInfo, RoomInfo, UserInfo},
     recorder_manager::RecorderEvent,
 };
 use async_trait::async_trait;
@@ -17,6 +14,7 @@ use tokio::{
     task::JoinHandle,
 };
 
+#[allow(dead_code)]
 pub trait RecorderBasicTrait<T> {
     fn platform(&self) -> PlatformType;
     fn room_id(&self) -> i64;
@@ -46,6 +44,12 @@ pub trait RecorderTrait<T>: RecorderBasicTrait<T> {
     async fn run(&self);
     async fn stop(&self) {
         self.quit().store(true, atomic::Ordering::Relaxed);
+        if let Some(danmu_task) = self.danmu_task().lock().await.take() {
+            danmu_task.abort();
+        }
+        if let Some(record_task) = self.record_task().lock().await.take() {
+            record_task.abort();
+        }
     }
     async fn should_record(&self) -> bool {
         if self.quit().load(atomic::Ordering::Relaxed) {
@@ -54,6 +58,7 @@ pub trait RecorderTrait<T>: RecorderBasicTrait<T> {
 
         self.enabled().load(atomic::Ordering::Relaxed)
     }
+    #[allow(dead_code)]
     async fn work_dir(&self, live_id: &str) -> CachePath {
         CachePath::new(self.cache_dir(), self.platform(), self.room_id(), live_id)
     }

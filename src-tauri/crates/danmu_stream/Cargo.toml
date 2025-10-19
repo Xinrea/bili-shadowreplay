@@ -42,7 +42,7 @@ urlencoding = "2.1"
 gzip = "0.1.2"
 hex = "0.4.3"
 async-trait = "0.1"
-uuid = "1"
+uuid = { workspace = true}
 
 [build-dependencies]
 tonic-build = "0.14"

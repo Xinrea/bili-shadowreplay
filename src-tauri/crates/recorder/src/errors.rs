@@ -72,4 +72,8 @@ pub enum RecorderError {
     SecurityControlError,
     #[error("JavaScript runtime error: {0}")]
     JsRuntimeError(String),
+    #[error("Update timeout")]
+    UpdateTimeout,
+    #[error("Unsupported stream")]
+    UnsupportedStream,
 }

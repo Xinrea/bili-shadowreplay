@@ -236,6 +236,16 @@ impl RecorderManager {
                         events::new_webhook_event(events::RECORD_STARTED, Payload::Room(recorder));
                     let _ = self.webhook_poster.post_event(&event).await;
                 }
+                RecorderEvent::RecordUpdate {
+                    live_id,
+                    duration_secs,
+                    cached_size_bytes,
+                } => {
+                    let _ = self
+                        .db
+                        .update_record(&live_id, duration_secs as i64, cached_size_bytes)
+                        .await;
+                }
                 RecorderEvent::RecordEnd { recorder } => {
                     let event =
                         events::new_webhook_event(events::RECORD_ENDED, Payload::Room(recorder));

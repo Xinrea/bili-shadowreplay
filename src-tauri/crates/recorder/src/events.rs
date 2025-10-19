@@ -17,6 +17,11 @@ pub enum RecorderEvent {
     RecordEnd {
         recorder: RecorderInfo,
     },
+    RecordUpdate {
+        live_id: String,
+        duration_secs: u64,
+        cached_size_bytes: u64,
+    },
     ProgressUpdate {
         id: String,
         content: String,

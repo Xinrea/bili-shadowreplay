@@ -5069,6 +5069,7 @@ dependencies = [
  "chrono",
  "danmu_stream",
  "deno_core",
+ "env_logger",
  "log",
  "m3u8-rs 6.0.0",
  "md5 0.8.0",

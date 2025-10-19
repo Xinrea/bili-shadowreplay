@@ -11,13 +11,28 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncWriteExt, BufReader};
 
 // 视频元数据结构
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct VideoMetadata {
     pub duration: f64,
     pub width: u32,
     pub height: u32,
     pub video_codec: String,
     pub audio_codec: String,
+}
+
+impl VideoMetadata {
+    pub fn seems_corrupted(&self) -> bool {
+        self.width == 0 && self.height == 0
+    }
+}
+
+impl std::cmp::PartialEq for VideoMetadata {
+    fn eq(&self, other: &Self) -> bool {
+        self.width == other.width
+            && self.height == other.height
+            && self.video_codec == other.video_codec
+            && self.audio_codec == other.audio_codec
+    }
 }
 
 #[cfg(target_os = "windows")]

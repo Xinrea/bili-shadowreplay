@@ -2,14 +2,17 @@ pub mod api;
 pub mod profile;
 pub mod response;
 use crate::account::Account;
+use crate::core::hls_recorder::HlsRecorder;
 use crate::events::RecorderEvent;
-use crate::platforms::bilibili::api::{Codec, Protocol, Qn};
+use crate::platforms::bilibili::api::{Protocol, Qn};
 use crate::platforms::PlatformType;
 use crate::traits::RecorderTrait;
 use crate::{Recorder, RoomInfo, UserInfo};
 
+use crate::core::Format;
+use crate::core::{Codec, HlsStream};
 use crate::danmu::DanmuStorage;
-use crate::platforms::bilibili::api::{BiliStream, Format};
+use crate::platforms::bilibili::api::BiliStream;
 use chrono::Utc;
 use danmu_stream::danmu_stream::DanmuStream;
 use danmu_stream::provider::ProviderType;
@@ -338,11 +341,25 @@ impl BiliRecorder {
         });
 
         self.is_recording.store(true, atomic::Ordering::Relaxed);
-        if let Err(e) =
-            crate::ffmpeg::playlist::cache_playlist(&current_stream.index(), &work_dir.full_path())
-                .await
-        {
-            log::error!("[{}]Failed to cache playlist: {}", self.room_id, e);
+
+        let stream = Arc::new(HlsStream::new(
+            live_id.to_string(),
+            current_stream.url_info.first().unwrap().host.clone(),
+            current_stream.base_url.clone(),
+            current_stream.url_info.first().unwrap().extra.clone(),
+            current_stream.format,
+            current_stream.codec,
+        ));
+        let hls_recorder = HlsRecorder::new(
+            stream,
+            self.client.clone(),
+            self.event_channel.clone(),
+            work_dir.full_path(),
+        )
+        .await;
+        if let Err(e) = hls_recorder.start().await {
+            log::error!("[{}]Failed to start hls recorder: {}", self.room_id, e);
+            return Err(e);
         }
 
         Ok(())

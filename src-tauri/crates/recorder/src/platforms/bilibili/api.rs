@@ -6,6 +6,8 @@ use super::response::PostVideoMetaResponse;
 use super::response::PreuploadResponse;
 use super::response::VideoSubmitData;
 use crate::account::Account;
+use crate::core::Codec;
+use crate::core::Format;
 use crate::errors::RecorderError;
 use crate::user_agent_generator;
 use chrono::TimeZone;
@@ -95,31 +97,6 @@ impl fmt::Display for Protocol {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum Format {
-    Flv,
-    TS,
-    FMP4,
-}
-
-impl fmt::Display for Format {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
-
-#[derive(Clone, Debug)]
-pub enum Codec {
-    Avc,
-    Hevc,
-}
-
-impl fmt::Display for Codec {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
-
 // 30000	杜比
 // 20000	4K
 // 15000    2K
@@ -188,17 +165,6 @@ impl BiliStream {
         let base_url = self.base_url.replace(m3u8_filename, seg_name);
         let url_info = self.url_info.choose(&mut rand::rng()).unwrap();
         format!("{}{}?{}", url_info.host, base_url, url_info.extra)
-    }
-
-    pub fn get_expire(&self) -> Option<i64> {
-        let url_info = self.url_info.choose(&mut rand::rng()).unwrap();
-        url_info.extra.split('&').find_map(|param| {
-            if param.starts_with("expires=") {
-                param.split('=').nth(1)?.parse().ok()
-            } else {
-                None
-            }
-        })
     }
 }
 

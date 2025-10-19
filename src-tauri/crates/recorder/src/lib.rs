@@ -1,4 +1,5 @@
 pub mod account;
+pub mod core;
 pub mod danmu;
 pub mod entry;
 pub mod errors;

@@ -162,7 +162,7 @@ impl DouyinRecorder {
                 true
             }
             Err(e) => {
-                log::error!("[{}]Update room status failed: {}", self.room_id, e);
+                log::warn!("[{}]Update room status failed: {}", self.room_id, e);
                 pre_live_status
             }
         }

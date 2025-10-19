@@ -694,7 +694,7 @@
             class="w-24 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors"
             on:click={async () => {
               await invoke("remove_recorder", {
-                roomId: deleteRoom.room_info.room_id,
+                roomId: Number(deleteRoom.room_info.room_id),
                 platform: deleteRoom.room_info.platform,
               });
               deleteModal = false;

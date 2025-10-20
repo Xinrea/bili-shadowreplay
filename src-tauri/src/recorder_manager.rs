@@ -522,6 +522,31 @@ impl RecorderManager {
         Ok(bytes)
     }
 
+    /// Check if the playlist is outdated
+    ///
+    /// This will check if the current recorder live id is the same as the live id
+    /// and if the current recorder is recording
+    /// and if the current recorder is recording, return false
+    /// otherwise, return true
+    async fn is_outdated_playlist(
+        &self,
+        platform: PlatformType,
+        room_id: i64,
+        live_id: &str,
+    ) -> bool {
+        // check current recorder live id is the same as the live id
+        let recorder = self.get_recorder_info(platform, room_id).await;
+        let Some(recorder) = recorder else {
+            return true;
+        };
+
+        if recorder.live_id != live_id {
+            return true;
+        }
+
+        false
+    }
+
     async fn load_playlist(
         &self,
         platform: PlatformType,
@@ -529,7 +554,11 @@ impl RecorderManager {
         live_id: &str,
     ) -> Result<MediaPlaylist, RecorderManagerError> {
         let bytes = self.load_playlist_bytes(platform, room_id, live_id).await?;
-        if let Result::Ok((_, pl)) = m3u8_rs::parse_media_playlist(&bytes) {
+        if let Result::Ok((_, mut pl)) = m3u8_rs::parse_media_playlist(&bytes) {
+            if self.is_outdated_playlist(platform, room_id, live_id).await {
+                pl.end_list = true;
+                pl.playlist_type = Some(MediaPlaylistType::Vod);
+            }
             return Ok(pl);
         }
         Err(RecorderManagerError::M3u8ParseFailed {

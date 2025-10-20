@@ -83,21 +83,22 @@ impl HlsRecorder {
         while !self.quit.load(Ordering::Relaxed) {
             let result = self.update_entries().await;
             if let Err(e) = result {
-                log::error!("Update entries error: {}", e);
                 match e {
                     RecorderError::ResolutionChanged { .. } => {
                         log::error!("Resolution changed: {}", e);
+                        self.playlist.lock().await.close().await?;
                         return Err(e);
                     }
                     RecorderError::UpdateTimeout => {
                         log::error!(
                             "Source playlist is not updated for a long time, stop recording"
                         );
+                        self.playlist.lock().await.close().await?;
                         return Err(e);
                     }
                     _ => {
+                        // Other errors are not critical, just log it
                         log::error!("Update entries error: {}", e);
-                        return Err(e);
                     }
                 }
             }

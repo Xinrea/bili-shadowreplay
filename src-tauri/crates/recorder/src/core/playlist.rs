@@ -25,6 +25,22 @@ impl HlsPlaylist {
         }
     }
 
+    pub async fn last_segment(&self) -> Option<&MediaSegment> {
+        self.playlist.segments.last()
+    }
+
+    pub async fn append_last_segment(
+        &mut self,
+        segment: MediaSegment,
+    ) -> Result<(), RecorderError> {
+        if self.is_empty().await {
+            self.add_segment(segment).await?;
+            return Ok(());
+        }
+        self.playlist.segments.last_mut().unwrap().duration += segment.duration;
+        Ok(())
+    }
+
     pub async fn add_segment(&mut self, segment: MediaSegment) -> Result<(), RecorderError> {
         self.playlist.segments.push(segment);
         self.flush().await?;
@@ -54,5 +70,9 @@ impl HlsPlaylist {
         self.playlist.playlist_type = Some(MediaPlaylistType::Vod);
         self.flush().await?;
         Ok(())
+    }
+
+    pub async fn is_empty(&self) -> bool {
+        self.playlist.segments.is_empty()
     }
 }

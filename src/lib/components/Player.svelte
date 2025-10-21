@@ -232,6 +232,10 @@ ${mediaPlaylistUrl}`;
     player.configure({
       streaming: {
         lowLatencyMode: true,
+        retryParameters: {
+          maxAttempts: 5, // Retry loading segments on failure
+          timeout: 30000, // Timeout for segment requests (ms)
+        },
       },
       cmsd: {
         enabled: false,

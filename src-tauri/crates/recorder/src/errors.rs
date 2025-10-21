@@ -76,4 +76,6 @@ pub enum RecorderError {
     UpdateTimeout,
     #[error("Unsupported stream")]
     UnsupportedStream,
+    #[error("Empty record")]
+    EmptyRecord,
 }

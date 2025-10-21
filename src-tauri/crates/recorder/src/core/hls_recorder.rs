@@ -5,13 +5,14 @@ use std::{path::PathBuf, sync::Arc};
 use m3u8_rs::{MediaPlaylist, Playlist};
 use reqwest::header::HeaderMap;
 use std::time::Duration;
-use tokio::fs::File;
+use tokio::fs::{File, OpenOptions};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{broadcast, Mutex, RwLock};
 
 use crate::core::playlist::HlsPlaylist;
 use crate::core::{Codec, Format};
 use crate::errors::RecorderError;
-use crate::ffmpeg::VideoMetadata;
+use crate::ffmpeg::{transcode, VideoMetadata};
 use crate::{core::HlsStream, events::RecorderEvent};
 
 const UPDATE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -191,20 +192,57 @@ impl HlsRecorder {
                 .await
                 .map_err(RecorderError::FfmpegError)?;
 
-            // if resolution is in metadata
-            if !segment_metadata.seems_corrupted() {
-                if let Some(last_metadata) = &last_metadata {
-                    if last_metadata != &segment_metadata {
-                        return Err(RecorderError::ResolutionChanged {
-                            err: "Resolution changed".to_string(),
-                        });
-                    }
-                } else {
-                    self.pre_metadata
-                        .write()
-                        .await
-                        .replace(segment_metadata.clone());
+            if segment_metadata.seems_corrupted() {
+                let mut playlist = self.playlist.lock().await;
+                if playlist.is_empty().await {
+                    // ignore this segment
+                    log::error!(
+                        "Segment is corrupted and has no previous segment, ignore: {}",
+                        segment_path.display()
+                    );
+                    continue;
                 }
+
+                let last_segment = playlist.last_segment().await;
+                let last_segment_uri = last_segment.unwrap().uri.clone();
+                let last_segment_path = segment_path.with_file_name(last_segment_uri);
+                // append segment data behind last segment data
+                let mut last_segment_file = OpenOptions::new()
+                    .append(true)
+                    .open(&last_segment_path)
+                    .await?;
+                log::debug!(
+                    "Appending segment data behind last segment: {}",
+                    last_segment_path.display()
+                );
+                let mut segment_file = File::open(&segment_path).await?;
+                let mut buffer = Vec::new();
+                segment_file.read_to_end(&mut buffer).await?;
+                last_segment_file.write_all(&buffer).await?;
+                let _ = tokio::fs::remove_file(&segment_path).await;
+                playlist.append_last_segment(segment.clone()).await?;
+
+                self.cached_duration_secs
+                    .fetch_add(segment_metadata.duration as u64, Ordering::Relaxed);
+                self.cached_size_bytes.fetch_add(size, Ordering::Relaxed);
+                self.sequence.store(segment_sequence, Ordering::Relaxed);
+                self.updated_at
+                    .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
+                updated = true;
+                continue;
+            }
+
+            if let Some(last_metadata) = &last_metadata {
+                if last_metadata != &segment_metadata {
+                    return Err(RecorderError::ResolutionChanged {
+                        err: "Resolution changed".to_string(),
+                    });
+                }
+            } else {
+                self.pre_metadata
+                    .write()
+                    .await
+                    .replace(segment_metadata.clone());
             }
 
             let mut new_segment = segment.clone();

@@ -204,55 +204,18 @@ impl BiliRecorder {
                             stream
                         );
 
-                        return true;
+                        true
                     }
                     Err(e) => {
                         if let crate::errors::RecorderError::FormatNotFound { format } = e {
-                            log::error!(
-                                "[{}]Format {} not found, try to fallback to fMP4",
-                                self.room_id,
-                                format
-                            );
+                            log::error!("[{}]Format {} not found", self.room_id, format);
+
+                            true
                         } else {
                             log::error!("[{}]Fetch stream failed: {}", self.room_id, e);
 
-                            return true;
+                            true
                         }
-                    }
-                }
-
-                // fallback to ts
-                let new_stream = api::get_stream_info(
-                    &self.client,
-                    &self.account,
-                    self.room_id,
-                    Protocol::HttpHls,
-                    Format::FMP4,
-                    &[Codec::Avc, Codec::Hevc],
-                    Qn::Q4K,
-                )
-                .await;
-
-                match new_stream {
-                    Ok(stream) => {
-                        let pre_live_stream = self.extra.live_stream.read().await.clone();
-                        *self.extra.live_stream.write().await = Some(stream.clone());
-                        self.last_update
-                            .store(Utc::now().timestamp(), atomic::Ordering::Relaxed);
-
-                        log::info!(
-                            "[{}]Update to a new stream: {:#?} => {:#?}",
-                            self.room_id,
-                            pre_live_stream,
-                            stream
-                        );
-
-                        true
-                    }
-                    Err(e) => {
-                        log::error!("[{}]Fetch stream failed: {}", self.room_id, e);
-
-                        true
                     }
                 }
             }

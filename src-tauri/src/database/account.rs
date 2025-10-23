@@ -1,4 +1,7 @@
-use crate::recorder::PlatformType;
+use std::str::FromStr;
+
+use recorder::account::Account;
+use recorder::platforms::PlatformType;
 
 use super::Database;
 use super::DatabaseError;
@@ -6,7 +9,7 @@ use chrono::Utc;
 use rand::seq::SliceRandom;
 use rand::Rng;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, sqlx::FromRow)]
 pub struct AccountRow {
     pub platform: String,
     pub uid: i64,               // Keep for Bilibili compatibility
@@ -16,6 +19,23 @@ pub struct AccountRow {
     pub csrf: String,
     pub cookies: String,
     pub created_at: String,
+}
+
+impl AccountRow {
+    pub fn to_account(&self) -> Account {
+        Account {
+            platform: self.platform.clone(),
+            id: if let Some(id) = self.id_str.as_ref() {
+                id.clone()
+            } else {
+                self.uid.to_string()
+            },
+            name: self.name.clone(),
+            avatar: self.avatar.clone(),
+            csrf: self.csrf.clone(),
+            cookies: self.cookies.clone(),
+        }
+    }
 }
 
 // accounts
@@ -29,21 +49,21 @@ impl Database {
         let lock = self.db.read().await.clone().unwrap();
         let platform = PlatformType::from_str(platform).unwrap();
 
-        let csrf = if platform == PlatformType::Douyin {
-            Some(String::new())
-        } else {
-            // parse cookies
-            cookies
-                .split(';')
-                .map(str::trim)
-                .find_map(|cookie| -> Option<String> {
-                    if cookie.starts_with("bili_jct=") {
-                        let var_name = &"bili_jct=";
-                        Some(cookie[var_name.len()..].to_string())
-                    } else {
-                        None
-                    }
-                })
+        let csrf = match platform {
+            PlatformType::BiliBili => {
+                cookies
+                    .split(';')
+                    .map(str::trim)
+                    .find_map(|cookie| -> Option<String> {
+                        if cookie.starts_with("bili_jct=") {
+                            let var_name = &"bili_jct=";
+                            Some(cookie[var_name.len()..].to_string())
+                        } else {
+                            None
+                        }
+                    })
+            }
+            _ => Some(String::new()),
         };
 
         if csrf.is_none() {
@@ -51,26 +71,48 @@ impl Database {
         }
 
         // parse uid and id_str based on platform
-        let (uid, id_str) = if platform == PlatformType::BiliBili {
-            // For Bilibili, extract numeric uid from cookies
-            let uid = (*cookies
-                .split("DedeUserID=")
-                .collect::<Vec<&str>>()
-                .get(1)
-                .unwrap()
-                .split(';')
-                .collect::<Vec<&str>>()
-                .first()
-                .unwrap())
-            .to_string()
-            .parse::<u64>()
-            .map_err(|_| DatabaseError::InvalidCookies)?;
-            (uid, None)
-        } else {
-            // For Douyin, use temporary uid and will set id_str later with real sec_uid
-            // Fix: Generate a u32 within the desired range and then cast to u64 to avoid `clippy::cast-sign-loss`.
-            let temp_uid = rand::thread_rng().gen_range(10000u64..=i32::MAX as u64);
-            (temp_uid, Some(format!("temp_{temp_uid}")))
+        let (uid, id_str) = match platform {
+            PlatformType::BiliBili => {
+                // For Bilibili, extract numeric uid from cookies
+                let uid = (*cookies
+                    .split("DedeUserID=")
+                    .collect::<Vec<&str>>()
+                    .get(1)
+                    .unwrap()
+                    .split(';')
+                    .collect::<Vec<&str>>()
+                    .first()
+                    .unwrap())
+                .to_string()
+                .parse::<u64>()
+                .map_err(|_| DatabaseError::InvalidCookies)?;
+                (uid, None)
+            }
+            PlatformType::Douyin => {
+                // For Douyin, use temporary uid and will set id_str later with real sec_uid
+                // Fix: Generate a u32 within the desired range and then cast to u64 to avoid `clippy::cast-sign-loss`.
+                let temp_uid = rand::thread_rng().gen_range(10000u64..=i32::MAX as u64);
+                (temp_uid, Some(format!("temp_{temp_uid}")))
+            }
+            PlatformType::Huya => {
+                let uid = (*cookies
+                    .split("yyuid=")
+                    .collect::<Vec<&str>>()
+                    .get(1)
+                    .unwrap()
+                    .split(';')
+                    .collect::<Vec<&str>>()
+                    .first()
+                    .unwrap())
+                .to_string()
+                .parse::<u64>()
+                .map_err(|_| DatabaseError::InvalidCookies)?;
+                (uid, None)
+            }
+            PlatformType::Youtube => {
+                // unsupported
+                return Err(DatabaseError::InvalidCookies);
+            }
         };
 
         let uid = i64::try_from(uid).map_err(|_| DatabaseError::InvalidCookies)?;

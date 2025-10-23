@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use crate::danmu2ass;
 use crate::database::record::RecordRow;
 use crate::database::recorder::RecorderRow;
@@ -5,13 +7,15 @@ use crate::database::task::TaskRow;
 use crate::progress::progress_reporter::EventEmitter;
 use crate::progress::progress_reporter::ProgressReporter;
 use crate::progress::progress_reporter::ProgressReporterTrait;
-use crate::recorder::danmu::DanmuEntry;
-use crate::recorder::PlatformType;
-use crate::recorder::RecorderInfo;
 use crate::recorder_manager::RecorderList;
 use crate::state::State;
 use crate::state_type;
 use crate::webhook::events;
+use recorder::account::Account;
+use recorder::danmu::DanmuEntry;
+use recorder::platforms::bilibili;
+use recorder::platforms::PlatformType;
+use recorder::RecorderInfo;
 
 #[cfg(feature = "gui")]
 use tauri::State as TauriState;
@@ -36,7 +40,7 @@ pub async fn add_recorder(
     let account = match platform {
         PlatformType::BiliBili => {
             if let Ok(account) = state.db.get_account_by_platform("bilibili").await {
-                Ok(account)
+                Ok(account.to_account())
             } else {
                 log::error!("No available bilibili account found");
                 Err("没有可用账号，请先添加账号".to_string())
@@ -44,10 +48,17 @@ pub async fn add_recorder(
         }
         PlatformType::Douyin => {
             if let Ok(account) = state.db.get_account_by_platform("douyin").await {
-                Ok(account)
+                Ok(account.to_account())
             } else {
                 log::error!("No available douyin account found");
                 Err("没有可用账号，请先添加账号".to_string())
+            }
+        }
+        PlatformType::Huya => {
+            if let Ok(account) = state.db.get_account_by_platform("huya").await {
+                Ok(account.to_account())
+            } else {
+                Ok(Account::default())
             }
         }
         _ => Err("不支持的平台".to_string()),
@@ -190,13 +201,10 @@ pub async fn get_archive_subtitle(
     room_id: i64,
     live_id: String,
 ) -> Result<String, String> {
-    let platform = PlatformType::from_str(&platform);
-    if platform.is_none() {
-        return Err("Unsupported platform".to_string());
-    }
+    let platform = PlatformType::from_str(&platform)?;
     Ok(state
         .recorder_manager
-        .get_archive_subtitle(platform.unwrap(), room_id, &live_id)
+        .get_archive_subtitle(platform, room_id, &live_id)
         .await?)
 }
 
@@ -207,13 +215,10 @@ pub async fn generate_archive_subtitle(
     room_id: i64,
     live_id: String,
 ) -> Result<String, String> {
-    let platform = PlatformType::from_str(&platform);
-    if platform.is_none() {
-        return Err("Unsupported platform".to_string());
-    }
+    let platform = PlatformType::from_str(&platform)?;
     Ok(state
         .recorder_manager
-        .generate_archive_subtitle(platform.unwrap(), room_id, &live_id)
+        .generate_archive_subtitle(platform, room_id, &live_id)
         .await?)
 }
 
@@ -224,13 +229,10 @@ pub async fn delete_archive(
     room_id: i64,
     live_id: String,
 ) -> Result<(), String> {
-    let platform = PlatformType::from_str(&platform);
-    if platform.is_none() {
-        return Err("Unsupported platform".to_string());
-    }
+    let platform = PlatformType::from_str(&platform)?;
     let to_delete = state
         .recorder_manager
-        .delete_archive(platform.unwrap(), room_id, &live_id)
+        .delete_archive(platform, room_id, &live_id)
         .await?;
     state
         .db
@@ -255,14 +257,11 @@ pub async fn delete_archives(
     room_id: i64,
     live_ids: Vec<String>,
 ) -> Result<(), String> {
-    let platform = PlatformType::from_str(&platform);
-    if platform.is_none() {
-        return Err("Unsupported platform".to_string());
-    }
+    let platform = PlatformType::from_str(&platform)?;
     let to_deletes = state
         .recorder_manager
         .delete_archives(
-            platform.unwrap(),
+            platform,
             room_id,
             &live_ids
                 .iter()
@@ -295,13 +294,10 @@ pub async fn get_danmu_record(
     room_id: i64,
     live_id: String,
 ) -> Result<Vec<DanmuEntry>, String> {
-    let platform = PlatformType::from_str(&platform);
-    if platform.is_none() {
-        return Err("Unsupported platform".to_string());
-    }
+    let platform = PlatformType::from_str(&platform)?;
     Ok(state
         .recorder_manager
-        .get_danmu(platform.unwrap(), room_id, &live_id)
+        .load_danmus(platform, room_id, &live_id)
         .await?)
 }
 
@@ -321,13 +317,10 @@ pub async fn export_danmu(
     state: state_type!(),
     options: ExportDanmuOptions,
 ) -> Result<String, String> {
-    let platform = PlatformType::from_str(&options.platform);
-    if platform.is_none() {
-        return Err("Unsupported platform".to_string());
-    }
+    let platform = PlatformType::from_str(&options.platform)?;
     let mut danmus = state
         .recorder_manager
-        .get_danmu(platform.unwrap(), options.room_id, &options.live_id)
+        .load_danmus(platform, options.room_id, &options.live_id)
         .await?;
 
     log::debug!("First danmu entry: {:?}", danmus.first());
@@ -359,11 +352,11 @@ pub async fn send_danmaku(
     message: String,
 ) -> Result<(), String> {
     let account = state.db.get_account("bilibili", uid).await?;
-    state
-        .client
-        .send_danmaku(&account, room_id, &message)
-        .await?;
-    Ok(())
+    let client = reqwest::Client::new();
+    match bilibili::api::send_danmaku(&client, &account.to_account(), room_id, &message).await {
+        Ok(()) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -403,13 +396,10 @@ pub async fn set_enable(
     enabled: bool,
 ) -> Result<(), String> {
     log::info!("Set enable for recorder {platform} {room_id} {enabled}");
-    let platform = PlatformType::from_str(&platform);
-    if platform.is_none() {
-        return Err("Unsupported platform".to_string());
-    }
+    let platform = PlatformType::from_str(&platform)?;
     state
         .recorder_manager
-        .set_enable(platform.unwrap(), room_id, enabled)
+        .set_enable(platform, room_id, enabled)
         .await;
     Ok(())
 }
@@ -422,11 +412,11 @@ pub async fn fetch_hls(state: state_type!(), uri: String) -> Result<Vec<u8>, Str
     } else {
         uri
     };
-    Ok(state
+    state
         .recorder_manager
         .handle_hls_request(&uri)
         .await
-        .unwrap())
+        .map_err(|e| e.to_string())
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]

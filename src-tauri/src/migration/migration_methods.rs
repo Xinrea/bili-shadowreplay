@@ -1,11 +1,13 @@
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use base64::Engine;
 
 use crate::database::Database;
-use crate::recorder::entry::EntryStore;
-use crate::recorder::PlatformType;
+use crate::recorder_manager::RecorderManagerError;
+use recorder::entry::EntryStore;
+use recorder::platforms::PlatformType;
 
 pub async fn try_rebuild_archives(
     db: &Arc<Database>,
@@ -30,7 +32,11 @@ pub async fn try_rebuild_archives(
                 // create a record for this live_id
                 let record = db
                     .add_record(
-                        PlatformType::from_str(room.platform.as_str()).unwrap(),
+                        PlatformType::from_str(room.platform.as_str()).map_err(|_| {
+                            RecorderManagerError::InvalidPlatformType {
+                                platform: room.platform.to_string(),
+                            }
+                        })?,
                         live_id,
                         live_id,
                         room_id,
@@ -152,7 +158,7 @@ pub async fn try_convert_entry_to_m3u8(
                 continue;
             }
             let entry_store = EntryStore::new(record_path.to_str().unwrap()).await;
-            if entry_store.len() == 0 {
+            if entry_store.is_empty() {
                 continue;
             }
             let m3u8_content = entry_store.manifest(true, true, None);

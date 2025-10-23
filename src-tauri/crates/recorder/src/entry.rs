@@ -1,13 +1,10 @@
-use core::fmt;
-use std::fmt::Display;
-
-use async_std::{
-    fs::OpenOptions,
-    io::{prelude::BufReadExt, BufReader},
-    path::Path,
-    stream::StreamExt,
-};
 use chrono::{TimeZone, Utc};
+use core::fmt;
+use std::{fmt::Display, path::Path};
+use tokio::{
+    fs::OpenOptions,
+    io::{AsyncBufReadExt, BufReader},
+};
 
 const ENTRY_FILE_NAME: &str = "entries.log";
 
@@ -104,7 +101,7 @@ pub struct EntryStore {
 impl EntryStore {
     pub async fn new(work_dir: &str) -> Self {
         // if work_dir is not exists, create it
-        if !Path::new(work_dir).exists().await {
+        if !Path::new(work_dir).exists() {
             std::fs::create_dir_all(work_dir).unwrap();
         }
 
@@ -126,11 +123,23 @@ impl EntryStore {
             .create(false)
             .read(true)
             .open(format!("{work_dir}/{ENTRY_FILE_NAME}"))
-            .await
-            .unwrap();
-        let mut lines = BufReader::new(file).lines();
-        while let Some(Ok(line)) = lines.next().await {
-            let entry = TsEntry::from(&line);
+            .await; // The `file` variable from the previous line now holds `Result<tokio::fs::File, tokio::io::Error>`
+        let file_handle = match file {
+            Ok(f) => f,
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    log::info!(
+                        "Entry file not found at {work_dir}/{ENTRY_FILE_NAME}, starting fresh."
+                    );
+                } else {
+                    log::error!("Failed to open entry file: {e}");
+                }
+                return; // Exit the load function if file cannot be opened
+            }
+        };
+        let mut lines = BufReader::new(file_handle).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let entry = TsEntry::from(line.as_str());
             if let Err(e) = entry {
                 log::error!("Failed to parse entry: {e} {line}");
                 continue;
@@ -153,6 +162,10 @@ impl EntryStore {
 
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 
     /// Generate a hls manifest for selected range.

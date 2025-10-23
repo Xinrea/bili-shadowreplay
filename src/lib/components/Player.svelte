@@ -183,7 +183,9 @@ ${mediaPlaylistUrl}`;
   async function update_stream_list() {
     recorders = (
       (await invoke("get_recorder_list")) as RecorderList
-    ).recorders.filter((r) => r.live_status && r.room_id != room_id);
+    ).recorders.filter(
+      (r) => r.room_info.status && Number(r.room_info.room_id) != room_id
+    );
   }
 
   function go_to(platform: string, room_id: number, live_id: string) {
@@ -230,6 +232,10 @@ ${mediaPlaylistUrl}`;
     player.configure({
       streaming: {
         lowLatencyMode: true,
+        retryParameters: {
+          maxAttempts: 5, // Retry loading segments on failure
+          timeout: 30000, // Timeout for segment requests (ms)
+        },
       },
       cmsd: {
         enabled: false,
@@ -1026,7 +1032,11 @@ ${mediaPlaylistUrl}`;
       <li
         class="shortcut"
         on:click={() => {
-          go_to(recorder.platform, recorder.room_id, recorder.current_live_id);
+          go_to(
+            recorder.room_info.platform,
+            Number(recorder.room_info.room_id),
+            recorder.live_id
+          );
         }}
       >
         <SortHorizontalOutline />[{recorder.user_info.user_name}]{recorder

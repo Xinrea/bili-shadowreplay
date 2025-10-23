@@ -1,4 +1,4 @@
-use crate::recorder::PlatformType;
+use recorder::platforms::PlatformType;
 
 use super::Database;
 use super::DatabaseError;

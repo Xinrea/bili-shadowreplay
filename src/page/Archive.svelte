@@ -85,22 +85,22 @@
       for (const room of allRooms) {
         try {
           const roomArchives = await invoke<RecordItem[]>("get_archives", {
-            roomId: room.room_id,
+            roomId: parseInt(room.room_info.room_id),
             offset: 0,
             limit: 100, // 每个直播间获取更多数据
           });
 
           // 处理封面
           for (const archive of roomArchives) {
-            archive.cover = await get_cover("cache", archive.cover);
+            archive.cover = await get_cover(
+              "cache",
+              `${archive.platform}/${archive.room_id}/${archive.live_id}/cover.jpg`
+            );
           }
 
           allArchives = [...allArchives, ...roomArchives];
         } catch (error) {
-          console.warn(
-            `Failed to load archives for room ${room.room_id}:`,
-            error
-          );
+          console.warn(`Failed to load archives for room ${room}:`, error);
         }
       }
 

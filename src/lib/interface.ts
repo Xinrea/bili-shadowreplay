@@ -1,31 +1,43 @@
 import { invoke } from "../lib/invoker";
 
+// #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Default)]
+// pub struct RoomInfo {
+//     pub platform: String,
+//     pub room_id: String,
+//     pub room_title: String,
+//     pub room_cover: String,
+//     /// Whether the room is live
+//     pub status: bool,
+// }
+
+// #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Default)]
+// pub struct UserInfo {
+//     pub user_id: String,
+//     pub user_name: String,
+//     pub user_avatar: String,
+// }
+
 export interface RoomInfo {
-  live_status: number;
-  room_cover: string;
-  room_id: number;
-  room_keyframe_url: string;
+  platform: string;
+  room_id: string;
   room_title: string;
-  user_id: string;
+  room_cover: string;
+  status: boolean;
 }
 
 export interface UserInfo {
   user_id: string;
   user_name: string;
-  user_sign: string;
   user_avatar: string;
 }
 
 export interface RecorderInfo {
-  platform: string;
-  room_id: number;
   room_info: RoomInfo;
   user_info: UserInfo;
-  total_length: number;
-  current_live_id: string;
-  live_status: boolean;
-  is_recording: boolean;
-  auto_start: boolean;
+  platform_live_id: string;
+  live_id: string;
+  recording: boolean;
+  enabled: boolean;
 }
 
 export interface RecorderList {

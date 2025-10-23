@@ -3,7 +3,7 @@ use serde_derive::Serialize;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StreamInfo {
+pub struct DouyinStream {
     pub data: Data,
 }
 

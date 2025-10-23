@@ -1,4 +1,4 @@
-use crate::recorder::danmu::DanmuEntry;
+use recorder::danmu::DanmuEntry;
 use std::collections::VecDeque;
 
 // code reference: https://github.com/tiansh/us-danmaku/blob/master/bilibili/bilibili_ASS_Danmaku_Downloader.user.js

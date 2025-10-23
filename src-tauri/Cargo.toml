@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/danmu_stream"]
+members = ["crates/danmu_stream", "crates/recorder"]
 resolver = "2"
 
 [package]
@@ -22,8 +22,9 @@ perf="deny"
 
 [dependencies]
 danmu_stream = { path = "crates/danmu_stream" }
+recorder = { path = "crates/recorder" }
 serde_json = "1.0"
-reqwest = { version = "0.11", features = ["blocking", "json", "multipart"] }
+reqwest = { workspace = true}
 serde_derive = "1.0.158"
 serde = "1.0.158"
 sysinfo = "0.32.0"
@@ -49,7 +50,7 @@ mime_guess = "2.0"
 async-trait = "0.1.87"
 whisper-rs = "0.14.2"
 hound = "3.5.1"
-uuid = { version = "1.4", features = ["v4"] }
+uuid = { workspace = true }
 axum = { version = "0.7", features = ["macros", "multipart"] }
 tower-http = { version = "0.5", features = ["cors", "fs"] }
 futures-core = "0.3"
@@ -63,6 +64,7 @@ thiserror = "2"
 deno_core = "0.355"
 sanitize-filename = "0.6.0"
 socketioxide = "0.17.2"
+scraper = "0.24.0"
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem
@@ -149,3 +151,7 @@ whisper-rs = { version = "0.14.2", default-features = false }
 [target.'cfg(darwin)'.dependencies.whisper-rs]
 version = "0.14.2"
 features = ["metal"]
+
+[workspace.dependencies]
+reqwest = { version = "0.11", features = ["blocking", "json", "multipart", "gzip"] }
+uuid = { version = "1.4", features = ["v4"] }

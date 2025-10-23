@@ -6,8 +6,8 @@ use socketioxide::{
 };
 use tokio::sync::broadcast;
 
-use crate::progress::progress_manager::Event;
 use crate::state::State;
+use recorder::events::RecorderEvent;
 
 pub async fn create_websocket_server(state: State) -> SocketIoLayer {
     let (layer, io) = SocketIo::new_layer();
@@ -28,14 +28,14 @@ pub async fn create_websocket_server(state: State) -> SocketIoLayer {
                 match rx.recv().await {
                     Ok(event) => {
                         let (event_type, message) = match event {
-                            Event::ProgressUpdate { id, content } => (
+                            RecorderEvent::ProgressUpdate { id, content } => (
                                 "progress-update",
                                 json!({
                                         "id": id,
                                         "content": content
                                 }),
                             ),
-                            Event::ProgressFinished {
+                            RecorderEvent::ProgressFinished {
                                 id,
                                 success,
                                 message,
@@ -47,7 +47,7 @@ pub async fn create_websocket_server(state: State) -> SocketIoLayer {
                                         "message": message
                                 }),
                             ),
-                            Event::DanmuReceived { room, ts, content } => (
+                            RecorderEvent::DanmuReceived { room, ts, content } => (
                                 "danmu",
                                 json!({
                                         "room": room,
@@ -55,6 +55,7 @@ pub async fn create_websocket_server(state: State) -> SocketIoLayer {
                                         "content": content
                                 }),
                             ),
+                            _ => continue,
                         };
 
                         if let Err(e) = socket_clone.emit(event_type, &message) {

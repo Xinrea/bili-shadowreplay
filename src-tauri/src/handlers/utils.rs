@@ -5,7 +5,7 @@ use crate::state_type;
 
 #[cfg(feature = "gui")]
 use {
-    crate::recorder::PlatformType,
+    recorder::platforms::PlatformType,
     std::process::Command,
     tauri::State as TauriState,
     tauri::{Manager, Theme},
@@ -222,7 +222,9 @@ pub async fn open_live(
     log::info!("Open player window: {room_id} {live_id}");
     #[cfg(feature = "gui")]
     {
-        let platform = PlatformType::from_str(&platform).unwrap();
+        use std::str::FromStr;
+
+        let platform = PlatformType::from_str(&platform)?;
         let recorder_info = state
             .recorder_manager
             .get_recorder_info(platform, room_id)
@@ -306,6 +308,15 @@ pub async fn list_folder(_state: state_type!(), path: String) -> Result<Vec<Stri
         files.push(entry.path().to_str().unwrap().to_string());
     }
     Ok(files)
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn file_exists(_state: state_type!(), path: String) -> Result<bool, String> {
+    let path = PathBuf::from(path);
+    match std::fs::metadata(&path) {
+        Ok(metadata) => Ok(metadata.is_file()),
+        Err(_) => Ok(false),
+    }
 }
 
 /// 高级文件名清理函数，全面处理各种危险字符和控制字符

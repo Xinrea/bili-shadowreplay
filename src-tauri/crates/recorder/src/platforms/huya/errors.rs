@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum BiliClientError {
+pub enum HuyaClientError {
     #[error("Invalid response")]
     InvalidResponse,
     #[error("Client init error")]
@@ -40,10 +40,12 @@ pub enum BiliClientError {
     FormatNotFound(String),
     #[error("Codec not found: {0}")]
     CodecNotFound(String),
+    #[error("Extractor error: {0}")]
+    ExtractorError(String),
 }
 
-impl From<BiliClientError> for String {
-    fn from(err: BiliClientError) -> Self {
+impl From<HuyaClientError> for String {
+    fn from(err: HuyaClientError) -> Self {
         err.to_string()
     }
 }

@@ -150,9 +150,24 @@ async function get_cover(coverType: string, coverPath: string) {
       if (coverCache.has(absolutePath)) {
         return coverCache.get(absolutePath);
       }
-      const url = tauri_convert(absolutePath);
-      coverCache.set(absolutePath, url);
-      return url;
+
+      // 检查文件是否存在
+      try {
+        const exists = (await invoke("file_exists", {
+          path: absolutePath,
+        })) as boolean;
+        if (!exists) {
+          log.error("Cover file not found:", absolutePath);
+          return "/imgs/bilibili.png"; // 返回默认封面
+        }
+
+        const url = tauri_convert(absolutePath);
+        coverCache.set(absolutePath, url);
+        return url;
+      } catch (e) {
+        log.error("Failed to check cover file existence:", e);
+        return "/imgs/bilibili.png"; // 返回默认封面
+      }
     }
 
     if (coverType === "output") {
@@ -160,9 +175,23 @@ async function get_cover(coverType: string, coverPath: string) {
       if (coverCache.has(absolutePath)) {
         return coverCache.get(absolutePath);
       }
-      const url = tauri_convert(absolutePath);
-      coverCache.set(absolutePath, url);
-      return url;
+
+      // 检查文件是否存在
+      try {
+        const exists = (await invoke("file_exists", {
+          path: absolutePath,
+        })) as boolean;
+        if (!exists) {
+          return "/imgs/bilibili.png"; // 返回默认封面
+        }
+
+        const url = tauri_convert(absolutePath);
+        coverCache.set(absolutePath, url);
+        return url;
+      } catch (e) {
+        log.error("Failed to check cover file existence:", e);
+        return "/imgs/bilibili.png"; // 返回默认封面
+      }
     }
 
     // exception

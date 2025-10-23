@@ -44,7 +44,7 @@
   async function update_summary() {
     summary = (await invoke("get_recorder_list")) as RecorderList;
     total = summary.count;
-    online = summary.recorders.filter((r) => r.live_status).length;
+    online = summary.recorders.filter((r) => r.room_info.status).length;
 
     disk_usage = await get_archive_disk_usage();
 
@@ -90,7 +90,10 @@
     })) as RecordItem[];
 
     for (const record of newRecords) {
-      record.cover = await get_cover("cache", record.cover);
+      record.cover = await get_cover(
+        "cache",
+        `${record.platform}/${record.room_id}/${record.live_id}/cover.jpg`
+      );
     }
 
     if (hasNewRecords) {
@@ -105,8 +108,6 @@
       recent_records = [...recent_records, ...newRecords];
       offset += newRecords.length;
     }
-
-    console.log(recent_records);
 
     loading = false;
   }
@@ -395,8 +396,6 @@
                   src={record.cover}
                   class="w-32 h-18 rounded-lg object-cover"
                   alt="Gaming stream thumbnail"
-                  on:load={() =>
-                    console.log("Image loaded in template:", record.cover)}
                   on:error={(e) =>
                     console.error("Image error in template:", record.cover, e)}
                 />

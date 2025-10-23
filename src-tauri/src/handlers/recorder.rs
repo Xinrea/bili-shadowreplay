@@ -11,6 +11,7 @@ use crate::recorder_manager::RecorderList;
 use crate::state::State;
 use crate::state_type;
 use crate::webhook::events;
+use recorder::account::Account;
 use recorder::danmu::DanmuEntry;
 use recorder::platforms::bilibili;
 use recorder::platforms::PlatformType;
@@ -39,7 +40,7 @@ pub async fn add_recorder(
     let account = match platform {
         PlatformType::BiliBili => {
             if let Ok(account) = state.db.get_account_by_platform("bilibili").await {
-                Ok(account)
+                Ok(account.to_account())
             } else {
                 log::error!("No available bilibili account found");
                 Err("没有可用账号，请先添加账号".to_string())
@@ -47,10 +48,17 @@ pub async fn add_recorder(
         }
         PlatformType::Douyin => {
             if let Ok(account) = state.db.get_account_by_platform("douyin").await {
-                Ok(account)
+                Ok(account.to_account())
             } else {
                 log::error!("No available douyin account found");
                 Err("没有可用账号，请先添加账号".to_string())
+            }
+        }
+        PlatformType::Huya => {
+            if let Ok(account) = state.db.get_account_by_platform("huya").await {
+                Ok(account.to_account())
+            } else {
+                Ok(Account::default())
             }
         }
         _ => Err("不支持的平台".to_string()),

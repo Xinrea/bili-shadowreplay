@@ -7,10 +7,10 @@ pub mod events;
 mod ffmpeg;
 pub mod platforms;
 pub mod traits;
+pub mod utils;
 use crate::danmu::DanmuStorage;
 use crate::events::RecorderEvent;
 use crate::{account::Account, platforms::PlatformType};
-mod user_agent_generator;
 
 use std::{
     fmt::Display,

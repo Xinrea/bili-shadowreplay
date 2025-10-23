@@ -9,7 +9,7 @@ use crate::account::Account;
 use crate::core::Codec;
 use crate::core::Format;
 use crate::errors::RecorderError;
-use crate::user_agent_generator;
+use crate::utils::user_agent_generator;
 use chrono::TimeZone;
 use pct_str::PctString;
 use pct_str::URIReserved;
@@ -169,7 +169,7 @@ impl BiliStream {
 }
 
 fn generate_user_agent_header() -> reqwest::header::HeaderMap {
-    let user_agent = user_agent_generator::UserAgentGenerator::new().generate();
+    let user_agent = user_agent_generator::UserAgentGenerator::new().generate(false);
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("user-agent", user_agent.parse().unwrap());
     headers

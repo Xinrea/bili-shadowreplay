@@ -4,12 +4,30 @@ pub struct UserAgentGenerator {
     rng: ThreadRng,
 }
 
+impl Default for UserAgentGenerator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UserAgentGenerator {
     pub fn new() -> Self {
         Self { rng: rand::rng() }
     }
 
-    pub fn generate(&mut self) -> String {
+    /// Generate a user agent
+    ///
+    /// # Arguments
+    ///
+    /// * `mobile` - Whether to generate a mobile user agent
+    ///
+    /// # Returns
+    ///
+    /// A string representing the user agent
+    pub fn generate(&mut self, mobile: bool) -> String {
+        if mobile {
+            return self.generate_mobile();
+        }
         let browser_type = self.rng.random_range(0..4);
 
         match browser_type {
@@ -17,6 +35,49 @@ impl UserAgentGenerator {
             1 => self.generate_firefox(),
             2 => self.generate_safari(),
             _ => self.generate_edge(),
+        }
+    }
+
+    fn generate_mobile(&mut self) -> String {
+        let mobile_versions = [
+            "120.0.0.0",
+            "119.0.0.0",
+            "118.0.0.0",
+            "117.0.0.0",
+            "116.0.0.0",
+            "115.0.0.0",
+            "114.0.0.0",
+        ];
+        let mobile_version = mobile_versions.choose(&mut self.rng).unwrap();
+
+        // 随机选择 Android 或 iOS
+        if self.rng.random_bool(0.7) {
+            // Android User-Agent
+            let android_versions = ["13", "12", "11", "10", "9"];
+            let android_version = android_versions.choose(&mut self.rng).unwrap();
+            let device_models = [
+                "SM-G991B",
+                "SM-G996B",
+                "SM-G998B",
+                "SM-A525F",
+                "SM-A725F",
+                "Pixel 6",
+                "Pixel 7",
+                "Pixel 8",
+                "OnePlus 9",
+                "OnePlus 10",
+            ];
+            let device_model = device_models.choose(&mut self.rng).unwrap();
+
+            format!("Mozilla/5.0 (Linux; Android {android_version}; {device_model}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{mobile_version} Mobile Safari/537.36")
+        } else {
+            // iOS User-Agent
+            let ios_versions = ["17_1", "16_7", "16_6", "15_7", "14_8"];
+            let ios_version = ios_versions.choose(&mut self.rng).unwrap();
+            let device_types = ["iPhone; CPU iPhone OS", "iPad; CPU OS"];
+            let device_type = device_types.choose(&mut self.rng).unwrap();
+
+            format!("Mozilla/5.0 ({device_type} {ios_version} like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1")
         }
     }
 
@@ -128,7 +189,7 @@ mod tests {
         let mut generator = UserAgentGenerator::new();
 
         for _ in 0..100 {
-            let ua = generator.generate();
+            let ua = generator.generate(false);
             assert!(!ua.is_empty());
             assert!(ua.starts_with("Mozilla/5.0"));
 
@@ -150,5 +211,24 @@ mod tests {
         assert!(ua.contains("Chrome"));
         assert!(ua.contains("Safari"));
         assert!(ua.contains("AppleWebKit"));
+    }
+
+    #[test]
+    fn test_mobile_user_agent_format() {
+        let mut generator = UserAgentGenerator::new();
+
+        for _ in 0..50 {
+            let ua = generator.generate(true);
+            assert!(!ua.is_empty());
+            assert!(ua.starts_with("Mozilla/5.0"));
+
+            // 验证是否包含移动设备标识
+            assert!(ua.contains("Android") || ua.contains("iPhone") || ua.contains("iPad"));
+
+            // 验证是否包含移动浏览器标识
+            // Android 包含 Chrome 和 Mobile Safari
+            // iOS 包含 Safari
+            assert!(ua.contains("Mobile Safari") || ua.contains("Chrome") || ua.contains("Safari"));
+        }
     }
 }

@@ -1,8 +1,8 @@
 use crate::config::Config;
 use crate::danmu2ass;
+use crate::database::record::RecordRow;
 use crate::database::recorder::RecorderRow;
 use crate::database::video::VideoRow;
-use crate::database::{account::AccountRow, record::RecordRow};
 use crate::database::{Database, DatabaseError};
 use crate::ffmpeg::{encode_video_danmu, transcode, Range};
 use crate::progress::progress_reporter::{EventEmitter, ProgressReporter};
@@ -17,6 +17,7 @@ use recorder::errors::RecorderError;
 use recorder::events::RecorderEvent;
 use recorder::platforms::bilibili::BiliRecorder;
 use recorder::platforms::douyin::DouyinRecorder;
+use recorder::platforms::huya::HuyaRecorder;
 use recorder::platforms::PlatformType;
 use recorder::traits::RecorderTrait;
 use recorder::RoomInfo;
@@ -62,6 +63,7 @@ pub struct ClipRangeParams {
 pub enum RecorderType {
     BiliBili(BiliRecorder),
     Douyin(DouyinRecorder),
+    Huya(HuyaRecorder),
 }
 
 impl RecorderType {
@@ -69,6 +71,7 @@ impl RecorderType {
         match self {
             RecorderType::BiliBili(recorder) => recorder.run().await,
             RecorderType::Douyin(recorder) => recorder.run().await,
+            RecorderType::Huya(recorder) => recorder.run().await,
         }
     }
 
@@ -76,6 +79,7 @@ impl RecorderType {
         match self {
             RecorderType::BiliBili(recorder) => recorder.stop().await,
             RecorderType::Douyin(recorder) => recorder.stop().await,
+            RecorderType::Huya(recorder) => recorder.stop().await,
         }
     }
 
@@ -83,6 +87,7 @@ impl RecorderType {
         match self {
             RecorderType::BiliBili(recorder) => recorder.info().await,
             RecorderType::Douyin(recorder) => recorder.info().await,
+            RecorderType::Huya(recorder) => recorder.info().await,
         }
     }
 
@@ -90,6 +95,7 @@ impl RecorderType {
         match self {
             RecorderType::BiliBili(recorder) => recorder.enable().await,
             RecorderType::Douyin(recorder) => recorder.enable().await,
+            RecorderType::Huya(recorder) => recorder.enable().await,
         }
     }
 
@@ -97,6 +103,7 @@ impl RecorderType {
         match self {
             RecorderType::BiliBili(recorder) => recorder.disable().await,
             RecorderType::Douyin(recorder) => recorder.disable().await,
+            RecorderType::Huya(recorder) => recorder.disable().await,
         }
     }
 }
@@ -218,6 +225,7 @@ impl RecorderManager {
                     // add record entry into db
                     let platform = PlatformType::from_str(&recorder.room_info.platform).unwrap();
                     let room_id = recorder.room_info.room_id.parse::<i64>().unwrap();
+                    log::info!("Record start: {recorder:?}");
                     if let Err(e) = self
                         .db
                         .add_record(
@@ -247,6 +255,7 @@ impl RecorderManager {
                         .await;
                 }
                 RecorderEvent::RecordEnd { recorder } => {
+                    log::info!("Record end: {recorder:?}");
                     let event =
                         events::new_webhook_event(events::RECORD_ENDED, Payload::Room(recorder));
                     let _ = self.webhook_poster.post_event(&event).await;
@@ -351,11 +360,15 @@ impl RecorderManager {
                     .db
                     .get_account_by_platform(platform.clone().as_str())
                     .await;
-                if account.is_err() {
+                if platform != PlatformType::Huya && account.is_err() {
                     log::error!("Failed to get account: {}", account.err().unwrap());
                     continue;
                 }
-                let account = account.unwrap();
+                let account = if let Ok(account) = account {
+                    account.to_account()
+                } else {
+                    Account::default()
+                };
 
                 if let Err(e) = self
                     .add_recorder(&account, platform, room_id, extra, *auto_start)
@@ -375,7 +388,7 @@ impl RecorderManager {
 
     pub async fn add_recorder(
         &self,
-        account: &AccountRow,
+        account: &Account,
         platform: PlatformType,
         room_id: i64,
         extra: &str,
@@ -389,34 +402,16 @@ impl RecorderManager {
         let cache_dir = self.config.read().await.cache.clone();
         let cache_dir = PathBuf::from(&cache_dir);
 
-        let recorder_account = Account {
-            platform: platform.as_str().to_string(),
-            id: if account.id_str.is_some() {
-                account.id_str.as_ref().unwrap().clone()
-            } else {
-                account.uid.to_string()
-            },
-            name: account.name.clone(),
-            avatar: account.avatar.clone(),
-            csrf: account.csrf.clone(),
-            cookies: account.cookies.clone(),
-        };
-
         let event_tx = self.get_event_sender();
         let recorder: RecorderType = match platform {
             PlatformType::BiliBili => RecorderType::BiliBili(
-                BiliRecorder::new(room_id, &recorder_account, cache_dir, event_tx, enabled).await?,
+                BiliRecorder::new(room_id, account, cache_dir, event_tx, enabled).await?,
             ),
             PlatformType::Douyin => RecorderType::Douyin(
-                DouyinRecorder::new(
-                    room_id,
-                    extra,
-                    &recorder_account,
-                    cache_dir,
-                    event_tx,
-                    enabled,
-                )
-                .await?,
+                DouyinRecorder::new(room_id, extra, account, cache_dir, event_tx, enabled).await?,
+            ),
+            PlatformType::Huya => RecorderType::Huya(
+                HuyaRecorder::new(room_id, account, cache_dir, event_tx, enabled).await?,
             ),
             _ => {
                 return Err(RecorderManagerError::InvalidPlatformType {
@@ -1126,16 +1121,9 @@ impl RecorderManager {
         } else {
             // try to find requested ts file in recorder's cache
             // cache files are stored in {cache_dir}/{room_id}/{timestamp}/{ts_file}
+            // remove path params
+            let path = path.split('?').next().unwrap_or(path);
             let ts_file = format!("{}/{}", cache_path, path.replace("%7C", "|"));
-            let recorders = self.recorders.read().await;
-            let recorder_id = format!("{}:{}", platform.as_str(), room_id);
-            let recorder = recorders.get(&recorder_id);
-            if recorder.is_none() {
-                log::warn!("Recorder not found: {recorder_id}");
-                return Err(RecorderManagerError::HLSError {
-                    err: "Recorder not found".into(),
-                });
-            }
             let ts_file_content = tokio::fs::read(&ts_file).await;
             if ts_file_content.is_err() {
                 log::warn!("Segment file not found: {ts_file}");

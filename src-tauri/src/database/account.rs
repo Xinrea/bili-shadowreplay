@@ -9,7 +9,7 @@ use chrono::Utc;
 use rand::seq::SliceRandom;
 use rand::Rng;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, sqlx::FromRow)]
 pub struct AccountRow {
     pub platform: String,
     pub uid: i64,               // Keep for Bilibili compatibility

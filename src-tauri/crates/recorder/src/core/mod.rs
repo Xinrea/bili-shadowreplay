@@ -1,5 +1,4 @@
 use std::fmt;
-
 pub mod hls_recorder;
 pub mod playlist;
 

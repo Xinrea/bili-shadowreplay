@@ -1,5 +1,6 @@
 pub mod bilibili;
 pub mod douyin;
+pub mod huya;
 use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

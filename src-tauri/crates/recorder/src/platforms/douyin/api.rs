@@ -1,6 +1,6 @@
 use crate::account::Account;
 use crate::errors::RecorderError;
-use crate::user_agent_generator;
+use crate::utils::user_agent_generator;
 use deno_core::JsRuntime;
 use deno_core::RuntimeOptions;
 use reqwest::Client;
@@ -63,7 +63,7 @@ async fn generate_ms_token() -> String {
 }
 
 pub fn generate_user_agent_header() -> reqwest::header::HeaderMap {
-    let user_agent = user_agent_generator::UserAgentGenerator::new().generate();
+    let user_agent = user_agent_generator::UserAgentGenerator::new().generate(false);
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("user-agent", user_agent.parse().unwrap());
     headers

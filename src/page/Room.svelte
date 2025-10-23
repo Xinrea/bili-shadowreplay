@@ -752,6 +752,15 @@
               >
                 抖音
               </button>
+              <button
+                class="flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform ===
+                'huya'
+                  ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white'
+                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
+                on:click={() => (selectedPlatform = "huya")}
+              >
+                虎牙
+              </button>
             </div>
           </div>
 
@@ -788,9 +797,7 @@
               type="text"
               bind:value={addRoom}
               class="w-full px-3 py-2 bg-[#f5f5f7] dark:bg-[#1c1c1e] border-0 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400"
-              placeholder={selectedPlatform === "bilibili"
-                ? "请输入直播间房间号"
-                : "请输入抖音直播间ID"}
+              placeholder="请输入直播间房间号"
               on:change={() => {
                 if (!addRoom) {
                   addErrorMsg = "";

@@ -314,10 +314,13 @@ impl BiliRecorder {
             current_stream.codec,
         ));
         let hls_recorder = HlsRecorder::new(
+            self.room_id.to_string(),
             stream,
             self.client.clone(),
+            None,
             self.event_channel.clone(),
             work_dir.full_path(),
+            self.enabled.clone(),
         )
         .await;
         if let Err(e) = hls_recorder.start().await {

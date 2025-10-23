@@ -2,6 +2,8 @@ pub mod api;
 mod response;
 pub mod stream_info;
 use crate::account::Account;
+use crate::core::hls_recorder::{construct_stream_from_variant, HlsRecorder};
+use crate::core::{Codec, Format};
 use crate::errors::RecorderError;
 use crate::events::RecorderEvent;
 use crate::platforms::douyin::stream_info::DouyinStream;
@@ -268,10 +270,23 @@ impl DouyinRecorder {
             recorder: self.info().await,
         });
 
-        if let Err(e) =
-            crate::ffmpeg::playlist::cache_playlist(&stream_url, &work_dir.full_path()).await
-        {
-            log::error!("[{}]Failed to cache playlist: {}", self.room_id, e);
+        let hls_stream =
+            construct_stream_from_variant(live_id, &stream_url, Format::TS, Codec::Avc)
+                .await
+                .map_err(|_| RecorderError::NoStreamAvailable)?;
+        let hls_recorder = HlsRecorder::new(
+            self.room_id.to_string(),
+            Arc::new(hls_stream),
+            self.client.clone(),
+            None,
+            self.event_channel.clone(),
+            work_dir.full_path(),
+            self.enabled.clone(),
+        )
+        .await;
+        if let Err(e) = hls_recorder.start().await {
+            log::error!("[{}]Failed to start hls recorder: {}", self.room_id, e);
+            return Err(e);
         }
 
         Ok(())

@@ -14,6 +14,7 @@
 
   let wholeClipArchives: RecordItem[] = [];
   let isLoading = false;
+  let encodeDanmu = false;
 
   // 当modal显示且有archive时，加载相关片段
   $: if (showModal && archive) {
@@ -33,7 +34,10 @@
 
       // 处理封面
       for (const archive of sameParentArchives) {
-        archive.cover = await get_cover("cache", archive.cover);
+        archive.cover = await get_cover(
+          "cache",
+          `${archive.platform}/${archive.room_id}/${archive.live_id}/cover.jpg`
+        );
       }
 
       // 按时间排序
@@ -55,6 +59,7 @@
   async function generateWholeClip() {
     try {
       await invoke("generate_whole_clip", {
+        encodeDanmu: encodeDanmu,
         platform: archive.platform,
         roomId: archive.room_id,
         parentId: archive.parent_id,
@@ -147,93 +152,127 @@
           </p>
         </div>
 
-        <!-- Scrollable List -->
-        <div class="flex-1 overflow-auto custom-scrollbar-light px-6 min-h-0">
-          {#if isLoading}
-            <div class="flex items-center justify-center py-8">
-              <div
-                class="flex items-center space-x-2 text-gray-500 dark:text-gray-400"
-              >
+        <!-- Main Content: Left (List) + Right (Summary) -->
+        <div class="flex-1 flex min-h-0">
+          <!-- Left: Scrollable List -->
+          <div class="flex-1 overflow-auto custom-scrollbar-light px-6 min-h-0">
+            {#if isLoading}
+              <div class="flex items-center justify-center py-8">
                 <div
-                  class="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-500"
-                ></div>
-                <span>加载中...</span>
-              </div>
-            </div>
-          {:else if wholeClipArchives.length === 0}
-            <div class="text-center py-8 text-gray-500 dark:text-gray-400">
-              未找到相关片段
-            </div>
-          {:else}
-            <div class="space-y-3 pb-4">
-              {#each wholeClipArchives as archiveItem, index (archiveItem.live_id)}
-                <div
-                  class="flex items-center space-x-4 p-4 rounded-lg bg-gray-50 dark:bg-gray-700/30"
+                  class="flex items-center space-x-2 text-gray-500 dark:text-gray-400"
                 >
                   <div
-                    class="flex-shrink-0 w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white text-sm font-medium"
+                    class="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-500"
+                  ></div>
+                  <span>加载中...</span>
+                </div>
+              </div>
+            {:else if wholeClipArchives.length === 0}
+              <div class="text-center py-8 text-gray-500 dark:text-gray-400">
+                未找到相关片段
+              </div>
+            {:else}
+              <div class="space-y-3 pb-4">
+                {#each wholeClipArchives as archiveItem, index (archiveItem.live_id)}
+                  <div
+                    class="flex items-center space-x-4 p-4 rounded-lg bg-gray-50 dark:bg-gray-700/30"
                   >
-                    {index + 1}
-                  </div>
-
-                  {#if archiveItem.cover}
-                    <img
-                      src={archiveItem.cover}
-                      alt="cover"
-                      class="w-16 h-10 rounded object-cover flex-shrink-0"
-                    />
-                  {/if}
-
-                  <div class="flex-1 min-w-0">
                     <div
-                      class="text-sm font-medium text-gray-900 dark:text-white truncate"
+                      class="flex-shrink-0 w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white text-sm font-medium"
                     >
-                      {archiveItem.title}
+                      {index + 1}
                     </div>
-                    <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                      {formatTimestamp(archiveItem.created_at)} · {formatDuration(
-                        archiveItem.length
-                      )} · {formatSize(archiveItem.size)}
+
+                    {#if archiveItem.cover}
+                      <img
+                        src={archiveItem.cover}
+                        alt="cover"
+                        class="w-16 h-10 rounded object-cover flex-shrink-0"
+                      />
+                    {/if}
+
+                    <div class="flex-1 min-w-0">
+                      <div
+                        class="text-sm font-medium text-gray-900 dark:text-white truncate"
+                      >
+                        {archiveItem.title}
+                      </div>
+                      <div
+                        class="text-xs text-gray-500 dark:text-gray-400 mt-1"
+                      >
+                        {formatTimestamp(archiveItem.created_at)} · {formatDuration(
+                          archiveItem.length
+                        )} · {formatSize(archiveItem.size)}
+                      </div>
                     </div>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          </div>
+
+          <!-- Right: Fixed Summary -->
+          {#if !isLoading && wholeClipArchives.length > 0}
+            <div class="w-80 px-6 pb-6 flex-shrink-0 flex items-center">
+              <div
+                class="p-4 rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 w-full"
+              >
+                <div class="flex items-center space-x-2 mb-2">
+                  <FileVideo class="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                  <span
+                    class="text-sm font-medium text-blue-900 dark:text-blue-100"
+                    >合成信息</span
+                  >
+                </div>
+                <div class="text-sm text-blue-800 dark:text-blue-200">
+                  共 {wholeClipArchives.length} 个片段 · 总时长 {formatDuration(
+                    wholeClipArchives.reduce(
+                      (sum, archiveItem) => sum + archiveItem.length,
+                      0
+                    )
+                  )} · 总大小 {formatSize(
+                    wholeClipArchives.reduce(
+                      (sum, archiveItem) => sum + archiveItem.size,
+                      0
+                    )
+                  )}
+                </div>
+
+                <!-- 压制弹幕选项 -->
+                <div
+                  class="mt-4 pt-4 border-t border-blue-200 dark:border-blue-700"
+                >
+                  <div class="flex items-center justify-between">
+                    <div class="flex-1">
+                      <div
+                        class="text-sm font-medium text-blue-900 dark:text-blue-100"
+                      >
+                        压制弹幕
+                      </div>
+                      <div
+                        class="text-xs text-blue-700 dark:text-blue-300 mt-1"
+                      >
+                        将弹幕直接压制到视频中，生成包含弹幕的最终视频文件
+                      </div>
+                    </div>
+                    <label
+                      class="relative inline-flex items-center cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        bind:checked={encodeDanmu}
+                        class="sr-only peer"
+                      />
+                      <div
+                        class="w-11 h-6 bg-blue-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-blue-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-blue-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-blue-600 peer-checked:bg-blue-600"
+                      ></div>
+                    </label>
                   </div>
                 </div>
-              {/each}
+              </div>
             </div>
           {/if}
         </div>
-
-        <!-- Fixed Summary -->
-        {#if !isLoading && wholeClipArchives.length > 0}
-          <div class="px-6 pb-6">
-            <div
-              class="p-4 rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800"
-            >
-              <div class="flex items-center space-x-2 mb-2">
-                <FileVideo class="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                <span
-                  class="text-sm font-medium text-blue-900 dark:text-blue-100"
-                  >合成信息</span
-                >
-              </div>
-              <div class="text-sm text-blue-800 dark:text-blue-200">
-                共 {wholeClipArchives.length} 个片段 · 总时长 {formatDuration(
-                  wholeClipArchives.reduce(
-                    (sum, archiveItem) => sum + archiveItem.length,
-                    0
-                  )
-                )} · 总大小 {formatSize(
-                  wholeClipArchives.reduce(
-                    (sum, archiveItem) => sum + archiveItem.size,
-                    0
-                  )
-                )}
-              </div>
-              <div class="text-sm text-gray-500 dark:text-gray-400">
-                如果片段分辨率不一致，将会消耗更多时间用于重新编码
-              </div>
-            </div>
-          </div>
-        {/if}
       </div>
 
       <!-- Footer -->

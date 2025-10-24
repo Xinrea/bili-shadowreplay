@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use m3u8_rs::Map;
 use tokio::io::AsyncWriteExt;
@@ -121,19 +121,29 @@ pub async fn playlist_to_video(
 pub async fn playlists_to_video(
     reporter: Option<&impl ProgressReporterTrait>,
     playlists: &[&Path],
+    danmu_ass_files: Vec<Option<PathBuf>>,
     output_path: &Path,
 ) -> Result<(), String> {
+    let mut to_remove = Vec::new();
     let mut segments = Vec::new();
     for (i, playlist) in playlists.iter().enumerate() {
-        let video_path = output_path.with_extension(format!("{}.mp4", i));
-        playlist_to_video(reporter, playlist, &video_path, None).await?;
+        let mut video_path = output_path.with_extension(format!("{}.mp4", i));
+        if let Err(e) = playlist_to_video(reporter, playlist, &video_path, None).await {
+            log::error!("Failed to generate playlist video: {e}");
+            continue;
+        }
+        to_remove.push(video_path.clone());
+        if let Some(danmu_ass_file) = &danmu_ass_files[i] {
+            video_path = super::encode_video_danmu(reporter, &video_path, danmu_ass_file).await?;
+            to_remove.push(video_path.clone());
+        }
         segments.push(video_path);
     }
 
     super::general::concat_videos(reporter, &segments, output_path).await?;
 
     // clean up segments
-    for segment in segments {
+    for segment in to_remove {
         let _ = tokio::fs::remove_file(segment).await;
     }
 

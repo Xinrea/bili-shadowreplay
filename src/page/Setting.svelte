@@ -768,10 +768,10 @@
                     <h3
                       class="text-sm font-medium text-gray-900 dark:text-white"
                     >
-                      自动切片压制弹幕（暂时禁止）
+                      自动切片压制弹幕
                     </h3>
                     <p class="text-sm text-gray-500 dark:text-gray-400">
-                      启用后，自动切片时会同时压制弹幕
+                      启用后，自动切片时会同时压制弹幕，会显著增加生成时间
                     </p>
                   </div>
                   <label class="relative inline-block w-11 h-6">

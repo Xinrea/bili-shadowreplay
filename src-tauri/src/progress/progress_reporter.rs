@@ -25,6 +25,7 @@ static CANCEL_FLAG_MAP: LazyLock<Arc<RwLock<CancelFlagMap>>> =
 pub struct ProgressReporter {
     emitter: EventEmitter,
     pub event_id: String,
+    #[allow(unused)]
     pub cancel: Arc<AtomicBool>,
 }
 

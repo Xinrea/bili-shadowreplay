@@ -5,7 +5,7 @@ use crate::database::recorder::RecorderRow;
 use crate::database::video::VideoRow;
 use crate::database::{Database, DatabaseError};
 use crate::ffmpeg::{encode_video_danmu, transcode, Range};
-use crate::progress::progress_reporter::{EventEmitter, ProgressReporter};
+use crate::progress::progress_reporter::{EventEmitter, ProgressReporter, ProgressReporterTrait};
 use crate::subtitle_generator::item_to_srt;
 use crate::webhook::events::{self, Payload};
 use crate::webhook::poster::WebhookPoster;
@@ -60,6 +60,12 @@ pub struct ClipRangeParams {
     pub local_offset: i64,
     /// Fix encoding after clip
     pub fix_encoding: bool,
+}
+
+pub struct RelatedPlaylist {
+    pub live_id: String,
+    pub title: String,
+    pub path: PathBuf,
 }
 
 pub enum RecorderType {
@@ -154,6 +160,8 @@ pub enum RecorderManagerError {
     SubtitleGenerationFailed { error: String },
     #[error("Invalid playlist without date time")]
     InvalidPlaylistWithoutDateTime,
+    #[error("Archive danmu ass generation failed: {error}")]
+    ArchiveDanmuAssGenerationFailed { error: String },
 }
 
 impl From<RecorderManagerError> for String {
@@ -329,9 +337,39 @@ impl RecorderManager {
 
         let live_record = live_record.unwrap();
 
+        let Ok(task) = self
+            .db
+            .generate_task(
+                "generate_whole_clip",
+                "",
+                &serde_json::json!({
+                    "platform": platform.as_str(),
+                    "room_id": room_id,
+                    "parent_id": live_record.parent_id,
+                })
+                .to_string(),
+            )
+            .await
+        else {
+            log::error!("Failed to generate task");
+            return;
+        };
+
+        let Ok(reporter) = ProgressReporter::new(&self.emitter, &task.id).await else {
+            log::error!("Failed to create reporter");
+            let _ = self
+                .db
+                .update_task(&task.id, "failed", "Failed to create reporter", None)
+                .await;
+            return;
+        };
+
+        log::info!("Create task: {} {}", task.id, task.task_type);
+
         if let Err(e) = self
             .generate_whole_clip(
-                None,
+                Some(&reporter),
+                self.config.read().await.auto_generate.encode_danmu,
                 platform.as_str().to_string(),
                 room_id,
                 live_record.parent_id,
@@ -339,7 +377,33 @@ impl RecorderManager {
             .await
         {
             log::error!("Failed to generate whole clip: {e}");
+            let _ = reporter
+                .finish(false, &format!("Failed to generate whole clip: {e}"))
+                .await;
+            let _ = self
+                .db
+                .update_task(
+                    &task.id,
+                    "failed",
+                    &format!("Failed to generate whole clip: {e}"),
+                    None,
+                )
+                .await;
+            return;
         }
+
+        let _ = reporter
+            .finish(true, "Whole clip generated successfully")
+            .await;
+        let _ = self
+            .db
+            .update_task(
+                &task.id,
+                "success",
+                "Whole clip generated successfully",
+                None,
+            )
+            .await;
     }
 
     pub fn set_migrating(&self, migrating: bool) {
@@ -684,7 +748,7 @@ impl RecorderManager {
         platform: &PlatformType,
         room_id: i64,
         parent_id: &str,
-    ) -> Vec<(String, String)> {
+    ) -> Vec<RelatedPlaylist> {
         let cache_path = self.config.read().await.cache.clone();
         let cache_path = Path::new(&cache_path);
         let archives = self.db.get_archives_by_parent_id(room_id, parent_id).await;
@@ -709,15 +773,12 @@ impl RecorderManager {
             .map(async |a| {
                 let work_dir =
                     CachePath::new(cache_path.to_path_buf(), *platform, room_id, a.1.as_str());
-                (
-                    a.0.clone(),
-                    work_dir
-                        .with_filename("playlist.m3u8")
-                        .full_path()
-                        .to_str()
-                        .unwrap()
-                        .to_string(),
-                )
+
+                RelatedPlaylist {
+                    live_id: a.1.clone(),
+                    title: a.0.clone(),
+                    path: work_dir.with_filename("playlist.m3u8").full_path(),
+                }
             })
             .collect::<Vec<_>>();
 
@@ -845,6 +906,47 @@ impl RecorderManager {
         let _ = remove_file(clip_file).await;
 
         result.map_err(|e| RecorderManagerError::ClipError { err: e })
+    }
+
+    async fn generate_archive_danmu_ass(
+        &self,
+        platform: PlatformType,
+        room_id: i64,
+        live_id: &str,
+    ) -> Result<PathBuf, RecorderManagerError> {
+        log::info!(
+            "Generate archive danmu ass file for {} {} {}",
+            platform.as_str(),
+            room_id,
+            live_id
+        );
+        let first_segment_timestamp_milis = self
+            .first_segment_timestamp(platform, room_id, live_id)
+            .await?;
+        let mut danmus = self.load_danmus(platform, room_id, live_id).await?;
+        danmus.retain(|x| x.ts >= first_segment_timestamp_milis);
+        for d in &mut danmus {
+            d.ts -= first_segment_timestamp_milis;
+        }
+        let ass_content = danmu2ass::danmu_to_ass(danmus);
+        let work_dir = CachePath::new(
+            self.config.read().await.cache.clone().into(),
+            platform,
+            room_id,
+            live_id,
+        );
+        let ass_file_path = work_dir.with_filename("danmu.ass");
+        if let Err(e) = write(&ass_file_path.full_path(), ass_content).await {
+            log::error!(
+                "Failed to write archive danmu ass file: {} {}",
+                ass_file_path.full_path().display(),
+                e
+            );
+            return Err(RecorderManagerError::ArchiveDanmuAssGenerationFailed {
+                error: e.to_string(),
+            });
+        }
+        Ok(ass_file_path.full_path())
     }
 
     pub async fn get_recorder_list(&self) -> RecorderList {
@@ -1185,6 +1287,7 @@ impl RecorderManager {
     pub async fn generate_whole_clip(
         &self,
         reporter: Option<&ProgressReporter>,
+        encode_danmu: bool,
         platform: String,
         room_id: i64,
         parent_id: String,
@@ -1203,14 +1306,29 @@ impl RecorderManager {
             return Ok(());
         }
 
-        let title = playlists.first().unwrap().0.clone();
-        let playlists = playlists
-            .iter()
-            .map(|p| p.1.clone())
-            .collect::<Vec<String>>();
+        let title = playlists.first().unwrap().title.clone();
+
+        // generate archive danmu ass file for all playlists
+        let danmu_ass_files = if encode_danmu {
+            let danmu_ass_files = playlists
+                .iter()
+                .map(async |p| {
+                    (self
+                        .generate_archive_danmu_ass(platform, room_id, &p.live_id)
+                        .await)
+                        .ok()
+                })
+                .collect::<Vec<_>>();
+
+            futures::future::join_all(danmu_ass_files).await
+        } else {
+            Vec::new()
+        };
+
+        let timestamp = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
 
         let sanitized_filename = sanitize_filename::sanitize(format!(
-            "[full][{platform:?}][{room_id}][{parent_id}]{title}.mp4"
+            "[full][{platform:?}][{room_id}][{parent_id}][{timestamp}]{title}.mp4"
         ));
         let output_filename = Path::new(&sanitized_filename);
         let cover_filename = output_filename.with_extension("jpg");
@@ -1218,20 +1336,18 @@ impl RecorderManager {
         let output_path =
             Path::new(&self.config.read().await.output.as_str()).join(output_filename);
 
-        log::info!("Concat playlists: {playlists:?}");
+        let playlists_refs: Vec<&Path> = playlists.iter().map(|p| p.path.as_path()).collect();
+
+        log::info!("Concat playlists: {playlists_refs:?}");
         log::info!("Output path: {output_path:?}");
 
-        let owned_path_bufs: Vec<std::path::PathBuf> =
-            playlists.iter().map(std::path::PathBuf::from).collect();
-
-        let playlists_refs: Vec<&std::path::Path> = owned_path_bufs
-            .iter()
-            .map(std::path::PathBuf::as_path)
-            .collect();
-
-        if let Err(e) =
-            crate::ffmpeg::playlist::playlists_to_video(reporter, &playlists_refs, &output_path)
-                .await
+        if let Err(e) = crate::ffmpeg::playlist::playlists_to_video(
+            reporter,
+            &playlists_refs,
+            danmu_ass_files,
+            &output_path,
+        )
+        .await
         {
             log::error!("Failed to concat playlists: {e}");
             return Err(RecorderManagerError::HLSError {

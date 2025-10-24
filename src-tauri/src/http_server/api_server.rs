@@ -1014,6 +1014,7 @@ struct GetFileSizeRequest {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GenerateWholeClipRequest {
+    encode_danmu: bool,
     platform: String,
     room_id: i64,
     parent_id: String,
@@ -1023,7 +1024,14 @@ async fn handler_generate_whole_clip(
     state: axum::extract::State<State>,
     Json(param): Json<GenerateWholeClipRequest>,
 ) -> Result<Json<ApiResponse<TaskRow>>, ApiError> {
-    let task = generate_whole_clip(state.0, param.platform, param.room_id, param.parent_id).await?;
+    let task = generate_whole_clip(
+        state.0,
+        param.encode_danmu,
+        param.platform,
+        param.room_id,
+        param.parent_id,
+    )
+    .await?;
     Ok(Json(ApiResponse::success(task)))
 }
 

@@ -422,6 +422,7 @@ pub async fn fetch_hls(state: state_type!(), uri: String) -> Result<Vec<u8>, Str
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn generate_whole_clip(
     state: state_type!(),
+    encode_danmu: bool,
     platform: String,
     room_id: i64,
     parent_id: String,
@@ -459,7 +460,7 @@ pub async fn generate_whole_clip(
     tokio::spawn(async move {
         match state_clone
             .recorder_manager
-            .generate_whole_clip(Some(&reporter), platform, room_id, parent_id)
+            .generate_whole_clip(Some(&reporter), encode_danmu, platform, room_id, parent_id)
             .await
         {
             Ok(()) => {

@@ -175,6 +175,7 @@ impl Config {
         let format_config = format_config.replace("{platform}", &params.platform);
         let format_config = format_config.replace("{room_id}", &params.room_id.to_string());
         let format_config = format_config.replace("{live_id}", &params.live_id);
+        let format_config = format_config.replace("{note}", &params.note);
         let format_config = format_config.replace(
             "{x}",
             &params
@@ -201,8 +202,9 @@ impl Config {
                 .map_or("0".to_string(), |r| r.duration().to_string()),
         );
 
+        let sanitized = sanitize_filename::sanitize(&format_config);
         let output = self.output.clone();
 
-        Path::new(&output).join(&format_config)
+        Path::new(&output).join(&sanitized)
     }
 }

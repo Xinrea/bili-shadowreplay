@@ -700,6 +700,7 @@
                       {"{y}"}
                       {"{created_at}"}
                       {"{length}"}
+                      {"{note}"}
                     </p>
                   </div>
                   <div class="flex items-center space-x-2">

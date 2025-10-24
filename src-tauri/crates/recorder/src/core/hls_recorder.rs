@@ -106,6 +106,10 @@ impl HlsRecorder {
                         self.playlist.lock().await.close().await?;
                         return Err(e);
                     }
+                    RecorderError::M3u8ParseFailed { .. } => {
+                        log::error!("[{}]M3u8 parse failed: {}", self.room_id, e);
+                        return Err(e);
+                    }
                     _ => {
                         // Other errors are not critical, just log it
                         log::error!("[{}]Update entries error: {}", self.room_id, e);

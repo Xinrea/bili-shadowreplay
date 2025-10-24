@@ -37,7 +37,16 @@ impl HlsPlaylist {
             self.add_segment(segment).await?;
             return Ok(());
         }
-        self.playlist.segments.last_mut().unwrap().duration += segment.duration;
+
+        {
+            let last = self.playlist.segments.last_mut().unwrap();
+            let new_duration = last.duration + segment.duration;
+            last.duration = new_duration;
+            self.playlist.target_duration =
+                std::cmp::max(self.playlist.target_duration, new_duration as u64);
+            self.flush().await?;
+        }
+
         Ok(())
     }
 

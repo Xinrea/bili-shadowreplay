@@ -228,6 +228,13 @@
   // Initialize video element when component is mounted
   onMount(() => {
     video = document.getElementById("video") as HTMLVideoElement;
+    invoke("get_archive", { roomId: room_id, liveId: live_id }).then(
+      (a: RecordItem) => {
+        archive = a;
+        set_title(`[${room_id}]${archive.title}`);
+      }
+    );
+    console.log(archive);
 
     // 初始化虚拟滚动
     setTimeout(() => {
@@ -238,13 +245,6 @@
   });
 
   get_video_list();
-
-  invoke("get_archive", { roomId: room_id, liveId: live_id }).then(
-    (a: RecordItem) => {
-      archive = a;
-      set_title(`[${room_id}]${archive.title}`);
-    }
-  );
 
   function update_clip_prompt(str: string) {
     // update button text

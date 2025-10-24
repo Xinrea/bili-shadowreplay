@@ -29,6 +29,8 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+#[cfg(feature = "gui")]
+use tauri_plugin_notification::NotificationExt;
 use thiserror::Error;
 use tokio::fs::{remove_file, write, File};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
@@ -205,9 +207,24 @@ impl RecorderManager {
         while let Ok(event) = rx.recv().await {
             match event {
                 RecorderEvent::LiveStart { recorder } => {
-                    let event =
-                        events::new_webhook_event(events::LIVE_STARTED, Payload::Room(recorder));
+                    let event = events::new_webhook_event(
+                        events::LIVE_STARTED,
+                        Payload::Room(recorder.clone()),
+                    );
                     let _ = self.webhook_poster.post_event(&event).await;
+                    if self.config.read().await.live_start_notify {
+                        #[cfg(feature = "gui")]
+                        self.app_handle
+                            .notification()
+                            .builder()
+                            .title("BiliShadowReplay - 直播开始")
+                            .body(format!(
+                                "{} 开启了直播：{}",
+                                recorder.user_info.user_name, recorder.room_info.room_title
+                            ))
+                            .show()
+                            .unwrap();
+                    }
                 }
                 RecorderEvent::LiveEnd {
                     platform,
@@ -220,6 +237,19 @@ impl RecorderManager {
                     );
                     let _ = self.webhook_poster.post_event(&event).await;
                     self.handle_live_end(platform, room_id, &recorder).await;
+                    if self.config.read().await.live_end_notify {
+                        #[cfg(feature = "gui")]
+                        self.app_handle
+                            .notification()
+                            .builder()
+                            .title("BiliShadowReplay - 直播结束")
+                            .body(format!(
+                                "{} 结束了直播：{}",
+                                recorder.user_info.user_name, recorder.room_info.room_title
+                            ))
+                            .show()
+                            .unwrap();
+                    }
                 }
                 RecorderEvent::RecordStart { recorder } => {
                     // add record entry into db

@@ -46,9 +46,11 @@ pub trait RecorderTrait<T>: RecorderBasicTrait<T> {
         self.quit().store(true, atomic::Ordering::Relaxed);
         if let Some(danmu_task) = self.danmu_task().lock().await.take() {
             danmu_task.abort();
+            let _ = danmu_task.await;
         }
         if let Some(record_task) = self.record_task().lock().await.take() {
             record_task.abort();
+            let _ = record_task.await;
         }
     }
     async fn should_record(&self) -> bool {

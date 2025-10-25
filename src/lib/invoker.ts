@@ -6,6 +6,7 @@ import { listen as tauri_listen } from "@tauri-apps/api/event";
 import { open as tauri_open } from "@tauri-apps/plugin-shell";
 import { onOpenUrl as tauri_onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { io, Socket } from "socket.io-client";
+import type { Config } from "./interface";
 
 declare global {
   interface Window {
@@ -140,10 +141,13 @@ async function convertFileSrc(filePath: string) {
   return `${ENDPOINT}/output/${filePath}`;
 }
 
-const config = (await invoke("get_config")) as any;
+let config: Config | null = null;
 const coverCache: Map<string, string> = new Map();
 
 async function get_cover(coverType: string, coverPath: string) {
+  if (config === null) {
+    config = (await invoke("get_config")) as any;
+  }
   if (TAURI_ENV) {
     if (coverType === "cache") {
       const absolutePath = `${config.cache}/${coverPath}`;

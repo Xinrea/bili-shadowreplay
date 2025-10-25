@@ -39,6 +39,7 @@
   import { onDestroy, onMount } from "svelte";
   import { listen as tauriListen } from "@tauri-apps/api/event";
   import type { AccountInfo } from "../db";
+  import WaveSurfer from "wavesurfer.js";
 
   export let show = false;
   export let video: VideoItem;
@@ -123,6 +124,13 @@
   let uid_selected = 0;
   let show_cover_editor = false;
 
+  // WaveSurfer.js 相关变量
+  let wavesurfer: any = null;
+  let waveformContainer: HTMLElement;
+  let isWaveformLoaded = false;
+  let isWaveformLoading = false;
+  let syncTimeout: ReturnType<typeof setTimeout> | null = null;
+
   // 获取 profile 从 localStorage
   function get_profile(): Profile {
     const profile_str = window.localStorage.getItem("profile-" + roomId);
@@ -136,6 +144,125 @@
 
   $: {
     window.localStorage.setItem("profile-" + roomId, JSON.stringify(profile));
+  }
+
+  // 初始化 WaveSurfer.js
+  async function initWaveSurfer() {
+    if (typeof window === "undefined" || !video?.file) return;
+
+    isWaveformLoading = true;
+
+    try {
+      createWaveSurfer();
+    } catch (error) {
+      console.error("Failed to initialize WaveSurfer.js:", error);
+      isWaveformLoading = false;
+    }
+  }
+
+  function createWaveSurfer() {
+    // 使用更稳定的容器查找方式
+    const container = document.querySelector(
+      "[data-waveform-container]"
+    ) as HTMLElement;
+
+    if (!container || !video?.file) {
+      console.log("Missing container or video file:", {
+        container,
+        videoFile: video?.file,
+      });
+      return;
+    }
+
+    // 确保容器有正确的尺寸，考虑 timeline scale
+    container.style.width = `${100 * timelineScale}%`;
+    container.style.height = "60px";
+    container.style.minHeight = "60px";
+    container.style.display = "block";
+
+    console.log("Creating WaveSurfer with:", {
+      container: container,
+      file: video.file,
+      containerDimensions: {
+        width: container.offsetWidth,
+        height: container.offsetHeight,
+      },
+    });
+
+    try {
+      wavesurfer = WaveSurfer.create({
+        container: container,
+        waveColor: "#4a5568",
+        progressColor: "#0A84FF",
+        cursorColor: "#0A84FF",
+        barWidth: 2,
+        barRadius: 1,
+        height: 60,
+        normalize: true,
+        interact: true, // 启用交互，允许点击切换进度
+        plugins: [],
+      });
+
+      console.log("WaveSurfer created, loading file:", video.file);
+      // 加载音频
+      wavesurfer.load(video.file);
+
+      // 监听加载完成
+      wavesurfer.on("ready", () => {
+        isWaveformLoaded = true;
+        isWaveformLoading = false;
+        console.log("Waveform loaded successfully");
+        console.log("WaveSurfer instance:", wavesurfer);
+      });
+
+      // 监听点击事件，同步视频进度
+      wavesurfer.on("interaction", (newTime: number) => {
+        if (videoElement && videoElement.duration) {
+          videoElement.currentTime = newTime;
+          currentTime = newTime;
+        }
+      });
+
+      // 监听错误
+      wavesurfer.on("error", (e: any) => {
+        console.error("WaveSurfer error:", e);
+        isWaveformLoading = false;
+      });
+
+      // 监听加载进度
+      wavesurfer.on("loading", (percent: number) => {
+        console.log("WaveSurfer loading:", percent + "%");
+      });
+    } catch (error) {
+      console.error("Failed to create WaveSurfer:", error);
+    }
+  }
+
+  // 同步波形图与视频进度
+  function syncWaveformWithVideo() {
+    if (
+      !wavesurfer ||
+      !videoElement ||
+      !isWaveformLoaded ||
+      !videoElement.duration
+    )
+      return;
+
+    try {
+      const progress = videoElement.currentTime / videoElement.duration;
+      wavesurfer.seekTo(progress);
+    } catch (error) {
+      console.warn("Failed to sync waveform:", error);
+    }
+  }
+
+  // 销毁 WaveSurfer 实例
+  function destroyWaveSurfer() {
+    if (wavesurfer) {
+      wavesurfer.destroy();
+      wavesurfer = null;
+      isWaveformLoaded = false;
+    }
   }
 
   // on window close, save subtitles
@@ -183,6 +310,8 @@
     if (windowCloseUnlisten) {
       windowCloseUnlisten();
     }
+    // 清理 WaveSurfer 实例
+    destroyWaveSurfer();
   });
 
   function update_encode_prompt(content: string) {
@@ -446,6 +575,9 @@
     currentSubtitleIndex = -1;
     subtitleElements = [];
     loadSubtitleStyle(); // 加载字幕样式
+
+    // 销毁旧的波形图实例
+    destroyWaveSurfer();
   }
 
   // 当视频改变时重新初始化切片时间（只在视频ID改变时触发）
@@ -479,6 +611,11 @@
     }
     await loadSubtitles(); // 加载保存的字幕
     initClipTimes(); // 初始化切片时间
+
+    // 初始化波形图
+    setTimeout(() => {
+      initWaveSurfer();
+    }, 100);
   }
 
   function updateTimeMarkers() {
@@ -771,6 +908,9 @@
     currentSubtitleIndex = getCurrentSubtitleIndex();
     const currentSub = subtitles[currentSubtitleIndex];
     currentSubtitle = currentSub?.text || "";
+
+    // 同步波形图进度
+    syncWaveformWithVideo();
   }
 
   function handleVideoEnded() {
@@ -1083,6 +1223,11 @@
     const rect = timelineElement.getBoundingClientRect();
     timelineWidth = rect.width;
     updateTimeMarkers();
+
+    // 同步调整 waveform 容器宽度
+    if (waveformContainer) {
+      waveformContainer.style.width = `${100 * timelineScale}%`;
+    }
   }
 
   function handleWheel(e: WheelEvent) {
@@ -1578,17 +1723,50 @@
           </div>
         </div>
 
-        <!-- 字幕时间轴 -->
+        <!-- 时间轴容器（包含波形图和字幕时间轴） -->
         <div class="bg-[#1c1c1e] border-t border-gray-800/50">
           <div
-            class="h-32 overflow-x-auto overflow-y-hidden sidebar-scrollbar"
+            class="h-48 overflow-x-auto overflow-y-hidden sidebar-scrollbar"
             bind:this={timelineContainer}
             on:wheel|preventDefault={handleWheel}
           >
+            {#if isWaveformLoading}
+              <div class="flex items-center space-x-2 text-gray-400 w-full">
+                <svg
+                  class="animate-spin h-4 w-4"
+                  xmlns="http://www.w3.org/2000/svg"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                >
+                  <circle
+                    class="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    stroke-width="4"
+                  ></circle>
+                  <path
+                    class="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                  ></path>
+                </svg>
+                <span class="text-sm">加载音频波形...</span>
+              </div>
+            {/if}
+            <div
+              bind:this={waveformContainer}
+              class="w-full h-full waveform-container"
+              style="min-height: 60px; width: 100%; height: 60px;"
+              data-waveform-container
+            ></div>
+
+            <!-- 字幕时间轴 -->
             <!-- svelte-ignore a11y-click-events-have-key-events -->
             <div
               bind:this={timelineElement}
-              class="relative h-full group"
+              class="relative h-32 group"
               style="width: {100 * timelineScale}%"
               on:mousemove={(e) => {
                 if (!timelineElement) return;
@@ -2154,5 +2332,13 @@
     height: 4px;
     border-radius: 2px;
     background: #4a5568;
+  }
+
+  /* WaveSurfer.js 样式 */
+  .waveform-container {
+    background: #1c1c1e;
+    border-radius: 4px;
+    width: 100%;
+    height: 100%;
   }
 </style>

@@ -260,6 +260,8 @@ impl DouyinRecorder {
             danmu_stream_task.abort();
         }
 
+        *self.live_id.write().await = live_id.to_string();
+
         let self_clone = self.clone();
         log::info!("Start fetching danmu for live {live_id}");
         *self.danmu_task.lock().await = Some(tokio::spawn(async move {

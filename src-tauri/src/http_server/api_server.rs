@@ -1062,7 +1062,7 @@ async fn handler_update_danmu_ass_options(
     state: axum::extract::State<State>,
     Json(param): Json<UpdateDanmuAssOptionsRequest>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
-    update_danmu_ass_options(state.0, param.font_size, param.opacity).await;
+    let _ = update_danmu_ass_options(state.0, param.font_size, param.opacity).await;
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -1755,6 +1755,10 @@ pub async fn start_api_server(state: State) {
                 post(handler_update_whisper_language),
             )
             .route("/api/update_webhook_url", post(handler_update_webhook_url))
+            .route(
+                "/api/update_danmu_ass_options",
+                post(handler_update_danmu_ass_options),
+            )
             .route(
                 "/api/batch_import_external_videos",
                 post(handler_batch_import_external_videos),

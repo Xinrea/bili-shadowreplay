@@ -113,6 +113,7 @@ impl HlsRecorder {
                     _ => {
                         // Other errors are not critical, just log it
                         log::error!("[{}]Update entries error: {}", self.room_id, e);
+                        return Err(e);
                     }
                 }
             }

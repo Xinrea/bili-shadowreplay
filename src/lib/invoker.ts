@@ -140,10 +140,10 @@ async function convertFileSrc(filePath: string) {
   return `${ENDPOINT}/output/${filePath}`;
 }
 
+const config = (await invoke("get_config")) as any;
 const coverCache: Map<string, string> = new Map();
 
 async function get_cover(coverType: string, coverPath: string) {
-  const config = (await invoke("get_config")) as any;
   if (TAURI_ENV) {
     if (coverType === "cache") {
       const absolutePath = `${config.cache}/${coverPath}`;

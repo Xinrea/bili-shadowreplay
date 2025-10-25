@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 
-use crate::recorder_manager::ClipRangeParams;
+use crate::{danmu2ass::Danmu2AssOptions, recorder_manager::ClipRangeParams};
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Config {
@@ -37,12 +37,18 @@ pub struct Config {
     pub whisper_language: String,
     #[serde(default = "default_webhook_url")]
     pub webhook_url: String,
+    #[serde(default = "default_danmu_ass_options")]
+    pub danmu_ass_options: Danmu2AssOptions,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct AutoGenerateConfig {
     pub enabled: bool,
     pub encode_danmu: bool,
+}
+
+fn default_danmu_ass_options() -> Danmu2AssOptions {
+    Danmu2AssOptions::default()
 }
 
 fn default_auto_subtitle() -> bool {
@@ -130,6 +136,7 @@ impl Config {
             config_path: config_path.to_str().unwrap().into(),
             whisper_language: default_whisper_language(),
             webhook_url: default_webhook_url(),
+            danmu_ass_options: default_danmu_ass_options(),
         };
 
         config.save();
@@ -159,6 +166,12 @@ impl Config {
     #[allow(dead_code)]
     pub fn set_whisper_language(&mut self, language: &str) {
         self.whisper_language = language.to_string();
+        self.save();
+    }
+
+    #[allow(dead_code)]
+    pub fn set_danmu_ass_options(&mut self, options: Danmu2AssOptions) {
+        self.danmu_ass_options = options;
         self.save();
     }
 

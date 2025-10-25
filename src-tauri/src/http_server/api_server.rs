@@ -14,10 +14,11 @@ use crate::{
             add_account, get_account_count, get_accounts, get_qr, get_qr_status, remove_account,
         },
         config::{
-            get_config, update_auto_generate, update_clip_name_format, update_notify,
-            update_openai_api_endpoint, update_openai_api_key, update_status_check_interval,
-            update_subtitle_generator_type, update_subtitle_setting, update_webhook_url,
-            update_whisper_language, update_whisper_model, update_whisper_prompt,
+            get_config, update_auto_generate, update_clip_name_format, update_danmu_ass_options,
+            update_notify, update_openai_api_endpoint, update_openai_api_key,
+            update_status_check_interval, update_subtitle_generator_type, update_subtitle_setting,
+            update_webhook_url, update_whisper_language, update_whisper_model,
+            update_whisper_prompt,
         },
         message::{delete_message, get_messages, read_message},
         recorder::{
@@ -1048,6 +1049,21 @@ async fn handler_get_archives_by_parent_id(
 ) -> Result<Json<ApiResponse<Vec<RecordRow>>>, ApiError> {
     let archives = get_archives_by_parent_id(state.0, param.room_id, param.parent_id).await?;
     Ok(Json(ApiResponse::success(archives)))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateDanmuAssOptionsRequest {
+    font_size: f64,
+    opacity: f64,
+}
+
+async fn handler_update_danmu_ass_options(
+    state: axum::extract::State<State>,
+    Json(param): Json<UpdateDanmuAssOptionsRequest>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    update_danmu_ass_options(state.0, param.font_size, param.opacity).await;
+    Ok(Json(ApiResponse::success(())))
 }
 
 #[derive(Debug, Serialize, Deserialize)]

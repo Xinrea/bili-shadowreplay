@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::danmu2ass::Danmu2AssOptions;
 use crate::state::State;
 use crate::state_type;
 
@@ -278,5 +279,20 @@ pub async fn update_webhook_url(state: state_type!(), webhook_url: String) -> Re
         .await;
     state.config.write().await.webhook_url = webhook_url;
     state.config.write().await.save();
+    Ok(())
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn update_danmu_ass_options(
+    state: state_type!(),
+    font_size: f64,
+    opacity: f64,
+) -> Result<(), ()> {
+    log::info!("Updating danmu ass options");
+    state
+        .config
+        .write()
+        .await
+        .set_danmu_ass_options(Danmu2AssOptions { font_size, opacity });
     Ok(())
 }

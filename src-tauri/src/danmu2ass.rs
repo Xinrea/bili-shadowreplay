@@ -1,4 +1,5 @@
 use recorder::danmu::DanmuEntry;
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
 // code reference: https://github.com/tiansh/us-danmaku/blob/master/bilibili/bilibili_ASS_Danmaku_Downloader.user.js
@@ -30,9 +31,32 @@ const BOTTOM_RESERVED: f64 = 50.0;
 const R2L_TIME: f64 = 8.0;
 const MAX_DELAY: f64 = 6.0;
 
-pub fn danmu_to_ass(danmus: Vec<DanmuEntry>) -> String {
+#[derive(Deserialize, Serialize, Clone)]
+pub struct Danmu2AssOptions {
+    pub font_size: f64,
+    pub opacity: f64, // 透明度，范围 0.0-1.0，0.0为完全透明，1.0为完全不透明
+}
+
+impl Default for Danmu2AssOptions {
+    fn default() -> Self {
+        Self {
+            font_size: 36.0,
+            opacity: 0.8, // 默认80%透明度
+        }
+    }
+}
+
+pub fn danmu_to_ass(danmus: Vec<DanmuEntry>, options: Danmu2AssOptions) -> String {
+    let font_size = options.font_size; // Default font size
+    let opacity = options.opacity; // 透明度参数
+
+    // 将透明度转换为十六进制Alpha值 (0.0-1.0 -> 0x00-0xFF)
+    let alpha = ((1.0 - opacity) * 255.0) as u8;
+    let alpha_hex = format!("{:02X}", alpha);
+
     // ASS header
-    let header = r"[Script Info]
+    let header = format!(
+        r"[Script Info]
 Title: Bilibili Danmaku
 ScriptType: v4.00+
 Collisions: Normal
@@ -42,14 +66,15 @@ Timer: 10.0000
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,微软雅黑,36,&H7fFFFFFF,&H7fFFFFFF,&H7f000000,&H7f000000,0,0,0,0,100,100,0,0,1,1,0,2,20,20,2,0
+Style: Default,微软雅黑,{},&H{}FFFFFF,&H{}FFFFFF,&H{}000000,&H{}000000,0,0,0,0,100,100,0,0,1,1,0,2,20,20,2,0
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-";
+",
+        font_size, alpha_hex, alpha_hex, alpha_hex, alpha_hex
+    );
 
     let mut normal = normal_danmaku();
-    let font_size = 36.0; // Default font size
 
     // Convert danmus to ASS events
     let events = danmus

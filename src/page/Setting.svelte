@@ -38,6 +38,10 @@
     status_check_interval: 30, // 默认30秒
     whisper_language: "",
     webhook_url: "",
+    danmu_ass_options: {
+      font_size: 36,
+      opacity: 0.8,
+    },
   };
 
   let showModal = false;
@@ -145,6 +149,13 @@
   async function update_webhook_url() {
     await invoke("update_webhook_url", {
       webhookUrl: setting_model.webhook_url,
+    });
+  }
+
+  async function update_danmu_ass_options() {
+    await invoke("update_danmu_ass_options", {
+      fontSize: setting_model.danmu_ass_options.font_size,
+      opacity: setting_model.danmu_ass_options.opacity,
     });
   }
 
@@ -713,6 +724,73 @@
                           clipNameFormat: setting_model.clip_name_format,
                         });
                       }}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Danmu Style Settings -->
+          <div class="space-y-4">
+            <h2
+              class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
+            >
+              <Captions class="w-5 h-5 dark:icon-white" />
+              <span>弹幕压制样式</span>
+            </h2>
+            <div
+              class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700"
+            >
+              <!-- Font Size -->
+              <div class="p-4">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <h3
+                      class="text-sm font-medium text-gray-900 dark:text-white"
+                    >
+                      字体大小
+                    </h3>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                      设置弹幕字体大小
+                    </p>
+                  </div>
+                  <div class="flex items-center space-x-2">
+                    <input
+                      type="number"
+                      class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-24"
+                      bind:value={setting_model.danmu_ass_options.font_size}
+                      on:blur={update_danmu_ass_options}
+                      min="12"
+                      max="72"
+                      step="1"
+                    />
+                  </div>
+                </div>
+              </div>
+              <!-- Opacity -->
+              <div class="p-4">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <h3
+                      class="text-sm font-medium text-gray-900 dark:text-white"
+                    >
+                      不透明度
+                    </h3>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                      设置弹幕不透明度，范围
+                      0.0-1.0，0.0为完全透明，1.0为完全不透明
+                    </p>
+                  </div>
+                  <div class="flex items-center space-x-2">
+                    <input
+                      type="number"
+                      class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-24"
+                      bind:value={setting_model.danmu_ass_options.opacity}
+                      on:blur={update_danmu_ass_options}
+                      min="0.0"
+                      max="1.0"
+                      step="0.1"
                     />
                   </div>
                 </div>

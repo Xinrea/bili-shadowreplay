@@ -888,7 +888,8 @@ impl RecorderManager {
             return Ok(clip_file);
         }
 
-        let ass_content = danmu2ass::danmu_to_ass(danmus);
+        let ass_content =
+            danmu2ass::danmu_to_ass(danmus, self.config.read().await.danmu_ass_options.clone());
         // dump ass_content into a temp file
         let ass_file_path = clip_file.with_extension("ass");
         if let Err(e) = write(&ass_file_path, ass_content).await {
@@ -928,7 +929,8 @@ impl RecorderManager {
         for d in &mut danmus {
             d.ts -= first_segment_timestamp_milis;
         }
-        let ass_content = danmu2ass::danmu_to_ass(danmus);
+        let ass_content =
+            danmu2ass::danmu_to_ass(danmus, self.config.read().await.danmu_ass_options.clone());
         let work_dir = CachePath::new(
             self.config.read().await.cache.clone().into(),
             platform,

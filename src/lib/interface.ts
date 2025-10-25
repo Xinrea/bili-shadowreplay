@@ -150,6 +150,12 @@ export interface Config {
   status_check_interval: number;
   whisper_language: string;
   webhook_url: string;
+  danmu_ass_options: Danmu2AssOptions;
+}
+
+export interface Danmu2AssOptions {
+  font_size: number;
+  opacity: number;
 }
 
 export interface AutoGenerateConfig {

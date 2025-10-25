@@ -333,7 +333,10 @@ pub async fn export_danmu(
     }
 
     if options.ass {
-        Ok(danmu2ass::danmu_to_ass(danmus))
+        Ok(danmu2ass::danmu_to_ass(
+            danmus,
+            danmu2ass::Danmu2AssOptions::default(),
+        ))
     } else {
         // map and join entries
         Ok(danmus

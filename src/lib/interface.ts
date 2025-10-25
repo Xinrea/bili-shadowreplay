@@ -282,3 +282,8 @@ export interface DanmuEntry {
   ts: number;
   content: string;
 }
+
+export interface RecorderList {
+  count: number;
+  recorders: RecorderInfo[];
+}

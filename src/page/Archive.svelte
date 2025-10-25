@@ -20,14 +20,15 @@
   import BilibiliIcon from "../lib/components/BilibiliIcon.svelte";
   import DouyinIcon from "../lib/components/DouyinIcon.svelte";
   import GenerateWholeClipModal from "../lib/components/GenerateWholeClipModal.svelte";
+  import type { RecorderInfo, RecorderList } from "src/lib/interface";
 
   let archives: RecordItem[] = [];
   let filteredArchives: RecordItem[] = [];
   let loading = false;
   let sortBy = "created_at";
   let sortOrder = "desc";
-  let selectedRoomId: number | null = null;
-  let roomIds: number[] = [];
+  let selectedRoomId: string | null = null;
+  let roomIds: string[] = [];
 
   let selectedArchives: Set<string> = new Set();
   let showDeleteConfirm = false;
@@ -50,7 +51,7 @@
 
   // 所有数据缓存
   let allArchives = [];
-  let allRooms = [];
+  let allRooms: RecorderInfo[] = [];
 
   onMount(async () => {
     // 从本地存储恢复分页大小设置
@@ -74,11 +75,13 @@
 
     try {
       // 获取所有直播间列表
-      const recorderList: any = await invoke("get_recorder_list");
+      const recorderList: RecorderList = await invoke("get_recorder_list");
       allRooms = recorderList.recorders || [];
 
       // 收集所有直播间ID用于筛选
-      roomIds = allRooms.map((room) => room.room_id).sort((a, b) => a - b);
+      roomIds = allRooms
+        .map((room: RecorderInfo) => room.room_info.room_id)
+        .sort();
 
       // 加载所有录播数据
       allArchives = [];
@@ -176,12 +179,12 @@
   }
 
   function applyFilters() {
-    let filtered = [...allArchives];
+    let filtered: RecordItem[] = [...allArchives];
 
     // Apply room filter
     if (selectedRoomId !== null) {
       filtered = filtered.filter(
-        (archive) => archive.room_id === selectedRoomId
+        (archive) => String(archive.room_id) === selectedRoomId
       );
     }
 

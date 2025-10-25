@@ -455,7 +455,7 @@ impl RecorderManager {
                     .get_account_by_platform(platform.clone().as_str())
                     .await;
                 if platform != PlatformType::Huya && account.is_err() {
-                    log::error!("Failed to get account: {}", account.err().unwrap());
+                    log::warn!("Failed to find an account for {platform:?} {room_id}");
                     continue;
                 }
                 let account = if let Ok(account) = account {

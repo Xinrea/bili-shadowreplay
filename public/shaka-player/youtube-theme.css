@@ -1,19 +1,19 @@
 @font-face {
-  font-family: 'Roboto';
+  font-family: "Roboto";
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url(https://fonts.gstatic.com/s/roboto/v27/KFOmCnqEu92Fr1Me5Q.ttf) format('truetype');
+  src: url(./fonts/KFOmCnqEu92Fr1Me5Q.ttf) format("truetype");
 }
 @font-face {
-  font-family: 'Roboto';
+  font-family: "Roboto";
   font-style: normal;
   font-weight: 500;
   font-display: swap;
-  src: url(https://fonts.gstatic.com/s/roboto/v27/KFOlCnqEu92Fr1MmEU9vAw.ttf) format('truetype');
+  src: url(./fonts/KFOlCnqEu92Fr1MmEU9vAw.ttf) format("truetype");
 }
 .youtube-theme {
-  font-family: 'Roboto', sans-serif;
+  font-family: "Roboto", sans-serif;
 }
 .youtube-theme .shaka-bottom-controls {
   width: 100%;
@@ -27,18 +27,18 @@
   display: flex;
   -webkit-box-orient: vertical;
   -webkit-box-direction: normal;
-      -ms-flex-direction: column;
-          flex-direction: column;
+  -ms-flex-direction: column;
+  flex-direction: column;
 }
 .youtube-theme .shaka-ad-controls {
   -webkit-box-ordinal-group: 2;
-      -ms-flex-order: 1;
-          order: 1;
+  -ms-flex-order: 1;
+  order: 1;
 }
 .youtube-theme .shaka-controls-button-panel {
   -webkit-box-ordinal-group: 3;
-      -ms-flex-order: 2;
-          order: 2;
+  -ms-flex-order: 2;
+  order: 2;
   height: 40px;
   padding: 0 10px;
 }
@@ -48,36 +48,36 @@
 }
 .youtube-theme .shaka-small-play-button {
   -webkit-box-ordinal-group: -2;
-      -ms-flex-order: -3;
-          order: -3;
+  -ms-flex-order: -3;
+  order: -3;
 }
 .youtube-theme .shaka-mute-button {
   -webkit-box-ordinal-group: -1;
-      -ms-flex-order: -2;
-          order: -2;
+  -ms-flex-order: -2;
+  order: -2;
 }
 .youtube-theme .shaka-controls-button-panel > * {
   margin: 0;
   padding: 3px 8px;
-  color: #EEE;
+  color: #eee;
   height: 40px;
 }
 .youtube-theme .shaka-controls-button-panel > *:focus {
   outline: none;
   -webkit-box-shadow: inset 0 0 0 2px rgba(27, 127, 204, 0.8);
-          box-shadow: inset 0 0 0 2px rgba(27, 127, 204, 0.8);
-  color: #FFF;
+  box-shadow: inset 0 0 0 2px rgba(27, 127, 204, 0.8);
+  color: #fff;
 }
 .youtube-theme .shaka-controls-button-panel > *:hover {
-  color: #FFF;
+  color: #fff;
 }
 .youtube-theme .shaka-controls-button-panel .shaka-volume-bar-container {
   position: relative;
   z-index: 10;
   left: -1px;
   -webkit-box-ordinal-group: 0;
-      -ms-flex-order: -1;
-          order: -1;
+  -ms-flex-order: -1;
+  order: -1;
   opacity: 0;
   width: 0px;
   -webkit-transition: width 0.2s cubic-bezier(0.4, 0, 1, 1);
@@ -120,23 +120,25 @@
   opacity: 1;
   cursor: pointer;
 }
-.youtube-theme .shaka-seek-bar-container input[type=range]::-webkit-slider-thumb {
-  background: #FF0000;
+.youtube-theme
+  .shaka-seek-bar-container
+  input[type="range"]::-webkit-slider-thumb {
+  background: #ff0000;
   cursor: pointer;
 }
-.youtube-theme .shaka-seek-bar-container input[type=range]::-moz-range-thumb {
-  background: #FF0000;
+.youtube-theme .shaka-seek-bar-container input[type="range"]::-moz-range-thumb {
+  background: #ff0000;
   cursor: pointer;
 }
-.youtube-theme .shaka-seek-bar-container input[type=range]::-ms-thumb {
-  background: #FF0000;
+.youtube-theme .shaka-seek-bar-container input[type="range"]::-ms-thumb {
+  background: #ff0000;
   cursor: pointer;
 }
 .youtube-theme .shaka-video-container * {
-  font-family: 'Roboto', sans-serif;
+  font-family: "Roboto", sans-serif;
 }
 .youtube-theme .shaka-video-container .material-icons-round {
-  font-family: 'Material Icons Sharp';
+  font-family: "Material Icons Sharp";
 }
 .youtube-theme .shaka-overflow-menu,
 .youtube-theme .shaka-settings-menu {
@@ -170,14 +172,14 @@
 }
 .youtube-theme .shaka-settings-menu button[aria-selected="true"] span {
   -webkit-box-ordinal-group: 3;
-      -ms-flex-order: 2;
-          order: 2;
+  -ms-flex-order: 2;
+  order: 2;
   margin-left: 0;
 }
 .youtube-theme .shaka-settings-menu button[aria-selected="true"] i {
   -webkit-box-ordinal-group: 2;
-      -ms-flex-order: 1;
-          order: 1;
+  -ms-flex-order: 1;
+  order: 1;
   font-size: 18px;
   padding-left: 5px;
 }
@@ -192,25 +194,25 @@
   display: -ms-flexbox;
   display: flex;
   -webkit-box-pack: justify;
-      -ms-flex-pack: justify;
-          justify-content: space-between;
+  -ms-flex-pack: justify;
+  justify-content: space-between;
   -webkit-box-orient: horizontal;
   -webkit-box-direction: normal;
-      -ms-flex-direction: row;
-          flex-direction: row;
+  -ms-flex-direction: row;
+  flex-direction: row;
   -webkit-box-align: center;
-      -ms-flex-align: center;
-          align-items: center;
+  -ms-flex-align: center;
+  align-items: center;
   cursor: default;
   outline: none;
   height: 40px;
   -webkit-box-flex: 0;
-      -ms-flex: 0 0 100%;
-          flex: 0 0 100%;
+  -ms-flex: 0 0 100%;
+  flex: 0 0 100%;
 }
 .youtube-theme .shaka-overflow-menu button .shaka-overflow-button-label span {
   -ms-flex-negative: initial;
-      flex-shrink: initial;
+  flex-shrink: initial;
   padding-left: 15px;
   font-size: 13px;
   font-weight: 500;
@@ -218,11 +220,11 @@
   display: -ms-flexbox;
   display: flex;
   -webkit-box-align: center;
-      -ms-flex-align: center;
-          align-items: center;
+  -ms-flex-align: center;
+  align-items: center;
 }
 .youtube-theme .shaka-overflow-menu span + span {
-  color: #FFF;
+  color: #fff;
   font-weight: 400 !important;
   font-size: 12px !important;
   padding-right: 8px;
@@ -230,7 +232,7 @@
 }
 .youtube-theme .shaka-overflow-menu span + span:after {
   content: "navigate_next";
-  font-family: 'Material Icons Sharp';
+  font-family: "Material Icons Sharp";
   font-size: 20px;
 }
 .youtube-theme .shaka-overflow-menu .shaka-pip-button span + span {
@@ -270,10 +272,10 @@
 }
 .youtube-theme .shaka-overflow-menu button,
 .youtube-theme .shaka-settings-menu button {
-  color: #EEE;
+  color: #eee;
 }
 .youtube-theme .shaka-captions-off {
-  color: #BFBFBF;
+  color: #bfbfbf;
 }
 .youtube-theme .shaka-overflow-menu-button {
   font-size: 18px;

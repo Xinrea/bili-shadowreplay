@@ -225,11 +225,6 @@ pub async fn open_live(
         use std::str::FromStr;
 
         let platform = PlatformType::from_str(&platform)?;
-        let recorder_info = state
-            .recorder_manager
-            .get_recorder_info(platform, room_id)
-            .await
-            .unwrap();
         let builder = tauri::WebviewWindowBuilder::new(
             &state.app_handle,
             format!("Live:{room_id}:{live_id}"),
@@ -243,10 +238,7 @@ pub async fn open_live(
                 .into(),
             ),
         )
-        .title(format!(
-            "Live[{}] {}",
-            room_id, recorder_info.room_info.room_title
-        ))
+        .title(format!("Live[{}] {}", room_id, live_id))
         .theme(Some(Theme::Light))
         .inner_size(1200.0, 800.0)
         .effects(WindowEffectsConfig {

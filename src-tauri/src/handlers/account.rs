@@ -114,10 +114,7 @@ pub async fn remove_account(
     if platform == "bilibili" {
         let account = state.db.get_account(&platform, uid).await?;
         let client = reqwest::Client::new();
-        return match bilibili::api::logout(&client, &account.to_account()).await {
-            Ok(()) => Ok(()),
-            Err(e) => Err(e.to_string()),
-        };
+        let _ = bilibili::api::logout(&client, &account.to_account()).await;
     }
     Ok(state.db.remove_account(&platform, uid).await?)
 }

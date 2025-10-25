@@ -303,6 +303,11 @@ async fn download_inner(
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     }
     let response = client.get(url).send().await?;
+    if !response.status().is_success() {
+        let status = response.status();
+        log::warn!("Download segment failed: {url}: {status}");
+        return Err(RecorderError::InvalidResponseStatus { status });
+    }
     let bytes = response.bytes().await?;
     let size = bytes.len() as u64;
     let mut file = tokio::fs::File::create(&path).await?;

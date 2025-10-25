@@ -876,6 +876,9 @@ impl RecorderManager {
             // update entry ts to offset and filter danmus in range
             for d in &mut danmus {
                 d.ts -= stream_start_timestamp_milis + params.local_offset * 1000;
+                if let Some(range) = &params.range {
+                    d.ts -= (range.start * 1000.0) as i64;
+                }
             }
             if range.duration() > 0.0 {
                 danmus.retain(|x| x.ts >= 0 && x.ts <= (range.duration() * 1000.0).round() as i64);

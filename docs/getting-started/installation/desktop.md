@@ -4,6 +4,8 @@
 
 由于程序会对账号等敏感信息进行管理，请从信任的来源进行下载；所有版本均可在 [GitHub Releases](https://github.com/Xinrea/bili-shadowreplay/releases) 页面下载安装。
 
+对于 MacOS 用户，请先手动安装 FFmpeg，详情见 [FFmpeg 配置](../config/ffmpeg.md)。
+
 ## Windows
 
 由于程序内置 Whisper 字幕识别模型支持，Windows 版本分为两种：

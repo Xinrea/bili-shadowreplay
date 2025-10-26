@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "bili-shadowreplay"
-version = "2.15.3"
+version = "2.15.4"
 description = "BiliBili ShadowReplay"
 authors = ["Xinrea"]
 license = ""

@@ -104,7 +104,6 @@
 
   let addModal = false;
   let addRoom = "";
-  let addSecUserId = "";
   let addValid = false;
   let addErrorMsg = "";
   let selectedPlatform = "bilibili";
@@ -337,7 +336,6 @@
       .then(() => {
         addModal = false;
         addRoom = "";
-        addSecUserId = "";
       })
       .catch(async (e) => {
         await message(e);
@@ -709,27 +707,6 @@
           </div>
 
           <div class="space-y-2">
-            {#if selectedPlatform === "douyin"}
-              <label
-                for="sec_user_id"
-                class="block text-sm font-medium text-gray-700 dark:text-gray-300"
-              >
-                主播 SEC_UID (
-                <a
-                  href="https://bsr.xinrea.cn/usage/features/room.html#%E6%89%8B%E5%8A%A8%E6%B7%BB%E5%8A%A0%E7%9B%B4%E6%92%AD%E9%97%B4"
-                  target="_blank"
-                  class="text-blue-500">如何获取</a
-                >
-                )
-              </label>
-              <input
-                id="sec_user_id"
-                type="text"
-                bind:value={addSecUserId}
-                placeholder="请输入主播的 SEC_UID（选填）"
-                class="w-full px-3 py-2 bg-[#f5f5f7] dark:bg-[#1c1c1e] border-0 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400"
-              />
-            {/if}
             <label
               for="room_id"
               class="block text-sm font-medium text-gray-700 dark:text-gray-300"
@@ -778,7 +755,7 @@
               class="px-4 py-2 bg-[#0A84FF] hover:bg-[#0A84FF]/90 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               disabled={!addValid}
               on:click={() => {
-                addNewRecorder(Number(addRoom), selectedPlatform, addSecUserId);
+                addNewRecorder(Number(addRoom), selectedPlatform, "");
                 addModal = false;
                 addRoom = "";
               }}

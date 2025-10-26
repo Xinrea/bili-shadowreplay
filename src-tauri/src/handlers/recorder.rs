@@ -14,6 +14,7 @@ use crate::webhook::events;
 use recorder::account::Account;
 use recorder::danmu::DanmuEntry;
 use recorder::platforms::bilibili;
+use recorder::platforms::douyin;
 use recorder::platforms::PlatformType;
 use recorder::RecorderInfo;
 
@@ -33,7 +34,7 @@ pub async fn add_recorder(
     state: state_type!(),
     platform: String,
     room_id: i64,
-    extra: String,
+    mut extra: String,
 ) -> Result<RecorderRow, String> {
     log::info!("Add recorder: {platform} {room_id}");
     let platform = PlatformType::from_str(&platform).unwrap();
@@ -47,6 +48,12 @@ pub async fn add_recorder(
             }
         }
         PlatformType::Douyin => {
+            let client = reqwest::Client::new();
+            let sec_uid = douyin::api::get_room_owner_sec_uid(&client, room_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            extra = sec_uid;
+
             if let Ok(account) = state.db.get_account_by_platform("douyin").await {
                 Ok(account.to_account())
             } else {

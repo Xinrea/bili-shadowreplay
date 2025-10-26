@@ -3,6 +3,7 @@ use crate::errors::RecorderError;
 use crate::utils::user_agent_generator;
 use deno_core::JsRuntime;
 use deno_core::RuntimeOptions;
+use regex::Regex;
 use reqwest::Client;
 use uuid::Uuid;
 
@@ -332,6 +333,34 @@ pub async fn get_user_info(
     })
 }
 
+pub async fn get_room_owner_sec_uid(
+    client: &Client,
+    room_id: i64,
+) -> Result<String, RecorderError> {
+    let url = format!("https://live.douyin.com/{room_id}");
+    let mut headers = generate_user_agent_header();
+    headers.insert("Referer", "https://live.douyin.com/".parse().unwrap());
+    let resp = client.get(url).headers(headers).send().await?;
+    let status = resp.status();
+    let text = resp.text().await?;
+    if !status.is_success() {
+        return Err(RecorderError::ApiError {
+            error: format!("Failed to get room owner sec uid: {status} {text}"),
+        });
+    }
+    // match to get sec_uid from text like \"sec_uid\":\"MS4wLjABAAAAdFmmud36bynPjXOvoMjatb42856_zryHsGmlkpIECDA\"
+    let sec_uid = Regex::new(r#"\\"sec_uid\\":\\"(.*?)\\""#)
+        .unwrap()
+        .captures(&text)
+        .and_then(|c| c.get(1))
+        .ok_or_else(|| RecorderError::ApiError {
+            error: "Failed to find sec_uid in room page".to_string(),
+        })?
+        .as_str()
+        .to_string();
+    Ok(sec_uid)
+}
+
 /// Download file from url to path
 pub async fn download_file(client: &Client, url: &str, path: &Path) -> Result<(), RecorderError> {
     if !path.parent().unwrap().exists() {
@@ -343,4 +372,19 @@ pub async fn download_file(client: &Client, url: &str, path: &Path) -> Result<()
     let mut content = std::io::Cursor::new(bytes);
     tokio::io::copy(&mut content, &mut file).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_get_room_owner_sec_uid() {
+        let client = Client::new();
+        let sec_uid = get_room_owner_sec_uid(&client, 200525029536).await.unwrap();
+        assert_eq!(
+            sec_uid,
+            "MS4wLjABAAAAdFmmud36bynPjXOvoMjatb42856_zryHsGmlkpIECDA"
+        );
+    }
 }

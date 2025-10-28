@@ -80,9 +80,18 @@ impl HlsStream {
         if self.extra.is_empty() {
             format!("{}{}", self.host, base_url)
         } else {
-            // Remove the trailing '?' from base_url and add it properly
-            let base_without_query = base_url.trim_end_matches('?');
-            format!("{}{}?{}", self.host, base_without_query, self.extra)
+            // Check if base_url already contains query parameters
+            if base_url.contains('?') {
+                // If seg_name already has query params, append extra with '&'
+                // Remove trailing '?' or '&' before appending
+                let base_trimmed = base_url.trim_end_matches('?').trim_end_matches('&');
+                format!("{}{}&{}", self.host, base_trimmed, self.extra)
+            } else {
+                // If no query params, add them with '?'
+                // Remove trailing '?' from base_url if present
+                let base_without_query = base_url.trim_end_matches('?');
+                format!("{}{}?{}", self.host, base_without_query, self.extra)
+            }
         }
     }
 }

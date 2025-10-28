@@ -77,6 +77,8 @@ where
     room_info: Arc<RwLock<RoomInfo>>,
     /// The user info for the recorder
     user_info: Arc<RwLock<UserInfo>>,
+    /// The update interval for room status
+    update_interval: Arc<atomic::AtomicU64>,
 
     /// The platform live id for the current recording
     platform_live_id: Arc<RwLock<String>>,

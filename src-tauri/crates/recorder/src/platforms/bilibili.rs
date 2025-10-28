@@ -42,6 +42,7 @@ impl BiliRecorder {
         account: &Account,
         cache_dir: PathBuf,
         event_channel: broadcast::Sender<RecorderEvent>,
+        update_interval: Arc<atomic::AtomicU64>,
         enabled: bool,
     ) -> Result<Self, crate::errors::RecorderError> {
         let client = reqwest::Client::new();
@@ -59,6 +60,7 @@ impl BiliRecorder {
             cache_dir,
             quit: Arc::new(atomic::AtomicBool::new(false)),
             enabled: Arc::new(atomic::AtomicBool::new(enabled)),
+            update_interval,
             is_recording: Arc::new(atomic::AtomicBool::new(false)),
             room_info: Arc::new(RwLock::new(RoomInfo::default())),
             user_info: Arc::new(RwLock::new(UserInfo::default())),
@@ -373,7 +375,10 @@ impl crate::traits::RecorderTrait<BiliExtra> for BiliRecorder {
                     continue;
                 }
 
-                tokio::time::sleep(Duration::from_secs(15)).await;
+                tokio::time::sleep(Duration::from_secs(
+                    self_clone.update_interval.load(atomic::Ordering::Relaxed),
+                ))
+                .await;
             }
         }));
     }

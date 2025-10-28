@@ -497,15 +497,41 @@ impl RecorderManager {
         let cache_dir = PathBuf::from(&cache_dir);
 
         let event_tx = self.get_event_sender();
+        let update_interval = self.config.read().await.update_interval.clone();
         let recorder: RecorderType = match platform {
             PlatformType::BiliBili => RecorderType::BiliBili(
-                BiliRecorder::new(room_id, account, cache_dir, event_tx, enabled).await?,
+                BiliRecorder::new(
+                    room_id,
+                    account,
+                    cache_dir,
+                    event_tx,
+                    update_interval,
+                    enabled,
+                )
+                .await?,
             ),
             PlatformType::Douyin => RecorderType::Douyin(
-                DouyinRecorder::new(room_id, extra, account, cache_dir, event_tx, enabled).await?,
+                DouyinRecorder::new(
+                    room_id,
+                    extra,
+                    account,
+                    cache_dir,
+                    event_tx,
+                    update_interval,
+                    enabled,
+                )
+                .await?,
             ),
             PlatformType::Huya => RecorderType::Huya(
-                HuyaRecorder::new(room_id, account, cache_dir, event_tx, enabled).await?,
+                HuyaRecorder::new(
+                    room_id,
+                    account,
+                    cache_dir,
+                    event_tx,
+                    update_interval,
+                    enabled,
+                )
+                .await?,
             ),
             _ => {
                 return Err(RecorderManagerError::InvalidPlatformType {

@@ -34,6 +34,7 @@ impl HuyaRecorder {
         account: &Account,
         cache_dir: PathBuf,
         channel: broadcast::Sender<RecorderEvent>,
+        update_interval: Arc<atomic::AtomicU64>,
         enabled: bool,
     ) -> Result<Self, crate::errors::RecorderError> {
         Ok(Self {
@@ -55,6 +56,7 @@ impl HuyaRecorder {
             last_sequence: Arc::new(atomic::AtomicU64::new(0)),
             danmu_task: Arc::new(Mutex::new(None)),
             record_task: Arc::new(Mutex::new(None)),
+            update_interval,
             total_duration: Arc::new(atomic::AtomicU64::new(0)),
             total_size: Arc::new(atomic::AtomicU64::new(0)),
             extra: HuyaExtra {
@@ -224,7 +226,10 @@ impl crate::traits::RecorderTrait<HuyaExtra> for HuyaRecorder {
                     continue;
                 }
 
-                tokio::time::sleep(Duration::from_secs(15)).await;
+                tokio::time::sleep(Duration::from_secs(
+                    self_clone.update_interval.load(atomic::Ordering::Relaxed),
+                ))
+                .await;
             }
             log::info!("[{}]Recording thread quit.", self_clone.room_id);
         }));

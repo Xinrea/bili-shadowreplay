@@ -1,7 +1,8 @@
-use std::path::{Path, PathBuf};
-
 use chrono::Local;
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{self, AtomicU64};
+use std::sync::Arc;
 
 use crate::{danmu2ass::Danmu2AssOptions, recorder_manager::ClipRangeParams};
 
@@ -39,6 +40,8 @@ pub struct Config {
     pub webhook_url: String,
     #[serde(default = "default_danmu_ass_options")]
     pub danmu_ass_options: Danmu2AssOptions,
+    #[serde(skip)]
+    pub update_interval: Arc<AtomicU64>,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -107,6 +110,7 @@ impl Config {
         if let Ok(content) = std::fs::read_to_string(config_path) {
             if let Ok(mut config) = toml::from_str::<Config>(&content) {
                 config.config_path = config_path.to_str().unwrap().into();
+                config.update_interval = Arc::new(AtomicU64::new(config.status_check_interval));
                 return Ok(config);
             }
         }
@@ -137,6 +141,7 @@ impl Config {
             whisper_language: default_whisper_language(),
             webhook_url: default_webhook_url(),
             danmu_ass_options: default_danmu_ass_options(),
+            update_interval: Arc::new(AtomicU64::new(default_status_check_interval())),
         };
 
         config.save();
@@ -219,5 +224,12 @@ impl Config {
         let output = self.output.clone();
 
         Path::new(&output).join(&sanitized)
+    }
+
+    pub fn set_status_check_interval(&mut self, interval: u64) {
+        self.status_check_interval = interval;
+        self.update_interval
+            .store(interval, atomic::Ordering::Relaxed);
+        self.save();
     }
 }

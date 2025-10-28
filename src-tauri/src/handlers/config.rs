@@ -251,8 +251,11 @@ pub async fn update_status_check_interval(
         interval = 10; // Minimum interval of 10 seconds
     }
     log::info!("Updating status check interval to {interval} seconds");
-    state.config.write().await.status_check_interval = interval;
-    state.config.write().await.save();
+    state
+        .config
+        .write()
+        .await
+        .set_status_check_interval(interval);
     Ok(())
 }
 

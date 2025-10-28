@@ -109,19 +109,22 @@ impl BiliRecorder {
                     room_cover: room_info.room_cover_url.clone(),
                     status: room_info.live_status == 1,
                 };
-                let user_id = room_info.user_id;
-                let user_info = api::get_user_info(&self.client, &self.account, user_id).await;
-                if let Ok(user_info) = user_info {
-                    *self.user_info.write().await = UserInfo {
-                        user_id: user_id.to_string(),
-                        user_name: user_info.user_name,
-                        user_avatar: user_info.user_avatar_url,
+                // Only update user info once
+                if self.user_info.read().await.user_id != room_info.user_id.to_string() {
+                    let user_id = room_info.user_id;
+                    let user_info = api::get_user_info(&self.client, &self.account, user_id).await;
+                    if let Ok(user_info) = user_info {
+                        *self.user_info.write().await = UserInfo {
+                            user_id: user_id.to_string(),
+                            user_name: user_info.user_name,
+                            user_avatar: user_info.user_avatar_url,
+                        }
+                    } else {
+                        self.log_error(&format!(
+                            "Failed to get user info: {}",
+                            user_info.err().unwrap()
+                        ));
                     }
-                } else {
-                    self.log_error(&format!(
-                        "Failed to get user info: {}",
-                        user_info.err().unwrap()
-                    ));
                 }
                 let live_status = room_info.live_status == 1;
 

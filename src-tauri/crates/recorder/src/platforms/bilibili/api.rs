@@ -14,6 +14,7 @@ use chrono::TimeZone;
 use pct_str::PctString;
 use pct_str::URIReserved;
 use rand::seq::IndexedRandom;
+use rand::seq::SliceRandom;
 use regex::Regex;
 use reqwest::Client;
 use serde::Deserialize;
@@ -155,7 +156,6 @@ impl BiliStream {
     }
 
     pub fn index(&self) -> String {
-        // random choose a url_info
         let url_info = self.url_info.choose(&mut rand::rng()).unwrap();
         format!("{}{}{}", url_info.host, self.base_url, url_info.extra)
     }
@@ -478,13 +478,15 @@ pub async fn get_stream_info(
 
     let url_info = codec_info["url_info"].as_array().unwrap_or(&empty_vec);
 
-    let url_info = url_info
+    let mut url_info = url_info
         .iter()
         .map(|u| UrlInfo {
             host: u["host"].as_str().unwrap_or("").to_string(),
             extra: u["extra"].as_str().unwrap_or("").to_string(),
         })
-        .collect();
+        .collect::<Vec<UrlInfo>>();
+
+    url_info.shuffle(&mut rand::rng());
 
     let drm = codec_info["drm"].as_bool().unwrap_or(false);
     let base_url = codec_info["base_url"].as_str().unwrap_or("").to_string();

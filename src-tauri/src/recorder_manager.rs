@@ -1362,7 +1362,7 @@ impl RecorderManager {
 
             futures::future::join_all(danmu_ass_files).await
         } else {
-            Vec::new()
+            vec![None; playlists.len()]
         };
 
         let timestamp = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();

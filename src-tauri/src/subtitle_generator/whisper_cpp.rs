@@ -71,7 +71,7 @@ impl SubtitleGenerator for WhisperCPP {
         let mut inter_samples = vec![Default::default(); samples.len()];
 
         if let Some(reporter) = reporter {
-            reporter.update("处理音频中");
+            reporter.update("处理音频中").await;
         }
         if let Err(e) = whisper_rs::convert_integer_to_float_audio(&samples, &mut inter_samples) {
             return Err(e.to_string());
@@ -85,7 +85,7 @@ impl SubtitleGenerator for WhisperCPP {
         let samples = samples.unwrap();
 
         if let Some(reporter) = reporter {
-            reporter.update("生成字幕中");
+            reporter.update("生成字幕中").await;
         }
         if let Err(e) = state.full(params, &samples[..]) {
             log::error!("failed to run model: {e}");
@@ -143,14 +143,14 @@ mod tests {
     struct MockReporter {}
     impl MockReporter {
         #[allow(dead_code)]
-        fn update(&self, _message: &str) {
+        async fn update(&self, _message: &str) {
             // mock implementation
         }
     }
 
     #[async_trait]
     impl ProgressReporterTrait for MockReporter {
-        fn update(&self, message: &str) {
+        async fn update(&self, message: &str) {
             println!("Mock update: {message}");
         }
 

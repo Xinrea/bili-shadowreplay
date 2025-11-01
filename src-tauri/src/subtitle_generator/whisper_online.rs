@@ -63,7 +63,7 @@ impl SubtitleGenerator for WhisperOnline {
 
         // Read audio file
         if let Some(reporter) = reporter {
-            reporter.update("读取音频文件中");
+            reporter.update("读取音频文件中").await;
         }
         let audio_data = fs::read(audio_path)
             .await
@@ -115,7 +115,7 @@ impl SubtitleGenerator for WhisperOnline {
         }
 
         if let Some(reporter) = reporter {
-            reporter.update("上传音频中");
+            reporter.update("上传音频中").await;
         }
         let response = req_builder
             .timeout(std::time::Duration::from_secs(3 * 60)) // 3 minutes timeout
@@ -195,7 +195,7 @@ mod tests {
 
     #[async_trait]
     impl ProgressReporterTrait for MockReporter {
-        fn update(&self, message: &str) {
+        async fn update(&self, message: &str) {
             println!("Mock update: {message}");
         }
 

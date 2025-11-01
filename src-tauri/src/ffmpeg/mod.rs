@@ -104,7 +104,8 @@ pub async fn transcode(
                 }
                 reporter
                     .unwrap()
-                    .update(format!("压制中：{}", p.time).as_str());
+                    .update(format!("压制中：{}", p.time).as_str())
+                    .await;
             }
             FfmpegEvent::LogEOF => break,
             FfmpegEvent::Error(e) => {
@@ -161,7 +162,8 @@ pub async fn trim_video(
                 }
                 reporter
                     .unwrap()
-                    .update(format!("切片中：{}", p.time).as_str());
+                    .update(format!("切片中：{}", p.time).as_str())
+                    .await;
             }
             FfmpegEvent::LogEOF => break,
             FfmpegEvent::Error(e) => {
@@ -429,7 +431,9 @@ pub async fn encode_video_subtitle(
             }
             FfmpegEvent::Progress(p) => {
                 log::info!("Encode video subtitle progress: {}", p.time);
-                reporter.update(format!("压制中：{}", p.time).as_str());
+                reporter
+                    .update(format!("压制中：{}", p.time).as_str())
+                    .await;
             }
             FfmpegEvent::LogEOF => break,
             FfmpegEvent::Log(_level, _content) => {}
@@ -528,7 +532,8 @@ pub async fn encode_video_danmu(
                 }
                 reporter
                     .unwrap()
-                    .update(format!("压制中：{}", p.time).as_str());
+                    .update(format!("压制中：{}", p.time).as_str())
+                    .await;
             }
             FfmpegEvent::Log(_level, _content) => {}
             FfmpegEvent::LogEOF => break,
@@ -813,7 +818,7 @@ pub async fn clip_from_video_file(
         match event {
             FfmpegEvent::Progress(p) => {
                 if let Some(reporter) = reporter {
-                    reporter.update(&format!("切片进度: {}", p.time));
+                    reporter.update(&format!("切片进度: {}", p.time)).await;
                 }
             }
             FfmpegEvent::LogEOF => break,
@@ -980,7 +985,9 @@ pub async fn execute_ffmpeg_conversion(
     while let Ok(event) = parser.parse_next_event().await {
         match event {
             FfmpegEvent::Progress(p) => {
-                reporter.update(&format!("正在转换视频格式... {} ({})", p.time, mode_name));
+                reporter
+                    .update(&format!("正在转换视频格式... {} ({})", p.time, mode_name))
+                    .await;
             }
             FfmpegEvent::LogEOF => break,
             FfmpegEvent::Log(level, content) => {
@@ -1008,7 +1015,9 @@ pub async fn execute_ffmpeg_conversion(
         return Err(format!("视频格式转换失败 ({mode_name}): {error_msg}"));
     }
 
-    reporter.update(&format!("视频格式转换完成 100% ({mode_name})"));
+    reporter
+        .update(&format!("视频格式转换完成 100% ({mode_name})"))
+        .await;
     Ok(())
 }
 
@@ -1018,7 +1027,7 @@ pub async fn try_stream_copy_conversion(
     dest: &Path,
     reporter: &ProgressReporter,
 ) -> Result<(), String> {
-    reporter.update("正在转换视频格式... 0% (无损模式)");
+    reporter.update("正在转换视频格式... 0% (无损模式)").await;
 
     // 构建ffmpeg命令 - 流复制模式
     let mut cmd = tokio::process::Command::new(ffmpeg_path());
@@ -1051,7 +1060,7 @@ pub async fn try_high_quality_conversion(
     dest: &Path,
     reporter: &ProgressReporter,
 ) -> Result<(), String> {
-    reporter.update("正在转换视频格式... 0% (高质量模式)");
+    reporter.update("正在转换视频格式... 0% (高质量模式)").await;
 
     // 构建ffmpeg命令 - 高质量重编码
     let mut cmd = tokio::process::Command::new(ffmpeg_path());
@@ -1094,7 +1103,7 @@ pub async fn convert_video_format(
     match try_stream_copy_conversion(source, dest, reporter).await {
         Ok(()) => Ok(()),
         Err(stream_copy_error) => {
-            reporter.update("流复制失败，使用高质量重编码模式...");
+            reporter.update("流复制失败，使用高质量重编码模式...").await;
             log::warn!("Stream copy failed: {stream_copy_error}, falling back to re-encoding");
             try_high_quality_conversion(source, dest, reporter).await
         }

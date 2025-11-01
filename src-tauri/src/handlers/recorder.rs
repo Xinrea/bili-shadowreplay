@@ -457,7 +457,7 @@ pub async fn generate_whole_clip(
     let emitter = EventEmitter::new(state.app_handle.clone());
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
-    let reporter = ProgressReporter::new(&emitter, &task.id).await?;
+    let reporter = ProgressReporter::new(state.db.clone(), &emitter, &task.id).await?;
 
     log::info!("Create task: {} {}", task.id, task.task_type);
     // create a tokio task to run in background

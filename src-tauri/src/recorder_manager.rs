@@ -360,7 +360,8 @@ impl RecorderManager {
             return;
         };
 
-        let Ok(reporter) = ProgressReporter::new(&self.emitter, &task.id).await else {
+        let Ok(reporter) = ProgressReporter::new(self.db.clone(), &self.emitter, &task.id).await
+        else {
             log::error!("Failed to create reporter");
             let _ = self
                 .db

@@ -6,6 +6,8 @@ use tokio::sync::RwLock;
 
 use recorder::events::RecorderEvent;
 
+use crate::database::Database;
+
 #[cfg(feature = "gui")]
 use {
     recorder::danmu::DanmuEntry,
@@ -25,13 +27,13 @@ static CANCEL_FLAG_MAP: LazyLock<Arc<RwLock<CancelFlagMap>>> =
 pub struct ProgressReporter {
     emitter: EventEmitter,
     pub event_id: String,
-    #[allow(unused)]
     pub cancel: Arc<AtomicBool>,
+    db: Arc<Database>,
 }
 
 #[async_trait]
 pub trait ProgressReporterTrait: Send + Sync + Clone {
-    fn update(&self, content: &str);
+    async fn update(&self, content: &str);
     async fn finish(&self, success: bool, message: &str);
 }
 
@@ -119,7 +121,11 @@ impl EventEmitter {
     }
 }
 impl ProgressReporter {
-    pub async fn new(emitter: &EventEmitter, event_id: &str) -> Result<Self, String> {
+    pub async fn new(
+        db: Arc<Database>,
+        emitter: &EventEmitter,
+        event_id: &str,
+    ) -> Result<Self, String> {
         // if already exists, return
         if CANCEL_FLAG_MAP.read().await.get(event_id).is_some() {
             log::error!("Task already exists: {event_id}");
@@ -138,6 +144,7 @@ impl ProgressReporter {
             .insert(event_id.to_string(), cancel.clone());
 
         Ok(Self {
+            db,
             emitter: emitter.clone(),
             event_id: event_id.to_string(),
             cancel,
@@ -147,11 +154,15 @@ impl ProgressReporter {
 
 #[async_trait]
 impl ProgressReporterTrait for ProgressReporter {
-    fn update(&self, content: &str) {
+    async fn update(&self, content: &str) {
         self.emitter.emit(&RecorderEvent::ProgressUpdate {
             id: self.event_id.clone(),
             content: content.to_string(),
         });
+        let _ = self
+            .db
+            .update_task(&self.event_id, "progress", content, None)
+            .await;
     }
 
     async fn finish(&self, success: bool, message: &str) {

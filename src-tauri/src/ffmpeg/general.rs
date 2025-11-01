@@ -43,7 +43,7 @@ pub async fn handle_ffmpeg_process(
                 if content.starts_with("out_time_ms") {
                     let time_str = content.strip_prefix("out_time_ms=").unwrap_or_default();
                     if let Some(reporter) = reporter {
-                        reporter.update(time_str);
+                        reporter.update(time_str).await;
                     }
                 }
             }

@@ -263,7 +263,7 @@
                         task.status
                       )} {get_status_color(task.status)}"
                     >
-                      {#if task.status.toLowerCase() === "running" || task.status.toLowerCase() === "processing"}
+                      {#if task.status.toLowerCase() === "pending" || task.status.toLowerCase() === "progress"}
                         <Loader2 class="w-3 h-3 animate-spin" />
                       {:else}
                         <svelte:component

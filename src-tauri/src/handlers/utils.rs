@@ -216,7 +216,7 @@ pub async fn open_log_folder(state: state_type!()) -> Result<(), String> {
 pub async fn open_live(
     state: state_type!(),
     platform: String,
-    room_id: i64,
+    room_id: String,
     live_id: String,
 ) -> Result<(), String> {
     log::info!("Open player window: {room_id} {live_id}");
@@ -303,6 +303,7 @@ pub async fn list_folder(_state: state_type!(), path: String) -> Result<Vec<Stri
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
+#[allow(dead_code)]
 pub async fn file_exists(_state: state_type!(), path: String) -> Result<bool, String> {
     let path = PathBuf::from(path);
     match std::fs::metadata(&path) {

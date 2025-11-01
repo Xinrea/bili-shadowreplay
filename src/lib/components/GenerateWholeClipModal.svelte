@@ -7,7 +7,7 @@
 
   export let showModal = false;
   export let archive: RecordItem | null = null;
-  export let roomId: number;
+  export let roomId: string;
   export const platform: string = "";
 
   const dispatch = createEventDispatcher();
@@ -21,7 +21,7 @@
     loadWholeClipArchives(roomId, archive.parent_id);
   }
 
-  async function loadWholeClipArchives(roomId: number, parentId: string) {
+  async function loadWholeClipArchives(roomId: string, parentId: string) {
     if (isLoading) return;
 
     isLoading = true;

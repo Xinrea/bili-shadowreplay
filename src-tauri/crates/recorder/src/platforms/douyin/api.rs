@@ -73,7 +73,7 @@ pub fn generate_user_agent_header() -> reqwest::header::HeaderMap {
 pub async fn get_room_info(
     client: &Client,
     account: &Account,
-    room_id: i64,
+    room_id: &str,
     sec_user_id: &str,
 ) -> Result<DouyinBasicRoomInfo, RecorderError> {
     let mut headers = generate_user_agent_header();
@@ -140,7 +140,7 @@ pub async fn get_room_info(
 pub async fn get_room_info_h5(
     client: &Client,
     account: &Account,
-    room_id: i64,
+    room_id: &str,
     sec_user_id: &str,
 ) -> Result<DouyinBasicRoomInfo, RecorderError> {
     // 参考biliup实现，构建完整的URL参数
@@ -335,7 +335,7 @@ pub async fn get_user_info(
 
 pub async fn get_room_owner_sec_uid(
     client: &Client,
-    room_id: i64,
+    room_id: &str,
 ) -> Result<String, RecorderError> {
     let url = format!("https://live.douyin.com/{room_id}");
     let mut headers = generate_user_agent_header();
@@ -381,7 +381,9 @@ mod tests {
     #[tokio::test]
     async fn test_get_room_owner_sec_uid() {
         let client = Client::new();
-        let sec_uid = get_room_owner_sec_uid(&client, 200525029536).await.unwrap();
+        let sec_uid = get_room_owner_sec_uid(&client, "200525029536")
+            .await
+            .unwrap();
         assert_eq!(
             sec_uid,
             "MS4wLjABAAAAdFmmud36bynPjXOvoMjatb42856_zryHsGmlkpIECDA"

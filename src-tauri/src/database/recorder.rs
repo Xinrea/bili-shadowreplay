@@ -6,7 +6,7 @@ use recorder::platforms::PlatformType;
 /// because many room infos are collected in realtime
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, sqlx::FromRow)]
 pub struct RecorderRow {
-    pub room_id: i64,
+    pub room_id: String,
     pub created_at: String,
     pub platform: String,
     pub auto_start: bool,
@@ -18,12 +18,12 @@ impl Database {
     pub async fn add_recorder(
         &self,
         platform: PlatformType,
-        room_id: i64,
+        room_id: &str,
         extra: &str,
     ) -> Result<RecorderRow, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         let recorder = RecorderRow {
-            room_id,
+            room_id: room_id.to_string(),
             created_at: Utc::now().to_rfc3339(),
             platform: platform.as_str().to_string(),
             auto_start: true,
@@ -42,7 +42,7 @@ impl Database {
         Ok(recorder)
     }
 
-    pub async fn remove_recorder(&self, room_id: i64) -> Result<RecorderRow, DatabaseError> {
+    pub async fn remove_recorder(&self, room_id: &str) -> Result<RecorderRow, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         let recorder =
             sqlx::query_as::<_, RecorderRow>("SELECT * FROM recorders WHERE room_id = $1")
@@ -71,7 +71,7 @@ impl Database {
         .await?)
     }
 
-    pub async fn remove_archive(&self, room_id: i64) -> Result<(), DatabaseError> {
+    pub async fn remove_archive(&self, room_id: &str) -> Result<(), DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         let _ = sqlx::query("DELETE FROM records WHERE room_id = $1")
             .bind(room_id)
@@ -83,7 +83,7 @@ impl Database {
     pub async fn update_recorder(
         &self,
         platform: PlatformType,
-        room_id: i64,
+        room_id: &str,
         auto_start: bool,
     ) -> Result<(), DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();

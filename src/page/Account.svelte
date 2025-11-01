@@ -212,7 +212,7 @@
                   </h3>
                 </div>
                 <p class="text-sm text-gray-600 dark:text-gray-400">
-                  UID: {account.id_str || account.uid}
+                  UID: {account.uid}
                 </p>
               </div>
             </div>

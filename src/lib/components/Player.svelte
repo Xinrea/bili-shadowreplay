@@ -23,7 +23,7 @@
   }
 
   export let platform: string;
-  export let room_id: number;
+  export let room_id: string;
   export let live_id: string;
   export let start = 0;
   export let end = 0;
@@ -184,11 +184,11 @@ ${mediaPlaylistUrl}`;
     recorders = (
       (await invoke("get_recorder_list")) as RecorderList
     ).recorders.filter(
-      (r) => r.room_info.status && Number(r.room_info.room_id) != room_id
+      (r) => r.room_info.status && r.room_info.room_id != room_id
     );
   }
 
-  function go_to(platform: string, room_id: number, live_id: string) {
+  function go_to(platform: string, room_id: string, live_id: string) {
     const url = `${window.location.origin}${window.location.pathname}?platform=${platform}&room_id=${room_id}&live_id=${live_id}`;
     window.location.href = url;
   }
@@ -1030,7 +1030,7 @@ ${mediaPlaylistUrl}`;
         on:click={() => {
           go_to(
             recorder.room_info.platform,
-            Number(recorder.room_info.room_id),
+            recorder.room_info.room_id,
             recorder.live_id
           );
         }}

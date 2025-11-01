@@ -70,7 +70,7 @@ pub async fn get_user_info(
 pub async fn get_room_info(
     client: &Client,
     account: &Account,
-    room_id: i64,
+    room_id: &str,
 ) -> Result<(UserInfo, RoomInfo, StreamInfo), HuyaClientError> {
     let mut headers = generate_user_agent_header();
     if let Ok(cookies) = account.cookies.parse() {
@@ -142,7 +142,7 @@ mod tests {
         let client = Client::new();
         let account = Account::default();
         let (user_info, room_info, stream_info) =
-            get_room_info(&client, &account, 599934).await.unwrap();
+            get_room_info(&client, &account, "599934").await.unwrap();
         println!("{:?}", user_info);
         println!("{:?}", room_info);
         println!("{:?}", stream_info);

@@ -1,11 +1,11 @@
 use super::Database;
 use super::DatabaseError;
 
-// CREATE TABLE videos (id INTEGER PRIMARY KEY, room_id INTEGER, cover TEXT, file TEXT, length INTEGER, size INTEGER, status INTEGER, bvid TEXT, title TEXT, desc TEXT, tags TEXT, area INTEGER, created_at TEXT);
+// CREATE TABLE videos (id INTEGER PRIMARY KEY, room_id TEXT, cover TEXT, file TEXT, length INTEGER, size INTEGER, status INTEGER, bvid TEXT, title TEXT, desc TEXT, tags TEXT, area INTEGER, created_at TEXT);
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, sqlx::FromRow)]
 pub struct VideoRow {
     pub id: i64,
-    pub room_id: i64,
+    pub room_id: String,
     pub cover: String,
     pub file: String,
     pub note: String,
@@ -22,7 +22,7 @@ pub struct VideoRow {
 }
 
 impl Database {
-    pub async fn get_videos(&self, room_id: i64) -> Result<Vec<VideoRow>, DatabaseError> {
+    pub async fn get_videos(&self, room_id: &str) -> Result<Vec<VideoRow>, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         let videos = sqlx::query_as::<_, VideoRow>("SELECT * FROM videos WHERE room_id = $1;")
             .bind(room_id)
@@ -69,7 +69,7 @@ impl Database {
     pub async fn add_video(&self, video: &VideoRow) -> Result<VideoRow, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         let sql = sqlx::query("INSERT INTO videos (room_id, cover, file, note, length, size, status, bvid, title, desc, tags, area, created_at, platform) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)")
-            .bind(video.room_id)
+            .bind(&video.room_id)
             .bind(&video.cover)
             .bind(&video.file)
             .bind(&video.note)

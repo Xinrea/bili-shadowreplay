@@ -65,7 +65,7 @@ impl WsStreamCtx {
 
         if let Some(danmu_msg) = danmu_msg {
             Ok(DanmuMessageType::DanmuMessage(DanmuMessage {
-                room_id: 0,
+                room_id: "".to_string(),
                 user_id: danmu_msg.uid,
                 user_name: danmu_msg.username,
                 message: danmu_msg.msg,

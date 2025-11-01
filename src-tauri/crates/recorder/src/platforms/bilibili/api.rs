@@ -40,16 +40,16 @@ struct UploadParams<'a> {
 pub struct RoomInfo {
     pub live_status: u8,
     pub room_cover_url: String,
-    pub room_id: i64,
+    pub room_id: String,
     pub room_keyframe_url: String,
     pub room_title: String,
-    pub user_id: i64,
+    pub user_id: String,
     pub live_start_time: i64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct UserInfo {
-    pub user_id: i64,
+    pub user_id: String,
     pub user_name: String,
     pub user_sign: String,
     pub user_avatar_url: String,
@@ -242,7 +242,7 @@ pub async fn logout(client: &Client, account: &Account) -> Result<(), RecorderEr
 pub async fn get_user_info(
     client: &Client,
     account: &Account,
-    user_id: i64,
+    user_id: &str,
 ) -> Result<UserInfo, RecorderError> {
     let params: Value = json!({
         "mid": user_id.to_string(),
@@ -284,7 +284,7 @@ pub async fn get_user_info(
         return Err(RecorderError::InvalidResponseJson { resp: res.clone() });
     }
     Ok(UserInfo {
-        user_id,
+        user_id: user_id.to_string(),
         user_name: res["data"]["name"].as_str().unwrap_or("").to_string(),
         user_sign: res["data"]["sign"].as_str().unwrap_or("").to_string(),
         user_avatar_url: res["data"]["face"].as_str().unwrap_or("").to_string(),
@@ -294,7 +294,7 @@ pub async fn get_user_info(
 pub async fn get_room_info(
     client: &Client,
     account: &Account,
-    room_id: i64,
+    room_id: &str,
 ) -> Result<RoomInfo, RecorderError> {
     let mut headers = generate_user_agent_header();
     if let Ok(cookies) = account.cookies.parse() {
@@ -329,7 +329,8 @@ pub async fn get_room_info(
 
     let room_id = res["data"]["room_id"]
         .as_i64()
-        .ok_or(RecorderError::InvalidValue)?;
+        .ok_or(RecorderError::InvalidValue)?
+        .to_string();
     let room_title = res["data"]["title"]
         .as_str()
         .ok_or(RecorderError::InvalidValue)?
@@ -344,7 +345,8 @@ pub async fn get_room_info(
         .to_string();
     let user_id = res["data"]["uid"]
         .as_i64()
-        .ok_or(RecorderError::InvalidValue)?;
+        .ok_or(RecorderError::InvalidValue)?
+        .to_string();
     let live_status = res["data"]["live_status"]
         .as_u64()
         .ok_or(RecorderError::InvalidValue)? as u8;
@@ -384,7 +386,7 @@ pub async fn get_room_info(
 pub async fn get_stream_info(
     client: &Client,
     account: &Account,
-    room_id: i64,
+    room_id: &str,
     protocol: Protocol,
     format: Format,
     codec: &[Codec],
@@ -900,7 +902,7 @@ pub async fn upload_cover(
 pub async fn send_danmaku(
     client: &Client,
     account: &Account,
-    room_id: i64,
+    room_id: &str,
     message: &str,
 ) -> Result<(), RecorderError> {
     let url = "https://api.live.bilibili.com/msg/send".to_string();
@@ -918,7 +920,7 @@ pub async fn send_danmaku(
         ("fontsize", "25"),
         ("room_type", "0"),
         ("rnd", &format!("{}", chrono::Local::now().timestamp())),
-        ("roomid", &format!("{room_id}")),
+        ("roomid", room_id),
         ("csrf", &account.csrf),
         ("csrf_token", &account.csrf),
     ];

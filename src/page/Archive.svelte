@@ -88,7 +88,7 @@
       for (const room of allRooms) {
         try {
           const roomArchives = await invoke<RecordItem[]>("get_archives", {
-            roomId: parseInt(room.room_info.room_id),
+            roomId: room.room_info.room_id,
             offset: 0,
             limit: 100, // 每个直播间获取更多数据
           });
@@ -184,7 +184,7 @@
     // Apply room filter
     if (selectedRoomId !== null) {
       filtered = filtered.filter(
-        (archive) => String(archive.room_id) === selectedRoomId
+        (archive) => archive.room_id === selectedRoomId
       );
     }
 
@@ -291,7 +291,7 @@
     }
   }
 
-  function getRoomUrl(platform: string, roomId: number) {
+  function getRoomUrl(platform: string, roomId: string) {
     switch (platform.toLowerCase()) {
       case "bilibili":
         return `https://live.bilibili.com/${roomId}`;
@@ -308,6 +308,10 @@
 
   function calcBitrate(size: number, duration: number) {
     return ((size * 8) / duration / 1024).toFixed(0);
+  }
+
+  function getArchiveKey(archive: RecordItem) {
+    return `${archive.platform}-${archive.room_id}-${archive.parent_id}-${archive.live_id}`;
   }
 
   function toggleSort(field: string) {
@@ -723,7 +727,7 @@
               </tr>
             </thead>
             <tbody class="divide-y divide-gray-200 dark:divide-gray-700/50">
-              {#each filteredArchives as archive (archive.live_id)}
+              {#each filteredArchives as archive (getArchiveKey(archive))}
                 <tr
                   class="group hover:bg-[#f5f5f7] dark:hover:bg-[#3a3a3c] transition-colors"
                 >
@@ -906,7 +910,7 @@
 <GenerateWholeClipModal
   bind:showModal={showWholeClipModal}
   archive={wholeClipArchive}
-  roomId={wholeClipArchive?.room_id || 0}
+  roomId={wholeClipArchive?.room_id || ""}
   platform={wholeClipArchive?.platform || ""}
   on:generated={handleWholeClipGenerated}
 />

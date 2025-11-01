@@ -43,7 +43,7 @@
 
   export let show = false;
   export let video: VideoItem;
-  export let roomId: number;
+  export let roomId: string;
   export let videos: any[] = [];
   export let onVideoChange: ((video: VideoItem) => void) | undefined =
     undefined;

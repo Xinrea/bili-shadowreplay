@@ -52,7 +52,7 @@ pub struct ClipRangeParams {
     pub note: String,
     pub cover: String,
     pub platform: String,
-    pub room_id: i64,
+    pub room_id: String,
     pub live_id: String,
     pub range: Option<Range>,
     /// Encode danmu after clip
@@ -133,9 +133,9 @@ pub struct RecorderManager {
 #[derive(Error, Debug)]
 pub enum RecorderManagerError {
     #[error("Recorder already exists: {room_id}")]
-    AlreadyExisted { room_id: i64 },
+    AlreadyExisted { room_id: String },
     #[error("Recorder not found: {room_id}")]
-    NotFound { room_id: i64 },
+    NotFound { room_id: String },
     #[error("Invalid platform type: {platform}")]
     InvalidPlatformType { platform: String },
     #[error("Recorder error: {0}")]
@@ -244,7 +244,7 @@ impl RecorderManager {
                         Payload::Room(recorder.clone()),
                     );
                     let _ = self.webhook_poster.post_event(&event).await;
-                    self.handle_live_end(platform, room_id, &recorder).await;
+                    self.handle_live_end(platform, &room_id, &recorder).await;
                     if self.config.read().await.live_end_notify {
                         #[cfg(feature = "gui")]
                         self.app_handle
@@ -262,7 +262,7 @@ impl RecorderManager {
                 RecorderEvent::RecordStart { recorder } => {
                     // add record entry into db
                     let platform = PlatformType::from_str(&recorder.room_info.platform).unwrap();
-                    let room_id = recorder.room_info.room_id.parse::<i64>().unwrap();
+                    let room_id = recorder.room_info.room_id.clone();
                     log::info!("Record start: {recorder:?}");
                     if let Err(e) = self
                         .db
@@ -270,7 +270,7 @@ impl RecorderManager {
                             platform,
                             &recorder.platform_live_id,
                             &recorder.live_id,
-                            room_id,
+                            &room_id,
                             &recorder.room_info.room_title,
                             None,
                         )
@@ -321,7 +321,12 @@ impl RecorderManager {
         }
     }
 
-    async fn handle_live_end(&self, platform: PlatformType, room_id: i64, recorder: &RecorderInfo) {
+    async fn handle_live_end(
+        &self,
+        platform: PlatformType,
+        room_id: &str,
+        recorder: &RecorderInfo,
+    ) {
         if !self.config.read().await.auto_generate.enabled {
             return;
         }
@@ -442,14 +447,14 @@ impl RecorderManager {
                 if !self.recorders.read().await.contains_key(&recorder_id)
                     && !self.to_remove.read().await.contains(&recorder_id)
                 {
-                    recorders_to_add.push((*platform, *room_id));
+                    recorders_to_add.push((*platform, room_id.clone()));
                 }
             }
             for (platform, room_id) in recorders_to_add {
                 if self.is_migrating.load(std::sync::atomic::Ordering::Relaxed) {
                     break;
                 }
-                let (auto_start, extra) = recorder_map.get(&(platform, room_id)).unwrap();
+                let (auto_start, extra) = recorder_map.get(&(platform, room_id.clone())).unwrap();
                 let account = self
                     .db
                     .get_account_by_platform(platform.clone().as_str())
@@ -465,7 +470,7 @@ impl RecorderManager {
                 };
 
                 if let Err(e) = self
-                    .add_recorder(&account, platform, room_id, extra, *auto_start)
+                    .add_recorder(&account, platform, &room_id, extra, *auto_start)
                     .await
                 {
                     log::error!(
@@ -484,13 +489,15 @@ impl RecorderManager {
         &self,
         account: &Account,
         platform: PlatformType,
-        room_id: i64,
+        room_id: &str,
         extra: &str,
         enabled: bool,
     ) -> Result<(), RecorderManagerError> {
         let recorder_id = format!("{}:{}", platform.as_str(), room_id);
         if self.recorders.read().await.contains_key(&recorder_id) {
-            return Err(RecorderManagerError::AlreadyExisted { room_id });
+            return Err(RecorderManagerError::AlreadyExisted {
+                room_id: room_id.to_string(),
+            });
         }
 
         let cache_dir = self.config.read().await.cache.clone();
@@ -565,12 +572,14 @@ impl RecorderManager {
     pub async fn remove_recorder(
         &self,
         platform: PlatformType,
-        room_id: i64,
+        room_id: &str,
     ) -> Result<RecorderRow, RecorderManagerError> {
         // check recorder exists
         let recorder_id = format!("{}:{}", platform.as_str(), room_id);
         if !self.recorders.read().await.contains_key(&recorder_id) {
-            return Err(RecorderManagerError::NotFound { room_id });
+            return Err(RecorderManagerError::NotFound {
+                room_id: room_id.to_string(),
+            });
         }
 
         // remove from db
@@ -611,14 +620,14 @@ impl RecorderManager {
     async fn load_playlist_bytes(
         &self,
         platform: PlatformType,
-        room_id: i64,
+        room_id: &str,
         live_id: &str,
     ) -> Result<Vec<u8>, RecorderManagerError> {
         let cache_path = self.config.read().await.cache.clone();
         let cache_path = Path::new(&cache_path);
         let playlist_path = cache_path
             .join(platform.as_str())
-            .join(room_id.to_string())
+            .join(room_id)
             .join(live_id)
             .join("playlist.m3u8");
         if !playlist_path.exists() {
@@ -646,7 +655,7 @@ impl RecorderManager {
     async fn is_outdated_playlist(
         &self,
         platform: PlatformType,
-        room_id: i64,
+        room_id: &str,
         live_id: &str,
     ) -> bool {
         // check current recorder live id is the same as the live id
@@ -665,7 +674,7 @@ impl RecorderManager {
     async fn load_playlist(
         &self,
         platform: PlatformType,
-        room_id: i64,
+        room_id: &str,
         live_id: &str,
     ) -> Result<MediaPlaylist, RecorderManagerError> {
         let bytes = self.load_playlist_bytes(platform, room_id, live_id).await?;
@@ -707,7 +716,7 @@ impl RecorderManager {
     async fn first_segment_timestamp(
         &self,
         platform: PlatformType,
-        room_id: i64,
+        room_id: &str,
         live_id: &str,
     ) -> Result<i64, RecorderManagerError> {
         let playlist = self.load_playlist(platform, room_id, live_id).await?;
@@ -745,14 +754,14 @@ impl RecorderManager {
     pub async fn load_danmus(
         &self,
         platform: PlatformType,
-        room_id: i64,
+        room_id: &str,
         live_id: &str,
     ) -> Result<Vec<DanmuEntry>, RecorderManagerError> {
         let cache_path = self.config.read().await.cache.clone();
         let cache_path = Path::new(&cache_path);
         let danmus_path = cache_path
             .join(platform.as_str())
-            .join(room_id.to_string())
+            .join(room_id)
             .join(live_id)
             .join("danmu.txt");
         if !danmus_path.exists() {
@@ -772,7 +781,7 @@ impl RecorderManager {
     async fn get_related_playlists(
         &self,
         platform: &PlatformType,
-        room_id: i64,
+        room_id: &str,
         parent_id: &str,
     ) -> Vec<RelatedPlaylist> {
         let cache_path = self.config.read().await.cache.clone();
@@ -823,7 +832,7 @@ impl RecorderManager {
         let cache_path = Path::new(&cache_path);
         let playlist_path = cache_path
             .join(params.platform.clone())
-            .join(params.room_id.to_string())
+            .join(params.room_id.clone())
             .join(params.live_id.clone())
             .join("playlist.m3u8");
 
@@ -869,11 +878,11 @@ impl RecorderManager {
             });
         };
         let stream_start_timestamp_milis = self
-            .first_segment_timestamp(platform, params.room_id, &params.live_id)
+            .first_segment_timestamp(platform, &params.room_id, &params.live_id)
             .await?;
 
         let danmus = self
-            .load_danmus(platform, params.room_id, &params.live_id)
+            .load_danmus(platform, &params.room_id, &params.live_id)
             .await;
         if danmus.is_err() {
             log::error!(
@@ -941,7 +950,7 @@ impl RecorderManager {
     async fn generate_archive_danmu_ass(
         &self,
         platform: PlatformType,
-        room_id: i64,
+        room_id: &str,
         live_id: &str,
     ) -> Result<PathBuf, RecorderManagerError> {
         log::info!(
@@ -1038,7 +1047,7 @@ impl RecorderManager {
     pub async fn get_recorder_info(
         &self,
         platform: PlatformType,
-        room_id: i64,
+        room_id: &str,
     ) -> Option<RecorderInfo> {
         let recorder_id = format!("{}:{}", platform.as_str(), room_id);
         if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
@@ -1055,7 +1064,7 @@ impl RecorderManager {
 
     pub async fn get_archives(
         &self,
-        room_id: i64,
+        room_id: &str,
         offset: i64,
         limit: i64,
     ) -> Result<Vec<RecordRow>, RecorderManagerError> {
@@ -1064,7 +1073,7 @@ impl RecorderManager {
 
     pub async fn get_archive(
         &self,
-        room_id: i64,
+        room_id: &str,
         live_id: &str,
     ) -> Result<RecordRow, RecorderManagerError> {
         Ok(self.db.get_record(room_id, live_id).await?)
@@ -1073,7 +1082,7 @@ impl RecorderManager {
     pub async fn get_archive_subtitle(
         &self,
         platform: PlatformType,
-        room_id: i64,
+        room_id: &str,
         live_id: &str,
     ) -> Result<String, RecorderManagerError> {
         // read subtitle file under work_dir
@@ -1100,7 +1109,7 @@ impl RecorderManager {
     pub async fn generate_archive_subtitle(
         &self,
         platform: PlatformType,
-        room_id: i64,
+        room_id: &str,
         live_id: &str,
     ) -> Result<String, RecorderManagerError> {
         // generate subtitle file under work_dir
@@ -1181,14 +1190,14 @@ impl RecorderManager {
     pub async fn delete_archive(
         &self,
         platform: PlatformType,
-        room_id: i64,
+        room_id: &str,
         live_id: &str,
     ) -> Result<RecordRow, RecorderManagerError> {
         log::info!("Deleting archive {room_id}:{live_id}");
         let to_delete = self.db.remove_record(live_id).await?;
         let cache_folder = Path::new(self.config.read().await.cache.as_str())
             .join(platform.as_str())
-            .join(room_id.to_string())
+            .join(room_id)
             .join(live_id);
         let _ = tokio::fs::remove_dir_all(cache_folder).await;
         Ok(to_delete)
@@ -1197,7 +1206,7 @@ impl RecorderManager {
     pub async fn delete_archives(
         &self,
         platform: PlatformType,
-        room_id: i64,
+        room_id: &str,
         live_ids: &[&str],
     ) -> Result<Vec<RecordRow>, RecorderManagerError> {
         log::info!("Deleting archives in batch: {live_ids:?}");
@@ -1224,7 +1233,7 @@ impl RecorderManager {
         // parse recorder type
         let platform = path_segs[0];
         // parse room id
-        let room_id = path_segs[1].parse::<i64>().unwrap();
+        let room_id = path_segs[1];
         // parse live id
         let live_id = path_segs[2];
 
@@ -1299,7 +1308,7 @@ impl RecorderManager {
         }
     }
 
-    pub async fn set_enable(&self, platform: PlatformType, room_id: i64, enabled: bool) {
+    pub async fn set_enable(&self, platform: PlatformType, room_id: &str, enabled: bool) {
         // update RecordRow auto_start field
         if let Err(e) = self.db.update_recorder(platform, room_id, enabled).await {
             log::error!("Failed to update recorder auto_start: {e}");
@@ -1320,7 +1329,7 @@ impl RecorderManager {
         reporter: Option<&ProgressReporter>,
         encode_danmu: bool,
         platform: String,
-        room_id: i64,
+        room_id: &str,
         parent_id: String,
     ) -> Result<(), RecorderManagerError> {
         let platform = PlatformType::from_str(&platform).map_err(|_| {
@@ -1412,7 +1421,7 @@ impl RecorderManager {
             .add_video(&VideoRow {
                 id: 0,
                 status: 0,
-                room_id,
+                room_id: room_id.to_string(),
                 created_at: chrono::Local::now().to_rfc3339(),
                 cover: cover_filename.to_string_lossy().to_string(),
                 file: output_filename.to_string_lossy().to_string(),

@@ -6,8 +6,8 @@ use std::{
 use crate::{
     config::Config,
     database::{
-        account::AccountRow, message::MessageRow, record::RecordRow, recorder::RecorderRow,
-        task::TaskRow, video::VideoRow,
+        message::MessageRow, record::RecordRow, recorder::RecorderRow, task::TaskRow,
+        video::VideoRow,
     },
     handlers::{
         account::{
@@ -137,17 +137,16 @@ struct AddAccountRequest {
 async fn handler_add_account(
     state: axum::extract::State<State>,
     Json(param): Json<AddAccountRequest>,
-) -> Result<Json<ApiResponse<AccountRow>>, ApiError> {
-    let mut account = add_account(state.0, param.platform, &param.cookies).await?;
-    account.cookies = "".to_string();
-    Ok(Json(ApiResponse::success(account)))
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    add_account(state.0, param.platform, &param.cookies).await?;
+    Ok(Json(ApiResponse::success(())))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RemoveAccountRequest {
     platform: String,
-    uid: i64,
+    uid: String,
 }
 
 async fn handler_remove_account(
@@ -449,7 +448,7 @@ async fn handler_get_recorder_list(
 #[serde(rename_all = "camelCase")]
 struct AddRecorderRequest {
     platform: String,
-    room_id: i64,
+    room_id: String,
     extra: String,
 }
 
@@ -467,7 +466,7 @@ async fn handler_add_recorder(
 #[serde(rename_all = "camelCase")]
 struct RemoveRecorderRequest {
     platform: String,
-    room_id: i64,
+    room_id: String,
 }
 
 async fn handler_remove_recorder(
@@ -484,7 +483,7 @@ async fn handler_remove_recorder(
 #[serde(rename_all = "camelCase")]
 struct GetRoomInfoRequest {
     platform: String,
-    room_id: i64,
+    room_id: String,
 }
 
 async fn handler_get_room_info(
@@ -505,7 +504,7 @@ async fn handler_get_archive_disk_usage(
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GetArchivesRequest {
-    room_id: i64,
+    room_id: String,
     offset: i64,
     limit: i64,
 }
@@ -521,7 +520,7 @@ async fn handler_get_archives(
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GetArchiveRequest {
-    room_id: i64,
+    room_id: String,
     live_id: String,
 }
 
@@ -537,7 +536,7 @@ async fn handler_get_archive(
 #[serde(rename_all = "camelCase")]
 struct GetArchiveSubtitleRequest {
     platform: String,
-    room_id: i64,
+    room_id: String,
     live_id: String,
 }
 
@@ -554,7 +553,7 @@ async fn handler_get_archive_subtitle(
 #[serde(rename_all = "camelCase")]
 struct GenerateArchiveSubtitleRequest {
     platform: String,
-    room_id: i64,
+    room_id: String,
     live_id: String,
 }
 
@@ -571,7 +570,7 @@ async fn handler_generate_archive_subtitle(
 #[serde(rename_all = "camelCase")]
 struct DeleteArchiveRequest {
     platform: String,
-    room_id: i64,
+    room_id: String,
     live_id: String,
 }
 
@@ -587,7 +586,7 @@ async fn handler_delete_archive(
 #[serde(rename_all = "camelCase")]
 struct DeleteArchivesRequest {
     platform: String,
-    room_id: i64,
+    room_id: String,
     live_ids: Vec<String>,
 }
 
@@ -603,7 +602,7 @@ async fn handler_delete_archives(
 #[serde(rename_all = "camelCase")]
 struct GetDanmuRecordRequest {
     platform: String,
-    room_id: i64,
+    room_id: String,
     live_id: String,
 }
 
@@ -619,8 +618,8 @@ async fn handler_get_danmu_record(
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SendDanmakuRequest {
-    uid: i64,
-    room_id: i64,
+    uid: String,
+    room_id: String,
     message: String,
 }
 
@@ -649,7 +648,7 @@ async fn handler_get_today_record_count(
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GetRecentRecordRequest {
-    room_id: i64,
+    room_id: String,
     offset: i64,
     limit: i64,
 }
@@ -667,7 +666,7 @@ async fn handler_get_recent_record(
 #[serde(rename_all = "camelCase")]
 struct SetEnableRequest {
     platform: String,
-    room_id: i64,
+    room_id: String,
     enabled: bool,
 }
 
@@ -698,8 +697,8 @@ async fn handler_clip_range(
 #[serde(rename_all = "camelCase")]
 struct UploadProcedureRequest {
     event_id: String,
-    uid: i64,
-    room_id: i64,
+    uid: String,
+    room_id: String,
     video_id: i64,
     cover: String,
     profile: Profile,
@@ -753,7 +752,7 @@ async fn handler_get_video(
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GetVideosRequest {
-    room_id: i64,
+    room_id: String,
 }
 
 async fn handler_get_videos(
@@ -962,7 +961,7 @@ struct ImportExternalVideoRequest {
     event_id: String,
     file_path: String,
     title: String,
-    room_id: i64,
+    room_id: String,
 }
 
 async fn handler_import_external_video(
@@ -1017,7 +1016,7 @@ struct GetFileSizeRequest {
 struct GenerateWholeClipRequest {
     encode_danmu: bool,
     platform: String,
-    room_id: i64,
+    room_id: String,
     parent_id: String,
 }
 
@@ -1039,7 +1038,7 @@ async fn handler_generate_whole_clip(
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GetArchivesByParentIdRequest {
-    room_id: i64,
+    room_id: String,
     parent_id: String,
 }
 
@@ -1071,7 +1070,7 @@ async fn handler_update_danmu_ass_options(
 struct BatchImportExternalVideosRequest {
     event_id: String,
     file_paths: Vec<String>,
-    room_id: i64,
+    room_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1238,7 +1237,7 @@ async fn handler_upload_and_import_files(
     mut multipart: Multipart,
 ) -> Result<Json<ApiResponse<UploadAndImportResponse>>, ApiError> {
     let mut uploaded_files = Vec::new();
-    let mut room_id = 0i64;
+    let mut room_id = "".to_string();
     let upload_dir = std::env::temp_dir().join("bsr_uploads");
 
     // 确保上传目录存在
@@ -1252,8 +1251,7 @@ async fn handler_upload_and_import_files(
             match name {
                 "room_id" => {
                     // 读取房间ID
-                    let text = field.text().await.map_err(|e| e.to_string())?;
-                    room_id = text.parse().unwrap_or(0);
+                    room_id = field.text().await.map_err(|e| e.to_string())?;
                 }
                 "files" => {
                     // 处理文件上传

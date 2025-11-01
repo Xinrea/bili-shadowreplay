@@ -58,7 +58,7 @@ where
     T: Send + Sync,
 {
     platform: PlatformType,
-    room_id: i64,
+    room_id: String,
     /// The account for the recorder
     account: Account,
     /// The client for the recorder
@@ -108,8 +108,8 @@ impl<T: Send + Sync> traits::RecorderBasicTrait<T> for Recorder<T> {
         self.platform
     }
 
-    fn room_id(&self) -> i64 {
-        self.room_id
+    fn room_id(&self) -> String {
+        self.room_id.clone()
     }
 
     fn account(&self) -> &Account {
@@ -194,17 +194,17 @@ impl<T: Send + Sync> traits::RecorderBasicTrait<T> for Recorder<T> {
 pub struct CachePath {
     pub cache_path: PathBuf,
     pub platform: PlatformType,
-    pub room_id: i64,
+    pub room_id: String,
     pub live_id: String,
     pub file_name: Option<String>,
 }
 
 impl CachePath {
-    pub fn new(cache_path: PathBuf, platform: PlatformType, room_id: i64, live_id: &str) -> Self {
+    pub fn new(cache_path: PathBuf, platform: PlatformType, room_id: &str, live_id: &str) -> Self {
         Self {
             cache_path,
             platform,
-            room_id,
+            room_id: room_id.to_string(),
             live_id: live_id.to_string(),
             file_name: None,
         }

@@ -18,7 +18,7 @@
   "id": "a96a5e9f-9857-4c13-b889-91da2ace208a",
   "event": "recorder.added",
   "payload": {
-    "room_id": 26966466,
+    "room_id": "26966466",
     "created_at": "2025-09-07T03:33:14.258796+00:00",
     "platform": "bilibili",
     "auto_start": true,
@@ -35,7 +35,7 @@
   "id": "e33623d4-e040-4390-88f5-d351ceeeace7",
   "event": "recorder.removed",
   "payload": {
-    "room_id": 27183290,
+    "room_id": "27183290",
     "created_at": "2025-08-30T10:54:18.569198+00:00",
     "platform": "bilibili",
     "auto_start": true,
@@ -57,9 +57,9 @@
   "id": "f12f3424-f7d8-4b2f-a8b7-55477411482e",
   "event": "live.started",
   "payload": {
-    "room_id": 843610,
+    "room_id": "843610",
     "room_info": {
-      "room_id": 843610,
+      "room_id": "843610",
       "room_title": "登顶！",
       "room_cover": "https://i0.hdslb.com/bfs/live/new_room_cover/73aea43f4b4624c314d62fea4b424822fb506dfb.jpg"
     },
@@ -86,9 +86,9 @@
   "id": "e8b0756a-02f9-4655-b5ae-a170bf9547bd",
   "event": "live.ended",
   "payload": {
-    "room_id": 843610,
+    "room_id": "843610",
     "room_info": {
-      "room_id": 843610,
+      "room_id": "843610",
       "room_title": "登顶！",
       "room_cover": "https://i0.hdslb.com/bfs/live/new_room_cover/73aea43f4b4624c314d62fea4b424822fb506dfb.jpg"
     },
@@ -117,9 +117,9 @@
   "id": "5ec1ea10-2b31-48fd-8deb-f2d7d2ea5985",
   "event": "record.started",
   "payload": {
-    "room_id": 26966466,
+    "room_id": "26966466",
     "room_info": {
-      "room_id": 26966466,
+      "room_id": "26966466",
       "room_title": "早安獭獭栞！下播前抽fufu",
       "room_cover": "https://i0.hdslb.com/bfs/live/user_cover/b810c36855168034557e905e5916b1dba1761fa4.jpg"
     },
@@ -146,9 +146,9 @@
   "id": "56fd03e5-3965-4c2e-a6a9-bb6932347eb3",
   "event": "record.ended",
   "payload": {
-    "room_id": 26966466,
+    "room_id": "26966466",
     "room_info": {
-      "room_id": 26966466,
+      "room_id": "26966466",
       "room_title": "早安獭獭栞！下播前抽fufu",
       "room_cover": "https://i0.hdslb.com/bfs/live/user_cover/b810c36855168034557e905e5916b1dba1761fa4.jpg"
     },
@@ -177,7 +177,7 @@
   "payload": {
     "platform": "bilibili",
     "live_id": "1756607084705",
-    "room_id": 1967212929,
+    "room_id": "1967212929",
     "title": "灶台O.o",
     "length": 9,
     "size": 1927112,
@@ -198,7 +198,7 @@
   "event": "clip.generated",
   "payload": {
     "id": 316,
-    "room_id": 27183290,
+    "room_id": "27183290",
     "cover": "[27183290][1757172501727][一起看凡人修仙传][2025-09-07_00-16-11].jpg",
     "file": "[27183290][1757172501727][一起看凡人修仙传][2025-09-07_00-16-11].mp4",
     "note": "",
@@ -225,7 +225,7 @@
   "event": "clip.deleted",
   "payload": {
     "id": 313,
-    "room_id": 27183290,
+    "room_id": "27183290",
     "cover": "[27183290][1756903953470][不出非洲之心不下播][2025-09-03_21-10-54].jpg",
     "file": "[27183290][1756903953470][不出非洲之心不下播][2025-09-03_21-10-54].mp4",
     "note": "",

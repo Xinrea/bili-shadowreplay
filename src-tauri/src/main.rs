@@ -197,6 +197,198 @@ fn get_migrations() -> Vec<Migration> {
             sql: r"ALTER TABLE records ADD COLUMN parent_id TEXT;",
             kind: MigrationKind::Up,
         },
+        // change records table primary key to (parent_id, live_id)
+        Migration {
+            version: 10,
+            description: "change_records_primary_key",
+            sql: r"
+                CREATE TABLE records_new (
+                    parent_id TEXT NOT NULL DEFAULT '',
+                    live_id TEXT NOT NULL,
+                    platform TEXT NOT NULL DEFAULT 'bilibili',
+                    room_id TEXT,
+                    title TEXT,
+                    length INTEGER,
+                    size INTEGER,
+                    cover BLOB,
+                    created_at TEXT,
+                    PRIMARY KEY (parent_id, live_id)
+                );
+                INSERT INTO records_new (
+                    parent_id,
+                    live_id,
+                    platform,
+                    room_id,
+                    title,
+                    length,
+                    size,
+                    cover,
+                    created_at
+                )
+                SELECT
+                    COALESCE(parent_id, live_id) AS parent_id,
+                    live_id,
+                    platform,
+                    CAST(room_id AS TEXT),
+                    title,
+                    length,
+                    size,
+                    cover,
+                    created_at
+                FROM records;
+                DROP TABLE records;
+                ALTER TABLE records_new RENAME TO records;
+                CREATE INDEX IF NOT EXISTS idx_records_live_id ON records (room_id, live_id);
+                CREATE INDEX IF NOT EXISTS idx_records_created_at ON records (room_id, created_at);
+            ",
+            kind: MigrationKind::Up,
+        },
+        // convert room_id columns to TEXT across tables
+        Migration {
+            version: 11,
+            description: "convert_room_id_to_text",
+            sql: r"
+                CREATE TABLE recorders_new (
+                    room_id TEXT PRIMARY KEY,
+                    platform TEXT NOT NULL DEFAULT 'bilibili',
+                    created_at TEXT,
+                    auto_start INTEGER NOT NULL DEFAULT 1,
+                    extra TEXT
+                );
+                INSERT INTO recorders_new (
+                    room_id,
+                    platform,
+                    created_at,
+                    auto_start,
+                    extra
+                )
+                SELECT
+                    CAST(room_id AS TEXT),
+                    platform,
+                    created_at,
+                    COALESCE(auto_start, 1),
+                    extra
+                FROM recorders;
+                DROP TABLE recorders;
+                ALTER TABLE recorders_new RENAME TO recorders;
+
+                CREATE TABLE danmu_statistics_new (
+                    live_id TEXT PRIMARY KEY,
+                    room_id TEXT,
+                    value INTEGER,
+                    time_point TEXT
+                );
+                INSERT INTO danmu_statistics_new (
+                    live_id,
+                    room_id,
+                    value,
+                    time_point
+                )
+                SELECT
+                    live_id,
+                    CAST(room_id AS TEXT),
+                    value,
+                    time_point
+                FROM danmu_statistics;
+                DROP TABLE danmu_statistics;
+                ALTER TABLE danmu_statistics_new RENAME TO danmu_statistics;
+
+                CREATE TABLE videos_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    room_id TEXT,
+                    cover TEXT,
+                    file TEXT,
+                    length INTEGER,
+                    size INTEGER,
+                    status INTEGER,
+                    bvid TEXT,
+                    title TEXT,
+                    desc TEXT,
+                    tags TEXT,
+                    area INTEGER,
+                    created_at TEXT,
+                    platform TEXT,
+                    note TEXT
+                );
+                INSERT INTO videos_new (
+                    id,
+                    room_id,
+                    cover,
+                    file,
+                    length,
+                    size,
+                    status,
+                    bvid,
+                    title,
+                    desc,
+                    tags,
+                    area,
+                    created_at,
+                    platform,
+                    note
+                )
+                SELECT
+                    id,
+                    CAST(room_id AS TEXT),
+                    cover,
+                    file,
+                    length,
+                    size,
+                    status,
+                    bvid,
+                    title,
+                    desc,
+                    tags,
+                    area,
+                    created_at,
+                    platform,
+                    note
+                FROM videos;
+                DROP TABLE videos;
+                ALTER TABLE videos_new RENAME TO videos;
+
+                CREATE INDEX IF NOT EXISTS idx_videos_room_id ON videos (room_id);
+                CREATE INDEX IF NOT EXISTS idx_videos_created_at ON videos (created_at);
+            ",
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 12,
+            description: "convert_account_uid_to_text",
+            sql: r"
+                CREATE TABLE accounts_new (
+                    uid TEXT,
+                    platform TEXT NOT NULL DEFAULT 'bilibili',
+                    name TEXT,
+                    avatar TEXT,
+                    csrf TEXT,
+                    cookies TEXT,
+                    created_at TEXT,
+                    PRIMARY KEY (uid, platform)
+                );
+                INSERT INTO accounts_new (
+                    uid,
+                    platform,
+                    name,
+                    avatar,
+                    csrf,
+                    cookies,
+                    created_at
+                )
+                SELECT
+                    COALESCE(NULLIF(id_str, ''), CAST(uid AS TEXT)),
+                    platform,
+                    name,
+                    avatar,
+                    csrf,
+                    cookies,
+                    created_at
+                FROM accounts;
+                DROP TABLE accounts;
+                ALTER TABLE accounts_new RENAME TO accounts;
+            ",
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

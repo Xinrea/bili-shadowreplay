@@ -62,7 +62,7 @@ const add_recorder = tool(
     extra,
   }: {
     platform: string;
-    room_id: number;
+    room_id: string;
     extra: string;
   }) => {
     const result = await invoke("add_recorder", {
@@ -81,7 +81,7 @@ const add_recorder = tool(
         .describe(
           `The platform of the recorder. Can be ${platform_list.join(", ")}`
         ),
-      room_id: z.number().describe("The room id of the recorder"),
+      room_id: z.string().describe("The room id of the recorder"),
       extra: z
         .string()
         .describe(
@@ -93,7 +93,7 @@ const add_recorder = tool(
 
 // @ts-ignore
 const remove_recorder = tool(
-  async ({ platform, room_id }: { platform: string; room_id: number }) => {
+  async ({ platform, room_id }: { platform: string; room_id: string }) => {
     const result = await invoke("remove_recorder", {
       platform,
       roomId: room_id,
@@ -109,7 +109,7 @@ const remove_recorder = tool(
         .describe(
           `The platform of the recorder. Can be ${platform_list.join(", ")}`
         ),
-      room_id: z.number().describe("The room id of the recorder"),
+      room_id: z.string().describe("The room id of the recorder"),
     }),
   }
 );
@@ -129,7 +129,7 @@ const get_recorder_list = tool(
 
 // @ts-ignore
 const get_recorder_info = tool(
-  async ({ platform, room_id }: { platform: string; room_id: number }) => {
+  async ({ platform, room_id }: { platform: string; room_id: string }) => {
     const result = await invoke("get_room_info", { platform, roomId: room_id });
     return result;
   },
@@ -138,7 +138,7 @@ const get_recorder_info = tool(
     description: "Get the info of a recorder",
     schema: z.object({
       platform: z.string().describe("The platform of the room"),
-      room_id: z.number().describe("The room id of the room"),
+      room_id: z.string().describe("The room id of the room"),
     }),
   }
 );
@@ -150,7 +150,7 @@ const get_archives = tool(
     offset,
     limit,
   }: {
-    room_id: number;
+    room_id: string;
     offset: number;
     limit: number;
   }) => {
@@ -174,7 +174,7 @@ const get_archives = tool(
     name: "get_archives",
     description: "Get the list of all archives of a recorder",
     schema: z.object({
-      room_id: z.number().describe("The room id of the recorder"),
+      room_id: z.string().describe("The room id of the recorder"),
       offset: z.number().describe("The offset of the archives"),
       limit: z.number().describe("The limit of the archives"),
     }),
@@ -183,7 +183,7 @@ const get_archives = tool(
 
 // @ts-ignore
 const get_archive = tool(
-  async ({ room_id, live_id }: { room_id: number; live_id: string }) => {
+  async ({ room_id, live_id }: { room_id: string; live_id: string }) => {
     const result = (await invoke("get_archive", {
       roomId: room_id,
       liveId: live_id,
@@ -199,7 +199,7 @@ const get_archive = tool(
     name: "get_archive",
     description: "Get the info of a archive",
     schema: z.object({
-      room_id: z.number().describe("The room id of the recorder"),
+      room_id: z.string().describe("The room id of the recorder"),
       live_id: z.string().describe("The live id of the archive"),
     }),
   }
@@ -213,7 +213,7 @@ const delete_archive = tool(
     live_id,
   }: {
     platform: string;
-    room_id: number;
+    room_id: string;
     live_id: string;
   }) => {
     const result = await invoke("delete_archive", {
@@ -232,7 +232,7 @@ const delete_archive = tool(
         .describe(
           `The platform of the recorder. Can be ${platform_list.join(", ")}`
         ),
-      room_id: z.number().describe("The room id of the recorder"),
+      room_id: z.string().describe("The room id of the recorder"),
       live_id: z.string().describe("The live id of the archive"),
     }),
   }
@@ -246,7 +246,7 @@ const delete_archives = tool(
     live_ids,
   }: {
     platform: string;
-    room_id: number;
+    room_id: string;
     live_ids: string[];
   }) => {
     const result = await invoke("delete_archives", {
@@ -265,7 +265,7 @@ const delete_archives = tool(
         .describe(
           `The platform of the recorder. Can be ${platform_list.join(", ")}`
         ),
-      room_id: z.number().describe("The room id of the recorder"),
+      room_id: z.string().describe("The room id of the recorder"),
       live_ids: z.array(z.string()).describe("The live ids of the archives"),
     }),
   }
@@ -308,7 +308,7 @@ const delete_background_task = tool(
 
 // @ts-ignore
 const get_videos = tool(
-  async ({ room_id }: { room_id: number }) => {
+  async ({ room_id }: { room_id: string }) => {
     const result = (await invoke("get_videos", { roomId: room_id })) as any[];
     return {
       videos: result.map((v: any) => {
@@ -323,7 +323,7 @@ const get_videos = tool(
     name: "get_videos",
     description: "Get the list of all videos of a room",
     schema: z.object({
-      room_id: z.number().describe("The room id of the room"),
+      room_id: z.string().describe("The room id of the room"),
     }),
   }
 );
@@ -480,7 +480,7 @@ const post_video_to_bilibili = tool(
     tid,
   }: {
     uid: number;
-    room_id: number;
+    room_id: string;
     video_id: number;
     title: string;
     desc: string;
@@ -521,7 +521,7 @@ const post_video_to_bilibili = tool(
         .describe(
           "The uid of the user, it should be one of the uid in the bilibili accounts"
         ),
-      room_id: z.number().describe("The room id of the room"),
+      room_id: z.string().describe("The room id of the room"),
       video_id: z.number().describe("The id of the video"),
       title: z.string().describe("The title of the video"),
       desc: z.string().describe("The description of the video"),
@@ -547,7 +547,7 @@ const get_danmu_record = tool(
     live_id,
   }: {
     platform: string;
-    room_id: number;
+    room_id: string;
     live_id: string;
   }) => {
     const result = (await invoke("get_danmu_record", {
@@ -571,7 +571,7 @@ const get_danmu_record = tool(
       "Get the danmu record of a live, entry ts is relative to the live start time in seconds",
     schema: z.object({
       platform: z.string().describe("The platform of the room"),
-      room_id: z.number().describe("The room id of the room"),
+      room_id: z.string().describe("The room id of the room"),
       live_id: z.string().describe("The live id of the live"),
     }),
   }
@@ -604,7 +604,7 @@ const clip_range = tool(
           "The reason for the clip range, it will be shown to the user. You must offer a summary of the clip range content and why you choose this clip range."
         ),
       clip_range_params: z.object({
-        room_id: z.number().describe("The room id of the room"),
+        room_id: z.string().describe("The room id of the room"),
         live_id: z.string().describe("The live id of the live"),
         range: z.object({
           start: z.number().describe("The start time in SECONDS of the clip"),
@@ -641,7 +641,7 @@ const get_recent_record = tool(
     offset,
     limit,
   }: {
-    room_id: number;
+    room_id: string;
     offset: number;
     limit: number;
   }) => {
@@ -664,7 +664,7 @@ const get_recent_record = tool(
     name: "get_recent_record",
     description: "Get the list of recent records that bsr has recorded",
     schema: z.object({
-      room_id: z.number().describe("The room id of the room"),
+      room_id: z.string().describe("The room id of the room"),
       offset: z.number().describe("The offset of the records"),
       limit: z.number().describe("The limit of the records"),
     }),
@@ -752,7 +752,7 @@ const get_archive_subtitle = tool(
     live_id,
   }: {
     platform: string;
-    room_id: number;
+    room_id: string;
     live_id: string;
   }) => {
     const result = await invoke("get_archive_subtitle", {
@@ -768,7 +768,7 @@ const get_archive_subtitle = tool(
       "Get the subtitle of a archive, it may not be generated yet, you can use generate_archive_subtitle to generate the subtitle",
     schema: z.object({
       platform: z.string().describe("The platform of the archive"),
-      room_id: z.number().describe("The room id of the archive"),
+      room_id: z.string().describe("The room id of the archive"),
       live_id: z.string().describe("The live id of the archive"),
     }),
   }
@@ -782,7 +782,7 @@ const generate_archive_subtitle = tool(
     live_id,
   }: {
     platform: string;
-    room_id: number;
+    room_id: string;
     live_id: string;
   }) => {
     const result = await invoke("generate_archive_subtitle", {
@@ -798,7 +798,7 @@ const generate_archive_subtitle = tool(
       "Generate the subtitle of a archive, it may take a long time, you should not call this tool unless user ask you to generate the subtitle. It can be used to overwrite the subtitle of a archive",
     schema: z.object({
       platform: z.string().describe("The platform of the archive"),
-      room_id: z.number().describe("The room id of the archive"),
+      room_id: z.string().describe("The room id of the archive"),
       live_id: z.string().describe("The live id of the archive"),
     }),
   }

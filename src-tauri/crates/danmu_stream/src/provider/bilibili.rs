@@ -36,7 +36,7 @@ type WsWriteType = futures_util::stream::SplitSink<
 
 pub struct BiliDanmu {
     client: ApiClient,
-    room_id: i64,
+    room_id: String,
     user_id: i64,
     stop: Arc<RwLock<bool>>,
     write: Arc<RwLock<Option<WsWriteType>>>,
@@ -44,7 +44,7 @@ pub struct BiliDanmu {
 
 #[async_trait]
 impl DanmuProvider for BiliDanmu {
-    async fn new(cookie: &str, room_id: i64) -> Result<Self, DanmuStreamError> {
+    async fn new(cookie: &str, room_id: &str) -> Result<Self, DanmuStreamError> {
         // find DedeUserID=<user_id> in cookie str
         let user_id = BiliDanmu::parse_user_id(cookie)?;
         // add buvid3 to cookie
@@ -54,7 +54,7 @@ impl DanmuProvider for BiliDanmu {
         Ok(Self {
             client,
             user_id,
-            room_id,
+            room_id: room_id.to_string(),
             stop: Arc::new(RwLock::new(false)),
             write: Arc::new(RwLock::new(None)),
         })
@@ -126,8 +126,10 @@ impl BiliDanmu {
         tx: mpsc::UnboundedSender<DanmuMessageType>,
     ) -> Result<(), DanmuStreamError> {
         let wbi_key = self.get_wbi_key().await?;
-        let real_room = self.get_real_room(&wbi_key, self.room_id).await?;
-        let danmu_info = self.get_danmu_info(&wbi_key, real_room).await?;
+        let real_room = self.get_real_room(&wbi_key, &self.room_id).await?;
+        let danmu_info = self
+            .get_danmu_info(&wbi_key, real_room.to_string().as_str())
+            .await?;
         let ws_hosts = danmu_info.data.host_list.clone();
         let mut conn = None;
         log::debug!("ws_hosts: {:?}", ws_hosts);
@@ -241,7 +243,7 @@ impl BiliDanmu {
     async fn get_danmu_info(
         &self,
         wbi_key: &str,
-        room_id: i64,
+        room_id: &str,
     ) -> Result<DanmuInfo, DanmuStreamError> {
         let params = self
             .get_sign(
@@ -268,7 +270,7 @@ impl BiliDanmu {
         Ok(resp)
     }
 
-    async fn get_real_room(&self, wbi_key: &str, room_id: i64) -> Result<i64, DanmuStreamError> {
+    async fn get_real_room(&self, wbi_key: &str, room_id: &str) -> Result<i64, DanmuStreamError> {
         let params = self
             .get_sign(
                 wbi_key,

@@ -59,7 +59,7 @@ export interface Video {
 
 export interface VideoItem {
   id: number;
-  room_id: number;
+  room_id: string;
   cover: string;
   file: string;
   length: number;
@@ -259,7 +259,7 @@ export interface ClipRangeParams {
   note: string;
   cover: string;
   platform: string;
-  room_id: number;
+  room_id: string;
   live_id: string;
   range: {
     start: number;

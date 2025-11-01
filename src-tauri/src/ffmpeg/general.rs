@@ -106,7 +106,7 @@ pub async fn concat_videos(
         let video_encoder = hwaccel::get_x264_encoder().await;
         ffmpeg_process.args(["-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2"]);
         ffmpeg_process.args(["-r", "60"]);
-        ffmpeg_process.args(["-c", video_encoder]);
+        ffmpeg_process.args(["-c:v", video_encoder]);
         ffmpeg_process.args(["-c:a", "aac"]);
         ffmpeg_process.args(["-b:v", "6000k"]);
         ffmpeg_process.args(["-b:a", "128k"]);

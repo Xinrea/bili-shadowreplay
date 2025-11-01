@@ -20,6 +20,15 @@ pub async fn get_accounts(state: state_type!()) -> Result<super::AccountInfo, St
     Ok(account_info)
 }
 
+fn get_item_from_cookies(name: &str, cookies: &str) -> Result<String, String> {
+    Ok(cookies
+        .split(';')
+        .map(str::trim)
+        .find_map(|cookie| cookie.strip_prefix(format!("{name}=").as_str()))
+        .ok_or_else(|| format!("Invalid cookies: missing {name}").to_string())?
+        .to_string())
+}
+
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn add_account(
     state: state_type!(),
@@ -58,16 +67,7 @@ pub async fn add_account(
             if csrf.is_none() {
                 return Err("Invalid bilibili cookies".to_string());
             }
-            let uid = cookies
-                .split("DedeUserID=")
-                .collect::<Vec<&str>>()
-                .get(1)
-                .unwrap()
-                .split(';')
-                .collect::<Vec<&str>>()
-                .first()
-                .unwrap()
-                .to_string();
+            let uid = get_item_from_cookies("DedeUserID", cookies)?;
             let tmp_account = AccountRow {
                 platform: platform.as_str().to_string(),
                 uid,
@@ -123,16 +123,7 @@ pub async fn add_account(
             }
         }
         PlatformType::Huya => {
-            let user_id = cookies
-                .split("yyuid=")
-                .collect::<Vec<&str>>()
-                .get(1)
-                .unwrap()
-                .split(';')
-                .collect::<Vec<&str>>()
-                .first()
-                .unwrap()
-                .to_string();
+            let user_id = get_item_from_cookies("yyuid", cookies)?;
 
             let tmp_account = AccountRow {
                 platform: platform.as_str().to_string(),
@@ -157,7 +148,7 @@ pub async fn add_account(
         }
         PlatformType::Youtube => {
             // unsupported
-            return Err("Unsupport platform".to_string());
+            return Err("Unsupported platform".to_string());
         }
     };
 
@@ -208,5 +199,23 @@ pub async fn get_qr(_state: state_type!()) -> Result<QrInfo, ()> {
     match bilibili::api::get_qr(&client).await {
         Ok(qr_info) => Ok(qr_info),
         Err(_e) => Err(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_get_item_from_cookies() {
+        let cookies = "DedeUserID=1234567890; bili_jct=1234567890; yyuid=1234567890";
+        let uid = get_item_from_cookies("DedeUserID", cookies).unwrap();
+        assert_eq!(uid, "1234567890");
+        let uid = get_item_from_cookies("yyuid", cookies).unwrap();
+        assert_eq!(uid, "1234567890");
+        let uid = get_item_from_cookies("bili_jct", cookies).unwrap();
+        assert_eq!(uid, "1234567890");
+        let uid = get_item_from_cookies("unknown", cookies).unwrap_err();
+        assert_eq!(uid, "Invalid cookies: missing unknown");
     }
 }

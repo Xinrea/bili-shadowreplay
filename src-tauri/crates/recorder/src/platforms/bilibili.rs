@@ -243,34 +243,49 @@ impl BiliRecorder {
         }
         let danmu_stream = danmu_stream.unwrap();
 
-        // create a task to receive danmu message
-        let danmu_stream_clone = danmu_stream.clone();
-        tokio::spawn(async move {
-            let _ = danmu_stream_clone.start().await;
-        });
+        let mut start_fut = Box::pin(danmu_stream.start());
 
         loop {
-            if let Ok(Some(msg)) = danmu_stream.recv().await {
-                match msg {
-                    DanmuMessageType::DanmuMessage(danmu) => {
-                        let ts = Utc::now().timestamp_millis();
-                        let _ = self.event_channel.send(RecorderEvent::DanmuReceived {
-                            room: self.room_id.clone(),
-                            ts,
-                            content: danmu.message.clone(),
-                        });
-                        if let Some(storage) = self.danmu_storage.write().await.as_ref() {
-                            storage.add_line(ts, &danmu.message).await;
+            tokio::select! {
+                start_res = &mut start_fut => {
+                    match start_res {
+                        Ok(_) => {
+                            log::info!("[{}]Danmu stream finished", &self.room_id);
+                            return Ok(());
+                        }
+                        Err(err) => {
+                            log::error!("[{}]Danmu stream start error: {}", &self.room_id, err);
+                            return Err(crate::errors::RecorderError::DanmuStreamError(err));
                         }
                     }
                 }
-            } else {
-                log::error!("[{}]Failed to receive danmu message", &self.room_id);
-                return Err(crate::errors::RecorderError::DanmuStreamError(
-                    danmu_stream::DanmuStreamError::WebsocketError {
-                        err: "Failed to receive danmu message".to_string(),
-                    },
-                ));
+                recv_res = danmu_stream.recv() => {
+                    match recv_res {
+                        Ok(Some(msg)) => {
+                            match msg {
+                                DanmuMessageType::DanmuMessage(danmu) => {
+                                    let ts = Utc::now().timestamp_millis();
+                                    let _ = self.event_channel.send(RecorderEvent::DanmuReceived {
+                                        room: self.room_id.clone(),
+                                        ts,
+                                        content: danmu.message.clone(),
+                                    });
+                                    if let Some(storage) = self.danmu_storage.write().await.as_ref() {
+                                        storage.add_line(ts, &danmu.message).await;
+                                    }
+                                }
+                            }
+                        }
+                        Ok(None) => {
+                            log::info!("[{}]Danmu stream closed", &self.room_id);
+                            return Ok(());
+                        }
+                        Err(err) => {
+                            log::error!("[{}]Failed to receive danmu message: {}", &self.room_id, err);
+                            return Err(crate::errors::RecorderError::DanmuStreamError(err));
+                        }
+                    }
+                }
             }
         }
     }

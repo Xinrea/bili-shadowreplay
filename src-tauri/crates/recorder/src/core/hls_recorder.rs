@@ -15,7 +15,7 @@ use crate::errors::RecorderError;
 use crate::ffmpeg::VideoMetadata;
 use crate::{core::HlsStream, events::RecorderEvent};
 
-const UPDATE_TIMEOUT: Duration = Duration::from_secs(10);
+const UPDATE_TIMEOUT: Duration = Duration::from_secs(20);
 const UPDATE_INTERVAL: Duration = Duration::from_secs(1);
 const PLAYLIST_FILE_NAME: &str = "playlist.m3u8";
 const DOWNLOAD_RETRY: u32 = 3;
@@ -193,13 +193,19 @@ impl HlsRecorder {
             // we need to remove the query parameters: 1.ts
             let filename = segment.uri.split('?').next().unwrap_or(&segment.uri);
             let segment_path = self.work_dir.join(filename);
-            let size = download(
+            let Ok(size) = download(
                 &self.client,
                 &segment_full_url,
                 &segment_path,
                 DOWNLOAD_RETRY,
             )
-            .await?;
+            .await
+            else {
+                log::error!("Download failed: {:#?}", segment);
+                return Err(RecorderError::IoError(std::io::Error::other(
+                    "Download failed",
+                )));
+            };
 
             // check if the stream is changed
             let segment_metadata = crate::ffmpeg::extract_video_metadata(&segment_path)

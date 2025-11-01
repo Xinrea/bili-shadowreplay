@@ -809,8 +809,16 @@
   function handleKeydown(event: KeyboardEvent) {
     if (!show || !isVideoLoaded) return;
 
-    // 如果在输入框中，不处理某些快捷键
-    const isInInput = (event.target as HTMLElement)?.tagName === "INPUT";
+    const target = event.target as HTMLElement | null;
+    const tagName = target?.tagName;
+
+    // 如果当前焦点位于可编辑元素内，则跳过快捷键处理
+    const isInInput =
+      (!!tagName && ["INPUT", "TEXTAREA", "SELECT"].includes(tagName)) ||
+      !!target?.isContentEditable ||
+      !!target?.closest(
+        "input, textarea, select, [contenteditable='true'], [data-hotkey-block]"
+      );
 
     switch (event.key) {
       case "【":

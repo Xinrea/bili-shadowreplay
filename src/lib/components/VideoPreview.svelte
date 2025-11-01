@@ -817,7 +817,7 @@
       (!!tagName && ["INPUT", "TEXTAREA", "SELECT"].includes(tagName)) ||
       !!target?.isContentEditable ||
       !!target?.closest(
-        "input, textarea, select, [contenteditable='true'], [contenteditable=''], [contenteditable], [data-hotkey-block]"
+        "input, textarea, select, [contenteditable='true'], [data-hotkey-block]"
       );
 
     switch (event.key) {

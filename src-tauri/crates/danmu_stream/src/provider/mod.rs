@@ -17,7 +17,7 @@ pub enum ProviderType {
 
 #[async_trait]
 pub trait DanmuProvider: Send + Sync {
-    async fn new(identifier: &str, room_id: i64) -> Result<Self, DanmuStreamError>
+    async fn new(identifier: &str, room_id: &str) -> Result<Self, DanmuStreamError>
     where
         Self: Sized;
 
@@ -57,7 +57,7 @@ pub trait DanmuProvider: Send + Sync {
 pub async fn new(
     provider_type: ProviderType,
     identifier: &str,
-    room_id: i64,
+    room_id: &str,
 ) -> Result<Box<dyn DanmuProvider>, DanmuStreamError> {
     match provider_type {
         ProviderType::BiliBili => {

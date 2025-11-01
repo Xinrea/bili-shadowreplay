@@ -38,7 +38,7 @@ pub type BiliRecorder = Recorder<BiliExtra>;
 
 impl BiliRecorder {
     pub async fn new(
-        room_id: i64,
+        room_id: &str,
         account: &Account,
         cache_dir: PathBuf,
         event_channel: broadcast::Sender<RecorderEvent>,
@@ -53,7 +53,7 @@ impl BiliRecorder {
 
         let recorder = Self {
             platform: PlatformType::BiliBili,
-            room_id,
+            room_id: room_id.to_string(),
             account: account.clone(),
             client,
             event_channel,
@@ -102,7 +102,7 @@ impl BiliRecorder {
 
     async fn check_status(&self) -> bool {
         let pre_live_status = self.room_info.read().await.status;
-        match api::get_room_info(&self.client, &self.account, self.room_id).await {
+        match api::get_room_info(&self.client, &self.account, &self.room_id).await {
             Ok(room_info) => {
                 *self.room_info.write().await = RoomInfo {
                     platform: "bilibili".to_string(),
@@ -112,9 +112,9 @@ impl BiliRecorder {
                     status: room_info.live_status == 1,
                 };
                 // Only update user info once
-                if self.user_info.read().await.user_id != room_info.user_id.to_string() {
+                if self.user_info.read().await.user_id != room_info.user_id {
                     let user_id = room_info.user_id;
-                    let user_info = api::get_user_info(&self.client, &self.account, user_id).await;
+                    let user_info = api::get_user_info(&self.client, &self.account, &user_id).await;
                     if let Ok(user_info) = user_info {
                         *self.user_info.write().await = UserInfo {
                             user_id: user_id.to_string(),
@@ -141,7 +141,7 @@ impl BiliRecorder {
                     if live_status {
                         // Get cover image
                         let room_cover_path = Path::new(PlatformType::BiliBili.as_str())
-                            .join(self.room_id.to_string())
+                            .join(&self.room_id)
                             .join("cover.jpg");
                         let full_room_cover_path = self.cache_dir.join(&room_cover_path);
                         if (api::download_file(
@@ -161,7 +161,7 @@ impl BiliRecorder {
                     } else {
                         let _ = self.event_channel.send(RecorderEvent::LiveEnd {
                             platform: PlatformType::BiliBili,
-                            room_id: self.room_id,
+                            room_id: self.room_id.to_string(),
                             recorder: self.info().await,
                         });
                         *self.live_id.write().await = String::new();
@@ -187,7 +187,7 @@ impl BiliRecorder {
                 let new_stream = api::get_stream_info(
                     &self.client,
                     &self.account,
-                    self.room_id,
+                    &self.room_id,
                     Protocol::HttpHls,
                     Format::TS,
                     &[Codec::Avc, Codec::Hevc],
@@ -204,7 +204,7 @@ impl BiliRecorder {
 
                         log::info!(
                             "[{}]Update to a new stream: {:#?} => {:#?}",
-                            self.room_id,
+                            &self.room_id,
                             pre_live_stream,
                             stream
                         );
@@ -213,11 +213,11 @@ impl BiliRecorder {
                     }
                     Err(e) => {
                         if let crate::errors::RecorderError::FormatNotFound { format } = e {
-                            log::error!("[{}]Format {} not found", self.room_id, format);
+                            log::error!("[{}]Format {} not found", &self.room_id, format);
 
                             true
                         } else {
-                            log::error!("[{}]Fetch stream failed: {}", self.room_id, e);
+                            log::error!("[{}]Fetch stream failed: {}", &self.room_id, e);
 
                             true
                         }
@@ -225,7 +225,7 @@ impl BiliRecorder {
                 }
             }
             Err(e) => {
-                log::error!("[{}]Update room status failed: {}", self.room_id, e);
+                log::error!("[{}]Update room status failed: {}", &self.room_id, e);
                 // may encounter internet issues, not sure whether the stream is closed or started, just remain
                 pre_live_status
             }
@@ -234,11 +234,11 @@ impl BiliRecorder {
 
     async fn danmu(&self) -> Result<(), crate::errors::RecorderError> {
         let cookies = self.account.cookies.clone();
-        let room_id = self.room_id;
-        let danmu_stream = DanmuStream::new(ProviderType::BiliBili, &cookies, room_id).await;
+        let room_id = self.room_id.clone();
+        let danmu_stream = DanmuStream::new(ProviderType::BiliBili, &cookies, &room_id).await;
         if danmu_stream.is_err() {
             let err = danmu_stream.err().unwrap();
-            log::error!("[{}]Failed to create danmu stream: {}", self.room_id, err);
+            log::error!("[{}]Failed to create danmu stream: {}", &self.room_id, err);
             return Err(crate::errors::RecorderError::DanmuStreamError(err));
         }
         let danmu_stream = danmu_stream.unwrap();
@@ -255,7 +255,7 @@ impl BiliRecorder {
                     DanmuMessageType::DanmuMessage(danmu) => {
                         let ts = Utc::now().timestamp_millis();
                         let _ = self.event_channel.send(RecorderEvent::DanmuReceived {
-                            room: self.room_id,
+                            room: self.room_id.clone(),
                             ts,
                             content: danmu.message.clone(),
                         });
@@ -265,7 +265,7 @@ impl BiliRecorder {
                     }
                 }
             } else {
-                log::error!("[{}]Failed to receive danmu message", self.room_id);
+                log::error!("[{}]Failed to receive danmu message", &self.room_id);
                 return Err(crate::errors::RecorderError::DanmuStreamError(
                     danmu_stream::DanmuStreamError::WebsocketError {
                         err: "Failed to receive danmu message".to_string(),
@@ -294,7 +294,7 @@ impl BiliRecorder {
         let room_cover_path = self
             .cache_dir
             .join(PlatformType::BiliBili.as_str())
-            .join(self.room_id.to_string())
+            .join(&self.room_id)
             .join("cover.jpg");
 
         tokio::fs::copy(room_cover_path, &cover_path.full_path())

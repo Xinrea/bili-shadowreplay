@@ -8,7 +8,7 @@
   let video: VideoItem | null = null;
   let videos: any[] = [];
   let showVideoPreview = false;
-  let roomId: number | null = null;
+  let roomId: string = "";
 
   let config: Config = null;
 
@@ -26,7 +26,7 @@
         // update window title to file name
         set_title((videoData as VideoItem).file);
         // 获取房间下的所有视频列表
-        if (roomId !== null && roomId !== undefined) {
+        if (roomId.length > 0) {
           const videoList = (await invoke("get_videos", {
             roomId: roomId,
           })) as VideoItem[];
@@ -68,7 +68,7 @@
   }
 
   async function handleVideoListUpdate() {
-    if (roomId !== null && roomId !== undefined) {
+    if (roomId.length > 0) {
       const videosData = await invoke("get_videos", { roomId });
       videos = await Promise.all(
         (videosData as VideoItem[]).map(async (v) => {
@@ -85,7 +85,7 @@
   }
 </script>
 
-{#if showVideoPreview && video && roomId !== null && roomId !== undefined}
+{#if showVideoPreview && video && roomId.length > 0}
   <VideoPreview
     bind:show={showVideoPreview}
     {video}

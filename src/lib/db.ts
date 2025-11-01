@@ -1,13 +1,12 @@
 export interface RecorderItem {
   platform: string;
-  room_id: number;
+  room_id: string;
   created_at: string;
 }
 
 export interface AccountItem {
   platform: string;
-  uid: number;
-  id_str?: string; // For platforms like Douyin that use string IDs
+  uid: string;
   name: string;
   avatar: string;
   csrf: string;
@@ -29,7 +28,7 @@ export interface RecordItem {
   title: string;
   parent_id: string;
   live_id: string;
-  room_id: number;
+  room_id: string;
   length: number;
   size: number;
   created_at: string;

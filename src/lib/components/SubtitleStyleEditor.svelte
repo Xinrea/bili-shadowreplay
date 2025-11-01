@@ -4,7 +4,7 @@
 
   export let show = false;
   export let onClose: () => void;
-  export let roomId: number;
+  export let roomId: string;
 
   // 默认样式
   const defaultStyle: SubtitleStyle = {
@@ -48,7 +48,7 @@
       font-family: ${style.fontName};
       font-size: ${style.fontSize}px;
       color: ${fontColor};
-      text-shadow: 
+      text-shadow:
         ${style.outlineWidth}px ${style.outlineWidth}px 0 ${outlineColor},
         -${style.outlineWidth}px ${style.outlineWidth}px 0 ${outlineColor},
         ${style.outlineWidth}px -${style.outlineWidth}px 0 ${outlineColor},

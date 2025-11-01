@@ -8,7 +8,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
     env_logger::init();
     // Replace these with actual values
-    let room_id = 7514298567821937427; // Replace with actual Douyin room_id. When live starts, the room_id will be generated, so it's more like a live_id.
+    let room_id = "7514298567821937427"; // Replace with actual Douyin room_id. When live starts, the room_id will be generated, so it's more like a live_id.
     let cookie = "your_cookie";
     let stream = Arc::new(DanmuStream::new(ProviderType::Douyin, cookie, room_id).await?);
 

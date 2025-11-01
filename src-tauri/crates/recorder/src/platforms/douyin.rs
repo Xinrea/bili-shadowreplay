@@ -43,7 +43,7 @@ fn get_best_stream_url(stream: &DouyinStream) -> Option<String> {
 
 impl DouyinRecorder {
     pub async fn new(
-        room_id: i64,
+        room_id: &str,
         sec_user_id: &str,
         account: &Account,
         cache_dir: PathBuf,
@@ -53,7 +53,7 @@ impl DouyinRecorder {
     ) -> Result<Self, crate::errors::RecorderError> {
         Ok(Self {
             platform: PlatformType::Douyin,
-            room_id,
+            room_id: room_id.to_string(),
             account: account.clone(),
             client: reqwest::Client::new(),
             event_channel: channel,
@@ -85,7 +85,7 @@ impl DouyinRecorder {
         match api::get_room_info(
             &self.client,
             &self.account,
-            self.room_id,
+            &self.room_id,
             &self.extra.sec_user_id,
         )
         .await
@@ -123,7 +123,7 @@ impl DouyinRecorder {
                     } else {
                         let _ = self.event_channel.send(RecorderEvent::LiveEnd {
                             platform: PlatformType::Douyin,
-                            room_id: self.room_id,
+                            room_id: self.room_id.clone(),
                             recorder: self.info().await,
                         });
                     }
@@ -166,7 +166,7 @@ impl DouyinRecorder {
                 true
             }
             Err(e) => {
-                log::warn!("[{}]Update room status failed: {}", self.room_id, e);
+                log::warn!("[{}]Update room status failed: {}", &self.room_id, e);
                 pre_live_status
             }
         }
@@ -181,7 +181,8 @@ impl DouyinRecorder {
             .clone()
             .parse::<i64>()
             .unwrap_or(0);
-        let danmu_stream = DanmuStream::new(ProviderType::Douyin, &cookies, danmu_room_id).await;
+        let danmu_stream =
+            DanmuStream::new(ProviderType::Douyin, &cookies, &danmu_room_id.to_string()).await;
         if danmu_stream.is_err() {
             let err = danmu_stream.err().unwrap();
             log::error!("Failed to create danmu stream: {err}");
@@ -200,7 +201,7 @@ impl DouyinRecorder {
                     DanmuMessageType::DanmuMessage(danmu) => {
                         let ts = Utc::now().timestamp_millis();
                         let _ = self.event_channel.send(RecorderEvent::DanmuReceived {
-                            room: self.room_id,
+                            room: self.room_id.clone(),
                             ts,
                             content: danmu.message.clone(),
                         });

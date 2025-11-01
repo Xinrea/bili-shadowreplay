@@ -33,7 +33,7 @@ pub async fn get_recorder_list(state: state_type!()) -> Result<RecorderList, ()>
 pub async fn add_recorder(
     state: state_type!(),
     platform: String,
-    room_id: i64,
+    room_id: String,
     mut extra: String,
 ) -> Result<RecorderRow, String> {
     log::info!("Add recorder: {platform} {room_id}");
@@ -49,7 +49,7 @@ pub async fn add_recorder(
         }
         PlatformType::Douyin => {
             let client = reqwest::Client::new();
-            let sec_uid = douyin::api::get_room_owner_sec_uid(&client, room_id)
+            let sec_uid = douyin::api::get_room_owner_sec_uid(&client, &room_id)
                 .await
                 .map_err(|e| e.to_string())?;
             extra = sec_uid;
@@ -74,11 +74,11 @@ pub async fn add_recorder(
     match account {
         Ok(account) => match state
             .recorder_manager
-            .add_recorder(&account, platform, room_id, &extra, true)
+            .add_recorder(&account, platform, &room_id, &extra, true)
             .await
         {
             Ok(()) => {
-                let room = state.db.add_recorder(platform, room_id, &extra).await?;
+                let room = state.db.add_recorder(platform, &room_id, &extra).await?;
                 state
                     .db
                     .new_message("添加直播间", &format!("添加了新直播间 {room_id}"))
@@ -109,13 +109,13 @@ pub async fn add_recorder(
 pub async fn remove_recorder(
     state: state_type!(),
     platform: String,
-    room_id: i64,
+    room_id: String,
 ) -> Result<(), String> {
     log::info!("Remove recorder: {platform} {room_id}");
     let platform = PlatformType::from_str(&platform).unwrap();
     match state
         .recorder_manager
-        .remove_recorder(platform, room_id)
+        .remove_recorder(platform, &room_id)
         .await
     {
         Ok(recorder) => {
@@ -145,12 +145,12 @@ pub async fn remove_recorder(
 pub async fn get_room_info(
     state: state_type!(),
     platform: String,
-    room_id: i64,
+    room_id: String,
 ) -> Result<RecorderInfo, String> {
     let platform = PlatformType::from_str(&platform).unwrap();
     if let Some(info) = state
         .recorder_manager
-        .get_recorder_info(platform, room_id)
+        .get_recorder_info(platform, &room_id)
         .await
     {
         Ok(info)
@@ -167,37 +167,37 @@ pub async fn get_archive_disk_usage(state: state_type!()) -> Result<i64, String>
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_archives(
     state: state_type!(),
-    room_id: i64,
+    room_id: String,
     offset: i64,
     limit: i64,
 ) -> Result<Vec<RecordRow>, String> {
     Ok(state
         .recorder_manager
-        .get_archives(room_id, offset, limit)
+        .get_archives(&room_id, offset, limit)
         .await?)
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_archive(
     state: state_type!(),
-    room_id: i64,
+    room_id: String,
     live_id: String,
 ) -> Result<RecordRow, String> {
     Ok(state
         .recorder_manager
-        .get_archive(room_id, &live_id)
+        .get_archive(&room_id, &live_id)
         .await?)
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_archives_by_parent_id(
     state: state_type!(),
-    room_id: i64,
+    room_id: String,
     parent_id: String,
 ) -> Result<Vec<RecordRow>, String> {
     Ok(state
         .db
-        .get_archives_by_parent_id(room_id, &parent_id)
+        .get_archives_by_parent_id(&room_id, &parent_id)
         .await?)
 }
 
@@ -205,13 +205,13 @@ pub async fn get_archives_by_parent_id(
 pub async fn get_archive_subtitle(
     state: state_type!(),
     platform: String,
-    room_id: i64,
+    room_id: String,
     live_id: String,
 ) -> Result<String, String> {
     let platform = PlatformType::from_str(&platform)?;
     Ok(state
         .recorder_manager
-        .get_archive_subtitle(platform, room_id, &live_id)
+        .get_archive_subtitle(platform, &room_id, &live_id)
         .await?)
 }
 
@@ -219,13 +219,13 @@ pub async fn get_archive_subtitle(
 pub async fn generate_archive_subtitle(
     state: state_type!(),
     platform: String,
-    room_id: i64,
+    room_id: String,
     live_id: String,
 ) -> Result<String, String> {
     let platform = PlatformType::from_str(&platform)?;
     Ok(state
         .recorder_manager
-        .generate_archive_subtitle(platform, room_id, &live_id)
+        .generate_archive_subtitle(platform, &room_id, &live_id)
         .await?)
 }
 
@@ -233,13 +233,13 @@ pub async fn generate_archive_subtitle(
 pub async fn delete_archive(
     state: state_type!(),
     platform: String,
-    room_id: i64,
+    room_id: String,
     live_id: String,
 ) -> Result<(), String> {
     let platform = PlatformType::from_str(&platform)?;
     let to_delete = state
         .recorder_manager
-        .delete_archive(platform, room_id, &live_id)
+        .delete_archive(platform, &room_id, &live_id)
         .await?;
     state
         .db
@@ -261,7 +261,7 @@ pub async fn delete_archive(
 pub async fn delete_archives(
     state: state_type!(),
     platform: String,
-    room_id: i64,
+    room_id: String,
     live_ids: Vec<String>,
 ) -> Result<(), String> {
     let platform = PlatformType::from_str(&platform)?;
@@ -269,7 +269,7 @@ pub async fn delete_archives(
         .recorder_manager
         .delete_archives(
             platform,
-            room_id,
+            &room_id,
             &live_ids
                 .iter()
                 .map(std::string::String::as_str)
@@ -298,13 +298,13 @@ pub async fn delete_archives(
 pub async fn get_danmu_record(
     state: state_type!(),
     platform: String,
-    room_id: i64,
+    room_id: String,
     live_id: String,
 ) -> Result<Vec<DanmuEntry>, String> {
     let platform = PlatformType::from_str(&platform)?;
     Ok(state
         .recorder_manager
-        .load_danmus(platform, room_id, &live_id)
+        .load_danmus(platform, &room_id, &live_id)
         .await?)
 }
 
@@ -312,7 +312,7 @@ pub async fn get_danmu_record(
 #[serde(rename_all = "camelCase")]
 pub struct ExportDanmuOptions {
     platform: String,
-    room_id: i64,
+    room_id: String,
     live_id: String,
     x: i64,
     y: i64,
@@ -327,7 +327,7 @@ pub async fn export_danmu(
     let platform = PlatformType::from_str(&options.platform)?;
     let mut danmus = state
         .recorder_manager
-        .load_danmus(platform, options.room_id, &options.live_id)
+        .load_danmus(platform, &options.room_id, &options.live_id)
         .await?;
 
     log::debug!("First danmu entry: {:?}", danmus.first());
@@ -357,13 +357,13 @@ pub async fn export_danmu(
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn send_danmaku(
     state: state_type!(),
-    uid: i64,
-    room_id: i64,
+    uid: String,
+    room_id: String,
     message: String,
 ) -> Result<(), String> {
-    let account = state.db.get_account("bilibili", uid).await?;
+    let account = state.db.get_account("bilibili", &uid).await?;
     let client = reqwest::Client::new();
-    match bilibili::api::send_danmaku(&client, &account.to_account(), room_id, &message).await {
+    match bilibili::api::send_danmaku(&client, &account.to_account(), &room_id, &message).await {
         Ok(()) => Ok(()),
         Err(e) => Err(e.to_string()),
     }
@@ -388,11 +388,11 @@ pub async fn get_today_record_count(state: state_type!()) -> Result<i64, String>
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_recent_record(
     state: state_type!(),
-    room_id: i64,
+    room_id: String,
     offset: i64,
     limit: i64,
 ) -> Result<Vec<RecordRow>, String> {
-    match state.db.get_recent_record(room_id, offset, limit).await {
+    match state.db.get_recent_record(&room_id, offset, limit).await {
         Ok(records) => Ok(records),
         Err(e) => Err(format!("Failed to get recent record: {e}")),
     }
@@ -402,14 +402,14 @@ pub async fn get_recent_record(
 pub async fn set_enable(
     state: state_type!(),
     platform: String,
-    room_id: i64,
+    room_id: String,
     enabled: bool,
 ) -> Result<(), String> {
     log::info!("Set enable for recorder {platform} {room_id} {enabled}");
     let platform = PlatformType::from_str(&platform)?;
     state
         .recorder_manager
-        .set_enable(platform, room_id, enabled)
+        .set_enable(platform, &room_id, enabled)
         .await;
     Ok(())
 }
@@ -434,7 +434,7 @@ pub async fn generate_whole_clip(
     state: state_type!(),
     encode_danmu: bool,
     platform: String,
-    room_id: i64,
+    room_id: String,
     parent_id: String,
 ) -> Result<TaskRow, String> {
     log::info!("Generate whole clip for {platform} {room_id} {parent_id}");
@@ -470,7 +470,7 @@ pub async fn generate_whole_clip(
     tokio::spawn(async move {
         match state_clone
             .recorder_manager
-            .generate_whole_clip(Some(&reporter), encode_danmu, platform, room_id, parent_id)
+            .generate_whole_clip(Some(&reporter), encode_danmu, platform, &room_id, parent_id)
             .await
         {
             Ok(()) => {

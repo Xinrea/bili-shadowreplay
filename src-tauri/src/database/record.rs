@@ -9,7 +9,7 @@ pub struct RecordRow {
     pub platform: String,
     pub parent_id: String,
     pub live_id: String,
-    pub room_id: i64,
+    pub room_id: String,
     pub title: String,
     pub length: i64,
     pub size: i64,
@@ -17,11 +17,11 @@ pub struct RecordRow {
     pub cover: Option<String>,
 }
 
-// CREATE TABLE records (live_id INTEGER PRIMARY KEY, room_id INTEGER, title TEXT, length INTEGER, size INTEGER, created_at TEXT);
+// CREATE TABLE records (live_id INTEGER PRIMARY KEY, room_id TEXT, title TEXT, length INTEGER, size INTEGER, created_at TEXT);
 impl Database {
     pub async fn get_records(
         &self,
-        room_id: i64,
+        room_id: &str,
         offset: i64,
         limit: i64,
     ) -> Result<Vec<RecordRow>, DatabaseError> {
@@ -38,7 +38,7 @@ impl Database {
 
     pub async fn get_record(
         &self,
-        room_id: i64,
+        room_id: &str,
         live_id: &str,
     ) -> Result<RecordRow, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
@@ -53,7 +53,7 @@ impl Database {
 
     pub async fn get_archives_by_parent_id(
         &self,
-        room_id: i64,
+        room_id: &str,
         parent_id: &str,
     ) -> Result<Vec<RecordRow>, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
@@ -71,7 +71,7 @@ impl Database {
         platform: PlatformType,
         parent_id: &str,
         live_id: &str,
-        room_id: i64,
+        room_id: &str,
         title: &str,
         cover: Option<String>,
     ) -> Result<RecordRow, DatabaseError> {
@@ -80,7 +80,7 @@ impl Database {
             platform: platform.as_str().to_string(),
             parent_id: parent_id.to_string(),
             live_id: live_id.to_string(),
-            room_id,
+            room_id: room_id.to_string(),
             title: title.into(),
             length: 0,
             size: 0,
@@ -88,7 +88,7 @@ impl Database {
             cover,
         };
         if let Err(e) = sqlx::query("INSERT INTO records (live_id, room_id, title, length, size, cover, created_at, platform, parent_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)").bind(record.live_id.clone())
-            .bind(record.room_id).bind(&record.title).bind(0).bind(0).bind(&record.cover).bind(&record.created_at).bind(platform.as_str().to_string()).bind(parent_id).execute(&lock).await {
+            .bind(&record.room_id).bind(&record.title).bind(0).bind(0).bind(&record.cover).bind(&record.created_at).bind(platform.as_str().to_string()).bind(parent_id).execute(&lock).await {
                 // if the record already exists, return the existing record
                 if e.to_string().contains("UNIQUE constraint failed") {
                     return self.get_record(room_id, live_id).await;
@@ -180,12 +180,12 @@ impl Database {
 
     pub async fn get_recent_record(
         &self,
-        room_id: i64,
+        room_id: &str,
         offset: i64,
         limit: i64,
     ) -> Result<Vec<RecordRow>, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
-        if room_id == 0 {
+        if room_id.is_empty() {
             Ok(sqlx::query_as::<_, RecordRow>(
                 "SELECT * FROM records ORDER BY created_at DESC LIMIT $1 OFFSET $2",
             )

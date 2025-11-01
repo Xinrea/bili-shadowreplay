@@ -25,7 +25,7 @@
   import { onDestroy, onMount } from "svelte";
 
   const urlParams = new URLSearchParams(window.location.search);
-  const room_id = parseInt(urlParams.get("room_id"));
+  const room_id = urlParams.get("room_id");
   const platform = urlParams.get("platform");
   const live_id = urlParams.get("live_id");
   const focus_start = parseInt(urlParams.get("start") || "0");

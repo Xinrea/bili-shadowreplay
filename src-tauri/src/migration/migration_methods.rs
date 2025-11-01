@@ -24,7 +24,7 @@ pub async fn try_rebuild_archives(
                 let live_id = file.file_name();
                 let live_id = live_id.to_str().unwrap();
                 // check if live_id is in db
-                let record = db.get_record(room_id, live_id).await;
+                let record = db.get_record(&room_id, live_id).await;
                 if record.is_ok() {
                     continue;
                 }
@@ -39,7 +39,7 @@ pub async fn try_rebuild_archives(
                         })?,
                         live_id,
                         live_id,
-                        room_id,
+                        &room_id,
                         &format!("UnknownLive {live_id}"),
                         None,
                     )
@@ -60,7 +60,7 @@ pub async fn try_convert_live_covers(
     for room in rooms {
         let room_id = room.room_id;
         let room_cache_path = cache_path.join(format!("{}/{}", room.platform, room_id));
-        let records = db.get_records(room_id, 0, 999_999_999).await?;
+        let records = db.get_records(&room_id, 0, 999_999_999).await?;
         for record in &records {
             let record_path = room_cache_path.join(record.live_id.clone());
             let cover = record.cover.clone();
@@ -129,7 +129,7 @@ pub async fn try_add_parent_id_to_records(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let rooms = db.get_recorders().await?;
     for room in &rooms {
-        let records = db.get_records(room.room_id, 0, 999_999_999).await?;
+        let records = db.get_records(&room.room_id, 0, 999_999_999).await?;
         for record in &records {
             if record.parent_id.is_empty() {
                 db.update_record_parent_id(record.live_id.as_str(), record.live_id.as_str())
@@ -146,7 +146,7 @@ pub async fn try_convert_entry_to_m3u8(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let rooms = db.get_recorders().await?;
     for room in &rooms {
-        let records = db.get_records(room.room_id, 0, 999_999_999).await?;
+        let records = db.get_records(&room.room_id, 0, 999_999_999).await?;
         for record in &records {
             let record_path = cache_path.join(format!(
                 "{}/{}/{}",

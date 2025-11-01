@@ -119,7 +119,7 @@
   let isLoading = false;
   let loadError = "";
 
-  async function showArchives(room_id: number) {
+  async function showArchives(room_id: string) {
     // 重置分页状态
     currentPage = 0;
     archives = [];
@@ -139,7 +139,7 @@
 
     try {
       let new_archives = (await invoke("get_archives", {
-        roomId: Number(archiveRoom.room_info.room_id),
+        roomId: archiveRoom.room_info.room_id,
         offset: currentPage * pageSize,
         limit: pageSize,
       })) as RecordItem[];
@@ -297,7 +297,7 @@
   // Function to toggle auto-record state
   function toggleEnabled(room: RecorderInfo) {
     invoke("set_enable", {
-      roomId: Number(room.room_info.room_id),
+      roomId: room.room_info.room_id,
       platform: room.room_info.platform,
       enabled: !room.enabled,
     });
@@ -322,7 +322,7 @@
     }
   }
 
-  function addNewRecorder(room_id: number, platform: string, extra: string) {
+  function addNewRecorder(room_id: string, platform: string, extra: string) {
     // if extra contains ?, remove it
     if (extra.includes("?")) {
       extra = extra.split("?")[0];
@@ -560,7 +560,7 @@
                     on:click={() => {
                       invoke("open_live", {
                         platform: room.room_info.platform,
-                        roomId: Number(room.room_info.room_id),
+                        roomId: room.room_info.room_id,
                         liveId: room.live_id,
                       });
                     }}
@@ -572,7 +572,7 @@
                   class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
                   on:click={() => {
                     archiveRoom = room;
-                    showArchives(Number(room.room_info.room_id));
+                    showArchives(room.room_info.room_id);
                   }}
                 >
                   <History class="w-5 h-5 dark:icon-white" />
@@ -636,7 +636,7 @@
             class="w-24 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors"
             on:click={async () => {
               await invoke("remove_recorder", {
-                roomId: Number(deleteRoom.room_info.room_id),
+                roomId: deleteRoom.room_info.room_id,
                 platform: deleteRoom.room_info.platform,
               });
               deleteModal = false;
@@ -725,8 +725,7 @@
                   addValid = false;
                   return;
                 }
-                const room_id = Number(addRoom);
-                if (Number.isInteger(room_id) && room_id > 0) {
+                if (addRoom.length > 0) {
                   addErrorMsg = "";
                   addValid = true;
                 } else {
@@ -755,7 +754,7 @@
               class="px-4 py-2 bg-[#0A84FF] hover:bg-[#0A84FF]/90 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               disabled={!addValid}
               on:click={() => {
-                addNewRecorder(Number(addRoom), selectedPlatform, "");
+                addNewRecorder(addRoom, selectedPlatform, "");
                 addModal = false;
                 addRoom = "";
               }}
@@ -879,7 +878,7 @@
                           on:click={() => {
                             invoke("open_live", {
                               platform: archiveRoom.room_info.platform,
-                              roomId: Number(archiveRoom.room_info.room_id),
+                              roomId: archiveRoom.room_info.room_id,
                               liveId: archive.live_id,
                             });
                           }}
@@ -901,7 +900,7 @@
                           on:click={() => {
                             invoke("delete_archive", {
                               platform: archiveRoom.room_info.platform,
-                              roomId: Number(archiveRoom.room_info.room_id),
+                              roomId: archiveRoom.room_info.room_id,
                               liveId: archive.live_id,
                             })
                               .then(async () => {
@@ -978,7 +977,7 @@
 <GenerateWholeClipModal
   bind:showModal={generateWholeClipModal}
   archive={generateWholeClipArchive}
-  roomId={generateWholeClipArchive?.room_id || 0}
+  roomId={generateWholeClipArchive?.room_id || ""}
   platform={generateWholeClipArchive?.platform || ""}
   on:generated={handleWholeClipGenerated}
 />

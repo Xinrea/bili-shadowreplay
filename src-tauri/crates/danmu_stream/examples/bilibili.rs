@@ -8,7 +8,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
     env_logger::init();
     // Replace these with actual values
-    let room_id = 768756;
+    let room_id = "768756";
     let cookie = "";
     let stream = Arc::new(DanmuStream::new(ProviderType::BiliBili, cookie, room_id).await?);
 

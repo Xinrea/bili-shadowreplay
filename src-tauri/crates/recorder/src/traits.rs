@@ -17,7 +17,7 @@ use tokio::{
 #[allow(dead_code)]
 pub trait RecorderBasicTrait<T> {
     fn platform(&self) -> PlatformType;
-    fn room_id(&self) -> i64;
+    fn room_id(&self) -> String;
     fn account(&self) -> &Account;
     fn client(&self) -> &reqwest::Client;
     fn event_channel(&self) -> &broadcast::Sender<RecorderEvent>;
@@ -62,7 +62,7 @@ pub trait RecorderTrait<T>: RecorderBasicTrait<T> {
     }
 
     async fn work_dir(&self, live_id: &str) -> CachePath {
-        CachePath::new(self.cache_dir(), self.platform(), self.room_id(), live_id)
+        CachePath::new(self.cache_dir(), self.platform(), &self.room_id(), live_id)
     }
     async fn info(&self) -> RecorderInfo {
         let room_info = self.room_info().read().await.clone();

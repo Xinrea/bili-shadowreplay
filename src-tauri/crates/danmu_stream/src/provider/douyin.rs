@@ -33,7 +33,7 @@ type WsWriteType =
     futures_util::stream::SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, WsMessage>;
 
 pub struct DouyinDanmu {
-    room_id: i64,
+    room_id: String,
     cookie: String,
     stop: Arc<RwLock<bool>>,
     write: Arc<RwLock<Option<WsWriteType>>>,
@@ -192,7 +192,7 @@ impl DouyinDanmu {
         });
 
         // Main message handling loop
-        let room_id = self.room_id;
+        let room_id = self.room_id.clone();
         let stop = Arc::clone(&self.stop);
         let write = Arc::clone(&self.write);
         let message_handle = tokio::spawn(async move {
@@ -210,7 +210,7 @@ impl DouyinDanmu {
 
                 match msg {
                     WsMessage::Binary(data) => {
-                        if let Ok(Some(ack)) = handle_binary_message(&data, &tx, room_id).await {
+                        if let Ok(Some(ack)) = handle_binary_message(&data, &tx, &room_id).await {
                             if let Some(write) = write.write().await.as_mut() {
                                 if let Err(e) =
                                     write.send(WsMessage::binary(ack.encode_to_vec())).await
@@ -268,7 +268,7 @@ impl DouyinDanmu {
 async fn handle_binary_message(
     data: &[u8],
     tx: &mpsc::UnboundedSender<DanmuMessageType>,
-    room_id: i64,
+    room_id: &str,
 ) -> Result<Option<PushFrame>, DanmuStreamError> {
     // First decode the PushFrame
     let push_frame = PushFrame::decode(Bytes::from(data.to_vec())).map_err(|e| {
@@ -328,7 +328,7 @@ async fn handle_binary_message(
                     })?;
                 if let Some(user) = chat_msg.user {
                     let danmu_msg = DanmuMessage {
-                        room_id,
+                        room_id: room_id.to_string(),
                         user_id: user.id,
                         user_name: user.nick_name,
                         message: chat_msg.content,
@@ -394,9 +394,9 @@ async fn handle_binary_message(
 
 #[async_trait]
 impl DanmuProvider for DouyinDanmu {
-    async fn new(identifier: &str, room_id: i64) -> Result<Self, DanmuStreamError> {
+    async fn new(identifier: &str, room_id: &str) -> Result<Self, DanmuStreamError> {
         Ok(Self {
-            room_id,
+            room_id: room_id.to_string(),
             cookie: identifier.to_string(),
             stop: Arc::new(RwLock::new(false)),
             write: Arc::new(RwLock::new(None)),

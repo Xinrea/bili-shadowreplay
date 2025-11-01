@@ -7,7 +7,7 @@ pub enum RecorderEvent {
         recorder: RecorderInfo,
     },
     LiveEnd {
-        room_id: i64,
+        room_id: String,
         platform: PlatformType,
         recorder: RecorderInfo,
     },
@@ -32,7 +32,7 @@ pub enum RecorderEvent {
         message: String,
     },
     DanmuReceived {
-        room: i64,
+        room: String,
         ts: i64,
         content: String,
     },

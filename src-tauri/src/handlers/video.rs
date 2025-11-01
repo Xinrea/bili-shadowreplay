@@ -435,7 +435,7 @@ async fn clip_range_inner(
         .add_video(&VideoRow {
             id: 0,
             status: 0,
-            room_id: params.room_id,
+            room_id: params.room_id.clone(),
             created_at: Local::now().to_rfc3339(),
             cover: cover_file
                 .file_name()
@@ -464,7 +464,7 @@ async fn clip_range_inner(
             "生成新切片",
             &format!(
                 "生成了房间 {} 的切片，长度 {}s：{}",
-                params.room_id,
+                &params.room_id,
                 params
                     .range
                     .as_ref()
@@ -482,7 +482,7 @@ async fn clip_range_inner(
             .title("BiliShadowReplay - 切片完成")
             .body(format!(
                 "生成了房间 {} 的切片: {}",
-                params.room_id, filename
+                &params.room_id, filename
             ))
             .show()
             .unwrap();
@@ -497,8 +497,8 @@ async fn clip_range_inner(
 pub async fn upload_procedure(
     state: state_type!(),
     event_id: String,
-    uid: i64,
-    room_id: i64,
+    uid: String,
+    room_id: String,
     video_id: i64,
     cover: String,
     profile: Profile,
@@ -547,13 +547,13 @@ pub async fn upload_procedure(
 async fn upload_procedure_inner(
     state: &state_type!(),
     reporter: &ProgressReporter,
-    uid: i64,
-    room_id: i64,
+    uid: String,
+    room_id: String,
     video_id: i64,
     cover: String,
     mut profile: Profile,
 ) -> Result<String, String> {
-    let account = state.db.get_account("bilibili", uid).await?;
+    let account = state.db.get_account("bilibili", &uid).await?;
     // get video info from dbs
     let mut video_row = state.db.get_video(video_id).await?;
     // construct file path
@@ -625,10 +625,10 @@ pub async fn get_video(state: state_type!(), id: i64) -> Result<VideoRow, String
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn get_videos(state: state_type!(), room_id: i64) -> Result<Vec<VideoRow>, String> {
+pub async fn get_videos(state: state_type!(), room_id: String) -> Result<Vec<VideoRow>, String> {
     state
         .db
-        .get_videos(room_id)
+        .get_videos(&room_id)
         .await
         .map_err(|e| e.to_string())
 }
@@ -949,7 +949,7 @@ pub async fn import_external_video(
     event_id: String,
     file_path: String,
     title: String,
-    room_id: i64,
+    room_id: String,
 ) -> Result<VideoRow, String> {
     #[cfg(feature = "gui")]
     let emitter = EventEmitter::new(state.app_handle.clone());
@@ -1293,7 +1293,7 @@ pub async fn batch_import_external_videos(
     state: state_type!(),
     event_id: String,
     file_paths: Vec<String>,
-    room_id: i64,
+    room_id: String,
 ) -> Result<BatchImportResult, String> {
     if file_paths.is_empty() {
         return Ok(BatchImportResult {
@@ -1343,7 +1343,7 @@ pub async fn batch_import_external_videos(
             file_event_id,
             file_path.clone(),
             title,
-            room_id,
+            room_id.clone(),
         )
         .await
         {

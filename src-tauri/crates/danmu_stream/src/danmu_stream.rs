@@ -11,7 +11,7 @@ use crate::{
 pub struct DanmuStream {
     pub provider_type: ProviderType,
     pub identifier: String,
-    pub room_id: i64,
+    pub room_id: String,
     pub provider: Arc<RwLock<Box<dyn DanmuProvider>>>,
     tx: mpsc::UnboundedSender<DanmuMessageType>,
     rx: Arc<RwLock<mpsc::UnboundedReceiver<DanmuMessageType>>>,
@@ -21,14 +21,14 @@ impl DanmuStream {
     pub async fn new(
         provider_type: ProviderType,
         identifier: &str,
-        room_id: i64,
+        room_id: &str,
     ) -> Result<Self, DanmuStreamError> {
         let (tx, rx) = mpsc::unbounded_channel();
         let provider = new(provider_type, identifier, room_id).await?;
         Ok(Self {
             provider_type,
             identifier: identifier.to_string(),
-            room_id,
+            room_id: room_id.to_string(),
             provider: Arc::new(RwLock::new(provider)),
             tx,
             rx: Arc::new(RwLock::new(rx)),

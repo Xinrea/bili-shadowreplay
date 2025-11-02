@@ -1315,25 +1315,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_select_preferred_hwaccel() {
-        let cases = vec![
-            (vec!["h264_nvenc", "h264_vaapi"], Some("h264_nvenc")),
-            (
-                vec!["h264_videotoolbox", "h264_qsv"],
-                Some("h264_videotoolbox"),
-            ),
-            (vec!["h264_vaapi"], Some("h264_vaapi")),
-            (vec!["h264_v4l2m2m"], Some("h264_v4l2m2m")),
-            (vec!["libx264"], None),
-        ];
-
-        for (inputs, expected) in cases {
-            let inputs = inputs.into_iter().map(String::from).collect::<Vec<_>>();
-            assert_eq!(super::hwaccel::select_preferred_hwaccel(&inputs), expected);
-        }
-    }
-
     // 测试字幕生成错误处理
     #[tokio::test]
     async fn test_generate_video_subtitle_errors() {

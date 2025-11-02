@@ -7,6 +7,7 @@ use crate::database::{Database, DatabaseError};
 use crate::ffmpeg::{encode_video_danmu, transcode, Range};
 use crate::progress::progress_reporter::{EventEmitter, ProgressReporter, ProgressReporterTrait};
 use crate::subtitle_generator::item_to_srt;
+use crate::task::{Task, TaskManager, TaskPriority};
 use crate::webhook::events::{self, Payload};
 use crate::webhook::poster::WebhookPoster;
 use chrono::DateTime;
@@ -123,6 +124,7 @@ pub struct RecorderManager {
     emitter: EventEmitter,
     db: Arc<Database>,
     config: Arc<RwLock<Config>>,
+    task_manager: Arc<TaskManager>,
     recorders: Arc<RwLock<HashMap<String, RecorderType>>>,
     to_remove: Arc<RwLock<HashSet<String>>>,
     event_tx: broadcast::Sender<RecorderEvent>,
@@ -176,6 +178,7 @@ impl RecorderManager {
         emitter: EventEmitter,
         db: Arc<Database>,
         config: Arc<RwLock<Config>>,
+        task_manager: Arc<TaskManager>,
         webhook_poster: WebhookPoster,
     ) -> RecorderManager {
         let (event_tx, _) = broadcast::channel(100);
@@ -185,6 +188,7 @@ impl RecorderManager {
             emitter,
             db,
             config,
+            task_manager,
             recorders: Arc::new(RwLock::new(HashMap::new())),
             to_remove: Arc::new(RwLock::new(HashSet::new())),
             event_tx,
@@ -360,7 +364,8 @@ impl RecorderManager {
             return;
         };
 
-        let Ok(reporter) = ProgressReporter::new(&self.emitter, &task.id).await else {
+        let Ok(reporter) = ProgressReporter::new(self.db.clone(), &self.emitter, &task.id).await
+        else {
             log::error!("Failed to create reporter");
             let _ = self
                 .db
@@ -371,43 +376,56 @@ impl RecorderManager {
 
         log::info!("Create task: {} {}", task.id, task.task_type);
 
-        if let Err(e) = self
-            .generate_whole_clip(
-                Some(&reporter),
-                self.config.read().await.auto_generate.encode_danmu,
-                platform.as_str().to_string(),
-                room_id,
-                live_record.parent_id,
-            )
-            .await
-        {
-            log::error!("Failed to generate whole clip: {e}");
-            let _ = reporter
-                .finish(false, &format!("Failed to generate whole clip: {e}"))
-                .await;
-            let _ = self
-                .db
-                .update_task(
-                    &task.id,
-                    "failed",
-                    &format!("Failed to generate whole clip: {e}"),
-                    None,
-                )
-                .await;
-            return;
-        }
-
-        let _ = reporter
-            .finish(true, "Whole clip generated successfully")
-            .await;
+        let self_clone = self.clone();
+        let task_id = task.id.clone();
+        let room_id = room_id.to_string();
         let _ = self
-            .db
-            .update_task(
-                &task.id,
-                "success",
-                "Whole clip generated successfully",
-                None,
-            )
+            .task_manager
+            .add_task(Task::new(
+                task_id.clone(),
+                TaskPriority::Normal,
+                async move {
+                    if let Err(e) = self_clone
+                        .generate_whole_clip(
+                            Some(&reporter),
+                            self_clone.config.read().await.auto_generate.encode_danmu,
+                            platform.as_str().to_string(),
+                            &room_id,
+                            live_record.parent_id,
+                        )
+                        .await
+                    {
+                        log::error!("Failed to generate whole clip: {e}");
+                        let _ = reporter
+                            .finish(false, &format!("Failed to generate whole clip: {e}"))
+                            .await;
+                        let _ = self_clone
+                            .db
+                            .update_task(
+                                &task_id,
+                                "failed",
+                                &format!("Failed to generate whole clip: {e}"),
+                                None,
+                            )
+                            .await;
+                        return Err(format!("Failed to generate whole clip: {e}"));
+                    }
+
+                    let _ = reporter
+                        .finish(true, "Whole clip generated successfully")
+                        .await;
+                    let _ = self_clone
+                        .db
+                        .update_task(
+                            &task_id,
+                            "success",
+                            "Whole clip generated successfully",
+                            None,
+                        )
+                        .await;
+                    Ok(())
+                },
+            ))
             .await;
     }
 

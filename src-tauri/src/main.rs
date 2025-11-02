@@ -14,6 +14,7 @@ mod progress;
 mod recorder_manager;
 mod state;
 mod subtitle_generator;
+mod task;
 #[cfg(feature = "gui")]
 mod tray;
 mod webhook;
@@ -421,6 +422,7 @@ impl MigrationSource<'static> for MigrationList {
 async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Error>> {
     use std::path::PathBuf;
 
+    use crate::task::TaskManager;
     use progress::progress_manager::ProgressManager;
     use progress::progress_reporter::EventEmitter;
 
@@ -467,10 +469,14 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     let emitter = EventEmitter::new(progress_manager.get_event_sender());
     let webhook_poster =
         webhook::poster::create_webhook_poster(&config.read().await.webhook_url, None).unwrap();
+    let mut task_manager = TaskManager::new();
+    task_manager.start();
+    let task_manager = Arc::new(task_manager);
     let recorder_manager = Arc::new(RecorderManager::new(
         emitter,
         db.clone(),
         config.clone(),
+        task_manager.clone(),
         webhook_poster.clone(),
     ));
 
@@ -485,6 +491,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
         config,
         webhook_poster,
         recorder_manager,
+        task_manager,
         progress_manager,
         readonly: args.readonly,
     })
@@ -494,6 +501,8 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
 async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::Error>> {
     use platform_dirs::AppDirs;
     use progress::progress_reporter::EventEmitter;
+
+    use crate::task::TaskManager;
 
     let log_dir = app.path().app_log_dir()?;
     setup_logging(&log_dir).await?;
@@ -527,12 +536,17 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     db_clone.finish_pending_tasks().await?;
     let webhook_poster =
         webhook::poster::create_webhook_poster(&config.read().await.webhook_url, None).unwrap();
+    let mut task_manager = TaskManager::new();
+    task_manager.start();
+
+    let task_manager = Arc::new(task_manager);
 
     let recorder_manager = Arc::new(RecorderManager::new(
         app.app_handle().clone(),
         emitter,
         db.clone(),
         config.clone(),
+        task_manager.clone(),
         webhook_poster.clone(),
     ));
 
@@ -551,6 +565,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         db,
         config,
         recorder_manager,
+        task_manager,
         app_handle: app.handle().clone(),
         webhook_poster,
     })

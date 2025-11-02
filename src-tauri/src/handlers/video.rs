@@ -2,9 +2,7 @@ use crate::database::task::TaskRow;
 use crate::database::video::VideoRow;
 use crate::ffmpeg;
 use crate::handlers::utils::get_disk_info_inner;
-use crate::progress::progress_reporter::{
-    cancel_progress, EventEmitter, ProgressReporter, ProgressReporterTrait,
-};
+use crate::progress::progress_reporter::{EventEmitter, ProgressReporter, ProgressReporterTrait};
 use crate::recorder_manager::ClipRangeParams;
 use crate::subtitle_generator::item_to_srt;
 use crate::webhook::events;
@@ -125,7 +123,9 @@ async fn copy_file_with_progress(
         let report_threshold = 1; // 每1%报告一次
 
         if percent != last_reported_percent && (percent % report_threshold == 0 || percent == 100) {
-            reporter.update(&format!("正在复制视频文件... {percent}%"));
+            reporter
+                .update(&format!("正在复制视频文件... {percent}%"))
+                .await;
             last_reported_percent = percent;
         }
     }
@@ -155,11 +155,13 @@ async fn copy_and_convert_with_progress(
 
     if is_network_source {
         // 网络文件：先复制到本地临时位置，再转换
-        reporter.update("检测到网络文件，使用先复制后转换策略...");
+        reporter
+            .update("检测到网络文件，使用先复制后转换策略...")
+            .await;
         copy_then_convert_strategy(source, dest, reporter).await
     } else {
         // 本地文件：直接转换（更高效）
-        reporter.update("检测到本地文件，使用直接转换策略...");
+        reporter.update("检测到本地文件，使用直接转换策略...").await;
         ffmpeg::convert_video_format(source, dest, reporter).await
     }
 }
@@ -185,11 +187,13 @@ async fn copy_then_convert_strategy(
     }
 
     // 第一步：将网络文件复制到本地临时位置（使用优化的缓冲区）
-    reporter.update("第1步：从网络复制文件到本地临时位置...");
+    reporter
+        .update("第1步：从网络复制文件到本地临时位置...")
+        .await;
     copy_file_with_network_optimization(source, &temp_path, reporter).await?;
 
     // 第二步：从本地临时文件转换到目标位置
-    reporter.update("第2步：从临时文件转换到目标格式...");
+    reporter.update("第2步：从临时文件转换到目标格式...").await;
     let convert_result = ffmpeg::convert_video_format(&temp_path, dest, reporter).await;
 
     // 清理临时文件
@@ -251,12 +255,14 @@ async fn copy_file_with_network_optimization(
 
                 // 网络文件更频繁地报告进度
                 if percent != last_reported_percent {
-                    reporter.update(&format!(
-                        "正在从网络复制文件... {}% ({:.1}MB/{:.1}MB)",
-                        percent,
-                        copied as f64 / (1024.0 * 1024.0),
-                        total_size as f64 / (1024.0 * 1024.0)
-                    ));
+                    reporter
+                        .update(&format!(
+                            "正在从网络复制文件... {}% ({:.1}MB/{:.1}MB)",
+                            percent,
+                            copied as f64 / (1024.0 * 1024.0),
+                            total_size as f64 / (1024.0 * 1024.0)
+                        ))
+                        .await;
                     last_reported_percent = percent;
                 }
             }
@@ -270,9 +276,11 @@ async fn copy_file_with_network_optimization(
 
                 // 等待一小段时间后重试
                 tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-                reporter.update(&format!(
-                    "网络连接中断，正在重试... ({consecutive_errors}/{MAX_RETRIES})"
-                ));
+                reporter
+                    .update(&format!(
+                        "网络连接中断，正在重试... ({consecutive_errors}/{MAX_RETRIES})"
+                    ))
+                    .await;
             }
         }
     }
@@ -280,7 +288,7 @@ async fn copy_file_with_network_optimization(
     dest_file
         .flush()
         .map_err(|e| format!("刷新临时文件缓冲区失败: {e}"))?;
-    reporter.update("网络文件复制完成");
+    reporter.update("网络文件复制完成").await;
     Ok(())
 }
 
@@ -313,7 +321,7 @@ pub async fn clip_range(
     let emitter = EventEmitter::new(state.app_handle.clone());
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
-    let reporter = ProgressReporter::new(&emitter, &event_id).await?;
+    let reporter = ProgressReporter::new(state.db.clone(), &emitter, &event_id).await?;
     let mut params_without_cover = params.clone();
     params_without_cover.cover = String::new();
     let task = TaskRow {
@@ -507,7 +515,7 @@ pub async fn upload_procedure(
     let emitter = EventEmitter::new(state.app_handle.clone());
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
-    let reporter = ProgressReporter::new(&emitter, &event_id).await?;
+    let reporter = ProgressReporter::new(state.db.clone(), &emitter, &event_id).await?;
     let task = TaskRow {
         id: event_id.clone(),
         task_type: "upload_procedure".to_string(),
@@ -562,7 +570,7 @@ async fn upload_procedure_inner(
     let path = Path::new(&file);
     let client = reqwest::Client::new();
     let cover_url = bilibili::api::upload_cover(&client, &account.to_account(), &cover).await;
-    reporter.update("投稿预处理中");
+    reporter.update("投稿预处理中").await;
 
     match bilibili::api::prepare_video(&client, &account.to_account(), path).await {
         Ok(video) => {
@@ -614,8 +622,13 @@ async fn upload_procedure_inner(
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn cancel(_state: state_type!(), event_id: String) -> Result<(), String> {
-    cancel_progress(&event_id).await;
+pub async fn cancel(state: state_type!(), event_id: String) -> Result<(), String> {
+    log::info!("Cancel task: {event_id}");
+    state.task_manager.cancel_task(&event_id).await?;
+    state
+        .db
+        .update_task(&event_id, "cancelled", "任务取消", None)
+        .await?;
     Ok(())
 }
 
@@ -743,7 +756,7 @@ pub async fn generate_video_subtitle(
     let emitter = EventEmitter::new(state.app_handle.clone());
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
-    let reporter = ProgressReporter::new(&emitter, &event_id).await?;
+    let reporter = ProgressReporter::new(state.db.clone(), &emitter, &event_id).await?;
     let task = TaskRow {
         id: event_id.clone(),
         task_type: "generate_video_subtitle".to_string(),
@@ -861,7 +874,7 @@ pub async fn encode_video_subtitle(
     let emitter = EventEmitter::new(state.app_handle.clone());
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
-    let reporter = ProgressReporter::new(&emitter, &event_id).await?;
+    let reporter = ProgressReporter::new(state.db.clone(), &emitter, &event_id).await?;
     let task = TaskRow {
         id: event_id.clone(),
         task_type: "encode_video_subtitle".to_string(),
@@ -956,14 +969,14 @@ pub async fn import_external_video(
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
 
-    let reporter = ProgressReporter::new(&emitter, &event_id).await?;
+    let reporter = ProgressReporter::new(state.db.clone(), &emitter, &event_id).await?;
 
     let source_path = Path::new(&file_path);
     if !source_path.exists() {
         return Err("文件不存在".to_string());
     }
 
-    reporter.update("正在提取视频元数据...");
+    reporter.update("正在提取视频元数据...").await;
     let metadata = ffmpeg::extract_video_metadata(source_path).await?;
     let output_str = state.config.read().await.output.clone();
     let output_dir = Path::new(&output_str);
@@ -989,7 +1002,7 @@ pub async fn import_external_video(
     let final_target_full_path = if need_conversion {
         let mp4_target_full_path = target_full_path.with_extension("mp4");
 
-        reporter.update("准备转换视频格式 (FLV → MP4)...");
+        reporter.update("准备转换视频格式 (FLV → MP4)...").await;
 
         copy_and_convert_with_progress(source_path, &mp4_target_full_path, true, &reporter).await?;
 
@@ -1008,7 +1021,7 @@ pub async fn import_external_video(
     };
 
     // 步骤3: 生成缩略图
-    reporter.update("正在生成视频缩略图...");
+    reporter.update("正在生成视频缩略图...").await;
 
     // 生成缩略图，使用智能时间点选择
     let thumbnail_timestamp = get_optimal_thumbnail_timestamp(metadata.duration);
@@ -1022,7 +1035,7 @@ pub async fn import_external_video(
         };
 
     // 步骤4: 保存到数据库
-    reporter.update("正在保存视频信息...");
+    reporter.update("正在保存视频信息...").await;
 
     let Ok(size) = i64::try_from(
         final_target_full_path
@@ -1091,7 +1104,7 @@ pub async fn clip_video(
     let emitter = EventEmitter::new(state.app_handle.clone());
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
-    let reporter = ProgressReporter::new(&emitter, &event_id).await?;
+    let reporter = ProgressReporter::new(state.db.clone(), &emitter, &event_id).await?;
 
     // 创建任务记录
     let task = TaskRow {
@@ -1185,7 +1198,7 @@ async fn clip_video_inner(
     let output_full_path = output_dir.join(&output_filename);
 
     // 执行切片
-    reporter.update("开始切片处理");
+    reporter.update("开始切片处理").await;
     ffmpeg::clip_from_video_file(
         Some(reporter),
         &input_path,
@@ -1314,7 +1327,7 @@ pub async fn batch_import_external_videos(
     let emitter = EventEmitter::new(state.app_handle.clone());
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
-    let batch_reporter = ProgressReporter::new(&emitter, &event_id).await?;
+    let batch_reporter = ProgressReporter::new(state.db.clone(), &emitter, &event_id).await?;
 
     let total_files = file_paths.len();
 
@@ -1327,9 +1340,11 @@ pub async fn batch_import_external_videos(
             .to_string();
 
         // 更新批量进度，只显示进度信息
-        batch_reporter.update(&format!(
-            "正在导入第{current_index}个，共{total_files}个文件"
-        ));
+        batch_reporter
+            .update(&format!(
+                "正在导入第{current_index}个，共{total_files}个文件"
+            ))
+            .await;
 
         // 为每个文件创建独立的事件ID
         let file_event_id = format!("{event_id}_file_{index}");

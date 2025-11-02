@@ -2,7 +2,6 @@
   import { invoke } from "../lib/invoker";
   import { scale, fade } from "svelte/transition";
   import {
-    Trash2,
     Clock,
     CheckCircle,
     XCircle,
@@ -10,13 +9,14 @@
     Loader2,
     RefreshCw,
     ChevronDown,
+    X,
   } from "lucide-svelte";
   import type { TaskRow } from "../lib/db";
   import { onMount, onDestroy } from "svelte";
 
   let tasks: TaskRow[] = [];
   let loading = true;
-  let deletingTaskId: string | null = null;
+  let actionTaskId: string | null = null;
   let refreshInterval = null;
   let expandedTasks = new Set<string>();
 
@@ -38,14 +38,27 @@
 
   async function delete_task(id: string) {
     try {
-      deletingTaskId = id;
+      actionTaskId = id;
       await invoke("delete_task", { id });
       await update_tasks();
     } catch (error) {
       console.error("删除任务失败:", error);
       alert("删除任务失败：" + error);
     } finally {
-      deletingTaskId = null;
+      actionTaskId = null;
+    }
+  }
+
+  async function cancel_task(id: string) {
+    try {
+      actionTaskId = id;
+      await invoke("cancel", { eventId: id });
+      await update_tasks();
+    } catch (error) {
+      console.error("取消任务失败:", error);
+      alert("取消任务失败：" + error);
+    } finally {
+      actionTaskId = null;
     }
   }
 
@@ -104,6 +117,11 @@
       default:
         return "bg-gray-100 dark:bg-gray-900/20";
     }
+  }
+
+  function is_cancelable_status(status: string) {
+    const normalized = status.toLowerCase();
+    return normalized === "pending" || normalized === "processing";
   }
 
   function format_date(date_str: string) {
@@ -263,7 +281,7 @@
                         task.status
                       )} {get_status_color(task.status)}"
                     >
-                      {#if task.status.toLowerCase() === "running" || task.status.toLowerCase() === "processing"}
+                      {#if task.status.toLowerCase() === "pending" || task.status.toLowerCase() === "processing"}
                         <Loader2 class="w-3 h-3 animate-spin" />
                       {:else}
                         <svelte:component
@@ -320,18 +338,24 @@
 
               <div class="flex items-center space-x-2 ml-4">
                 <button
-                  class="p-2 rounded-lg transition-colors {task.status.toLowerCase() ===
-                  'pending'
-                    ? 'text-gray-400 cursor-not-allowed'
-                    : 'hover:bg-red-50 dark:hover:bg-red-900/20 text-red-600 hover:text-red-700'}"
-                  on:click={() => delete_task(task.id)}
-                  disabled={deletingTaskId === task.id ||
-                    task.status.toLowerCase() === "pending"}
+                  class={`p-2 rounded-lg transition-colors flex items-center space-x-1 ${
+                    is_cancelable_status(task.status)
+                      ? "text-amber-600 hover:text-amber-700 hover:bg-amber-50 dark:hover:bg-amber-900/20"
+                      : "text-gray-500 hover:text-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800/60"
+                  } ${actionTaskId === task.id ? "cursor-wait" : ""}`}
+                  on:click={() =>
+                    is_cancelable_status(task.status)
+                      ? cancel_task(task.id)
+                      : delete_task(task.id)}
+                  disabled={actionTaskId === task.id}
                 >
-                  {#if deletingTaskId === task.id}
+                  {#if actionTaskId === task.id}
                     <Loader2 class="w-4 h-4 animate-spin" />
+                  {:else if is_cancelable_status(task.status)}
+                    <XCircle class="w-4 h-4" />
+                    <span class="text-xs font-medium">取消</span>
                   {:else}
-                    <Trash2 class="w-4 h-4" />
+                    <X class="w-4 h-4" />
                   {/if}
                 </button>
               </div>

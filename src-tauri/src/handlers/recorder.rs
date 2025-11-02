@@ -10,6 +10,8 @@ use crate::progress::progress_reporter::ProgressReporterTrait;
 use crate::recorder_manager::RecorderList;
 use crate::state::State;
 use crate::state_type;
+use crate::task::Task;
+use crate::task::TaskPriority;
 use crate::webhook::events;
 use recorder::account::Account;
 use recorder::danmu::DanmuEntry;
@@ -457,7 +459,7 @@ pub async fn generate_whole_clip(
     let emitter = EventEmitter::new(state.app_handle.clone());
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
-    let reporter = ProgressReporter::new(&emitter, &task.id).await?;
+    let reporter = ProgressReporter::new(state.db.clone(), &emitter, &task.id).await?;
 
     log::info!("Create task: {} {}", task.id, task.task_type);
     // create a tokio task to run in background
@@ -467,27 +469,42 @@ pub async fn generate_whole_clip(
     let state_clone = state.clone();
 
     let task_id = task.id.clone();
-    tokio::spawn(async move {
-        match state_clone
-            .recorder_manager
-            .generate_whole_clip(Some(&reporter), encode_danmu, platform, &room_id, parent_id)
-            .await
-        {
-            Ok(()) => {
-                reporter.finish(true, "切片生成完成").await;
-                let _ = state_clone
-                    .db
-                    .update_task(&task_id, "success", "切片生成完成", None)
-                    .await;
-            }
-            Err(e) => {
-                reporter.finish(false, &format!("切片生成失败: {e}")).await;
-                let _ = state_clone
-                    .db
-                    .update_task(&task_id, "failed", &format!("切片生成失败: {e}"), None)
-                    .await;
-            }
-        }
-    });
+    state
+        .task_manager
+        .add_task(Task::new(
+            task_id.clone(),
+            TaskPriority::Normal,
+            async move {
+                match state_clone
+                    .recorder_manager
+                    .generate_whole_clip(
+                        Some(&reporter),
+                        encode_danmu,
+                        platform,
+                        &room_id,
+                        parent_id,
+                    )
+                    .await
+                {
+                    Ok(()) => {
+                        reporter.finish(true, "切片生成完成").await;
+                        let _ = state_clone
+                            .db
+                            .update_task(&task_id, "success", "切片生成完成", None)
+                            .await;
+                        Ok(())
+                    }
+                    Err(e) => {
+                        reporter.finish(false, &format!("切片生成失败: {e}")).await;
+                        let _ = state_clone
+                            .db
+                            .update_task(&task_id, "failed", &format!("切片生成失败: {e}"), None)
+                            .await;
+                        Err(format!("切片生成失败: {e}"))
+                    }
+                }
+            },
+        ))
+        .await?;
     Ok(task)
 }

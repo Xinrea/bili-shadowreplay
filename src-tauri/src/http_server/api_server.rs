@@ -700,7 +700,6 @@ struct UploadProcedureRequest {
     uid: String,
     room_id: String,
     video_id: i64,
-    cover: String,
     profile: Profile,
 }
 
@@ -714,7 +713,6 @@ async fn handler_upload_procedure(
         param.uid,
         param.room_id,
         param.video_id,
-        param.cover,
         param.profile,
     )
     .await?;

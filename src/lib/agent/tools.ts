@@ -496,7 +496,6 @@ const post_video_to_bilibili = tool(
     //   profile: profile,
     // })
     const event_id = generateEventId();
-    const cover = await invoke("get_video_cover", { id: video_id });
     let profile = default_profile();
     profile.title = title;
     profile.desc = desc;
@@ -507,7 +506,6 @@ const post_video_to_bilibili = tool(
       eventId: event_id,
       roomId: room_id,
       videoId: video_id,
-      cover,
       profile,
     });
     return result;

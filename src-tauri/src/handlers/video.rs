@@ -508,7 +508,6 @@ pub async fn upload_procedure(
     uid: String,
     room_id: String,
     video_id: i64,
-    cover: String,
     profile: Profile,
 ) -> Result<String, String> {
     #[cfg(feature = "gui")]
@@ -532,7 +531,7 @@ pub async fn upload_procedure(
     };
     state.db.add_task(&task).await?;
     log::info!("Create task: {task:?}");
-    match upload_procedure_inner(&state, &reporter, uid, room_id, video_id, cover, profile).await {
+    match upload_procedure_inner(&state, &reporter, uid, room_id, video_id, profile).await {
         Ok(bvid) => {
             reporter.finish(true, "投稿成功").await;
             state
@@ -558,7 +557,6 @@ async fn upload_procedure_inner(
     uid: String,
     room_id: String,
     video_id: i64,
-    cover: String,
     mut profile: Profile,
 ) -> Result<String, String> {
     let account = state.db.get_account("bilibili", &uid).await?;
@@ -569,7 +567,19 @@ async fn upload_procedure_inner(
     let file = Path::new(&output).join(&video_row.file);
     let path = Path::new(&file);
     let client = reqwest::Client::new();
-    let cover_url = bilibili::api::upload_cover(&client, &account.to_account(), &cover).await;
+
+    let cover_path = file.with_extension("jpg");
+    let cover_bytes = tokio::fs::read(&cover_path).await.map_err(|e| {
+        log::error!("Read cover file error: {} {}", e, cover_path.display());
+        e.to_string()
+    })?;
+    let cover_base64 = format!(
+        "data:image/jpeg;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(cover_bytes)
+    );
+    let cover_url =
+        bilibili::api::upload_cover(&client, &account.to_account(), &cover_base64).await;
+
     reporter.update("投稿预处理中").await;
 
     match bilibili::api::prepare_video(&client, &account.to_account(), path).await {

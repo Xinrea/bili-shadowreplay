@@ -374,7 +374,6 @@
       eventId: event_id,
       roomId: roomId,
       videoId: video.id,
-      cover: video.cover,
       profile: profile,
     }).then(async () => {
       uid_selected = 0;

@@ -862,8 +862,9 @@ pub async fn upload_cover(
     cover: &str,
 ) -> Result<String, RecorderError> {
     let url = format!(
-        "https://member.bilibili.com/x/vu/web/cover/up?ts={}",
-        chrono::Local::now().timestamp(),
+        "https://member.bilibili.com/x/vu/web/cover/up?ts={}&csrf={}",
+        chrono::Local::now().timestamp_millis(),
+        account.csrf
     );
     let mut headers = generate_user_agent_header();
     if let Ok(cookies) = account.cookies.parse() {

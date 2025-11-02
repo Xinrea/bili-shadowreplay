@@ -106,7 +106,7 @@ impl SubtitleGeneratorType {
 pub trait SubtitleGenerator {
     async fn generate_subtitle(
         &self,
-        reporter: Option<&impl ProgressReporterTrait>,
+        reporter: Option<&(impl ProgressReporterTrait + 'static)>,
         audio_path: &Path,
         language_hint: &str,
     ) -> Result<GenerateResult, String>;

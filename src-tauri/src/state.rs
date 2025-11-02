@@ -4,6 +4,7 @@ use tokio::sync::RwLock;
 use crate::config::Config;
 use crate::database::Database;
 use crate::recorder_manager::RecorderManager;
+use crate::task::TaskManager;
 use crate::webhook::poster::WebhookPoster;
 
 #[cfg(feature = "headless")]
@@ -15,6 +16,7 @@ pub struct State {
     pub config: Arc<RwLock<Config>>,
     pub webhook_poster: WebhookPoster,
     pub recorder_manager: Arc<RecorderManager>,
+    pub task_manager: Arc<TaskManager>,
     #[cfg(not(feature = "headless"))]
     pub app_handle: tauri::AppHandle,
     #[cfg(feature = "headless")]

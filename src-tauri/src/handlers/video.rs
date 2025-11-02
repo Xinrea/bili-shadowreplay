@@ -2,9 +2,7 @@ use crate::database::task::TaskRow;
 use crate::database::video::VideoRow;
 use crate::ffmpeg;
 use crate::handlers::utils::get_disk_info_inner;
-use crate::progress::progress_reporter::{
-    cancel_progress, EventEmitter, ProgressReporter, ProgressReporterTrait,
-};
+use crate::progress::progress_reporter::{EventEmitter, ProgressReporter, ProgressReporterTrait};
 use crate::recorder_manager::ClipRangeParams;
 use crate::subtitle_generator::item_to_srt;
 use crate::webhook::events;
@@ -624,8 +622,13 @@ async fn upload_procedure_inner(
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn cancel(_state: state_type!(), event_id: String) -> Result<(), String> {
-    cancel_progress(&event_id).await;
+pub async fn cancel(state: state_type!(), event_id: String) -> Result<(), String> {
+    log::info!("Cancel task: {event_id}");
+    state.task_manager.cancel_task(&event_id).await?;
+    state
+        .db
+        .update_task(&event_id, "cancelled", "任务取消", None)
+        .await?;
     Ok(())
 }
 

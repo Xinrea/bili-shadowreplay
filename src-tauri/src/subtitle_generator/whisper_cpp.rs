@@ -36,7 +36,7 @@ pub async fn new(model: &Path, prompt: &str) -> Result<WhisperCPP, String> {
 impl SubtitleGenerator for WhisperCPP {
     async fn generate_subtitle(
         &self,
-        reporter: Option<&impl ProgressReporterTrait>,
+        reporter: Option<&(impl ProgressReporterTrait + 'static)>,
         audio_path: &Path,
         language_hint: &str,
     ) -> Result<GenerateResult, String> {

@@ -69,21 +69,32 @@ pub async fn playlist_to_video(
         if !output_folder.exists() {
             std::fs::create_dir_all(output_folder).unwrap();
         }
-        let mut file = tokio::fs::File::create(&output_path).await.unwrap();
+        let mut file = tokio::fs::File::create(&output_path)
+            .await
+            .map_err(|e| format!("Failed to create output file: {}", e))?;
         if let Some(header_url) = header_url {
             let header_data = tokio::fs::read(playlist_folder.join(header_url))
                 .await
-                .unwrap();
-            file.write_all(&header_data).await.unwrap();
+                .map_err(|e| format!("Failed to read header file: {}", e))?;
+            file.write_all(&header_data)
+                .await
+                .map_err(|e| format!("Failed to write header file: {}", e))?;
         }
         for s in segments {
             // read segment
-            let segment_file_path = playlist_folder.join(s.uri);
-            let segment_data = tokio::fs::read(&segment_file_path).await.unwrap();
+            let uri = s.uri.split('?').next().unwrap_or(&s.uri);
+            let segment_file_path = playlist_folder.join(uri);
+            let segment_data = tokio::fs::read(&segment_file_path)
+                .await
+                .map_err(|e| format!("Failed to read segment file: {}", e))?;
             // append segment data to clip_file
-            file.write_all(&segment_data).await.unwrap();
+            file.write_all(&segment_data)
+                .await
+                .map_err(|e| format!("Failed to write segment file: {}", e))?;
         }
-        file.flush().await.unwrap();
+        file.flush()
+            .await
+            .map_err(|e| format!("Failed to flush file: {}", e))?;
     }
 
     // transcode copy to fix timestamp

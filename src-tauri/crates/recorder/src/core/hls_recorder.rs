@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::{path::PathBuf, sync::Arc};
 
+use chrono::Utc;
 use m3u8_rs::{MediaPlaylist, Playlist};
 use reqwest::header::HeaderMap;
 use std::time::Duration;
@@ -206,6 +207,11 @@ impl HlsRecorder {
                     "Download failed",
                 )));
             };
+
+            let mut segment = segment.clone();
+            if segment.program_date_time.is_none() {
+                segment.program_date_time.replace(Utc::now().into());
+            }
 
             // check if the stream is changed
             let segment_metadata = crate::ffmpeg::extract_video_metadata(&segment_path)

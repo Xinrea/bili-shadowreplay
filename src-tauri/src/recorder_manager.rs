@@ -160,8 +160,8 @@ pub enum RecorderManagerError {
     SubtitleNotFound { live_id: String },
     #[error("Subtitle generation failed: {error}")]
     SubtitleGenerationFailed { error: String },
-    #[error("Invalid playlist without date time")]
-    InvalidPlaylistWithoutDateTime,
+    #[error("Invalid live id, not timestamp str")]
+    InvalidLiveID,
     #[error("Archive danmu ass generation failed: {error}")]
     ArchiveDanmuAssGenerationFailed { error: String },
 }
@@ -754,11 +754,15 @@ impl RecorderManager {
             .find(|t| t.tag == "X-PROGRAM-DATE-TIME");
 
         let Some(program_date_time) = program_date_time else {
-            return Err(RecorderManagerError::InvalidPlaylistWithoutDateTime);
+            return live_id
+                .parse::<i64>()
+                .map_err(|_| RecorderManagerError::InvalidLiveID);
         };
 
         let Some(value) = &program_date_time.rest else {
-            return Err(RecorderManagerError::InvalidPlaylistWithoutDateTime);
+            return live_id
+                .parse::<i64>()
+                .map_err(|_| RecorderManagerError::InvalidLiveID);
         };
 
         // example: "2025-10-18T17:18:17.004+0800"

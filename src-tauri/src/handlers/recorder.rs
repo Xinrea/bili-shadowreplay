@@ -450,6 +450,7 @@ pub async fn generate_whole_clip(
                 "platform": platform,
                 "room_id": room_id,
                 "parent_id": parent_id,
+                "encode_danmu": encode_danmu,
             })
             .to_string(),
         )

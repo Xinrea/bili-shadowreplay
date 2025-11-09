@@ -13,6 +13,7 @@ mod migration;
 mod progress;
 mod recorder_manager;
 mod state;
+mod static_server;
 mod subtitle_generator;
 mod task;
 #[cfg(feature = "gui")]
@@ -422,7 +423,7 @@ impl MigrationSource<'static> for MigrationList {
 async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Error>> {
     use std::path::PathBuf;
 
-    use crate::task::TaskManager;
+    use crate::{static_server::start_static_server, task::TaskManager};
     use progress::progress_manager::ProgressManager;
     use progress::progress_reporter::EventEmitter;
 
@@ -480,6 +481,8 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
         webhook_poster.clone(),
     ));
 
+    let static_server = Arc::new(start_static_server(config.clone()).await?);
+
     let _ = try_rebuild_archives(&db, config.read().await.cache.clone().into()).await;
     let _ = try_convert_live_covers(&db, config.read().await.cache.clone().into()).await;
     let _ = try_convert_clip_covers(&db, config.read().await.output.clone().into()).await;
@@ -492,6 +495,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
         webhook_poster,
         recorder_manager,
         task_manager,
+        static_server,
         progress_manager,
         readonly: args.readonly,
     })
@@ -502,7 +506,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     use platform_dirs::AppDirs;
     use progress::progress_reporter::EventEmitter;
 
-    use crate::task::TaskManager;
+    use crate::{static_server::start_static_server, task::TaskManager};
 
     let log_dir = app.path().app_log_dir()?;
     setup_logging(&log_dir).await?;
@@ -550,6 +554,8 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         webhook_poster.clone(),
     ));
 
+    let static_server = Arc::new(start_static_server(config.clone()).await?);
+
     // try to rebuild archive table
     let cache_path = config_clone.read().await.cache.clone();
     let output_path = config_clone.read().await.output.clone();
@@ -566,6 +572,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         config,
         recorder_manager,
         task_manager,
+        static_server,
         app_handle: app.handle().clone(),
         webhook_poster,
     })
@@ -623,6 +630,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::account::get_qr_status,
         crate::handlers::account::get_qr,
         crate::handlers::config::get_config,
+        crate::handlers::config::get_static_port,
         crate::handlers::config::set_cache_path,
         crate::handlers::config::set_output_path,
         crate::handlers::config::update_notify,

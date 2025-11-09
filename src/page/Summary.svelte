@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { get_cover, invoke } from "../lib/invoker";
+  import { get_static_url, invoke } from "../lib/invoker";
   import type { RecorderList, DiskInfo } from "../lib/interface";
   import type { RecordItem } from "../lib/db";
   const INTERVAL = 5000;
@@ -90,7 +90,7 @@
     })) as RecordItem[];
 
     for (const record of newRecords) {
-      record.cover = await get_cover(
+      record.cover = await get_static_url(
         "cache",
         `${record.platform}/${record.room_id}/${record.live_id}/cover.jpg`
       );

@@ -10,6 +10,8 @@
     accounts: [],
   };
 
+  let avatar_cache: Map<string, string> = new Map();
+
   async function update_accounts() {
     let new_account_info = (await invoke("get_accounts")) as AccountInfo;
     for (const account of new_account_info.accounts) {
@@ -17,9 +19,15 @@
         account.avatar = platform_avatar(account.platform);
         continue;
       }
+      if (avatar_cache.has(account.avatar)) {
+        account.avatar = avatar_cache.get(account.avatar);
+        continue;
+      }
       const avatar_response = await get(account.avatar);
       const avatar_blob = await avatar_response.blob();
-      account.avatar = URL.createObjectURL(avatar_blob);
+      const avatar_url = URL.createObjectURL(avatar_blob);
+      avatar_cache.set(account.avatar, avatar_url);
+      account.avatar = avatar_url;
     }
     account_info = new_account_info;
   }

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke, TAURI_ENV, convertFileSrc, get_cover } from "../lib/invoker";
+  import { invoke, TAURI_ENV, get_static_url } from "../lib/invoker";
   import type { VideoItem } from "../lib/interface";
   import ImportVideoDialog from "../lib/components/ImportVideoDialog.svelte";
   import { onMount, onDestroy, tick } from "svelte";
@@ -173,7 +173,7 @@
       const tempVideos = await invoke<VideoItem[]>("get_all_videos");
 
       for (const video of tempVideos) {
-        video.cover = await get_cover("output", video.cover);
+        video.cover = await get_static_url("output", video.cover);
       }
 
       for (const video of tempVideos) {
@@ -298,7 +298,7 @@
     }
   }
 
-  function getRoomUrl(platform: string | undefined, roomId: number) {
+  function getRoomUrl(platform: string | undefined, roomId: string) {
     if (!platform) return null;
     switch (platform.toLowerCase()) {
       case "bilibili":
@@ -393,7 +393,7 @@
 
   async function exportVideo(video: VideoItem) {
     // download video
-    const video_url = await convertFileSrc(video.file);
+    const video_url = await get_static_url("output", video.file);
     const video_name = video.title;
     const a = document.createElement("a");
     a.href = video_url;
@@ -428,7 +428,7 @@
 
       // 更新筛选后的视频列表
       const index = filteredVideos.findIndex(
-        (v) => v.id === videoToEditNote.id,
+        (v) => v.id === videoToEditNote.id
       );
       if (index !== -1) {
         filteredVideos[index].note = editingNote;

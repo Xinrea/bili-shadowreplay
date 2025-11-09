@@ -14,11 +14,11 @@ use crate::{
             add_account, get_account_count, get_accounts, get_qr, get_qr_status, remove_account,
         },
         config::{
-            get_config, update_auto_generate, update_clip_name_format, update_danmu_ass_options,
-            update_notify, update_openai_api_endpoint, update_openai_api_key,
-            update_status_check_interval, update_subtitle_generator_type, update_subtitle_setting,
-            update_webhook_url, update_whisper_language, update_whisper_model,
-            update_whisper_prompt,
+            get_config, get_static_port, update_auto_generate, update_clip_name_format,
+            update_danmu_ass_options, update_notify, update_openai_api_endpoint,
+            update_openai_api_key, update_status_check_interval, update_subtitle_generator_type,
+            update_subtitle_setting, update_webhook_url, update_whisper_language,
+            update_whisper_model, update_whisper_prompt,
         },
         message::{delete_message, get_messages, read_message},
         recorder::{
@@ -192,6 +192,15 @@ async fn handler_get_config(
 ) -> Result<Json<ApiResponse<Config>>, ApiError> {
     let config = get_config(state.0).await.expect("Failed to get config");
     Ok(Json(ApiResponse::success(config)))
+}
+
+async fn handler_get_static_port(
+    state: axum::extract::State<State>,
+) -> Result<Json<ApiResponse<u16>>, ApiError> {
+    let static_port = get_static_port(state.0)
+        .await
+        .expect("Failed to get static port");
+    Ok(Json(ApiResponse::success(static_port)))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1772,12 +1781,10 @@ pub async fn start_api_server(state: State) {
         log::info!("Running in readonly mode, some api routes are disabled");
     }
 
-    let cache_path = state.config.read().await.cache.clone();
-    let output_path = state.config.read().await.output.clone();
-
     app = app
         // Config commands
         .route("/api/get_config", post(handler_get_config))
+        .route("/api/get_static_port", post(handler_get_static_port))
         // Message commands
         .route("/api/get_messages", post(handler_get_messages))
         .route("/api/read_message", post(handler_read_message))
@@ -1825,9 +1832,7 @@ pub async fn start_api_server(state: State) {
         .route("/api/fetch", post(handler_fetch))
         .route("/api/upload_file", post(handler_upload_file))
         .route("/api/image/:video_id", get(handler_image_base64))
-        .route("/hls/*uri", get(handler_hls))
-        .nest_service("/output", ServeDir::new(output_path))
-        .nest_service("/cache", ServeDir::new(cache_path));
+        .route("/hls/*uri", get(handler_hls));
 
     let websocket_layer = websocket::create_websocket_server(state.clone()).await;
 

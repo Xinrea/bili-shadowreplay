@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke, get_cover } from "../lib/invoker";
+  import { invoke, get_static_url } from "../lib/invoker";
   import type { RecordItem } from "../lib/db";
   import { onMount } from "svelte";
   import {
@@ -95,7 +95,7 @@
 
           // 处理封面
           for (const archive of roomArchives) {
-            archive.cover = await get_cover(
+            archive.cover = await get_static_url(
               "cache",
               `${archive.platform}/${archive.room_id}/${archive.live_id}/cover.jpg`
             );

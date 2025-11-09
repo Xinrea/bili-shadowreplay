@@ -12,6 +12,11 @@ pub async fn get_config(state: state_type!()) -> Result<Config, ()> {
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_static_port(state: state_type!()) -> Result<u16, ()> {
+    Ok(state.static_server.port)
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
 #[allow(dead_code)]
 pub async fn set_cache_path(state: state_type!(), cache_path: String) -> Result<(), String> {
     let old_cache_path = state.config.read().await.cache.clone();

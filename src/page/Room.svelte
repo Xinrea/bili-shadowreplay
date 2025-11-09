@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke, open, onOpenUrl, get_cover, get } from "../lib/invoker";
+  import { invoke, open, onOpenUrl, get_static_url, get } from "../lib/invoker";
   import { message } from "@tauri-apps/plugin-dialog";
   import { fade, scale } from "svelte/transition";
   import { Dropdown, DropdownItem } from "flowbite-svelte";
@@ -57,6 +57,32 @@
     }
   }
 
+  let avatar_cache: Map<string, string> = new Map();
+  async function get_avatar_url(user_id: string, url: string) {
+    if (avatar_cache.has(user_id)) {
+      return avatar_cache.get(user_id);
+    }
+    console.log("get avatar url:", url);
+    const response = await get(url);
+    const blob = await response.blob();
+    const avatar_url = URL.createObjectURL(blob);
+    avatar_cache.set(user_id, avatar_url);
+    return avatar_url;
+  }
+
+  let image_cache: Map<string, string> = new Map();
+  async function get_image_url(url: string) {
+    if (image_cache.has(url)) {
+      return image_cache.get(url);
+    }
+    console.log("get image url:", url);
+    const response = await get(url);
+    const blob = await response.blob();
+    const cover_url = URL.createObjectURL(blob);
+    image_cache.set(url, cover_url);
+    return cover_url;
+  }
+
   async function update_summary() {
     let new_summary = (await invoke("get_recorder_list")) as RecorderList;
     room_count = new_summary.count;
@@ -77,17 +103,18 @@
     // process room cover
     for (const room of new_summary.recorders) {
       if (room.room_info.room_cover != "") {
-        const cover_response = await get(room.room_info.room_cover);
-        const cover_blob = await cover_response.blob();
-        room.room_info.room_cover = URL.createObjectURL(cover_blob);
+        room.room_info.room_cover = await get_image_url(
+          room.room_info.room_cover
+        );
       } else {
         room.room_info.room_cover = default_cover(room.room_info.platform);
       }
 
       if (room.user_info.user_avatar != "") {
-        const avatar_response = await get(room.user_info.user_avatar);
-        const avatar_blob = await avatar_response.blob();
-        room.user_info.user_avatar = URL.createObjectURL(avatar_blob);
+        room.user_info.user_avatar = await get_avatar_url(
+          room.user_info.user_id,
+          room.user_info.user_avatar
+        );
       } else {
         room.user_info.user_avatar = default_avatar(room.room_info.platform);
       }
@@ -145,7 +172,7 @@
       })) as RecordItem[];
 
       for (const archive of new_archives) {
-        archive.cover = await get_cover(
+        archive.cover = await get_static_url(
           "cache",
           `${archive.platform}/${archive.room_id}/${archive.live_id}/cover.jpg`
         );

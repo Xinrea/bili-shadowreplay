@@ -31,8 +31,8 @@
   let loading = false;
   let sortBy = "created_at";
   let sortOrder = "desc";
-  let selectedRoomId: number | null = null;
-  let roomIds: number[] = [];
+  let selectedRoomId = null;
+  let roomIds: string[] = [];
 
   let selectedVideos: Set<number> = new Set();
   let showDeleteConfirm = false;
@@ -169,7 +169,7 @@
     try {
       // 获取所有视频
       const allVideos: VideoItem[] = [];
-      const roomIdsSet = new Set<number>();
+      const roomIdsSet = new Set<string>();
       const tempVideos = await invoke<VideoItem[]>("get_all_videos");
 
       for (const video of tempVideos) {
@@ -182,7 +182,7 @@
       }
 
       videos = allVideos;
-      roomIds = Array.from(roomIdsSet).sort((a, b) => a - b);
+      roomIds = Array.from(roomIdsSet).sort();
 
       applyFilters();
     } catch (error) {
@@ -428,7 +428,7 @@
 
       // 更新筛选后的视频列表
       const index = filteredVideos.findIndex(
-        (v) => v.id === videoToEditNote.id
+        (v) => v.id === videoToEditNote.id,
       );
       if (index !== -1) {
         filteredVideos[index].note = editingNote;

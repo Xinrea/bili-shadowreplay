@@ -6,9 +6,10 @@
   import type { ProgressUpdate, ProgressFinished } from "../interface";
 
   export let showDialog = false;
-  export let roomId: number | null = null;
+  export let roomId: string | null = null;
 
   const dispatch = createEventDispatcher();
+  const IMPORTED_VIDEO_ROOM = "bsr:import";
 
   let selectedFilePath: string | null = null;
   let selectedFileName: string = "";
@@ -172,7 +173,7 @@
         await uploadFile(file);
       } else {
         alert(
-          "请选择支持的视频文件格式 (MP4, MKV, AVI, MOV, WMV, FLV, M4V, WebM)"
+          "请选择支持的视频文件格式 (MP4, MKV, AVI, MOV, WMV, FLV, M4V, WebM)",
         );
       }
     }
@@ -185,7 +186,7 @@
     try {
       const formData = new FormData();
       formData.append("file", file);
-      formData.append("roomId", String(roomId || 0));
+      formData.append("roomId", roomId || IMPORTED_VIDEO_ROOM);
 
       const xhr = new XMLHttpRequest();
 
@@ -259,7 +260,7 @@
       }
 
       const formData = new FormData();
-      formData.append("room_id", String(roomId || 0));
+      formData.append("room_id", roomId || IMPORTED_VIDEO_ROOM);
 
       files.forEach((file) => {
         formData.append("files", file);
@@ -276,7 +277,7 @@
           // 根据进度估算当前正在上传的文件
           const estimatedCurrentIndex = Math.min(
             Math.floor((progress / 100) * totalFiles),
-            totalFiles - 1
+            totalFiles - 1,
           );
           currentFileName = fileNames[estimatedCurrentIndex] || fileNames[0];
         }
@@ -360,7 +361,7 @@
           if (match) {
             currentFileIndex = parseInt(match[1]);
           }
-        }
+        },
       );
       const clear_finished_listener = await listen(
         `progress-finished:${eventId}`,
@@ -385,13 +386,13 @@
 
           clear_update_listener();
           clear_finished_listener();
-        }
+        },
       );
 
       await invoke("batch_import_external_videos", {
         eventId: eventId,
         filePaths: selectedFiles,
-        roomId: roomId || 0,
+        roomId: roomId || IMPORTED_VIDEO_ROOM,
       });
     } catch (error) {
       console.error("批量导入失败:", error);
@@ -433,7 +434,7 @@
           if (match) {
             currentFileIndex = parseInt(match[1]);
           }
-        }
+        },
       );
       const clear_finished_listener = await listen(
         `progress-finished:${eventId}`,
@@ -458,14 +459,14 @@
 
           clear_update_listener();
           clear_finished_listener();
-        }
+        },
       );
 
       await invoke("import_external_video", {
         eventId: eventId,
         filePath: selectedFilePath,
         title: videoTitle,
-        roomId: roomId || 0,
+        roomId: roomId || IMPORTED_VIDEO_ROOM,
       });
 
       // 注意：成功处理移到了progressFinishedListener中

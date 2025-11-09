@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke, get_cover } from "../invoker";
+  import { invoke, get_static_url } from "../invoker";
   import type { RecordItem } from "../db";
   import { fade, scale } from "svelte/transition";
   import { X, FileVideo } from "lucide-svelte";
@@ -34,7 +34,7 @@
 
       // 处理封面
       for (const archive of sameParentArchives) {
-        archive.cover = await get_cover(
+        archive.cover = await get_static_url(
           "cache",
           `${archive.platform}/${archive.room_id}/${archive.live_id}/cover.jpg`
         );

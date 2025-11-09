@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke, convertFileSrc, get_cover } from "./lib/invoker";
+  import { invoke, get_static_url } from "./lib/invoker";
   import { onMount } from "svelte";
   import VideoPreview from "./lib/components/VideoPreview.svelte";
   import type { Config, VideoItem } from "./lib/interface";
@@ -36,7 +36,7 @@
                 id: v.id,
                 value: v.id,
                 name: v.file,
-                file: await convertFileSrc(v.file),
+                file: await get_static_url("output", v.file),
                 cover: v.cover,
               };
             })
@@ -59,7 +59,7 @@
   async function handleVideoChange(newVideo: VideoItem) {
     if (newVideo) {
       if (newVideo.cover && newVideo.cover.trim() !== "") {
-        newVideo.cover = await get_cover("output", newVideo.cover);
+        newVideo.cover = await get_static_url("output", newVideo.cover);
       } else {
         newVideo.cover = "";
       }
@@ -76,7 +76,7 @@
             id: v.id,
             value: v.id,
             name: v.file,
-            file: await convertFileSrc(v.file),
+            file: await get_static_url("output", v.file),
             cover: v.cover,
           };
         })

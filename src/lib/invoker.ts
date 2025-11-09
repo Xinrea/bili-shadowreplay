@@ -1,7 +1,6 @@
 import { invoke as tauri_invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { fetch as tauri_fetch } from "@tauri-apps/plugin-http";
-import { convertFileSrc as tauri_convert } from "@tauri-apps/api/core";
 import { listen as tauri_listen } from "@tauri-apps/api/event";
 import { open as tauri_open } from "@tauri-apps/plugin-shell";
 import { onOpenUrl as tauri_onOpenUrl } from "@tauri-apps/plugin-deep-link";
@@ -125,84 +124,23 @@ async function set_title(title: string) {
   document.title = title;
 }
 
-async function convertFileSrc(filePath: string) {
-  if (TAURI_ENV) {
-    // 在客户端模式下，需要获取config来构建绝对路径
-    try {
-      const config = (await invoke("get_config")) as any;
-      const absolutePath = `${config.output}/${filePath}`;
-      return tauri_convert(absolutePath);
-    } catch (error) {
-      console.error("Failed to get config for file path conversion:", error);
-      return tauri_convert(filePath);
-    }
-  }
-  // 在headless模式下，保持完整的相对路径
-  return `${ENDPOINT}/output/${filePath}`;
-}
-
+let STATIC_PORT = 0;
 let config: Config | null = null;
-const coverCache: Map<string, string> = new Map();
 
-async function get_cover(coverType: string, coverPath: string) {
+async function get_static_url(base: string, path: string) {
   if (config === null) {
     config = (await invoke("get_config")) as any;
   }
-  if (TAURI_ENV) {
-    if (coverType === "cache") {
-      const absolutePath = `${config.cache}/${coverPath}`;
-      if (coverCache.has(absolutePath)) {
-        return coverCache.get(absolutePath);
-      }
-
-      // 检查文件是否存在
-      try {
-        const exists = (await invoke("file_exists", {
-          path: absolutePath,
-        })) as boolean;
-        if (!exists) {
-          log.error("Cover file not found:", absolutePath);
-          return "/imgs/bilibili.png"; // 返回默认封面
-        }
-
-        const url = tauri_convert(absolutePath);
-        coverCache.set(absolutePath, url);
-        return url;
-      } catch (e) {
-        log.error("Failed to check cover file existence:", e);
-        return "/imgs/bilibili.png"; // 返回默认封面
-      }
-    }
-
-    if (coverType === "output") {
-      const absolutePath = `${config.output}/${coverPath}`;
-      if (coverCache.has(absolutePath)) {
-        return coverCache.get(absolutePath);
-      }
-
-      // 检查文件是否存在
-      try {
-        const exists = (await invoke("file_exists", {
-          path: absolutePath,
-        })) as boolean;
-        if (!exists) {
-          return "/imgs/bilibili.png"; // 返回默认封面
-        }
-
-        const url = tauri_convert(absolutePath);
-        coverCache.set(absolutePath, url);
-        return url;
-      } catch (e) {
-        log.error("Failed to check cover file existence:", e);
-        return "/imgs/bilibili.png"; // 返回默认封面
-      }
-    }
-
-    // exception
-    throw new Error(`Invalid cover type: ${coverType}`);
+  if (STATIC_PORT === 0) {
+    STATIC_PORT = await invoke("get_static_port");
+  }
+  let staticUrl = `http://localhost:${STATIC_PORT}`;
+  if (!TAURI_ENV) {
+    // replace port in ENDPOINT
+    staticUrl = ENDPOINT.replace(/:\d+/, `:${STATIC_PORT}`);
   }
 
-  return `${ENDPOINT}/${coverType}/${coverPath}`;
+  return `${staticUrl}/${base}/${path}`;
 }
 
 let socket: Socket | null = null;
@@ -345,12 +283,11 @@ export {
   get,
   set_title,
   TAURI_ENV,
-  convertFileSrc,
   ENDPOINT,
   listen,
   open,
   log,
   close_window,
   onOpenUrl,
-  get_cover,
+  get_static_url,
 };

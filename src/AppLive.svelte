@@ -3,10 +3,9 @@
     invoke,
     set_title,
     TAURI_ENV,
-    convertFileSrc,
     listen,
     log,
-    get_cover,
+    get_static_url,
   } from "./lib/invoker";
   import Player from "./lib/components/Player.svelte";
   import type { RecordItem } from "./lib/db";
@@ -15,8 +14,6 @@
     type VideoItem,
     type Config,
     type Marker,
-    type ProgressUpdate,
-    type ProgressFinished,
     type DanmuEntry,
     clipRange,
     generateEventId,
@@ -264,7 +261,7 @@
           id: v.id,
           value: v.id,
           name: v.file,
-          file: await convertFileSrc(v.file),
+          file: await get_static_url("output", v.file),
           cover: v.cover,
         };
       })
@@ -281,7 +278,7 @@
       return v.value == id;
     });
     if (target_video) {
-      target_video.cover = await get_cover("output", target_video.cover);
+      target_video.cover = await get_static_url("output", target_video.cover);
     }
     selected_video = target_video;
   }
@@ -342,7 +339,7 @@
       fix_encoding,
     })) as VideoItem;
     await get_video_list();
-    new_video.cover = await get_cover("output", new_video.cover);
+    new_video.cover = await get_static_url("output", new_video.cover);
     video_selected = new_video.id;
     selected_video = videos.find((v) => {
       return v.value == new_video.id;

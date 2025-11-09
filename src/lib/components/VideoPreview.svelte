@@ -34,7 +34,7 @@
     listen,
     log,
     close_window,
-    get_cover,
+    get_static_url,
   } from "../invoker";
   import { onDestroy, onMount } from "svelte";
   import { listen as tauriListen } from "@tauri-apps/api/event";

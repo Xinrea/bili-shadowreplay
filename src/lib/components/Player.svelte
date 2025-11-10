@@ -399,7 +399,7 @@ ${mediaPlaylistUrl}`;
             const value = danmakuInput.value;
             if (value) {
               // get account uid from select
-              const uid = parseInt(accountSelect.value);
+              const uid = accountSelect.value;
               await invoke("send_danmaku", {
                 uid,
                 roomId: room_id,

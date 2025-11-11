@@ -99,9 +99,11 @@ impl Database {
 
     pub async fn finish_pending_tasks(&self) -> Result<(), DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
-        let _ = sqlx::query("UPDATE tasks SET status = 'failed' WHERE status = 'pending'")
-            .execute(&lock)
-            .await?;
+        let _ = sqlx::query(
+            "UPDATE tasks SET status = 'failed' WHERE status = 'pending' or status = 'processing'",
+        )
+        .execute(&lock)
+        .await?;
         Ok(())
     }
 }

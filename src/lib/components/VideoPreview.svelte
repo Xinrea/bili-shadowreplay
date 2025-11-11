@@ -153,14 +153,14 @@
     isWaveformLoading = true;
 
     try {
-      createWaveSurfer();
+      await createWaveSurfer();
     } catch (error) {
       console.error("Failed to initialize WaveSurfer.js:", error);
       isWaveformLoading = false;
     }
   }
 
-  function createWaveSurfer() {
+  async function createWaveSurfer() {
     // 使用更稳定的容器查找方式
     const container = document.querySelector(
       "[data-waveform-container]"
@@ -203,9 +203,13 @@
         plugins: [],
       });
 
-      console.log("WaveSurfer created, loading file:", video.file);
       // 加载音频
-      wavesurfer.load(video.file);
+      await invoke("generate_audio_sample", {
+        videoId: video.id,
+      });
+      let opus_file = video.file.replace(".mp4", ".opus");
+      console.log("WaveSurfer created, loading file:", opus_file);
+      wavesurfer.load(opus_file);
 
       // 监听加载完成
       wavesurfer.on("ready", () => {
@@ -1738,7 +1742,9 @@
             on:wheel|preventDefault={handleWheel}
           >
             {#if isWaveformLoading}
-              <div class="flex items-center space-x-2 text-gray-400 w-full">
+              <div
+                class="flex items-center justify-center gap-2 text-gray-400 w-full h-full text-center"
+              >
                 <svg
                   class="animate-spin h-4 w-4"
                   xmlns="http://www.w3.org/2000/svg"

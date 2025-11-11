@@ -44,9 +44,9 @@ pub async fn start_static_server(
             .allow_methods(Any)
             .allow_headers(Any);
         let router = Router::new()
-            .layer(cors)
             .nest_service("/output", ServeDir::new(output_path))
-            .nest_service("/cache", ServeDir::new(cache_path));
+            .nest_service("/cache", ServeDir::new(cache_path))
+            .layer(cors);
 
         if let Err(e) = axum::serve(listener, router).await {
             log::error!("Server error: {}", e);

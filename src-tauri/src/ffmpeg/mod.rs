@@ -183,6 +183,68 @@ pub async fn trim_video(
     Ok(())
 }
 
+/// Extract a sample audio from the video file for waveform display
+pub async fn extract_audio_sample(file: &Path) -> Result<PathBuf, String> {
+    // ffmpeg -i fixed_\[30655592\]1742887114_0325084106_81.5.mp4 -ar 16000 test.wav
+    log::info!("Extract audio sample task start: {}", file.display());
+    let output_path = file.with_extension("opus");
+    let mut extract_error = None;
+
+    let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
+    #[cfg(target_os = "windows")]
+    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
+
+    let child = ffmpeg_process
+        .args(["-i", file.to_str().unwrap()])
+        .args(["-c:a", "libopus"])
+        .args(["-ar", "16000"])
+        .args(["-ac", "1"])
+        .args(["-vn"])
+        .args(["-b:a", "12k"])
+        .args(["-vbr", "on"])
+        .args(["-compression_level", "10"])
+        .args([output_path.to_str().unwrap()])
+        .args(["-y"])
+        .args(["-progress", "pipe:2"])
+        .stderr(Stdio::piped())
+        .spawn();
+
+    if let Err(e) = child {
+        return Err(e.to_string());
+    }
+
+    let mut child = child.unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let reader = BufReader::new(stderr);
+    let mut parser = FfmpegLogParser::new(reader);
+    while let Ok(event) = parser.parse_next_event().await {
+        match event {
+            FfmpegEvent::Error(e) => {
+                log::error!("Extract audio sample error: {e}");
+                extract_error = Some(e.to_string());
+            }
+            FfmpegEvent::LogEOF => break,
+            FfmpegEvent::Progress(p) => {
+                log::info!("Extract audio sample progress: {}", p.time);
+            }
+            FfmpegEvent::Log(_level, _content) => {}
+            _ => {}
+        }
+    }
+
+    if let Err(e) = child.wait().await {
+        log::error!("Extract audio sample error: {e}");
+        return Err(e.to_string());
+    }
+
+    if let Some(error) = extract_error {
+        log::error!("Extract audio sample error: {error}");
+        Err(error)
+    } else {
+        log::info!("Extract audio sample task end: {}", output_path.display());
+        Ok(output_path)
+    }
+}
 pub async fn extract_audio_chunks(file: &Path, format: &str) -> Result<PathBuf, String> {
     // ffmpeg -i fixed_\[30655190\]1742887114_0325084106_81.5.mp4 -ar 16000 test.wav
     log::info!("Extract audio task start: {}", file.display());

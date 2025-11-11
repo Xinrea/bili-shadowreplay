@@ -415,15 +415,20 @@ async fn clip_range_inner(
         e.to_string()
     })?;
     let cover_file = file.with_extension("jpg");
-    let base64 = params.cover.split("base64,").nth(1).unwrap();
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(base64)
-        .unwrap();
-    // write cover file to fs
-    tokio::fs::write(&cover_file, bytes).await.map_err(|e| {
-        log::error!("Write cover file error: {} {}", e, cover_file.display());
-        e.to_string()
-    })?;
+    if !params.cover.is_empty() {
+        let base64 = params.cover.split("base64,").nth(1).unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(base64)
+            .unwrap();
+        // write cover file to fs
+        tokio::fs::write(&cover_file, bytes).await.map_err(|e| {
+            log::error!("Write cover file error: {} {}", e, cover_file.display());
+            e.to_string()
+        })?;
+    } else {
+        // generate cover file from video
+        ffmpeg::generate_thumbnail(&file, 0.0).await?;
+    }
     // get filename from path
     let filename = Path::new(&file)
         .file_name()

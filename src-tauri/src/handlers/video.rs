@@ -414,16 +414,28 @@ async fn clip_range_inner(
         log::error!("Get file metadata error: {} {}", e, file.display());
         e.to_string()
     })?;
+    let mut cover_generate_ffmpeg = true;
     let cover_file = file.with_extension("jpg");
-    let base64 = params.cover.split("base64,").nth(1).unwrap();
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(base64)
-        .unwrap();
-    // write cover file to fs
-    tokio::fs::write(&cover_file, bytes).await.map_err(|e| {
-        log::error!("Write cover file error: {} {}", e, cover_file.display());
-        e.to_string()
-    })?;
+    if !params.cover.is_empty() {
+        if let Some(base64) = params.cover.split("base64,").nth(1) {
+            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(base64) {
+                // write cover file to fs
+                tokio::fs::write(&cover_file, bytes).await.map_err(|e| {
+                    log::error!("Write cover file error: {} {}", e, cover_file.display());
+                    e.to_string()
+                })?;
+                cover_generate_ffmpeg = false;
+            } else {
+                log::error!("Decode base64 error: {}", params.cover);
+            }
+        } else {
+            log::error!("Invalid cover base64: {}", params.cover);
+        }
+    }
+    // generate cover file from video as fallback
+    if cover_generate_ffmpeg {
+        ffmpeg::generate_thumbnail(&file, 0.0).await?;
+    }
     // get filename from path
     let filename = Path::new(&file)
         .file_name()

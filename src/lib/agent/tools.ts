@@ -605,8 +605,16 @@ const clip_range = tool(
         room_id: z.string().describe("The room id of the room"),
         live_id: z.string().describe("The live id of the live"),
         range: z.object({
-          start: z.number().describe("The start time in SECONDS of the clip"),
-          end: z.number().describe("The end time in SECONDS of the clip"),
+          start: z
+            .number()
+            .describe(
+              "The start time in SECONDS of the clip that relative to the live start time"
+            ),
+          end: z
+            .number()
+            .describe(
+              "The end time in SECONDS of the clip that relative to the live start time"
+            ),
         }),
         danmu: z
           .boolean()

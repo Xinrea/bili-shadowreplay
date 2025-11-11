@@ -32,10 +32,11 @@ use crate::{
         utils::{console_log, get_disk_info, list_folder, sanitize_filename_advanced, DiskInfo},
         video::{
             batch_import_external_videos, cancel, clip_range, clip_video, delete_video,
-            encode_video_subtitle, generate_video_subtitle, generic_ffmpeg_command, get_all_videos,
-            get_file_size, get_import_progress, get_video, get_video_cover, get_video_subtitle,
-            get_video_typelist, get_videos, import_external_video, update_video_cover,
-            update_video_note, update_video_subtitle, upload_procedure,
+            encode_video_subtitle, generate_audio_sample, generate_video_subtitle,
+            generic_ffmpeg_command, get_all_videos, get_file_size, get_import_progress, get_video,
+            get_video_cover, get_video_subtitle, get_video_typelist, get_videos,
+            import_external_video, update_video_cover, update_video_note, update_video_subtitle,
+            upload_procedure,
         },
         AccountInfo,
     },
@@ -754,6 +755,20 @@ async fn handler_get_video(
 ) -> Result<Json<ApiResponse<VideoRow>>, ApiError> {
     let video = get_video(state.0, param.id).await?;
     Ok(Json(ApiResponse::success(video)))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerateAudioSampleRequest {
+    video_id: i64,
+}
+
+async fn handler_generate_audio_sample(
+    state: axum::extract::State<State>,
+    Json(param): Json<GenerateAudioSampleRequest>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    generate_audio_sample(state.0, param.video_id).await?;
+    Ok(Json(ApiResponse::success(())))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1816,6 +1831,10 @@ pub async fn start_api_server(state: State) {
         // Video commands
         .route("/api/clip_range", post(handler_clip_range))
         .route("/api/get_video", post(handler_get_video))
+        .route(
+            "/api/generate_audio_sample",
+            post(handler_generate_audio_sample),
+        )
         .route("/api/get_videos", post(handler_get_videos))
         .route("/api/get_video_cover", post(handler_get_video_cover))
         .route("/api/get_all_videos", post(handler_get_all_videos))

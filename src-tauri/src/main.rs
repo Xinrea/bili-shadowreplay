@@ -691,6 +691,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::video::clip_video,
         crate::handlers::video::get_file_size,
         crate::handlers::video::get_import_progress,
+        crate::handlers::video::generate_audio_sample,
         crate::handlers::task::get_tasks,
         crate::handlers::task::delete_task,
         crate::handlers::utils::show_in_folder,

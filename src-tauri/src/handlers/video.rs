@@ -436,6 +436,7 @@ async fn clip_range_inner(
     if cover_generate_ffmpeg {
         ffmpeg::generate_thumbnail(&file, 0.0).await?;
     }
+    let _ = crate::ffmpeg::extract_audio_sample(&file).await?;
     // get filename from path
     let filename = Path::new(&file)
         .file_name()
@@ -714,6 +715,8 @@ pub async fn delete_video(state: state_type!(), id: i64) -> Result<(), String> {
     let _ = tokio::fs::remove_file(wav_path).await;
     let mp3_path = file.with_extension("mp3");
     let _ = tokio::fs::remove_file(mp3_path).await;
+    let opus_path = file.with_extension("opus");
+    let _ = tokio::fs::remove_file(opus_path).await;
     let cover_path = Path::new(&config.output).join(&video.cover);
     let _ = tokio::fs::remove_file(cover_path).await;
 
@@ -1451,4 +1454,15 @@ pub async fn get_import_progress(
     }
 
     Ok(None)
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn generate_audio_sample(state: state_type!(), video_id: i64) -> Result<(), String> {
+    let video = state.db.get_video(video_id).await?;
+    let video_path = Path::new(&state.config.read().await.output).join(&video.file);
+    let opus_path = video_path.with_extension("opus");
+    if !opus_path.exists() {
+        let _ = crate::ffmpeg::extract_audio_sample(&video_path).await?;
+    }
+    Ok(())
 }

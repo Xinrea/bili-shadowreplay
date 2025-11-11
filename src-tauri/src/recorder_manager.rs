@@ -1437,6 +1437,7 @@ impl RecorderManager {
         }
 
         let _ = crate::ffmpeg::generate_thumbnail(Path::new(&output_path), 0.0).await;
+        let _ = crate::ffmpeg::extract_audio_sample(Path::new(&output_path)).await;
 
         let video = self
             .db

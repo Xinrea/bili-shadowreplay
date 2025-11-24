@@ -74,24 +74,37 @@ impl HlsStream {
     }
 
     pub fn ts_url(&self, seg_name: &str) -> String {
+        // According to HLS spec (RFC 8216):
+        // - If segment URI is absolute, use it directly
+        // - If segment URI is relative, resolve it relative to the m3u8 base URL
+        // - If segment URI contains query parameters, use them as-is (don't merge with m3u8 params)
+        // - If segment URI doesn't contain query parameters, may add m3u8 params (non-standard but needed for some platforms)
+
+        // Check if segment URI is absolute
+        if seg_name.starts_with("http://") || seg_name.starts_with("https://") {
+            return seg_name.to_string();
+        }
+
+        // Segment URI is relative, resolve it relative to m3u8 base URL
         let base = self.base.clone();
         let m3u8_filename = base.split('/').next_back().unwrap();
         let base_url = base.replace(m3u8_filename, seg_name);
-        if self.extra.is_empty() {
+
+        // Check if seg_name already contains query parameters
+        if seg_name.contains('?') {
+            // Segment URI already has query parameters, use it directly per HLS spec
+            // Remove trailing '?' from base_url if present (from m3u8 base)
+            let base_without_query = base_url.trim_end_matches('?');
+            format!("{}{}", self.host, base_without_query)
+        } else if self.extra.is_empty() {
+            // No query parameters to add
             format!("{}{}", self.host, base_url)
         } else {
-            // Check if base_url already contains query parameters
-            if base_url.contains('?') {
-                // If seg_name already has query params, append extra with '&'
-                // Remove trailing '?' or '&' before appending
-                let base_trimmed = base_url.trim_end_matches('?').trim_end_matches('&');
-                format!("{}{}&{}", self.host, base_trimmed, self.extra)
-            } else {
-                // If no query params, add them with '?'
-                // Remove trailing '?' from base_url if present
-                let base_without_query = base_url.trim_end_matches('?');
-                format!("{}{}?{}", self.host, base_without_query, self.extra)
-            }
+            // Segment URI has no query parameters, add m3u8 query parameters
+            // (Non-standard but needed for some platforms like Huya)
+            // Remove trailing '?' from base_url if present
+            let base_without_query = base_url.trim_end_matches('?');
+            format!("{}{}?{}", self.host, base_without_query, self.extra)
         }
     }
 }

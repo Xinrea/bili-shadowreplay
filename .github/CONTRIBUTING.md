@@ -40,7 +40,7 @@ $env:CMAKE_CXX_FLAGS="/utf-8"
 配置环境变量 `CMAKE_OSX_DEPLOYMENT_TARGET`，不低于 `13.3`。
 
 ```bash
-# 在 MacOS Tahoe 上编译时，必须设置 SDKROOT
+# 在 macOS Tahoe 上编译时，必须设置 SDKROOT
 export SDKROOT=$(xcrun --sdk macosx --show-sdk-path) && export MACOSX_DEPLOYMENT_TARGET=13.3
 ```
 

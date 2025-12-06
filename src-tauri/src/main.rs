@@ -708,6 +708,18 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
 
 #[cfg(feature = "gui")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let _guard = sentry::init((
+        "https://fbf803d994a257326ea8f043d79058eb@sentry.vjoi.cn/2",
+        sentry::ClientOptions {
+            release: sentry::release_name!(),
+            // Capture user IPs and potentially sensitive headers when using HTTP server integrations
+            // see https://docs.sentry.io/platforms/rust/data-management/data-collected for more info
+            send_default_pii: true,
+            session_mode: sentry::SessionMode::Application,
+            ..Default::default()
+        },
+    ));
+
     let _ = fix_path_env::fix();
 
     let builder = tauri::Builder::default().plugin(tauri_plugin_deep_link::init());
@@ -767,6 +779,17 @@ struct Args {
 #[cfg(feature = "headless")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let _guard = sentry::init((
+        "https://fbf803d994a257326ea8f043d79058eb@sentry.vjoi.cn/2",
+        sentry::ClientOptions {
+            release: sentry::release_name!(),
+            // Capture user IPs and potentially sensitive headers when using HTTP server integrations
+            // see https://docs.sentry.io/platforms/rust/data-management/data-collected for more info
+            send_default_pii: true,
+            session_mode: sentry::SessionMode::Application,
+            ..Default::default()
+        },
+    ));
     // get params from command line
     let args = Args::parse();
     let state = setup_server_state(args)

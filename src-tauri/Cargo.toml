@@ -48,7 +48,7 @@ rand = "0.8.5"
 base64 = "0.21"
 mime_guess = "2.0"
 async-trait = "0.1.87"
-whisper-rs = "0.14.2"
+whisper-rs = "0.15.1"
 hound = "3.5.1"
 uuid = { workspace = true }
 axum = { version = "0.7", features = ["macros", "multipart"] }
@@ -65,6 +65,7 @@ deno_core = "0.355"
 sanitize-filename = "0.6.0"
 socketioxide = "0.17.2"
 scraper = "0.24.0"
+sentry = { version = "0.46.0", features = ["log", "logs"] }
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem
@@ -146,10 +147,10 @@ features = []
 optional = true
 
 [target.'cfg(windows)'.dependencies]
-whisper-rs = { version = "0.14.2", default-features = false }
+whisper-rs = { version = "0.15.1", default-features = false }
 
 [target.'cfg(darwin)'.dependencies.whisper-rs]
-version = "0.14.2"
+version = "0.15.1"
 features = ["metal"]
 
 [workspace.dependencies]

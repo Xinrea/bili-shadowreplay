@@ -93,12 +93,14 @@ impl SubtitleGenerator for WhisperCPP {
         }
 
         // fetch the results
-        let num_segments = state.full_n_segments().map_err(|e| e.to_string())?;
+        let num_segments = state.full_n_segments();
         let mut subtitle = String::new();
         for i in 0..num_segments {
-            let segment = state.full_get_segment_text(i).map_err(|e| e.to_string())?;
-            let start_timestamp = state.full_get_segment_t0(i).map_err(|e| e.to_string())?;
-            let end_timestamp = state.full_get_segment_t1(i).map_err(|e| e.to_string())?;
+            let segment = state
+                .get_segment(i)
+                .ok_or(format!("Failed to get segment {i}"))?;
+            let start_timestamp = segment.start_timestamp();
+            let end_timestamp = segment.end_timestamp();
 
             let format_time = |timestamp: f64| {
                 let hours = (timestamp / 3600.0).floor();
@@ -115,7 +117,7 @@ impl SubtitleGenerator for WhisperCPP {
                 i + 1,
                 format_time(start_timestamp as f64 / 100.0),
                 format_time(end_timestamp as f64 / 100.0),
-                segment,
+                segment.to_str().unwrap_or_default(),
             );
 
             subtitle.push_str(&line);

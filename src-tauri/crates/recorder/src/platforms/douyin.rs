@@ -246,7 +246,7 @@ impl DouyinRecorder {
         self.total_duration.store(0, atomic::Ordering::Relaxed);
         self.total_size.store(0, atomic::Ordering::Relaxed);
         *self.extra.live_stream.write().await = None;
-        if let Some(danmu_task) = self.danmu_task.lock().await.as_mut() {
+        if let Some(danmu_task) = self.danmu_task.lock().await.take() {
             danmu_task.abort();
             let _ = danmu_task.await;
             log::info!("Danmu task aborted");

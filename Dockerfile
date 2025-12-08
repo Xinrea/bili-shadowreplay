@@ -37,6 +37,7 @@ RUN apt-get update && apt-get install -y \
     g++ \
     wget \
     xz-utils \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy Rust project files

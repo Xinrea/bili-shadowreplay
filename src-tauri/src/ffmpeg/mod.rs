@@ -8,7 +8,7 @@ pub mod playlist;
 
 use crate::constants;
 use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
-use crate::subtitle_generator::whisper_online;
+use crate::subtitle_generator::{powerlive, whisper_online};
 use crate::subtitle_generator::{
     whisper_cpp, GenerateResult, SubtitleGenerator, SubtitleGeneratorType,
 };
@@ -200,7 +200,7 @@ pub async fn extract_audio_sample(file: &Path) -> Result<PathBuf, String> {
         .args(["-ar", "16000"])
         .args(["-ac", "1"])
         .args(["-vn"])
-        .args(["-b:a", "12k"])
+        .args(["-b:a", "64k"])
         .args(["-vbr", "on"])
         .args(["-compression_level", "10"])
         .args([output_path.to_str().unwrap()])
@@ -771,6 +771,27 @@ pub async fn generate_video_subtitle(
                 Ok(full_result)
             } else {
                 Err("Failed to initialize Whisper Online".to_string())
+            }
+        }
+        "powerlive" => {
+            if let Ok(generator) = powerlive::new(
+                "pk_d2755cd38ef03f7ed3a92be1f1471e4adea90a1a5d4b3900345298a68fba0821",
+            )
+            .await
+            {
+                let opus_file = file.with_extension("opus");
+                if !opus_file.exists() {
+                    return Err("Opus file not found".to_string());
+                }
+                let result = generator
+                    .generate_subtitle(reporter, &opus_file, language_hint)
+                    .await;
+                match result {
+                    Ok(result) => Ok(result),
+                    Err(e) => Err(e),
+                }
+            } else {
+                Err("Failed to initialize PowerLive".to_string())
             }
         }
         _ => Err(format!("Unknown subtitle generator type: {generator_type}")),

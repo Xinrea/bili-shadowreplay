@@ -3,6 +3,7 @@ use std::path::Path;
 
 use crate::progress::progress_reporter::ProgressReporterTrait;
 
+pub mod powerlive;
 pub mod whisper_cpp;
 pub mod whisper_online;
 
@@ -12,6 +13,7 @@ pub mod whisper_online;
 pub enum SubtitleGeneratorType {
     Whisper,
     WhisperOnline,
+    PowerLive,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +92,7 @@ impl SubtitleGeneratorType {
         match self {
             SubtitleGeneratorType::Whisper => "whisper",
             SubtitleGeneratorType::WhisperOnline => "whisper_online",
+            SubtitleGeneratorType::PowerLive => "powerlive",
         }
     }
     #[allow(dead_code)]
@@ -97,6 +100,7 @@ impl SubtitleGeneratorType {
         match s {
             "whisper" => Some(SubtitleGeneratorType::Whisper),
             "whisper_online" => Some(SubtitleGeneratorType::WhisperOnline),
+            "powerlive" => Some(SubtitleGeneratorType::PowerLive),
             _ => None,
         }
     }

@@ -41,7 +41,7 @@ $env:CMAKE_CXX_FLAGS="/utf-8"
 
 ```bash
 # 在 macOS Tahoe 上编译时，必须设置 SDKROOT
-export SDKROOT=$(xcrun --sdk macosx --show-sdk-path) && export MACOSX_DEPLOYMENT_TARGET=13.3
+export SDKROOT=$(xcrun --sdk macosx --show-sdk-path) && export CMAKE_OSX_DEPLOYMENT_TARGET=13.3
 ```
 
 ### 3. CUDA arch 错误

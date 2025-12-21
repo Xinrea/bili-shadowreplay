@@ -151,6 +151,7 @@ export interface Config {
   whisper_language: string;
   webhook_url: string;
   danmu_ass_options: Danmu2AssOptions;
+  powerlive_key: string;
 }
 
 export interface Danmu2AssOptions {

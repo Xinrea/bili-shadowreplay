@@ -28,6 +28,7 @@
     subtitle_generator_type: "whisper",
     openai_api_endpoint: "",
     openai_api_key: "",
+    powerlive_key: "",
     whisper_model: "",
     whisper_prompt: "",
     clip_name_format: "",
@@ -514,7 +515,12 @@
                       字幕生成器类型
                     </h3>
                     <p class="text-sm text-gray-500 dark:text-gray-400">
-                      选择字幕生成的方式：本地Whisper模型或在线API服务
+                      选择字幕生成的方式：本地模型，OpenAI 服务或 <a
+                        href="https://www.powerlive.io/"
+                        class="text-blue-500 hover:underline"
+                        target="_blank"
+                        rel="noopener noreferrer">PowerLive</a
+                      > 服务（按量付费）
                     </p>
                   </div>
                   <div class="flex items-center space-x-2">
@@ -534,152 +540,183 @@
                     >
                       <option value="whisper">本地 Whisper</option>
                       <option value="whisper_online">在线 Whisper API</option>
+                      <option value="powerlive">PowerLive</option>
                     </select>
                   </div>
                 </div>
               </div>
               <!-- Whisper Model Path -->
-              {#if TAURI_ENV && setting_model.subtitle_generator_type === "whisper"}
+              {#if setting_model.subtitle_generator_type === "powerlive"}
                 <div class="p-4">
                   <div class="flex items-center justify-between">
                     <div>
                       <h3
                         class="text-sm font-medium text-gray-900 dark:text-white"
                       >
-                        Whisper 模型路径
+                        PowerLive API 密钥
                       </h3>
                       <p class="text-sm text-gray-500 dark:text-gray-400">
-                        {setting_model.whisper_model || "未设置"}
-                        <span class="block mt-1 text-xs"
-                          >可前往 <a
-                            href="https://huggingface.co/ggerganov/whisper.cpp/tree/main"
-                            class="text-blue-500 hover:underline"
-                            target="_blank"
-                            rel="noopener noreferrer">ggerganov/whisper.cpp</a
-                          > 下载模型文件</span
-                        >
-                      </p>
-                    </div>
-                    <button
-                      class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
-                      on:click={handleWhisperModelPathChange}
-                    >
-                      变更
-                    </button>
-                  </div>
-                </div>
-              {/if}
-              <!-- OpenAI API Settings -->
-              {#if setting_model.subtitle_generator_type === "whisper_online"}
-                <div class="p-4">
-                  <div class="flex items-center justify-between">
-                    <div>
-                      <h3
-                        class="text-sm font-medium text-gray-900 dark:text-white"
-                      >
-                        OpenAI API 端点
-                      </h3>
-                      <p class="text-sm text-gray-500 dark:text-gray-400">
-                        设置 OpenAI API 的端点地址，默认为官方地址
-                      </p>
-                    </div>
-                    <div class="flex items-center space-x-2">
-                      <input
-                        type="text"
-                        class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
-                        bind:value={setting_model.openai_api_endpoint}
-                        on:change={async () => {
-                          await invoke("update_openai_api_endpoint", {
-                            openaiApiEndpoint:
-                              setting_model.openai_api_endpoint,
-                          });
-                        }}
-                        placeholder="https://api.openai.com/v1"
-                      />
-                    </div>
-                  </div>
-                </div>
-                <div class="p-4">
-                  <div class="flex items-center justify-between">
-                    <div>
-                      <h3
-                        class="text-sm font-medium text-gray-900 dark:text-white"
-                      >
-                        OpenAI API 密钥
-                      </h3>
-                      <p class="text-sm text-gray-500 dark:text-gray-400">
-                        设置 OpenAI API 的访问密钥
+                        设置 PowerLive API 的访问密钥
                       </p>
                     </div>
                     <div class="flex items-center space-x-2">
                       <input
                         type="password"
                         class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
-                        bind:value={setting_model.openai_api_key}
+                        bind:value={setting_model.powerlive_key}
                         on:change={async () => {
-                          await invoke("update_openai_api_key", {
-                            openaiApiKey: setting_model.openai_api_key,
+                          await invoke("update_powerlive_key", {
+                            powerliveKey: setting_model.powerlive_key,
                           });
                         }}
-                        placeholder="sk-..."
+                        placeholder="pk_..."
+                      />
+                    </div>
+                  </div>
+                </div>
+              {:else}
+                {#if TAURI_ENV && setting_model.subtitle_generator_type === "whisper"}
+                  <div class="p-4">
+                    <div class="flex items-center justify-between">
+                      <div>
+                        <h3
+                          class="text-sm font-medium text-gray-900 dark:text-white"
+                        >
+                          Whisper 模型路径
+                        </h3>
+                        <p class="text-sm text-gray-500 dark:text-gray-400">
+                          {setting_model.whisper_model || "未设置"}
+                          <span class="block mt-1 text-xs"
+                            >可前往 <a
+                              href="https://huggingface.co/ggerganov/whisper.cpp/tree/main"
+                              class="text-blue-500 hover:underline"
+                              target="_blank"
+                              rel="noopener noreferrer">ggerganov/whisper.cpp</a
+                            > 下载模型文件</span
+                          >
+                        </p>
+                      </div>
+                      <button
+                        class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+                        on:click={handleWhisperModelPathChange}
+                      >
+                        变更
+                      </button>
+                    </div>
+                  </div>
+                {/if}
+                <!-- OpenAI API Settings -->
+                {#if setting_model.subtitle_generator_type === "whisper_online"}
+                  <div class="p-4">
+                    <div class="flex items-center justify-between">
+                      <div>
+                        <h3
+                          class="text-sm font-medium text-gray-900 dark:text-white"
+                        >
+                          OpenAI API 端点
+                        </h3>
+                        <p class="text-sm text-gray-500 dark:text-gray-400">
+                          设置 OpenAI API 的端点地址，默认为官方地址
+                        </p>
+                      </div>
+                      <div class="flex items-center space-x-2">
+                        <input
+                          type="text"
+                          class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
+                          bind:value={setting_model.openai_api_endpoint}
+                          on:change={async () => {
+                            await invoke("update_openai_api_endpoint", {
+                              openaiApiEndpoint:
+                                setting_model.openai_api_endpoint,
+                            });
+                          }}
+                          placeholder="https://api.openai.com/v1"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                  <div class="p-4">
+                    <div class="flex items-center justify-between">
+                      <div>
+                        <h3
+                          class="text-sm font-medium text-gray-900 dark:text-white"
+                        >
+                          OpenAI API 密钥
+                        </h3>
+                        <p class="text-sm text-gray-500 dark:text-gray-400">
+                          设置 OpenAI API 的访问密钥
+                        </p>
+                      </div>
+                      <div class="flex items-center space-x-2">
+                        <input
+                          type="password"
+                          class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
+                          bind:value={setting_model.openai_api_key}
+                          on:change={async () => {
+                            await invoke("update_openai_api_key", {
+                              openaiApiKey: setting_model.openai_api_key,
+                            });
+                          }}
+                          placeholder="sk-..."
+                        />
+                      </div>
+                    </div>
+                  </div>
+                {/if}
+                <!-- Whisper Language -->
+                <div class="p-4">
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <h3
+                        class="text-sm font-medium text-gray-900 dark:text-white"
+                      >
+                        Whisper 语言
+                      </h3>
+                      <p class="text-sm text-gray-500 dark:text-gray-400">
+                        （测试）生成字幕时使用的语言，默认自动识别
+                      </p>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                      <input
+                        type="text"
+                        class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
+                        bind:value={setting_model.whisper_language}
+                        on:change={async () => {
+                          await invoke("update_whisper_language", {
+                            whisperLanguage: setting_model.whisper_language,
+                          });
+                        }}
+                      />
+                    </div>
+                  </div>
+                </div>
+                <div class="p-4">
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <h3
+                        class="text-sm font-medium text-gray-900 dark:text-white"
+                      >
+                        Whisper 提示词
+                      </h3>
+                      <p class="text-sm text-gray-500 dark:text-gray-400">
+                        生成字幕时使用的提示词，尽量简洁明了，提示音频内容偏向的领域以及字幕的风格
+                      </p>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                      <input
+                        type="text"
+                        class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
+                        bind:value={setting_model.whisper_prompt}
+                        on:change={async () => {
+                          await invoke("update_whisper_prompt", {
+                            whisperPrompt: setting_model.whisper_prompt,
+                          });
+                        }}
                       />
                     </div>
                   </div>
                 </div>
               {/if}
-              <!-- Whisper Language -->
-              <div class="p-4">
-                <div class="flex items-center justify-between">
-                  <div>
-                    <h3
-                      class="text-sm font-medium text-gray-900 dark:text-white"
-                    >
-                      Whisper 语言
-                    </h3>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">
-                      （测试）生成字幕时使用的语言，默认自动识别
-                    </p>
-                  </div>
-                  <div class="flex items-center space-x-2">
-                    <input
-                      type="text"
-                      class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
-                      bind:value={setting_model.whisper_language}
-                      on:change={async () => {
-                        await invoke("update_whisper_language", {
-                          whisperLanguage: setting_model.whisper_language,
-                        });
-                      }}
-                    />
-                  </div>
-                </div>
-              </div>
-              <div class="p-4">
-                <div class="flex items-center justify-between">
-                  <div>
-                    <h3
-                      class="text-sm font-medium text-gray-900 dark:text-white"
-                    >
-                      Whisper 提示词
-                    </h3>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">
-                      生成字幕时使用的提示词，尽量简洁明了，提示音频内容偏向的领域以及字幕的风格
-                    </p>
-                  </div>
-                  <div class="flex items-center space-x-2">
-                    <input
-                      type="text"
-                      class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
-                      bind:value={setting_model.whisper_prompt}
-                      on:change={async () => {
-                        await invoke("update_whisper_prompt", {
-                          whisperPrompt: setting_model.whisper_prompt,
-                        });
-                      }}
-                    />
-                  </div>
-                </div>
-              </div>
             </div>
           </div>
 

@@ -26,7 +26,11 @@ pub async fn clip_multiple_from_playlist(
             clip_from_playlist(reporter, playlist_path, &video_path, Some(range.clone())).await
         {
             log::error!("Failed to generate playlist video: {e}");
-            continue;
+            // clean up to_remove
+            for path in to_remove {
+                let _ = tokio::fs::remove_file(path).await;
+            }
+            return Err(e);
         }
         to_remove.push(video_path.clone());
     }

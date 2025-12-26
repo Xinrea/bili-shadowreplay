@@ -204,28 +204,23 @@ impl Config {
         let format_config = format_config.replace(
             "{x}",
             &params
-                .range
-                .as_ref()
+                .ranges
+                .first()
                 .map_or("0".to_string(), |r| r.start.to_string()),
         );
         let format_config = format_config.replace(
             "{y}",
             &params
-                .range
-                .as_ref()
+                .ranges
+                .last()
                 .map_or("0".to_string(), |r| r.end.to_string()),
         );
         let format_config = format_config.replace(
             "{created_at}",
             &Local::now().format("%Y-%m-%d_%H-%M-%S").to_string(),
         );
-        let format_config = format_config.replace(
-            "{length}",
-            &params
-                .range
-                .as_ref()
-                .map_or("0".to_string(), |r| r.duration().to_string()),
-        );
+        let duration = params.ranges.iter().map(|r| r.duration()).sum::<f64>();
+        let format_config = format_config.replace("{length}", &duration.to_string());
 
         let sanitized = sanitize_filename::sanitize(&format_config);
         let output = self.output.clone();

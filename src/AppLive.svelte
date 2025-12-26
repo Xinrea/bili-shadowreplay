@@ -17,6 +17,7 @@
     type DanmuEntry,
     clipRange,
     generateEventId,
+    type Range,
   } from "./lib/interface";
   import MarkerPanel from "./lib/components/MarkerPanel.svelte";
   import { onDestroy, onMount } from "svelte";
@@ -179,17 +180,8 @@
 
   let archive: RecordItem = null;
 
-  let start = 0.0;
-  let end = 0.0;
+  let ranges: Range[] = [];
   let global_offset = 0;
-
-  // load start and end from localStorage
-  if (localStorage.getItem(`${live_id}_start`)) {
-    start = parseFloat(localStorage.getItem(`${live_id}_start`)) - focus_start;
-  }
-  if (localStorage.getItem(`${live_id}_end`)) {
-    end = parseFloat(localStorage.getItem(`${live_id}_end`)) - focus_start;
-  }
 
   function generateCover() {
     const video = document.getElementById("video") as HTMLVideoElement;
@@ -283,19 +275,6 @@
     selected_video = target_video;
   }
 
-  async function generate_clip() {
-    if (end == 0) {
-      alert("请检查选区范围");
-      return;
-    }
-    if (end - start < 5.0) {
-      alert("选区过短:," + (end - start).toFixed(2));
-      return;
-    }
-
-    show_clip_confirm = true;
-  }
-
   async function confirm_generate_clip() {
     show_clip_confirm = false;
     let new_cover = generateCover();
@@ -328,10 +307,7 @@
       platform: platform,
       cover: new_cover,
       live_id: live_id,
-      range: {
-        start: focus_start + start,
-        end: focus_start + end,
-      },
+      ranges: ranges,
       danmu: danmu_enabled,
       local_offset:
         parseInt(localStorage.getItem(`local_offset:${live_id}`) || "0", 10) ||
@@ -440,8 +416,7 @@
     </div>
     <div class="overflow-hidden h-screen w-full relative">
       <Player
-        bind:start
-        bind:end
+        bind:ranges
         bind:global_offset
         bind:this={player}
         bind:danmu_records
@@ -496,7 +471,7 @@
                 <h3 class="text-sm font-medium text-gray-300">切片列表</h3>
                 <div class="flex space-x-2">
                   <button
-                    on:click={generate_clip}
+                    on:click={() => (show_clip_confirm = true)}
                     disabled={current_clip_event_id != null}
                     class="px-4 py-1.5 bg-[#0A84FF] text-white text-sm rounded-lg
                            transition-all duration-200 hover:bg-[#0A84FF]/90
@@ -711,11 +686,42 @@
         <p class="mt-1 text-[13px] text-white/70">请确认以下设置后继续</p>
 
         <div class="mt-3 space-y-3">
-          <div class="text-[13px] text-white/80">> 切片时长</div>
+          <div class="text-[13px] font-medium text-white/90">
+            待合并选区列表
+          </div>
           <div
-            class="mt-0.5 text-[22px] font-semibold tracking-tight text-white"
+            class="max-h-48 overflow-y-auto space-y-2 custom-scrollbar-light"
           >
-            {format_duration_seconds(end - start)}
+            {#each ranges as range, index}
+              <div
+                class="flex items-center justify-between px-3 py-2 bg-[#2c2c2e] rounded-lg border border-white/5 hover:border-white/10 transition-colors"
+              >
+                <div class="flex items-center space-x-3">
+                  <div
+                    class="flex items-center justify-center w-6 h-6 rounded-full bg-[#0A84FF]/20 text-[#0A84FF] text-[11px] font-semibold"
+                  >
+                    {index + 1}
+                  </div>
+                  <div class="flex flex-col space-y-0.5">
+                    <div class="text-[12px] text-white/90">
+                      {format_time(range.start * 1000)} → {format_time(
+                        range.end * 1000
+                      )}
+                    </div>
+                    <div class="text-[11px] text-white/60">
+                      时长: {format_duration_seconds(range.end - range.start)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            {/each}
+          </div>
+          <div
+            class="mt-2 pt-2 border-t border-white/10 text-[15px] font-semibold text-white"
+          >
+            总时长: {format_duration_seconds(
+              ranges.reduce((acc, range) => acc + range.end - range.start, 0)
+            )}
           </div>
         </div>
 

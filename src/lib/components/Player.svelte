@@ -5,7 +5,7 @@
 <script lang="ts">
   import { invoke, TAURI_ENV, ENDPOINT, listen, log } from "../invoker";
   import type { AccountInfo } from "../db";
-  import type { Marker, RecorderList, RecorderInfo } from "../interface";
+  import type { Marker, RecorderList, RecorderInfo, Range } from "../interface";
 
   import { createEventDispatcher } from "svelte";
   import {
@@ -25,8 +25,7 @@
   export let platform: string;
   export let room_id: string;
   export let live_id: string;
-  export let start = 0;
-  export let end = 0;
+  export let ranges: Range[] = [];
   export let global_offset = 0;
   export let focus_start = 0;
   export let focus_end = 0;
@@ -41,15 +40,171 @@
   let show_export = false;
   let recorders: RecorderInfo[] = [];
 
+  let start = 0;
+  let end = 0;
+  let currentRangeIndex: number = -1; // 当前正在编辑的区间索引，-1 表示没有区间
+
   // local setting of danmu offset
   let local_offset: number =
     parseInt(localStorage.getItem(`local_offset:${live_id}`) || "0", 10) || 0;
 
-  // save start and end to localStorage
-  function saveStartEnd() {
-    localStorage.setItem(`${live_id}_start`, (start + focus_start).toString());
-    localStorage.setItem(`${live_id}_end`, (end + focus_start).toString());
-    console.log("Saved start and end", start + focus_start, end + focus_start);
+  // 获取当前区间
+  function getCurrentRange(): Range | null {
+    if (currentRangeIndex >= 0 && currentRangeIndex < ranges.length) {
+      return ranges[currentRangeIndex];
+    }
+    return null;
+  }
+
+  // 检测两个区间是否重叠或相邻（允许小误差）
+  function rangesOverlap(range1: Range, range2: Range): boolean {
+    // 允许 0.1 秒的误差，认为是相邻的区间
+    return !(
+      range1.end < range2.start - 0.1 || range1.start > range2.end + 0.1
+    );
+  }
+
+  // 合并两个重叠的区间
+  function mergeRanges(range1: Range, range2: Range): Range {
+    return {
+      start: Math.min(range1.start, range2.start),
+      end: Math.max(range1.end, range2.end),
+    };
+  }
+
+  // 合并所有重叠的区间
+  function mergeOverlappingRanges(): void {
+    if (ranges.length <= 1) return;
+
+    const beforeCount = ranges.length;
+
+    // 按开始时间排序
+    ranges.sort((a, b) => a.start - b.start);
+
+    const merged: Range[] = [];
+    let current = ranges[0];
+
+    for (let i = 1; i < ranges.length; i++) {
+      const next = ranges[i];
+
+      // 如果当前区间与下一个区间重叠或相邻，合并它们
+      if (rangesOverlap(current, next)) {
+        current = mergeRanges(current, next);
+      } else {
+        merged.push(current);
+        current = next;
+      }
+    }
+    merged.push(current);
+
+    ranges = merged;
+
+    const afterCount = ranges.length;
+    if (beforeCount > afterCount) {
+      console.log(`Merged overlapping ranges: ${beforeCount} -> ${afterCount}`);
+    }
+  }
+
+  // 保存区间数组到 localStorage
+  // 注意：区间始终保存为绝对时间（不依赖 focus_start），这样在切换 focus 模式时不会丢失
+  function saveRanges() {
+    // 将相对时间转换为绝对时间保存
+    const rangesToSave = ranges.map((r) => ({
+      start: r.start + focus_start,
+      end: r.end + focus_start,
+    }));
+    localStorage.setItem(`${live_id}_ranges`, JSON.stringify(rangesToSave));
+    localStorage.setItem(
+      `${live_id}_currentRangeIndex`,
+      currentRangeIndex.toString()
+    );
+    console.log(
+      "Saved ranges (absolute time):",
+      rangesToSave,
+      "current index:",
+      currentRangeIndex
+    );
+  }
+
+  // 从 localStorage 加载区间数组
+  // 注意：加载时保留所有区间，但只显示在当前 focus 范围内的区间
+  function loadRanges() {
+    const saved = localStorage.getItem(`${live_id}_ranges`);
+    if (saved) {
+      try {
+        const savedRanges = JSON.parse(saved) as Array<{
+          start: number;
+          end: number;
+        }>;
+        // 保存的区间是绝对时间，需要转换为相对时间
+        // 但保留所有区间，不进行过滤，因为区间可能跨越多个 focus 范围
+        ranges = savedRanges.map((r) => ({
+          start: r.start - focus_start,
+          end: r.end - focus_start,
+        }));
+
+        // 不在这里过滤区间，因为区间可能不在当前 focus 范围内
+        // 但需要确保区间的时间顺序正确（start < end）
+        ranges = ranges.filter((r) => r.end > r.start);
+
+        const savedIndex = localStorage.getItem(`${live_id}_currentRangeIndex`);
+        if (savedIndex) {
+          const index = parseInt(savedIndex, 10);
+          // 检查索引是否有效，如果对应的区间不在当前 focus 范围内，重置索引
+          if (index >= 0 && index < ranges.length) {
+            const range = ranges[index];
+            // 如果区间在当前 focus 范围内（至少部分可见），保留索引
+            if (
+              range.end > 0 &&
+              range.start < (focus_end - focus_start || Infinity)
+            ) {
+              currentRangeIndex = index;
+            } else {
+              // 否则找到第一个在当前范围内的区间，或设为 -1
+              const visibleIndex = ranges.findIndex(
+                (r) =>
+                  r.end > 0 && r.start < (focus_end - focus_start || Infinity)
+              );
+              currentRangeIndex = visibleIndex >= 0 ? visibleIndex : -1;
+            }
+          } else {
+            currentRangeIndex = ranges.length > 0 ? 0 : -1;
+          }
+        } else {
+          currentRangeIndex = ranges.length > 0 ? 0 : -1;
+        }
+      } catch (e) {
+        console.error("Failed to load ranges:", e);
+        ranges = [];
+        currentRangeIndex = -1;
+      }
+    }
+    // 兼容旧版本的单个区间数据
+    if (ranges.length === 0) {
+      const oldStart = localStorage.getItem(`${live_id}_start`);
+      const oldEnd = localStorage.getItem(`${live_id}_end`);
+      if (oldStart && oldEnd) {
+        const s = parseFloat(oldStart) - focus_start;
+        const e = parseFloat(oldEnd) - focus_start;
+        if (e > s) {
+          ranges = [{ start: s, end: e }];
+          currentRangeIndex = 0;
+          saveRanges();
+        }
+      }
+    }
+  }
+
+  // 向后兼容：保持 start 和 end 的 getter/setter
+  $: {
+    const current = getCurrentRange();
+    if (current) {
+      start = current.start;
+      end = current.end;
+    } else {
+      start = 0;
+      end = 0;
+    }
   }
 
   async function load_metadata(url: string) {
@@ -708,6 +863,9 @@ ${mediaPlaylistUrl}`;
     function get_total() {
       return player.seekRange().end;
     }
+    // 加载区间数据
+    loadRanges();
+
     // add keydown event listener for '[' and ']' to control range
     document.addEventListener("keydown", async (e) => {
       const target = e.target as HTMLInputElement;
@@ -721,24 +879,151 @@ ${mediaPlaylistUrl}`;
         case "[":
         case "【":
           e.preventDefault();
-          start = parseFloat(video.currentTime.toFixed(2));
-          // 如果没有选区（end为0）或者end小于start，自动设置终点为视频结尾
-          if (end === 0 || end < start) {
-            end = get_total();
+          {
+            const currentTime = parseFloat(video.currentTime.toFixed(2));
+            if (currentRangeIndex >= 0 && currentRangeIndex < ranges.length) {
+              // 有选中区间：更新当前区间的开始时间
+              ranges[currentRangeIndex].start = currentTime;
+              // 如果结束时间小于开始时间，自动设置为视频结尾
+              if (ranges[currentRangeIndex].end <= currentTime) {
+                ranges[currentRangeIndex].end = get_total();
+              }
+            } else {
+              // 没有选中区间：创建新区间并选中
+              const newRange: Range = {
+                start: currentTime,
+                end: get_total(),
+              };
+              ranges.push(newRange);
+              currentRangeIndex = ranges.length - 1;
+            }
+            saveRanges();
+            console.log(
+              "Range updated:",
+              ranges[currentRangeIndex],
+              "Total ranges:",
+              ranges.length
+            );
           }
-          saveStartEnd();
-          console.log(start, end);
           break;
         case "]":
         case "】":
           e.preventDefault();
-          end = parseFloat(video.currentTime.toFixed(2));
-          // 如果没有选区（start为0）或者start大于end，自动设置起点为视频开头
-          if (start === 0 || start > end) {
-            start = 0;
+          {
+            const currentTime = parseFloat(video.currentTime.toFixed(2));
+            if (currentRangeIndex >= 0 && currentRangeIndex < ranges.length) {
+              // 有选中区间：更新当前区间的结束时间
+              ranges[currentRangeIndex].end = currentTime;
+              // 如果开始时间大于结束时间，自动设置为0
+              if (ranges[currentRangeIndex].start >= currentTime) {
+                ranges[currentRangeIndex].start = 0;
+              }
+            } else {
+              // 没有选中区间：创建新区间并选中
+              const newRange: Range = {
+                start: 0,
+                end: currentTime,
+              };
+              ranges.push(newRange);
+              currentRangeIndex = ranges.length - 1;
+            }
+            saveRanges();
+            console.log(
+              "Range updated:",
+              ranges[currentRangeIndex],
+              "Total ranges:",
+              ranges.length
+            );
           }
-          saveStartEnd();
-          console.log(start, end);
+          break;
+        case "Enter":
+          e.preventDefault();
+          {
+            // 合并重叠区间
+            mergeOverlappingRanges();
+            // 取消选中，进入创建模式
+            currentRangeIndex = -1;
+            saveRanges();
+            console.log("Entered range creation mode (no range selected)");
+          }
+          break;
+        case "n":
+        case "N":
+          e.preventDefault();
+          {
+            // 创建新区间，从当前播放位置开始
+            const currentTime = parseFloat(video.currentTime.toFixed(2));
+            const newRange: Range = {
+              start: currentTime,
+              end: get_total(),
+            };
+            ranges.push(newRange);
+            currentRangeIndex = ranges.length - 1;
+            saveRanges();
+            console.log(
+              "New range created:",
+              newRange,
+              "Total ranges:",
+              ranges.length
+            );
+          }
+          break;
+        case "d":
+        case "Delete":
+          e.preventDefault();
+          {
+            if (currentRangeIndex >= 0 && currentRangeIndex < ranges.length) {
+              ranges.splice(currentRangeIndex, 1);
+              // 调整当前索引
+              if (ranges.length === 0) {
+                currentRangeIndex = -1;
+              } else if (currentRangeIndex >= ranges.length) {
+                currentRangeIndex = ranges.length - 1;
+              }
+              saveRanges();
+              console.log("Range deleted, remaining:", ranges.length);
+            }
+          }
+          break;
+        case "Tab":
+          e.preventDefault();
+          {
+            if (ranges.length > 0) {
+              if (e.shiftKey) {
+                // Shift+Tab: 切换到上一个区间
+                currentRangeIndex =
+                  currentRangeIndex <= 0
+                    ? ranges.length - 1
+                    : currentRangeIndex - 1;
+              } else {
+                // Tab: 切换到下一个区间
+                currentRangeIndex = (currentRangeIndex + 1) % ranges.length;
+              }
+              saveRanges();
+              const current = ranges[currentRangeIndex];
+              console.log("Switched to range:", currentRangeIndex, current);
+            }
+          }
+          break;
+        case "t":
+          e.preventDefault();
+          {
+            if (ranges.length > 0) {
+              if (e.shiftKey) {
+                // Shift+T: 切换到上一个区间
+                currentRangeIndex =
+                  currentRangeIndex <= 0
+                    ? ranges.length - 1
+                    : currentRangeIndex - 1;
+              } else {
+                // t: 切换到下一个区间
+                currentRangeIndex = (currentRangeIndex + 1) % ranges.length;
+              }
+              saveRanges();
+              const current = ranges[currentRangeIndex];
+              console.log("Switched to range:", currentRangeIndex, current);
+            }
+          }
           break;
         case " ":
           e.preventDefault();
@@ -772,20 +1057,32 @@ ${mediaPlaylistUrl}`;
           break;
         case "q":
           e.preventDefault();
-          video.currentTime = start;
+          {
+            const current = getCurrentRange();
+            if (current) {
+              video.currentTime = current.start;
+            } else {
+              video.currentTime = 0;
+            }
+          }
           break;
         case "e":
           e.preventDefault();
-          if (end == 0) {
-            video.currentTime = get_total();
-          } else {
-            video.currentTime = end;
+          {
+            const current = getCurrentRange();
+            if (current) {
+              video.currentTime = current.end;
+            } else {
+              video.currentTime = get_total();
+            }
           }
           break;
         case "c":
           e.preventDefault();
-          start = 0;
-          end = 0;
+          ranges = [];
+          currentRangeIndex = -1;
+          saveRanges();
+          console.log("All ranges cleared");
           break;
         case "h":
           e.preventDefault();
@@ -797,10 +1094,17 @@ ${mediaPlaylistUrl}`;
           break;
         case "g":
           e.preventDefault();
-          if ((start == 0 && end == 0) || start > end) {
-            break;
+          {
+            const current = getCurrentRange();
+            if (current && current.start < current.end) {
+              // 在跳转前先保存所有区间，确保数据不丢失
+              saveRanges();
+              zoomOnRange(
+                focus_start + current.start,
+                focus_start + current.end
+              );
+            }
           }
-          zoomOnRange(focus_start + start, focus_start + end);
           break;
       }
     });
@@ -818,6 +1122,20 @@ ${mediaPlaylistUrl}`;
     statisticGraph.style.zIndex = "20";
     const canvas = statisticGraph.getContext("2d");
     seekbarContainer.appendChild(statisticGraph);
+
+    // 创建当前区间高亮覆盖层
+    const currentRangeHighlight = document.createElement("div");
+    currentRangeHighlight.style.pointerEvents = "none";
+    currentRangeHighlight.style.position = "absolute";
+    currentRangeHighlight.style.top = "-2px";
+    currentRangeHighlight.style.height = "calc(100% + 4px)";
+    currentRangeHighlight.style.backgroundColor = "rgba(255, 215, 0, 0.6)"; // 金黄色，半透明
+    currentRangeHighlight.style.border = "2px solid rgb(255, 165, 0)"; // 橙色边框
+    currentRangeHighlight.style.borderRadius = "2px";
+    currentRangeHighlight.style.zIndex = "25";
+    currentRangeHighlight.style.display = "none";
+    currentRangeHighlight.style.boxShadow = "0 0 8px rgba(255, 215, 0, 0.8)"; // 发光效果
+    seekbarContainer.appendChild(currentRangeHighlight);
 
     // draw statistics
     function drawStatistics(points: { ts: number; count: number }[]) {
@@ -894,18 +1212,81 @@ ${mediaPlaylistUrl}`;
 
     function updateSeekbar() {
       const total = get_total();
-      const first_point = start / total;
-      const second_point = end / total;
-      // set background color for self-defined seekbar between first_point and second_point using linear-gradient
-      seekbarContainer.style.background = `linear-gradient(to right, rgba(255, 255, 255, 0.4) ${
-        first_point * 100
-      }%, rgb(0, 255, 0) ${first_point * 100}%, rgb(0, 255, 0) ${
-        second_point * 100
-      }%, rgba(255, 255, 255, 0.4) ${
-        second_point * 100
-      }%, rgba(255, 255, 255, 0.4) ${
-        first_point * 100
-      }%, rgba(255, 255, 255, 0.2) ${first_point * 100}%)`;
+
+      // 更新当前区间高亮覆盖层
+      const currentRange =
+        currentRangeIndex >= 0 && currentRangeIndex < ranges.length
+          ? ranges[currentRangeIndex]
+          : null;
+
+      if (currentRange && total > 0) {
+        const rangeStart = currentRange.start / total;
+        const rangeEnd = currentRange.end / total;
+        const containerWidth = seekbarContainer.clientWidth;
+        const left = rangeStart * containerWidth;
+        const width = (rangeEnd - rangeStart) * containerWidth;
+
+        currentRangeHighlight.style.left = `${left}px`;
+        currentRangeHighlight.style.width = `${width}px`;
+        currentRangeHighlight.style.display = "block";
+      } else {
+        currentRangeHighlight.style.display = "none";
+      }
+
+      // 构建多区间渐变背景
+      if (ranges.length === 0) {
+        // 没有区间时，显示默认背景
+        seekbarContainer.style.background = "rgba(255, 255, 255, 0.4)";
+      } else {
+        // 按时间顺序排序区间
+        const sortedRanges = [...ranges].sort((a, b) => a.start - b.start);
+        const gradientStops: string[] = [];
+        let lastPos = 0;
+
+        for (let i = 0; i < sortedRanges.length; i++) {
+          const range = sortedRanges[i];
+          // 计算区间在当前 focus 范围内的可见部分
+          // range.start 和 range.end 是相对于当前 focus_start 的时间
+          const visibleStart = Math.max(0, range.start);
+          const visibleEnd = Math.min(total, range.end);
+
+          // 如果区间在当前 focus 范围内有可见部分，才显示
+          if (visibleEnd > visibleStart) {
+            const rangeStart = visibleStart / total;
+            const rangeEnd = visibleEnd / total;
+            // 判断是否是当前区间：比较区间对象引用或值
+            const isCurrent =
+              currentRange &&
+              currentRange.start === range.start &&
+              currentRange.end === range.end;
+
+            // 添加区间前的背景
+            if (rangeStart > lastPos) {
+              gradientStops.push(`rgba(255, 255, 255, 0.4) ${lastPos * 100}%`);
+              gradientStops.push(
+                `rgba(255, 255, 255, 0.4) ${rangeStart * 100}%`
+              );
+            }
+
+            // 添加区间（当前区间用更亮的绿色，其他区间用普通绿色）
+            // 注意：当前区间会被高亮覆盖层覆盖，所以这里用普通绿色即可
+            const rangeColor = "rgb(0, 200, 0)";
+            gradientStops.push(`${rangeColor} ${rangeStart * 100}%`);
+            gradientStops.push(`${rangeColor} ${rangeEnd * 100}%`);
+
+            lastPos = rangeEnd;
+          }
+        }
+
+        // 添加最后一个区间后的背景
+        if (lastPos < 1) {
+          gradientStops.push(`rgba(255, 255, 255, 0.4) ${lastPos * 100}%`);
+          gradientStops.push(`rgba(255, 255, 255, 0.4) 100%`);
+        }
+
+        seekbarContainer.style.background = `linear-gradient(to right, ${gradientStops.join(", ")})`;
+      }
+
       // render markers in shaka-ad-markers
       const adMarkers = document.querySelector(
         ".shaka-ad-markers"
@@ -1006,14 +1387,19 @@ ${mediaPlaylistUrl}`;
     <span>
       <p><kbd>Esc</kbd>返回直播/录播</p>
       <p><kbd>Space</kbd>播放/暂停</p>
-      <p><kbd>[</kbd>设定选区开始</p>
-      <p><kbd>]</kbd>设定选区结束</p>
-      <p><kbd>g</kbd>预览选区片段</p>
-      <p><kbd>q</kbd>跳转到选区开始</p>
-      <p><kbd>e</kbd>跳转到选区结束</p>
+      <p><kbd>[</kbd>设定当前区间开始（无选中时创建新区间）</p>
+      <p><kbd>]</kbd>设定当前区间结束（无选中时创建新区间）</p>
+      <p><kbd>Enter</kbd>取消选中，进入创建模式</p>
+      <p><kbd>n</kbd>创建新区间</p>
+      <p><kbd>d</kbd>删除当前区间</p>
+      <p><kbd>Tab</kbd>/<kbd>t</kbd>切换到下一个区间</p>
+      <p><kbd>Shift+Tab</kbd>/<kbd>Shift+t</kbd>切换到上一个区间</p>
+      <p><kbd>g</kbd>预览当前区间片段</p>
+      <p><kbd>q</kbd>跳转到当前区间开始</p>
+      <p><kbd>e</kbd>跳转到当前区间结束</p>
       <p><kbd>←</kbd>前进</p>
       <p><kbd>→</kbd>后退</p>
-      <p><kbd>c</kbd>清除选区</p>
+      <p><kbd>c</kbd>清除所有区间</p>
       <p><kbd>p</kbd>创建标记</p>
     </span>
   {/if}

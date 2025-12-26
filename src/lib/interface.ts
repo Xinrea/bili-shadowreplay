@@ -255,6 +255,11 @@ export function parseSubtitleStyle(style: SubtitleStyle): string {
   },MarginR=${style.marginR}`;
 }
 
+export interface Range {
+  start: number;
+  end: number;
+}
+
 export interface ClipRangeParams {
   title: string;
   note: string;
@@ -262,10 +267,7 @@ export interface ClipRangeParams {
   platform: string;
   room_id: string;
   live_id: string;
-  range: {
-    start: number;
-    end: number;
-  };
+  ranges: Range[];
   danmu: boolean;
   local_offset: number;
   fix_encoding: boolean;

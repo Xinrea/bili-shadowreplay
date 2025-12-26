@@ -388,18 +388,11 @@ async fn clip_range_inner(
     params: ClipRangeParams,
 ) -> Result<VideoRow, String> {
     log::info!(
-        "[{}]Clip room_id: {}, ts: {}, start: {}, end: {}",
+        "[{}]Clip room_id: {}, ts: {}, ranges: {:?}",
         reporter.event_id,
         params.room_id,
         params.live_id,
-        params
-            .range
-            .as_ref()
-            .map_or("None".to_string(), |r| r.start.to_string()),
-        params
-            .range
-            .as_ref()
-            .map_or("None".to_string(), |r| r.end.to_string()),
+        params.ranges,
     );
 
     let clip_file = state.config.read().await.generate_clip_name(&params);
@@ -451,6 +444,7 @@ async fn clip_range_inner(
         );
         return Err("Failed to convert metadata length to i64".to_string());
     };
+    let duration = params.ranges.iter().map(|r| r.duration()).sum::<f64>();
     let video = state
         .db
         .add_video(&VideoRow {
@@ -466,10 +460,7 @@ async fn clip_range_inner(
                 .to_string(),
             file: filename.into(),
             note: params.note.clone(),
-            length: params
-                .range
-                .as_ref()
-                .map_or(0.0, super::super::ffmpeg::Range::duration) as i64,
+            length: duration as i64,
             size,
             bvid: String::new(),
             title: String::new(),
@@ -485,12 +476,7 @@ async fn clip_range_inner(
             "生成新切片",
             &format!(
                 "生成了房间 {} 的切片，长度 {}s：{}",
-                &params.room_id,
-                params
-                    .range
-                    .as_ref()
-                    .map_or(0.0, super::super::ffmpeg::Range::duration),
-                filename
+                &params.room_id, duration, filename
             ),
         )
         .await?;

@@ -13,7 +13,32 @@ use std::os::windows::process::CommandExt;
 
 use super::Range;
 
-pub async fn playlist_to_video(
+pub async fn clip_multiple_from_playlist(
+    reporter: Option<&impl ProgressReporterTrait>,
+    playlist_path: &Path,
+    output_path: &Path,
+    ranges: &[Range],
+) -> Result<(), String> {
+    let mut to_remove = Vec::new();
+    for (i, range) in ranges.iter().enumerate() {
+        let video_path = output_path.with_extension(format!("{}.mp4", i));
+        if let Err(e) =
+            clip_from_playlist(reporter, playlist_path, &video_path, Some(range.clone())).await
+        {
+            log::error!("Failed to generate playlist video: {e}");
+            continue;
+        }
+        to_remove.push(video_path.clone());
+    }
+    super::general::concat_videos(reporter, &to_remove, output_path).await?;
+    // clean up to_remove
+    for path in to_remove {
+        let _ = tokio::fs::remove_file(path).await;
+    }
+    Ok(())
+}
+
+pub async fn clip_from_playlist(
     reporter: Option<&impl ProgressReporterTrait>,
     playlist_path: &Path,
     output_path: &Path,
@@ -129,7 +154,7 @@ pub async fn playlist_to_video(
     Ok(())
 }
 
-pub async fn playlists_to_video(
+pub async fn concat_playlists_to_video(
     reporter: Option<&impl ProgressReporterTrait>,
     playlists: &[&Path],
     danmu_ass_files: Vec<Option<PathBuf>>,
@@ -139,7 +164,7 @@ pub async fn playlists_to_video(
     let mut segments = Vec::new();
     for (i, playlist) in playlists.iter().enumerate() {
         let mut video_path = output_path.with_extension(format!("{}.mp4", i));
-        if let Err(e) = playlist_to_video(reporter, playlist, &video_path, None).await {
+        if let Err(e) = clip_from_playlist(reporter, playlist, &video_path, None).await {
             log::error!("Failed to generate playlist video: {e}");
             continue;
         }

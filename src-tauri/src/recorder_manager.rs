@@ -55,7 +55,7 @@ pub struct ClipRangeParams {
     pub platform: String,
     pub room_id: String,
     pub live_id: String,
-    pub range: Option<Range>,
+    pub ranges: Vec<Range>,
     /// Encode danmu after clip
     pub danmu: bool,
     pub local_offset: i64,
@@ -865,14 +865,20 @@ impl RecorderManager {
             });
         }
 
-        crate::ffmpeg::playlist::playlist_to_video(
-            reporter,
-            &playlist_path,
-            &clip_file,
-            params.range.clone(),
-        )
-        .await
-        .map_err(|e| RecorderManagerError::ClipError { err: e.to_string() })?;
+        if params.ranges.is_empty() {
+            crate::ffmpeg::playlist::clip_from_playlist(reporter, &playlist_path, &clip_file, None)
+                .await
+                .map_err(|e| RecorderManagerError::ClipError { err: e.to_string() })?;
+        } else {
+            crate::ffmpeg::playlist::clip_multiple_from_playlist(
+                reporter,
+                &playlist_path,
+                &clip_file,
+                &params.ranges,
+            )
+            .await
+            .map_err(|e| RecorderManagerError::ClipError { err: e.to_string() })?;
+        }
 
         if params.fix_encoding {
             // transcode clip_file
@@ -914,42 +920,42 @@ impl RecorderManager {
             return Ok(clip_file);
         }
 
-        log::info!(
-            "Filter danmus in range {} with local offset {}",
-            params
-                .range
-                .as_ref()
-                .map_or("None".to_string(), std::string::ToString::to_string),
-            params.local_offset
-        );
         let mut danmus = danmus.unwrap();
         log::debug!("First danmu entry: {:?}", danmus.first());
         log::debug!("Last danmu entry: {:?}", danmus.last());
         log::debug!("Stream start timestamp: {}", stream_start_timestamp_milis);
         log::debug!("Local offset: {}", params.local_offset);
-        log::debug!("Range: {:?}", params.range);
+        log::debug!("Range: {:?}", params.ranges);
 
-        if let Some(range) = &params.range {
-            // update entry ts to offset and filter danmus in range
-            for d in &mut danmus {
-                d.ts -= stream_start_timestamp_milis + params.local_offset * 1000;
-                if let Some(range) = &params.range {
-                    d.ts -= (range.start * 1000.0) as i64;
-                }
-            }
-            if range.duration() > 0.0 {
-                danmus.retain(|x| x.ts >= 0 && x.ts <= (range.duration() * 1000.0).round() as i64);
-            }
+        // update danmu entry ts to relative offset
+        for d in &mut danmus {
+            d.ts -= stream_start_timestamp_milis + params.local_offset * 1000;
         }
 
-        if danmus.is_empty() {
-            log::warn!("No danmus found, skip danmu encoding");
-
-            return Ok(clip_file);
+        let mut range_anchors = vec![0; params.ranges.len()];
+        for i in 0..params.ranges.len() {
+            if i == 0 {
+                continue;
+            }
+            range_anchors[i] =
+                (params.ranges[i - 1].duration() * 1000.0) as i64 + range_anchors[i - 1];
         }
 
-        let ass_content =
-            danmu2ass::danmu_to_ass(danmus, self.config.read().await.danmu_ass_options.clone());
+        log::debug!("Range anchors: {:?}", range_anchors);
+
+        let mut filtered_danmus = Vec::<DanmuEntry>::new();
+        for (i, range) in params.ranges.iter().enumerate() {
+            filtered_danmus.extend(self.filter_danmus_in_range(
+                danmus.clone(),
+                range,
+                range_anchors[i],
+            ));
+        }
+
+        let ass_content = danmu2ass::danmu_to_ass(
+            filtered_danmus,
+            self.config.read().await.danmu_ass_options.clone(),
+        );
         // dump ass_content into a temp file
         let ass_file_path = clip_file.with_extension("ass");
         if let Err(e) = write(&ass_file_path, ass_content).await {
@@ -967,6 +973,26 @@ impl RecorderManager {
         let _ = remove_file(clip_file).await;
 
         result.map_err(|e| RecorderManagerError::ClipError { err: e })
+    }
+
+    fn filter_danmus_in_range(
+        &self,
+        mut danmus: Vec<DanmuEntry>,
+        range: &Range,
+        anchor: i64,
+    ) -> Vec<DanmuEntry> {
+        for d in &mut danmus {
+            d.ts -= (range.start * 1000.0) as i64;
+        }
+        if range.duration() > 0.0 {
+            danmus.retain(|x| x.ts >= 0 && x.ts <= (range.duration() * 1000.0).round() as i64);
+        }
+
+        for d in &mut danmus {
+            d.ts += anchor;
+        }
+
+        danmus
     }
 
     async fn generate_archive_danmu_ass(
@@ -1161,7 +1187,7 @@ impl RecorderManager {
         );
         // generate a tmp clip file
         let clip_file_path = work_dir.with_filename("tmp.mp4");
-        if let Err(e) = crate::ffmpeg::playlist::playlist_to_video(
+        if let Err(e) = crate::ffmpeg::playlist::clip_from_playlist(
             None::<&crate::progress::progress_reporter::ProgressReporter>,
             Path::new(&m3u8_index_file_path.full_path()),
             Path::new(&clip_file_path.full_path()),
@@ -1403,7 +1429,7 @@ impl RecorderManager {
         log::info!("Concat playlists: {playlists_refs:?}");
         log::info!("Output path: {output_path:?}");
 
-        if let Err(e) = crate::ffmpeg::playlist::playlists_to_video(
+        if let Err(e) = crate::ffmpeg::playlist::concat_playlists_to_video(
             reporter,
             &playlists_refs,
             danmu_ass_files,

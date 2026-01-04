@@ -85,9 +85,7 @@ impl HlsRecorder {
             .await
             .map_err(RecorderError::IoError)?;
         let trimmed = sequence_buf.trim();
-        let sequence = trimmed
-            .parse::<u64>()
-            .map_err(|_| RecorderError::InvalidValue)?;
+        let sequence = trimmed.parse::<u64>().unwrap_or(0);
 
         // If the file is newly created / empty, normalize it to "0"
         if trimmed.is_empty() {

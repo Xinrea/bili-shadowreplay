@@ -180,6 +180,11 @@ impl HuyaRecorder {
             self.enabled.clone(),
         )
         .await;
+        if let Err(e) = hls_recorder {
+            log::error!("[{}]Hls recorder creation error: {}", self.room_id, e);
+            return Err(e);
+        }
+        let hls_recorder = hls_recorder.unwrap();
 
         if let Err(e) = hls_recorder.start().await {
             log::error!("[{}]Failed to start hls recorder: {}", &self.room_id, e);

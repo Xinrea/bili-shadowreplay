@@ -53,10 +53,10 @@ impl HlsRecorder {
         event_channel: broadcast::Sender<RecorderEvent>,
         work_dir: PathBuf,
         enabled: Arc<AtomicBool>,
-    ) -> Self {
+    ) -> Result<Self, RecorderError> {
         // try to create work_dir
         if !work_dir.exists() {
-            std::fs::create_dir_all(&work_dir).unwrap();
+            std::fs::create_dir_all(&work_dir)?;
         }
         let playlist_path = work_dir.join(PLAYLIST_FILE_NAME);
 
@@ -77,26 +77,40 @@ impl HlsRecorder {
             .truncate(false)
             .open(&sequence_path)
             .await
-            .unwrap();
+            .map_err(RecorderError::IoError)?;
 
         let mut sequence_buf = String::new();
         sequence_file
             .read_to_string(&mut sequence_buf)
             .await
-            .unwrap();
+            .map_err(RecorderError::IoError)?;
         let trimmed = sequence_buf.trim();
-        let sequence = trimmed.parse::<u64>().unwrap_or(0);
+        let sequence = trimmed
+            .parse::<u64>()
+            .map_err(|_| RecorderError::InvalidValue)?;
 
         // If the file is newly created / empty, normalize it to "0"
         if trimmed.is_empty() {
-            sequence_file.set_len(0).await.unwrap();
-            sequence_file.seek(SeekFrom::Start(0)).await.unwrap();
-            sequence_file.write_all(b"0").await.unwrap();
+            sequence_file
+                .set_len(0)
+                .await
+                .map_err(RecorderError::IoError)?;
+            sequence_file
+                .seek(SeekFrom::Start(0))
+                .await
+                .map_err(RecorderError::IoError)?;
+            sequence_file
+                .write_all(b"0")
+                .await
+                .map_err(RecorderError::IoError)?;
             let _ = sequence_file.flush().await;
-            sequence_file.seek(SeekFrom::Start(0)).await.unwrap();
+            sequence_file
+                .seek(SeekFrom::Start(0))
+                .await
+                .map_err(RecorderError::IoError)?;
         }
 
-        Self {
+        Ok(Self {
             room_id,
             stream,
             client,
@@ -109,7 +123,7 @@ impl HlsRecorder {
             updated_at: Arc::new(AtomicI64::new(chrono::Utc::now().timestamp_millis())),
             pre_metadata: Arc::new(RwLock::new(None)),
             sequence_file: Arc::new(RwLock::new(sequence_file)),
-        }
+        })
     }
 
     /// Start the recorder blockingly

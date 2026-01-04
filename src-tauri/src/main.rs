@@ -391,6 +391,17 @@ fn get_migrations() -> Vec<Migration> {
             ",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 13,
+            description: "change_records_length_to_float",
+            sql: r"
+            ALTER TABLE records ADD COLUMN length_float FLOAT;
+            UPDATE records SET length_float = CAST(length AS FLOAT);
+            ALTER TABLE records DROP COLUMN length;
+            ALTER TABLE records RENAME COLUMN length_float TO length;
+            ",
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

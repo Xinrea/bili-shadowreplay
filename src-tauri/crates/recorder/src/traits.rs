@@ -34,8 +34,6 @@ pub trait RecorderBasicTrait<T> {
     fn danmu_storage(&self) -> Arc<RwLock<Option<DanmuStorage>>>;
     fn last_update(&self) -> &atomic::AtomicI64;
     fn last_sequence(&self) -> &atomic::AtomicU64;
-    fn total_duration(&self) -> &atomic::AtomicU64;
-    fn total_size(&self) -> &atomic::AtomicU64;
     fn extra(&self) -> &T;
 }
 

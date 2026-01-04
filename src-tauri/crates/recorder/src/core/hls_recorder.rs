@@ -7,7 +7,7 @@ use m3u8_rs::{MediaPlaylist, Playlist};
 use reqwest::header::HeaderMap;
 use std::time::Duration;
 use tokio::fs::{File, OpenOptions};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::sync::{broadcast, Mutex, RwLock};
 
 use crate::core::playlist::HlsPlaylist;
@@ -38,10 +38,8 @@ pub struct HlsRecorder {
     enabled: Arc<AtomicBool>,
 
     sequence: Arc<AtomicU64>,
+    sequence_file: Arc<RwLock<File>>,
     updated_at: Arc<AtomicI64>,
-
-    cached_duration_secs: Arc<AtomicU64>,
-    cached_size_bytes: Arc<AtomicU64>,
 
     pre_metadata: Arc<RwLock<Option<VideoMetadata>>>,
 }
@@ -55,10 +53,10 @@ impl HlsRecorder {
         event_channel: broadcast::Sender<RecorderEvent>,
         work_dir: PathBuf,
         enabled: Arc<AtomicBool>,
-    ) -> Self {
+    ) -> Result<Self, RecorderError> {
         // try to create work_dir
         if !work_dir.exists() {
-            std::fs::create_dir_all(&work_dir).unwrap();
+            std::fs::create_dir_all(&work_dir)?;
         }
         let playlist_path = work_dir.join(PLAYLIST_FILE_NAME);
 
@@ -70,7 +68,49 @@ impl HlsRecorder {
         if let Some(cookies) = cookies {
             headers.insert("cookie", cookies.parse().unwrap());
         }
-        Self {
+
+        let sequence_path = work_dir.join(".sequence");
+        let mut sequence_file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&sequence_path)
+            .await
+            .map_err(RecorderError::IoError)?;
+
+        let mut sequence_buf = String::new();
+        sequence_file
+            .read_to_string(&mut sequence_buf)
+            .await
+            .map_err(RecorderError::IoError)?;
+        let trimmed = sequence_buf.trim();
+        let sequence = trimmed
+            .parse::<u64>()
+            .map_err(|_| RecorderError::InvalidValue)?;
+
+        // If the file is newly created / empty, normalize it to "0"
+        if trimmed.is_empty() {
+            sequence_file
+                .set_len(0)
+                .await
+                .map_err(RecorderError::IoError)?;
+            sequence_file
+                .seek(SeekFrom::Start(0))
+                .await
+                .map_err(RecorderError::IoError)?;
+            sequence_file
+                .write_all(b"0")
+                .await
+                .map_err(RecorderError::IoError)?;
+            let _ = sequence_file.flush().await;
+            sequence_file
+                .seek(SeekFrom::Start(0))
+                .await
+                .map_err(RecorderError::IoError)?;
+        }
+
+        Ok(Self {
             room_id,
             stream,
             client,
@@ -79,12 +119,11 @@ impl HlsRecorder {
             playlist: Arc::new(Mutex::new(HlsPlaylist::new(playlist_path).await)),
             headers,
             enabled,
-            sequence: Arc::new(AtomicU64::new(0)),
+            sequence: Arc::new(AtomicU64::new(sequence)),
             updated_at: Arc::new(AtomicI64::new(chrono::Utc::now().timestamp_millis())),
-            cached_duration_secs: Arc::new(AtomicU64::new(0)),
-            cached_size_bytes: Arc::new(AtomicU64::new(0)),
             pre_metadata: Arc::new(RwLock::new(None)),
-        }
+            sequence_file: Arc::new(RwLock::new(sequence_file)),
+        })
     }
 
     /// Start the recorder blockingly
@@ -109,6 +148,10 @@ impl HlsRecorder {
                     }
                     RecorderError::M3u8ParseFailed { .. } => {
                         log::error!("[{}]M3u8 parse failed: {}", self.room_id, e);
+                        return Err(e);
+                    }
+                    RecorderError::StreamExpired { .. } => {
+                        log::error!("[{}]Stream expired", self.room_id);
                         return Err(e);
                     }
                     _ => {
@@ -182,17 +225,19 @@ impl HlsRecorder {
         let last_sequence = self.sequence.load(Ordering::Relaxed);
         let last_metadata = self.pre_metadata.read().await.clone();
         let mut updated = false;
+        let mut duration_delta = 0.0;
+        let mut size_delta = 0;
         for (i, segment) in media_playlist.segments.iter().enumerate() {
             let segment_sequence = playlist_sequence + i as u64;
-            if segment_sequence <= last_sequence {
-                continue;
-            }
-
             let segment_full_url = self.stream.ts_url(&segment.uri);
             // to get filename, we need to remove the query parameters
             // for example: 1.ts?expires=1760808243
             // we need to remove the query parameters: 1.ts
             let filename = segment.uri.split('?').next().unwrap_or(&segment.uri);
+            if segment_sequence <= last_sequence {
+                continue;
+            }
+
             let segment_path = self.work_dir.join(filename);
             let Ok(size) = download(
                 &self.client,
@@ -249,10 +294,9 @@ impl HlsRecorder {
                 let _ = tokio::fs::remove_file(&segment_path).await;
                 playlist.append_last_segment(segment.clone()).await?;
 
-                self.cached_duration_secs
-                    .fetch_add(segment_metadata.duration as u64, Ordering::Relaxed);
-                self.cached_size_bytes.fetch_add(size, Ordering::Relaxed);
-                self.sequence.store(segment_sequence, Ordering::Relaxed);
+                duration_delta += segment_metadata.duration;
+                size_delta += size;
+                self.update_sequence(segment_sequence).await;
                 self.updated_at
                     .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
                 updated = true;
@@ -277,10 +321,9 @@ impl HlsRecorder {
 
             self.playlist.lock().await.add_segment(new_segment).await?;
 
-            self.cached_duration_secs
-                .fetch_add(segment_metadata.duration as u64, Ordering::Relaxed);
-            self.cached_size_bytes.fetch_add(size, Ordering::Relaxed);
-            self.sequence.store(segment_sequence, Ordering::Relaxed);
+            duration_delta += segment_metadata.duration;
+            size_delta += size;
+            self.update_sequence(segment_sequence).await;
             self.updated_at
                 .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
             updated = true;
@@ -297,12 +340,30 @@ impl HlsRecorder {
         if updated {
             let _ = self.event_channel.send(RecorderEvent::RecordUpdate {
                 live_id: self.stream.id.clone(),
-                duration_secs: self.cached_duration_secs.load(Ordering::Relaxed),
-                cached_size_bytes: self.cached_size_bytes.load(Ordering::Relaxed),
+                duration_secs: duration_delta,
+                cached_size_bytes: size_delta,
+            });
+        }
+
+        if self.stream.is_expired() {
+            return Err(RecorderError::StreamExpired {
+                expire: self.stream.expire,
             });
         }
 
         Ok(())
+    }
+
+    async fn update_sequence(&self, sequence: u64) {
+        self.sequence.store(sequence, Ordering::Relaxed);
+        // write to file
+        let mut file = self.sequence_file.write().await;
+        file.set_len(0).await.unwrap();
+        file.seek(SeekFrom::Start(0)).await.unwrap();
+        file.write_all(sequence.to_string().as_bytes())
+            .await
+            .unwrap();
+        let _ = file.flush().await;
     }
 }
 
@@ -357,7 +418,7 @@ pub async fn construct_stream_from_variant(
     codec: Codec,
 ) -> Result<HlsStream, RecorderError> {
     // construct the real stream from variant
-    // example: https://cn-jsnt-ct-01-07.bilivideo.com/live-bvc/930889/live_2124647716_1414766_bluray/index.m3u8?expires=1760808243
+    // example: https://cn-jsnt-ct-01-07.bilivideo.com/live-bvc/930889/live_2124647716_1414766_bluray/index.m3u8?expires=1760808243&other=kldskf
     let (body, extra) = variant_url.split_once('?').unwrap_or((variant_url, ""));
     // body example: https://cn-jsnt-ct-01-07.bilivideo.com/live-bvc/930889/live_2124647716_1414766_bluray/index.m3u8
 
@@ -396,6 +457,14 @@ pub async fn construct_stream_from_variant(
         base
     };
 
+    // try to match expire from extra with regex
+    let expire_regex = regex::Regex::new(r"expires=(\d+)").unwrap();
+    let expire = if let Some(captures) = expire_regex.captures(extra) {
+        captures[1].parse::<i64>().unwrap_or(0)
+    } else {
+        0
+    };
+
     let real_stream = HlsStream::new(
         id.to_string(),
         host,
@@ -403,6 +472,7 @@ pub async fn construct_stream_from_variant(
         extra.to_string(),
         format,
         codec,
+        expire,
     );
 
     Ok(real_stream)

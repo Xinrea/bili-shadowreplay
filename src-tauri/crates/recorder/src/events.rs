@@ -19,7 +19,7 @@ pub enum RecorderEvent {
     },
     RecordUpdate {
         live_id: String,
-        duration_secs: u64,
+        duration_secs: f64,
         cached_size_bytes: u64,
     },
     ProgressUpdate {

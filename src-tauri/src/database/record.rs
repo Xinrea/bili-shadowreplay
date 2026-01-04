@@ -11,7 +11,7 @@ pub struct RecordRow {
     pub live_id: String,
     pub room_id: String,
     pub title: String,
-    pub length: i64,
+    pub length: f64,
     pub size: i64,
     pub created_at: String,
     pub cover: Option<String>,
@@ -82,7 +82,7 @@ impl Database {
             live_id: live_id.to_string(),
             room_id: room_id.to_string(),
             title: title.into(),
-            length: 0,
+            length: 0.0,
             size: 0,
             created_at: Utc::now().to_rfc3339().to_string(),
             cover,
@@ -110,15 +110,15 @@ impl Database {
         Ok(to_delete)
     }
 
-    pub async fn update_record(
+    pub async fn update_record_delta(
         &self,
         live_id: &str,
-        length: i64,
+        length: f64,
         size: u64,
     ) -> Result<(), DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         let size = i64::try_from(size).map_err(|_| DatabaseError::NumberExceedI64Range)?;
-        sqlx::query("UPDATE records SET length = $1, size = $2 WHERE live_id = $3")
+        sqlx::query("UPDATE records SET length = length + $1, size = size + $2 WHERE live_id = $3")
             .bind(length)
             .bind(size)
             .bind(live_id)
@@ -155,9 +155,9 @@ impl Database {
         Ok(())
     }
 
-    pub async fn get_total_length(&self) -> Result<i64, DatabaseError> {
+    pub async fn get_total_length(&self) -> Result<f64, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
-        let result: (i64,) = sqlx::query_as("SELECT SUM(length) FROM records;")
+        let result: (f64,) = sqlx::query_as("SELECT SUM(length) FROM records;")
             .fetch_one(&lock)
             .await?;
         Ok(result.0)

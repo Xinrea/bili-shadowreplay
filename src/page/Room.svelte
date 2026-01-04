@@ -231,6 +231,7 @@
   }
 
   function format_duration(duration: number) {
+    duration = Math.round(duration);
     const hours = Math.floor(duration / 3600)
       .toString()
       .padStart(2, "0");
@@ -861,7 +862,7 @@
                 </tr>
               </thead>
               <tbody class="divide-y divide-gray-200 dark:divide-gray-700/50">
-                {#each archives as archive (archive.live_id)}
+                {#each archives as archive (archive.parent_id + ":" + archive.live_id)}
                   <tr
                     class="group hover:bg-[#f5f5f7] dark:hover:bg-[#3a3a3c] transition-colors"
                   >

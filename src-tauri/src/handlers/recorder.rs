@@ -372,7 +372,7 @@ pub async fn send_danmaku(
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn get_total_length(state: state_type!()) -> Result<i64, String> {
+pub async fn get_total_length(state: state_type!()) -> Result<f64, String> {
     match state.db.get_total_length().await {
         Ok(total_length) => Ok(total_length),
         Err(e) => Err(format!("Failed to get total length: {e}")),

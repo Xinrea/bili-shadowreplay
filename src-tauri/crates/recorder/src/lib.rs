@@ -94,10 +94,6 @@ where
     last_update: Arc<atomic::AtomicI64>,
     /// The last sequence of the current recording
     last_sequence: Arc<atomic::AtomicU64>,
-    /// The total duration of the current recording in milliseconds
-    total_duration: Arc<atomic::AtomicU64>,
-    /// The total size of the current recording in bytes
-    total_size: Arc<atomic::AtomicU64>,
 
     /// The extra information for the recorder
     extra: T,
@@ -174,14 +170,6 @@ impl<T: Send + Sync> traits::RecorderBasicTrait<T> for Recorder<T> {
 
     fn last_sequence(&self) -> &atomic::AtomicU64 {
         &self.last_sequence
-    }
-
-    fn total_duration(&self) -> &atomic::AtomicU64 {
-        &self.total_duration
-    }
-
-    fn total_size(&self) -> &atomic::AtomicU64 {
-        &self.total_size
     }
 
     fn extra(&self) -> &T {

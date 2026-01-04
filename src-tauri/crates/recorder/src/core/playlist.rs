@@ -13,6 +13,7 @@ impl HlsPlaylist {
         if file_path.exists() {
             let bytes = tokio::fs::read(&file_path).await.unwrap();
             let (_, playlist) = m3u8_rs::parse_media_playlist(&bytes).unwrap();
+
             Self {
                 playlist,
                 file_path,

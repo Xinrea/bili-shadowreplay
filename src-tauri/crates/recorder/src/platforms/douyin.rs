@@ -71,8 +71,6 @@ impl DouyinRecorder {
             danmu_task: Arc::new(Mutex::new(None)),
             record_task: Arc::new(Mutex::new(None)),
             update_interval,
-            total_duration: Arc::new(atomic::AtomicU64::new(0)),
-            total_size: Arc::new(atomic::AtomicU64::new(0)),
             extra: DouyinExtra {
                 sec_user_id: sec_user_id.to_string(),
                 live_stream: Arc::new(RwLock::new(None)),
@@ -243,8 +241,6 @@ impl DouyinRecorder {
         self.last_update
             .store(Utc::now().timestamp(), atomic::Ordering::Relaxed);
         self.last_sequence.store(0, atomic::Ordering::Relaxed);
-        self.total_duration.store(0, atomic::Ordering::Relaxed);
-        self.total_size.store(0, atomic::Ordering::Relaxed);
         *self.extra.live_stream.write().await = None;
         if let Some(danmu_task) = self.danmu_task.lock().await.take() {
             danmu_task.abort();
@@ -303,6 +299,12 @@ impl DouyinRecorder {
             self.enabled.clone(),
         )
         .await;
+        if let Err(e) = hls_recorder {
+            log::error!("[{}]Hls recorder creation error: {}", self.room_id, e);
+            return Err(e);
+        }
+
+        let hls_recorder = hls_recorder.unwrap();
         if let Err(e) = hls_recorder.start().await {
             log::error!("[{}]Error from hls recorder: {}", self.room_id, e);
             return Err(e);

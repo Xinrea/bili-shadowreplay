@@ -3,6 +3,7 @@ pub mod profile;
 pub mod response;
 use crate::account::Account;
 use crate::core::hls_recorder::HlsRecorder;
+use crate::errors::RecorderError;
 use crate::events::RecorderEvent;
 use crate::platforms::bilibili::api::{Protocol, Qn};
 use crate::platforms::PlatformType;
@@ -18,6 +19,7 @@ use danmu_stream::danmu_stream::DanmuStream;
 use danmu_stream::provider::ProviderType;
 use danmu_stream::DanmuMessageType;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{atomic, Arc};
 use std::time::Duration;
 use tokio::sync::{broadcast, Mutex, RwLock};
@@ -32,6 +34,8 @@ use async_trait::async_trait;
 pub struct BiliExtra {
     cover: Arc<RwLock<Option<String>>>,
     live_stream: Arc<RwLock<Option<BiliStream>>>,
+    pre_live_id: Arc<RwLock<Option<String>>>,
+    should_continue: Arc<AtomicBool>,
 }
 
 pub type BiliRecorder = Recorder<BiliExtra>;
@@ -49,6 +53,8 @@ impl BiliRecorder {
         let extra = BiliExtra {
             cover: Arc::new(RwLock::new(None)),
             live_stream: Arc::new(RwLock::new(None)),
+            pre_live_id: Arc::new(RwLock::new(None)),
+            should_continue: Arc::new(AtomicBool::new(false)),
         };
 
         let recorder = Self {
@@ -71,8 +77,6 @@ impl BiliRecorder {
             last_sequence: Arc::new(atomic::AtomicU64::new(0)),
             danmu_task: Arc::new(Mutex::new(None)),
             record_task: Arc::new(Mutex::new(None)),
-            total_duration: Arc::new(atomic::AtomicU64::new(0)),
-            total_size: Arc::new(atomic::AtomicU64::new(0)),
             extra,
         };
 
@@ -96,8 +100,6 @@ impl BiliRecorder {
         *self.danmu_storage.write().await = None;
         *self.platform_live_id.write().await = String::new();
         *self.live_id.write().await = String::new();
-        self.total_duration.store(0, atomic::Ordering::Relaxed);
-        self.total_size.store(0, atomic::Ordering::Relaxed);
     }
 
     async fn check_status(&self) -> bool {
@@ -325,14 +327,19 @@ impl BiliRecorder {
 
         self.is_recording.store(true, atomic::Ordering::Relaxed);
 
+        let first_url_info = current_stream.url_info.first().unwrap();
+        let expire = first_url_info.get_expire();
+
         let stream = Arc::new(HlsStream::new(
             live_id.to_string(),
-            current_stream.url_info.first().unwrap().host.clone(),
+            first_url_info.host.clone(),
             current_stream.base_url.clone(),
-            current_stream.url_info.first().unwrap().extra.clone(),
+            first_url_info.extra.clone(),
             current_stream.format,
             current_stream.codec,
+            expire,
         ));
+
         let hls_recorder = HlsRecorder::new(
             self.room_id.to_string(),
             stream,
@@ -344,7 +351,7 @@ impl BiliRecorder {
         )
         .await;
         if let Err(e) = hls_recorder.start().await {
-            log::error!("[{}]Failed to start hls recorder: {}", self.room_id, e);
+            log::error!("[{}]Hls recorder quit with error: {}", self.room_id, e);
             return Err(e);
         }
 
@@ -368,10 +375,47 @@ impl crate::traits::RecorderTrait<BiliExtra> for BiliRecorder {
                 if self_clone.check_status().await {
                     // Live status is ok, start recording.
                     if self_clone.should_record().await {
-                        let live_id = Utc::now().timestamp_millis().to_string();
+                        let live_id;
+                        // if should continue with previous recording, using the same live id
+                        if self_clone.extra.should_continue.load(Ordering::Relaxed)
+                            && self_clone.extra.pre_live_id.read().await.is_some()
+                        {
+                            live_id = self_clone.extra.pre_live_id.read().await.clone().unwrap();
+                            self_clone
+                                .extra
+                                .should_continue
+                                .store(false, Ordering::Relaxed);
+                        } else {
+                            live_id = Utc::now().timestamp_millis().to_string();
+                            self_clone
+                                .extra
+                                .pre_live_id
+                                .write()
+                                .await
+                                .replace(live_id.clone());
+                        }
 
                         if let Err(e) = self_clone.update_entries(&live_id).await {
-                            log::error!("[{}]Update entries error: {}", self_clone.room_id, e);
+                            match e {
+                                RecorderError::StreamExpired { expire } => {
+                                    self_clone
+                                        .extra
+                                        .should_continue
+                                        .store(true, Ordering::Relaxed);
+                                    log::warn!(
+                                        "[{}]Stream expired at {}",
+                                        self_clone.room_id,
+                                        expire
+                                    );
+                                }
+                                _ => {
+                                    log::error!(
+                                        "[{}]Update entries error: {}",
+                                        self_clone.room_id,
+                                        e
+                                    );
+                                }
+                            }
                         }
 
                         let _ = self_clone.event_channel.send(RecorderEvent::RecordEnd {
@@ -384,6 +428,10 @@ impl crate::traits::RecorderTrait<BiliExtra> for BiliRecorder {
                         .store(false, atomic::Ordering::Relaxed);
 
                     self_clone.reset().await;
+                    // if should continue with previous recording, no need to sleep
+                    if self_clone.extra.should_continue.load(Ordering::Relaxed) {
+                        continue;
+                    }
                     // go check status again after random 2-5 secs
                     let secs = rand::random::<u64>() % 4 + 2;
                     tokio::time::sleep(Duration::from_secs(secs)).await;

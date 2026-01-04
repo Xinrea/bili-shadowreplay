@@ -643,7 +643,7 @@ async fn handler_send_danmaku(
 
 async fn handler_get_total_length(
     state: axum::extract::State<State>,
-) -> Result<Json<ApiResponse<i64>>, ApiError> {
+) -> Result<Json<ApiResponse<f64>>, ApiError> {
     let total_length = get_total_length(state.0).await?;
     Ok(Json(ApiResponse::success(total_length)))
 }

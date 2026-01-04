@@ -293,7 +293,7 @@ impl RecorderManager {
                 } => {
                     let _ = self
                         .db
-                        .update_record(&live_id, duration_secs as i64, cached_size_bytes)
+                        .update_record_delta(&live_id, duration_secs, cached_size_bytes)
                         .await;
                 }
                 RecorderEvent::RecordEnd { recorder } => {

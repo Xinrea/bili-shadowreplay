@@ -44,7 +44,10 @@ pub struct HlsStream {
     extra: String,
     format: Format,
     codec: Codec,
+    expire: i64,
 }
+
+const SAFE_EXPIRE: i64 = 55 * 60;
 
 impl HlsStream {
     pub fn new(
@@ -54,6 +57,7 @@ impl HlsStream {
         extra: String,
         format: Format,
         codec: Codec,
+        expire: i64,
     ) -> Self {
         Self {
             id,
@@ -62,6 +66,7 @@ impl HlsStream {
             extra,
             format,
             codec,
+            expire,
         }
     }
 
@@ -106,5 +111,9 @@ impl HlsStream {
             let base_without_query = base_url.trim_end_matches('?');
             format!("{}{}?{}", self.host, base_without_query, self.extra)
         }
+    }
+
+    pub fn is_expired(&self) -> bool {
+        self.expire > 0 && (self.expire < chrono::Utc::now().timestamp() + SAFE_EXPIRE)
     }
 }

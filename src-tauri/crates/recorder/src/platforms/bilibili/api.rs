@@ -85,6 +85,18 @@ pub struct UrlInfo {
     pub extra: String,
 }
 
+impl UrlInfo {
+    pub fn get_expire(&self) -> i64 {
+        // try to match expire from extra with regex
+        let expire_regex = regex::Regex::new(r"expires=(\d+)").unwrap();
+        if let Some(captures) = expire_regex.captures(&self.extra) {
+            captures[1].parse::<i64>().unwrap_or(0)
+        } else {
+            0
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub enum Protocol {

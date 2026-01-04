@@ -22,8 +22,8 @@ pub enum RecorderError {
     NoStreamAvailable,
     #[error("Stream is freezed: {stream:#?}")]
     FreezedStream { stream: Stream },
-    #[error("Stream is nearly expired: {stream:#?}")]
-    StreamExpired { stream: Stream },
+    #[error("Stream is nearly expired: {expire}")]
+    StreamExpired { expire: i64 },
     #[error("No room info provided")]
     NoRoomInfo,
     #[error("Invalid stream: {stream:#?}")]

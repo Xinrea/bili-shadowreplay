@@ -7,7 +7,7 @@ use m3u8_rs::{MediaPlaylist, Playlist};
 use reqwest::header::HeaderMap;
 use std::time::Duration;
 use tokio::fs::{File, OpenOptions};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::sync::{broadcast, Mutex, RwLock};
 
 use crate::core::playlist::HlsPlaylist;
@@ -38,6 +38,7 @@ pub struct HlsRecorder {
     enabled: Arc<AtomicBool>,
 
     sequence: Arc<AtomicU64>,
+    sequence_file: Arc<RwLock<File>>,
     updated_at: Arc<AtomicI64>,
 
     pre_metadata: Arc<RwLock<Option<VideoMetadata>>>,
@@ -67,6 +68,34 @@ impl HlsRecorder {
         if let Some(cookies) = cookies {
             headers.insert("cookie", cookies.parse().unwrap());
         }
+
+        let sequence_path = work_dir.join(".sequence");
+        let mut sequence_file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&sequence_path)
+            .await
+            .unwrap();
+
+        let mut sequence_buf = String::new();
+        sequence_file
+            .read_to_string(&mut sequence_buf)
+            .await
+            .unwrap();
+        let trimmed = sequence_buf.trim();
+        let sequence = trimmed.parse::<u64>().unwrap_or(0);
+
+        // If the file is newly created / empty, normalize it to "0"
+        if trimmed.is_empty() {
+            sequence_file.set_len(0).await.unwrap();
+            sequence_file.seek(SeekFrom::Start(0)).await.unwrap();
+            sequence_file.write_all(b"0").await.unwrap();
+            let _ = sequence_file.flush().await;
+            sequence_file.seek(SeekFrom::Start(0)).await.unwrap();
+        }
+
         Self {
             room_id,
             stream,
@@ -76,9 +105,10 @@ impl HlsRecorder {
             playlist: Arc::new(Mutex::new(HlsPlaylist::new(playlist_path).await)),
             headers,
             enabled,
-            sequence: Arc::new(AtomicU64::new(0)),
+            sequence: Arc::new(AtomicU64::new(sequence)),
             updated_at: Arc::new(AtomicI64::new(chrono::Utc::now().timestamp_millis())),
             pre_metadata: Arc::new(RwLock::new(None)),
+            sequence_file: Arc::new(RwLock::new(sequence_file)),
         }
     }
 
@@ -190,9 +220,7 @@ impl HlsRecorder {
             // for example: 1.ts?expires=1760808243
             // we need to remove the query parameters: 1.ts
             let filename = segment.uri.split('?').next().unwrap_or(&segment.uri);
-            if segment_sequence <= last_sequence
-                || self.playlist.lock().await.contains_segment(filename).await
-            {
+            if segment_sequence <= last_sequence {
                 continue;
             }
 
@@ -254,7 +282,7 @@ impl HlsRecorder {
 
                 duration_delta += segment_metadata.duration;
                 size_delta += size;
-                self.sequence.store(segment_sequence, Ordering::Relaxed);
+                self.update_sequence(segment_sequence).await;
                 self.updated_at
                     .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
                 updated = true;
@@ -281,7 +309,7 @@ impl HlsRecorder {
 
             duration_delta += segment_metadata.duration;
             size_delta += size;
-            self.sequence.store(segment_sequence, Ordering::Relaxed);
+            self.update_sequence(segment_sequence).await;
             self.updated_at
                 .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
             updated = true;
@@ -310,6 +338,18 @@ impl HlsRecorder {
         }
 
         Ok(())
+    }
+
+    async fn update_sequence(&self, sequence: u64) {
+        self.sequence.store(sequence, Ordering::Relaxed);
+        // write to file
+        let mut file = self.sequence_file.write().await;
+        file.set_len(0).await.unwrap();
+        file.seek(SeekFrom::Start(0)).await.unwrap();
+        file.write_all(sequence.to_string().as_bytes())
+            .await
+            .unwrap();
+        let _ = file.flush().await;
     }
 }
 

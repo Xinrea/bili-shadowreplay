@@ -47,7 +47,7 @@ pub struct HlsStream {
     expire: i64,
 }
 
-const SAFE_EXPIRE: i64 = 55 * 60;
+const SAFE_EXPIRE: i64 = 3 * 60;
 
 impl HlsStream {
     pub fn new(

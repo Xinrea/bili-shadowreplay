@@ -1,12 +1,11 @@
 use m3u8_rs::{MediaPlaylist, MediaPlaylistType, MediaSegment};
-use std::{collections::HashSet, path::PathBuf};
+use std::path::PathBuf;
 
 use crate::errors::RecorderError;
 
 pub struct HlsPlaylist {
     pub playlist: MediaPlaylist,
     pub file_path: PathBuf,
-    segment_set: HashSet<String>,
 }
 
 impl HlsPlaylist {
@@ -14,28 +13,17 @@ impl HlsPlaylist {
         if file_path.exists() {
             let bytes = tokio::fs::read(&file_path).await.unwrap();
             let (_, playlist) = m3u8_rs::parse_media_playlist(&bytes).unwrap();
-            // create set with all segment path
-            let segment_set = playlist
-                .segments
-                .iter()
-                .map(|segment| segment.uri.clone())
-                .collect();
+
             Self {
                 playlist,
                 file_path,
-                segment_set,
             }
         } else {
             Self {
                 playlist: MediaPlaylist::default(),
                 file_path,
-                segment_set: HashSet::new(),
             }
         }
-    }
-
-    pub async fn contains_segment(&self, segment_uri: &str) -> bool {
-        self.segment_set.contains(segment_uri)
     }
 
     pub async fn last_segment(&self) -> Option<&MediaSegment> {
@@ -64,7 +52,6 @@ impl HlsPlaylist {
     }
 
     pub async fn add_segment(&mut self, segment: MediaSegment) -> Result<(), RecorderError> {
-        self.segment_set.insert(segment.uri.clone());
         self.playlist.segments.push(segment);
         self.flush().await?;
         Ok(())

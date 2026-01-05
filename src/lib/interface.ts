@@ -258,6 +258,7 @@ export function parseSubtitleStyle(style: SubtitleStyle): string {
 export interface Range {
   start: number;
   end: number;
+  activated?: boolean;
 }
 
 export interface ClipRangeParams {

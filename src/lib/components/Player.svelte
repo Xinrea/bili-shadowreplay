@@ -112,6 +112,7 @@
     const rangesToSave = ranges.map((r) => ({
       start: r.start + focus_start,
       end: r.end + focus_start,
+      activated: r.activated,
     }));
     localStorage.setItem(`${live_id}_ranges`, JSON.stringify(rangesToSave));
     localStorage.setItem(
@@ -135,12 +136,14 @@
         const savedRanges = JSON.parse(saved) as Array<{
           start: number;
           end: number;
+          activated?: boolean;
         }>;
         // 保存的区间是绝对时间，需要转换为相对时间
         // 但保留所有区间，不进行过滤，因为区间可能跨越多个 focus 范围
         ranges = savedRanges.map((r) => ({
           start: r.start - focus_start,
           end: r.end - focus_start,
+          activated: r.activated !== false, // 默认为 true
         }));
 
         // 不在这里过滤区间，因为区间可能不在当前 focus 范围内
@@ -187,7 +190,7 @@
         const s = parseFloat(oldStart) - focus_start;
         const e = parseFloat(oldEnd) - focus_start;
         if (e > s) {
-          ranges = [{ start: s, end: e }];
+          ranges = [{ start: s, end: e, activated: true }];
           currentRangeIndex = 0;
           saveRanges();
         }
@@ -893,6 +896,7 @@ ${mediaPlaylistUrl}`;
               const newRange: Range = {
                 start: currentTime,
                 end: get_total(),
+                activated: true, // 新建区间默认为激活
               };
               ranges.push(newRange);
               currentRangeIndex = ranges.length - 1;
@@ -923,6 +927,7 @@ ${mediaPlaylistUrl}`;
               const newRange: Range = {
                 start: 0,
                 end: currentTime,
+                activated: true, // 新建区间默认为激活
               };
               ranges.push(newRange);
               currentRangeIndex = ranges.length - 1;
@@ -956,6 +961,7 @@ ${mediaPlaylistUrl}`;
             const newRange: Range = {
               start: currentTime,
               end: get_total(),
+              activated: true, // 新建区间默认为激活
             };
             ranges.push(newRange);
             currentRangeIndex = ranges.length - 1;
@@ -986,37 +992,18 @@ ${mediaPlaylistUrl}`;
           }
           break;
         case "Tab":
-          e.preventDefault();
-          {
-            if (ranges.length > 0) {
-              if (e.shiftKey) {
-                // Shift+Tab: 切换到上一个区间
-                currentRangeIndex =
-                  currentRangeIndex <= 0
-                    ? ranges.length - 1
-                    : currentRangeIndex - 1;
-              } else {
-                // Tab: 切换到下一个区间
-                currentRangeIndex = (currentRangeIndex + 1) % ranges.length;
-              }
-              saveRanges();
-              const current = ranges[currentRangeIndex];
-              console.log("Switched to range:", currentRangeIndex, current);
-            }
-          }
-          break;
         case "t":
           e.preventDefault();
           {
             if (ranges.length > 0) {
               if (e.shiftKey) {
-                // Shift+T: 切换到上一个区间
+                // Shift+Tab or Shift+t: 切换到上一个区间
                 currentRangeIndex =
                   currentRangeIndex <= 0
                     ? ranges.length - 1
                     : currentRangeIndex - 1;
               } else {
-                // t: 切换到下一个区间
+                // Tab or t: 切换到下一个区间
                 currentRangeIndex = (currentRangeIndex + 1) % ranges.length;
               }
               saveRanges();
@@ -1106,12 +1093,45 @@ ${mediaPlaylistUrl}`;
             }
           }
           break;
+        case "a": // Add 'a' key for toggling activated status
+          e.preventDefault();
+          {
+            const current = getCurrentRange();
+            if (current) {
+              current.activated = !current.activated;
+              ranges = [...ranges]; // Trigger Svelte reactivity for array update
+              saveRanges();
+              console.log(
+                `Range ${currentRangeIndex} activated status toggled to: ${current.activated}`
+              );
+            } else {
+              console.log("No current range selected to toggle activation.");
+            }
+          }
+          break;
       }
     });
 
     const seekbarContainer = selfSeekbar.querySelector(
       ".shaka-seek-bar-container.self-defined"
     ) as HTMLElement;
+
+    // Add click listener to seekbar to toggle range activation
+    seekbarContainer.addEventListener("click", (e) => {
+      const rect = seekbarContainer.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const clickRatio = clickX / rect.width;
+      const clickTime = clickRatio * get_total();
+
+      for (const range of ranges) {
+        if (clickTime >= range.start && clickTime <= range.end) {
+          range.activated = !range.activated;
+          // save and redraw will be handled by the animation frame
+          saveRanges();
+          break; // only toggle the first one found
+        }
+      }
+    });
 
     const statisticGraph = document.createElement(
       "canvas"
@@ -1254,11 +1274,6 @@ ${mediaPlaylistUrl}`;
           if (visibleEnd > visibleStart) {
             const rangeStart = visibleStart / total;
             const rangeEnd = visibleEnd / total;
-            // 判断是否是当前区间：比较区间对象引用或值
-            const isCurrent =
-              currentRange &&
-              currentRange.start === range.start &&
-              currentRange.end === range.end;
 
             // 添加区间前的背景
             if (rangeStart > lastPos) {
@@ -1268,9 +1283,11 @@ ${mediaPlaylistUrl}`;
               );
             }
 
-            // 添加区间（当前区间用更亮的绿色，其他区间用普通绿色）
-            // 注意：当前区间会被高亮覆盖层覆盖，所以这里用普通绿色即可
-            const rangeColor = "rgb(0, 200, 0)";
+            // 'activated' 默认为 true
+            const rangeColor =
+              range.activated !== false
+                ? "rgb(0, 200, 0)"
+                : "rgb(80, 80, 80)"; // Active: green, Inactive: gray
             gradientStops.push(`${rangeColor} ${rangeStart * 100}%`);
             gradientStops.push(`${rangeColor} ${rangeEnd * 100}%`);
 
@@ -1284,9 +1301,10 @@ ${mediaPlaylistUrl}`;
           gradientStops.push(`rgba(255, 255, 255, 0.4) 100%`);
         }
 
-        seekbarContainer.style.background = `linear-gradient(to right, ${gradientStops.join(", ")})`;
+        seekbarContainer.style.background = `linear-gradient(to right, ${gradientStops.join(
+          ", "
+        )})`;
       }
-
       // render markers in shaka-ad-markers
       const adMarkers = document.querySelector(
         ".shaka-ad-markers"
@@ -1395,6 +1413,7 @@ ${mediaPlaylistUrl}`;
       <p><kbd>Tab</kbd>/<kbd>t</kbd>切换到下一个区间</p>
       <p><kbd>Shift+Tab</kbd>/<kbd>Shift+t</kbd>切换到上一个区间</p>
       <p><kbd>g</kbd>预览当前区间片段</p>
+      <p><kbd>a</kbd>切换当前区间激活状态</p>
       <p><kbd>q</kbd>跳转到当前区间开始</p>
       <p><kbd>e</kbd>跳转到当前区间结束</p>
       <p><kbd>←</kbd>前进</p>

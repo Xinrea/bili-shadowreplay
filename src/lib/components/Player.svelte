@@ -993,6 +993,7 @@ ${mediaPlaylistUrl}`;
           break;
         case "Tab":
         case "t":
+        case "T":
           e.preventDefault();
           {
             if (ranges.length > 0) {

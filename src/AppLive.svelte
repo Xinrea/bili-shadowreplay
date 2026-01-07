@@ -184,6 +184,16 @@
   $: activeRanges = ranges.filter((r) => r.activated !== false);
   let global_offset = 0;
 
+  function handleSelectAll(e: Event) {
+    const checked = (e.currentTarget as HTMLInputElement).checked;
+    ranges = ranges.map((r) => ({ ...r, activated: checked }));
+  }
+
+  function handleRangeChange(e: Event, range: Range) {
+    range.activated = (e.currentTarget as HTMLInputElement).checked;
+    ranges = ranges; // trigger update
+  }
+
   function generateCover() {
     const video = document.getElementById("video") as HTMLVideoElement;
     var w = video.videoWidth;
@@ -197,6 +207,7 @@
   }
 
   let show_clip_confirm = false;
+  let show_selection_list = false;
   let text_style = {
     position: { x: 8, y: 8 },
     fontSize: 24,
@@ -471,6 +482,15 @@
               <div class="flex items-center justify-between">
                 <h3 class="text-sm font-medium text-gray-300">切片列表</h3>
                 <div class="flex space-x-2">
+                  <button
+                    on:click={() => (show_selection_list = true)}
+                    class="px-4 py-1.5 bg-[#2c2c2e] text-white text-sm rounded-lg
+                           hover:bg-[#3c3c3e]/90 transition-all duration-200
+                           disabled:opacity-50 disabled:cursor-not-allowed
+                           flex items-center space-x-2"
+                  >
+                    选区列表
+                  </button>
                   <button
                     on:click={() => (show_clip_confirm = true)}
                     disabled={current_clip_event_id != null}
@@ -781,6 +801,105 @@
           class="px-3.5 py-2 text-[13px] rounded-lg bg-[#0A84FF] text-white shadow-[inset_0_1px_0_rgba(255,255,255,.15)] hover:bg-[#0A84FF]/90 transition-colors"
         >
           确认生成
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Selection List Dialog -->
+{#if show_selection_list}
+  <div class="fixed inset-0 z-[100] flex items-center justify-center">
+    <div
+      class="absolute inset-0 bg-black/60 backdrop-blur-md"
+      role="button"
+      tabindex="0"
+      aria-label="关闭对话框"
+      on:click={() => (show_selection_list = false)}
+      on:keydown={(e) => {
+        if (e.key === "Escape" || e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          show_selection_list = false;
+        }
+      }}
+    />
+
+    <div
+      role="dialog"
+      aria-modal="true"
+      class="relative mx-4 w-full max-w-md rounded-2xl bg-[#1c1c1e] border border-white/10 shadow-2xl ring-1 ring-black/5"
+    >
+      <div class="p-5">
+        <div class="flex items-center justify-between mb-4">
+            <h3 class="text-[17px] font-semibold text-white">选区管理</h3>
+            <div class="flex items-center gap-3">
+                <div class="text-[13px] text-white/60">
+                    共 {ranges.length} 个选区，已激活 {activeRanges.length} 个
+                </div>
+                <label class="flex items-center cursor-pointer select-none">
+                    <input
+                        type="checkbox"
+                        checked={ranges.length > 0 && ranges.every(r => r.activated !== false)}
+                        on:change={handleSelectAll}
+                        class="h-4 w-4 rounded border-white/30 bg-[#1c1c1e] text-[#0A84FF] accent-[#0A84FF] focus:outline-none focus:ring-2 focus:ring-[#0A84FF]/40 cursor-pointer"
+                    />
+                </label>
+            </div>
+        </div>
+
+        <div class="space-y-3">
+          <div
+            class="max-h-[60vh] overflow-y-auto space-y-2 custom-scrollbar-light pr-1"
+          >
+            {#each ranges as range, index}
+              <div
+                class="flex items-center justify-between px-3 py-2 bg-[#2c2c2e] rounded-lg border border-white/5 hover:border-white/10 transition-colors"
+                class:opacity-50={range.activated === false}
+              >
+                <div class="flex items-center space-x-3">
+                  <div
+                    class="flex items-center justify-center w-6 h-6 rounded-full bg-[#0A84FF]/20 text-[#0A84FF] text-[11px] font-semibold"
+                  >
+                    {index + 1}
+                  </div>
+                  <div class="flex flex-col space-y-0.5">
+                    <div class="text-[12px] text-white/90">
+                      {format_time(range.start * 1000)} → {format_time(
+                        range.end * 1000
+                      )}
+                    </div>
+                    <div class="text-[11px] text-white/60">
+                      时长: {format_duration_seconds(range.end - range.start)}
+                    </div>
+                  </div>
+                </div>
+                <label class="flex items-center cursor-pointer p-1">
+                    <input
+                      type="checkbox"
+                      checked={range.activated !== false}
+                      on:change={(e) => handleRangeChange(e, range)}
+                      class="h-5 w-5 rounded border-white/30 bg-[#1c1c1e] text-[#0A84FF] accent-[#0A84FF] focus:outline-none focus:ring-2 focus:ring-[#0A84FF]/40 cursor-pointer"
+                    />
+                </label>
+              </div>
+            {/each}
+             {#if ranges.length === 0}
+                <div class="text-center py-8 text-white/40 text-[13px]">
+                    暂无选区
+                </div>
+             {/if}
+          </div>
+        </div>
+      </div>
+
+      <div
+        class="flex items-center justify-end gap-2 rounded-b-2xl border-t border-white/10 bg-[#111113] px-5 py-3"
+      >
+        <button
+          on:click={() => (show_selection_list = false)}
+          class="px-3.5 py-2 text-[13px] rounded-lg bg-[#0A84FF] text-white shadow-[inset_0_1px_0_rgba(255,255,255,.15)] hover:bg-[#0A84FF]/90 transition-colors"
+        >
+          完成
         </button>
       </div>
     </div>

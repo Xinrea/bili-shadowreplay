@@ -181,6 +181,7 @@
   let archive: RecordItem = null;
 
   let ranges: Range[] = [];
+  $: activeRanges = ranges.filter((r) => r.activated !== false);
   let global_offset = 0;
 
   function generateCover() {
@@ -692,7 +693,7 @@
           <div
             class="max-h-48 overflow-y-auto space-y-2 custom-scrollbar-light"
           >
-            {#each ranges.filter((r) => r.activated !== false) as range, index}
+            {#each activeRanges as range, index}
               <div
                 class="flex items-center justify-between px-3 py-2 bg-[#2c2c2e] rounded-lg border border-white/5 hover:border-white/10 transition-colors"
               >
@@ -720,9 +721,10 @@
             class="mt-2 pt-2 border-t border-white/10 text-[15px] font-semibold text-white"
           >
             总时长: {format_duration_seconds(
-              ranges
-                .filter((r) => r.activated !== false)
-                .reduce((acc, range) => acc + range.end - range.start, 0)
+              activeRanges.reduce(
+                (acc, range) => acc + range.end - range.start,
+                0
+              )
             )}
           </div>
         </div>

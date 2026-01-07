@@ -1126,6 +1126,8 @@ ${mediaPlaylistUrl}`;
       for (const range of ranges) {
         if (clickTime >= range.start && clickTime <= range.end) {
           range.activated = !range.activated;
+          // reassign ranges to trigger Svelte reactivity after mutation
+          ranges = [...ranges];
           // save and redraw will be handled by the animation frame
           saveRanges();
           break; // only toggle the first one found

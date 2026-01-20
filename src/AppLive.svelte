@@ -269,8 +269,10 @@
     }
   }
 
-  // 监听弹幕数据变化，重新检测峰值
-  $: if (danmu_records.length > 0) {
+  // 监听弹幕数据变化、面板状态变化、阈值变化，统一检测峰值
+  $: if (show_peak_panel && danmu_records.length > 0) {
+    // 引用 peak_threshold 以便在其变化时触发重新计算
+    peak_threshold;
     detect_danmu_peaks();
   }
 
@@ -433,8 +435,8 @@
     ranges = ranges; // trigger update
   }
 
-  function deleteSelectedRanges() {
-    // 删除已勾选的选区
+  function deleteActivatedRanges() {
+    // 删除选区
     ranges = ranges.filter((r) => r.activated === false);
   }
 
@@ -807,9 +809,6 @@
                 <button
                   on:click={() => {
                     show_peak_panel = !show_peak_panel;
-                    if (show_peak_panel) {
-                      detect_danmu_peaks();
-                    }
                   }}
                   class="px-4 py-1.5 text-white text-sm rounded-lg transition-all duration-200 flex items-center space-x-2"
                   class:bg-[#0A84FF]={show_peak_panel}
@@ -833,7 +832,6 @@
                       min="50"
                       max="100"
                       bind:value={peak_threshold}
-                      on:change={detect_danmu_peaks}
                       class="w-32 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer"
                     />
                   </div>
@@ -1244,7 +1242,7 @@
         class="flex items-center justify-end gap-2 rounded-b-2xl border-t border-white/10 bg-[#111113] px-5 py-3"
       >
         <button
-          on:click={deleteSelectedRanges}
+          on:click={deleteActivatedRanges}
           class="px-3.5 py-2 text-[13px] rounded-lg border border-red-500/20 text-red-500 hover:bg-red-500/10 transition-colors"
         >
           删除选区

@@ -47,6 +47,240 @@
   let filtered_danmu: DanmuEntry[] = [];
   let danmu_search_text = "";
 
+  // 弹幕峰值检测相关变量
+  interface DanmuPeak {
+    start: number; // 秒
+    end: number; // 秒
+    count: number;
+    added: boolean; // 是否已添加为选区
+  }
+  let danmu_peaks: DanmuPeak[] = [];
+  let peak_threshold = 80; // 阈值百分比
+  const DENSITY_WINDOW_SEC = 30; // 内部固定密度计算窗口
+  let show_peak_panel = false;
+
+  // 辅助函数：判断两个时间范围是否相似（容差 tolerance 秒）
+  function is_range_similar(
+    r1: { start: number; end: number },
+    r2: { start: number; end: number },
+    tolerance: number = 5,
+  ): boolean {
+    return (
+      Math.abs(r1.start - r2.start) < tolerance &&
+      Math.abs(r1.end - r2.end) < tolerance
+    );
+  }
+
+  // 检测弹幕峰值区间
+  function detect_danmu_peaks() {
+    if (danmu_records.length === 0) {
+      danmu_peaks = [];
+      return;
+    }
+
+    const window_ms = DENSITY_WINDOW_SEC * 1000;
+    const half_window_ms = window_ms / 2;
+    const step_ms = 5000; // 5秒滑动步长
+    const bucket_ms = step_ms; // 桶大小与步长一致
+
+    // 找出时间范围
+    const min_ts = Math.min(...danmu_records.map((d) => d.ts));
+    const max_ts = Math.max(...danmu_records.map((d) => d.ts));
+
+    // 1. 构建弹幕直方图 (O(N))
+    const total_buckets = Math.ceil((max_ts - min_ts) / bucket_ms) + 1;
+    const histogram = new Array(total_buckets).fill(0);
+    for (const d of danmu_records) {
+      const bucket_idx = Math.floor((d.ts - min_ts) / bucket_ms);
+      if (bucket_idx >= 0 && bucket_idx < total_buckets) {
+        histogram[bucket_idx]++;
+      }
+    }
+
+    // 2. 使用滑动窗口计算密度 (O(W))
+    const density: { center: number; count: number }[] = [];
+    const counts: number[] = [];
+    const window_buckets = Math.ceil(window_ms / bucket_ms);
+
+    // 初始化第一个窗口的和
+    let window_sum = 0;
+    for (let i = 0; i < window_buckets && i < total_buckets; i++) {
+      window_sum += histogram[i];
+    }
+
+    // 滑动窗口遍历
+    for (let i = 0; i + window_buckets <= total_buckets; i++) {
+      const center = min_ts + (i + window_buckets / 2) * bucket_ms;
+      density.push({ center, count: window_sum });
+      counts.push(window_sum);
+
+      // 滑动：移除左边，添加右边
+      if (i + window_buckets < total_buckets) {
+        window_sum -= histogram[i];
+        window_sum += histogram[i + window_buckets];
+      }
+    }
+
+    if (density.length === 0) {
+      danmu_peaks = [];
+      return;
+    }
+
+    // 2. 计算统计特征 (Mean & StdDev)
+    const n = counts.length;
+    const mean = counts.reduce((a, b) => a + b, 0) / n;
+    const variance = counts.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / n;
+    const stdDev = Math.sqrt(variance);
+
+    // 3. 计算动态阈值
+    // peak_threshold (50-100) 映射为 k (1.0 - 4.0)
+    const k = 1.0 + ((peak_threshold - 50) / 50) * 3.0;
+    const z_threshold = mean + k * stdDev;
+
+    // 至少要有一定的弹幕量 (例如平均值的 1.5 倍，或者固定值如 15/30s)
+    const abs_min_count = Math.max(15, mean * 1.2);
+
+    // 动态边界的基准线 (Baseline)
+    const expansion_baseline = mean + 0.5 * stdDev;
+
+    // 4. 寻找候选峰值 (局部极值)
+    let candidates: { center: number; count: number; index: number }[] = [];
+    for (let i = 1; i < density.length - 1; i++) {
+      const curr = density[i];
+      const prev = density[i - 1];
+      const next = density[i + 1];
+
+      if (
+        curr.count >= z_threshold &&
+        curr.count >= abs_min_count && // 增加绝对门槛判断
+        curr.count > 0 &&
+        curr.count >= prev.count &&
+        curr.count >= next.count
+      ) {
+        candidates.push({ ...curr, index: i });
+      }
+    }
+
+    // 按强度降序排列
+    candidates.sort((a, b) => b.count - a.count);
+
+    const final_peaks: DanmuPeak[] = [];
+    while (candidates.length > 0) {
+      const best = candidates.shift();
+      const best_idx = best.index;
+
+      // 动态向左扩展
+      let left_idx = best_idx;
+      while (left_idx > 0 && density[left_idx].count > expansion_baseline) {
+        left_idx--;
+      }
+
+      // 动态向右扩展
+      let right_idx = best_idx;
+      while (
+        right_idx < density.length - 1 &&
+        density[right_idx].count > expansion_baseline
+      ) {
+        right_idx++;
+      }
+
+      // 计算时间 (秒)
+      const start_time = (density[left_idx].center - min_ts) / 1000 - 5; // 再多给5s缓冲
+      const end_time = (density[right_idx].center - min_ts) / 1000 + 5;
+
+      // 限制最小和最大时长
+      const min_duration = 15;
+      const max_duration = 120;
+      let duration = end_time - start_time;
+
+      let final_start = Math.max(0, start_time);
+      let final_end = end_time;
+
+      if (duration < min_duration) {
+        const padding = (min_duration - duration) / 2;
+        final_start = Math.max(0, final_start - padding);
+        final_end = final_end + padding;
+      } else if (duration > max_duration) {
+        // 如果太长，就只取峰值附近的 max_duration
+        const center_sec = (best.center - min_ts) / 1000;
+        final_start = Math.max(0, center_sec - max_duration / 2);
+        final_end = center_sec + max_duration / 2;
+      }
+
+      const is_added = ranges.some((r) =>
+        is_range_similar(r, { start: final_start, end: final_end }),
+      );
+
+      final_peaks.push({
+        start: final_start,
+        end: final_end,
+        count: best.count,
+        added: is_added,
+      });
+
+      // 抑制相邻的较弱峰值 (基于实际生成的区间进行抑制)
+      // 如果候选点落在我们刚刚生成的区间内，就剔除
+      const current_peak_center_ms = best.center;
+      candidates = candidates.filter(
+        (c) =>
+          Math.abs(c.center - current_peak_center_ms) >=
+          ((final_end - final_start) * 1000) / 2, // 简单起见，只要距离峰值中心超过半个区间长度就算不重叠
+      );
+    }
+
+    // 按弹幕数量降序排列
+    danmu_peaks = final_peaks.sort((a, b) => b.count - a.count);
+  }
+
+  // 将峰值添加到选区
+  function add_peak_to_ranges(peak: DanmuPeak) {
+    // 检查是否已存在类似选区
+    const exists = ranges.some((r) => is_range_similar(r, peak));
+    if (exists) {
+      return;
+    }
+
+    ranges = [...ranges, { start: peak.start, end: peak.end, activated: true }];
+    peak.added = true;
+    danmu_peaks = [...danmu_peaks]; // 触发响应式更新
+  }
+
+  // 一键添加所有峰值
+  function add_all_peaks_to_ranges() {
+    for (const peak of danmu_peaks) {
+      if (!peak.added) {
+        add_peak_to_ranges(peak);
+      }
+    }
+  }
+
+  // 更新峰值的添加状态（根据当前 ranges）
+  function update_peak_added_status() {
+    let changed = false;
+    for (const peak of danmu_peaks) {
+      const is_added = ranges.some((r) => is_range_similar(r, peak));
+      if (peak.added !== is_added) {
+        peak.added = is_added;
+        changed = true;
+      }
+    }
+    if (changed) {
+      danmu_peaks = [...danmu_peaks]; // 触发响应式更新
+    }
+  }
+
+  // 监听弹幕数据变化、面板状态变化、阈值变化，统一检测峰值
+  $: if (show_peak_panel && danmu_records.length > 0) {
+    // 引用 peak_threshold 以便在其变化时触发重新计算
+    peak_threshold;
+    detect_danmu_peaks();
+  }
+
+  // 监听 ranges 变化，更新峰值的添加状态
+  $: if (ranges && danmu_peaks.length > 0) {
+    update_peak_added_status();
+  }
+
   // 虚拟滚动相关变量
   let danmu_container_height = 0;
   let danmu_item_height = 80; // 预估每个弹幕项的高度
@@ -131,12 +365,7 @@
     });
   }
 
-  // 监听弹幕搜索变化
-  $: {
-    if (danmu_search_text !== undefined && danmu_records) {
-      filter_danmu();
-    }
-  }
+
 
   // 格式化时间(ts 为毫秒)
   function format_time(milliseconds: number): string {
@@ -180,8 +409,20 @@
 
   let archive: RecordItem = null;
 
-  let ranges: Range[] = [];
+  // load ranges from local storage
+  let ranges: Range[] = JSON.parse(
+    window.localStorage.getItem(`ranges:${room_id}:${live_id}`) || "[]"
+  );
   $: activeRanges = ranges.filter((r) => r.activated !== false);
+  // save ranges to local storage when changed
+  $: {
+    if (ranges) {
+      window.localStorage.setItem(
+        `ranges:${room_id}:${live_id}`,
+        JSON.stringify(ranges)
+      );
+    }
+  }
   let global_offset = 0;
 
   function handleSelectAll(e: Event) {
@@ -192,6 +433,11 @@
   function handleRangeChange(e: Event, range: Range) {
     range.activated = (e.currentTarget as HTMLInputElement).checked;
     ranges = ranges; // trigger update
+  }
+
+  function deleteActivatedRanges() {
+    // 删除选区
+    ranges = ranges.filter((r) => r.activated === false);
   }
 
   function generateCover() {
@@ -556,6 +802,112 @@
               </div>
             </section>
 
+            <!-- 弹幕峰值检索区 -->
+            <section class="space-y-3 flex-shrink-0">
+              <div class="flex items-center justify-between">
+                <h3 class="text-sm font-medium text-gray-300">弹幕峰值</h3>
+                {#if show_peak_panel}
+                  <button
+                    on:click={() => (show_peak_panel = false)}
+                    class="text-sm text-gray-400 hover:text-[#0A84FF] transition-colors duration-200"
+                  >
+                    收起
+                  </button>
+                {:else}
+                  <button
+                    on:click={() => (show_peak_panel = true)}
+                    class="px-4 py-1.5 bg-[#2c2c2e] text-white text-sm rounded-lg
+                           transition-all duration-200 hover:bg-[#3c3c3e]"
+                  >
+                    峰值检索
+                  </button>
+                {/if}
+              </div>
+
+              {#if show_peak_panel}
+                <!-- 设置区域 -->
+                <div
+                  class="space-y-2 p-3 bg-[#2c2c2e] rounded-lg border border-gray-800/50"
+                >
+                  <div class="flex items-center justify-between">
+                    <span class="text-xs text-gray-400"
+                      >阈值: {peak_threshold}%</span
+                    >
+                    <input
+                      type="range"
+                      min="50"
+                      max="100"
+                      bind:value={peak_threshold}
+                      class="w-32 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+                </div>
+
+                <!-- 峰值列表 -->
+                {#if danmu_records.length === 0}
+                  <div class="text-center py-4 text-gray-500 text-sm">
+                    暂无弹幕数据
+                  </div>
+                {:else if danmu_peaks.length === 0}
+                  <div class="text-center py-4 text-gray-500 text-sm">
+                    未检测到峰值，请尝试降低阈值
+                  </div>
+                {:else}
+                  <div class="flex items-center justify-between mb-2">
+                    <span class="text-xs text-gray-400">
+                      检测到 {danmu_peaks.length} 个峰值
+                    </span>
+                    <button
+                      on:click={add_all_peaks_to_ranges}
+                      class="text-xs text-gray-400 hover:text-[#0A84FF] transition-colors duration-200 font-medium"
+                    >
+                      + 全部添加
+                    </button>
+                  </div>
+                  <div
+                    class="max-h-48 overflow-y-auto space-y-2 sidebar-scrollbar"
+                  >
+                    {#each danmu_peaks as peak}
+                      <!-- svelte-ignore a11y-click-events-have-key-events -->
+                      <div
+                        class="flex items-center justify-between p-2 bg-[#2c2c2e] rounded-lg border border-gray-800/50
+                               hover:border-[#0A84FF]/50 transition-all duration-200 cursor-pointer"
+                        on:click={() => {
+                          if (player) {
+                            player.seek(peak.start);
+                          }
+                        }}
+                      >
+                        <div class="flex-1">
+                          <div class="text-xs text-white/90">
+                            {format_time(peak.start * 1000)} → {format_time(
+                              peak.end * 1000,
+                            )}
+                          </div>
+                          <div class="text-xs text-gray-500">
+                            {peak.count} 条弹幕
+                          </div>
+                        </div>
+                        {#if peak.added}
+                          <span class="text-xs text-[#0A84FF]/80 font-medium">
+                            ✓ 已添加
+                          </span>
+                        {:else}
+                          <button
+                            on:click|stopPropagation={() =>
+                              add_peak_to_ranges(peak)}
+                            class="text-xs text-gray-400 hover:text-[#0A84FF] transition-colors duration-200 font-medium"
+                          >
+                            + 添加
+                          </button>
+                        {/if}
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              {/if}
+            </section>
+
             <!-- 封面预览 -->
             {#if selected_video && selected_video.id != -1}
               <section class="flex-shrink-0">
@@ -831,20 +1183,21 @@
     >
       <div class="p-5">
         <div class="flex items-center justify-between mb-4">
-            <h3 class="text-[17px] font-semibold text-white">选区管理</h3>
-            <div class="flex items-center gap-3">
-                <div class="text-[13px] text-white/60">
-                    共 {ranges.length} 个选区，已激活 {activeRanges.length} 个
-                </div>
-                <label class="flex items-center cursor-pointer select-none">
-                    <input
-                        type="checkbox"
-                        checked={ranges.length > 0 && ranges.every(r => r.activated !== false)}
-                        on:change={handleSelectAll}
-                        class="h-4 w-4 rounded border-white/30 bg-[#1c1c1e] text-[#0A84FF] accent-[#0A84FF] focus:outline-none focus:ring-2 focus:ring-[#0A84FF]/40 cursor-pointer"
-                    />
-                </label>
+          <h3 class="text-[17px] font-semibold text-white">选区管理</h3>
+          <div class="flex items-center gap-3">
+            <div class="text-[13px] text-white/60">
+              共 {ranges.length} 个选区，已激活 {activeRanges.length} 个
             </div>
+            <label class="flex items-center cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={ranges.length > 0 &&
+                  ranges.every((r) => r.activated !== false)}
+                on:change={handleSelectAll}
+                class="h-4 w-4 rounded border-white/30 bg-[#1c1c1e] text-[#0A84FF] accent-[#0A84FF] focus:outline-none focus:ring-2 focus:ring-[#0A84FF]/40 cursor-pointer"
+              />
+            </label>
+          </div>
         </div>
 
         <div class="space-y-3">
@@ -874,20 +1227,20 @@
                   </div>
                 </div>
                 <label class="flex items-center cursor-pointer p-1">
-                    <input
-                      type="checkbox"
-                      checked={range.activated !== false}
-                      on:change={(e) => handleRangeChange(e, range)}
-                      class="h-5 w-5 rounded border-white/30 bg-[#1c1c1e] text-[#0A84FF] accent-[#0A84FF] focus:outline-none focus:ring-2 focus:ring-[#0A84FF]/40 cursor-pointer"
-                    />
+                  <input
+                    type="checkbox"
+                    checked={range.activated !== false}
+                    on:change={(e) => handleRangeChange(e, range)}
+                    class="h-5 w-5 rounded border-white/30 bg-[#1c1c1e] text-[#0A84FF] accent-[#0A84FF] focus:outline-none focus:ring-2 focus:ring-[#0A84FF]/40 cursor-pointer"
+                  />
                 </label>
               </div>
             {/each}
-             {#if ranges.length === 0}
-                <div class="text-center py-8 text-white/40 text-[13px]">
-                    暂无选区
-                </div>
-             {/if}
+            {#if ranges.length === 0}
+              <div class="text-center py-8 text-white/40 text-[13px]">
+                暂无选区
+              </div>
+            {/if}
           </div>
         </div>
       </div>
@@ -895,6 +1248,12 @@
       <div
         class="flex items-center justify-end gap-2 rounded-b-2xl border-t border-white/10 bg-[#111113] px-5 py-3"
       >
+        <button
+          on:click={deleteActivatedRanges}
+          class="px-3.5 py-2 text-[13px] rounded-lg border border-red-500/20 text-red-500 hover:bg-red-500/10 transition-colors"
+        >
+          删除选区
+        </button>
         <button
           on:click={() => (show_selection_list = false)}
           class="px-3.5 py-2 text-[13px] rounded-lg bg-[#0A84FF] text-white shadow-[inset_0_1px_0_rgba(255,255,255,.15)] hover:bg-[#0A84FF]/90 transition-colors"

@@ -20,6 +20,32 @@ const UPDATE_TIMEOUT: Duration = Duration::from_secs(20);
 const UPDATE_INTERVAL: Duration = Duration::from_secs(1);
 const PLAYLIST_FILE_NAME: &str = "playlist.m3u8";
 const DOWNLOAD_RETRY: u32 = 3;
+
+fn strip_query_param(url: &str, key: &str) -> Option<String> {
+    let (base, query) = url.split_once('?')?;
+    let mut kept = Vec::new();
+    let mut removed = false;
+    for part in query.split('&') {
+        if part.is_empty() {
+            continue;
+        }
+        let mut iter = part.splitn(2, '=');
+        let param_key = iter.next().unwrap_or("");
+        if param_key == key {
+            removed = true;
+            continue;
+        }
+        kept.push(part);
+    }
+    if !removed {
+        return None;
+    }
+    if kept.is_empty() {
+        Some(base.to_string())
+    } else {
+        Some(format!("{}?{}", base, kept.join("&")))
+    }
+}
 /// A recorder for HLS streams
 ///
 /// This recorder fetches, caches and serves TS entries, currently supporting `StreamType::FMP4, StreamType::TS`.
@@ -42,6 +68,7 @@ pub struct HlsRecorder {
     updated_at: Arc<AtomicI64>,
 
     pre_metadata: Arc<RwLock<Option<VideoMetadata>>>,
+    fresh_sequence: Arc<AtomicBool>,
 }
 
 impl HlsRecorder {
@@ -50,6 +77,7 @@ impl HlsRecorder {
         stream: Arc<HlsStream>,
         client: reqwest::Client,
         cookies: Option<String>,
+        extra_headers: Option<HeaderMap>,
         event_channel: broadcast::Sender<RecorderEvent>,
         work_dir: PathBuf,
         enabled: Arc<AtomicBool>,
@@ -67,6 +95,11 @@ impl HlsRecorder {
         headers.insert("user-agent", user_agent.parse().unwrap());
         if let Some(cookies) = cookies {
             headers.insert("cookie", cookies.parse().unwrap());
+        }
+        if let Some(extra_headers) = extra_headers {
+            for (key, value) in extra_headers.iter() {
+                headers.insert(key, value.clone());
+            }
         }
 
         let sequence_path = work_dir.join(".sequence");
@@ -86,6 +119,7 @@ impl HlsRecorder {
             .map_err(RecorderError::IoError)?;
         let trimmed = sequence_buf.trim();
         let sequence = trimmed.parse::<u64>().unwrap_or(0);
+        let fresh_sequence = trimmed.is_empty();
 
         // If the file is newly created / empty, normalize it to "0"
         if trimmed.is_empty() {
@@ -121,6 +155,7 @@ impl HlsRecorder {
             updated_at: Arc::new(AtomicI64::new(chrono::Utc::now().timestamp_millis())),
             pre_metadata: Arc::new(RwLock::new(None)),
             sequence_file: Arc::new(RwLock::new(sequence_file)),
+            fresh_sequence: Arc::new(AtomicBool::new(fresh_sequence)),
         })
     }
 
@@ -178,6 +213,11 @@ impl HlsRecorder {
             .headers(self.headers.clone())
             .send()
             .await?;
+        if !response.status().is_success() {
+            return Err(RecorderError::InvalidResponseStatus {
+                status: response.status(),
+            });
+        }
         let bytes = response.bytes().await?;
         let (_, playlist) =
             m3u8_rs::parse_playlist(&bytes).map_err(|_| RecorderError::M3u8ParseFailed {
@@ -191,8 +231,12 @@ impl HlsRecorder {
         match playlist {
             Playlist::MediaPlaylist(playlist) => Ok(playlist),
             Playlist::MasterPlaylist(playlist) => {
-                // just return the first variant
-                match playlist.variants.first() {
+                let best_variant = playlist.variants.iter().max_by(|a, b| {
+                    let a_bw = a.average_bandwidth.unwrap_or(a.bandwidth);
+                    let b_bw = b.average_bandwidth.unwrap_or(b.bandwidth);
+                    a_bw.cmp(&b_bw)
+                });
+                match best_variant {
                     Some(variant) => {
                         let real_stream = construct_stream_from_variant(
                             &self.stream.id,
@@ -220,7 +264,23 @@ impl HlsRecorder {
     async fn update_entries(&self) -> Result<(), RecorderError> {
         let media_playlist = self.query_media_playlist().await?;
         let playlist_sequence = media_playlist.media_sequence;
-        let last_sequence = self.sequence.load(Ordering::Relaxed);
+        let mut last_sequence = self.sequence.load(Ordering::Relaxed);
+        if self.fresh_sequence.load(Ordering::Relaxed) && last_sequence == 0 {
+            let segment_len = media_playlist.segments.len() as u64;
+            if segment_len >= 3 {
+                let new_sequence = playlist_sequence + segment_len - 3;
+                if new_sequence > last_sequence {
+                    log::info!(
+                        "[{}]Skip initial segments, start from sequence {}",
+                        self.room_id,
+                        new_sequence
+                    );
+                    self.update_sequence(new_sequence).await;
+                    last_sequence = new_sequence;
+                }
+            }
+            self.fresh_sequence.store(false, Ordering::Relaxed);
+        }
         let last_metadata = self.pre_metadata.read().await.clone();
         let mut updated = false;
         let mut duration_delta = 0.0;
@@ -228,6 +288,20 @@ impl HlsRecorder {
         for (i, segment) in media_playlist.segments.iter().enumerate() {
             let segment_sequence = playlist_sequence + i as u64;
             let segment_full_url = self.stream.ts_url(&segment.uri);
+            let mut fallback_urls = Vec::new();
+            if let Some(no_codec_url) = strip_query_param(&segment_full_url, "codec") {
+                if no_codec_url != segment_full_url {
+                    fallback_urls.push(no_codec_url);
+                }
+            }
+            if !segment.uri.contains('?') {
+                let no_extra_url = self.stream.ts_url_without_extra(&segment.uri);
+                if no_extra_url != segment_full_url
+                    && !fallback_urls.iter().any(|url| url == &no_extra_url)
+                {
+                    fallback_urls.push(no_extra_url);
+                }
+            }
             // to get filename, we need to remove the query parameters
             // for example: 1.ts?expires=1760808243
             // we need to remove the query parameters: 1.ts
@@ -237,18 +311,43 @@ impl HlsRecorder {
             }
 
             let segment_path = self.work_dir.join(filename);
-            let Ok(size) = download(
+            let size = match download(
                 &self.client,
                 &segment_full_url,
+                &fallback_urls,
                 &segment_path,
                 DOWNLOAD_RETRY,
+                Some(&self.headers),
             )
             .await
-            else {
-                log::error!("Download failed: {:#?}", segment);
-                return Err(RecorderError::IoError(std::io::Error::other(
-                    "Download failed",
-                )));
+            {
+                Ok(size) => size,
+                Err(RecorderError::InvalidResponseStatus { status })
+                    if status == reqwest::StatusCode::NOT_FOUND =>
+                {
+                    let end_sequence =
+                        playlist_sequence + media_playlist.segments.len() as u64;
+                    let is_last = segment_sequence + 1 >= end_sequence;
+                    if is_last {
+                        log::warn!(
+                            "Segment not found yet, wait for next update: {}",
+                            segment_full_url
+                        );
+                        self.updated_at
+                            .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
+                        break;
+                    } else {
+                        log::warn!("Segment not found, skip: {}", segment_full_url);
+                        self.update_sequence(segment_sequence).await;
+                        self.updated_at
+                            .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
+                        continue;
+                    }
+                }
+                Err(err) => {
+                    log::error!("Download failed: {:#?}", segment);
+                    return Err(err);
+                }
             };
 
             let mut segment = segment.clone();
@@ -370,11 +469,16 @@ async fn download_inner(
     client: &reqwest::Client,
     url: &str,
     path: &Path,
+    headers: Option<&HeaderMap>,
 ) -> Result<u64, RecorderError> {
     if !path.parent().unwrap().exists() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     }
-    let response = client.get(url).send().await?;
+    let mut request = client.get(url);
+    if let Some(headers) = headers {
+        request = request.headers(headers.clone());
+    }
+    let response = request.send().await?;
     if !response.status().is_success() {
         let status = response.status();
         log::warn!("Download segment failed: {url}: {status}");
@@ -391,22 +495,47 @@ async fn download_inner(
 async fn download(
     client: &reqwest::Client,
     url: &str,
+    fallback_urls: &[String],
     path: &Path,
     retry: u32,
+    headers: Option<&HeaderMap>,
 ) -> Result<u64, RecorderError> {
+    let mut fallback_tried = false;
+    let mut last_err: Option<RecorderError> = None;
     for i in 0..retry {
-        let result = download_inner(client, url, path).await;
+        let result = download_inner(client, url, path, headers).await;
         if let Ok(size) = result {
             return Ok(size);
+        }
+        if let Err(RecorderError::InvalidResponseStatus { status }) = &result {
+            if *status == reqwest::StatusCode::NOT_FOUND && !fallback_tried {
+                for fallback_url in fallback_urls {
+                    if fallback_url == url {
+                        continue;
+                    }
+                    let fallback_result =
+                        download_inner(client, fallback_url, path, headers).await;
+                    if let Ok(size) = fallback_result {
+                        return Ok(size);
+                    }
+                    if let Err(err) = fallback_result {
+                        last_err = Some(err);
+                    }
+                }
+                fallback_tried = true;
+            }
+        }
+        if let Err(err) = result {
+            last_err = Some(err);
         }
         log::error!("Download failed, retry: {}", i);
         // sleep for 500 ms
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
-    Err(RecorderError::IoError(std::io::Error::other(
-        "Download failed",
-    )))
+    Err(last_err.unwrap_or_else(|| {
+        RecorderError::IoError(std::io::Error::other("Download failed"))
+    }))
 }
 
 pub async fn construct_stream_from_variant(

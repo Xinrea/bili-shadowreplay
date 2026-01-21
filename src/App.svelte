@@ -13,8 +13,17 @@
   import { onMount } from "svelte";
 
   let active = "总览";
+  let darkMode = false;
+
+  function applyTheme(isDark: boolean) {
+    darkMode = isDark;
+    document.documentElement.classList.toggle("dark", isDark);
+  }
 
   onMount(async () => {
+    const theme = localStorage.getItem("theme");
+    applyTheme(theme === "dark");
+
     await onOpenUrl((urls: string[]) => {
       console.log("Received Deep Link:", urls);
       if (urls.length > 0) {
@@ -39,6 +48,17 @@
           platform = "douyin";
         }
 
+        if (url.startsWith("bsr://live.kuaishou.com/")) {
+          room_id = url.replace("bsr://live.kuaishou.com/", "").split("?")[0];
+          room_id = room_id.replace(/^u\//, "");
+          platform = "kuaishou";
+        }
+
+        if (url.startsWith("bsr://live.tiktok.com/")) {
+          room_id = url.replace("bsr://live.tiktok.com/", "").split("?")[0];
+          platform = "tiktok";
+        }
+
         if (platform && room_id) {
           // switch to room page
           active = "直播间";
@@ -60,7 +80,7 @@
         }}
       />
     </div>
-    <div class="content bg-white dark:bg-[#2c2c2e]">
+    <div class="content bg-white dark:bg-black">
       <div class="page" class:visible={active == "总览"}>
         <Summary />
       </div>
@@ -103,6 +123,11 @@
     flex-direction: row;
     height: 100vh;
     overflow: hidden;
+    background: #fff;
+  }
+
+  :global(.dark) .wrap {
+    background: #000;
   }
 
   .visible {

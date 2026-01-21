@@ -232,7 +232,7 @@
 <svelte:window on:click={handleClickOutside} />
 
 <div
-  class="flex-1 p-6 overflow-y-auto custom-scrollbar-light bg-gray-50"
+  class="flex-1 p-6 overflow-y-auto custom-scrollbar-light bg-gray-50 dark:bg-black"
   on:scroll={handleScroll}
 >
   <div class="space-y-6">

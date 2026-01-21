@@ -15,9 +15,13 @@
     X,
     History,
     PlayIcon,
+    Globe,
   } from "lucide-svelte";
   import BilibiliIcon from "../lib/components/BilibiliIcon.svelte";
   import DouyinIcon from "../lib/components/DouyinIcon.svelte";
+  import KuaishouIcon from "../lib/components/KuaishouIcon.svelte";
+  import HuyaIcon from "../lib/components/HuyaIcon.svelte";
+  import TikTokIcon from "../lib/components/TikTokIcon.svelte";
   import AutoRecordIcon from "../lib/components/AutoRecordIcon.svelte";
   import GenerateWholeClipModal from "../lib/components/GenerateWholeClipModal.svelte";
   import { onMount } from "svelte";
@@ -42,19 +46,25 @@
   });
 
   function default_avatar(platform: string) {
-    if (platform === "bilibili") {
-      return "/imgs/bilibili_avatar.png";
-    } else if (platform === "douyin") {
-      return "/imgs/douyin_avatar.png";
-    }
+    const avatarMap = {
+      bilibili: "/imgs/bilibili_avatar.png",
+      douyin: "/imgs/douyin.svg",
+      huya: "/imgs/huya_avatar.png",
+      kuaishou: "/imgs/kuaishou.svg",
+      tiktok: "/imgs/Tiktok.svg",
+    };
+    return avatarMap[platform] || "/imgs/huya_avatar.png";
   }
 
   function default_cover(platform: string) {
-    if (platform === "bilibili") {
-      return "/imgs/bilibili.png";
-    } else if (platform === "douyin") {
-      return "/imgs/douyin.png";
-    }
+    const coverMap = {
+      bilibili: "/imgs/bilibili.png",
+      douyin: "/imgs/douyin.svg",
+      huya: "/imgs/huya.png",
+      kuaishou: "/imgs/kuaishou.svg",
+      tiktok: "/imgs/Tiktok.svg",
+    };
+    return coverMap[platform] || "/imgs/huya.png";
   }
 
   let avatar_cache: Map<string, string> = new Map();
@@ -102,14 +112,6 @@
 
     // process room cover
     for (const room of new_summary.recorders) {
-      if (room.room_info.room_cover != "") {
-        room.room_info.room_cover = await get_image_url(
-          room.room_info.room_cover
-        );
-      } else {
-        room.room_info.room_cover = default_cover(room.room_info.platform);
-      }
-
       if (room.user_info.user_avatar != "") {
         room.user_info.user_avatar = await get_avatar_url(
           room.user_info.user_id,
@@ -117,6 +119,16 @@
         );
       } else {
         room.user_info.user_avatar = default_avatar(room.room_info.platform);
+      }
+
+      if (room.room_info.room_cover != "") {
+        room.room_info.room_cover = await get_image_url(
+          room.room_info.room_cover
+        );
+      } else if (room.user_info.user_avatar != "") {
+        room.room_info.room_cover = room.user_info.user_avatar;
+      } else {
+        room.room_info.room_cover = default_cover(room.room_info.platform);
       }
     }
 
@@ -134,6 +146,22 @@
   let addValid = false;
   let addErrorMsg = "";
   let selectedPlatform = "bilibili";
+  $: {
+    const trimmed = addRoom.trim();
+    const needsNumeric =
+      selectedPlatform === "bilibili" || selectedPlatform === "douyin";
+    if (!trimmed) {
+      addValid = false;
+      addErrorMsg = "";
+    } else if (needsNumeric && !Number.isInteger(Number(trimmed))) {
+      addValid = false;
+      addErrorMsg =
+        "\u0049\u0044\u683c\u5f0f\u9519\u8bef\uff0c\u8bf7\u68c0\u67e5\u8f93\u5165";
+    } else {
+      addValid = true;
+      addErrorMsg = "";
+    }
+  }
 
   let archiveModal = false;
   let archiveRoom: RecorderInfo = null;
@@ -337,16 +365,38 @@
     } else if (room.room_info.platform === "douyin") {
       console.log(room.user_info);
       open("https://www.douyin.com/user/" + room.user_info.user_id);
+    } else if (room.room_info.platform === "kuaishou") {
+      if (room.user_info.user_id) {
+        open("https://www.kuaishou.com/profile/" + room.user_info.user_id);
+      } else {
+        openLiveUrl(room);
+      }
+    } else if (room.room_info.platform === "tiktok") {
+      if (room.user_info.user_id) {
+        const handle = room.user_info.user_id.startsWith("@")
+          ? room.user_info.user_id
+          : `@${room.user_info.user_id}`;
+        open(`https://www.tiktok.com/${handle}`);
+      } else {
+        openLiveUrl(room);
+      }
     }
   }
 
   function openLiveUrl(room: RecorderInfo) {
-    if (room.room_info.platform === "bilibili") {
-      open("https://live.bilibili.com/" + room.room_info.room_id);
+    if (room.room_info.room_id.startsWith("http")) {
+      open(room.room_info.room_id);
+      return;
     }
 
-    if (room.room_info.platform === "douyin") {
+    if (room.room_info.platform === "bilibili") {
+      open("https://live.bilibili.com/" + room.room_info.room_id);
+    } else if (room.room_info.platform === "douyin") {
       open("https://live.douyin.com/" + room.room_info.room_id);
+    } else if (room.room_info.platform === "kuaishou") {
+      open("https://live.kuaishou.com/u/" + room.room_info.room_id);
+    } else if (room.room_info.platform === "tiktok") {
+      open(`https://www.tiktok.com/${room.room_info.room_id}/live`);
     }
   }
 
@@ -408,13 +458,26 @@
           platform = "douyin";
         }
 
+        if (url.startsWith("bsr://live.kuaishou.com/")) {
+          room_id = url.replace("bsr://live.kuaishou.com/", "").split("?")[0];
+          room_id = room_id.replace(/^u\//, "");
+          platform = "kuaishou";
+        }
+
+        if (url.startsWith("bsr://live.tiktok.com/")) {
+          room_id = url.replace("bsr://live.tiktok.com/", "").split("?")[0];
+          platform = "tiktok";
+        }
+
         if (platform && room_id) {
           addModal = true;
           addRoom = room_id;
           selectedPlatform = platform;
 
-          if (Number.isInteger(Number(room_id))) {
+          const needsNumeric = platform === "bilibili" || platform === "douyin";
+          if (!needsNumeric || Number.isInteger(Number(room_id))) {
             addValid = true;
+            addErrorMsg = "";
           } else {
             addErrorMsg = "ID格式错误，请检查输入";
             addValid = false;
@@ -425,7 +488,7 @@
   });
 </script>
 
-<div class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50">
+<div class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50 dark:bg-black">
   <div class="space-y-6">
     <!-- Header -->
     <div class="flex justify-between items-center">
@@ -556,6 +619,14 @@
                     <BilibiliIcon class="w-4 h-4" />
                   {:else if room.room_info.platform === "douyin"}
                     <DouyinIcon class="w-4 h-4" />
+                  {:else if room.room_info.platform === "kuaishou"}
+                    <KuaishouIcon class="w-4 h-4" />
+                  {:else if room.room_info.platform === "huya"}
+                    <HuyaIcon class="w-4 h-4" />
+                  {:else if room.room_info.platform === "tiktok"}
+                    <TikTokIcon class="w-5 h-5" />
+                  {:else}
+                    <Globe class="w-4 h-4 text-gray-400" />
                   {/if}
                   <h3 class="font-medium text-gray-900 dark:text-white">
                     {room.room_info.room_title}
@@ -703,9 +774,9 @@
             >
               平台
             </label>
-            <div class="flex p-0.5 bg-[#f5f5f7] dark:bg-[#1c1c1e] rounded-lg">
+            <div class="grid grid-cols-5 gap-2 p-0.5 bg-[#f5f5f7] dark:bg-[#1c1c1e] rounded-lg">
               <button
-                class="flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform ===
+                class="px-3 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform ===
                 'bilibili'
                   ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white'
                   : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
@@ -714,7 +785,7 @@
                 哔哩哔哩
               </button>
               <button
-                class="flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform ===
+                class="px-3 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform ===
                 'douyin'
                   ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white'
                   : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
@@ -723,13 +794,31 @@
                 抖音
               </button>
               <button
-                class="flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform ===
+                class="px-3 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform ===
                 'huya'
                   ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white'
                   : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
                 on:click={() => (selectedPlatform = "huya")}
               >
                 虎牙
+              </button>
+              <button
+                class="px-3 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform ===
+                'kuaishou'
+                  ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white'
+                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
+                on:click={() => (selectedPlatform = "kuaishou")}
+              >
+                快手
+              </button>
+              <button
+                class="px-3 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform ===
+                'tiktok'
+                  ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white'
+                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
+                on:click={() => (selectedPlatform = "tiktok")}
+              >
+                TikTok
               </button>
             </div>
           </div>
@@ -739,28 +828,20 @@
               for="room_id"
               class="block text-sm font-medium text-gray-700 dark:text-gray-300"
             >
-              {selectedPlatform === "bilibili" ? "房间号" : "直播间ID"}
+              {selectedPlatform === "kuaishou" || selectedPlatform === "tiktok"
+                ? "直播间链接"
+                : selectedPlatform === "bilibili"
+                  ? "房间号"
+                  : "直播间ID"}
             </label>
             <input
               id="room_id"
               type="text"
               bind:value={addRoom}
               class="w-full px-3 py-2 bg-[#f5f5f7] dark:bg-[#1c1c1e] border-0 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400"
-              placeholder="请输入直播间房间号"
-              on:change={() => {
-                if (!addRoom) {
-                  addErrorMsg = "";
-                  addValid = false;
-                  return;
-                }
-                if (addRoom.length > 0) {
-                  addErrorMsg = "";
-                  addValid = true;
-                } else {
-                  addErrorMsg = "ID格式错误，请检查输入";
-                  addValid = false;
-                }
-              }}
+              placeholder={selectedPlatform === "kuaishou" || selectedPlatform === "tiktok"
+                ? "请输入直播间链接"
+                : "请输入直播间房间号"}
             />
             {#if addErrorMsg}
               <p class="text-sm text-red-600 dark:text-red-500">

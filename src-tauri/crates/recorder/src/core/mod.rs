@@ -1,5 +1,6 @@
 use std::fmt;
 pub mod hls_recorder;
+pub mod flv_recorder;
 pub mod playlist;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -90,6 +91,10 @@ impl HlsStream {
             return seg_name.to_string();
         }
 
+        if let Some(resolved) = self.resolve_yximgs_segment(seg_name, Some(&self.extra)) {
+            return resolved;
+        }
+
         // Segment URI is relative, resolve it relative to m3u8 base URL
         let base = self.base.clone();
         let m3u8_filename = base.split('/').next_back().unwrap();
@@ -111,6 +116,66 @@ impl HlsStream {
             let base_without_query = base_url.trim_end_matches('?');
             format!("{}{}?{}", self.host, base_without_query, self.extra)
         }
+    }
+
+    pub fn ts_url_without_extra(&self, seg_name: &str) -> String {
+        if seg_name.starts_with("http://") || seg_name.starts_with("https://") {
+            return seg_name.to_string();
+        }
+
+        if let Some(resolved) = self.resolve_yximgs_segment(seg_name, None) {
+            return resolved;
+        }
+
+        let base = self.base.clone();
+        let m3u8_filename = base.split('/').next_back().unwrap_or("");
+        let base_url = if m3u8_filename.is_empty() {
+            base
+        } else {
+            base.replace(m3u8_filename, seg_name)
+        };
+        let base_without_query = base_url.trim_end_matches('?');
+        format!("{}{}", self.host, base_without_query)
+    }
+
+    fn resolve_yximgs_segment(&self, seg_name: &str, extra: Option<&str>) -> Option<String> {
+        let (seg_path, seg_query) = seg_name.split_once('?').unwrap_or((seg_name, ""));
+        let marker = ".yximgs.com_";
+        let marker_index = seg_path.find(marker)?;
+        let host_end = marker_index + ".yximgs.com".len();
+        let host = &seg_path[..host_end];
+        let rest = &seg_path[marker_index + marker.len()..];
+
+        let base_path = self.base.split('?').next().unwrap_or(&self.base);
+        let base_dir = base_path
+            .rsplit_once('/')
+            .map(|(dir, _)| dir)
+            .unwrap_or("");
+        let mut url = if base_dir.is_empty() {
+            format!("https://{host}/")
+        } else if base_dir.ends_with('/') {
+            format!("https://{host}{base_dir}")
+        } else {
+            format!("https://{host}{base_dir}/")
+        };
+        url.push_str(rest);
+
+        let mut query_parts = Vec::new();
+        if !seg_query.is_empty() {
+            query_parts.push(seg_query.to_string());
+        } else if let Some(extra) = extra {
+            let trimmed = extra.trim();
+            if !trimmed.is_empty() {
+                query_parts.push(trimmed.to_string());
+            }
+        }
+
+        if !query_parts.is_empty() {
+            url.push('?');
+            url.push_str(&query_parts.join("&"));
+        }
+
+        Some(url)
     }
 
     pub fn is_expired(&self) -> bool {

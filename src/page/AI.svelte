@@ -443,7 +443,7 @@
   });
 </script>
 
-<div class="flex-1 flex flex-col bg-gray-50 dark:bg-gray-900 h-full">
+<div class="flex-1 flex flex-col bg-gray-50 dark:bg-black h-full">
   <!-- Messages Container -->
   <div
     class="flex-1 overflow-y-auto p-6 space-y-4 custom-scrollbar-light min-h-0"

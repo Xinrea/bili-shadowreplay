@@ -43,11 +43,18 @@
       font_size: 36,
       opacity: 0.8,
     },
+    proxy_url: "",
   };
 
   let showModal = false;
   let endpoint = localStorage.getItem("endpoint") || "";
   let endpointValue = endpoint;
+  let darkMode = localStorage.getItem("theme") === "dark";
+
+  function updateTheme() {
+    localStorage.setItem("theme", darkMode ? "dark" : "light");
+    document.documentElement.classList.toggle("dark", darkMode);
+  }
 
   function handleEndpointChange() {
     localStorage.setItem("endpoint", endpointValue);
@@ -153,6 +160,12 @@
     });
   }
 
+  async function update_proxy_url() {
+    await invoke("update_proxy_url", {
+      proxyUrl: setting_model.proxy_url,
+    });
+  }
+
   async function update_danmu_ass_options() {
     await invoke("update_danmu_ass_options", {
       fontSize: setting_model.danmu_ass_options.font_size,
@@ -165,12 +178,12 @@
   });
 </script>
 
-<div class="flex-1 overflow-auto custom-scrollbar-light bg-gray-50">
+<div class="flex-1 overflow-auto custom-scrollbar-light bg-gray-50 dark:bg-black">
   <div class="h-screen">
     <div class="p-6 space-y-6">
       <!-- Header -->
       <div
-        class="flex items-center justify-between dark:bg-[#1c1c1e] py-2 -mt-2 z-10"
+        class="flex items-center justify-between dark:bg-black py-2 -mt-2 z-10"
       >
         <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">
           Settings
@@ -179,6 +192,40 @@
 
       <!-- Settings Sections -->
       <div class="space-y-6 pb-6">
+        <div class="space-y-4">
+          <h2
+            class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
+          >
+            <span>外观设置</span>
+          </h2>
+          <div
+            class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700"
+          >
+            <div class="p-4">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                    夜晚模式
+                  </h3>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    反转文字与背景，黑色背景，白色文字
+                  </p>
+                </div>
+                <label class="relative inline-block w-11 h-6">
+                  <input
+                    type="checkbox"
+                    class="peer opacity-0 w-0 h-0"
+                    bind:checked={darkMode}
+                    on:change={updateTheme}
+                  />
+                  <span
+                    class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
+                  ></span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
         <div class="space-y-4">
           <h2
             class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
@@ -230,6 +277,27 @@
                     bind:value={setting_model.webhook_url}
                     on:change={update_webhook_url}
                     placeholder="https://example.com/webhook"
+                  />
+                </div>
+              </div>
+            </div>
+            <div class="p-4">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                    HTTP Proxy
+                  </h3>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    Configure HTTP/HTTPS proxy for platforms like TikTok
+                  </p>
+                </div>
+                <div class="flex items-center space-x-2">
+                  <input
+                    type="text"
+                    class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
+                    bind:value={setting_model.proxy_url}
+                    on:change={update_proxy_url}
+                    placeholder="http://127.0.0.1:7890"
                   />
                 </div>
               </div>

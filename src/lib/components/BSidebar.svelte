@@ -27,7 +27,7 @@
 </script>
 
 <div
-  class="w-48 bg-[#f0f0f3]/50 dark:bg-[#2c2c2e]/50 backdrop-blur-xl border-r border-gray-200 dark:border-gray-700"
+  class="w-48 bg-[#f0f0f3]/50 dark:bg-black backdrop-blur-xl border-r border-gray-200 dark:border-gray-700"
 >
   <nav class="p-3 space-y-1">
     <SidebarItem label="总览" {activeUrl} on:activeChange={navigate}>

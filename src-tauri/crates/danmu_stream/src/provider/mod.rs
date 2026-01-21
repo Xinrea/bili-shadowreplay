@@ -1,11 +1,13 @@
 mod bilibili;
 mod douyin;
+mod kuaishou;
 
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
 use self::bilibili::BiliDanmu;
 use self::douyin::DouyinDanmu;
+use self::kuaishou::KuaishouDanmu;
 
 use crate::{DanmuMessageType, DanmuStreamError};
 
@@ -13,6 +15,7 @@ use crate::{DanmuMessageType, DanmuStreamError};
 pub enum ProviderType {
     BiliBili,
     Douyin,
+    Kuaishou,
 }
 
 #[async_trait]
@@ -67,6 +70,10 @@ pub async fn new(
         ProviderType::Douyin => {
             let douyin = DouyinDanmu::new(identifier, room_id).await?;
             Ok(Box::new(douyin))
+        }
+        ProviderType::Kuaishou => {
+            let kuaishou = KuaishouDanmu::new(identifier, room_id).await?;
+            Ok(Box::new(kuaishou))
         }
     }
 }

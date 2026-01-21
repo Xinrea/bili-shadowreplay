@@ -56,7 +56,7 @@
   }
 </script>
 
-<div class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50">
+<div class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50 dark:bg-black">
   <div class="max-w-2xl mx-auto space-y-8">
     <!-- App Info -->
     <div class="text-center space-y-4">

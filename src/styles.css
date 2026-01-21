@@ -8,6 +8,13 @@ body {
   width: 100%;
   user-select: none;
   cursor: default;
+  margin: 0;
+}
+
+html.dark,
+.dark body {
+  background: #000;
+  color: #fff;
 }
 
 .icon-white {
@@ -99,6 +106,19 @@ body {
 }
 
 .dark .sidebar-scrollbar::-webkit-scrollbar-thumb:horizontal:hover {
+  background: #5c5c5e;
+}
+
+.dark .custom-scrollbar-light {
+  background: #000;
+  color: #fff;
+}
+
+.dark .custom-scrollbar-light::-webkit-scrollbar-thumb {
+  background: #4c4c4e;
+}
+
+.dark .custom-scrollbar-light::-webkit-scrollbar-thumb:hover {
   background: #5c5c5e;
 }
 

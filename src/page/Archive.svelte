@@ -19,6 +19,9 @@
   } from "lucide-svelte";
   import BilibiliIcon from "../lib/components/BilibiliIcon.svelte";
   import DouyinIcon from "../lib/components/DouyinIcon.svelte";
+  import KuaishouIcon from "../lib/components/KuaishouIcon.svelte";
+  import HuyaIcon from "../lib/components/HuyaIcon.svelte";
+  import TikTokIcon from "../lib/components/TikTokIcon.svelte";
   import GenerateWholeClipModal from "../lib/components/GenerateWholeClipModal.svelte";
   import type { RecorderInfo, RecorderList } from "src/lib/interface";
 
@@ -27,8 +30,13 @@
   let loading = false;
   let sortBy = "created_at";
   let sortOrder = "desc";
+  type RoomOption = {
+    id: string;
+    label: string;
+  };
+
   let selectedRoomId: string | null = null;
-  let roomIds: string[] = [];
+  let roomOptions: RoomOption[] = [];
 
   let selectedArchives: Set<string> = new Set();
   let showDeleteConfirm = false;
@@ -78,10 +86,18 @@
       const recorderList: RecorderList = await invoke("get_recorder_list");
       allRooms = recorderList.recorders || [];
 
-      // 收集所有直播间ID用于筛选
-      roomIds = allRooms
-        .map((room: RecorderInfo) => room.room_info.room_id)
-        .sort();
+      // 收集所有直播间，用账号名/直播间标题+直播间号展示
+      roomOptions = allRooms
+        .map((room: RecorderInfo) => {
+          const id = room.room_info.room_id;
+          const name =
+            room.user_info?.user_name?.trim() ||
+            room.room_info?.room_title?.trim() ||
+            "";
+          const label = name ? `${name} (${id})` : id;
+          return { id, label };
+        })
+        .sort((a, b) => a.label.localeCompare(b.label));
 
       // 加载所有录播数据
       allArchives = [];
@@ -285,6 +301,10 @@
         return "抖音";
       case "huya":
         return "虎牙";
+      case "kuaishou":
+        return "快手";
+      case "tiktok":
+        return "TikTok";
       case "youtube":
         return "YouTube";
       default:
@@ -293,6 +313,9 @@
   }
 
   function getRoomUrl(platform: string, roomId: string) {
+    if (roomId.startsWith("http")) {
+      return roomId;
+    }
     switch (platform.toLowerCase()) {
       case "bilibili":
         return `https://live.bilibili.com/${roomId}`;
@@ -300,6 +323,10 @@
         return `https://live.douyin.com/${roomId}`;
       case "huya":
         return `https://www.huya.com/${roomId}`;
+      case "kuaishou":
+        return `https://live.kuaishou.com/u/${roomId}`;
+      case "tiktok":
+        return `https://www.tiktok.com/${roomId}/live`;
       case "youtube":
         return `https://www.youtube.com/channel/${roomId}`;
       default:
@@ -308,6 +335,9 @@
   }
 
   function calcBitrate(size: number, duration: number) {
+    if (!duration || duration <= 0 || !size || size <= 0) {
+      return "0";
+    }
     return ((size * 8) / duration / 1024).toFixed(0);
   }
 
@@ -405,7 +435,7 @@
   }
 </script>
 
-<div class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50">
+<div class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50 dark:bg-black">
   <div class="space-y-6">
     <!-- Header -->
     <div class="flex justify-between items-center">
@@ -445,8 +475,8 @@
             class="px-3 py-2 bg-gray-100 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 cursor-pointer"
           >
             <option value={null}>所有直播间</option>
-            {#each roomIds as roomId}
-              <option value={roomId}>{roomId}</option>
+            {#each roomOptions as option}
+              <option value={option.id}>{option.label}</option>
             {/each}
           </select>
 
@@ -758,6 +788,12 @@
                         <BilibiliIcon class="w-4 h-4" />
                       {:else if archive.platform === "douyin"}
                         <DouyinIcon class="w-4 h-4" />
+                      {:else if archive.platform === "kuaishou"}
+                        <KuaishouIcon class="w-4 h-4" />
+                      {:else if archive.platform === "huya"}
+                        <HuyaIcon class="w-4 h-4" />
+                      {:else if archive.platform === "tiktok"}
+                        <TikTokIcon class="w-5 h-5" />
                       {:else}
                         <Globe class="w-4 h-4 text-gray-400" />
                       {/if}

@@ -204,7 +204,7 @@
   });
 </script>
 
-<div class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50">
+<div class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50 dark:bg-black">
   <div class="space-y-6">
     <!-- Header -->
     <div class="flex justify-between items-center">

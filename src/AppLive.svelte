@@ -806,16 +806,22 @@
             <section class="space-y-3 flex-shrink-0">
               <div class="flex items-center justify-between">
                 <h3 class="text-sm font-medium text-gray-300">弹幕峰值</h3>
-                <button
-                  on:click={() => {
-                    show_peak_panel = !show_peak_panel;
-                  }}
-                  class="px-4 py-1.5 text-white text-sm rounded-lg transition-all duration-200 flex items-center space-x-2"
-                  class:bg-[#0A84FF]={show_peak_panel}
-                  class:bg-[#2c2c2e]={!show_peak_panel}
-                >
-                  {show_peak_panel ? "收起" : "峰值检索"}
-                </button>
+                {#if show_peak_panel}
+                  <button
+                    on:click={() => (show_peak_panel = false)}
+                    class="text-sm text-gray-400 hover:text-[#0A84FF] transition-colors duration-200"
+                  >
+                    收起
+                  </button>
+                {:else}
+                  <button
+                    on:click={() => (show_peak_panel = true)}
+                    class="px-4 py-1.5 bg-[#2c2c2e] text-white text-sm rounded-lg
+                           transition-all duration-200 hover:bg-[#3c3c3e]"
+                  >
+                    峰值检索
+                  </button>
+                {/if}
               </div>
 
               {#if show_peak_panel}
@@ -853,9 +859,9 @@
                     </span>
                     <button
                       on:click={add_all_peaks_to_ranges}
-                      class="px-3 py-1 text-xs bg-[#0A84FF] text-white rounded-lg hover:bg-[#0A84FF]/90 transition-colors"
+                      class="text-xs text-gray-400 hover:text-[#0A84FF] transition-colors duration-200 font-medium"
                     >
-                      全部添加
+                      + 全部添加
                     </button>
                   </div>
                   <div
@@ -882,18 +888,19 @@
                             {peak.count} 条弹幕
                           </div>
                         </div>
-                        <button
-                          on:click|stopPropagation={() =>
-                            add_peak_to_ranges(peak)}
-                          class="px-2 py-1 text-xs rounded transition-colors"
-                          class:bg-green-600={peak.added}
-                          class:text-white={peak.added}
-                          class:bg-gray-700={!peak.added}
-                          class:text-gray-300={!peak.added}
-                          class:hover:bg-[#0A84FF]={!peak.added}
-                        >
-                          {peak.added ? "✓" : "添加"}
-                        </button>
+                        {#if peak.added}
+                          <span class="text-xs text-[#0A84FF]/80 font-medium">
+                            ✓ 已添加
+                          </span>
+                        {:else}
+                          <button
+                            on:click|stopPropagation={() =>
+                              add_peak_to_ranges(peak)}
+                            class="text-xs text-gray-400 hover:text-[#0A84FF] transition-colors duration-200 font-medium"
+                          >
+                            + 添加
+                          </button>
+                        {/if}
                       </div>
                     {/each}
                   </div>

@@ -14,14 +14,14 @@
   on:click={() => dispatch("activeChange", label)}
   class="flex w-full items-center space-x-2 px-3 py-2 rounded-lg {activeUrl ===
   label
-    ? 'bg-blue-500/10 text-[#0A84FF]'
-    : 'text-gray-700'} dark:text-[#0A84FF] hover:bg-[#e5e5e5] dark:hover:bg-[#3a3a3c]"
+    ? 'bg-blue-500/10 text-[#0A84FF] dark:bg-transparent dark:text-white'
+    : 'text-gray-700 dark:text-white'} hover:bg-[#e5e5e5] dark:hover:bg-transparent"
 >
   <slot
     name="icon"
     class={activeUrl === label
-      ? "text-[#0A84FF]"
-      : "text-gray-700 dark:text-[#0A84FF]"}
+      ? "text-[#0A84FF] dark:text-white"
+      : "text-gray-700 dark:text-white"}
   ></slot>
   <span>{label}</span>
   {#if dot}

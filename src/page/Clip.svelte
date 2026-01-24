@@ -25,6 +25,9 @@
   import { AnnotationOutline } from "flowbite-svelte-icons";
   import BilibiliIcon from "../lib/components/BilibiliIcon.svelte";
   import DouyinIcon from "../lib/components/DouyinIcon.svelte";
+  import KuaishouIcon from "../lib/components/KuaishouIcon.svelte";
+  import HuyaIcon from "../lib/components/HuyaIcon.svelte";
+  import TikTokIcon from "../lib/components/TikTokIcon.svelte";
 
   let videos: VideoItem[] = [];
   let filteredVideos: VideoItem[] = [];
@@ -287,6 +290,10 @@
         return "抖音";
       case "huya":
         return "虎牙";
+      case "kuaishou":
+        return "快手";
+      case "tiktok":
+        return "TikTok";
       case "youtube":
         return "YouTube";
       case "imported":
@@ -300,6 +307,7 @@
 
   function getRoomUrl(platform: string | undefined, roomId: string) {
     if (!platform) return null;
+    if (roomId.startsWith("http")) return roomId;
     switch (platform.toLowerCase()) {
       case "bilibili":
         return `https://live.bilibili.com/${roomId}`;
@@ -307,6 +315,10 @@
         return `https://live.douyin.com/${roomId}`;
       case "huya":
         return `https://www.huya.com/${roomId}`;
+      case "kuaishou":
+        return `https://live.kuaishou.com/u/${roomId}`;
+      case "tiktok":
+        return `https://www.tiktok.com/${roomId}/live`;
       case "youtube":
         return `https://www.youtube.com/channel/${roomId}`;
       default:
@@ -457,7 +469,7 @@
 <!-- svelte-ignore a11y-click-events-have-key-events -->
 <svelte:window on:keydown={handleKeydown} />
 
-<div class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50">
+<div class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50 dark:bg-black">
   <div class="space-y-6">
     <!-- Header -->
     <div class="flex justify-between items-center">
@@ -777,6 +789,57 @@
                         {/if}
                       {:else if video.platform === "douyin"}
                         <DouyinIcon class="w-4 h-4 flex-shrink-0" />
+                        {#if getRoomUrl(video.platform, video.room_id)}
+                          <a
+                            href={getRoomUrl(video.platform, video.room_id)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="text-blue-500 hover:text-blue-700 text-sm"
+                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
+                          >
+                            {video.room_id}
+                          </a>
+                        {:else}
+                          <span class="text-sm text-gray-900 dark:text-white"
+                            >{video.room_id}</span
+                          >
+                        {/if}
+                      {:else if video.platform === "kuaishou"}
+                        <KuaishouIcon class="w-4 h-4 flex-shrink-0" />
+                        {#if getRoomUrl(video.platform, video.room_id)}
+                          <a
+                            href={getRoomUrl(video.platform, video.room_id)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="text-blue-500 hover:text-blue-700 text-sm"
+                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
+                          >
+                            {video.room_id}
+                          </a>
+                        {:else}
+                          <span class="text-sm text-gray-900 dark:text-white"
+                            >{video.room_id}</span
+                          >
+                        {/if}
+                      {:else if video.platform === "huya"}
+                        <HuyaIcon class="w-4 h-4 flex-shrink-0" />
+                        {#if getRoomUrl(video.platform, video.room_id)}
+                          <a
+                            href={getRoomUrl(video.platform, video.room_id)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="text-blue-500 hover:text-blue-700 text-sm"
+                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
+                          >
+                            {video.room_id}
+                          </a>
+                        {:else}
+                          <span class="text-sm text-gray-900 dark:text-white"
+                            >{video.room_id}</span
+                          >
+                        {/if}
+                      {:else if video.platform === "tiktok"}
+                        <TikTokIcon class="w-5 h-5 flex-shrink-0" />
                         {#if getRoomUrl(video.platform, video.room_id)}
                           <a
                             href={getRoomUrl(video.platform, video.room_id)}

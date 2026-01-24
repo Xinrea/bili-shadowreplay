@@ -220,6 +220,8 @@ pub async fn open_live(
     live_id: String,
 ) -> Result<(), String> {
     log::info!("Open player window: {room_id} {live_id}");
+    // trim @ from room_id
+    let clean_room_id = room_id.trim_start_matches('@');
     #[cfg(feature = "gui")]
     {
         use std::str::FromStr;
@@ -227,7 +229,7 @@ pub async fn open_live(
         let platform = PlatformType::from_str(&platform)?;
         let builder = tauri::WebviewWindowBuilder::new(
             &state.app_handle,
-            format!("Live:{room_id}:{live_id}"),
+            format!("Live:{clean_room_id}:{live_id}"),
             tauri::WebviewUrl::App(
                 format!(
                     "index_live.html?platform={}&room_id={}&live_id={}",

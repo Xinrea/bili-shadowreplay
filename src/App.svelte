@@ -13,7 +13,6 @@
   import { onMount } from "svelte";
 
   let active = "总览";
-
   onMount(async () => {
     await onOpenUrl((urls: string[]) => {
       console.log("Received Deep Link:", urls);
@@ -37,6 +36,17 @@
         if (url.startsWith("bsr://live.douyin.com/")) {
           room_id = url.replace("bsr://live.douyin.com/", "").split("?")[0];
           platform = "douyin";
+        }
+
+        if (url.startsWith("bsr://live.kuaishou.com/")) {
+          room_id = url.replace("bsr://live.kuaishou.com/", "").split("?")[0];
+          room_id = room_id.replace(/^u\//, "");
+          platform = "kuaishou";
+        }
+
+        if (url.startsWith("bsr://live.tiktok.com/")) {
+          room_id = url.replace("bsr://live.tiktok.com/", "").split("?")[0];
+          platform = "tiktok";
         }
 
         if (platform && room_id) {

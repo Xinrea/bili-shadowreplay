@@ -19,6 +19,8 @@ use recorder::events::RecorderEvent;
 use recorder::platforms::bilibili::BiliRecorder;
 use recorder::platforms::douyin::DouyinRecorder;
 use recorder::platforms::huya::HuyaRecorder;
+use recorder::platforms::kuaishou::KuaishouRecorder;
+use recorder::platforms::tiktok::TikTokRecorder;
 use recorder::platforms::PlatformType;
 use recorder::traits::RecorderTrait;
 use recorder::RoomInfo;
@@ -73,6 +75,8 @@ pub enum RecorderType {
     BiliBili(BiliRecorder),
     Douyin(DouyinRecorder),
     Huya(HuyaRecorder),
+    Kuaishou(KuaishouRecorder),
+    TikTok(TikTokRecorder),
 }
 
 impl RecorderType {
@@ -81,6 +85,8 @@ impl RecorderType {
             RecorderType::BiliBili(recorder) => recorder.run().await,
             RecorderType::Douyin(recorder) => recorder.run().await,
             RecorderType::Huya(recorder) => recorder.run().await,
+            RecorderType::Kuaishou(recorder) => recorder.run().await,
+            RecorderType::TikTok(recorder) => recorder.run().await,
         }
     }
 
@@ -89,6 +95,8 @@ impl RecorderType {
             RecorderType::BiliBili(recorder) => recorder.stop().await,
             RecorderType::Douyin(recorder) => recorder.stop().await,
             RecorderType::Huya(recorder) => recorder.stop().await,
+            RecorderType::Kuaishou(recorder) => recorder.stop().await,
+            RecorderType::TikTok(recorder) => recorder.stop().await,
         }
     }
 
@@ -97,6 +105,8 @@ impl RecorderType {
             RecorderType::BiliBili(recorder) => recorder.info().await,
             RecorderType::Douyin(recorder) => recorder.info().await,
             RecorderType::Huya(recorder) => recorder.info().await,
+            RecorderType::Kuaishou(recorder) => recorder.info().await,
+            RecorderType::TikTok(recorder) => recorder.info().await,
         }
     }
 
@@ -105,6 +115,8 @@ impl RecorderType {
             RecorderType::BiliBili(recorder) => recorder.enable().await,
             RecorderType::Douyin(recorder) => recorder.enable().await,
             RecorderType::Huya(recorder) => recorder.enable().await,
+            RecorderType::Kuaishou(recorder) => recorder.enable().await,
+            RecorderType::TikTok(recorder) => recorder.enable().await,
         }
     }
 
@@ -113,6 +125,8 @@ impl RecorderType {
             RecorderType::BiliBili(recorder) => recorder.disable().await,
             RecorderType::Douyin(recorder) => recorder.disable().await,
             RecorderType::Huya(recorder) => recorder.disable().await,
+            RecorderType::Kuaishou(recorder) => recorder.disable().await,
+            RecorderType::TikTok(recorder) => recorder.disable().await,
         }
     }
 }
@@ -477,7 +491,11 @@ impl RecorderManager {
                     .db
                     .get_account_by_platform(platform.clone().as_str())
                     .await;
-                if platform != PlatformType::Huya && account.is_err() {
+                if platform != PlatformType::Huya
+                    && platform != PlatformType::Kuaishou
+                    && platform != PlatformType::TikTok
+                    && account.is_err()
+                {
                     log::warn!("Failed to find an account for {platform:?} {room_id}");
                     continue;
                 }
@@ -549,6 +567,28 @@ impl RecorderManager {
             ),
             PlatformType::Huya => RecorderType::Huya(
                 HuyaRecorder::new(
+                    room_id,
+                    account,
+                    cache_dir,
+                    event_tx,
+                    update_interval,
+                    enabled,
+                )
+                .await?,
+            ),
+            PlatformType::Kuaishou => RecorderType::Kuaishou(
+                KuaishouRecorder::new(
+                    room_id,
+                    account,
+                    cache_dir,
+                    event_tx,
+                    update_interval,
+                    enabled,
+                )
+                .await?,
+            ),
+            PlatformType::TikTok => RecorderType::TikTok(
+                TikTokRecorder::new(
                     room_id,
                     account,
                     cache_dir,

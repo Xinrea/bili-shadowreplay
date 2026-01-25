@@ -31,7 +31,7 @@
     return notes
       .split("\n")
       .filter(
-        (line) => line.trim().startsWith("*") || line.trim().startsWith("-")
+        (line) => line.trim().startsWith("*") || line.trim().startsWith("-"),
       )
       .map((line) => {
         line = line.trim().replace(/^[*-]\s*/, "");

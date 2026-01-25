@@ -170,6 +170,7 @@ impl HuyaRecorder {
             construct_stream_from_variant(live_id, &stream.hls_url, Format::TS, Codec::Avc)
                 .await
                 .map_err(|_| RecorderError::NoStreamAvailable)?;
+
         let hls_recorder = HlsRecorder::new(
             self.room_id.clone(),
             Arc::new(hls_stream),

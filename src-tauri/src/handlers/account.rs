@@ -5,7 +5,7 @@ use crate::state::State;
 use crate::state_type;
 use chrono::Utc;
 use recorder::platforms::bilibili::api::{QrInfo, QrStatus};
-use recorder::platforms::{bilibili, douyin, huya, PlatformType};
+use recorder::platforms::{bilibili, douyin, huya, kuaishou, tiktok, PlatformType};
 use recorder::UserInfo;
 
 use hyper::header::HeaderValue;
@@ -148,6 +148,54 @@ pub async fn add_account(
         }
         PlatformType::Youtube => {
             // unsupported
+            return Err("Unsupported platform".to_string());
+        }
+        PlatformType::Kuaishou => {
+            let tmp_account = AccountRow {
+                platform: platform.as_str().to_string(),
+                uid: "".into(),
+                name: String::new(),
+                avatar: String::new(),
+                csrf: "".into(),
+                cookies: cookies.into(),
+                created_at: Utc::now().to_rfc3339(),
+            };
+            match kuaishou::api::get_user_info(&client, &tmp_account.to_account()).await {
+                Ok(user_info) => UserInfo {
+                    user_id: user_info.user_id,
+                    user_name: user_info.user_name,
+                    user_avatar: user_info.user_avatar,
+                },
+                Err(e) => {
+                    return Err(format!("Failed to get Kuaishou user info: {e}"));
+                }
+            }
+        }
+        PlatformType::Xiaohongshu => {
+            return Err("Unsupported platform".to_string());
+        }
+        PlatformType::TikTok => {
+            let tmp_account = AccountRow {
+                platform: platform.as_str().to_string(),
+                uid: "".into(),
+                name: String::new(),
+                avatar: String::new(),
+                csrf: "".into(),
+                cookies: cookies.into(),
+                created_at: Utc::now().to_rfc3339(),
+            };
+            match tiktok::api::get_user_info(&client, &tmp_account.to_account()).await {
+                Ok(user_info) => UserInfo {
+                    user_id: user_info.user_id,
+                    user_name: user_info.user_name,
+                    user_avatar: user_info.user_avatar,
+                },
+                Err(e) => {
+                    return Err(format!("Failed to get TikTok user info: {e}"));
+                }
+            }
+        }
+        PlatformType::Weibo => {
             return Err("Unsupported platform".to_string());
         }
     };

@@ -27,7 +27,7 @@
       // 按创建时间倒序排列
       tasks.sort(
         (a, b) =>
-          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
       );
     } catch (error) {
       console.error("获取任务列表失败:", error);
@@ -266,7 +266,7 @@
                   <div class="flex items-center space-x-2">
                     <div
                       class="w-2 h-2 {get_task_type_color(
-                        task.task_type
+                        task.task_type,
                       )} rounded-full"
                     ></div>
                     <span
@@ -278,7 +278,7 @@
                   <div class="flex items-center space-x-2">
                     <div
                       class="flex items-center space-x-1 px-2 py-1 rounded-full text-xs font-medium {get_status_bg_color(
-                        task.status
+                        task.status,
                       )} {get_status_color(task.status)}"
                     >
                       {#if task.status.toLowerCase() === "pending" || task.status.toLowerCase() === "processing"}
@@ -310,7 +310,7 @@
                       >
                         <ChevronDown
                           class="w-3 h-3 transition-transform {expandedTasks.has(
-                            task.id
+                            task.id,
                           )
                             ? 'rotate-180'
                             : ''}"

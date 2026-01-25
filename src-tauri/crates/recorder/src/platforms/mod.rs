@@ -1,6 +1,8 @@
 pub mod bilibili;
 pub mod douyin;
 pub mod huya;
+pub mod kuaishou;
+pub mod tiktok;
 use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9,6 +11,10 @@ pub enum PlatformType {
     Douyin,
     Huya,
     Youtube,
+    Kuaishou,
+    Xiaohongshu,
+    TikTok,
+    Weibo,
 }
 
 impl PlatformType {
@@ -18,6 +24,10 @@ impl PlatformType {
             PlatformType::Douyin => "douyin",
             PlatformType::Huya => "huya",
             PlatformType::Youtube => "youtube",
+            PlatformType::Kuaishou => "kuaishou",
+            PlatformType::Xiaohongshu => "xiaohongshu",
+            PlatformType::TikTok => "tiktok",
+            PlatformType::Weibo => "weibo",
         }
     }
 }
@@ -30,6 +40,10 @@ impl std::str::FromStr for PlatformType {
             "douyin" => Ok(PlatformType::Douyin),
             "huya" => Ok(PlatformType::Huya),
             "youtube" => Ok(PlatformType::Youtube),
+            "kuaishou" => Ok(PlatformType::Kuaishou),
+            "xiaohongshu" => Ok(PlatformType::Xiaohongshu),
+            "tiktok" => Ok(PlatformType::TikTok),
+            "weibo" => Ok(PlatformType::Weibo),
             _ => Err(format!("Invalid platform type: {s}")),
         }
     }

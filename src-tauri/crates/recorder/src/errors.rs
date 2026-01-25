@@ -78,4 +78,6 @@ pub enum RecorderError {
     UnsupportedStream,
     #[error("Empty record")]
     EmptyRecord,
+    #[error("Not live")]
+    NotLive,
 }

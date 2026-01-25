@@ -94,7 +94,7 @@
   async function check_qr() {
     let qr_status: { code: number; cookies: string } = await invoke(
       "get_qr_status",
-      { qrcodeKey: oauth_key }
+      { qrcodeKey: oauth_key },
     );
     if (qr_status.code == 0) {
       clearInterval(check_interval);
@@ -126,26 +126,25 @@
   }
 
   function platform_display(platform: string) {
-    if (platform === "bilibili") {
-      return "B站";
-    } else if (platform === "douyin") {
-      return "抖音";
-    }
-    if (platform === "huya") {
-      return "虎牙";
-    }
-    return platform;
+    const platformMap = {
+      bilibili: "B站",
+      douyin: "抖音",
+      huya: "虎牙",
+      kuaishou: "快手",
+      tiktok: "TikTok",
+    };
+    return platformMap[platform] || platform;
   }
 
   function platform_avatar(platform: string) {
-    if (platform === "bilibili") {
-      return "/imgs/bilibili_avatar.png";
-    } else if (platform === "douyin") {
-      return "/imgs/douyin_avatar.png";
-    } else if (platform === "huya") {
-      return "/imgs/huya_avatar.png";
-    }
-    return "/imgs/bilibili_avatar.png";
+    const avatarMap = {
+      bilibili: "/imgs/bilibili_avatar.png",
+      douyin: "/imgs/douyin.png",
+      huya: "/imgs/huya_avatar.png",
+      kuaishou: "/imgs/kuaishou.svg",
+      tiktok: "/imgs/tiktok.png",
+    };
+    return avatarMap[platform] || "/imgs/bilibili_avatar.png";
   }
 </script>
 
@@ -154,7 +153,9 @@
   on:mousedown={handleModalClickOutside}
 />
 
-<div class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50">
+<div
+  class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50 dark:bg-black"
+>
   <div class="space-y-6">
     <!-- Header -->
     <div class="flex justify-between items-center">
@@ -204,7 +205,8 @@
                     class="inline-flex items-center px-2 py-1 text-xs font-medium rounded-full {account.platform ===
                     'bilibili'
                       ? 'bg-pink-100 text-pink-800 dark:bg-pink-900 dark:text-pink-200'
-                      : account.platform === 'douyin'
+                      : account.platform === 'douyin' ||
+                          account.platform === 'tiktok'
                         ? 'bg-black text-white'
                         : account.platform === 'huya'
                           ? 'text-white'
@@ -315,9 +317,11 @@
           >
             平台
           </label>
-          <div class="flex p-0.5 bg-[#f5f5f7] dark:bg-[#1c1c1e] rounded-lg">
+          <div
+            class="flex items-center gap-2 p-0.5 bg-[#f5f5f7] dark:bg-[#1c1c1e] rounded-lg overflow-x-auto custom-scrollbar-light"
+          >
             <button
-              class="flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform ===
+              class="flex-none px-3 py-2 text-sm font-medium whitespace-nowrap rounded-md transition-colors {selectedPlatform ===
               'bilibili'
                 ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white'
                 : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
@@ -330,7 +334,7 @@
               哔哩哔哩
             </button>
             <button
-              class="flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform ===
+              class="flex-none px-3 py-2 text-sm font-medium whitespace-nowrap rounded-md transition-colors {selectedPlatform ===
               'douyin'
                 ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white'
                 : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
@@ -342,7 +346,7 @@
               抖音
             </button>
             <button
-              class="flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform ===
+              class="flex-none px-3 py-2 text-sm font-medium whitespace-nowrap rounded-md transition-colors {selectedPlatform ===
               'huya'
                 ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white'
                 : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
@@ -352,6 +356,30 @@
               }}
             >
               虎牙
+            </button>
+            <button
+              class="flex-none px-3 py-2 text-sm font-medium whitespace-nowrap rounded-md transition-colors {selectedPlatform ===
+              'kuaishou'
+                ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white'
+                : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
+              on:click={() => {
+                selectedPlatform = "kuaishou";
+                activeTab = "manual";
+              }}
+            >
+              快手
+            </button>
+            <button
+              class="flex-none px-3 py-2 text-sm font-medium whitespace-nowrap rounded-md transition-colors {selectedPlatform ===
+              'tiktok'
+                ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white'
+                : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
+              on:click={() => {
+                selectedPlatform = "tiktok";
+                activeTab = "manual";
+              }}
+            >
+              TikTok
             </button>
           </div>
         </div>
@@ -407,7 +435,7 @@
                 />
               </p>
               <div class="flex justify-end items-center space-x-2">
-                {#if selectedPlatform === "douyin"}
+                {#if selectedPlatform !== "bilibili"}
                   <a
                     href="https://bsr.xinrea.cn/getting-started/config/account.html"
                     class="text-blue-500 hover:underline text-sm"

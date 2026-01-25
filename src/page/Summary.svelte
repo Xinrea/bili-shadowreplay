@@ -92,7 +92,7 @@
     for (const record of newRecords) {
       record.cover = await get_static_url(
         "cache",
-        `${record.platform}/${record.room_id}/${record.live_id}/cover.jpg`
+        `${record.platform}/${record.room_id}/${record.live_id}/cover.jpg`,
       );
     }
 
@@ -203,7 +203,7 @@
 
       // Remove the record from the list
       recent_records = recent_records.filter(
-        (r) => r.live_id !== record.live_id
+        (r) => r.live_id !== record.live_id,
       );
 
       // Update stats
@@ -413,7 +413,7 @@
                 </h3>
                 <p class="text-sm text-gray-600 dark:text-gray-400">
                   {record.platform} • {record.room_id} • {format_date(
-                    record.created_at
+                    record.created_at,
                   )} • {format_size(record.size)}
                 </p>
               </div>

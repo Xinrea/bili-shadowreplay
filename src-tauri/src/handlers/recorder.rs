@@ -70,6 +70,34 @@ pub async fn add_recorder(
                 Ok(Account::default())
             }
         }
+        PlatformType::Kuaishou => {
+            if let Ok(account) = state.db.get_account_by_platform("kuaishou").await {
+                Ok(account.to_account())
+            } else {
+                Ok(Account::default())
+            }
+        }
+        PlatformType::TikTok => {
+            if let Ok(account) = state.db.get_account_by_platform("tiktok").await {
+                Ok(account.to_account())
+            } else {
+                Ok(Account::default())
+            }
+        }
+        PlatformType::Xiaohongshu => {
+            if let Ok(account) = state.db.get_account_by_platform("xiaohongshu").await {
+                Ok(account.to_account())
+            } else {
+                Ok(Account::default())
+            }
+        }
+        PlatformType::Weibo => {
+            if let Ok(account) = state.db.get_account_by_platform("weibo").await {
+                Ok(account.to_account())
+            } else {
+                Ok(Account::default())
+            }
+        }
         _ => Err("不支持的平台".to_string()),
     };
 

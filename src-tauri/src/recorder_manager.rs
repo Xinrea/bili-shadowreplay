@@ -312,9 +312,35 @@ impl RecorderManager {
                 }
                 RecorderEvent::RecordEnd { recorder } => {
                     log::info!("Record end: {recorder:?}");
-                    let event =
-                        events::new_webhook_event(events::RECORD_ENDED, Payload::Room(recorder));
+                    let event = events::new_webhook_event(
+                        events::RECORD_ENDED,
+                        Payload::Room(recorder.clone()),
+                    );
                     let _ = self.webhook_poster.post_event(&event).await;
+                    let live_id = recorder.live_id.clone();
+                    // check record in db, if length is 0, delete it
+                    let room_id = recorder.room_info.room_id.clone();
+                    let record = match self.db.get_record(&room_id, &live_id).await {
+                        Ok(r) => r,
+                        Err(e) => {
+                            log::error!("Record not found in db: {recorder:?}, err={e:?}");
+                            return;
+                        }
+                    };
+                    if record.size == 0 {
+                        let _ = self.db.remove_record(&live_id).await;
+                        // remove record folder
+                        let cache_folder = Path::new(self.config.read().await.cache.as_str())
+                            .join(
+                                PlatformType::from_str(&recorder.room_info.platform)
+                                    .unwrap_or(PlatformType::BiliBili)
+                                    .as_str(),
+                            )
+                            .join(room_id)
+                            .join(live_id);
+                        let _ = tokio::fs::remove_dir_all(&cache_folder).await;
+                        log::info!("Record folder removed: {cache_folder:?}");
+                    }
                 }
                 RecorderEvent::ProgressUpdate { id, content } => {
                     self.emitter

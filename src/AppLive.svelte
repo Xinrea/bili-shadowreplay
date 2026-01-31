@@ -1087,6 +1087,10 @@
                   </div>
                 </div>
               </div>
+            {:else}
+              <div class="text-center py-4 text-white/60 text-[13px]">
+                没有已激活的选区，请选择或添加选区。
+              </div>
             {/each}
           </div>
           <div
@@ -1150,6 +1154,7 @@
         </button>
         <button
           on:click={confirm_generate_clip}
+          disabled={activeRanges.length === 0}
           class="px-3.5 py-2 text-[13px] rounded-lg bg-[#0A84FF] text-white shadow-[inset_0_1px_0_rgba(255,255,255,.15)] hover:bg-[#0A84FF]/90 transition-colors"
         >
           确认生成

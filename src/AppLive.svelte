@@ -565,7 +565,7 @@
       platform: platform,
       cover: new_cover,
       live_id: live_id,
-      ranges: ranges,
+      ranges: activeRanges,
       danmu: danmu_enabled,
       local_offset:
         parseInt(localStorage.getItem(`local_offset:${live_id}`) || "0", 10) ||

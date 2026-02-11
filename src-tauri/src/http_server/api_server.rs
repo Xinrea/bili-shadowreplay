@@ -5,6 +5,7 @@ use std::{
 
 use crate::{
     config::Config,
+    constants::API_PORT,
     database::{
         message::MessageRow, record::RecordRow, recorder::RecorderRow, task::TaskRow,
         video::VideoRow,
@@ -1679,7 +1680,14 @@ pub async fn start_api_server(state: State) {
         .allow_methods(Any)
         .allow_headers(Any);
 
+    // In headless/Docker mode, serve cache and output from the same port (3000) so they are
+    // reachable when only one port is exposed. These routes must be registered before "/".
+    let output_path = state.config.read().await.output.clone();
+    let cache_path = state.config.read().await.cache.clone();
+
     let mut app = Router::new()
+        .nest_service("/output", ServeDir::new(output_path))
+        .nest_service("/cache", ServeDir::new(cache_path))
         // Serve static files from dist directory
         .nest_service("/", ServeDir::new("./dist"))
         // Account commands
@@ -1861,10 +1869,10 @@ pub async fn start_api_server(state: State) {
         .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
         .with_state(state);
 
-    let addr = "0.0.0.0:3000";
+    let addr = format!("0.0.0.0:{}", API_PORT);
     log::info!("Starting API server on http://{}", addr);
 
-    let listener = match tokio::net::TcpListener::bind(addr).await {
+    let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(listener) => {
             log::info!("API server listening on http://{}", addr);
             listener

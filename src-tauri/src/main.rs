@@ -434,7 +434,7 @@ impl MigrationSource<'static> for MigrationList {
 async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Error>> {
     use std::path::PathBuf;
 
-    use crate::{static_server::start_static_server, task::TaskManager};
+    use crate::{constants::API_PORT, static_server::StaticServer, task::TaskManager};
     use progress::progress_manager::ProgressManager;
     use progress::progress_reporter::EventEmitter;
 
@@ -492,7 +492,12 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
         webhook_poster.clone(),
     ));
 
-    let static_server = Arc::new(start_static_server(config.clone()).await?);
+    // In headless/Docker, cache and output are served from the API server (API_PORT), so no
+    // separate static server is needed and only one port need be exposed.
+    let static_server = Arc::new(StaticServer {
+        handle: tokio::spawn(async {}),
+        port: API_PORT,
+    });
 
     let _ = try_rebuild_archives(&db, config.read().await.cache.clone().into()).await;
     let _ = try_convert_live_covers(&db, config.read().await.cache.clone().into()).await;

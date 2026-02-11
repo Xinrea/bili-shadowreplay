@@ -12,6 +12,19 @@ pub struct StaticServer {
     pub port: u16,
 }
 
+impl StaticServer {
+    /// Create a StaticServer instance for environments where the actual static
+    /// files are served by the API server (e.g. headless/Docker). The handle is
+    /// a no-op task used only to satisfy the existing interface.
+    #[cfg(feature = "headless")]
+    pub fn headless(port: u16) -> Self {
+        Self {
+            handle: tokio::spawn(async {}),
+            port,
+        }
+    }
+}
+
 pub async fn start_static_server(
     config: Arc<RwLock<Config>>,
 ) -> Result<StaticServer, Box<dyn std::error::Error>> {

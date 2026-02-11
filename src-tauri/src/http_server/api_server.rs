@@ -1682,8 +1682,14 @@ pub async fn start_api_server(state: State) {
 
     // In headless/Docker mode, serve cache and output from the same port (3000) so they are
     // reachable when only one port is exposed. These routes must be registered before "/".
-    let output_path = state.config.read().await.output.clone();
-    let cache_path = state.config.read().await.cache.clone();
+    //
+    // Take a single read lock on config and clone the relevant fields to avoid
+    // redundant locking. The lock is scoped to this block so it is released
+    // before we move `state` into the router below.
+    let (output_path, cache_path) = {
+        let config = state.config.read().await;
+        (config.output.clone(), config.cache.clone())
+    };
 
     let mut app = Router::new()
         .nest_service("/output", ServeDir::new(output_path))

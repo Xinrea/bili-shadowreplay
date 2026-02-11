@@ -493,11 +493,9 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     ));
 
     // In headless/Docker, cache and output are served from the API server (API_PORT), so no
-    // separate static server is needed and only one port need be exposed.
-    let static_server = Arc::new(StaticServer {
-        handle: tokio::spawn(async {}),
-        port: API_PORT,
-    });
+    // separate static server is needed and only one port need be exposed. Use a dedicated
+    // constructor to make this intent explicit.
+    let static_server = Arc::new(StaticServer::headless(API_PORT));
 
     let _ = try_rebuild_archives(&db, config.read().await.cache.clone().into()).await;
     let _ = try_convert_live_covers(&db, config.read().await.cache.clone().into()).await;

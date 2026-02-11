@@ -13,14 +13,14 @@ pub async fn get_config(state: state_type!()) -> Result<Config, ()> {
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn get_static_port(state: state_type!()) -> Result<u16, ()> {
+pub async fn get_static_port(_state: state_type!()) -> Result<u16, ()> {
     #[cfg(feature = "headless")]
     {
         Ok(API_PORT)
     }
     #[cfg(not(feature = "headless"))]
     {
-        Ok(state.static_server.port)
+        Ok(_state.static_server.port)
     }
 }
 

@@ -1,4 +1,5 @@
 use crate::config::Config;
+#[cfg(feature = "headless")]
 use crate::constants::API_PORT;
 use crate::danmu2ass::Danmu2AssOptions;
 use crate::state::State;

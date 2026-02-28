@@ -1,4 +1,6 @@
 use crate::config::Config;
+#[cfg(feature = "headless")]
+use crate::constants::API_PORT;
 use crate::danmu2ass::Danmu2AssOptions;
 use crate::state::State;
 use crate::state_type;
@@ -12,8 +14,15 @@ pub async fn get_config(state: state_type!()) -> Result<Config, ()> {
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn get_static_port(state: state_type!()) -> Result<u16, ()> {
-    Ok(state.static_server.port)
+pub async fn get_static_port(_state: state_type!()) -> Result<u16, ()> {
+    #[cfg(feature = "headless")]
+    {
+        Ok(API_PORT)
+    }
+    #[cfg(not(feature = "headless"))]
+    {
+        Ok(_state.static_server.port)
+    }
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]

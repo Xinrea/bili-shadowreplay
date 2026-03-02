@@ -2,6 +2,12 @@ use std::fmt;
 pub mod flv_recorder;
 pub mod hls_recorder;
 pub mod playlist;
+pub mod stream_info;
+
+pub use stream_info::{
+    CdnNode, Codec as StreamCodec, Format as StreamFormat, PlatformStreamInfo, PlatformType,
+    Quality, RecorderType, StreamVariant,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Format {

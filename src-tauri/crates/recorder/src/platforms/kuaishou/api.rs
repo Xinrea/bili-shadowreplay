@@ -1,4 +1,7 @@
 ﻿use super::response::LiveStreamResponse;
+use crate::core::stream_info::{
+    CdnNode, Codec, Format, PlatformStreamInfo, PlatformType, Quality, StreamVariant,
+};
 use crate::errors::RecorderError;
 use crate::{account::Account, utils::user_agent_generator};
 use regex::Regex;
@@ -1209,7 +1212,44 @@ pub async fn download_file(
     let response = client.get(url).send().await?;
     let bytes = response.bytes().await?;
     let mut file = tokio::fs::File::create(&path).await?;
-    let mut content = std::io::Cursor::new(bytes);
-    tokio::io::copy(&mut content, &mut file).await?;
+    tokio::io::AsyncWriteExt::write_all(&mut file, &bytes).await?;
     Ok(())
+}
+
+// 实现 PlatformStreamInfo trait
+impl PlatformStreamInfo for StreamInfo {
+    fn primary_variant(&self) -> Result<StreamVariant, RecorderError> {
+        // 根据 quality 字段推断质量等级
+        let quality = match self.quality.as_str() {
+            "origin" => Quality::Origin,
+            "uhd" => Quality::UltraHD,
+            "hd" => Quality::HD,
+            "sd" => Quality::SD,
+            _ => Quality::Origin,
+        };
+
+        Ok(StreamVariant {
+            url: self.url.clone(),
+            format: Format::HLS,
+            codec: Codec::AVC,
+            quality,
+            bitrate: self.bitrate.map(|b| b as u64),
+        })
+    }
+
+    fn all_variants(&self) -> Vec<StreamVariant> {
+        vec![self.primary_variant().unwrap()]
+    }
+
+    fn expires_at(&self) -> Option<i64> {
+        None // Kuaishou 流不过期
+    }
+
+    fn cdn_nodes(&self) -> Vec<CdnNode> {
+        Vec::new() // Kuaishou 单 CDN
+    }
+
+    fn platform(&self) -> PlatformType {
+        PlatformType::Kuaishou
+    }
 }

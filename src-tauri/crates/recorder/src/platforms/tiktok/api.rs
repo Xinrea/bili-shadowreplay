@@ -1,5 +1,8 @@
 use super::response::{RoomInfo as SigiRoomInfo, SigiStateResponse, StreamUrl as SigiStreamUrl};
 use crate::account::Account;
+use crate::core::stream_info::{
+    CdnNode, Codec, Format, PlatformStreamInfo, PlatformType, Quality, StreamVariant,
+};
 use crate::errors::RecorderError;
 use crate::utils::user_agent_generator;
 use regex::Regex;
@@ -1097,4 +1100,70 @@ pub async fn download_file(
     let mut content = std::io::Cursor::new(bytes);
     tokio::io::copy(&mut content, &mut file).await?;
     Ok(())
+}
+
+// 实现 PlatformStreamInfo trait
+impl PlatformStreamInfo for StreamInfo {
+    fn primary_variant(&self) -> Result<StreamVariant, RecorderError> {
+        // TikTok 优先使用 RTMP (FLV)，其次 HLS
+        if let Some(rtmp_url) = &self.rtmp_url {
+            return Ok(StreamVariant {
+                url: rtmp_url.clone(),
+                format: Format::RTMP,
+                codec: Codec::AVC,
+                quality: Quality::Origin,
+                bitrate: None,
+            });
+        }
+
+        if let Some(hls_url) = &self.hls_url {
+            return Ok(StreamVariant {
+                url: hls_url.clone(),
+                format: Format::HLS,
+                codec: Codec::AVC,
+                quality: Quality::Origin,
+                bitrate: None,
+            });
+        }
+
+        Err(RecorderError::NoStreamAvailable)
+    }
+
+    fn all_variants(&self) -> Vec<StreamVariant> {
+        let mut variants = Vec::new();
+
+        if let Some(rtmp_url) = &self.rtmp_url {
+            variants.push(StreamVariant {
+                url: rtmp_url.clone(),
+                format: Format::RTMP,
+                codec: Codec::AVC,
+                quality: Quality::Origin,
+                bitrate: None,
+            });
+        }
+
+        if let Some(hls_url) = &self.hls_url {
+            variants.push(StreamVariant {
+                url: hls_url.clone(),
+                format: Format::HLS,
+                codec: Codec::AVC,
+                quality: Quality::Origin,
+                bitrate: None,
+            });
+        }
+
+        variants
+    }
+
+    fn expires_at(&self) -> Option<i64> {
+        None // TikTok 流不过期
+    }
+
+    fn cdn_nodes(&self) -> Vec<CdnNode> {
+        Vec::new() // TikTok 单 CDN
+    }
+
+    fn platform(&self) -> PlatformType {
+        PlatformType::TikTok
+    }
 }

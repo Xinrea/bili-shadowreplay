@@ -1,6 +1,7 @@
 pub mod api;
 pub mod profile;
 pub mod response;
+pub mod stream_info;
 use crate::account::Account;
 use crate::core::hls_recorder::HlsRecorder;
 use crate::errors::RecorderError;

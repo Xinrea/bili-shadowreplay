@@ -3,9 +3,12 @@ use regex::Regex;
 use reqwest::Url;
 use serde_json::Value;
 
+use crate::core::stream_info::{
+    CdnNode, Codec, Format, PlatformStreamInfo, PlatformType, Quality, StreamVariant,
+};
+use crate::errors::RecorderError;
 use crate::platforms::huya::url_builder::PlayerInfo;
 use crate::platforms::huya::url_builder::UrlBuilder;
-use crate::platforms::PlatformType;
 use crate::RoomInfo;
 use crate::UserInfo;
 
@@ -1559,5 +1562,34 @@ mod tests {
         assert_eq!(user_info.user_avatar, "https://huyaimg.msstatic.com/avatar/1003/23/3be5ff7cff0f6d08fee796ac537ef0_180_135.jpg?1525686175");
         assert_eq!(room_info.room_id, "857824");
         assert!(stream_info.hls_url.starts_with("https://"));
+    }
+}
+
+// 实现 PlatformStreamInfo trait
+impl PlatformStreamInfo for StreamInfo {
+    fn primary_variant(&self) -> Result<StreamVariant, RecorderError> {
+        Ok(StreamVariant {
+            url: self.hls_url.clone(),
+            format: Format::HLS,
+            codec: Codec::AVC,
+            quality: Quality::Origin,
+            bitrate: None,
+        })
+    }
+
+    fn all_variants(&self) -> Vec<StreamVariant> {
+        vec![self.primary_variant().unwrap()]
+    }
+
+    fn expires_at(&self) -> Option<i64> {
+        None // Huya 流不过期
+    }
+
+    fn cdn_nodes(&self) -> Vec<CdnNode> {
+        Vec::new() // Huya 单 CDN
+    }
+
+    fn platform(&self) -> PlatformType {
+        PlatformType::Huya
     }
 }

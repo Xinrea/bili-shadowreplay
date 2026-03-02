@@ -22,10 +22,11 @@ impl BiliStreamInfo {
 
     /// 从 UrlInfo 构建完整 URL
     fn build_url(&self, url_info: &UrlInfo) -> String {
-        format!(
-            "{}{}?{}",
-            url_info.host, self.inner.base_url, url_info.extra
-        )
+        if url_info.extra.is_empty() {
+            format!("{}{}", url_info.host, self.inner.base_url)
+        } else {
+            format!("{}{}?{}", url_info.host, self.inner.base_url, url_info.extra)
+        }
     }
 }
 

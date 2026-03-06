@@ -1,0 +1,3 @@
+file '/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/test_videos/[test1][video].mp4'
+file '/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/test_videos/test'\''2'\''video.mp4'
+file '/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/test_videos/[test3]'\''video'\''[final].mp4'

@@ -582,19 +582,25 @@ const clip_range = tool(
     clip_range_params,
   }: {
     reason: string;
-    clip_range_params: ClipRangeParams;
+    clip_range_params: Omit<ClipRangeParams, 'ranges'> & {
+      ranges: Array<{ start: number; end: number }>;
+    };
   }) => {
     const event_id = generateEventId();
+    const backendParams: ClipRangeParams = {
+      ...clip_range_params,
+    };
+
     const result = await invoke("clip_range", {
       eventId: event_id,
-      params: clip_range_params,
+      params: backendParams,
     });
     return result;
   },
   {
     name: "clip_range",
     description:
-      "Clip a range of a live, it will be used to generate a video. You must provide a reason for your decision on params",
+      "Clip one or more ranges from a live stream to generate a video. When multiple ranges are provided, they are concatenated into a single video with an optional transition effect. You must provide a reason for your decision on params.",
     schema: z.object({
       reason: z
         .string()
@@ -604,18 +610,22 @@ const clip_range = tool(
       clip_range_params: z.object({
         room_id: z.string().describe("The room id of the room"),
         live_id: z.string().describe("The live id of the live"),
-        range: z.object({
-          start: z
-            .number()
-            .describe(
-              "The start time in SECONDS of the clip that relative to the live start time"
-            ),
-          end: z
-            .number()
-            .describe(
-              "The end time in SECONDS of the clip that relative to the live start time"
-            ),
-        }),
+        ranges: z
+          .array(
+            z.object({
+              start: z
+                .number()
+                .describe(
+                  "The start time in SECONDS of the clip that relative to the live start time"
+                ),
+              end: z
+                .number()
+                .describe(
+                  "The end time in SECONDS of the clip that relative to the live start time"
+                ),
+            })
+          )
+          .describe("Array of time ranges to clip. Supports single or multiple ranges."),
         danmu: z
           .boolean()
           .describe(
@@ -634,6 +644,12 @@ const clip_range = tool(
           .boolean()
           .describe(
             "Whether to fix the encoding of the clip, it will take a lot of time, so it is recommended to set it to false"
+          ),
+        transition: z
+          .enum(["none", "fade", "dissolve", "wipeleft", "wiperight", "slideup", "slidedown"])
+          .optional()
+          .describe(
+            "Transition effect between clips when multiple ranges are provided. Default: 'none' (direct cut)."
           ),
       }),
     }),
@@ -761,12 +777,26 @@ const get_archive_subtitle = tool(
     room_id: string;
     live_id: string;
   }) => {
-    const result = await invoke("get_archive_subtitle", {
-      platform,
-      roomId: room_id,
-      liveId: live_id,
-    });
-    return result;
+    try {
+      const result = await invoke("get_archive_subtitle", {
+        platform,
+        roomId: room_id,
+        liveId: live_id,
+      });
+      return result;
+    } catch (error) {
+      // If subtitle doesn't exist, return a helpful message instead of throwing
+      if (error.toString().includes("Subtitle not found")) {
+        return {
+          error: "subtitle_not_found",
+          message: "该录播还没有生成字幕，可以使用 generate_archive_subtitle 工具生成字幕",
+          platform,
+          room_id,
+          live_id,
+        };
+      }
+      throw error;
+    }
   },
   {
     name: "get_archive_subtitle",
@@ -810,6 +840,237 @@ const generate_archive_subtitle = tool(
   }
 );
 
+// @ts-ignore
+const extract_video_frames = tool(
+  async ({
+    video_id,
+    timestamps,
+    max_frames,
+  }: {
+    video_id: number;
+    timestamps?: number[];
+    max_frames?: number;
+  }) => {
+    const result = await invoke("extract_video_frames", {
+      videoId: video_id,
+      timestamps: timestamps || [],
+      maxFrames: max_frames || 10,
+    });
+    return result;
+  },
+  {
+    name: "extract_video_frames",
+    description:
+      "Extract frames from a video at specific timestamps or evenly distributed. Returns base64 encoded images for visual analysis. Use this to 'see' video content.",
+    schema: z.object({
+      video_id: z.number().describe("The id of the video"),
+      timestamps: z
+        .array(z.number())
+        .optional()
+        .describe(
+          "Specific timestamps in seconds to extract frames. If not provided, frames will be evenly distributed"
+        ),
+      max_frames: z
+        .number()
+        .optional()
+        .describe("Maximum number of frames to extract (default: 10)"),
+    }),
+  }
+);
+
+// @ts-ignore
+const get_video_metadata = tool(
+  async ({ video_id }: { video_id: number }) => {
+    const result = await invoke("get_video_metadata", { videoId: video_id });
+    return result;
+  },
+  {
+    name: "get_video_metadata",
+    description:
+      "Get detailed metadata of a video including duration, resolution, codec, bitrate, fps, and file size",
+    schema: z.object({
+      video_id: z.number().describe("The id of the video"),
+    }),
+  }
+);
+
+// @ts-ignore
+const analyze_danmu_highlights = tool(
+  async ({
+    platform,
+    room_id,
+    live_id,
+    time_window,
+    min_density,
+  }: {
+    platform: string;
+    room_id: string;
+    live_id: string;
+    time_window: number;
+    min_density: number;
+  }) => {
+    const result = await invoke("analyze_danmu_highlights", {
+      platform,
+      roomId: room_id,
+      liveId: live_id,
+      timeWindow: time_window,
+      minDensity: min_density,
+    });
+    return result;
+  },
+  {
+    name: "analyze_danmu_highlights",
+    description:
+      "Analyze danmu (comments) to find highlight moments based on comment density and keywords. Returns time ranges with high engagement that are good candidates for clipping.",
+    schema: z.object({
+      platform: z.string().describe("The platform of the live"),
+      room_id: z.string().describe("The room id of the live"),
+      live_id: z.string().describe("The live id of the live"),
+      time_window: z
+        .number()
+        .describe(
+          "Time window in seconds to analyze comment density (e.g., 30 for 30-second windows)"
+        ),
+      min_density: z
+        .number()
+        .describe(
+          "Minimum comments per time window to consider as highlight (e.g., 10)"
+        ),
+    }),
+  }
+);
+
+// @ts-ignore
+const search_danmu_keywords = tool(
+  async ({
+    platform,
+    room_id,
+    live_id,
+    keywords,
+    context_seconds,
+  }: {
+    platform: string;
+    room_id: string;
+    live_id: string;
+    keywords: string[];
+    context_seconds: number;
+  }) => {
+    const result = await invoke("search_danmu_keywords", {
+      platform,
+      roomId: room_id,
+      liveId: live_id,
+      keywords,
+      contextSeconds: context_seconds,
+    });
+    return result;
+  },
+  {
+    name: "search_danmu_keywords",
+    description:
+      "Search for specific keywords in danmu and return timestamps with context. Useful for finding specific moments mentioned by viewers (e.g., '精彩', '666', '笑死').",
+    schema: z.object({
+      platform: z.string().describe("The platform of the live"),
+      room_id: z.string().describe("The room id of the live"),
+      live_id: z.string().describe("The live id of the live"),
+      keywords: z
+        .array(z.string())
+        .describe("Keywords to search for in danmu content"),
+      context_seconds: z
+        .number()
+        .describe(
+          "Seconds of context to include before and after keyword match (e.g., 10)"
+        ),
+    }),
+  }
+);
+
+// @ts-ignore
+const merge_videos = tool(
+  async ({
+    video_ids,
+    output_title,
+    output_note,
+    transition,
+  }: {
+    video_ids: number[];
+    output_title: string;
+    output_note: string;
+    transition?: string;
+  }) => {
+    const result = await invoke("merge_videos", {
+      videoIds: video_ids,
+      outputTitle: output_title,
+      outputNote: output_note,
+      transition: transition || "none",
+    });
+    return result;
+  },
+  {
+    name: "merge_videos",
+    description:
+      "Merge multiple videos into a single video. Videos will be concatenated in the order provided with optional transitions between clips. Useful for creating compilations or combining multiple clips.",
+    schema: z.object({
+      video_ids: z
+        .array(z.number())
+        .describe("Array of video IDs to merge, in order"),
+      output_title: z.string().describe("Title for the merged video"),
+      output_note: z.string().describe("Note for the merged video"),
+      transition: z
+        .enum(["none", "fade", "dissolve", "wipeleft", "wiperight", "slideup", "slidedown"])
+        .optional()
+        .describe(
+          "Transition effect between clips. Options: 'none' (直接切换), 'fade' (淡入淡出), 'dissolve' (溶解), 'wipeleft' (左擦除), 'wiperight' (右擦除), 'slideup' (上滑), 'slidedown' (下滑). Default: 'none'"
+        ),
+    }),
+  }
+);
+
+// @ts-ignore
+const extract_video_audio = tool(
+  async ({ video_id }: { video_id: number }) => {
+    const result = await invoke("extract_video_audio", { videoId: video_id });
+    return result;
+  },
+  {
+    name: "extract_video_audio",
+    description:
+      "Extract audio from a video as a separate audio file. Useful for audio analysis or creating audio-only content.",
+    schema: z.object({
+      video_id: z.number().describe("The id of the video"),
+    }),
+  }
+);
+
+// @ts-ignore
+const get_archive_metadata = tool(
+  async ({
+    platform,
+    room_id,
+    live_id,
+  }: {
+    platform: string;
+    room_id: string;
+    live_id: string;
+  }) => {
+    const result = await invoke("get_archive_metadata", {
+      platform,
+      roomId: room_id,
+      liveId: live_id,
+    });
+    return result;
+  },
+  {
+    name: "get_archive_metadata",
+    description:
+      "Get detailed metadata of an archive including duration, file size, video quality, and recording time",
+    schema: z.object({
+      platform: z.string().describe("The platform of the archive"),
+      room_id: z.string().describe("The room id of the archive"),
+      live_id: z.string().describe("The live id of the archive"),
+    }),
+  }
+);
+
 const tools = [
   get_accounts,
   remove_account,
@@ -842,6 +1103,14 @@ const tools = [
   list_folder,
   get_archive_subtitle,
   generate_archive_subtitle,
+  // New video editing tools
+  extract_video_frames,
+  get_video_metadata,
+  analyze_danmu_highlights,
+  search_danmu_keywords,
+  merge_videos,
+  extract_video_audio,
+  get_archive_metadata,
 ];
 
 export { tools };

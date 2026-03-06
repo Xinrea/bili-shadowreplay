@@ -837,7 +837,7 @@ pub async fn check_ffmpeg() -> Result<String, String> {
     }
 }
 
-fn ffmpeg_path() -> PathBuf {
+pub fn ffmpeg_path() -> PathBuf {
     let mut path = Path::new("ffmpeg").to_path_buf();
     if cfg!(windows) {
         path.set_extension("exe");

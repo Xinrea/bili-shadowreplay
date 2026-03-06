@@ -21,6 +21,18 @@ pub async fn random_filename() -> String {
     format!("{:x}", rand::random::<u64>())
 }
 
+/// Escape path for FFmpeg concat demuxer
+/// According to FFmpeg docs, when using single quotes in concat files:
+/// - Single quotes need special escaping: ' -> '\''
+/// - Backslashes need escaping: \ -> \\
+/// - Square brackets [] do NOT need escaping when inside single quotes
+fn escape_concat_path(path: &Path) -> String {
+    let path_str = path.to_string_lossy();
+    // Only escape backslashes and single quotes
+    // Do NOT escape square brackets - they work fine in single-quoted paths
+    path_str.replace('\\', "\\\\").replace('\'', "'\\''")
+}
+
 pub async fn handle_ffmpeg_process(
     reporter: Option<&impl ProgressReporterTrait>,
     ffmpeg_process: &mut tokio::process::Command,
@@ -67,7 +79,16 @@ pub async fn concat_videos(
     videos: &[PathBuf],
     output_path: &Path,
 ) -> Result<(), String> {
-    // ffmpeg -i input1.mp4 -i input2.mp4 -i input3.mp4 -c copy output.mp4
+    concat_videos_with_transition(reporter, videos, output_path, None).await
+}
+
+/// Concatenate videos with optional transition effects
+pub async fn concat_videos_with_transition(
+    reporter: Option<&impl ProgressReporterTrait>,
+    videos: &[PathBuf],
+    output_path: &Path,
+    transition: Option<&str>,
+) -> Result<(), String> {
     let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
     #[cfg(target_os = "windows")]
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
@@ -77,51 +98,129 @@ pub async fn concat_videos(
         std::fs::create_dir_all(output_folder).unwrap();
     }
 
-    let filelist_filename = format!("filelist_{}.txt", random_filename().await);
+    // If no transition or only one video, use simple concat
+    if transition.is_none() || transition == Some("none") || videos.len() == 1 {
+        let filelist_filename = format!("filelist_{}.txt", random_filename().await);
 
-    let mut filelist = tokio::fs::File::create(&output_folder.join(&filelist_filename))
-        .await
-        .unwrap();
-    for video in videos {
-        filelist
-            .write_all(format!("file '{}'\n", video.display()).as_bytes())
+        let mut filelist = tokio::fs::File::create(&output_folder.join(&filelist_filename))
             .await
             .unwrap();
-    }
-    filelist.flush().await.unwrap();
+        for video in videos {
+            let escaped_path = escape_concat_path(video);
+            filelist
+                .write_all(format!("file '{}'\n", escaped_path).as_bytes())
+                .await
+                .unwrap();
+        }
+        filelist.flush().await.unwrap();
 
-    // Convert &[PathBuf] to &[&Path] for check_videos
-    let video_refs: Vec<&Path> = videos.iter().map(|p| p.as_path()).collect();
-    let should_encode = !super::check_videos(&video_refs).await;
+        // Convert &[PathBuf] to &[&Path] for check_videos
+        let video_refs: Vec<&Path> = videos.iter().map(|p| p.as_path()).collect();
+        let should_encode = !super::check_videos(&video_refs).await;
 
-    ffmpeg_process.args([
-        "-f",
-        "concat",
-        "-safe",
-        "0",
-        "-i",
-        output_folder.join(&filelist_filename).to_str().unwrap(),
-    ]);
-    if should_encode {
-        let video_encoder = hwaccel::get_x264_encoder().await;
-        ffmpeg_process.args(["-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2"]);
-        ffmpeg_process.args(["-r", "60"]);
-        ffmpeg_process.args(["-c:v", video_encoder]);
-        ffmpeg_process.args(["-c:a", "aac"]);
-        ffmpeg_process.args(["-b:v", "6000k"]);
-        ffmpeg_process.args(["-b:a", "128k"]);
-        ffmpeg_process.args(["-threads", "0"]);
+        ffmpeg_process.args([
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            output_folder.join(&filelist_filename).to_str().unwrap(),
+        ]);
+        if should_encode {
+            let video_encoder = hwaccel::get_x264_encoder().await;
+            ffmpeg_process.args(["-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2"]);
+            ffmpeg_process.args(["-r", "60"]);
+            ffmpeg_process.args(["-c:v", video_encoder]);
+            ffmpeg_process.args(["-c:a", "aac"]);
+            ffmpeg_process.args(["-b:v", "6000k"]);
+            ffmpeg_process.args(["-b:a", "128k"]);
+            ffmpeg_process.args(["-threads", "0"]);
+        } else {
+            ffmpeg_process.args(["-c", "copy"]);
+        }
+        ffmpeg_process.args([output_path.to_str().unwrap()]);
+        ffmpeg_process.args(["-progress", "pipe:2"]);
+        ffmpeg_process.args(["-y"]);
+
+        handle_ffmpeg_process(reporter, &mut ffmpeg_process).await?;
+
+        // clean up filelist
+        let _ = tokio::fs::remove_file(output_folder.join(&filelist_filename)).await;
     } else {
-        ffmpeg_process.args(["-c", "copy"]);
+        // Use xfade filter for transitions
+        let transition_duration = 1.0;
+        // At this point we know transition is Some and not "none"
+        let transition_type = transition.unwrap_or("fade");
+
+        // Get video durations
+        let mut durations = Vec::new();
+        for video in videos {
+            let metadata = super::extract_video_metadata(video).await?;
+            durations.push(metadata.duration);
+        }
+
+        // Add all input files
+        for video in videos {
+            ffmpeg_process.args(["-i", video.to_str().unwrap()]);
+        }
+
+        // Build xfade filter chain for video
+        let mut filter_complex = String::new();
+
+        for i in 0..(videos.len() - 1) {
+            if i == 0 {
+                let offset = durations[0] - transition_duration;
+                filter_complex.push_str(&format!(
+                    "[0:v][1:v]xfade=transition={}:duration={}:offset={}[v1];",
+                    transition_type, transition_duration, offset
+                ));
+            } else if i < videos.len() - 2 {
+                let offset: f64 = durations.iter().take(i + 1).sum::<f64>()
+                    - (i as f64 + 1.0) * transition_duration;
+                filter_complex.push_str(&format!(
+                    "[v{}][{}:v]xfade=transition={}:duration={}:offset={}[v{}];",
+                    i,
+                    i + 1,
+                    transition_type,
+                    transition_duration,
+                    offset,
+                    i + 1
+                ));
+            } else {
+                let offset: f64 = durations.iter().take(i + 1).sum::<f64>()
+                    - (i as f64 + 1.0) * transition_duration;
+                filter_complex.push_str(&format!(
+                    "[v{}][{}:v]xfade=transition={}:duration={}:offset={}[outv];",
+                    i,
+                    i + 1,
+                    transition_type,
+                    transition_duration,
+                    offset
+                ));
+            }
+        }
+
+        // Build audio concat filter to merge all audio streams
+        for i in 0..videos.len() {
+            filter_complex.push_str(&format!("[{}:a]", i));
+        }
+        filter_complex.push_str(&format!("concat=n={}:v=0:a=1[outa]", videos.len()));
+
+        ffmpeg_process.args(["-filter_complex", &filter_complex]);
+        ffmpeg_process.args(["-map", "[outv]"]);
+        ffmpeg_process.args(["-map", "[outa]"]);
+
+        let video_encoder = hwaccel::get_x264_encoder().await;
+        ffmpeg_process.args(["-c:v", video_encoder]);
+        ffmpeg_process.args(["-preset", "medium"]);
+        ffmpeg_process.args(["-crf", "23"]);
+        ffmpeg_process.args(["-c:a", "aac"]);
+        ffmpeg_process.args(["-progress", "pipe:2"]);
+        ffmpeg_process.args(["-y"]);
+        ffmpeg_process.args([output_path.to_str().unwrap()]);
+
+        handle_ffmpeg_process(reporter, &mut ffmpeg_process).await?;
     }
-    ffmpeg_process.args([output_path.to_str().unwrap()]);
-    ffmpeg_process.args(["-progress", "pipe:2"]);
-    ffmpeg_process.args(["-y"]);
-
-    handle_ffmpeg_process(reporter, &mut ffmpeg_process).await?;
-
-    // clean up filelist
-    let _ = tokio::fs::remove_file(output_folder.join(&filelist_filename)).await;
 
     Ok(())
 }

@@ -63,6 +63,8 @@ pub struct ClipRangeParams {
     pub local_offset: i64,
     /// Fix encoding after clip
     pub fix_encoding: bool,
+    /// Transition effect between clips (for multiple ranges)
+    pub transition: Option<String>,
 }
 
 pub struct RelatedPlaylist {
@@ -941,6 +943,7 @@ impl RecorderManager {
                 &playlist_path,
                 &clip_file,
                 &params.ranges,
+                params.transition.as_deref(),
             )
             .await
             .map_err(|e| RecorderManagerError::ClipError { err: e.to_string() })?;
@@ -1251,7 +1254,8 @@ impl RecorderManager {
             room_id,
             m3u8_index_file_path.full_path().display()
         );
-        // generate a tmp clip file
+
+        // Generate a tmp mp4 clip file first
         let clip_file_path = work_dir.with_filename("tmp.mp4");
         if let Err(e) = crate::ffmpeg::playlist::clip_from_playlist(
             None::<&crate::progress::progress_reporter::ProgressReporter>,
@@ -1266,12 +1270,57 @@ impl RecorderManager {
             });
         }
         log::info!("[{}]Temp clip file generated: {}", room_id, clip_file_path);
-        // generate subtitle file
+
+        // Read config to determine generator type
         let config = self.config.read().await;
+        let generator_type = config.subtitle_generator_type.as_str();
+
+        // For third-party services (powerlive), extract opus audio from mp4
+        let media_file_path = if generator_type == "powerlive" {
+            let opus_file_path = work_dir.with_filename("tmp.opus");
+            log::info!("[{}]Extracting opus audio for third-party service", room_id);
+
+            // Extract opus audio using FFmpeg
+            let ffmpeg_path = crate::ffmpeg::ffmpeg_path();
+            let mut cmd = tokio::process::Command::new(ffmpeg_path);
+            cmd.args([
+                "-i",
+                clip_file_path.full_path().to_str().unwrap(),
+                "-vn", // no video
+                "-acodec",
+                "libopus",
+                "-b:a",
+                "128k",
+                "-y",
+                opus_file_path.full_path().to_str().unwrap(),
+            ]);
+
+            let output =
+                cmd.output()
+                    .await
+                    .map_err(|e| RecorderManagerError::SubtitleGenerationFailed {
+                        error: format!("Failed to run FFmpeg: {}", e),
+                    })?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(RecorderManagerError::SubtitleGenerationFailed {
+                    error: format!("Failed to extract opus audio: {}", stderr),
+                });
+            }
+
+            log::info!("[{}]Opus audio extracted: {}", room_id, opus_file_path);
+            opus_file_path
+        } else {
+            // For whisper/whisper_online, use mp4 directly
+            clip_file_path
+        };
+
+        // generate subtitle file
         let result = crate::ffmpeg::generate_video_subtitle(
             None,
-            Path::new(&clip_file_path.full_path()),
-            "whisper",
+            Path::new(&media_file_path.full_path()),
+            &config.subtitle_generator_type,
             &config.whisper_model,
             &config.whisper_prompt,
             &config.openai_api_key,
@@ -1294,10 +1343,17 @@ impl RecorderManager {
             .collect::<String>();
         subtitle_file.write_all(subtitle_content.as_bytes()).await?;
         log::info!("[{room_id}]Subtitle file written");
-        // remove tmp file
+        // remove tmp files
         tokio::fs::remove_file(&m3u8_index_file_path.full_path()).await?;
-        tokio::fs::remove_file(&clip_file_path.full_path()).await?;
-        log::info!("[{room_id}]Tmp file removed");
+
+        // Remove both mp4 and opus files if they exist
+        let clip_file_path = work_dir.with_filename("tmp.mp4");
+        let _ = tokio::fs::remove_file(&clip_file_path.full_path()).await;
+
+        let opus_file_path = work_dir.with_filename("tmp.opus");
+        let _ = tokio::fs::remove_file(&opus_file_path.full_path()).await;
+
+        log::info!("[{room_id}]Tmp files removed");
         Ok(subtitle_content)
     }
 

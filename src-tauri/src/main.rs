@@ -718,6 +718,13 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::utils::file_exists,
         crate::handlers::utils::console_log,
         crate::handlers::utils::list_folder,
+        crate::handlers::video_editing::extract_video_frames,
+        crate::handlers::video_editing::get_video_metadata,
+        crate::handlers::video_editing::get_archive_metadata,
+        crate::handlers::video_editing::analyze_danmu_highlights,
+        crate::handlers::video_editing::search_danmu_keywords,
+        crate::handlers::video_editing::merge_videos,
+        crate::handlers::video_editing::extract_video_audio,
     ])
 }
 

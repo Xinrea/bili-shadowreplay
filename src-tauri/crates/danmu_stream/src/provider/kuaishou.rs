@@ -10,11 +10,11 @@ use async_trait::async_trait;
 use flate2::read::GzDecoder;
 use futures_util::{SinkExt, StreamExt, TryStreamExt};
 use log::{error, info, warn};
+use prost::Message;
 use rand::{distr::Alphanumeric, Rng};
 use regex::Regex;
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::Value;
-use prost::Message;
 use tokio::{
     sync::{mpsc, RwLock},
     time::sleep,
@@ -63,10 +63,7 @@ pub struct KuaishouDanmu {
 impl DanmuProvider for KuaishouDanmu {
     async fn new(cookie: &str, room_id: &str) -> Result<Self, DanmuStreamError> {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            "User-Agent",
-            HeaderValue::from_static(KUAISHOU_USER_AGENT),
-        );
+        headers.insert("User-Agent", HeaderValue::from_static(KUAISHOU_USER_AGENT));
         if !cookie.trim().is_empty() {
             if let Ok(value) = HeaderValue::from_str(cookie) {
                 headers.insert("Cookie", value);
@@ -161,11 +158,9 @@ impl KuaishouDanmu {
             })?
             .to_string();
 
-        let (conn, _) = connect_async(&ws_url).await.map_err(|e| {
-            DanmuStreamError::WebsocketError {
-                err: e.to_string(),
-            }
-        })?;
+        let (conn, _) = connect_async(&ws_url)
+            .await
+            .map_err(|e| DanmuStreamError::WebsocketError { err: e.to_string() })?;
 
         let (write, read) = conn.split();
         *self.write.write().await = Some(write);
@@ -240,7 +235,7 @@ impl KuaishouDanmu {
 
             if let Some(write) = write.write().await.as_mut() {
                 write
-                .send(WsMessage::binary(msg.encode_to_vec()))
+                    .send(WsMessage::binary(msg.encode_to_vec()))
                     .await
                     .map_err(|e| DanmuStreamError::WebsocketError { err: e.to_string() })?;
             }
@@ -265,11 +260,8 @@ impl KuaishouDanmu {
                 continue;
             }
 
-            let socket_msg = SocketMessage::decode(&*data).map_err(|e| {
-                DanmuStreamError::MessageParseError {
-                    err: e.to_string(),
-                }
-            })?;
+            let socket_msg = SocketMessage::decode(&*data)
+                .map_err(|e| DanmuStreamError::MessageParseError { err: e.to_string() })?;
 
             let payload = match CompressionType::try_from(socket_msg.compression_type).ok() {
                 Some(CompressionType::None) | Some(CompressionType::Unknown) => socket_msg.payload,
@@ -283,11 +275,8 @@ impl KuaishouDanmu {
 
             if PayloadType::try_from(socket_msg.payload_type).ok() == Some(PayloadType::ScFeedPush)
             {
-                let feed = ScWebFeedPush::decode(&*payload).map_err(|e| {
-                    DanmuStreamError::MessageParseError {
-                        err: e.to_string(),
-                    }
-                })?;
+                let feed = ScWebFeedPush::decode(&*payload)
+                    .map_err(|e| DanmuStreamError::MessageParseError { err: e.to_string() })?;
                 for comment in feed.comment_feeds {
                     let user = comment.user.unwrap_or_default();
                     let user_id = user.principal_id.parse::<u64>().unwrap_or(0);
@@ -309,9 +298,7 @@ impl KuaishouDanmu {
                         timestamp: ts,
                     };
                     tx.send(DanmuMessageType::DanmuMessage(danmu))
-                        .map_err(|e| DanmuStreamError::WebsocketError {
-                            err: e.to_string(),
-                        })?;
+                        .map_err(|e| DanmuStreamError::WebsocketError { err: e.to_string() })?;
                 }
             }
         }
@@ -363,7 +350,7 @@ impl KuaishouDanmu {
         }
 
         if !self.cookie.is_empty() {
-        let ws_info = self
+            let ws_info = self
                 .client
                 .get("https://live.kuaishou.com/live_api/liveroom/websocketinfo")
                 .query(&[("caver", "2"), ("liveStreamId", live_stream_id.as_str())])
@@ -408,9 +395,8 @@ fn extract_kww(cookie: &str) -> Option<String> {
 }
 
 fn parse_response_data(text: &str) -> Result<Value, DanmuStreamError> {
-    let root: Value = serde_json::from_str(text).map_err(|e| DanmuStreamError::MessageParseError {
-        err: e.to_string(),
-    })?;
+    let root: Value = serde_json::from_str(text)
+        .map_err(|e| DanmuStreamError::MessageParseError { err: e.to_string() })?;
 
     let data = root.get("data").cloned().unwrap_or(root);
 
@@ -457,9 +443,7 @@ fn gunzip(data: &[u8]) -> Result<Vec<u8>, DanmuStreamError> {
     let mut out = Vec::new();
     decoder
         .read_to_end(&mut out)
-        .map_err(|e| DanmuStreamError::MessageParseError {
-            err: e.to_string(),
-        })?;
+        .map_err(|e| DanmuStreamError::MessageParseError { err: e.to_string() })?;
     Ok(out)
 }
 

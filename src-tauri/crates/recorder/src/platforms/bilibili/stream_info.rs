@@ -25,7 +25,10 @@ impl BiliStreamInfo {
         if url_info.extra.is_empty() {
             format!("{}{}", url_info.host, self.inner.base_url)
         } else {
-            format!("{}{}?{}", url_info.host, self.inner.base_url, url_info.extra)
+            format!(
+                "{}{}?{}",
+                url_info.host, self.inner.base_url, url_info.extra
+            )
         }
     }
 }

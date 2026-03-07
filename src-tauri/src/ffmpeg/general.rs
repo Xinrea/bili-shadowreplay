@@ -37,6 +37,7 @@ pub async fn handle_ffmpeg_process(
     reporter: Option<&impl ProgressReporterTrait>,
     ffmpeg_process: &mut tokio::process::Command,
 ) -> Result<(), String> {
+    log::info!("[FFmpeg] {:?}", ffmpeg_process);
     let child = ffmpeg_process
         .stderr(Stdio::piped())
         .stdout(Stdio::piped())
@@ -67,8 +68,9 @@ pub async fn handle_ffmpeg_process(
             _ => {}
         }
     }
-    if let Err(e) = child.wait().await {
-        return Err(e.to_string());
+    let status = child.wait().await.map_err(|e| e.to_string())?;
+    if !status.success() {
+        return Err(format!("FFmpeg exited with status: {}", status));
     }
 
     Ok(())
@@ -168,36 +170,31 @@ pub async fn concat_videos_with_transition(
         let mut filter_complex = String::new();
 
         for i in 0..(videos.len() - 1) {
-            if i == 0 {
-                let offset = durations[0] - transition_duration;
-                filter_complex.push_str(&format!(
-                    "[0:v][1:v]xfade=transition={}:duration={}:offset={}[v1];",
-                    transition_type, transition_duration, offset
-                ));
-            } else if i < videos.len() - 2 {
-                let offset: f64 = durations.iter().take(i + 1).sum::<f64>()
-                    - (i as f64 + 1.0) * transition_duration;
-                filter_complex.push_str(&format!(
-                    "[v{}][{}:v]xfade=transition={}:duration={}:offset={}[v{}];",
-                    i,
-                    i + 1,
-                    transition_type,
-                    transition_duration,
-                    offset,
-                    i + 1
-                ));
+            let is_last = i == videos.len() - 2;
+            let offset = if i == 0 {
+                durations[0] - transition_duration
             } else {
-                let offset: f64 = durations.iter().take(i + 1).sum::<f64>()
-                    - (i as f64 + 1.0) * transition_duration;
-                filter_complex.push_str(&format!(
-                    "[v{}][{}:v]xfade=transition={}:duration={}:offset={}[outv];",
-                    i,
-                    i + 1,
-                    transition_type,
-                    transition_duration,
-                    offset
-                ));
-            }
+                durations.iter().take(i + 1).sum::<f64>() - (i as f64 + 1.0) * transition_duration
+            };
+            let input_left = if i == 0 {
+                "[0:v]".to_string()
+            } else {
+                format!("[v{}]", i)
+            };
+            let output_label = if is_last {
+                "[outv]".to_string()
+            } else {
+                format!("[v{}]", i + 1)
+            };
+            filter_complex.push_str(&format!(
+                "{}[{}:v]xfade=transition={}:duration={}:offset={}{};",
+                input_left,
+                i + 1,
+                transition_type,
+                transition_duration,
+                offset,
+                output_label
+            ));
         }
 
         // Build audio concat filter to merge all audio streams

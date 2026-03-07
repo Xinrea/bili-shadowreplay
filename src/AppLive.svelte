@@ -1161,6 +1161,7 @@
             <div class="grid grid-cols-4 gap-1.5">
               {#each transitionOptions as opt}
                 <button
+                  type="button"
                   class="px-2 py-1.5 text-[12px] rounded-lg border transition-colors
                     {transition === opt.value
                       ? 'bg-[#0A84FF]/20 border-[#0A84FF] text-[#0A84FF]'

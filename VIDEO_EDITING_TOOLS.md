@@ -20,7 +20,7 @@ Enhanced the AI agent with professional video editing capabilities, enabling it 
 #### `get_video_metadata`
 - Returns detailed video metadata
 - Information includes: duration, resolution, codec, bitrate, FPS, file size
-- Helps agent understand technical video properties
+- Helps the agent understand technical video properties
 
 #### `get_archive_metadata`
 - Gets metadata for archived live streams

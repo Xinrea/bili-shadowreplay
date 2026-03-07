@@ -1338,7 +1338,7 @@ impl RecorderManager {
         let params = uri.split('?').nth(1).unwrap_or("");
         let path_segs: Vec<&str> = path.split('/').collect();
 
-        if path_segs.len() != 4 {
+        if path_segs.len() < 4 {
             log::warn!("Invalid request path: {path}");
             return Err(RecorderManagerError::HLSError {
                 err: "Invalid hls path".into(),
@@ -1398,7 +1398,15 @@ impl RecorderManager {
             None
         };
 
-        if path_segs[3] == "playlist.m3u8" {
+        // Check if this is a playlist request
+        // The remaining path after platform/room_id/live_id could be:
+        // - "playlist.m3u8" (4 segments total)
+        // - "some_dir/playlist.m3u8" (5+ segments)
+        // - "segment.ts" (4 segments total)
+        // - "some_dir/segment.ts" (5+ segments)
+        let remaining_path = path_segs[3..].join("/");
+
+        if remaining_path == "playlist.m3u8" || remaining_path.ends_with("/playlist.m3u8") {
             let playlist = self.load_playlist(platform, room_id, live_id).await?;
             let playlist = self.playlist_range(&playlist, range).await?;
             let mut bytes: Vec<u8> = Vec::new();

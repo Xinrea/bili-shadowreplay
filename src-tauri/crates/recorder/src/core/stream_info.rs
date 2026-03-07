@@ -80,11 +80,7 @@ impl StreamVariant {
             error: format!("Invalid URL: {}", e),
         })?;
 
-        let host = format!(
-            "{}://{}",
-            parsed.scheme(),
-            parsed.host_str().unwrap_or("")
-        );
+        let host = format!("{}://{}", parsed.scheme(), parsed.host_str().unwrap_or(""));
         let base = parsed.path().to_string();
         let extra = parsed.query().unwrap_or("").to_string();
 

@@ -41,6 +41,17 @@
   let danmu_enabled = false;
   let fix_encoding = false;
   let clip_note: string = "";
+  let transition: string = "none";
+
+  const transitionOptions = [
+    { value: "none", label: "无" },
+    { value: "fade", label: "淡入淡出" },
+    { value: "dissolve", label: "溶解" },
+    { value: "wipeleft", label: "向左擦除" },
+    { value: "wiperight", label: "向右擦除" },
+    { value: "slideup", label: "向上滑动" },
+    { value: "slidedown", label: "向下滑动" },
+  ];
 
   // 弹幕相关变量
   let danmu_records: DanmuEntry[] = [];
@@ -571,6 +582,7 @@
         parseInt(localStorage.getItem(`local_offset:${live_id}`) || "0", 10) ||
         0,
       fix_encoding,
+      transition: transition !== "none" ? transition : undefined,
     })) as VideoItem;
     await get_video_list();
     new_video.cover = await get_static_url("output", new_video.cover);
@@ -584,6 +596,7 @@
 
     // clean up previous input data
     clip_note = "";
+    transition = "none";
   }
 
   async function cancel_clip() {
@@ -1141,6 +1154,26 @@
             >
           </label>
         </div>
+
+        {#if activeRanges.length > 1}
+          <div class="mt-3 space-y-2">
+            <div class="text-[13px] font-medium text-white/90">转场效果</div>
+            <div class="grid grid-cols-4 gap-1.5">
+              {#each transitionOptions as opt}
+                <button
+                  type="button"
+                  class="px-2 py-1.5 text-[12px] rounded-lg border transition-colors
+                    {transition === opt.value
+                      ? 'bg-[#0A84FF]/20 border-[#0A84FF] text-[#0A84FF]'
+                      : 'bg-[#2c2c2e] border-white/5 text-white/70 hover:border-white/20'}"
+                  on:click={() => (transition = opt.value)}
+                >
+                  {opt.label}
+                </button>
+              {/each}
+            </div>
+          </div>
+        {/if}
       </div>
 
       <div

@@ -140,7 +140,8 @@ async function get_static_url(base: string, path: string) {
     staticUrl = ENDPOINT.replace(/:\d+/, `:${STATIC_PORT}`);
   }
 
-  return `${staticUrl}/${base}/${path}`;
+  const encodedPath = path.split('/').map(encodeURIComponent).join('/');
+  return `${staticUrl}/${base}/${encodedPath}`;
 }
 
 let socket: Socket | null = null;

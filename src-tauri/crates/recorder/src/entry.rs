@@ -8,7 +8,7 @@ use tokio::{
 
 const ENTRY_FILE_NAME: &str = "entries.log";
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TsEntry {
     pub url: String,
     pub sequence: u64,
@@ -246,5 +246,139 @@ pub struct Range {
 impl Range {
     pub fn is_in(&self, v: f32) -> bool {
         v >= self.x && v <= self.y
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ts_entry_from_valid() {
+        let line = "https://example.com/seg.ts|42|5.0|1024|1700000000|false";
+        let entry = TsEntry::from(line).unwrap();
+        assert_eq!(entry.url, "https://example.com/seg.ts");
+        assert_eq!(entry.sequence, 42);
+        assert!((entry.length - 5.0).abs() < f64::EPSILON);
+        assert_eq!(entry.size, 1024);
+        assert_eq!(entry.ts, 1700000000);
+        assert!(!entry.is_header);
+    }
+
+    #[test]
+    fn test_ts_entry_from_header() {
+        let line = "https://example.com/init.mp4|0|0.0|512|1700000000|true";
+        let entry = TsEntry::from(line).unwrap();
+        assert!(entry.is_header);
+    }
+
+    #[test]
+    fn test_ts_entry_from_invalid_field_count() {
+        let line = "a|b|c";
+        let result = TsEntry::from(line);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("expected 6 fields"));
+    }
+
+    #[test]
+    fn test_ts_entry_from_invalid_number() {
+        let line = "url|notanumber|5.0|1024|1700000000|false";
+        let result = TsEntry::from(line);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Failed to parse sequence"));
+    }
+
+    #[test]
+    fn test_ts_seconds_milliseconds() {
+        let entry = TsEntry {
+            url: "test".to_string(),
+            sequence: 1,
+            length: 5.0,
+            size: 100,
+            ts: 1700000000000, // ms timestamp
+            is_header: false,
+        };
+        assert_eq!(entry.ts_seconds(), 1700000000);
+    }
+
+    #[test]
+    fn test_ts_seconds_already_seconds() {
+        let entry = TsEntry {
+            url: "test".to_string(),
+            sequence: 1,
+            length: 5.0,
+            size: 100,
+            ts: 1700000000, // already in seconds
+            is_header: false,
+        };
+        assert_eq!(entry.ts_seconds(), 1700000000);
+    }
+
+    #[test]
+    fn test_to_segment_normal() {
+        let entry = TsEntry {
+            url: "segment_001.ts".to_string(),
+            sequence: 1,
+            length: 5.1234,
+            size: 100,
+            ts: 1700000000,
+            is_header: false,
+        };
+        let seg = entry.to_segment();
+        assert!(seg.contains("#EXTINF:5.1234,"));
+        assert!(seg.contains("segment_001.ts"));
+    }
+
+    #[test]
+    fn test_to_segment_header_returns_empty() {
+        let entry = TsEntry {
+            url: "init.mp4".to_string(),
+            sequence: 0,
+            length: 0.0,
+            size: 100,
+            ts: 1700000000,
+            is_header: true,
+        };
+        assert_eq!(entry.to_segment(), "");
+    }
+
+    #[test]
+    fn test_date_time_format() {
+        let entry = TsEntry {
+            url: "test".to_string(),
+            sequence: 1,
+            length: 5.0,
+            size: 100,
+            ts: 1700000000,
+            is_header: false,
+        };
+        let dt = entry.date_time();
+        assert!(dt.starts_with("#EXT-X-PROGRAM-DATE-TIME:"));
+        assert!(dt.contains("2023"));
+    }
+
+    #[test]
+    fn test_range_is_in() {
+        let r = Range { x: 1.0, y: 5.0 };
+        assert!(r.is_in(3.0));
+        assert!(r.is_in(1.0));
+        assert!(r.is_in(5.0));
+        assert!(!r.is_in(0.9));
+        assert!(!r.is_in(5.1));
+    }
+
+    #[test]
+    fn test_ts_entry_display() {
+        let entry = TsEntry {
+            url: "seg.ts".to_string(),
+            sequence: 1,
+            length: 5.0,
+            size: 1024,
+            ts: 1700000000,
+            is_header: false,
+        };
+        let display = format!("{}", entry);
+        assert!(display.contains("seg.ts"));
+        assert!(display.contains("1024"));
     }
 }

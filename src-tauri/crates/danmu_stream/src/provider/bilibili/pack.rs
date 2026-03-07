@@ -159,3 +159,80 @@ fn brotli_decode(body: &[u8]) -> Result<(BilibiliPackHeader, Vec<u8>), DanmuStre
 
     Ok((header, buf))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_encode_packet_structure() {
+        let packet = encode("hello", 7);
+        // Total length = 16 (header) + 5 (data) = 21
+        assert_eq!(packet.len(), 21);
+        // First 4 bytes = packet length in big-endian
+        let len = u32::from_be_bytes([packet[0], packet[1], packet[2], packet[3]]);
+        assert_eq!(len, 21);
+        // Header length at bytes 4-5
+        let header_len = u16::from_be_bytes([packet[4], packet[5]]);
+        assert_eq!(header_len, 16);
+        // Version at bytes 6-7
+        let ver = u16::from_be_bytes([packet[6], packet[7]]);
+        assert_eq!(ver, 1);
+        // Op code at bytes 8-11
+        let op = u32::from_be_bytes([packet[8], packet[9], packet[10], packet[11]]);
+        assert_eq!(op, 7);
+        // Data payload
+        assert_eq!(&packet[16..], b"hello");
+    }
+
+    #[test]
+    fn test_encode_empty_string() {
+        let packet = encode("", 2);
+        assert_eq!(packet.len(), 16);
+        let len = u32::from_be_bytes([packet[0], packet[1], packet[2], packet[3]]);
+        assert_eq!(len, 16);
+    }
+
+    #[test]
+    fn test_encode_unicode() {
+        let packet = encode("你好", 7);
+        let data_len = "你好".as_bytes().len(); // 6 bytes for UTF-8
+        assert_eq!(packet.len(), 16 + data_len);
+        assert_eq!(&packet[16..], "你好".as_bytes());
+    }
+
+    #[test]
+    fn test_write_int() {
+        let buf = vec![0u8; 8];
+        let result = write_int(&buf, 2, 0x12345678);
+        assert_eq!(result[2], 0x12);
+        assert_eq!(result[3], 0x34);
+        assert_eq!(result[4], 0x56);
+        assert_eq!(result[5], 0x78);
+        // Other bytes unchanged
+        assert_eq!(result[0], 0);
+        assert_eq!(result[1], 0);
+    }
+
+    #[test]
+    fn test_build_pack_invalid_buffer() {
+        // Buffer too short for header
+        let result = build_pack(&[0u8; 4]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_encode_roundtrip_structure() {
+        // Encode a JSON auth message (op=7 is auth)
+        let auth_json = r#"{"uid":0,"roomid":12345}"#;
+        let packet = encode(auth_json, 7);
+
+        // Verify we can parse the header back
+        let (header, body) = pack(&packet).unwrap();
+        assert_eq!(header.pack_len as usize, packet.len());
+        assert_eq!(header.ver, 1);
+        // Body should be the original JSON
+        let body_str = std::str::from_utf8(body).unwrap();
+        assert_eq!(body_str, auth_json);
+    }
+}

@@ -209,3 +209,163 @@ fn extract_host(url: &str) -> Result<String, RecorderError> {
             error: format!("Invalid URL: {}", e),
         })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_quality_ordering() {
+        assert!(Quality::Origin < Quality::BluRay4K);
+        assert!(Quality::BluRay4K < Quality::BluRay);
+        assert!(Quality::BluRay < Quality::UltraHD);
+        assert!(Quality::UltraHD < Quality::HD);
+        assert!(Quality::HD < Quality::SD);
+        assert!(Quality::SD < Quality::Smooth);
+    }
+
+    #[test]
+    fn test_stream_variant_to_flv_url_ok() {
+        let sv = StreamVariant {
+            url: "rtmp://live.example.com/stream".to_string(),
+            format: Format::FLV,
+            codec: Codec::AVC,
+            quality: Quality::Origin,
+            bitrate: Some(5000),
+        };
+        assert_eq!(sv.to_flv_url().unwrap(), "rtmp://live.example.com/stream");
+    }
+
+    #[test]
+    fn test_stream_variant_to_flv_url_rtmp() {
+        let sv = StreamVariant {
+            url: "rtmp://live.example.com/stream".to_string(),
+            format: Format::RTMP,
+            codec: Codec::AVC,
+            quality: Quality::Origin,
+            bitrate: None,
+        };
+        assert!(sv.to_flv_url().is_ok());
+    }
+
+    #[test]
+    fn test_stream_variant_to_flv_url_hls_fails() {
+        let sv = StreamVariant {
+            url: "https://cdn.example.com/live/stream.m3u8".to_string(),
+            format: Format::HLS,
+            codec: Codec::AVC,
+            quality: Quality::Origin,
+            bitrate: None,
+        };
+        assert!(sv.to_flv_url().is_err());
+    }
+
+    #[test]
+    fn test_stream_variant_to_hls_stream() {
+        let sv = StreamVariant {
+            url: "https://cdn.example.com/live/stream.m3u8?expire=9999999999&token=abc".to_string(),
+            format: Format::HLS,
+            codec: Codec::AVC,
+            quality: Quality::BluRay,
+            bitrate: Some(3000),
+        };
+        let stream = sv.to_hls_stream("live_123".to_string(), None).unwrap();
+        let index = stream.index();
+        assert!(index.contains("cdn.example.com"));
+        assert!(index.contains("stream.m3u8"));
+    }
+
+    #[test]
+    fn test_stream_variant_to_hls_stream_not_hls() {
+        let sv = StreamVariant {
+            url: "rtmp://live.example.com/stream".to_string(),
+            format: Format::FLV,
+            codec: Codec::AVC,
+            quality: Quality::Origin,
+            bitrate: None,
+        };
+        assert!(sv.to_hls_stream("live_123".to_string(), None).is_err());
+    }
+
+    #[test]
+    fn test_stream_variant_to_hls_stream_with_cdn_node() {
+        let sv = StreamVariant {
+            url: "https://cdn1.example.com/live/stream.m3u8?token=abc".to_string(),
+            format: Format::HLS,
+            codec: Codec::AVC,
+            quality: Quality::Origin,
+            bitrate: None,
+        };
+        let cdn = CdnNode {
+            host: "cdn2.example.com".to_string(),
+            priority: 1,
+        };
+        let stream = sv
+            .to_hls_stream("live_123".to_string(), Some(&cdn))
+            .unwrap();
+        let index = stream.index();
+        assert!(index.contains("cdn2.example.com"));
+    }
+
+    #[test]
+    fn test_stream_variant_to_recorder_type_hls() {
+        let sv = StreamVariant {
+            url: "https://cdn.example.com/live/stream.m3u8?token=abc".to_string(),
+            format: Format::HLS,
+            codec: Codec::AVC,
+            quality: Quality::Origin,
+            bitrate: None,
+        };
+        let rt = sv.to_recorder_type("live_123".to_string(), None).unwrap();
+        assert!(matches!(rt, RecorderType::Hls(_)));
+    }
+
+    #[test]
+    fn test_stream_variant_to_recorder_type_flv() {
+        let sv = StreamVariant {
+            url: "rtmp://live.example.com/stream".to_string(),
+            format: Format::FLV,
+            codec: Codec::AVC,
+            quality: Quality::Origin,
+            bitrate: None,
+        };
+        let rt = sv.to_recorder_type("live_123".to_string(), None).unwrap();
+        assert!(matches!(rt, RecorderType::Flv(_)));
+    }
+
+    #[test]
+    fn test_platform_type_as_str() {
+        assert_eq!(PlatformType::Bilibili.as_str(), "bilibili");
+        assert_eq!(PlatformType::Douyin.as_str(), "douyin");
+        assert_eq!(PlatformType::Kuaishou.as_str(), "kuaishou");
+        assert_eq!(PlatformType::Huya.as_str(), "huya");
+        assert_eq!(PlatformType::TikTok.as_str(), "tiktok");
+    }
+
+    #[test]
+    fn test_extract_host() {
+        assert_eq!(
+            extract_host("https://cdn.example.com/path").unwrap(),
+            "cdn.example.com"
+        );
+        assert!(extract_host("not-a-url").is_err());
+    }
+
+    #[test]
+    fn test_quality_equality() {
+        assert_eq!(Quality::Origin, Quality::Origin);
+        assert_ne!(Quality::Origin, Quality::HD);
+    }
+
+    #[test]
+    fn test_format_equality() {
+        assert_eq!(Format::HLS, Format::HLS);
+        assert_ne!(Format::HLS, Format::FLV);
+    }
+
+    #[test]
+    fn test_codec_equality() {
+        assert_eq!(Codec::AVC, Codec::AVC);
+        assert_ne!(Codec::AVC, Codec::HEVC);
+    }
+}

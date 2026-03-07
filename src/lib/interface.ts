@@ -272,6 +272,7 @@ export interface ClipRangeParams {
   danmu: boolean;
   local_offset: number;
   fix_encoding: boolean;
+  transition?: string;
 }
 
 export function generateEventId() {

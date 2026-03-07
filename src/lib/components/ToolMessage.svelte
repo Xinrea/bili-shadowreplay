@@ -11,11 +11,11 @@
   export let message: ToolMessage;
   export let formatTime: (date: Date) => string;
 
-  // 折叠状态
+  // 折叠状态 - 默认折叠
   let isExpanded = false;
 
   // 获取消息时间戳，如果没有则使用当前时间
-  $: messageTime = message.additional_kwargs?.timestamp 
+  $: messageTime = message.additional_kwargs?.timestamp
     ? new Date(message.additional_kwargs.timestamp as string | number)
     : new Date();
 

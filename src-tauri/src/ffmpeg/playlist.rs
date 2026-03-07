@@ -18,6 +18,7 @@ pub async fn clip_multiple_from_playlist(
     playlist_path: &Path,
     output_path: &Path,
     ranges: &[Range],
+    transition: Option<&str>,
 ) -> Result<(), String> {
     let mut to_remove = Vec::new();
     for (i, range) in ranges.iter().enumerate() {
@@ -34,7 +35,8 @@ pub async fn clip_multiple_from_playlist(
         }
         to_remove.push(video_path.clone());
     }
-    super::general::concat_videos(reporter, &to_remove, output_path).await?;
+    super::general::concat_videos_with_transition(reporter, &to_remove, output_path, transition)
+        .await?;
     // clean up to_remove
     for path in to_remove {
         let _ = tokio::fs::remove_file(path).await;

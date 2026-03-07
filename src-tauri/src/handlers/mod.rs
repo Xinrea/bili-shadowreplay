@@ -6,6 +6,7 @@ pub mod recorder;
 pub mod task;
 pub mod utils;
 pub mod video;
+pub mod video_editing;
 
 use crate::database::account::AccountRow;
 

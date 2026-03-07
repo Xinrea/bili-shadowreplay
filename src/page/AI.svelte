@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { Send, Sparkles, Settings } from "lucide-svelte";
   import { onMount } from "svelte";
-  import createAgent from "../lib/agent/agent";
+  import { Settings, Send, Sparkles, Trash2, Zap, MessageSquare } from "lucide-svelte";
+  import createAgent, { type AgentConfig } from "../lib/agent/agent";
   import { tools } from "../lib/agent/tools";
   import {
     HumanMessage,
@@ -12,84 +12,64 @@
   import AIMessageComponent from "../lib/components/AIMessage.svelte";
   import ProcessingMessageComponent from "../lib/components/ProcessingMessage.svelte";
   import ToolMessageComponent from "../lib/components/ToolMessage.svelte";
+  import SettingsModal from "../lib/components/ai/SettingsModal.svelte";
 
   let messages: any[] = [];
   let inputMessage = "";
   let isProcessing = false;
   let messageContainer: HTMLElement;
   let agent = null;
-  let firstMessage = true;
 
   // 设置相关状态
   let showSettings = false;
   let isLoadingModels = false;
   let settings = {
+    provider: "openai" as "openai" | "ollama",
     endpoint: "",
     api_key: "",
     model: ""
   };
 
-  // 可用的模型列表
   let availableModels = [];
-
   const toolCallStates = new Map<string, 'confirmed' | 'rejected' | 'none'>();
 
   // 预设提示词
   const presetPrompts = [
-    {
-      title: "帮助我录制直播",
-      description: "指导我如何设置和开始录制B站或抖音直播",
-      prompt: "我该如何添加新的直播间？"
-    },
-    {
-      title: "查看录制任务",
-      description: "显示当前所有的录制任务和状态",
-      prompt: "显示我所有的录制任务"
-    },
-    {
-      title: "管理账户",
-      description: "查看和管理已添加的B站和抖音账户",
-      prompt: "显示可用的账号信息"
-    },
-    {
-      title: "切片生成",
-      description: "根据录播弹幕分析，生成切片",
-      prompt: "分析最新录制的录播有哪些精彩部分，选择一段生成切片"
-    },
-    {
-      title: "视频转码",
-      description: "将视频转码为指定格式",
-      prompt: "帮我将视频转码为mp4格式"
-    },
-    {
-      title: "音频提取",
-      description: "提取视频中的音频",
-      prompt: "帮我提取视频中的音频"
-    }
+    { title: "录制直播", description: "添加新的直播间并开始录制", prompt: "我该如何添加新的直播间？", icon: "📡" },
+    { title: "查看任务", description: "显示所有录制任务状态", prompt: "显示我所有的录制任务", icon: "📊" },
+    { title: "管理账户", description: "查看已添加的账户信息", prompt: "显示可用的账号信息", icon: "👤" },
+    { title: "生成切片", description: "分析录播并生成精彩片段", prompt: "分析最新录制的录播有哪些精彩部分，选择一段生成切片", icon: "✂️" },
+    { title: "视频转码", description: "转换视频格式", prompt: "帮我将视频转码为mp4格式", icon: "🎬" },
+    { title: "提取音频", description: "从视频中提取音频", prompt: "帮我提取视频中的音频", icon: "🎵" }
   ];
 
-  // 设置相关函数
-  function openSettings() {
-    showSettings = true;
-  }
-
-  function closeSettings() {
-    showSettings = false;
-  }
+  function openSettings() { showSettings = true; }
+  function closeSettings() { showSettings = false; }
 
   async function saveSettings() {
     localStorage.setItem('ai_settings', JSON.stringify(settings));
-    // 只有当有必要的设置时才创建agent
-    if (settings.api_key && settings.endpoint) {
-      agent = createAgent({
-        apiKey: settings.api_key || undefined,
-        baseURL: settings.endpoint || undefined,
-        model: settings.model || undefined,
-      });
-      // 重新加载模型列表
-      await loadModels();
+    if (settings.provider === 'ollama') {
+      if (settings.endpoint || settings.model) {
+        agent = createAgent({
+          provider: 'ollama',
+          baseURL: settings.endpoint || 'http://localhost:11434',
+          model: settings.model || 'llama2',
+        });
+      } else {
+        agent = null;
+      }
     } else {
-      agent = null;
+      if (settings.api_key && settings.endpoint) {
+        agent = createAgent({
+          provider: 'openai',
+          apiKey: settings.api_key,
+          baseURL: settings.endpoint,
+          model: settings.model || undefined,
+        });
+        await loadModels();
+      } else {
+        agent = null;
+      }
     }
     closeSettings();
   }
@@ -97,22 +77,12 @@
   async function fetchModels(endpoint: string, apiKey: string) {
     try {
       const response = await fetch(`${endpoint}/models`, {
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json'
-        }
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' }
       });
-      
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const data = await response.json();
       if (data.data && Array.isArray(data.data)) {
-        return data.data.map((model: any) => ({
-          value: model.id,
-          label: model.id
-        }));
+        return data.data.map((model: any) => ({ value: model.id, label: model.id }));
       }
       return [];
     } catch (error) {
@@ -126,9 +96,7 @@
       isLoadingModels = true;
       try {
         const models = await fetchModels(settings.endpoint, settings.api_key);
-        if (models.length > 0) {
-          availableModels = models;
-        }
+        if (models.length > 0) availableModels = models;
       } catch (error) {
         console.error('Failed to load models:', error);
       } finally {
@@ -141,20 +109,25 @@
     const savedSettings = localStorage.getItem('ai_settings');
     if (savedSettings) {
       settings = { ...settings, ...JSON.parse(savedSettings) };
-      // 只有当有必要的设置时才创建agent
-      if (settings.api_key && settings.endpoint) {
-        agent = createAgent({
-          apiKey: settings.api_key || undefined,
-          baseURL: settings.endpoint || undefined,
-          model: settings.model || undefined,
-        });
-        // 加载模型列表
-        loadModels();
+      if (settings.provider === 'ollama') {
+        if (settings.endpoint || settings.model) {
+          agent = createAgent({
+            provider: 'ollama',
+            baseURL: settings.endpoint || 'http://localhost:11434',
+            model: settings.model || 'llama2',
+          });
+        }
       } else {
-        agent = null;
+        if (settings.api_key && settings.endpoint) {
+          agent = createAgent({
+            provider: 'openai',
+            apiKey: settings.api_key,
+            baseURL: settings.endpoint,
+            model: settings.model || undefined,
+          });
+          loadModels();
+        }
       }
-    } else {
-      agent = null;
     }
   }
 
@@ -165,200 +138,218 @@
     return 'none';
   }
 
-  // 自动滚动到底部
   function scrollToBottom() {
     if (messageContainer) {
-      setTimeout(() => {
-        messageContainer.scrollTop = messageContainer.scrollHeight;
-      }, 100);
+      setTimeout(() => { messageContainer.scrollTop = messageContainer.scrollHeight; }, 100);
     }
   }
 
-  // 发送消息
-  async function sendMessage() {
-    if (!inputMessage.trim() || isProcessing) return;
-
-    const userMessage = inputMessage.trim();
-    inputMessage = "";
-
-    const message = new HumanMessage(userMessage);
-    // 为消息添加时间戳
-    message.additional_kwargs = {
-      ...message.additional_kwargs,
-      timestamp: new Date().toISOString()
-    };
-
-    scrollToBottom();
-
-    await continueAgentFlow([message]);
+  function formatTime(timestamp: string): string {
+    const date = new Date(timestamp);
+    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
   }
 
-  // 点击预设提示词
+  function isSensitiveToolCall(message: any): boolean {
+    if (!message.tool_calls || message.tool_calls.length === 0) return false;
+    const sensitiveTools = ['delete_recorder', 'delete_archive', 'delete_video'];
+    return message.tool_calls.some((toolCall: any) => sensitiveTools.includes(toolCall.name));
+  }
+
   async function handlePresetPrompt(prompt: string) {
     inputMessage = prompt;
     await sendMessage();
   }
 
-  async function continueAgentFlow(newMessages: any[]) {
-    console.log("continueAgentFlow", newMessages);
-    messages = [...messages, ...newMessages];
+  async function sendMessage() {
+    if (!inputMessage.trim() || isProcessing || !agent) return;
+    const userMessage = new HumanMessage({ content: inputMessage });
+    userMessage.additional_kwargs = { ...userMessage.additional_kwargs, timestamp: new Date().toISOString() };
+    messages = [...messages, userMessage];
+    inputMessage = "";
     isProcessing = true;
+    scrollToBottom();
     try {
-      const result = await agent.invoke(
-        {
-          messages: firstMessage ? messages : newMessages,
-        },
-        {
-          configurable: {
-            thread_id: "chat-session",
-          },
-        }
-      );
-
-      console.log("result", result);
-
-      const newLastMessage = result.messages[result.messages.length - 1];
-      newLastMessage.additional_kwargs = {
-        ...newLastMessage.additional_kwargs,
-        timestamp: new Date().toISOString()
-      };
-
-      messages = [
-        ...messages,
-        newLastMessage,
-      ];
-
-      console.log("messages", messages);
-
-      // if the last message is a tool call, and it is not sensitive
-      if (isToolCall(newLastMessage) && !isSensitiveToolCall(newLastMessage)) {
-        // take it as confirmed
-        handleToolCallConfirm(newLastMessage.tool_calls[0]);
-      }
-    } catch (error) {
-      console.error("AI 处理错误:", error);
-      const errorMessage = new AIMessage("抱歉，处理您的消息时出现了错误。请稍后重试。");
-      errorMessage.additional_kwargs = {
-        ...errorMessage.additional_kwargs,
-        timestamp: new Date().toISOString()
-      };
-      messages = [
-        ...messages,
-        errorMessage,
-      ];
+      await continueAgentFlow([userMessage]);
     } finally {
       isProcessing = false;
-      firstMessage = false;
       scrollToBottom();
+    }
+  }
 
-      // save messages into local storage
-      localStorage.setItem('messages', JSON.stringify(messages));
-      // save toolCallStates into local storage
-      const toolCallStatesObj = {};
-      toolCallStates.forEach((value, key) => {
-        toolCallStatesObj[key] = value;
+  // Define tool whitelist - tools that auto-execute without user confirmation
+  const autoExecuteTools = new Set([
+    'get_accounts',
+    'get_recorder_list',
+    'get_recorder_info',
+    'get_archives',
+    'get_archive',
+    'get_background_tasks',
+    'get_videos',
+    'get_all_videos',
+    'get_video',
+    'get_video_cover',
+    'get_video_typelist',
+    'get_video_subtitle',
+    'get_danmu_record',
+    'get_recent_record',
+    'get_recent_record_all',
+    'get_archive_subtitle',
+    'get_video_metadata',
+    'get_archive_metadata',
+  ]);
+
+  async function continueAgentFlow(newMessages: any[]) {
+    const config = { configurable: { thread_id: "1" } };
+
+    try {
+      const stream = await agent.stream({ messages: newMessages }, config);
+
+      let lastAIMessage = null;
+      for await (const chunk of stream) {
+        if (chunk.agent) {
+          const agentMessages = chunk.agent.messages;
+          for (const msg of agentMessages) {
+            if (msg instanceof AIMessage) {
+              msg.additional_kwargs = { ...msg.additional_kwargs, timestamp: new Date().toISOString() };
+              messages = [...messages, msg];
+              lastAIMessage = msg;
+              scrollToBottom();
+            }
+          }
+        }
+      }
+
+    localStorage.setItem('messages', JSON.stringify(messages));
+    const toolCallStatesObj = Object.fromEntries(toolCallStates);
+    localStorage.setItem('toolCallStates', JSON.stringify(toolCallStatesObj));
+
+    // After stream ends, check if we need to auto-execute whitelisted tools
+    if (lastAIMessage?.tool_calls && lastAIMessage.tool_calls.length > 0) {
+      const autoExecutableTools = lastAIMessage.tool_calls.filter(
+        (toolCall: any) => autoExecuteTools.has(toolCall.name)
+      );
+
+      // If all tool calls are whitelisted, auto-execute them
+      if (autoExecutableTools.length === lastAIMessage.tool_calls.length) {
+        const toolResults: any[] = [];
+
+        for (const toolCall of autoExecutableTools) {
+          // Mark as confirmed
+          toolCallStates.set(toolCall.id, 'confirmed');
+
+          // Execute tool
+          const tool = tools.find(t => t.name === toolCall.name);
+          if (!tool) {
+            console.error(`Tool ${toolCall.name} not found`);
+            const errorDetails = {
+              error: true,
+              message: `Tool ${toolCall.name} not found`,
+              tool: toolCall.name,
+            };
+            const errorMessage = new ToolMessage({
+              name: toolCall.name,
+              content: JSON.stringify(errorDetails),
+              tool_call_id: toolCall.id || `tool_${Date.now()}`,
+            });
+            errorMessage.additional_kwargs = { ...errorMessage.additional_kwargs, timestamp: new Date().toISOString() };
+            toolResults.push(errorMessage);
+            continue;
+          }
+
+          try {
+            const result = await tool.invoke(toolCall.args);
+            const resultMessage = new ToolMessage({
+              name: toolCall.name,
+              content: typeof result === 'string' ? result : JSON.stringify(result),
+              tool_call_id: toolCall.id || `tool_${Date.now()}`,
+            });
+            resultMessage.additional_kwargs = { ...resultMessage.additional_kwargs, timestamp: new Date().toISOString() };
+            toolResults.push(resultMessage);
+          } catch (error) {
+            console.error(`Error executing tool ${toolCall.name}:`, error);
+            const errorDetails = {
+              error: true,
+              message: error.message || String(error),
+              tool: toolCall.name,
+              args: toolCall.args,
+            };
+            const errorMessage = new ToolMessage({
+              name: toolCall.name,
+              content: JSON.stringify(errorDetails),
+              tool_call_id: toolCall.id || `tool_${Date.now()}`,
+            });
+            errorMessage.additional_kwargs = { ...errorMessage.additional_kwargs, timestamp: new Date().toISOString() };
+            toolResults.push(errorMessage);
+          }
+        }
+
+        // Add all tool results to messages
+        messages = [...messages, ...toolResults];
+        scrollToBottom();
+
+        // Continue agent flow with all tool results
+        await continueAgentFlow(toolResults);
+      }
+    }
+    } catch (error) {
+      console.error('LLM API Error:', error);
+
+      // Create error message to display to user
+      const errorMessage = new AIMessage({
+        content: `❌ **LLM API 错误**\n\n${error.message || String(error)}\n\n请检查：\n- API 端点是否正确\n- API 密钥是否有效\n- 网络连接是否正常\n- 模型名称是否正确`,
       });
-      localStorage.setItem('toolCallStates', JSON.stringify(toolCallStatesObj));
+      errorMessage.additional_kwargs = {
+        ...errorMessage.additional_kwargs,
+        timestamp: new Date().toISOString(),
+        isError: true
+      };
+      messages = [...messages, errorMessage];
+      scrollToBottom();
     }
-  }
-
-  // 处理回车键
-  function handleKeyPress(event: KeyboardEvent) {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      sendMessage();
-    }
-  }
-
-  function isSensitiveToolCall(message: any) {
-    return message.tool_calls && message.tool_calls.length > 0
-      && message.tool_calls.some((tool_call: any) => tool_call.name.includes("delete") || 
-      tool_call.name.includes("remove") || 
-      tool_call.name.includes("post") || 
-      tool_call.name.includes("clip") || 
-      tool_call.name.includes("generate") ||
-      tool_call.name.includes("generic_ffmpeg_command"));
-  }
-
-  function isToolCall(message: any) {
-    return message.tool_calls && message.tool_calls.length > 0;
-  }
-
-  // 清空对话
-  async function clearConversation() {
-    console.log("clearConversation");
-    messages = [];
-    toolCallStates.clear();
-    localStorage.removeItem('messages');
-    localStorage.removeItem('toolCallStates');
-    // 只有当有必要的设置时才重新创建agent
-    if (settings.api_key && settings.endpoint) {
-      agent = createAgent({
-        apiKey: settings.api_key || undefined,
-        baseURL: settings.endpoint || undefined,
-        model: settings.model || undefined,
-      });
-    }
-    scrollToBottom();
-  }
-
-  // 格式化时间
-  function formatTime(date: Date): string {
-    return date.toLocaleTimeString("zh-CN", {
-      hour: "2-digit",
-      minute: "2-digit",
-    });
   }
 
   async function handleToolCallConfirm(toolCall: any) {
-    console.log("handleToolCallConfirm", toolCall);
-    toolCallStates.set(toolCall.id, 'confirmed');
-    // update messages to trigger re-render
-    messages = [...messages];
-    // Execute the tool and resume the flow
-    await executeToolAndResume(toolCall);
-  }
-
-  async function executeToolAndResume(toolCall: any) {
     isProcessing = true;
     try {
-      // Find the tool in the tools array
+      // 立即更新状态为 confirmed
+      toolCallStates.set(toolCall.id, 'confirmed');
+      messages = [...messages]; // 触发响应式更新
+      scrollToBottom();
+
       const tool = tools.find(t => t.name === toolCall.name);
       if (!tool) {
         throw new Error(`Tool ${toolCall.name} not found`);
       }
 
-      // Execute the tool
-      const toolResult = await tool.invoke(toolCall.args);
-      console.log("Tool result:", toolResult);
+      let resultMessage: ToolMessage;
+      try {
+        const result = await tool.invoke(toolCall.args);
+        resultMessage = new ToolMessage({
+          name: toolCall.name,
+          content: typeof result === 'string' ? result : JSON.stringify(result),
+          tool_call_id: toolCall.id || `tool_${Date.now()}`,
+        });
+      } catch (error) {
+        // Wrap error as tool result instead of throwing
+        console.error(`Error executing tool ${toolCall.name}:`, error);
+        const errorDetails = {
+          error: true,
+          message: error.message || String(error),
+          tool: toolCall.name,
+          args: toolCall.args,
+        };
+        resultMessage = new ToolMessage({
+          name: toolCall.name,
+          content: JSON.stringify(errorDetails),
+          tool_call_id: toolCall.id || `tool_${Date.now()}`,
+        });
+      }
 
-      // Create a ToolMessage with the result
-      const toolMessage = new ToolMessage({
-        name: toolCall.name,
-        content: JSON.stringify(toolResult),
-        tool_call_id: toolCall.id || `tool_${Date.now()}`,
-      });
-      // 为工具消息添加时间戳
-      toolMessage.additional_kwargs = {
-        ...toolMessage.additional_kwargs,
-        timestamp: new Date().toISOString()
-      };
+      resultMessage.additional_kwargs = { ...resultMessage.additional_kwargs, timestamp: new Date().toISOString() };
 
-      // Continue the agent flow with the tool result
-      await continueAgentFlow([toolMessage]);
-    } catch (error) {
-      console.error("Tool execution error:", error);
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      const resultMessage = new ToolMessage({
-        name: toolCall.name,
-        content: errorMessage,
-        tool_call_id: toolCall.id || `tool_${Date.now()}`,
-      });
-      // 为错误工具消息添加时间戳
-      resultMessage.additional_kwargs = {
-        ...resultMessage.additional_kwargs,
-        timestamp: new Date().toISOString()
-      };
+      // 添加工具结果消息到对话中
+      messages = [...messages, resultMessage];
+      scrollToBottom();
 
       await continueAgentFlow([resultMessage]);
     } finally {
@@ -368,297 +359,298 @@
   }
 
   async function handleToolCallReject(toolCall: any) {
-    console.log("handleToolCallReject", toolCall);
-
+    // 立即更新状态为 rejected
     toolCallStates.set(toolCall.id, 'rejected');
+    messages = [...messages]; // 触发响应式更新
+    scrollToBottom();
+
     const resultMessage = new ToolMessage({
       name: toolCall.name,
       content: "用户选择拒绝执行工具",
       tool_call_id: toolCall.id || `tool_${Date.now()}`,
     });
-    // 为拒绝的工具消息添加时间戳
-    resultMessage.additional_kwargs = {
-      ...resultMessage.additional_kwargs,
-      timestamp: new Date().toISOString()
-    };
+    resultMessage.additional_kwargs = { ...resultMessage.additional_kwargs, timestamp: new Date().toISOString() };
+
+    // 添加拒绝消息到对话中
+    messages = [...messages, resultMessage];
+    scrollToBottom();
 
     await continueAgentFlow([resultMessage]);
-
     scrollToBottom();
   }
 
+  async function clearConversation() {
+    messages = [];
+    toolCallStates.clear();
+    localStorage.removeItem('messages');
+    localStorage.removeItem('toolCallStates');
+    if (settings.provider === 'ollama') {
+      if (settings.endpoint || settings.model) {
+        agent = createAgent({
+          provider: 'ollama',
+          baseURL: settings.endpoint || 'http://localhost:11434',
+          model: settings.model || 'llama2',
+        });
+      }
+    } else {
+      if (settings.api_key && settings.endpoint) {
+        agent = createAgent({
+          provider: 'openai',
+          apiKey: settings.api_key,
+          baseURL: settings.endpoint,
+          model: settings.model || undefined,
+        });
+      }
+    }
+    scrollToBottom();
+  }
+
+  function handleKeyPress(e: KeyboardEvent) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  }
+
   onMount(async () => {
-    // 加载设置
     loadSettings();
-    
     const previousMessages = JSON.parse(localStorage.getItem('messages') || '[]');
-    // reconstruct messages
     messages = previousMessages.map((message: any) => {
-      // if HumanMessage in messgae.id array
       if (message.id.includes('HumanMessage')) {
         const msg = new HumanMessage(message.kwargs);
-        // 恢复时间戳
         if (message.additional_kwargs?.timestamp) {
-          msg.additional_kwargs = {
-            ...msg.additional_kwargs,
-            timestamp: message.additional_kwargs.timestamp
-          };
+          msg.additional_kwargs = { ...msg.additional_kwargs, timestamp: message.additional_kwargs.timestamp };
         }
         return msg;
       } else if (message.id.includes('AIMessage')) {
         const msg = new AIMessage(message.kwargs);
-        // 恢复时间戳
         if (message.additional_kwargs?.timestamp) {
-          msg.additional_kwargs = {
-            ...msg.additional_kwargs,
-            timestamp: message.additional_kwargs.timestamp
-          };
+          msg.additional_kwargs = { ...msg.additional_kwargs, timestamp: message.additional_kwargs.timestamp };
         }
         return msg;
       } else if (message.id.includes('ToolMessage')) {
         const msg = new ToolMessage(message.kwargs);
-        // 恢复时间戳
         if (message.additional_kwargs?.timestamp) {
-          msg.additional_kwargs = {
-            ...msg.additional_kwargs,
-            timestamp: message.additional_kwargs.timestamp
-          };
+          msg.additional_kwargs = { ...msg.additional_kwargs, timestamp: message.additional_kwargs.timestamp };
         }
         return msg;
       }
     });
-    console.log("init messages", messages);
-    // init toolCallStates
     toolCallStates.clear();
     const toolCallStatesString = localStorage.getItem('toolCallStates');
-    console.log("toolCallStatesString", toolCallStatesString);
     if (toolCallStatesString) {
       const toolCallStatesObj = JSON.parse(toolCallStatesString);
       for (const [key, value] of Object.entries(toolCallStatesObj)) {
         toolCallStates.set(key, value as 'confirmed' | 'rejected' | 'none');
       }
     }
-
     scrollToBottom();
   });
 </script>
 
-<div class="flex-1 flex flex-col bg-gray-50 dark:bg-gray-900 h-full">
-  <!-- Messages Container -->
-  <div
-    class="flex-1 overflow-y-auto p-6 space-y-4 custom-scrollbar-light min-h-0"
-    bind:this={messageContainer}
-  >
-    {#if !agent}
-      <div class="flex items-center justify-center min-h-[400px] px-6">
-        <div class="max-w-sm w-full">
-          <div class="text-center">
-            <div class="w-20 h-20 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-8 shadow-lg shadow-blue-500/20">
-              <Settings class="w-10 h-10 text-white" />
-            </div>
-            <h3 class="text-2xl font-semibold text-gray-900 dark:text-white mb-4 tracking-tight">
-              配置 AI 模型
-            </h3>
-            <p class="text-gray-500 dark:text-gray-400 mb-8 leading-relaxed text-base">
-              在使用 AI 助手之前，请先配置您的 OpenAI 兼容 API 设置。
+<div class="flex h-full bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-950 dark:to-gray-900">
+  <!-- Main Content -->
+  <div class="flex-1 flex flex-col">
+    <!-- Header Bar -->
+    <div class="flex-shrink-0 border-b border-gray-200 dark:border-gray-800 bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm">
+      <div class="max-w-4xl mx-auto px-6 py-4 flex items-center justify-between">
+        <div class="flex items-center space-x-3">
+          <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center">
+            <span class="text-lg">🍊</span>
+          </div>
+          <div>
+            <h1 class="text-lg font-semibold text-gray-900 dark:text-gray-100">小轴 AI 助手</h1>
+            <p class="text-xs text-gray-500 dark:text-gray-500">
+              {#if agent}
+                {settings.provider === 'ollama' ? 'Ollama' : 'OpenAI'} · {settings.model || '未设置模型'}
+              {:else}
+                未配置
+              {/if}
             </p>
+          </div>
+        </div>
+        <button
+          on:click={openSettings}
+          class="p-2 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
+          title="设置"
+        >
+          <Settings class="w-5 h-5" />
+        </button>
+      </div>
+    </div>
+
+    <!-- Messages Area -->
+    <div class="flex-1 overflow-y-auto" bind:this={messageContainer}>
+      <div class="max-w-4xl mx-auto px-6 py-8">
+        {#if !agent}
+          <!-- Welcome State -->
+          <div class="flex items-center justify-center min-h-[500px]">
+            <div class="max-w-md text-center space-y-6">
+              <div class="inline-flex items-center justify-center w-20 h-20 rounded-3xl bg-gradient-to-br from-amber-400 to-orange-500 shadow-xl">
+                <span class="text-4xl">🍊</span>
+              </div>
+              <div class="space-y-3">
+                <h2 class="text-2xl font-semibold text-gray-900 dark:text-gray-100">欢迎使用 AI 助手</h2>
+                <p class="text-gray-600 dark:text-gray-400 leading-relaxed">
+                  配置您的 AI 模型以开始智能对话。支持 OpenAI 兼容 API 和本地 Ollama 模型。
+                </p>
+              </div>
+              <button
+                on:click={openSettings}
+                class="inline-flex items-center space-x-2 px-6 py-3 bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 rounded-xl hover:bg-gray-800 dark:hover:bg-gray-200 transition-colors font-medium shadow-lg"
+              >
+                <Settings class="w-4 h-4" />
+                <span>开始配置</span>
+              </button>
+              <div class="flex items-center justify-center space-x-6 text-sm text-gray-500 pt-4">
+                <div class="flex items-center space-x-1.5">
+                  <Zap class="w-4 h-4" />
+                  <span>快速响应</span>
+                </div>
+                <div class="flex items-center space-x-1.5">
+                  <Sparkles class="w-4 h-4" />
+                  <span>智能分析</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        {:else if messages.length === 0}
+          <!-- Empty State with Prompts -->
+          <div class="space-y-8">
+            <div class="text-center space-y-3">
+              <div class="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-amber-400 to-orange-500">
+                <span class="text-2xl">🍊</span>
+              </div>
+              <div>
+                <h2 class="text-xl font-semibold text-gray-900 dark:text-gray-100">你好！我是小轴</h2>
+                <p class="text-sm text-gray-600 dark:text-gray-400 mt-2">
+                  我可以帮你管理直播录制、生成精彩切片、分析弹幕内容等。点击下方卡片快速开始。
+                </p>
+              </div>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {#each presetPrompts as prompt}
+                <button
+                  on:click={() => handlePresetPrompt(prompt.prompt)}
+                  class="group p-4 text-left bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-md transition-all"
+                >
+                  <div class="flex items-start space-x-3">
+                    <span class="text-2xl flex-shrink-0">{prompt.icon}</span>
+                    <div class="flex-1 min-w-0">
+                      <div class="text-sm font-medium text-gray-900 dark:text-gray-100 mb-1">{prompt.title}</div>
+                      <p class="text-xs text-gray-500 dark:text-gray-500 leading-relaxed">{prompt.description}</p>
+                    </div>
+                  </div>
+                </button>
+              {/each}
+            </div>
+          </div>
+        {:else}
+          <!-- Messages -->
+          <div class="space-y-6">
+            {#each messages as message, index (index)}
+              {#if message instanceof HumanMessage}
+                <HumanMessageComponent {message} {formatTime} />
+              {:else if message instanceof AIMessage}
+                <AIMessageComponent
+                  {message}
+                  {formatTime}
+                  onToolCallConfirm={handleToolCallConfirm}
+                  onToolCallReject={handleToolCallReject}
+                  toolCallState={getToolCallState(message)}
+                  isSensitiveToolCall={isSensitiveToolCall(message)}
+                />
+              {:else if message instanceof ToolMessage}
+                <ToolMessageComponent {message} {formatTime} />
+              {/if}
+            {/each}
+          </div>
+        {/if}
+
+        {#if isProcessing}
+          <div class="mt-6">
+            <ProcessingMessageComponent />
+          </div>
+        {/if}
+      </div>
+    </div>
+
+    <!-- Input Area -->
+    <div class="flex-shrink-0 border-t border-gray-200 dark:border-gray-800 bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm">
+      <div class="max-w-4xl mx-auto px-6 py-4">
+        <div class="space-y-3">
+          <div class="flex items-end space-x-2">
+            <div class="flex-1 relative">
+              <textarea
+                bind:value={inputMessage}
+                on:keypress={handleKeyPress}
+                placeholder={!agent ? "请先配置 AI 模型..." : "输入您的消息..."}
+                class="w-full px-4 py-3 pr-16 border border-gray-300 dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-100 focus:border-transparent resize-none min-h-[52px] max-h-[200px] text-[15px] leading-relaxed disabled:opacity-50 disabled:cursor-not-allowed transition-shadow"
+                rows="1"
+                disabled={isProcessing || !agent}
+              ></textarea>
+              {#if inputMessage.trim()}
+                <div class="absolute right-3 bottom-3 text-xs text-gray-400">{inputMessage.length}</div>
+              {/if}
+            </div>
             <button
-              class="inline-flex items-center justify-center space-x-2 px-8 py-4 bg-blue-500 hover:bg-blue-600 active:bg-blue-700 text-white rounded-xl transition-all duration-200 font-medium text-base shadow-sm hover:shadow-md active:shadow-inner disabled:opacity-50 disabled:cursor-not-allowed"
-              on:click={openSettings}
+              class="px-5 py-3 bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 rounded-xl hover:bg-gray-800 dark:hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center space-x-2 font-medium shadow-lg"
+              disabled={!inputMessage.trim() || isProcessing || !agent}
+              on:click={sendMessage}
             >
-              <Settings class="w-5 h-5" />
-              <span>模型设置</span>
+              <Send class="w-4 h-4" />
+              <span>发送</span>
             </button>
+          </div>
+          <div class="flex items-center justify-between text-xs">
+            <button
+              class="px-3 py-1.5 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center space-x-1.5"
+              on:click={clearConversation}
+              disabled={!agent}
+            >
+              <Trash2 class="w-3.5 h-3.5" />
+              <span>清空对话</span>
+            </button>
+            <div class="text-gray-500 dark:text-gray-500">
+              按 Enter 发送，Shift + Enter 换行
+            </div>
           </div>
         </div>
       </div>
-    {:else if messages.length === 0}
-      <div class="text-center py-10">
-        <p class="text-gray-500 dark:text-gray-400 text-lg mb-8">
-          我是助手小轴，你可以点击下方预设提示词发送第一条消息，或是直接输入你想要执行的操作。
-        </p>
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-2xl mx-auto">
-          {#each presetPrompts as prompt}
-            <button
-              class="group relative p-4 bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm border border-gray-200/50 dark:border-gray-700/50 rounded-2xl text-left transition-all duration-200 hover:bg-white/90 dark:hover:bg-gray-800/90 hover:shadow-lg hover:shadow-gray-200/50 dark:hover:shadow-gray-900/50 hover:scale-[1.02] active:scale-[0.98]"
-              on:click={() => handlePresetPrompt(prompt.prompt)}
-            >
-              <div class="flex items-start space-x-3">
-                <div class="flex-shrink-0 w-8 h-8 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl flex items-center justify-center group-hover:from-blue-600 group-hover:to-purple-700 transition-all duration-200">
-                  <Sparkles class="w-4 h-4 text-white" />
-                </div>
-                <div class="flex-1 min-w-0">
-                  <h3 class="text-sm font-semibold text-gray-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors duration-200">
-                    {prompt.title}
-                  </h3>
-                  <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 leading-relaxed">
-                    {prompt.description}
-                  </p>
-                </div>
-              </div>
-            </button>
-          {/each}
-        </div>
-      </div>
-    {:else}
-      {#each messages as message, index (index)}
-        {#if message instanceof HumanMessage}
-          <HumanMessageComponent {message} {formatTime} />
-        {:else if message instanceof AIMessage}
-          <AIMessageComponent
-            {message}
-            {formatTime}
-            onToolCallConfirm={handleToolCallConfirm}
-            onToolCallReject={handleToolCallReject}
-            toolCallState={getToolCallState(message)}
-            isSensitiveToolCall={isSensitiveToolCall(message)}
-          />
-        {:else if message instanceof ToolMessage}
-          <ToolMessageComponent {message} {formatTime} />
-        {/if}
-      {/each}
-    {/if}
-
-    {#if isProcessing}
-      <ProcessingMessageComponent />
-    {/if}
-</div>
-
-  <!-- Input Area -->
-  <div class="border-t border-gray-200 dark:border-gray-700 p-6">
-    <div class="flex items-stretch space-x-3">
-      <div class="flex-1 flex items-center">
-        <textarea
-          bind:value={inputMessage}
-          on:keypress={handleKeyPress}
-          placeholder={!agent ? "请先配置 AI 模型..." : "输入您的消息..."}
-          class="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none min-h-[44px] max-h-[120px] text-sm"
-          rows="1"
-          disabled={isProcessing || !agent}
-        ></textarea>
-      </div>
-
-      <button
-        class="px-4 py-3 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2 text-sm font-medium"
-        disabled={!inputMessage.trim() || isProcessing || !agent}
-        on:click={sendMessage}
-      >
-        <Send class="w-4 h-4" />
-        <span>发送</span>
-      </button>
-    </div>
-
-    <div class="flex items-center justify-between mt-4">
-      <button
-        class="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg border border-gray-300 dark:border-gray-600 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-        on:click={clearConversation}
-        disabled={!agent}
-      >
-        清空对话
-      </button>
-      
-      <button
-        class="p-2 text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-all duration-200"
-        on:click={openSettings}
-        title="设置"
-      >
-        <Settings class="w-4 h-4" />
-      </button>
     </div>
   </div>
 
   <!-- Settings Modal -->
-  {#if showSettings}
-    <div class="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div class="bg-white/95 dark:bg-gray-800/95 backdrop-blur-xl rounded-2xl shadow-2xl border border-gray-200/50 dark:border-gray-700/50 w-full max-w-md mx-auto">
-        <div class="p-6">
-          <div class="flex items-center justify-between mb-6">
-            <h3 class="text-xl font-semibold text-gray-900 dark:text-white tracking-tight">模型设置</h3>
-            <button
-              class="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl transition-all duration-200"
-              on:click={closeSettings}
-            >
-              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-              </svg>
-            </button>
-          </div>
-          
-          <div class="space-y-5">
-            <div>
-              <label for="endpoint" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                OpenAI Compatible API Endpoint
-              </label>
-              <input
-                id="endpoint"
-                type="text"
-                bind:value={settings.endpoint}
-                placeholder="https://api.openai.com/v1"
-                class="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200"
-              />
-            </div>
-            
-            <div>
-              <label for="api_key" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                API Key
-              </label>
-              <input
-                id="api_key"
-                type="password"
-                bind:value={settings.api_key}
-                placeholder="sk-..."
-                class="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200"
-              />
-            </div>
-
-            <div>
-              <div class="flex items-center justify-between mb-2">
-                <label for="model" class="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                  模型选择
-                </label>
-                <button
-                  type="button"
-                  class="text-xs text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 disabled:opacity-50 disabled:cursor-not-allowed px-2 py-1 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-all duration-200"
-                  on:click={loadModels}
-                  disabled={!settings.endpoint || !settings.api_key || isLoadingModels}
-                >
-                  {isLoadingModels ? '加载中...' : '刷新模型列表'}
-                </button>
-              </div>
-              <div class="relative">
-                <input
-                  id="model"
-                  type="text"
-                  bind:value={settings.model}
-                  list="model-options"
-                  placeholder="输入模型名称或从列表中选择"
-                  class="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200"
-                />
-                <datalist id="model-options">
-                  {#each availableModels as model}
-                    <option value={model.value}>{model.label}</option>
-                  {/each}
-                </datalist>
-              </div>
-            </div>
-          </div>
-          
-          <div class="flex justify-end space-x-3 mt-8">
-            <button
-              class="px-6 py-3 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-xl border border-gray-300 dark:border-gray-600 transition-all duration-200 font-medium"
-              on:click={closeSettings}
-            >
-              取消
-            </button>
-            <button
-              class="px-6 py-3 text-sm bg-blue-500 hover:bg-blue-600 active:bg-blue-700 text-white rounded-xl transition-all duration-200 font-medium shadow-sm hover:shadow-md active:shadow-inner"
-              on:click={saveSettings}
-            >
-              保存
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  {/if}
+  <SettingsModal
+    {showSettings}
+    bind:settings
+    {availableModels}
+    {isLoadingModels}
+    onClose={closeSettings}
+    onSave={saveSettings}
+    onLoadModels={loadModels}
+  />
 </div>
+
+<style>
+  :global(.overflow-y-auto) {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(209 213 219) transparent;
+  }
+  :global(.dark .overflow-y-auto) {
+    scrollbar-color: rgb(55 65 81) transparent;
+  }
+  :global(.overflow-y-auto::-webkit-scrollbar) {
+    width: 6px;
+  }
+  :global(.overflow-y-auto::-webkit-scrollbar-track) {
+    background: transparent;
+  }
+  :global(.overflow-y-auto::-webkit-scrollbar-thumb) {
+    background: rgb(209 213 219);
+    border-radius: 3px;
+  }
+  :global(.dark .overflow-y-auto::-webkit-scrollbar-thumb) {
+    background: rgb(55 65 81);
+  }
+</style>

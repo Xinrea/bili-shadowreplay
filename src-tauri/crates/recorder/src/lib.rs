@@ -237,3 +237,107 @@ impl Display for CachePath {
         write!(f, "{}", self.full_path().display())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cache_path_relative_without_filename() {
+        let cp = CachePath::new(
+            PathBuf::from("/cache"),
+            PlatformType::BiliBili,
+            "12345",
+            "live_001",
+        );
+        assert_eq!(cp.relative_path(), PathBuf::from("bilibili/12345/live_001"));
+    }
+
+    #[test]
+    fn test_cache_path_relative_with_filename() {
+        let cp = CachePath::new(
+            PathBuf::from("/cache"),
+            PlatformType::BiliBili,
+            "12345",
+            "live_001",
+        )
+        .with_filename("video.ts");
+        assert_eq!(
+            cp.relative_path(),
+            PathBuf::from("bilibili/12345/live_001/video.ts")
+        );
+    }
+
+    #[test]
+    fn test_cache_path_full_path() {
+        let cp = CachePath::new(
+            PathBuf::from("/cache"),
+            PlatformType::Douyin,
+            "room1",
+            "live1",
+        );
+        assert_eq!(cp.full_path(), PathBuf::from("/cache/douyin/room1/live1"));
+    }
+
+    #[test]
+    fn test_cache_path_full_path_with_filename() {
+        let cp = CachePath::new(
+            PathBuf::from("/cache"),
+            PlatformType::Huya,
+            "room1",
+            "live1",
+        )
+        .with_filename("seg.ts");
+        assert_eq!(
+            cp.full_path(),
+            PathBuf::from("/cache/huya/room1/live1/seg.ts")
+        );
+    }
+
+    #[test]
+    fn test_cache_path_with_filename_sanitizes() {
+        let cp = CachePath::new(
+            PathBuf::from("/cache"),
+            PlatformType::BiliBili,
+            "12345",
+            "live_001",
+        )
+        .with_filename("bad/file:name?.ts");
+        let rel = cp.relative_path();
+        let filename = rel.file_name().unwrap().to_str().unwrap();
+        // sanitize_filename should remove invalid chars
+        assert!(!filename.contains('/'));
+        assert!(!filename.contains(':'));
+        assert!(!filename.contains('?'));
+    }
+
+    #[test]
+    fn test_cache_path_display() {
+        let cp = CachePath::new(
+            PathBuf::from("/cache"),
+            PlatformType::TikTok,
+            "room",
+            "live",
+        );
+        let display = format!("{}", cp);
+        assert!(display.contains("tiktok"));
+        assert!(display.contains("room"));
+        assert!(display.contains("live"));
+    }
+
+    #[test]
+    fn test_room_info_default() {
+        let ri = RoomInfo::default();
+        assert_eq!(ri.platform, "");
+        assert_eq!(ri.room_id, "");
+        assert!(!ri.status);
+    }
+
+    #[test]
+    fn test_user_info_default() {
+        let ui = UserInfo::default();
+        assert_eq!(ui.user_id, "");
+        assert_eq!(ui.user_name, "");
+        assert_eq!(ui.user_avatar, "");
+    }
+}

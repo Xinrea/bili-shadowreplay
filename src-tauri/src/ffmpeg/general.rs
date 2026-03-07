@@ -76,6 +76,46 @@ pub async fn handle_ffmpeg_process(
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_escape_concat_path_plain() {
+        let path = Path::new("/tmp/video.mp4");
+        assert_eq!(escape_concat_path(path), "/tmp/video.mp4");
+    }
+
+    #[test]
+    fn test_escape_concat_path_single_quote() {
+        let path = Path::new("/tmp/it's a video.mp4");
+        assert_eq!(escape_concat_path(path), "/tmp/it'\\''s a video.mp4");
+    }
+
+    #[test]
+    fn test_escape_concat_path_square_brackets() {
+        let path = Path::new("/tmp/video [1].mp4");
+        assert_eq!(escape_concat_path(path), "/tmp/video [1].mp4");
+    }
+
+    #[test]
+    fn test_escape_concat_path_spaces() {
+        let path = Path::new("/tmp/my video file.mp4");
+        assert_eq!(escape_concat_path(path), "/tmp/my video file.mp4");
+    }
+
+    #[tokio::test]
+    async fn test_random_filename() {
+        let name1 = random_filename().await;
+        let name2 = random_filename().await;
+        assert!(!name1.is_empty());
+        assert!(!name2.is_empty());
+        // Should be hex strings
+        assert!(name1.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(name2.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+}
+
 pub async fn concat_videos(
     reporter: Option<&impl ProgressReporterTrait>,
     videos: &[PathBuf],

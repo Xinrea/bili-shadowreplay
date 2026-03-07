@@ -124,3 +124,132 @@ impl HlsStream {
         self.expire > 0 && (self.expire < chrono::Utc::now().timestamp() + SAFE_EXPIRE)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_stream(host: &str, base: &str, extra: &str, expire: i64) -> HlsStream {
+        HlsStream::new(
+            "test_live".to_string(),
+            host.to_string(),
+            base.to_string(),
+            extra.to_string(),
+            Format::TS,
+            Codec::Avc,
+            expire,
+        )
+    }
+
+    #[test]
+    fn test_hls_stream_index_with_extra() {
+        let s = make_stream(
+            "https://cdn.example.com",
+            "/live/stream.m3u8?",
+            "expire=999&token=abc",
+            0,
+        );
+        assert_eq!(
+            s.index(),
+            "https://cdn.example.com/live/stream.m3u8?expire=999&token=abc"
+        );
+    }
+
+    #[test]
+    fn test_hls_stream_index_without_extra() {
+        let s = make_stream("https://cdn.example.com", "/live/stream.m3u8", "", 0);
+        assert_eq!(s.index(), "https://cdn.example.com/live/stream.m3u8");
+    }
+
+    #[test]
+    fn test_ts_url_absolute() {
+        let s = make_stream(
+            "https://cdn.example.com",
+            "/live/stream.m3u8?",
+            "token=abc",
+            0,
+        );
+        let url = s.ts_url("https://other.com/seg001.ts");
+        assert_eq!(url, "https://other.com/seg001.ts");
+    }
+
+    #[test]
+    fn test_ts_url_relative_no_query() {
+        let s = make_stream(
+            "https://cdn.example.com",
+            "/live/stream.m3u8?",
+            "token=abc",
+            0,
+        );
+        let url = s.ts_url("seg001.ts");
+        assert_eq!(url, "https://cdn.example.com/live/seg001.ts?token=abc");
+    }
+
+    #[test]
+    fn test_ts_url_relative_with_query() {
+        let s = make_stream(
+            "https://cdn.example.com",
+            "/live/stream.m3u8?",
+            "token=abc",
+            0,
+        );
+        let url = s.ts_url("seg001.ts?own_token=xyz");
+        assert_eq!(url, "https://cdn.example.com/live/seg001.ts?own_token=xyz");
+    }
+
+    #[test]
+    fn test_ts_url_relative_no_extra() {
+        let s = make_stream("https://cdn.example.com", "/live/stream.m3u8", "", 0);
+        let url = s.ts_url("seg001.ts");
+        assert_eq!(url, "https://cdn.example.com/live/seg001.ts");
+    }
+
+    #[test]
+    fn test_is_expired_zero_expire() {
+        let s = make_stream("https://cdn.example.com", "/live/stream.m3u8", "", 0);
+        assert!(!s.is_expired());
+    }
+
+    #[test]
+    fn test_is_expired_past() {
+        let s = make_stream("https://cdn.example.com", "/live/stream.m3u8", "", 1000);
+        assert!(s.is_expired());
+    }
+
+    #[test]
+    fn test_is_expired_far_future() {
+        let far_future = chrono::Utc::now().timestamp() + 100000;
+        let s = make_stream(
+            "https://cdn.example.com",
+            "/live/stream.m3u8",
+            "",
+            far_future,
+        );
+        assert!(!s.is_expired());
+    }
+
+    #[test]
+    fn test_format_display() {
+        assert_eq!(format!("{}", Format::Flv), "Flv");
+        assert_eq!(format!("{}", Format::TS), "TS");
+        assert_eq!(format!("{}", Format::FMP4), "FMP4");
+    }
+
+    #[test]
+    fn test_codec_display() {
+        assert_eq!(format!("{}", Codec::Avc), "Avc");
+        assert_eq!(format!("{}", Codec::Hevc), "Hevc");
+    }
+
+    #[test]
+    fn test_format_equality() {
+        assert_eq!(Format::Flv, Format::Flv);
+        assert_ne!(Format::Flv, Format::TS);
+    }
+
+    #[test]
+    fn test_codec_equality() {
+        assert_eq!(Codec::Avc, Codec::Avc);
+        assert_ne!(Codec::Avc, Codec::Hevc);
+    }
+}

@@ -266,4 +266,33 @@ mod tests {
         let uid = get_item_from_cookies("unknown", cookies).unwrap_err();
         assert_eq!(uid, "Invalid cookies: missing unknown");
     }
+
+    #[test]
+    fn test_get_item_from_cookies_empty() {
+        let result = get_item_from_cookies("key", "");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_item_from_cookies_no_value() {
+        let cookies = "key1=; key2=value2";
+        let result = get_item_from_cookies("key1", cookies).unwrap();
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_get_item_from_cookies_special_chars() {
+        let cookies = "token=abc%3Ddef; session=xyz123";
+        let result = get_item_from_cookies("token", cookies).unwrap();
+        assert_eq!(result, "abc%3Ddef");
+    }
+
+    #[test]
+    fn test_get_item_from_cookies_whitespace_handling() {
+        let cookies = "  key1=val1  ;  key2=val2  ";
+        let result = get_item_from_cookies("key1", cookies).unwrap();
+        assert_eq!(result, "val1");
+        let result = get_item_from_cookies("key2", cookies).unwrap();
+        assert_eq!(result, "val2");
+    }
 }

@@ -1479,4 +1479,84 @@ mod tests {
         assert!(chunk_dir.to_string_lossy().contains("_chunks"));
         assert!(chunk_dir.to_string_lossy().contains("test"));
     }
+
+    #[test]
+    fn test_range_is_in_inside() {
+        let r = Range {
+            start: 1.0,
+            end: 5.0,
+        };
+        assert!(r.is_in(3.0));
+    }
+
+    #[test]
+    fn test_range_is_in_at_boundaries() {
+        let r = Range {
+            start: 1.0,
+            end: 5.0,
+        };
+        assert!(r.is_in(1.0));
+        assert!(r.is_in(5.0));
+    }
+
+    #[test]
+    fn test_range_is_in_outside() {
+        let r = Range {
+            start: 1.0,
+            end: 5.0,
+        };
+        assert!(!r.is_in(0.9));
+        assert!(!r.is_in(5.1));
+    }
+
+    #[test]
+    fn test_video_metadata_equality() {
+        let m1 = VideoMetadata {
+            duration: 10.0,
+            width: 1920,
+            height: 1080,
+            video_codec: "h264".to_string(),
+            audio_codec: "aac".to_string(),
+        };
+        let m2 = m1.clone();
+        assert_eq!(m1, m2);
+    }
+
+    #[test]
+    fn test_video_metadata_different_resolution() {
+        let m1 = VideoMetadata {
+            duration: 10.0,
+            width: 1920,
+            height: 1080,
+            video_codec: "h264".to_string(),
+            audio_codec: "aac".to_string(),
+        };
+        let m2 = VideoMetadata {
+            duration: 10.0,
+            width: 1280,
+            height: 720,
+            video_codec: "h264".to_string(),
+            audio_codec: "aac".to_string(),
+        };
+        assert_ne!(m1, m2);
+    }
+
+    #[test]
+    fn test_video_metadata_different_codec() {
+        let m1 = VideoMetadata {
+            duration: 10.0,
+            width: 1920,
+            height: 1080,
+            video_codec: "h264".to_string(),
+            audio_codec: "aac".to_string(),
+        };
+        let m2 = VideoMetadata {
+            duration: 10.0,
+            width: 1920,
+            height: 1080,
+            video_codec: "hevc".to_string(),
+            audio_codec: "aac".to_string(),
+        };
+        assert_ne!(m1, m2);
+    }
 }

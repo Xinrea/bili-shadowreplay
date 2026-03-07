@@ -253,4 +253,72 @@ mod tests {
         let poster = create_webhook_poster("https://httpbin.org/post", Some(headers));
         assert!(poster.is_ok());
     }
+
+    #[test]
+    fn test_webhook_config_default() {
+        let config = WebhookConfig::default();
+        assert_eq!(config.url, "");
+        assert_eq!(config.timeout, Duration::from_secs(30));
+        assert_eq!(config.retry_attempts, 3);
+        assert_eq!(config.retry_delay, Duration::from_secs(1));
+        assert!(config.headers.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_webhook_poster_update_config() {
+        let config = WebhookConfig {
+            url: "https://old.example.com".to_string(),
+            ..Default::default()
+        };
+        let poster = WebhookPoster::new(config).unwrap();
+        let new_config = WebhookConfig {
+            url: "https://new.example.com".to_string(),
+            ..Default::default()
+        };
+        poster.update_config(new_config).await.unwrap();
+        let current = poster.config.read().await;
+        assert_eq!(current.url, "https://new.example.com");
+    }
+
+    #[tokio::test]
+    async fn test_webhook_post_event_empty_url_skips() {
+        let config = WebhookConfig {
+            url: "".to_string(),
+            ..Default::default()
+        };
+        let poster = WebhookPoster::new(config).unwrap();
+        let event = crate::webhook::events::WebhookEvent {
+            id: "test".to_string(),
+            event: "test.event".to_string(),
+            payload: crate::webhook::events::Payload::Room(recorder::RecorderInfo {
+                room_info: recorder::RoomInfo::default(),
+                user_info: recorder::UserInfo::default(),
+                platform_live_id: "".to_string(),
+                live_id: "".to_string(),
+                recording: false,
+                enabled: false,
+            }),
+            timestamp: 0,
+        };
+        // post_event with empty URL should return Ok
+        let result = poster.post_event(&event).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_create_webhook_poster_no_headers() {
+        let poster = create_webhook_poster("https://example.com/hook", None);
+        assert!(poster.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_webhook_post_json_empty_url() {
+        let config = WebhookConfig {
+            url: "".to_string(),
+            ..Default::default()
+        };
+        let poster = WebhookPoster::new(config).unwrap();
+        let result = poster.post_json("{}").await;
+        assert!(result.is_ok());
+    }
 }

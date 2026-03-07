@@ -241,3 +241,117 @@ fn normal_danmaku() -> impl FnMut(f64, f64, f64, bool) -> Option<DanmakuPosition
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_time_zero() {
+        assert_eq!(format_time(0.0), "0:00:00.00");
+    }
+
+    #[test]
+    fn test_format_time_seconds() {
+        assert_eq!(format_time(5.5), "0:00:05.50");
+    }
+
+    #[test]
+    fn test_format_time_minutes() {
+        assert_eq!(format_time(65.25), "0:01:05.25");
+    }
+
+    #[test]
+    fn test_format_time_hours() {
+        assert_eq!(format_time(3661.99), "1:01:01.99");
+    }
+
+    #[test]
+    fn test_escape_text_backslash() {
+        assert_eq!(escape_text("a\\b"), "a\\\\b");
+    }
+
+    #[test]
+    fn test_escape_text_braces() {
+        assert_eq!(escape_text("{test}"), "｛test｝");
+    }
+
+    #[test]
+    fn test_escape_text_carriage_return() {
+        // \r is removed, \n becomes \N (ASS line break)
+        assert_eq!(escape_text("line\r\n"), "line\\N");
+    }
+
+    #[test]
+    fn test_escape_text_plain() {
+        assert_eq!(escape_text("hello world"), "hello world");
+    }
+
+    #[test]
+    fn test_danmu2ass_options_default() {
+        let opts = Danmu2AssOptions::default();
+        assert_eq!(opts.font_size, 36.0);
+        assert_eq!(opts.opacity, 0.8);
+    }
+
+    #[test]
+    fn test_danmu_to_ass_empty() {
+        let result = danmu_to_ass(vec![], Danmu2AssOptions::default());
+        assert!(result.contains("[Script Info]"));
+        assert!(result.contains("[V4+ Styles]"));
+        assert!(result.contains("[Events]"));
+    }
+
+    #[test]
+    fn test_danmu_to_ass_with_entries() {
+        let danmus = vec![
+            DanmuEntry {
+                ts: 1000,
+                content: "hello".to_string(),
+            },
+            DanmuEntry {
+                ts: 5000,
+                content: "world".to_string(),
+            },
+        ];
+        let result = danmu_to_ass(danmus, Danmu2AssOptions::default());
+        assert!(result.contains("[Events]"));
+        assert!(result.contains("hello"));
+        assert!(result.contains("world"));
+    }
+
+    #[test]
+    fn test_danmu_to_ass_opacity() {
+        // opacity 1.0 -> alpha 0x00
+        let result = danmu_to_ass(
+            vec![],
+            Danmu2AssOptions {
+                font_size: 36.0,
+                opacity: 1.0,
+            },
+        );
+        assert!(result.contains("&H00FFFFFF"));
+
+        // opacity 0.0 -> alpha 0xFF
+        let result = danmu_to_ass(
+            vec![],
+            Danmu2AssOptions {
+                font_size: 36.0,
+                opacity: 0.0,
+            },
+        );
+        assert!(result.contains("&HFFFFFFFF"));
+    }
+
+    #[test]
+    fn test_danmu_to_ass_font_size() {
+        let result = danmu_to_ass(
+            vec![],
+            Danmu2AssOptions {
+                font_size: 48.0,
+                opacity: 0.8,
+            },
+        );
+        assert!(result.contains(",48,"));
+    }
+}

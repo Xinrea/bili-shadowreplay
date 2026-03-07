@@ -157,3 +157,54 @@ fn escape_xml(s: &str) -> String {
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_escape_xml_ampersand() {
+        assert_eq!(escape_xml("a&b"), "a&amp;b");
+    }
+
+    #[test]
+    fn test_escape_xml_angle_brackets() {
+        assert_eq!(escape_xml("<tag>"), "&lt;tag&gt;");
+    }
+
+    #[test]
+    fn test_escape_xml_quotes() {
+        assert_eq!(escape_xml(r#"say "hello""#), "say &quot;hello&quot;");
+        assert_eq!(escape_xml("it's"), "it&apos;s");
+    }
+
+    #[test]
+    fn test_escape_xml_no_special_chars() {
+        assert_eq!(escape_xml("plain text 123"), "plain text 123");
+    }
+
+    #[test]
+    fn test_escape_xml_all_special() {
+        assert_eq!(escape_xml(r#"<a href="x">&'y'"#), "&lt;a href=&quot;x&quot;&gt;&amp;&apos;y&apos;");
+    }
+
+    #[test]
+    fn test_escape_xml_empty() {
+        assert_eq!(escape_xml(""), "");
+    }
+
+    #[test]
+    fn test_video_clip_struct() {
+        let clip = VideoClip {
+            file_path: PathBuf::from("/tmp/test.mp4"),
+            start_time: 10.0,
+            duration: 5.0,
+            width: 1920,
+            height: 1080,
+        };
+        assert_eq!(clip.start_time, 10.0);
+        assert_eq!(clip.duration, 5.0);
+        assert_eq!(clip.width, 1920);
+        assert_eq!(clip.height, 1080);
+    }
+}

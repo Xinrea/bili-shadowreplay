@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { Settings, Send, Sparkles, Trash2, Zap, MessageSquare } from "lucide-svelte";
+  import { Settings, Send, Sparkles, Trash2, Zap, MessageSquare, Bot } from "lucide-svelte";
   import createAgent, { type AgentConfig } from "../lib/agent/agent";
   import { tools } from "../lib/agent/tools";
   import {
@@ -450,38 +450,10 @@
 
 <div class="flex h-full bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-950 dark:to-gray-900">
   <!-- Main Content -->
-  <div class="flex-1 flex flex-col">
-    <!-- Header Bar -->
-    <div class="flex-shrink-0 border-b border-gray-200 dark:border-gray-800 bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm">
-      <div class="max-w-4xl mx-auto px-6 py-4 flex items-center justify-between">
-        <div class="flex items-center space-x-3">
-          <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center">
-            <span class="text-lg">🍊</span>
-          </div>
-          <div>
-            <h1 class="text-lg font-semibold text-gray-900 dark:text-gray-100">小轴 AI 助手</h1>
-            <p class="text-xs text-gray-500 dark:text-gray-500">
-              {#if agent}
-                {settings.provider === 'ollama' ? 'Ollama' : 'OpenAI'} · {settings.model || '未设置模型'}
-              {:else}
-                未配置
-              {/if}
-            </p>
-          </div>
-        </div>
-        <button
-          on:click={openSettings}
-          class="p-2 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
-          title="设置"
-        >
-          <Settings class="w-5 h-5" />
-        </button>
-      </div>
-    </div>
-
+  <div class="flex-1 flex flex-col relative">
     <!-- Messages Area -->
     <div class="flex-1 overflow-y-auto" bind:this={messageContainer}>
-      <div class="max-w-4xl mx-auto px-6 py-8">
+      <div class="max-w-4xl mx-auto px-6 py-8 pb-52">
         {#if !agent}
           <!-- Welcome State -->
           <div class="flex items-center justify-center min-h-[500px]">
@@ -575,44 +547,62 @@
       </div>
     </div>
 
-    <!-- Input Area -->
-    <div class="flex-shrink-0 border-t border-gray-200 dark:border-gray-800 bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm">
-      <div class="max-w-4xl mx-auto px-6 py-4">
-        <div class="space-y-3">
-          <div class="flex items-end space-x-2">
-            <div class="flex-1 relative">
-              <textarea
-                bind:value={inputMessage}
-                on:keypress={handleKeyPress}
-                placeholder={!agent ? "请先配置 AI 模型..." : "输入您的消息..."}
-                class="w-full px-4 py-3 pr-16 border border-gray-300 dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-100 focus:border-transparent resize-none min-h-[52px] max-h-[200px] text-[15px] leading-relaxed disabled:opacity-50 disabled:cursor-not-allowed transition-shadow"
-                rows="1"
-                disabled={isProcessing || !agent}
-              ></textarea>
-              {#if inputMessage.trim()}
-                <div class="absolute right-3 bottom-3 text-xs text-gray-400">{inputMessage.length}</div>
-              {/if}
-            </div>
-            <button
-              class="px-5 py-3 bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 rounded-xl hover:bg-gray-800 dark:hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center space-x-2 font-medium shadow-lg"
-              disabled={!inputMessage.trim() || isProcessing || !agent}
-              on:click={sendMessage}
-            >
-              <Send class="w-4 h-4" />
-              <span>发送</span>
-            </button>
+    <!-- Floating Input Area -->
+    <div class="absolute bottom-0 left-0 right-0 px-6 pb-4 pt-8 bg-gradient-to-t from-gray-50 via-gray-50 to-transparent dark:from-gray-950 dark:via-gray-950">
+      <div class="max-w-4xl mx-auto">
+        <div class="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 shadow-lg overflow-hidden">
+          <!-- Textarea -->
+          <div class="relative">
+            <textarea
+              bind:value={inputMessage}
+              on:keypress={handleKeyPress}
+              placeholder={!agent ? "请先配置 AI 模型..." : "输入您的消息..."}
+              class="w-full px-4 pt-3 pb-3 bg-transparent text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none resize-none min-h-[52px] max-h-[200px] text-[15px] leading-relaxed disabled:opacity-50 disabled:cursor-not-allowed"
+              rows="1"
+              disabled={isProcessing || !agent}
+            ></textarea>
           </div>
-          <div class="flex items-center justify-between text-xs">
-            <button
-              class="px-3 py-1.5 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center space-x-1.5"
-              on:click={clearConversation}
-              disabled={!agent}
-            >
-              <Trash2 class="w-3.5 h-3.5" />
-              <span>清空对话</span>
-            </button>
-            <div class="text-gray-500 dark:text-gray-500">
-              按 Enter 发送，Shift + Enter 换行
+
+          <!-- Bottom bar: model info + actions -->
+          <div class="flex items-center justify-between px-4 py-2 border-t border-gray-100 dark:border-gray-800/50">
+            <div class="flex items-center space-x-3">
+              <!-- Model info -->
+              <button
+                on:click={openSettings}
+                class="flex items-center space-x-1.5 px-2 py-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
+                title="点击配置模型"
+              >
+                <Bot class="w-3.5 h-3.5" />
+                {#if agent}
+                  <span>{settings.provider === 'ollama' ? 'Ollama' : 'OpenAI'} · {settings.model || '未设置模型'}</span>
+                {:else}
+                  <span>未配置模型</span>
+                {/if}
+              </button>
+
+              <button
+                class="flex items-center space-x-1 px-2 py-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                on:click={clearConversation}
+                disabled={!agent}
+                title="清空对话"
+              >
+                <Trash2 class="w-3.5 h-3.5" />
+                <span>清空</span>
+              </button>
+            </div>
+
+            <div class="flex items-center space-x-2">
+              {#if inputMessage.trim()}
+                <span class="text-xs text-gray-400 dark:text-gray-600">{inputMessage.length}</span>
+              {/if}
+              <button
+                class="px-3 py-1.5 bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 rounded-lg hover:bg-gray-800 dark:hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center space-x-1.5 text-sm font-medium"
+                disabled={!inputMessage.trim() || isProcessing || !agent}
+                on:click={sendMessage}
+              >
+                <Send class="w-3.5 h-3.5" />
+                <span>发送</span>
+              </button>
             </div>
           </div>
         </div>

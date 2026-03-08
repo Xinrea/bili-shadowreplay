@@ -557,7 +557,7 @@
               bind:value={inputMessage}
               on:keypress={handleKeyPress}
               placeholder={!agent ? "请先配置 AI 模型..." : "输入您的消息..."}
-              class="w-full px-4 pt-3 pb-3 bg-transparent text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none resize-none min-h-[52px] max-h-[200px] text-[15px] leading-relaxed disabled:opacity-50 disabled:cursor-not-allowed"
+              class="w-full px-4 pt-3 pb-3 border-0 bg-transparent text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-0 resize-none min-h-[52px] max-h-[200px] text-[15px] leading-relaxed disabled:opacity-50 disabled:cursor-not-allowed"
               rows="1"
               disabled={isProcessing || !agent}
             ></textarea>

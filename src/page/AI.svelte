@@ -18,6 +18,7 @@
   let inputMessage = "";
   let isProcessing = false;
   let messageContainer: HTMLElement;
+  let inputAreaHeight = 0;
   let agent = null;
 
   // 设置相关状态
@@ -453,7 +454,7 @@
   <div class="flex-1 flex flex-col relative">
     <!-- Messages Area -->
     <div class="flex-1 overflow-y-auto" bind:this={messageContainer}>
-      <div class="max-w-4xl mx-auto px-6 py-8 pb-52">
+      <div class="max-w-4xl mx-auto px-6 py-8" style="padding-bottom: {inputAreaHeight + 16}px;">
         {#if !agent}
           <!-- Welcome State -->
           <div class="flex items-center justify-center min-h-[500px]">
@@ -548,7 +549,7 @@
     </div>
 
     <!-- Floating Input Area -->
-    <div class="absolute bottom-0 left-0 right-0 px-6 pb-4 pt-8 bg-gradient-to-t from-gray-50 via-gray-50 to-transparent dark:from-gray-950 dark:via-gray-950">
+    <div bind:offsetHeight={inputAreaHeight} class="absolute bottom-0 left-0 right-0 px-6 pb-4 pt-8 bg-gradient-to-t from-gray-50 via-gray-50 to-transparent dark:from-gray-950 dark:via-gray-950">
       <div class="max-w-4xl mx-auto">
         <div class="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 shadow-lg overflow-hidden">
           <!-- Textarea -->

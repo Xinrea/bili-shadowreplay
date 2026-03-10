@@ -370,6 +370,8 @@ ${mediaPlaylistUrl}`;
 
     video = document.getElementById("video") as HTMLVideoElement;
     video.crossOrigin = "anonymous";
+    video.disableRemotePlayback = true;
+    video.setAttribute("x-webkit-airplay", "deny");
     const ui = video["ui"];
     const controls = ui.getControls();
     const player = controls.getPlayer();
@@ -1483,6 +1485,10 @@ ${mediaPlaylistUrl}`;
   video {
     width: 100%;
     height: 100%;
+  }
+
+  video::-webkit-media-controls-wireless-playback-picker-button {
+    display: none !important;
   }
 
   p {

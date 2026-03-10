@@ -148,7 +148,10 @@ pub async fn concat_videos_with_transition(
             .await
             .unwrap();
         for video in videos {
-            let abs_path = std::fs::canonicalize(video).unwrap_or_else(|_| video.to_path_buf());
+            let abs_path = tokio::fs::canonicalize(video).await.unwrap_or_else(|e| {
+                log::warn!("Failed to canonicalize path {}: {e}", video.display());
+                video.to_path_buf()
+            });
             let escaped_path = escape_concat_path(&abs_path);
             filelist
                 .write_all(format!("file '{}'\n", escaped_path).as_bytes())

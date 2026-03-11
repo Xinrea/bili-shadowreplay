@@ -372,6 +372,7 @@ ${mediaPlaylistUrl}`;
     video.crossOrigin = "anonymous";
     video.disableRemotePlayback = true;
     video.setAttribute("x-webkit-airplay", "deny");
+    video.setAttribute("webkit-playsinline", "true");
     const ui = video["ui"];
     const controls = ui.getControls();
     const player = controls.getPlayer();
@@ -460,6 +461,9 @@ ${mediaPlaylistUrl}`;
 
     document.getElementsByClassName("shaka-overflow-menu-button")[0].remove();
     document.getElementsByClassName("shaka-fullscreen-button")[0].remove();
+    document
+      .querySelectorAll(".shaka-remote-button")
+      .forEach((el) => el.remove());
     // add self-defined element in shaka-bottom-controls.shaka-no-propagation (second seekbar)
     const shakaBottomControls = document.querySelector(
       ".shaka-bottom-controls.shaka-no-propagation"
@@ -1397,7 +1401,13 @@ ${mediaPlaylistUrl}`;
     style="width: 100%; height: 100vh;"
   >
     <!-- svelte-ignore a11y-media-has-caption -->
-    <video autoplay data-shaka-player id="video" disablepictureinpicture
+    <video
+      autoplay
+      data-shaka-player
+      id="video"
+      disablepictureinpicture
+      disableRemotePlayback
+      playsinline
     ></video>
   </div>
 </section>

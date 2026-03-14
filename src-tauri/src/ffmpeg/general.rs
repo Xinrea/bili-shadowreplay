@@ -28,6 +28,19 @@ pub async fn random_filename() -> String {
 /// - Square brackets [] do NOT need escaping when inside single quotes
 fn escape_concat_path(path: &Path) -> String {
     let path_str = path.to_string_lossy();
+
+    // On Windows, canonicalize returns UNC paths like \\?\D:\path
+    // FFmpeg doesn't handle these well, so we need to strip the UNC prefix
+    #[cfg(target_os = "windows")]
+    let path_str = {
+        let s = path_str.as_ref();
+        if s.starts_with(r"\\?\") {
+            std::borrow::Cow::Borrowed(&s[4..])
+        } else {
+            path_str
+        }
+    };
+
     // Only escape backslashes and single quotes
     // Do NOT escape square brackets - they work fine in single-quoted paths
     path_str.replace('\\', "\\\\").replace('\'', "'\\''")
@@ -264,4 +277,120 @@ pub async fn concat_videos_with_transition(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod concat_videos_tests {
+    use super::{concat_videos, ffmpeg_path, random_filename};
+    use std::path::Path;
+
+    #[cfg(target_os = "windows")]
+    use super::CREATE_NO_WINDOW;
+
+    /// Helper function to create a minimal valid MP4 file for testing
+    async fn create_test_video(path: &Path, duration_secs: u32) -> Result<(), String> {
+        // Create parent directory if it doesn't exist
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("Failed to create parent dir: {}", e))?;
+        }
+
+        // Use FFmpeg to generate a test video with color and audio
+        let mut cmd = tokio::process::Command::new(ffmpeg_path());
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        cmd.args([
+            "-f",
+            "lavfi",
+            "-i",
+            &format!("color=c=blue:s=1280x720:d={}", duration_secs),
+            "-f",
+            "lavfi",
+            "-i",
+            &format!("anullsrc=r=44100:cl=stereo:d={}", duration_secs),
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-c:a",
+            "aac",
+            "-y",
+            path.to_str().unwrap(),
+        ]);
+
+        let output = cmd
+            .output()
+            .await
+            .map_err(|e| format!("Failed to run ffmpeg: {}", e))?;
+
+        if !output.status.success() {
+            return Err(format!(
+                "FFmpeg failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_concat_videos_with_chinese_and_brackets() {
+        // Create a temporary directory for testing
+        let temp_dir = std::env::temp_dir().join(format!("bili_test_{}", random_filename().await));
+        tokio::fs::create_dir_all(&temp_dir).await.unwrap();
+
+        // Create test videos with problematic filenames (Chinese characters and brackets)
+        let video1_path =
+            temp_dir.join("[22637261][1773410394380][电台久违的嚼嚼嚼][2026-03-14_11-11-41].0.mp4");
+        let video2_path =
+            temp_dir.join("[22637261][1773410394380][电台久违的嚼嚼嚼][2026-03-14_11-11-41].1.mp4");
+        let output_path =
+            temp_dir.join("[22637261][1773410394380][电台久违的嚼嚼嚼][2026-03-14_11-11-41].mp4");
+
+        // Create test videos
+        create_test_video(&video1_path, 2).await.unwrap();
+        create_test_video(&video2_path, 2).await.unwrap();
+
+        // Test concatenation
+        let videos = vec![video1_path.clone(), video2_path.clone()];
+        let result = concat_videos(
+            None::<&crate::progress::progress_reporter::ProgressReporter>,
+            &videos,
+            &output_path,
+        )
+        .await;
+
+        // Clean up
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+
+        // Assert
+        assert!(result.is_ok(), "Concat should succeed: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn test_concat_videos_with_spaces_and_special_chars() {
+        let temp_dir = std::env::temp_dir().join(format!("bili_test_{}", random_filename().await));
+        tokio::fs::create_dir_all(&temp_dir).await.unwrap();
+
+        let video1_path = temp_dir.join("video with spaces [1].mp4");
+        let video2_path = temp_dir.join("video's file [2].mp4");
+        let output_path = temp_dir.join("output [final].mp4");
+
+        create_test_video(&video1_path, 2).await.unwrap();
+        create_test_video(&video2_path, 2).await.unwrap();
+
+        let videos = vec![video1_path, video2_path];
+        let result = concat_videos(
+            None::<&crate::progress::progress_reporter::ProgressReporter>,
+            &videos,
+            &output_path,
+        )
+        .await;
+
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+
+        assert!(result.is_ok(), "Concat should succeed: {:?}", result);
+    }
 }

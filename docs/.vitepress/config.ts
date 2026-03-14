@@ -64,8 +64,40 @@ export default withMermaid({
         text: "开发文档",
         items: [
           {
-            text: "DeepWiki",
-            link: "https://deepwiki.com/Xinrea/bili-shadowreplay",
+            text: "架构设计",
+            items: [
+              { text: "架构概览", link: "/development/architecture/overview" },
+            ],
+          },
+          {
+            text: "前端开发",
+            items: [
+              { text: "状态管理 (Stores)", link: "/development/frontend/stores" },
+              { text: "Tauri Invoker", link: "/development/frontend/invoker" },
+              { text: "AI Agent", link: "/development/frontend/agent" },
+            ],
+          },
+          {
+            text: "后端开发",
+            items: [
+              { text: "录制管理器", link: "/development/backend/recorder-manager" },
+              { text: "数据库模块", link: "/development/backend/database" },
+            ],
+          },
+          {
+            text: "平台开发",
+            items: [
+              { text: "平台实现指南", link: "/development/platforms/implementation-guide" },
+            ],
+          },
+          {
+            text: "外部资源",
+            items: [
+              {
+                text: "DeepWiki",
+                link: "https://deepwiki.com/Xinrea/bili-shadowreplay",
+              },
+            ],
           },
         ],
       },

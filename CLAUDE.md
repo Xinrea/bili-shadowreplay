@@ -207,3 +207,77 @@ BiliBili ShadowReplay is a Tauri-based desktop application for caching live stre
 ### CUDA Builds
 - Configure `CMAKE_CUDA_ARCHITECTURES` environment variable
 - Reference GitHub Actions workflows for proper configuration
+
+## Documentation
+
+### Documentation Structure
+
+The project maintains comprehensive documentation in the `docs/` directory using VitePress:
+
+- **User Documentation** (`docs/getting-started/`, `docs/usage/`):
+  - Installation guides (desktop and Docker)
+  - Configuration guides (account, FFmpeg, Whisper, LLM)
+  - Feature documentation (workflow, room management, clips, subtitles, danmaku, webhook)
+  - FAQ
+
+- **Development Documentation** (`docs/development/`):
+  - **Architecture** (`docs/development/architecture/`):
+    - `overview.md` - System architecture, tech stack, data flow, and module overview
+  - **Frontend** (`docs/development/frontend/`):
+    - `stores.md` - Svelte stores and state management patterns
+    - `invoker.md` - Tauri command invocation and frontend-backend communication
+    - `agent.md` - AI agent implementation with LangChain
+  - **Backend** (`docs/development/backend/`):
+    - `recorder-manager.md` - Recording orchestration and task management
+    - `database.md` - SQLite database schema and operations
+  - **Platforms** (`docs/development/platforms/`):
+    - `implementation-guide.md` - Guide for implementing new platform support
+
+### Documentation Maintenance Requirements
+
+**IMPORTANT**: When making changes to the codebase, you MUST update the corresponding documentation:
+
+1. **Architecture Changes**:
+   - Update `docs/development/architecture/overview.md` when modifying system architecture
+   - Update diagrams (Mermaid) to reflect structural changes
+   - Document new modules or significant refactoring
+
+2. **Frontend Changes**:
+   - Update `docs/development/frontend/stores.md` when adding/modifying stores
+   - Update `docs/development/frontend/invoker.md` when adding new Tauri commands
+   - Update `docs/development/frontend/agent.md` when modifying AI agent functionality
+
+3. **Backend Changes**:
+   - Update `docs/development/backend/recorder-manager.md` when modifying recording logic
+   - Update `docs/development/backend/database.md` when changing database schema or operations
+   - Add migration documentation when creating new database migrations
+
+4. **Platform Changes**:
+   - Update `docs/development/platforms/implementation-guide.md` when adding new platforms
+   - Document platform-specific quirks and requirements
+
+5. **User-Facing Changes**:
+   - Update user documentation in `docs/getting-started/` and `docs/usage/` for any UI/UX changes
+   - Update configuration guides when adding new settings
+   - Add FAQ entries for common issues
+
+6. **CLAUDE.md Updates**:
+   - Keep this file synchronized with major architectural changes
+   - Update development commands when adding new scripts
+   - Update common patterns when establishing new conventions
+
+### Documentation Commands
+
+- `yarn docs:dev` - Start VitePress development server at http://localhost:5173
+- `yarn docs:build` - Build documentation for production
+- `yarn docs:preview` - Preview built documentation
+
+### Documentation Best Practices
+
+- Use Mermaid diagrams for visualizing architecture and flows
+- Include code examples with proper syntax highlighting
+- Keep documentation concise but comprehensive
+- Use consistent terminology across all documentation
+- Update documentation in the same commit as code changes
+- Review documentation for accuracy during code reviews
+

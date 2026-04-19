@@ -125,7 +125,7 @@ impl fmt::Display for Protocol {
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub enum Qn {
-    Dolby = 30000,
+    Q30000 = 30000,
     Q25000 = 25000,
     Q20000 = 20000,
     Q15000 = 15000,

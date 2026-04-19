@@ -110,26 +110,30 @@ impl fmt::Display for Protocol {
     }
 }
 
-// 30000	杜比
-// 20000	4K
-// 15000    2K
-// 10000	原画
-// 400	蓝光
-// 250	超清
-// 150	高清
-// 80	流畅
+// Bilibili display labels can vary while sharing the same qn bucket.
+//
+// qn=30000 -> 杜比
+// qn=25000 -> 原画真彩 / 2K 原画 / 2K 原画 高帧率
+// qn=20000 -> 4K
+// qn=15000 -> 2K
+// qn=10000 -> 原画 / 1080P 高码率 / 1080P 高码率 高帧率
+// qn=400   -> 蓝光 / 1080P 蓝光
+// qn=250   -> 超清 / 720P 超清
+// qn=150   -> 高清
+// qn=80    -> 流畅
 
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub enum Qn {
-    Dolby = 30000,
-    Q4K = 20000,
-    Q2K = 15000,
-    Q1080PH = 10000,
-    Q1080P = 400,
-    Q720P = 250,
-    Hd = 150,
-    Smooth = 80,
+    Q30000 = 30000,
+    Q25000 = 25000,
+    Q20000 = 20000,
+    Q15000 = 15000,
+    Q10000 = 10000,
+    Q400 = 400,
+    Q250 = 250,
+    Q150 = 150,
+    Q80 = 80,
 }
 
 impl fmt::Display for Qn {

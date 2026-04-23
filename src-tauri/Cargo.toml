@@ -48,7 +48,7 @@ rand = "0.8.5"
 base64 = "0.21"
 mime_guess = "2.0"
 async-trait = "0.1.87"
-whisper-rs = "0.15.1"
+whisper-rs = "0.16.0"
 hound = "3.5.1"
 uuid = { workspace = true }
 axum = { version = "0.7", features = ["macros", "multipart"] }
@@ -147,10 +147,10 @@ features = []
 optional = true
 
 [target.'cfg(windows)'.dependencies]
-whisper-rs = { version = "0.15.1", default-features = false }
+whisper-rs = { version = "0.16.0", default-features = false }
 
 [target.'cfg(darwin)'.dependencies.whisper-rs]
-version = "0.15.1"
+version = "0.16.0"
 features = ["metal"]
 
 [workspace.dependencies]

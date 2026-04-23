@@ -77,12 +77,10 @@ impl SubtitleGenerator for WhisperCPP {
             return Err(e.to_string());
         }
 
-        let samples = whisper_rs::convert_stereo_to_mono_audio(&inter_samples);
-        if let Err(e) = samples {
+        let mut samples = vec![Default::default(); samples.len() / 2];
+        if let Err(e) = whisper_rs::convert_stereo_to_mono_audio(&inter_samples, &mut samples) {
             return Err(e.to_string());
         }
-
-        let samples = samples.unwrap();
 
         if let Some(reporter) = reporter {
             reporter.update("生成字幕中").await;

@@ -949,7 +949,7 @@ impl RecorderManager {
             .map_err(|e| RecorderManagerError::ClipError { err: e.to_string() })?;
         }
 
-        if params.fix_encoding {
+        if params.fix_encoding && !params.danmu {
             // transcode clip_file
             let tmp_clip_file = clip_file.with_extension("tmp.mp4");
             if let Err(e) = transcode(reporter, &clip_file, &tmp_clip_file, false).await {

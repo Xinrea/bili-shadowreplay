@@ -188,11 +188,10 @@ pub async fn concat_videos_with_transition(
         if should_encode {
             let video_encoder = hwaccel::get_x264_encoder().await;
             ffmpeg_process.args(["-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2"]);
-            ffmpeg_process.args(["-r", "60"]);
             ffmpeg_process.args(["-c:v", video_encoder]);
             ffmpeg_process.args(["-c:a", "aac"]);
-            ffmpeg_process.args(["-b:v", "6000k"]);
-            ffmpeg_process.args(["-b:a", "128k"]);
+            ffmpeg_process.args(["-crf", "20"]);
+            ffmpeg_process.args(["-preset", "medium"]);
             ffmpeg_process.args(["-threads", "0"]);
         } else {
             ffmpeg_process.args(["-c", "copy"]);
@@ -267,7 +266,7 @@ pub async fn concat_videos_with_transition(
         let video_encoder = hwaccel::get_x264_encoder().await;
         ffmpeg_process.args(["-c:v", video_encoder]);
         ffmpeg_process.args(["-preset", "medium"]);
-        ffmpeg_process.args(["-crf", "23"]);
+        ffmpeg_process.args(["-crf", "20"]);
         ffmpeg_process.args(["-c:a", "aac"]);
         ffmpeg_process.args(["-progress", "pipe:2"]);
         ffmpeg_process.args(["-y"]);

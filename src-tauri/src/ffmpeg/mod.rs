@@ -77,8 +77,8 @@ pub async fn transcode(
             .args(["-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2"])
             .args(["-c:v", video_encoder])
             .args(["-c:a", "aac"])
-            .args(["-b:v", "6000k"])
-            .args(["-b:a", "128k"])
+            .args(["-crf", "20"])
+            .args(["-preset", "medium"])
             .args(["-threads", "0"]);
     }
 
@@ -455,7 +455,7 @@ pub async fn encode_video_subtitle(
     } else {
         format!("'{}'", subtitle.display())
     };
-    let vf = format!("subtitles={subtitle}:force_style='{srt_style}'");
+    let vf = format!("scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,subtitles={subtitle}:force_style='{srt_style}'");
     log::info!("vf: {vf}");
 
     let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
@@ -469,7 +469,8 @@ pub async fn encode_video_subtitle(
         .args(["-vf", vf.as_str()])
         .args(["-c:v", video_encoder])
         .args(["-c:a", "copy"])
-        .args(["-b:v", "6000k"])
+        .args(["-crf", "20"])
+        .args(["-preset", "medium"])
         .args([output_path.to_str().unwrap()])
         .args(["-y"])
         .args(["-progress", "pipe:2"])
@@ -562,10 +563,11 @@ pub async fn encode_video_danmu(
 
     let child = ffmpeg_process
         .args(["-i", file.to_str().unwrap()])
-        .args(["-vf", &format!("ass={subtitle}")])
+        .args(["-vf", &format!("scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,ass={subtitle}")])
         .args(["-c:v", video_encoder])
         .args(["-c:a", "copy"])
-        .args(["-b:v", "6000k"])
+        .args(["-crf", "20"])
+        .args(["-preset", "medium"])
         .args([output_file_path.to_str().unwrap()])
         .args(["-y"])
         .args(["-progress", "pipe:2"])
@@ -880,7 +882,8 @@ pub async fn clip_from_video_file(
         .args(["-t", &duration.to_string()])
         .args(["-c:v", video_encoder])
         .args(["-c:a", "aac"])
-        .args(["-b:v", "6000k"])
+        .args(["-crf", "20"])
+        .args(["-preset", "medium"])
         .args(["-avoid_negative_ts", "make_zero"])
         .args(["-y", output_path.to_str().unwrap()])
         .args(["-progress", "pipe:2"])

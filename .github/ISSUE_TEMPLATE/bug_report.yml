@@ -1,7 +1,7 @@
 name: Bug Report
 description: 提交 BUG 报告.
 title: "[bug] "
-labels: ["bug"]
+labels: ["bug", "plane"]
 assignees:
   - Xinrea
 body:

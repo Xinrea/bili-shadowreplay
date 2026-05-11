@@ -1,7 +1,7 @@
 name: Feature Request
 description: 提交新功能的需求
 title: "[feature] "
-labels: ["feature"]
+labels: ["feature", "plane"]
 assignees:
   - Xinrea
 body:

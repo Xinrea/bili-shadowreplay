@@ -434,6 +434,8 @@ impl RecorderManager {
                             platform.as_str().to_string(),
                             &room_id,
                             live_record.parent_id,
+                            None,
+                            None,
                         )
                         .await
                     {
@@ -1509,6 +1511,8 @@ impl RecorderManager {
         platform: String,
         room_id: &str,
         parent_id: String,
+        selected_live_ids: Option<Vec<String>>,
+        output_name: Option<String>,
     ) -> Result<(), RecorderManagerError> {
         let platform = PlatformType::from_str(&platform).map_err(|_| {
             RecorderManagerError::InvalidPlatformType {
@@ -1516,11 +1520,30 @@ impl RecorderManager {
             }
         })?;
 
-        let playlists = self
+        let mut playlists = self
             .get_related_playlists(&platform, room_id, &parent_id)
             .await;
         if playlists.is_empty() {
             log::error!("No related playlists found: {parent_id}");
+            return Ok(());
+        }
+
+        if let Some(selected_live_ids) = selected_live_ids {
+            let mut by_id = std::collections::HashMap::new();
+            for playlist in playlists {
+                by_id.insert(playlist.live_id.clone(), playlist);
+            }
+            let mut ordered = Vec::new();
+            for live_id in selected_live_ids {
+                if let Some(playlist) = by_id.remove(&live_id) {
+                    ordered.push(playlist);
+                }
+            }
+            playlists = ordered;
+        }
+
+        if playlists.is_empty() {
+            log::error!("No selected playlists found: {parent_id}");
             return Ok(());
         }
 
@@ -1543,16 +1566,35 @@ impl RecorderManager {
             vec![None; playlists.len()]
         };
 
-        let timestamp = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
+        let output_filename = if let Some(output_name) = output_name {
+            let trimmed = output_name.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                let mut sanitized = sanitize_filename::sanitize(trimmed);
+                if !sanitized.to_lowercase().ends_with(".mp4") {
+                    sanitized.push_str(".mp4");
+                }
+                Some(std::path::PathBuf::from(sanitized))
+            }
+        } else {
+            None
+        };
 
-        let sanitized_filename = sanitize_filename::sanitize(format!(
-            "[full][{platform:?}][{room_id}][{parent_id}][{timestamp}]{title}.mp4"
-        ));
-        let output_filename = Path::new(&sanitized_filename);
+        let output_filename = if let Some(output_filename) = output_filename {
+            output_filename
+        } else {
+            let timestamp = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
+            let sanitized_filename = sanitize_filename::sanitize(format!(
+                "[full][{platform:?}][{room_id}][{parent_id}][{timestamp}]{title}.mp4"
+            ));
+            std::path::PathBuf::from(sanitized_filename)
+        };
+
         let cover_filename = output_filename.with_extension("jpg");
 
-        let output_path =
-            Path::new(&self.config.read().await.output.as_str()).join(output_filename);
+        let output_path = Path::new(&self.config.read().await.output.as_str())
+            .join(&output_filename);
 
         let playlists_refs: Vec<&Path> = playlists.iter().map(|p| p.path.as_path()).collect();
 

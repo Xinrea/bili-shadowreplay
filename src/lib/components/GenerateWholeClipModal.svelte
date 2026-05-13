@@ -2,8 +2,8 @@
   import { invoke, get_static_url } from "../invoker";
   import type { RecordItem } from "../db";
   import { fade, scale } from "svelte/transition";
-  import { X, FileVideo } from "lucide-svelte";
-  import { createEventDispatcher } from "svelte";
+  import { X, FileVideo, Info } from "lucide-svelte";
+  import { createEventDispatcher, onMount } from "svelte";
 
   export let showModal = false;
   export let archive: RecordItem | null = null;
@@ -15,11 +15,31 @@
   let wholeClipArchives: RecordItem[] = [];
   let isLoading = false;
   let encodeDanmu = false;
+  let selectedLiveIds: string[] = [];
+  let outputName = "";
+  let outputNameEdited = false;
+  let showSelectionHelp = false;
+  let selectionHelpRef: HTMLDivElement | null = null;
 
   // 当modal显示且有archive时，加载相关片段
   $: if (showModal && archive) {
     loadWholeClipArchives(roomId, archive.parent_id);
   }
+
+  onMount(() => {
+    const handleOutsideClick = (event: MouseEvent) => {
+      if (!showSelectionHelp || !selectionHelpRef) {
+        return;
+      }
+      if (!selectionHelpRef.contains(event.target as Node)) {
+        showSelectionHelp = false;
+      }
+    };
+    document.addEventListener("click", handleOutsideClick);
+    return () => {
+      document.removeEventListener("click", handleOutsideClick);
+    };
+  });
 
   async function loadWholeClipArchives(roomId: string, parentId: string) {
     if (isLoading) return;
@@ -48,6 +68,9 @@
       });
 
       wholeClipArchives = sameParentArchives;
+      selectedLiveIds = sameParentArchives.map((item) => item.live_id);
+      outputNameEdited = false;
+      outputName = buildDefaultOutputName();
     } catch (error) {
       console.error("Failed to load whole clip archives:", error);
       wholeClipArchives = [];
@@ -63,6 +86,8 @@
         platform: archive.platform,
         roomId: archive.room_id,
         parentId: archive.parent_id,
+        selectedLiveIds: selectedLiveIds,
+        outputName: outputName.trim() ? outputName.trim() : undefined,
       });
 
       showModal = false;
@@ -77,14 +102,65 @@
     return date.toLocaleString();
   }
 
-  function formatDuration(duration: number) {
-    const hours = Math.floor(duration / 3600)
+  function formatCompactTimestamp(date = new Date()) {
+    const pad = (value: number) => value.toString().padStart(2, "0");
+    return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(
+      date.getDate()
+    )}${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+  }
+
+  function sanitizeOutputName(name: string) {
+    return name.replace(/[\\/:*?"<>|]/g, "");
+  }
+
+  function buildDefaultOutputName() {
+    if (!archive) {
+      return "";
+    }
+    const timestamp = formatCompactTimestamp();
+    const name = `[full][${archive.platform}][${archive.room_id}][${
+      archive.parent_id
+    }][${timestamp}]${archive.title}.mp4`;
+    return sanitizeOutputName(name);
+  }
+
+  function selectAll() {
+    selectedLiveIds = [...wholeClipArchives.map((item) => item.live_id)];
+  }
+
+  function clearSelection() {
+    selectedLiveIds = [];
+  }
+
+  function selectionIndex(liveId: string) {
+    return selectedLiveIds.indexOf(liveId);
+  }
+
+  function toggleArchiveSelection(liveId: string, checked: boolean) {
+    if (checked) {
+      if (!selectedLiveIds.includes(liveId)) {
+        selectedLiveIds = [...selectedLiveIds, liveId];
+      }
+    } else {
+      selectedLiveIds = selectedLiveIds.filter((id) => id !== liveId);
+    }
+  }
+
+  function handleSelectionChange(event: Event, liveId: string) {
+    const target = event.currentTarget as HTMLInputElement;
+    toggleArchiveSelection(liveId, target.checked);
+  }
+
+  function formatDuration(duration: number | string) {
+    const numDuration = typeof duration === 'string' ? parseFloat(duration) : duration;
+    const totalSeconds = Math.max(0, Math.round(Number.isNaN(numDuration) ? 0 : numDuration));
+    const hours = Math.floor(totalSeconds / 3600)
       .toString()
       .padStart(2, "0");
-    const minutes = Math.floor((duration % 3600) / 60)
+    const minutes = Math.floor((totalSeconds % 3600) / 60)
       .toString()
       .padStart(2, "0");
-    const seconds = (duration % 60).toString().padStart(2, "0");
+    const seconds = (totalSeconds % 60).toString().padStart(2, "0");
 
     return `${hours}:${minutes}:${seconds}`;
   }
@@ -101,9 +177,24 @@
     }
   }
 
+  $: selectedArchives = selectedLiveIds
+    .map((id) => wholeClipArchives.find((item) => item.live_id === id))
+    .filter((item): item is RecordItem => Boolean(item));
+
+  $: totalDuration = selectedArchives.reduce(
+    (sum, item) => sum + item.length,
+    0
+  );
+
+  $: totalSize = selectedArchives.reduce((sum, item) => sum + item.size, 0);
+
   function closeModal() {
     showModal = false;
     wholeClipArchives = [];
+    selectedLiveIds = [];
+    outputName = "";
+    outputNameEdited = false;
+    showSelectionHelp = false;
   }
 </script>
 
@@ -119,7 +210,7 @@
     <!-- svelte-ignore a11y-click-events-have-key-events -->
     <!-- svelte-ignore a11y-no-static-element-interactions -->
     <div
-      class="mac-modal w-[800px] bg-white dark:bg-[#323234] rounded-xl shadow-xl overflow-hidden flex flex-col max-h-[80vh]"
+      class="mac-modal w-[900px] bg-white dark:bg-[#323234] rounded-xl shadow-xl overflow-hidden flex flex-col max-h-[90vh]"
       transition:scale={{ duration: 150, start: 0.95 }}
       on:click|stopPropagation
     >
@@ -145,17 +236,10 @@
 
       <!-- Content -->
       <div class="flex-1 flex flex-col min-h-0">
-        <!-- Description -->
-        <div class="px-6 pt-6 pb-4">
-          <p class="text-sm text-gray-600 dark:text-gray-400">
-            以下是属于同一场直播的所有片段，将按时间顺序合成为一个完整的视频文件：
-          </p>
-        </div>
-
-        <!-- Main Content: Left (List) + Right (Summary) -->
+        <!-- Main Content: Left (List) -->
         <div class="flex-1 flex min-h-0">
           <!-- Left: Scrollable List -->
-          <div class="flex-1 overflow-auto custom-scrollbar-light px-6 min-h-0">
+          <div class="flex-1 overflow-auto custom-scrollbar-light px-6 py-6 min-h-0">
             {#if isLoading}
               <div class="flex items-center justify-center py-8">
                 <div
@@ -172,22 +256,75 @@
                 未找到相关片段
               </div>
             {:else}
-              <div class="space-y-3 pb-4">
+              <div class="flex items-center justify-between pb-4">
+                <div class="text-sm text-gray-600 dark:text-gray-400">
+                  默认全选，按勾选顺序合成
+                </div>
+                <div class="flex items-center space-x-3 text-sm">
+                  <button
+                    class="text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
+                    on:click={selectAll}
+                  >
+                    全选
+                  </button>
+                  <button
+                    class="text-gray-500 hover:text-gray-700 dark:text-gray-300 dark:hover:text-gray-100"
+                    on:click={clearSelection}
+                  >
+                    取消全选
+                  </button>
+                  <div class="relative" bind:this={selectionHelpRef}>
+                    <button
+                      class="text-gray-500 hover:text-gray-700 dark:text-gray-300 dark:hover:text-gray-100"
+                      on:click={() =>
+                        (showSelectionHelp = !showSelectionHelp)}
+                      on:mouseenter={() => (showSelectionHelp = true)}
+                      on:mouseleave={() => (showSelectionHelp = false)}
+                      aria-label="选择顺序说明"
+                    >
+                      <Info class="w-4 h-4" />
+                    </button>
+                    {#if showSelectionHelp}
+                      <div
+                        class="absolute right-0 top-6 z-20 w-64 rounded-lg border border-gray-200 bg-white p-3 text-xs text-gray-700 shadow-lg dark:border-gray-700 dark:bg-[#2c2c2e] dark:text-gray-200"
+                      >
+                        取消全选后请按需要勾选片段，勾选的先后顺序即合成顺序。
+                      </div>
+                    {/if}
+                  </div>
+                </div>
+              </div>
+              <div class="space-y-2 pb-4">
                 {#each wholeClipArchives as archiveItem, index (archiveItem.live_id)}
                   <div
-                    class="flex items-center space-x-4 p-4 rounded-lg bg-gray-50 dark:bg-gray-700/30"
+                    class="flex items-center space-x-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-700/30"
                   >
-                    <div
-                      class="flex-shrink-0 w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white text-sm font-medium"
-                    >
-                      {index + 1}
+                    <input
+                      type="checkbox"
+                      class="h-4 w-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
+                      checked={selectedLiveIds.includes(archiveItem.live_id)}
+                      on:change={(event) =>
+                        handleSelectionChange(event, archiveItem.live_id)}
+                    />
+                    <div class="flex items-center justify-center w-6">
+                      {#if selectedLiveIds.includes(archiveItem.live_id)}
+                        <div
+                          class="w-6 h-6 rounded-full bg-blue-500 flex items-center justify-center text-white text-xs font-bold shadow-sm"
+                        >
+                          {selectedLiveIds.indexOf(archiveItem.live_id) + 1}
+                        </div>
+                      {:else}
+                        <span class="text-xs text-gray-400 dark:text-gray-500 font-medium">
+                          {index + 1}
+                        </span>
+                      {/if}
                     </div>
 
                     {#if archiveItem.cover}
                       <img
                         src={archiveItem.cover}
                         alt="cover"
-                        class="w-16 h-10 rounded object-cover flex-shrink-0"
+                        class="w-14 h-9 rounded object-cover flex-shrink-0"
                       />
                     {/if}
 
@@ -197,12 +334,13 @@
                       >
                         {archiveItem.title}
                       </div>
-                      <div
-                        class="text-xs text-gray-500 dark:text-gray-400 mt-1"
-                      >
-                        {formatTimestamp(archiveItem.created_at)} · {formatDuration(
-                          archiveItem.length
-                        )} · {formatSize(archiveItem.size)}
+                      <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                        开始时间 {formatTimestamp(archiveItem.created_at)}
+                      </div>
+                      <div class="text-xs text-gray-500 dark:text-gray-400">
+                        时长 {formatDuration(archiveItem.length)} · 大小 {formatSize(
+                          archiveItem.size
+                        )}
                       </div>
                     </div>
                   </div>
@@ -210,69 +348,54 @@
               </div>
             {/if}
           </div>
+        </div>
 
-          <!-- Right: Fixed Summary -->
-          {#if !isLoading && wholeClipArchives.length > 0}
-            <div class="w-80 px-6 pb-6 flex-shrink-0 flex items-center">
-              <div
-                class="p-4 rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 w-full"
-              >
-                <div class="flex items-center space-x-2 mb-2">
+        <!-- Bottom Summary -->
+        {#if !isLoading && wholeClipArchives.length > 0}
+          <div class="px-6 pb-4">
+            <div
+              class="p-3 rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 w-full"
+            >
+              <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-2">
                   <FileVideo class="w-4 h-4 text-blue-600 dark:text-blue-400" />
                   <span
                     class="text-sm font-medium text-blue-900 dark:text-blue-100"
-                    >合成信息</span
                   >
+                    合成信息
+                  </span>
                 </div>
-                <div class="text-sm text-blue-800 dark:text-blue-200">
-                  共 {wholeClipArchives.length} 个片段 · 总时长 {formatDuration(
-                    wholeClipArchives.reduce(
-                      (sum, archiveItem) => sum + archiveItem.length,
-                      0
-                    )
-                  )} · 总大小 {formatSize(
-                    wholeClipArchives.reduce(
-                      (sum, archiveItem) => sum + archiveItem.size,
-                      0
-                    )
-                  )}
+                <div class="text-xs text-blue-600 dark:text-blue-300">
+                  已选 {selectedArchives.length} 个片段 · 总时长 {formatDuration(totalDuration)} · 总大小 {formatSize(totalSize)}
                 </div>
-
-                <!-- 压制弹幕选项 -->
-                <div
-                  class="mt-4 pt-4 border-t border-blue-200 dark:border-blue-700"
-                >
-                  <div class="flex items-center justify-between">
-                    <div class="flex-1">
-                      <div
-                        class="text-sm font-medium text-blue-900 dark:text-blue-100"
-                      >
-                        压制弹幕
-                      </div>
-                      <div
-                        class="text-xs text-blue-700 dark:text-blue-300 mt-1"
-                      >
-                        将弹幕直接压制到视频中，生成包含弹幕的最终视频文件
-                      </div>
-                    </div>
-                    <label
-                      class="relative inline-flex items-center cursor-pointer"
-                    >
-                      <input
-                        type="checkbox"
-                        bind:checked={encodeDanmu}
-                        class="sr-only peer"
-                      />
-                      <div
-                        class="w-11 h-6 bg-blue-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-blue-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-blue-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-blue-600 peer-checked:bg-blue-600"
-                      ></div>
-                    </label>
-                  </div>
+              </div>
+              <div class="flex items-center gap-4 mt-3">
+                <div class="flex-1">
+                  <input
+                    type="text"
+                    class="w-full px-3 py-1.5 text-sm rounded-lg border border-blue-200 dark:border-blue-700 bg-white dark:bg-[#2c2c2e] text-gray-900 dark:text-gray-100"
+                    bind:value={outputName}
+                    on:input={() => (outputNameEdited = true)}
+                    placeholder="输出文件名"
+                  />
+                </div>
+                <div class="flex items-center space-x-2">
+                  <span class="text-xs text-blue-600 dark:text-blue-300">压制弹幕</span>
+                  <label class="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      bind:checked={encodeDanmu}
+                      class="sr-only peer"
+                    />
+                    <div
+                      class="w-11 h-6 bg-blue-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-blue-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-blue-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-blue-600 peer-checked:bg-blue-600"
+                    ></div>
+                  </label>
                 </div>
               </div>
             </div>
-          {/if}
-        </div>
+          </div>
+        {/if}
       </div>
 
       <!-- Footer -->
@@ -287,7 +410,7 @@
         </button>
         <button
           class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          disabled={isLoading || wholeClipArchives.length === 0}
+          disabled={isLoading || selectedArchives.length === 0}
           on:click={generateWholeClip}
         >
           开始合成

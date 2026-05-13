@@ -1041,6 +1041,8 @@ struct GenerateWholeClipRequest {
     platform: String,
     room_id: String,
     parent_id: String,
+    selected_live_ids: Option<Vec<String>>,
+    output_name: Option<String>,
 }
 
 async fn handler_generate_whole_clip(
@@ -1053,6 +1055,8 @@ async fn handler_generate_whole_clip(
         param.platform,
         param.room_id,
         param.parent_id,
+        param.selected_live_ids,
+        param.output_name,
     )
     .await?;
     Ok(Json(ApiResponse::success(task)))

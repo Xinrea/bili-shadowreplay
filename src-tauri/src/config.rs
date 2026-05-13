@@ -81,7 +81,7 @@ fn default_openai_api_key() -> String {
 }
 
 fn default_clip_name_format() -> String {
-    "[{room_id}][{live_id}][{title}][{created_at}].mp4".to_string()
+    "[{room_id}][{note}][{live_id}][{title}][{created_at}].mp4".to_string()
 }
 
 fn default_auto_generate_config() -> AutoGenerateConfig {
@@ -201,6 +201,8 @@ impl Config {
         let format_config = format_config.replace("{room_id}", &params.room_id.to_string());
         let format_config = format_config.replace("{live_id}", &params.live_id);
         let format_config = format_config.replace("{note}", &params.note);
+        let danmu_tag = if params.danmu { "danmaku" } else { "" };
+        let format_config = format_config.replace("{danmu}", danmu_tag);
         let format_config = format_config.replace(
             "{x}",
             &params
@@ -221,6 +223,11 @@ impl Config {
         );
         let duration = params.ranges.iter().map(|r| r.duration()).sum::<f64>();
         let format_config = format_config.replace("{length}", &duration.to_string());
+
+        let mut format_config = format_config;
+        while format_config.contains("[]") {
+            format_config = format_config.replace("[]", "");
+        }
 
         let sanitized = sanitize_filename::sanitize(&format_config);
         let output = self.output.clone();

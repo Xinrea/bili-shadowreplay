@@ -46,6 +46,8 @@
   };
 
   let showModal = false;
+  let show_clip_name_help = false;
+  let clip_name_help_ref: HTMLDivElement | null = null;
   let endpoint = localStorage.getItem("endpoint") || "";
   let endpointValue = endpoint;
 
@@ -161,7 +163,19 @@
   }
 
   onMount(async () => {
+    const handleOutsideClick = (event: MouseEvent) => {
+      if (!show_clip_name_help || !clip_name_help_ref) {
+        return;
+      }
+      if (!clip_name_help_ref.contains(event.target as Node)) {
+        show_clip_name_help = false;
+      }
+    };
+    document.addEventListener("click", handleOutsideClick);
     await get_config();
+    return () => {
+      document.removeEventListener("click", handleOutsideClick);
+    };
   });
 </script>
 
@@ -739,17 +753,51 @@
                     >
                       文件名格式
                     </h3>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">
-                      可用标签：{"{title}"}
-                      {"{platform}"}
-                      {"{room_id}"}
-                      {"{live_id}"}
-                      {"{x}"}
-                      {"{y}"}
-                      {"{created_at}"}
-                      {"{length}"}
-                      {"{note}"}
-                    </p>
+                    <div class="flex items-center space-x-2">
+                      <p class="text-sm text-gray-500 dark:text-gray-400">
+                        可用标签：{"{title}"}
+                        {"{platform}"}
+                        {"{room_id}"}
+                        {"{live_id}"}
+                        {"{x}"}
+                        {"{y}"}
+                        {"{created_at}"}
+                        {"{length}"}
+                        {"{note}"}
+                      </p>
+                      <div
+                        class="relative"
+                        bind:this={clip_name_help_ref}
+                        on:mouseenter={() => (show_clip_name_help = true)}
+                        on:mouseleave={() => (show_clip_name_help = false)}
+                      >
+                        <button
+                          type="button"
+                          class="text-xs text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
+                          on:click={() =>
+                            (show_clip_name_help = !show_clip_name_help)}
+                        >
+                          详情
+                        </button>
+                        {#if show_clip_name_help}
+                          <div
+                            class="absolute left-0 top-6 z-20 w-96 rounded-lg border border-gray-200 bg-white p-3 text-xs text-gray-700 shadow-lg dark:border-gray-700 dark:bg-[#2c2c2e] dark:text-gray-200"
+                          >
+                            <div class="space-y-1">
+                              <div>{"{title}"}: 直播标题</div>
+                              <div>{"{platform}"}: 平台标识</div>
+                              <div>{"{room_id}"}: 房间号</div>
+                              <div>{"{live_id}"}: 录播 ID</div>
+                              <div>{"{x}"}: 切片起始秒</div>
+                              <div>{"{y}"}: 切片结束秒</div>
+                              <div>{"{created_at}"}: 创建时间</div>
+                              <div>{"{length}"}: 切片时长（秒）</div>
+                              <div>{"{note}"}: 备注</div>
+                            </div>
+                          </div>
+                        {/if}
+                      </div>
+                    </div>
                   </div>
                   <div class="flex items-center space-x-2">
                     <input

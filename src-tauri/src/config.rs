@@ -201,8 +201,6 @@ impl Config {
         let format_config = format_config.replace("{room_id}", &params.room_id.to_string());
         let format_config = format_config.replace("{live_id}", &params.live_id);
         let format_config = format_config.replace("{note}", &params.note);
-        let danmu_tag = if params.danmu { "danmaku" } else { "" };
-        let format_config = format_config.replace("{danmu}", danmu_tag);
         let format_config = format_config.replace(
             "{x}",
             &params

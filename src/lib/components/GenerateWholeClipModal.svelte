@@ -4,6 +4,7 @@
   import { fade, scale } from "svelte/transition";
   import { X, FileVideo, Info } from "lucide-svelte";
   import { createEventDispatcher, onMount } from "svelte";
+  import { clickOutside } from "../actions/clickOutside";
 
   export let showModal = false;
   export let archive: RecordItem | null = null;
@@ -17,29 +18,12 @@
   let encodeDanmu = false;
   let selectedLiveIds: string[] = [];
   let outputName = "";
-  let outputNameEdited = false;
   let showSelectionHelp = false;
-  let selectionHelpRef: HTMLDivElement | null = null;
 
   // 当modal显示且有archive时，加载相关片段
   $: if (showModal && archive) {
     loadWholeClipArchives(roomId, archive.parent_id);
   }
-
-  onMount(() => {
-    const handleOutsideClick = (event: MouseEvent) => {
-      if (!showSelectionHelp || !selectionHelpRef) {
-        return;
-      }
-      if (!selectionHelpRef.contains(event.target as Node)) {
-        showSelectionHelp = false;
-      }
-    };
-    document.addEventListener("click", handleOutsideClick);
-    return () => {
-      document.removeEventListener("click", handleOutsideClick);
-    };
-  });
 
   async function loadWholeClipArchives(roomId: string, parentId: string) {
     if (isLoading) return;
@@ -69,7 +53,6 @@
 
       wholeClipArchives = sameParentArchives;
       selectedLiveIds = sameParentArchives.map((item) => item.live_id);
-      outputNameEdited = false;
       outputName = buildDefaultOutputName();
     } catch (error) {
       console.error("Failed to load whole clip archives:", error);
@@ -193,7 +176,6 @@
     wholeClipArchives = [];
     selectedLiveIds = [];
     outputName = "";
-    outputNameEdited = false;
     showSelectionHelp = false;
   }
 </script>
@@ -273,7 +255,7 @@
                   >
                     取消全选
                   </button>
-                  <div class="relative" bind:this={selectionHelpRef}>
+                  <div class="relative" use:clickOutside={() => (showSelectionHelp = false)}>
                     <button
                       class="text-gray-500 hover:text-gray-700 dark:text-gray-300 dark:hover:text-gray-100"
                       on:click={() =>
@@ -375,7 +357,6 @@
                     type="text"
                     class="w-full px-3 py-1.5 text-sm rounded-lg border border-blue-200 dark:border-blue-700 bg-white dark:bg-[#2c2c2e] text-gray-900 dark:text-gray-100"
                     bind:value={outputName}
-                    on:input={() => (outputNameEdited = true)}
                     placeholder="输出文件名"
                   />
                 </div>

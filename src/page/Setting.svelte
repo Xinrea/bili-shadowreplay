@@ -2,6 +2,7 @@
   import { invoke } from "../lib/invoker";
   import { open } from "@tauri-apps/plugin-dialog";
   import { TAURI_ENV } from "../lib/invoker";
+  import { clickOutside } from "../lib/actions/clickOutside";
 
   import type { Config } from "../lib/interface";
   import {
@@ -47,7 +48,6 @@
 
   let showModal = false;
   let show_clip_name_help = false;
-  let clip_name_help_ref: HTMLDivElement | null = null;
   let endpoint = localStorage.getItem("endpoint") || "";
   let endpointValue = endpoint;
 
@@ -163,19 +163,7 @@
   }
 
   onMount(async () => {
-    const handleOutsideClick = (event: MouseEvent) => {
-      if (!show_clip_name_help || !clip_name_help_ref) {
-        return;
-      }
-      if (!clip_name_help_ref.contains(event.target as Node)) {
-        show_clip_name_help = false;
-      }
-    };
-    document.addEventListener("click", handleOutsideClick);
     await get_config();
-    return () => {
-      document.removeEventListener("click", handleOutsideClick);
-    };
   });
 </script>
 
@@ -767,7 +755,7 @@
                       </p>
                       <div
                         class="relative"
-                        bind:this={clip_name_help_ref}
+                        use:clickOutside={() => (show_clip_name_help = false)}
                         on:mouseenter={() => (show_clip_name_help = true)}
                         on:mouseleave={() => (show_clip_name_help = false)}
                       >

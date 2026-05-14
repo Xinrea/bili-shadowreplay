@@ -466,6 +466,8 @@ pub async fn generate_whole_clip(
     platform: String,
     room_id: String,
     parent_id: String,
+    selected_live_ids: Option<Vec<String>>,
+    output_name: Option<String>,
 ) -> Result<TaskRow, String> {
     log::info!("Generate whole clip for {platform} {room_id} {parent_id}");
 
@@ -479,6 +481,8 @@ pub async fn generate_whole_clip(
                 "room_id": room_id,
                 "parent_id": parent_id,
                 "encode_danmu": encode_danmu,
+                "selected_live_ids": selected_live_ids,
+                "output_name": output_name,
             })
             .to_string(),
         )
@@ -512,6 +516,8 @@ pub async fn generate_whole_clip(
                         platform,
                         &room_id,
                         parent_id,
+                        selected_live_ids,
+                        output_name,
                     )
                     .await
                 {

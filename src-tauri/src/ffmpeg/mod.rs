@@ -33,8 +33,6 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[allow(unused_imports)]
 use std::os::windows::process::CommandExt;
 
-const H264_SCALE_PAD_FILTER: &str = "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2";
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Range {
     pub start: f64,
@@ -78,10 +76,9 @@ pub async fn transcode(
         hwaccel::apply_x264_encoder_args(
             &mut ffmpeg_process,
             video_encoder,
-            Some(H264_SCALE_PAD_FILTER),
+            Some(hwaccel::H264_SCALE_PAD_FILTER),
         );
-        ffmpeg_process
-            .args(["-c:a", "aac"]);
+        ffmpeg_process.args(["-c:a", "aac"]);
         hwaccel::apply_x264_quality_args(&mut ffmpeg_process, video_encoder);
         ffmpeg_process.args(["-threads", "0"]);
     }
@@ -459,7 +456,10 @@ pub async fn encode_video_subtitle(
     } else {
         format!("'{}'", subtitle.display())
     };
-    let vf = format!("{H264_SCALE_PAD_FILTER},subtitles={subtitle}:force_style='{srt_style}'");
+    let vf = format!(
+        "{},subtitles={subtitle}:force_style='{srt_style}'",
+        hwaccel::H264_SCALE_PAD_FILTER
+    );
     log::info!("vf: {vf}");
 
     let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
@@ -563,7 +563,7 @@ pub async fn encode_video_danmu(
 
     let video_encoder = hwaccel::get_x264_encoder().await;
 
-    let vf = format!("{H264_SCALE_PAD_FILTER},ass={subtitle}");
+    let vf = format!("{},ass={subtitle}", hwaccel::H264_SCALE_PAD_FILTER);
     ffmpeg_process.args(["-i", file.to_str().unwrap()]);
     hwaccel::apply_x264_encoder_args(&mut ffmpeg_process, video_encoder, Some(vf.as_str()));
     ffmpeg_process.args(["-c:a", "copy"]);

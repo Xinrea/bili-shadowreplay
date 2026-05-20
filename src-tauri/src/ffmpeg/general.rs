@@ -16,8 +16,6 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[allow(unused_imports)]
 use std::os::windows::process::CommandExt;
 
-const H264_SCALE_PAD_FILTER: &str = "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2";
-
 /// Generate a random filename in hex
 pub async fn random_filename() -> String {
     format!("{:x}", rand::random::<u64>())
@@ -192,7 +190,7 @@ pub async fn concat_videos_with_transition(
             hwaccel::apply_x264_encoder_args(
                 &mut ffmpeg_process,
                 video_encoder,
-                Some(H264_SCALE_PAD_FILTER),
+                Some(hwaccel::H264_SCALE_PAD_FILTER),
             );
             ffmpeg_process.args(["-c:a", "aac"]);
             hwaccel::apply_x264_quality_args(&mut ffmpeg_process, video_encoder);

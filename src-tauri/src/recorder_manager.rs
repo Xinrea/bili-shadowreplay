@@ -1593,8 +1593,8 @@ impl RecorderManager {
 
         let cover_filename = output_filename.with_extension("jpg");
 
-        let output_path = Path::new(&self.config.read().await.output.as_str())
-            .join(&output_filename);
+        let output_path =
+            Path::new(&self.config.read().await.output.as_str()).join(&output_filename);
 
         let playlists_refs: Vec<&Path> = playlists.iter().map(|p| p.path.as_path()).collect();
 

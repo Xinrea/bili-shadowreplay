@@ -1,4 +1,4 @@
-use std::{collections::HashSet, process::Stdio, sync::OnceLock};
+use std::{collections::HashSet, path::PathBuf, process::Stdio, sync::OnceLock};
 
 use tokio::io::AsyncReadExt;
 
@@ -14,8 +14,101 @@ const TARGET_ENCODERS: [&str; 7] = [
     "h264_v4l2m2m",
 ];
 
+pub const H264_SCALE_PAD_FILTER: &str =
+    "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2";
+
+const VAAPI_ENCODER: &str = "h264_vaapi";
+const VAAPI_DEVICE_DIR: &str = "/dev/dri";
+const VAAPI_RENDER_PREFIX: &str = "renderD";
+const VAAPI_FILTER_SUFFIX: &str = "format=nv12,hwupload";
+
 // 缓存选中的编码器，避免重复检查
 static ENCODER_CACHE: OnceLock<String> = OnceLock::new();
+
+/// 查找 Linux VAAPI render 设备。
+fn vaapi_device_path() -> Option<PathBuf> {
+    let entries = std::fs::read_dir(VAAPI_DEVICE_DIR).ok()?;
+    let mut devices = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(VAAPI_RENDER_PREFIX))
+        })
+        .collect::<Vec<_>>();
+
+    devices.sort();
+    devices.into_iter().next()
+}
+
+/// 为 VAAPI 滤镜链追加硬件上传步骤。
+fn build_vaapi_filter(filter: &str) -> String {
+    if filter.trim().is_empty() {
+        VAAPI_FILTER_SUFFIX.to_string()
+    } else {
+        format!("{filter},{VAAPI_FILTER_SUFFIX}")
+    }
+}
+
+/// 判断编码器是否为 VAAPI。
+pub fn is_vaapi_encoder(encoder: &str) -> bool {
+    encoder == VAAPI_ENCODER
+}
+
+/// 返回 VAAPI 硬件上传滤镜片段。
+pub fn vaapi_filter_suffix() -> &'static str {
+    VAAPI_FILTER_SUFFIX
+}
+
+/// 为 FFmpeg 命令追加 VAAPI 设备参数。
+fn apply_vaapi_device(command: &mut tokio::process::Command) {
+    if let Some(device_path) = vaapi_device_path() {
+        command.args(["-vaapi_device", device_path.to_string_lossy().as_ref()]);
+    } else {
+        log::warn!("VAAPI encoder selected but no /dev/dri/renderD* device was found");
+    }
+}
+
+/// 只追加视频编码器参数，不追加视频滤镜。
+pub fn apply_x264_encoder_only(command: &mut tokio::process::Command, encoder: &str) {
+    if is_vaapi_encoder(encoder) {
+        apply_vaapi_device(command);
+    }
+    command.args(["-c:v", encoder]);
+}
+
+/// 按编码器类型追加质量参数。
+pub fn apply_x264_quality_args(command: &mut tokio::process::Command, encoder: &str) {
+    if is_vaapi_encoder(encoder) {
+        command.args(["-qp", "20"]);
+    } else {
+        command.args(["-crf", "20"]);
+        command.args(["-preset", "medium"]);
+    }
+}
+
+/// 追加视频编码器参数，并在 VAAPI 下补齐硬件上传滤镜。
+pub fn apply_x264_encoder_args(
+    command: &mut tokio::process::Command,
+    encoder: &str,
+    filter: Option<&str>,
+) {
+    if is_vaapi_encoder(encoder) {
+        apply_vaapi_device(command);
+
+        let filter = filter
+            .map(build_vaapi_filter)
+            .unwrap_or_else(|| VAAPI_FILTER_SUFFIX.to_string());
+        command.args(["-vf", filter.as_str()]);
+        command.args(["-c:v", encoder]);
+    } else {
+        if let Some(filter) = filter {
+            command.args(["-vf", filter]);
+        }
+        command.args(["-c:v", encoder]);
+    }
+}
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -111,18 +204,34 @@ async fn test_encoder_availability(encoder: &str) -> bool {
     command.creation_flags(CREATE_NO_WINDOW);
 
     // 使用合成输入源 (testsrc2) 测试编码器
-    // -t 0.1 只编码0.1秒，-frames:v 3 只编码3帧，快速测试
+    // -frames:v 3 只编码3帧，快速测试
     // -f null 丢弃输出，不需要实际文件
-    let child = command
-        .arg("-hide_banner")
-        .arg("-loglevel")
-        .arg("error")
+    command.arg("-hide_banner").arg("-loglevel").arg("error");
+
+    let filter = if is_vaapi_encoder(encoder) {
+        if let Some(device_path) = vaapi_device_path() {
+            command.args(["-vaapi_device", device_path.to_string_lossy().as_ref()]);
+            Some(vaapi_filter_suffix())
+        } else {
+            log::debug!("Encoder {encoder} failed: no /dev/dri/renderD* device was found");
+            return false;
+        }
+    } else {
+        None
+    };
+
+    command
         .arg("-f")
         .arg("lavfi")
         .arg("-i")
-        .arg("testsrc2=duration=0.1:size=320x240:rate=1")
-        .arg("-c:v")
-        .arg(encoder)
+        .arg("testsrc2=duration=1:size=320x240:rate=30");
+
+    if let Some(filter) = filter {
+        command.args(["-vf", filter]);
+    }
+    command.args(["-c:v", encoder]);
+
+    let child = command
         .arg("-frames:v")
         .arg("3")
         .arg("-f")

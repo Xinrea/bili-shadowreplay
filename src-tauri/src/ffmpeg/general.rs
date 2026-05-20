@@ -187,11 +187,13 @@ pub async fn concat_videos_with_transition(
         ]);
         if should_encode {
             let video_encoder = hwaccel::get_x264_encoder().await;
-            ffmpeg_process.args(["-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2"]);
-            ffmpeg_process.args(["-c:v", video_encoder]);
+            hwaccel::apply_x264_encoder_args(
+                &mut ffmpeg_process,
+                video_encoder,
+                Some(hwaccel::H264_SCALE_PAD_FILTER),
+            );
             ffmpeg_process.args(["-c:a", "aac"]);
-            ffmpeg_process.args(["-crf", "20"]);
-            ffmpeg_process.args(["-preset", "medium"]);
+            hwaccel::apply_x264_quality_args(&mut ffmpeg_process, video_encoder);
             ffmpeg_process.args(["-threads", "0"]);
         } else {
             ffmpeg_process.args(["-c", "copy"]);
@@ -259,14 +261,23 @@ pub async fn concat_videos_with_transition(
         }
         filter_complex.push_str(&format!("concat=n={}:v=0:a=1[outa]", videos.len()));
 
-        ffmpeg_process.args(["-filter_complex", &filter_complex]);
-        ffmpeg_process.args(["-map", "[outv]"]);
+        let video_encoder = hwaccel::get_x264_encoder().await;
+
+        if hwaccel::is_vaapi_encoder(video_encoder) {
+            let filter_complex = format!(
+                "{filter_complex};[outv]{}[outv_hw]",
+                hwaccel::vaapi_filter_suffix()
+            );
+            ffmpeg_process.args(["-filter_complex", filter_complex.as_str()]);
+            ffmpeg_process.args(["-map", "[outv_hw]"]);
+        } else {
+            ffmpeg_process.args(["-filter_complex", &filter_complex]);
+            ffmpeg_process.args(["-map", "[outv]"]);
+        }
         ffmpeg_process.args(["-map", "[outa]"]);
 
-        let video_encoder = hwaccel::get_x264_encoder().await;
-        ffmpeg_process.args(["-c:v", video_encoder]);
-        ffmpeg_process.args(["-preset", "medium"]);
-        ffmpeg_process.args(["-crf", "20"]);
+        hwaccel::apply_x264_encoder_only(&mut ffmpeg_process, video_encoder);
+        hwaccel::apply_x264_quality_args(&mut ffmpeg_process, video_encoder);
         ffmpeg_process.args(["-c:a", "aac"]);
         ffmpeg_process.args(["-progress", "pipe:2"]);
         ffmpeg_process.args(["-y"]);

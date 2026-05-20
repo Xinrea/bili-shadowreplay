@@ -73,13 +73,14 @@ pub async fn transcode(
         ffmpeg_process.args(["-c:v", "copy"]).args(["-c:a", "copy"]);
     } else {
         let video_encoder = hwaccel::get_x264_encoder().await;
-        ffmpeg_process
-            .args(["-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2"])
-            .args(["-c:v", video_encoder])
-            .args(["-c:a", "aac"])
-            .args(["-crf", "20"])
-            .args(["-preset", "medium"])
-            .args(["-threads", "0"]);
+        hwaccel::apply_x264_encoder_args(
+            &mut ffmpeg_process,
+            video_encoder,
+            Some(hwaccel::H264_SCALE_PAD_FILTER),
+        );
+        ffmpeg_process.args(["-c:a", "aac"]);
+        hwaccel::apply_x264_quality_args(&mut ffmpeg_process, video_encoder);
+        ffmpeg_process.args(["-threads", "0"]);
     }
 
     let child = ffmpeg_process
@@ -455,7 +456,10 @@ pub async fn encode_video_subtitle(
     } else {
         format!("'{}'", subtitle.display())
     };
-    let vf = format!("scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,subtitles={subtitle}:force_style='{srt_style}'");
+    let vf = format!(
+        "{},subtitles={subtitle}:force_style='{srt_style}'",
+        hwaccel::H264_SCALE_PAD_FILTER
+    );
     log::info!("vf: {vf}");
 
     let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
@@ -464,13 +468,11 @@ pub async fn encode_video_subtitle(
 
     let video_encoder = hwaccel::get_x264_encoder().await;
 
+    ffmpeg_process.args(["-i", file.to_str().unwrap()]);
+    hwaccel::apply_x264_encoder_args(&mut ffmpeg_process, video_encoder, Some(vf.as_str()));
+    ffmpeg_process.args(["-c:a", "copy"]);
+    hwaccel::apply_x264_quality_args(&mut ffmpeg_process, video_encoder);
     let child = ffmpeg_process
-        .args(["-i", file.to_str().unwrap()])
-        .args(["-vf", vf.as_str()])
-        .args(["-c:v", video_encoder])
-        .args(["-c:a", "copy"])
-        .args(["-crf", "20"])
-        .args(["-preset", "medium"])
         .args([output_path.to_str().unwrap()])
         .args(["-y"])
         .args(["-progress", "pipe:2"])
@@ -561,13 +563,12 @@ pub async fn encode_video_danmu(
 
     let video_encoder = hwaccel::get_x264_encoder().await;
 
+    let vf = format!("{},ass={subtitle}", hwaccel::H264_SCALE_PAD_FILTER);
+    ffmpeg_process.args(["-i", file.to_str().unwrap()]);
+    hwaccel::apply_x264_encoder_args(&mut ffmpeg_process, video_encoder, Some(vf.as_str()));
+    ffmpeg_process.args(["-c:a", "copy"]);
+    hwaccel::apply_x264_quality_args(&mut ffmpeg_process, video_encoder);
     let child = ffmpeg_process
-        .args(["-i", file.to_str().unwrap()])
-        .args(["-vf", &format!("scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,ass={subtitle}")])
-        .args(["-c:v", video_encoder])
-        .args(["-c:a", "copy"])
-        .args(["-crf", "20"])
-        .args(["-preset", "medium"])
         .args([output_file_path.to_str().unwrap()])
         .args(["-y"])
         .args(["-progress", "pipe:2"])
@@ -876,14 +877,14 @@ pub async fn clip_from_video_file(
 
     let video_encoder = hwaccel::get_x264_encoder().await;
 
-    let child = ffmpeg_process
+    ffmpeg_process
         .args(["-i", &format!("{}", input_path.display())])
         .args(["-ss", &start_time.to_string()])
-        .args(["-t", &duration.to_string()])
-        .args(["-c:v", video_encoder])
-        .args(["-c:a", "aac"])
-        .args(["-crf", "20"])
-        .args(["-preset", "medium"])
+        .args(["-t", &duration.to_string()]);
+    hwaccel::apply_x264_encoder_args(&mut ffmpeg_process, video_encoder, None);
+    ffmpeg_process.args(["-c:a", "aac"]);
+    hwaccel::apply_x264_quality_args(&mut ffmpeg_process, video_encoder);
+    let child = ffmpeg_process
         .args(["-avoid_negative_ts", "make_zero"])
         .args(["-y", output_path.to_str().unwrap()])
         .args(["-progress", "pipe:2"])

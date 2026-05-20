@@ -1,0 +1,26 @@
+services:
+    Bilibili_ShadowReplay:
+        image: ghcr.io/xinrea/bili-shadowreplay:latest
+        container_name: Bili_ShadowReplay
+        restart: unless-stopped
+        devices:
+            - /dev/dri:/dev/dri
+        networks:
+            - stream_replay
+        ports:
+            - "3000:3000"
+        volumes:
+            - ./data:/app/data
+            - ./cache:/app/cache
+            - ./output:/app/output
+            - ./whisper_model.bin:/app/whisper_model.bin
+        environment:
+            DATA_DIR: /app/data
+            CACHE_DIR: /app/cache
+            OUTPUT_DIR: /app/output
+            WHISPER_MODEL: /app/whisper_model.bin
+
+
+networks:
+    stream_replay:
+        driver: bridge

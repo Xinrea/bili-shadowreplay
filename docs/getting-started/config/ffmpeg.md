@@ -42,6 +42,10 @@ sudo yum install epel-release
 sudo yum install ffmpeg
 ```
 
+### Docker VAAPI 硬件编码
+
+在 Linux Docker 容器中使用核显 VAAPI 编码时，需要把宿主机的 `/dev/dri` 映射到容器中，并确保容器内 FFmpeg 支持 `h264_vaapi` 编码器。程序会自动检测 `/dev/dri/renderD*` 设备，并在测试和转码时追加 `-vaapi_device` 与 `format=nv12,hwupload` 参数。
+
 ## Windows
 
 Windows 版本安装后，FFmpeg 已经放置在了程序目录下，因此不需要额外安装。

@@ -83,6 +83,7 @@ pub async fn transcode(
         ffmpeg_process.args(["-threads", "0"]);
     }
 
+    ffmpeg_process.kill_on_drop(true);
     let child = ffmpeg_process
         .args([output_path.to_str().unwrap()])
         .args(["-y"])
@@ -145,6 +146,7 @@ pub async fn trim_video(
     ffmpeg_process.args(["-y"]);
     ffmpeg_process.args(["-progress", "pipe:2"]);
     ffmpeg_process.stderr(Stdio::piped());
+    ffmpeg_process.kill_on_drop(true);
     let child = ffmpeg_process.spawn();
     if let Err(e) = child {
         return Err(e.to_string());
@@ -195,6 +197,7 @@ pub async fn extract_audio_sample(file: &Path) -> Result<PathBuf, String> {
     #[cfg(target_os = "windows")]
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
+    ffmpeg_process.kill_on_drop(true);
     let child = ffmpeg_process
         .args(["-i", file.to_str().unwrap()])
         .args(["-c:a", "libopus"])
@@ -327,6 +330,7 @@ pub async fn extract_audio_chunks(file: &Path, format: &str) -> Result<PathBuf, 
     #[cfg(target_os = "windows")]
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
+    ffmpeg_process.kill_on_drop(true);
     let child = ffmpeg_process.args(&args).stderr(Stdio::piped()).spawn();
 
     if let Err(e) = child {
@@ -472,6 +476,7 @@ pub async fn encode_video_subtitle(
     hwaccel::apply_x264_encoder_args(&mut ffmpeg_process, video_encoder, Some(vf.as_str()));
     ffmpeg_process.args(["-c:a", "copy"]);
     hwaccel::apply_x264_quality_args(&mut ffmpeg_process, video_encoder);
+    ffmpeg_process.kill_on_drop(true);
     let child = ffmpeg_process
         .args([output_path.to_str().unwrap()])
         .args(["-y"])
@@ -568,6 +573,7 @@ pub async fn encode_video_danmu(
     hwaccel::apply_x264_encoder_args(&mut ffmpeg_process, video_encoder, Some(vf.as_str()));
     ffmpeg_process.args(["-c:a", "copy"]);
     hwaccel::apply_x264_quality_args(&mut ffmpeg_process, video_encoder);
+    ffmpeg_process.kill_on_drop(true);
     let child = ffmpeg_process
         .args([output_file_path.to_str().unwrap()])
         .args(["-y"])
@@ -628,6 +634,7 @@ pub async fn generic_ffmpeg_command(args: &[&str]) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
+    ffmpeg_process.kill_on_drop(true);
     let child = ffmpeg_process.args(args).stderr(Stdio::piped()).spawn();
     if let Err(e) = child {
         return Err(e.to_string());
@@ -884,6 +891,7 @@ pub async fn clip_from_video_file(
     hwaccel::apply_x264_encoder_args(&mut ffmpeg_process, video_encoder, None);
     ffmpeg_process.args(["-c:a", "aac"]);
     hwaccel::apply_x264_quality_args(&mut ffmpeg_process, video_encoder);
+    ffmpeg_process.kill_on_drop(true);
     let child = ffmpeg_process
         .args(["-avoid_negative_ts", "make_zero"])
         .args(["-y", output_path.to_str().unwrap()])

@@ -416,6 +416,9 @@
     if (scroll_timeout) {
       clearTimeout(scroll_timeout);
     }
+    if (current_clip_event_id) {
+      cancel_clip();
+    }
   });
 
   let archive: RecordItem = null;
@@ -603,7 +606,9 @@
     if (!current_clip_event_id) {
       return;
     }
-    invoke("cancel", { eventId: current_clip_event_id });
+    invoke("cancel", { eventId: current_clip_event_id }).catch((error) => {
+      log.warn("Failed to cancel clip task", error);
+    });
   }
 
   async function delete_video() {

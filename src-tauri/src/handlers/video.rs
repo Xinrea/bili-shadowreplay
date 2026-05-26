@@ -5,6 +5,7 @@ use crate::handlers::utils::get_disk_info_inner;
 use crate::progress::progress_reporter::{EventEmitter, ProgressReporter, ProgressReporterTrait};
 use crate::recorder_manager::ClipRangeParams;
 use crate::subtitle_generator::item_to_srt;
+use crate::task::{Task, TaskPriority};
 use crate::webhook::events;
 use base64::Engine;
 use chrono::{Local, Utc};
@@ -339,51 +340,86 @@ pub async fn clip_range(
     state.db.add_task(&task).await?;
     log::info!("Create task: {} {}", task.id, task.task_type);
 
-    let clip_result = clip_range_inner(&state, &reporter, params.clone()).await;
-    if let Err(e) = clip_result {
-        reporter.finish(false, &format!("切片失败: {e}")).await;
-        state
-            .db
-            .update_task(&event_id, "failed", &format!("切片失败: {e}"), None)
-            .await?;
-        return Err(e);
-    }
+    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
 
-    let video = clip_result.unwrap();
+    #[cfg(feature = "gui")]
+    let state_clone = (*state).clone();
+    #[cfg(feature = "headless")]
+    let state_clone = state.clone();
 
-    reporter.finish(true, "切片完成").await;
+    let task_id = event_id.clone();
     state
-        .db
-        .update_task(&event_id, "success", "切片完成", None)
+        .task_manager
+        .add_task(Task::new(
+            task_id.clone(),
+            TaskPriority::Normal,
+            async move {
+                let result = match clip_range_inner(&state_clone, &reporter, params).await {
+                    Ok(video) => {
+                        reporter.finish(true, "切片完成").await;
+                        let _ = state_clone
+                            .db
+                            .update_task(&task_id, "success", "切片完成", None)
+                            .await;
+
+                        if state_clone.config.read().await.auto_subtitle {
+                            let subtitle_event_id = format!("{task_id}_subtitle");
+                            let result = generate_video_subtitle_inner(
+                                &state_clone,
+                                subtitle_event_id,
+                                video.id,
+                            )
+                            .await;
+                            if let Ok(subtitle) = result {
+                                let result =
+                                    update_video_subtitle_inner(&state_clone, video.id, subtitle)
+                                        .await;
+                                if let Err(e) = result {
+                                    log::error!("Update video subtitle error: {e}");
+                                }
+                            } else {
+                                log::error!(
+                                    "Generate video subtitle error: {}",
+                                    result.err().unwrap()
+                                );
+                            }
+                        }
+
+                        let event = events::new_webhook_event(
+                            events::CLIP_GENERATED,
+                            events::Payload::Clip(video.clone()),
+                        );
+
+                        if let Err(e) = state_clone.webhook_poster.post_event(&event).await {
+                            log::error!("Post webhook event error: {e}");
+                        }
+
+                        Ok(video)
+                    }
+                    Err(e) => {
+                        reporter.finish(false, &format!("切片失败: {e}")).await;
+                        let _ = state_clone
+                            .db
+                            .update_task(&task_id, "failed", &format!("切片失败: {e}"), None)
+                            .await;
+                        Err(e)
+                    }
+                };
+
+                let task_result = result.as_ref().map(|_| ()).map_err(Clone::clone);
+                let _ = result_tx.send(result);
+                task_result
+            },
+        ))
         .await?;
 
-    if state.config.read().await.auto_subtitle {
-        // generate a subtitle task event id
-        let subtitle_event_id = format!("{event_id}_subtitle");
-        let result = generate_video_subtitle(state.clone(), subtitle_event_id, video.id).await;
-        if let Ok(subtitle) = result {
-            let result = update_video_subtitle(state.clone(), video.id, subtitle).await;
-            if let Err(e) = result {
-                log::error!("Update video subtitle error: {e}");
-            }
-        } else {
-            log::error!("Generate video subtitle error: {}", result.err().unwrap());
-        }
-    }
-
-    // Emit webhook events
-    let event =
-        events::new_webhook_event(events::CLIP_GENERATED, events::Payload::Clip(video.clone()));
-
-    if let Err(e) = state.webhook_poster.post_event(&event).await {
-        log::error!("Post webhook event error: {e}");
-    }
-
-    Ok(video)
+    result_rx
+        .await
+        .unwrap_or_else(|_| Err("切片任务已取消".to_string()))
 }
 
 async fn clip_range_inner(
-    state: &state_type!(),
+    state: &State,
     reporter: &ProgressReporter,
     params: ClipRangeParams,
 ) -> Result<VideoRow, String> {
@@ -633,7 +669,17 @@ async fn upload_procedure_inner(
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn cancel(state: state_type!(), event_id: String) -> Result<(), String> {
     log::info!("Cancel task: {event_id}");
-    state.task_manager.cancel_task(&event_id).await?;
+    state
+        .task_manager
+        .cancel_task(&event_id)
+        .await
+        .or_else(|e| {
+            if e == "Task not found" {
+                Ok(())
+            } else {
+                Err(e)
+            }
+        })?;
     state
         .db
         .update_task(&event_id, "cancelled", "任务取消", None)
@@ -763,6 +809,14 @@ pub async fn generate_video_subtitle(
     event_id: String,
     id: i64,
 ) -> Result<String, String> {
+    generate_video_subtitle_inner(&state, event_id, id).await
+}
+
+async fn generate_video_subtitle_inner(
+    state: &State,
+    event_id: String,
+    id: i64,
+) -> Result<String, String> {
     #[cfg(feature = "gui")]
     let emitter = EventEmitter::new(state.app_handle.clone());
     #[cfg(feature = "headless")]
@@ -832,7 +886,7 @@ pub async fn generate_video_subtitle(
                 .map(item_to_srt)
                 .collect::<String>();
 
-            let result = update_video_subtitle(state.clone(), id, subtitle.clone()).await;
+            let result = update_video_subtitle_inner(&state, id, subtitle.clone()).await;
             if let Err(e) = result {
                 log::error!("Update video subtitle error: {e}");
             }
@@ -852,6 +906,14 @@ pub async fn generate_video_subtitle(
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_video_subtitle(
     state: state_type!(),
+    id: i64,
+    subtitle: String,
+) -> Result<(), String> {
+    update_video_subtitle_inner(&state, id, subtitle).await
+}
+
+async fn update_video_subtitle_inner(
+    state: &State,
     id: i64,
     subtitle: String,
 ) -> Result<(), String> {

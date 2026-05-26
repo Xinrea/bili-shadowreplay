@@ -137,7 +137,10 @@ export async function getClips(recordingId: string) {
 }
 ```
 
-## 错误处理
+### 切片任务生命周期
+
+实时回放页使用 `clip_range` 生成切片时会保存当前 `eventId`，监听 `progress-update:<eventId>` 和 `progress-finished:<eventId>` 更新按钮状态。页面卸载时如果切片仍在运行，会调用 `cancel` 命令取消后端任务；取消命令会将任务状态写为 `cancelled`，并中止关联的 FFmpeg 处理。
+
 
 ### 后端错误返回
 

@@ -51,6 +51,7 @@ pub async fn handle_ffmpeg_process(
     ffmpeg_process: &mut tokio::process::Command,
 ) -> Result<(), String> {
     log::info!("[FFmpeg] {:?}", ffmpeg_process);
+    ffmpeg_process.kill_on_drop(true);
     let child = ffmpeg_process
         .stderr(Stdio::piped())
         .stdout(Stdio::piped())

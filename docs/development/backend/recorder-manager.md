@@ -96,7 +96,12 @@ enum RecordingStatus {
 }
 ```
 
-## 主要方法
+## 切片任务取消
+
+实时回放页面的 `clip_range` 命令会先在数据库创建任务记录，再交给 `TaskManager` 执行实际的 `RecorderManager::clip_range` 流程。前端关闭页面或用户取消时调用 `cancel` 命令，后端通过 `TaskManager::cancel_task` 中止运行中的任务并把数据库状态更新为 `cancelled`，避免任务停留在 `processing`。
+
+切片、转码、合并和弹幕压制中的 FFmpeg 子进程必须随 Rust future 取消而退出。使用 `tokio::process::Child::kill_on_drop(true)` 包装 FFmpeg 进程，确保 TaskManager abort 时不会留下后台 FFmpeg 进程继续运行。
+
 
 ### 创建录制任务
 

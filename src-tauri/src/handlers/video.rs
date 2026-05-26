@@ -415,7 +415,7 @@ pub async fn clip_range(
 
     result_rx
         .await
-        .unwrap_or_else(|_| Err("切片任务已取消".to_string()))
+        .unwrap_or_else(|_| Err("切片任务失败".to_string()))
 }
 
 async fn clip_range_inner(

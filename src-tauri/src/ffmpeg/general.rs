@@ -8,7 +8,7 @@ use tokio::io::{AsyncWriteExt, BufReader};
 
 use crate::{ffmpeg::hwaccel, progress::progress_reporter::ProgressReporterTrait};
 
-use super::ffmpeg_path;
+use super::ffmpeg_command;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -51,7 +51,6 @@ pub async fn handle_ffmpeg_process(
     ffmpeg_process: &mut tokio::process::Command,
 ) -> Result<(), String> {
     log::info!("[FFmpeg] {:?}", ffmpeg_process);
-    ffmpeg_process.kill_on_drop(true);
     let child = ffmpeg_process
         .stderr(Stdio::piped())
         .stdout(Stdio::piped())
@@ -145,7 +144,7 @@ pub async fn concat_videos_with_transition(
     output_path: &Path,
     transition: Option<&str>,
 ) -> Result<(), String> {
-    let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
+    let mut ffmpeg_process = ffmpeg_command();
     #[cfg(target_os = "windows")]
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
@@ -292,7 +291,8 @@ pub async fn concat_videos_with_transition(
 
 #[cfg(test)]
 mod concat_videos_tests {
-    use super::{concat_videos, ffmpeg_path, random_filename};
+    use super::{concat_videos, random_filename};
+    use crate::ffmpeg::ffmpeg_path;
     use std::path::Path;
 
     #[cfg(target_os = "windows")]

@@ -63,7 +63,7 @@ pub async fn transcode(
 ) -> Result<(), String> {
     // ffmpeg -i fixed_\[30655190\]1742887114_0325084106_81.5.mp4 -c:v libx264 -c:a aac -b:v 6000k -b:a 64k -compression_level 0 -threads 0 output.mp3
     log::info!("Transcode: {} copy: {}", file.display(), copy_codecs);
-    let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
+    let mut ffmpeg_process = ffmpeg_command();
     #[cfg(target_os = "windows")]
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
@@ -83,7 +83,6 @@ pub async fn transcode(
         ffmpeg_process.args(["-threads", "0"]);
     }
 
-    ffmpeg_process.kill_on_drop(true);
     let child = ffmpeg_process
         .args([output_path.to_str().unwrap()])
         .args(["-y"])
@@ -134,7 +133,7 @@ pub async fn trim_video(
 ) -> Result<(), String> {
     // ffmpeg -i fixed_\[30655190\]1742887114_0325084106_81.5.mp4 -ss 0 -t 10 output.mp4
     log::info!("Trim video task start: {}", file.display());
-    let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
+    let mut ffmpeg_process = ffmpeg_command();
     #[cfg(target_os = "windows")]
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
@@ -146,7 +145,6 @@ pub async fn trim_video(
     ffmpeg_process.args(["-y"]);
     ffmpeg_process.args(["-progress", "pipe:2"]);
     ffmpeg_process.stderr(Stdio::piped());
-    ffmpeg_process.kill_on_drop(true);
     let child = ffmpeg_process.spawn();
     if let Err(e) = child {
         return Err(e.to_string());
@@ -193,11 +191,10 @@ pub async fn extract_audio_sample(file: &Path) -> Result<PathBuf, String> {
     let output_path = file.with_extension("opus");
     let mut extract_error = None;
 
-    let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
+    let mut ffmpeg_process = ffmpeg_command();
     #[cfg(target_os = "windows")]
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
-    ffmpeg_process.kill_on_drop(true);
     let child = ffmpeg_process
         .args(["-i", file.to_str().unwrap()])
         .args(["-c:a", "libopus"])
@@ -326,11 +323,10 @@ pub async fn extract_audio_chunks(file: &Path, format: &str) -> Result<PathBuf, 
 
     args.push(segment_pattern_str);
 
-    let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
+    let mut ffmpeg_process = ffmpeg_command();
     #[cfg(target_os = "windows")]
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
-    ffmpeg_process.kill_on_drop(true);
     let child = ffmpeg_process.args(&args).stderr(Stdio::piped()).spawn();
 
     if let Err(e) = child {
@@ -466,7 +462,7 @@ pub async fn encode_video_subtitle(
     );
     log::info!("vf: {vf}");
 
-    let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
+    let mut ffmpeg_process = ffmpeg_command();
     #[cfg(target_os = "windows")]
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
@@ -476,7 +472,6 @@ pub async fn encode_video_subtitle(
     hwaccel::apply_x264_encoder_args(&mut ffmpeg_process, video_encoder, Some(vf.as_str()));
     ffmpeg_process.args(["-c:a", "copy"]);
     hwaccel::apply_x264_quality_args(&mut ffmpeg_process, video_encoder);
-    ffmpeg_process.kill_on_drop(true);
     let child = ffmpeg_process
         .args([output_path.to_str().unwrap()])
         .args(["-y"])
@@ -562,7 +557,7 @@ pub async fn encode_video_danmu(
         format!("'{}'", subtitle.display())
     };
 
-    let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
+    let mut ffmpeg_process = ffmpeg_command();
     #[cfg(target_os = "windows")]
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
@@ -573,7 +568,6 @@ pub async fn encode_video_danmu(
     hwaccel::apply_x264_encoder_args(&mut ffmpeg_process, video_encoder, Some(vf.as_str()));
     ffmpeg_process.args(["-c:a", "copy"]);
     hwaccel::apply_x264_quality_args(&mut ffmpeg_process, video_encoder);
-    ffmpeg_process.kill_on_drop(true);
     let child = ffmpeg_process
         .args([output_file_path.to_str().unwrap()])
         .args(["-y"])
@@ -630,11 +624,10 @@ pub async fn encode_video_danmu(
 }
 
 pub async fn generic_ffmpeg_command(args: &[&str]) -> Result<String, String> {
-    let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
+    let mut ffmpeg_process = ffmpeg_command();
     #[cfg(target_os = "windows")]
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
-    ffmpeg_process.kill_on_drop(true);
     let child = ffmpeg_process.args(args).stderr(Stdio::piped()).spawn();
     if let Err(e) = child {
         return Err(e.to_string());
@@ -847,6 +840,12 @@ pub async fn check_ffmpeg() -> Result<String, String> {
     }
 }
 
+pub fn ffmpeg_command() -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(ffmpeg_path());
+    command.kill_on_drop(true);
+    command
+}
+
 pub fn ffmpeg_path() -> PathBuf {
     let mut path = Path::new("ffmpeg").to_path_buf();
     if cfg!(windows) {
@@ -878,7 +877,7 @@ pub async fn clip_from_video_file(
         std::fs::create_dir_all(output_folder).unwrap();
     }
 
-    let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
+    let mut ffmpeg_process = ffmpeg_command();
     #[cfg(target_os = "windows")]
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
@@ -891,7 +890,6 @@ pub async fn clip_from_video_file(
     hwaccel::apply_x264_encoder_args(&mut ffmpeg_process, video_encoder, None);
     ffmpeg_process.args(["-c:a", "aac"]);
     hwaccel::apply_x264_quality_args(&mut ffmpeg_process, video_encoder);
-    ffmpeg_process.kill_on_drop(true);
     let child = ffmpeg_process
         .args(["-avoid_negative_ts", "make_zero"])
         .args(["-y", output_path.to_str().unwrap()])
@@ -1021,7 +1019,7 @@ pub async fn extract_video_metadata(file_path: &Path) -> Result<VideoMetadata, S
 /// # Returns
 /// The path to the generated thumbnail image.
 pub async fn generate_thumbnail(video_full_path: &Path, timestamp: f64) -> Result<PathBuf, String> {
-    let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
+    let mut ffmpeg_process = ffmpeg_command();
     #[cfg(target_os = "windows")]
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 

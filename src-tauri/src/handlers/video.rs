@@ -669,21 +669,25 @@ async fn upload_procedure_inner(
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn cancel(state: state_type!(), event_id: String) -> Result<(), String> {
     log::info!("Cancel task: {event_id}");
-    state
-        .task_manager
-        .cancel_task(&event_id)
-        .await
-        .or_else(|e| {
-            if e == "Task not found" {
-                Ok(())
-            } else {
-                Err(e)
+    let cancel_result = state.task_manager.cancel_task(&event_id).await;
+    match cancel_result {
+        Ok(()) => {
+            state
+                .db
+                .update_task(&event_id, "cancelled", "任务取消", None)
+                .await?;
+        }
+        Err(e) if e == "Task not found" => {
+            let task = state.db.get_task(&event_id).await?;
+            if matches!(task.status.as_str(), "pending" | "processing") {
+                state
+                    .db
+                    .update_task(&event_id, "cancelled", "任务取消", None)
+                    .await?;
             }
-        })?;
-    state
-        .db
-        .update_task(&event_id, "cancelled", "任务取消", None)
-        .await?;
+        }
+        Err(e) => return Err(e),
+    }
     Ok(())
 }
 

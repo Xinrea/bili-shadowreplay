@@ -411,14 +411,22 @@
     }
   }
 
+  function handleBeforeUnload(event: BeforeUnloadEvent) {
+    if (!current_clip_event_id) {
+      return;
+    }
+    const message = "切片任务将在后台继续运行，可前往任务页面管理后台任务。";
+    event.preventDefault();
+    event.returnValue = message;
+    return message;
+  }
+
   onDestroy(() => {
     // 清理滚动定时器
     if (scroll_timeout) {
       clearTimeout(scroll_timeout);
     }
-    if (current_clip_event_id) {
-      cancel_clip();
-    }
+    window.removeEventListener("beforeunload", handleBeforeUnload);
   });
 
   let archive: RecordItem = null;
@@ -496,6 +504,8 @@
       }
     );
     console.log(archive);
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
 
     // 初始化虚拟滚动
     setTimeout(() => {

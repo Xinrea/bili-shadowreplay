@@ -67,6 +67,17 @@ pub struct ClipRangeParams {
     pub transition: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerateWholeClipParams {
+    pub encode_danmu: bool,
+    pub platform: String,
+    pub room_id: String,
+    pub parent_id: String,
+    pub selected_live_ids: Option<Vec<String>>,
+    pub output_name: Option<String>,
+}
+
 pub struct RelatedPlaylist {
     pub live_id: String,
     pub title: String,
@@ -430,12 +441,19 @@ impl RecorderManager {
                     if let Err(e) = self_clone
                         .generate_whole_clip(
                             Some(&reporter),
-                            self_clone.config.read().await.auto_generate.encode_danmu,
-                            platform.as_str().to_string(),
-                            &room_id,
-                            live_record.parent_id,
-                            None,
-                            None,
+                            GenerateWholeClipParams {
+                                encode_danmu: self_clone
+                                    .config
+                                    .read()
+                                    .await
+                                    .auto_generate
+                                    .encode_danmu,
+                                platform: platform.as_str().to_string(),
+                                room_id,
+                                parent_id: live_record.parent_id,
+                                selected_live_ids: None,
+                                output_name: None,
+                            },
                         )
                         .await
                     {
@@ -1507,13 +1525,17 @@ impl RecorderManager {
     pub async fn generate_whole_clip(
         &self,
         reporter: Option<&ProgressReporter>,
-        encode_danmu: bool,
-        platform: String,
-        room_id: &str,
-        parent_id: String,
-        selected_live_ids: Option<Vec<String>>,
-        output_name: Option<String>,
+        params: GenerateWholeClipParams,
     ) -> Result<(), RecorderManagerError> {
+        let GenerateWholeClipParams {
+            encode_danmu,
+            platform,
+            room_id,
+            parent_id,
+            selected_live_ids,
+            output_name,
+        } = params;
+
         let platform = PlatformType::from_str(&platform).map_err(|_| {
             RecorderManagerError::InvalidPlatformType {
                 platform: platform.to_string(),
@@ -1521,7 +1543,7 @@ impl RecorderManager {
         })?;
 
         let mut playlists = self
-            .get_related_playlists(&platform, room_id, &parent_id)
+            .get_related_playlists(&platform, &room_id, &parent_id)
             .await;
         if playlists.is_empty() {
             log::error!("No related playlists found: {parent_id}");
@@ -1555,7 +1577,7 @@ impl RecorderManager {
                 .iter()
                 .map(async |p| {
                     (self
-                        .generate_archive_danmu_ass(platform, room_id, &p.live_id)
+                        .generate_archive_danmu_ass(platform, &room_id, &p.live_id)
                         .await)
                         .ok()
                 })

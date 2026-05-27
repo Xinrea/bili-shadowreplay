@@ -890,7 +890,7 @@ async fn generate_video_subtitle_inner(
                 .map(item_to_srt)
                 .collect::<String>();
 
-            let result = update_video_subtitle_inner(&state, id, subtitle.clone()).await;
+            let result = update_video_subtitle_inner(state, id, subtitle.clone()).await;
             if let Err(e) = result {
                 log::error!("Update video subtitle error: {e}");
             }

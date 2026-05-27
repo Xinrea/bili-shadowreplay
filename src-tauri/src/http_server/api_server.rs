@@ -42,7 +42,7 @@ use crate::{
         AccountInfo,
     },
     http_server::websocket,
-    recorder_manager::{ClipRangeParams, RecorderList},
+    recorder_manager::{ClipRangeParams, GenerateWholeClipParams, RecorderList},
     state::State,
 };
 use axum::extract::Query;
@@ -1034,20 +1034,9 @@ struct GetFileSizeRequest {
     file_path: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GenerateWholeClipRequest {
-    encode_danmu: bool,
-    platform: String,
-    room_id: String,
-    parent_id: String,
-    selected_live_ids: Option<Vec<String>>,
-    output_name: Option<String>,
-}
-
 async fn handler_generate_whole_clip(
     state: axum::extract::State<State>,
-    Json(param): Json<GenerateWholeClipRequest>,
+    Json(param): Json<GenerateWholeClipParams>,
 ) -> Result<Json<ApiResponse<TaskRow>>, ApiError> {
     let task = generate_whole_clip(
         state.0,

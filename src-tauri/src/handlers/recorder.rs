@@ -7,7 +7,7 @@ use crate::database::task::TaskRow;
 use crate::progress::progress_reporter::EventEmitter;
 use crate::progress::progress_reporter::ProgressReporter;
 use crate::progress::progress_reporter::ProgressReporterTrait;
-use crate::recorder_manager::RecorderList;
+use crate::recorder_manager::{GenerateWholeClipParams, RecorderList};
 use crate::state::State;
 use crate::state_type;
 use crate::task::Task;
@@ -512,12 +512,14 @@ pub async fn generate_whole_clip(
                     .recorder_manager
                     .generate_whole_clip(
                         Some(&reporter),
-                        encode_danmu,
-                        platform,
-                        &room_id,
-                        parent_id,
-                        selected_live_ids,
-                        output_name,
+                        GenerateWholeClipParams {
+                            encode_danmu,
+                            platform,
+                            room_id,
+                            parent_id,
+                            selected_live_ids,
+                            output_name,
+                        },
                     )
                     .await
                 {

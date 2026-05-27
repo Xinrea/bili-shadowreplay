@@ -38,6 +38,8 @@
   });
 
   let current_clip_event_id = null;
+  let clear_clip_update_listener: (() => void) | null = null;
+  let clear_clip_finished_listener: (() => void) | null = null;
   let danmu_enabled = false;
   let fix_encoding = false;
   let clip_note: string = "";
@@ -411,11 +413,22 @@
     }
   }
 
+  function handleBeforeUnload(event: BeforeUnloadEvent) {
+    if (!current_clip_event_id) {
+      return;
+    }
+    const message = "切片任务将在后台继续运行，可前往任务页面管理后台任务。";
+    event.preventDefault();
+    event.returnValue = message;
+    return message;
+  }
+
   onDestroy(() => {
     // 清理滚动定时器
     if (scroll_timeout) {
       clearTimeout(scroll_timeout);
     }
+    window.removeEventListener("beforeunload", handleBeforeUnload);
   });
 
   let archive: RecordItem = null;
@@ -494,6 +507,8 @@
     );
     console.log(archive);
 
+    window.addEventListener("beforeunload", handleBeforeUnload);
+
     // 初始化虚拟滚动
     setTimeout(() => {
       if (container_ref) {
@@ -544,66 +559,83 @@
     selected_video = target_video;
   }
 
+  function reset_clip_state() {
+    update_clip_prompt(`生成切片`);
+    current_clip_event_id = null;
+    clear_clip_update_listener?.();
+    clear_clip_update_listener = null;
+    clear_clip_finished_listener?.();
+    clear_clip_finished_listener = null;
+  }
+
   async function confirm_generate_clip() {
     show_clip_confirm = false;
     let new_cover = generateCover();
     update_clip_prompt(`切片生成中`);
     let event_id = generateEventId();
+    reset_clip_state();
     current_clip_event_id = event_id;
-    const clear_update_listener = await listen(
+    clear_clip_update_listener = await listen(
       `progress-update:${event_id}`,
       (e) => {
         update_clip_prompt(e.payload.content);
       }
     );
-    const clear_finished_listener = await listen(
+    clear_clip_finished_listener = await listen(
       `progress-finished:${event_id}`,
       (e) => {
-        update_clip_prompt(`生成切片`);
+        reset_clip_state();
         if (!e.payload.success) {
           alert("请检查 ffmpeg 是否配置正确：" + e.payload.message);
         }
-        current_clip_event_id = null;
-
-        clear_update_listener();
-        clear_finished_listener();
       }
     );
-    let new_video = (await clipRange(event_id, {
-      title: archive.title,
-      note: clip_note,
-      room_id: room_id,
-      platform: platform,
-      cover: new_cover,
-      live_id: live_id,
-      ranges: activeRanges,
-      danmu: danmu_enabled,
-      local_offset:
-        parseInt(localStorage.getItem(`local_offset:${live_id}`) || "0", 10) ||
-        0,
-      fix_encoding,
-      transition: transition !== "none" ? transition : undefined,
-    })) as VideoItem;
-    await get_video_list();
-    new_video.cover = await get_static_url("output", new_video.cover);
-    video_selected = new_video.id;
-    selected_video = videos.find((v) => {
-      return v.value == new_video.id;
-    });
-    if (selected_video) {
-      selected_video.cover = new_video.cover;
-    }
+    try {
+      let new_video = (await clipRange(event_id, {
+        title: archive.title,
+        note: clip_note,
+        room_id: room_id,
+        platform: platform,
+        cover: new_cover,
+        live_id: live_id,
+        ranges: activeRanges,
+        danmu: danmu_enabled,
+        local_offset:
+          parseInt(localStorage.getItem(`local_offset:${live_id}`) || "0", 10) ||
+          0,
+        fix_encoding,
+        transition: transition !== "none" ? transition : undefined,
+      })) as VideoItem;
+      await get_video_list();
+      new_video.cover = await get_static_url("output", new_video.cover);
+      video_selected = new_video.id;
+      selected_video = videos.find((v) => {
+        return v.value == new_video.id;
+      });
+      if (selected_video) {
+        selected_video.cover = new_video.cover;
+      }
 
-    // clean up previous input data
-    clip_note = "";
-    transition = "none";
+      // clean up previous input data
+      clip_note = "";
+      transition = "none";
+    } finally {
+      reset_clip_state();
+    }
   }
 
   async function cancel_clip() {
     if (!current_clip_event_id) {
       return;
     }
-    invoke("cancel", { eventId: current_clip_event_id });
+    invoke("cancel", { eventId: current_clip_event_id })
+      .then(() => {
+        reset_clip_state();
+      })
+      .catch((error) => {
+        log.warn("Failed to cancel clip task", error);
+        reset_clip_state();
+      });
   }
 
   async function delete_video() {
@@ -787,6 +819,12 @@
                   {/if}
                 </div>
               </div>
+
+              {#if current_clip_event_id != null}
+                <div class="rounded-lg border border-[#0A84FF]/30 bg-[#0A84FF]/10 px-3 py-2 text-xs text-blue-100">
+                  切片任务将在后台继续运行，关闭页面不会取消任务；可前往任务页面管理后台任务。
+                </div>
+              {/if}
 
               <div class="flex flex-row items-center justify-between">
                 <select

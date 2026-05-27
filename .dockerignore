@@ -36,4 +36,4 @@ yarn-error.log*
 
 # Tauri specific
 src-tauri/target
-src-tauri/dist 
+src-tauri/dist

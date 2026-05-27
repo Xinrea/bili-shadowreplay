@@ -280,4 +280,3 @@ The project maintains comprehensive documentation in the `docs/` directory using
 - Use consistent terminology across all documentation
 - Update documentation in the same commit as code changes
 - Review documentation for accuracy during code reviews
-

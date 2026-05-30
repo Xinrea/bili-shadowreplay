@@ -1,5 +1,5 @@
 # Build frontend
-FROM node:20-bullseye AS frontend-builder
+FROM node:22-bookworm AS frontend-builder
 
 WORKDIR /app
 

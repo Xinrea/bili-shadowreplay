@@ -1214,15 +1214,13 @@ pub async fn check_videos(video_paths: &[&Path]) -> bool {
         if !Path::new(video_path).exists() {
             continue;
         }
-        let metadata = extract_video_metadata(Path::new(video_path)).await;
-        if metadata.is_err() {
-            log::error!(
-                "Failed to extract video metadata: {}",
-                metadata.unwrap_err()
-            );
-            return false;
-        }
-        let metadata = metadata.unwrap();
+        let metadata = match extract_video_metadata(Path::new(video_path)).await {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                log::error!("Failed to extract video metadata: {error}");
+                return false;
+            }
+        };
 
         // check video codec
         if !video_codec.is_empty() && metadata.video_codec != video_codec {

@@ -149,7 +149,7 @@ optional = true
 [target.'cfg(windows)'.dependencies]
 whisper-rs = { version = "0.16.0", default-features = false }
 
-[target.'cfg(darwin)'.dependencies.whisper-rs]
+[target.'cfg(target_os = "macos")'.dependencies.whisper-rs]
 version = "0.16.0"
 features = ["metal"]
 

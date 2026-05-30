@@ -70,6 +70,52 @@ pub fn generate_user_agent_header() -> reqwest::header::HeaderMap {
     headers
 }
 
+fn parse_web_room_info_response(
+    data: DouyinRoomInfoResponse,
+    sec_user_id: &str,
+) -> Result<DouyinBasicRoomInfo, RecorderError> {
+    let room = data
+        .data
+        .data
+        .first()
+        .ok_or_else(|| RecorderError::ApiError {
+            error: "Douyin room info response did not include room data".to_string(),
+        })?;
+
+    let cover = room
+        .cover
+        .as_ref()
+        .and_then(|cover| cover.url_list.first().cloned());
+    let user_avatar = data
+        .data
+        .user
+        .avatar_thumb
+        .url_list
+        .first()
+        .cloned()
+        .unwrap_or_default();
+
+    Ok(DouyinBasicRoomInfo {
+        room_id_str: room.id_str.clone(),
+        sec_user_id: sec_user_id.to_string(),
+        cover,
+        room_title: room.title.clone(),
+        user_name: data.data.user.nickname.clone(),
+        user_avatar,
+        status: data.data.room_status,
+        hls_url: room
+            .stream_url
+            .as_ref()
+            .map(|stream_url| stream_url.hls_pull_url.clone())
+            .unwrap_or_default(),
+        stream_data: room
+            .stream_url
+            .as_ref()
+            .map(|s| s.live_core_sdk_data.pull_data.stream_data.clone())
+            .unwrap_or_default(),
+    })
+}
+
 pub async fn get_room_info(
     client: &Client,
     account: &Account,
@@ -103,31 +149,13 @@ pub async fn get_room_info(
 
     if status.is_success() {
         if let Ok(data) = serde_json::from_str::<DouyinRoomInfoResponse>(&text) {
-            let cover = data
-                .data
-                .data
-                .first()
-                .and_then(|data| data.cover.as_ref())
-                .map(|cover| cover.url_list[0].clone());
-            return Ok(DouyinBasicRoomInfo {
-                room_id_str: data.data.data[0].id_str.clone(),
-                sec_user_id: sec_user_id.to_string(),
-                cover,
-                room_title: data.data.data[0].title.clone(),
-                user_name: data.data.user.nickname.clone(),
-                user_avatar: data.data.user.avatar_thumb.url_list[0].clone(),
-                status: data.data.room_status,
-                hls_url: data.data.data[0]
-                    .stream_url
-                    .as_ref()
-                    .map(|stream_url| stream_url.hls_pull_url.clone())
-                    .unwrap_or_default(),
-                stream_data: data.data.data[0]
-                    .stream_url
-                    .as_ref()
-                    .map(|s| s.live_core_sdk_data.pull_data.stream_data.clone())
-                    .unwrap_or_default(),
-            });
+            match parse_web_room_info_response(data, sec_user_id) {
+                Ok(info) => return Ok(info),
+                Err(e) => {
+                    log::warn!("Invalid douyin room info response: {e}; trying H5 API");
+                    return get_room_info_h5(client, account, room_id, sec_user_id).await;
+                }
+            }
         }
         log::error!("Failed to parse room info response: {text}");
         return get_room_info_h5(client, account, room_id, sec_user_id).await;
@@ -204,8 +232,8 @@ pub async fn get_room_info_h5(
                     .avatar_thumb
                     .url_list
                     .first()
-                    .unwrap_or(&String::new())
-                    .clone(),
+                    .cloned()
+                    .unwrap_or_default(),
                 sec_user_id: owner.sec_uid.clone(),
                 stream_data: room
                     .stream_url
@@ -377,6 +405,50 @@ pub async fn download_file(client: &Client, url: &str, path: &Path) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platforms::douyin::response;
+
+    fn web_room_response_with_room(room: Option<response::Daum>) -> DouyinRoomInfoResponse {
+        DouyinRoomInfoResponse {
+            data: response::Data {
+                data: room.into_iter().collect(),
+                room_status: 0,
+                user: response::User {
+                    nickname: "主播".to_string(),
+                    avatar_thumb: response::AvatarThumb { url_list: vec![] },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            status_code: 0,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn parse_web_room_info_response_rejects_empty_room_data() {
+        let err = parse_web_room_info_response(web_room_response_with_room(None), "sec_uid")
+            .expect_err("empty room data should be rejected");
+
+        assert!(matches!(err, RecorderError::ApiError { .. }));
+    }
+
+    #[test]
+    fn parse_web_room_info_response_allows_empty_image_lists() {
+        let room = response::Daum {
+            id_str: "room_id".to_string(),
+            title: "直播标题".to_string(),
+            cover: Some(response::Cover { url_list: vec![] }),
+            ..Default::default()
+        };
+
+        let info = parse_web_room_info_response(web_room_response_with_room(Some(room)), "sec_uid")
+            .expect("empty image url lists should not fail room parsing");
+
+        assert_eq!(info.room_id_str, "room_id");
+        assert_eq!(info.room_title, "直播标题");
+        assert_eq!(info.cover, None);
+        assert_eq!(info.user_avatar, "");
+    }
 
     #[tokio::test]
     async fn test_get_room_owner_sec_uid() {

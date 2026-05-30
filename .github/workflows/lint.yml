@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 jobs:
-  pre-commit:
+  pr-check:
     runs-on: ubuntu-22.04
 
     steps:
@@ -17,7 +17,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y ffmpeg libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Setup Python
         uses: actions/setup-python@v5

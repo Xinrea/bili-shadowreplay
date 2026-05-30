@@ -18,6 +18,7 @@ pub const H264_SCALE_PAD_FILTER: &str =
     "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2";
 
 const VAAPI_ENCODER: &str = "h264_vaapi";
+const NVENC_ENCODER: &str = "h264_nvenc";
 const VAAPI_DEVICE_DIR: &str = "/dev/dri";
 const VAAPI_RENDER_PREFIX: &str = "renderD";
 const VAAPI_FILTER_SUFFIX: &str = "format=nv12,hwupload";
@@ -56,6 +57,11 @@ pub fn is_vaapi_encoder(encoder: &str) -> bool {
     encoder == VAAPI_ENCODER
 }
 
+/// 判断编码器是否为 NVIDIA NVENC。
+pub fn is_nvenc_encoder(encoder: &str) -> bool {
+    encoder == NVENC_ENCODER
+}
+
 /// 返回 VAAPI 硬件上传滤镜片段。
 pub fn vaapi_filter_suffix() -> &'static str {
     VAAPI_FILTER_SUFFIX
@@ -80,11 +86,17 @@ pub fn apply_x264_encoder_only(command: &mut tokio::process::Command, encoder: &
 
 /// 按编码器类型追加质量参数。
 pub fn apply_x264_quality_args(command: &mut tokio::process::Command, encoder: &str) {
+    command.args(quality_args_for_encoder(encoder));
+}
+
+/// 返回指定 H.264 编码器应使用的质量参数。
+pub fn quality_args_for_encoder(encoder: &str) -> &'static [&'static str] {
     if is_vaapi_encoder(encoder) {
-        command.args(["-qp", "20"]);
+        &["-qp", "20"]
+    } else if is_nvenc_encoder(encoder) {
+        &["-preset", "p5", "-rc", "vbr", "-cq", "20", "-b:v", "0"]
     } else {
-        command.args(["-crf", "20"]);
-        command.args(["-preset", "medium"]);
+        &["-crf", "20", "-preset", "medium"]
     }
 }
 
@@ -335,5 +347,34 @@ pub async fn get_x264_encoder() -> &'static str {
             // 其他线程已经设置了，返回缓存的值
             ENCODER_CACHE.get().unwrap().as_str()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::quality_args_for_encoder;
+
+    #[test]
+    fn test_quality_args_for_libx264() {
+        assert_eq!(
+            quality_args_for_encoder("libx264"),
+            &["-crf", "20", "-preset", "medium"]
+        );
+    }
+
+    #[test]
+    fn test_quality_args_for_nvenc() {
+        let args = quality_args_for_encoder("h264_nvenc");
+
+        assert_eq!(
+            args,
+            &["-preset", "p5", "-rc", "vbr", "-cq", "20", "-b:v", "0"]
+        );
+        assert!(!args.contains(&"-crf"));
+    }
+
+    #[test]
+    fn test_quality_args_for_vaapi() {
+        assert_eq!(quality_args_for_encoder("h264_vaapi"), &["-qp", "20"]);
     }
 }

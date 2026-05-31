@@ -131,13 +131,17 @@ async function get_static_url(base: string, path: string) {
   if (config === null) {
     config = (await invoke("get_config")) as any;
   }
-  if (STATIC_PORT === 0) {
-    STATIC_PORT = await invoke("get_static_port");
-  }
-  let staticUrl = `http://localhost:${STATIC_PORT}`;
-  if (!TAURI_ENV) {
-    // replace port in ENDPOINT
-    staticUrl = ENDPOINT.replace(/:\d+/, `:${STATIC_PORT}`);
+  let staticUrl;
+  if (TAURI_ENV) {
+    if (STATIC_PORT === 0) {
+      STATIC_PORT = await invoke("get_static_port");
+    }
+    staticUrl = `http://localhost:${STATIC_PORT}`;
+  } else {
+    // In headless/web mode static assets are served by the same server as the
+    // API, so follow the configured endpoint as-is. Rewriting the port here
+    // breaks remapped ports, reverse proxies and HTTPS.
+    staticUrl = ENDPOINT;
   }
 
   const encodedPath = path.split('/').map(encodeURIComponent).join('/');

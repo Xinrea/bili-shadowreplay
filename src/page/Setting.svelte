@@ -1,7 +1,6 @@
 <script lang="ts">
-  import { invoke } from "../lib/invoker";
+  import { invoke, TAURI_ENV, normalizeEndpoint } from "../lib/invoker";
   import { open } from "@tauri-apps/plugin-dialog";
-  import { TAURI_ENV } from "../lib/invoker";
   import { clickOutside } from "../lib/actions/clickOutside";
 
   import type { Config } from "../lib/interface";
@@ -52,6 +51,7 @@
   let endpointValue = endpoint;
 
   function handleEndpointChange() {
+    endpointValue = normalizeEndpoint(endpointValue);
     localStorage.setItem("endpoint", endpointValue);
     // reload page
     location.reload();

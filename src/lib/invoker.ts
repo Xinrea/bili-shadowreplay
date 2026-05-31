@@ -13,7 +13,11 @@ declare global {
   }
 }
 
-const ENDPOINT = localStorage.getItem("endpoint") || "";
+function normalizeEndpoint(value: string): string {
+  return value.trim().replace(/\/+$/, "");
+}
+
+const ENDPOINT = normalizeEndpoint(localStorage.getItem("endpoint") || "");
 const TAURI_ENV = typeof window.__TAURI_INTERNALS__ !== "undefined";
 
 const log = {
@@ -291,4 +295,5 @@ export {
   close_window,
   onOpenUrl,
   get_static_url,
+  normalizeEndpoint,
 };

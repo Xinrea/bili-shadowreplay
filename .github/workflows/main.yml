@@ -103,6 +103,9 @@ jobs:
           CMAKE_OSX_DEPLOYMENT_TARGET: "13.3"
           CMAKE_CUDA_ARCHITECTURES: "75"
           WHISPER_BACKEND: ${{ matrix.features }}
+          # Sentry DSN baked into the binary at build time (option_env! in main.rs).
+          # When unset, Sentry is disabled in the build instead of using a default.
+          SENTRY_ENDPOINT: ${{ secrets.SENTRY_ENDPOINT }}
         with:
           tagName: v__VERSION__
           releaseName: "BiliBili ShadowReplay v__VERSION__"
@@ -110,3 +113,44 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }} ${{ matrix.platform == 'windows-latest' && matrix.features == 'cuda' && '--config src-tauri/tauri.windows.cuda.conf.json' || '' }}
+
+      - name: Generate dSYM for Sentry (macOS only)
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Rust on macOS keeps DWARF in the object files; run dsymutil to
+          # produce a .dSYM bundle next to the binary so Sentry can symbolicate.
+          TARGET=$(echo "${{ matrix.args }}" | sed -n 's/.*--target \([^ ]*\).*/\1/p')
+          BIN="src-tauri/target/$TARGET/release/bili-shadowreplay"
+          if [ -f "$BIN" ]; then
+            echo "Running dsymutil on $BIN"
+            dsymutil "$BIN"
+          else
+            echo "Binary not found, skipping dsymutil: $BIN"
+          fi
+
+      - name: Upload debug symbols to Sentry
+        # Requires repository secrets: SENTRY_URL, SENTRY_AUTH_TOKEN, SENTRY_ORG, SENTRY_PROJECT
+        shell: bash
+        env:
+          SENTRY_URL: ${{ secrets.SENTRY_URL }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SENTRY_AUTH_TOKEN:-}" ]; then
+            echo "SENTRY_AUTH_TOKEN not set, skipping debug symbol upload."
+            exit 0
+          fi
+          # Derive the cargo target directory from the matrix args (if any).
+          ARGS="${{ matrix.args }}"
+          if [[ "$ARGS" == *"--target "* ]]; then
+            TARGET=$(echo "$ARGS" | sed -n 's/.*--target \([^ ]*\).*/\1/p')
+            DEBUG_DIR="src-tauri/target/$TARGET/release"
+          else
+            DEBUG_DIR="src-tauri/target/release"
+          fi
+          echo "Uploading debug files from: $DEBUG_DIR"
+          npx --yes @sentry/cli@latest debug-files upload --include-sources "$DEBUG_DIR"

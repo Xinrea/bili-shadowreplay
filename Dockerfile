@@ -45,6 +45,11 @@ COPY src-tauri/Cargo.toml src-tauri/Cargo.lock ./src-tauri/
 COPY src-tauri/src ./src-tauri/src
 COPY src-tauri/crates ./src-tauri/crates
 
+# Sentry DSN baked into the binary at build time (option_env! in main.rs).
+# Empty by default so Sentry stays disabled unless a DSN is provided.
+ARG SENTRY_ENDPOINT=""
+ENV SENTRY_ENDPOINT=${SENTRY_ENDPOINT}
+
 # Build Rust backend
 WORKDIR /app/src-tauri
 RUN rustup component add rustfmt

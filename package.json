@@ -1,7 +1,7 @@
 {
   "name": "bili-shadowreplay",
   "private": true,
-  "version": "2.19.8",
+  "version": "2.19.9",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,7 +12,8 @@
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",
-    "bump": "node scripts/bump.cjs"
+    "bump": "node scripts/bump.cjs",
+    "version": "node scripts/bump.cjs && git add src-tauri/Cargo.toml src-tauri/Cargo.lock"
   },
   "dependencies": {
     "@langchain/core": "^0.3.64",

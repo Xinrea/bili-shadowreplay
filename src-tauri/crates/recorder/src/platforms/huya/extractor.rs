@@ -36,61 +36,58 @@ impl StreamInfo {
 
 pub struct LiveStreamExtractor;
 
+#[derive(Clone, Copy)]
+struct UsableStreamInfo<'a> {
+    hls_url: &'a str,
+    hls_anti_code: &'a str,
+    presenter_uid: i64,
+    stream_name: &'a str,
+}
+
 impl LiveStreamExtractor {
     /// 从 JavaScript 代码中提取指定的变量
     pub fn extract_infos(
         js_content: &str,
     ) -> Result<(UserInfo, RoomInfo, StreamInfo), super::errors::HuyaClientError> {
         let global_init = Self::extract_variable(js_content, "window.HNF_GLOBAL_INIT")?;
-        let room_info_obj = Self::required_object(&global_init, &["roomInfo"])?;
-        let profile_info_obj =
-            Self::value_at(&global_init, &["roomInfo", "tProfileInfo"]).and_then(|v| v.as_object());
-        let live_info_obj =
-            Self::value_at(&global_init, &["roomInfo", "tLiveInfo"]).and_then(|v| v.as_object());
+        Self::required_object(&global_init, &["roomInfo"])?;
 
         // roomInfo.tProfileInfo.lUid
-        let uid = profile_info_obj
-            .and_then(|v| Self::i64_field(v, "lUid"))
-            .or_else(|| live_info_obj.and_then(|v| Self::i64_field(v, "lUid")))
+        let uid = Self::i64_value_at(&global_init, &["roomInfo", "tProfileInfo", "lUid"])
+            .or_else(|| Self::i64_value_at(&global_init, &["roomInfo", "tLiveInfo", "lUid"]))
             .unwrap_or(0)
             .to_string();
         // roomInfo.tProfileInfo.sNick
-        let nick = profile_info_obj
-            .and_then(|v| Self::str_field(v, "sNick"))
-            .or_else(|| live_info_obj.and_then(|v| Self::str_field(v, "sNick")))
+        let nick = Self::str_value_at(&global_init, &["roomInfo", "tProfileInfo", "sNick"])
+            .or_else(|| Self::str_value_at(&global_init, &["roomInfo", "tLiveInfo", "sNick"]))
             .unwrap_or("")
             .to_string();
         // roomInfo.tProfileInfo.sAvatar180
-        let avatar = profile_info_obj
-            .and_then(|v| Self::str_field(v, "sAvatar180"))
-            .or_else(|| live_info_obj.and_then(|v| Self::str_field(v, "sAvatar180")))
+        let avatar = Self::str_value_at(&global_init, &["roomInfo", "tProfileInfo", "sAvatar180"])
+            .or_else(|| Self::str_value_at(&global_init, &["roomInfo", "tLiveInfo", "sAvatar180"]))
             .unwrap_or("")
             .to_string();
 
         // roomInfo.tLiveInfo.sScreenshot
-        let cover = live_info_obj
-            .and_then(|v| Self::str_field(v, "sScreenshot"))
+        let cover = Self::str_value_at(&global_init, &["roomInfo", "tLiveInfo", "sScreenshot"])
             .unwrap_or("")
             .to_string();
 
         // roomInfo.tLiveInfo.sIntroduction
-        let title = live_info_obj
-            .and_then(|v| Self::str_field(v, "sIntroduction"))
+        let title = Self::str_value_at(&global_init, &["roomInfo", "tLiveInfo", "sIntroduction"])
             .unwrap_or("")
             .to_string();
 
         // roomInfo.tLiveInfo.lProfileRoom
-        let room_id = live_info_obj
-            .and_then(|v| Self::i64_field(v, "lProfileRoom"))
-            .or_else(|| profile_info_obj.and_then(|v| Self::i64_field(v, "lProfileRoom")))
+        let room_id = Self::i64_value_at(&global_init, &["roomInfo", "tLiveInfo", "lProfileRoom"])
+            .or_else(|| {
+                Self::i64_value_at(&global_init, &["roomInfo", "tProfileInfo", "lProfileRoom"])
+            })
             .unwrap_or(0)
             .to_string();
 
         // roomInfo.eLiveStatus
-        let status = room_info_obj
-            .get("eLiveStatus")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
+        let status = Self::i64_value_at(&global_init, &["roomInfo", "eLiveStatus"]).unwrap_or(0);
 
         let user_info = UserInfo {
             user_id: uid,
@@ -146,42 +143,26 @@ impl LiveStreamExtractor {
 
         let usable_streams = live_stream_info
             .iter()
-            .filter(|stream| {
-                Self::str_value_at(stream, &["sHlsUrl"]).is_some()
-                    && Self::str_value_at(stream, &["sHlsAntiCode"]).is_some()
-                    && Self::i64_value_at(stream, &["lPresenterUid"]).is_some()
-                    && Self::str_value_at(stream, &["sStreamName"]).is_some()
+            .filter_map(|stream| {
+                Some(UsableStreamInfo {
+                    hls_url: Self::str_value_at(stream, &["sHlsUrl"])?,
+                    hls_anti_code: Self::str_value_at(stream, &["sHlsAntiCode"])?,
+                    presenter_uid: Self::i64_value_at(stream, &["lPresenterUid"])?,
+                    stream_name: Self::str_value_at(stream, &["sStreamName"])?,
+                })
             })
             .collect::<Vec<_>>();
 
-        let Some(stream_info) = usable_streams.choose(&mut rand::rng()) else {
+        let Some(stream_info) = usable_streams.choose(&mut rand::rng()).copied() else {
             return Ok(None);
         };
 
-        let Some(hls_url) = Self::str_value_at(stream_info, &["sHlsUrl"]) else {
-            return Ok(None);
-        };
-        let Some(hls_anti_code) = Self::str_value_at(stream_info, &["sHlsAntiCode"]) else {
-            return Ok(None);
-        };
-        let Some(presenter_uid) = Self::i64_value_at(stream_info, &["lPresenterUid"]) else {
-            return Ok(None);
-        };
-        let Some(stream_name) = Self::str_value_at(stream_info, &["sStreamName"]) else {
-            return Ok(None);
-        };
-        let hls_url = hls_url.to_string();
-        let hls_anti_code = hls_anti_code.to_string();
-        let presenter_uid = presenter_uid.to_string();
-        let stream_name = stream_name.to_string();
+        let hls_url = Self::normalize_hls_url(stream_info.hls_url);
+        let hls_anti_code = stream_info.hls_anti_code.to_string();
+        let presenter_uid = stream_info.presenter_uid.to_string();
+        let stream_name = stream_info.stream_name.to_string();
 
-        let url = format!(
-            "{}/{}.{}?{}",
-            hls_url.replace("http://", "https://"),
-            stream_name,
-            "m3u8",
-            hls_anti_code
-        );
+        let url = format!("{hls_url}/{stream_name}.m3u8?{hls_anti_code}");
 
         let player_info = PlayerInfo {
             url,
@@ -220,8 +201,10 @@ impl LiveStreamExtractor {
     fn normalize_hls_url(url: &str) -> String {
         if url.starts_with("//") {
             format!("https:{url}")
+        } else if let Some(rest) = url.strip_prefix("http://") {
+            format!("https://{rest}")
         } else {
-            url.replace("http://", "https://")
+            url.to_string()
         }
     }
 
@@ -245,14 +228,6 @@ impl LiveStreamExtractor {
     fn value_at<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
         path.iter()
             .try_fold(value, |current, key| current.as_object()?.get(*key))
-    }
-
-    fn str_field<'a>(object: &'a Map<String, Value>, field: &str) -> Option<&'a str> {
-        object.get(field).and_then(|v| v.as_str())
-    }
-
-    fn i64_field(object: &Map<String, Value>, field: &str) -> Option<i64> {
-        object.get(field).and_then(|v| v.as_i64())
     }
 
     fn extractor_error(message: impl Into<String>) -> super::errors::HuyaClientError {
@@ -492,6 +467,26 @@ mod tests {
         assert_eq!(
             stream_info.hls_url,
             "https://hs.hls.huya.com/huyalive/123-123-456-789-10057-A-0-1.m3u8?ratio=2000"
+        );
+    }
+
+    #[test]
+    fn test_normalize_hls_url_only_rewrites_scheme() {
+        assert_eq!(
+            LiveStreamExtractor::normalize_hls_url("//example.com/live.m3u8?next=http://callback"),
+            "https://example.com/live.m3u8?next=http://callback"
+        );
+        assert_eq!(
+            LiveStreamExtractor::normalize_hls_url(
+                "http://example.com/live.m3u8?next=http://callback"
+            ),
+            "https://example.com/live.m3u8?next=http://callback"
+        );
+        assert_eq!(
+            LiveStreamExtractor::normalize_hls_url(
+                "https://example.com/live.m3u8?next=http://callback"
+            ),
+            "https://example.com/live.m3u8?next=http://callback"
         );
     }
 

@@ -75,4 +75,4 @@ jobs:
           CID=$(docker create "$IMAGE")
           docker cp "$CID:/app/bili-shadowreplay" debug-files/bili-shadowreplay
           docker rm "$CID"
-          npx --yes @sentry/cli@latest debug-files upload debug-files
+          npx --yes @sentry/cli@2 debug-files upload debug-files

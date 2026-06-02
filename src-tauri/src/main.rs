@@ -728,17 +728,30 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
     ])
 }
 
+/// Initializes Sentry only when a DSN is provided at build time via the
+/// `SENTRY_ENDPOINT` env var. Returns `None` (Sentry disabled) when unset or
+/// empty. The returned guard must be kept alive for the lifetime of the app.
+fn init_sentry_from_env() -> Option<sentry::ClientInitGuard> {
+    option_env!("SENTRY_ENDPOINT")
+        .filter(|s| !s.is_empty())
+        .map(|dsn| {
+            sentry::init((
+                dsn,
+                sentry::ClientOptions {
+                    release: sentry::release_name!(),
+                    // Capture user IPs and potentially sensitive headers when using HTTP server integrations
+                    // see https://docs.sentry.io/platforms/rust/data-management/data-collected for more info
+                    send_default_pii: true,
+                    session_mode: sentry::SessionMode::Application,
+                    ..Default::default()
+                },
+            ))
+        })
+}
+
 #[cfg(feature = "gui")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let _guard = sentry::init((
-        "https://2dc627cc3cbf40653fa93f97fcb0f96c@sentry.vjoi.cn/2",
-        sentry::ClientOptions {
-            release: sentry::release_name!(),
-            session_mode: sentry::SessionMode::Application,
-            send_default_pii: true,
-            ..Default::default()
-        },
-    ));
+    let _guard = init_sentry_from_env();
 
     let _ = fix_path_env::fix();
 
@@ -799,17 +812,7 @@ struct Args {
 #[cfg(feature = "headless")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let _guard = sentry::init((
-        "https://fbf803d994a257326ea8f043d79058eb@sentry.vjoi.cn/2",
-        sentry::ClientOptions {
-            release: sentry::release_name!(),
-            // Capture user IPs and potentially sensitive headers when using HTTP server integrations
-            // see https://docs.sentry.io/platforms/rust/data-management/data-collected for more info
-            send_default_pii: true,
-            session_mode: sentry::SessionMode::Application,
-            ..Default::default()
-        },
-    ));
+    let _guard = init_sentry_from_env();
     // get params from command line
     let args = Args::parse();
     let state = setup_server_state(args)

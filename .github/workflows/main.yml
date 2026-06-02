@@ -14,16 +14,21 @@ jobs:
         include:
           - platform: "macos-latest" # for Intel based macs.
             args: "--target x86_64-apple-darwin"
+            target: "x86_64-apple-darwin"
           - platform: "macos-latest" # for Apple silicon macs.
             args: "--target aarch64-apple-darwin"
+            target: "aarch64-apple-darwin"
           - platform: "ubuntu-22.04"
             args: ""
+            target: ""
           - platform: "windows-latest"
             args: "--features cuda"
             features: "cuda"
+            target: ""
           - platform: "windows-latest"
             args: ""
             features: "cpu"
+            target: ""
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -103,6 +108,9 @@ jobs:
           CMAKE_OSX_DEPLOYMENT_TARGET: "13.3"
           CMAKE_CUDA_ARCHITECTURES: "75"
           WHISPER_BACKEND: ${{ matrix.features }}
+          # Sentry DSN baked into the binary at build time (option_env! in main.rs).
+          # When unset, Sentry is disabled in the build instead of using a default.
+          SENTRY_ENDPOINT: ${{ secrets.SENTRY_ENDPOINT }}
         with:
           tagName: v__VERSION__
           releaseName: "BiliBili ShadowReplay v__VERSION__"
@@ -110,3 +118,44 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }} ${{ matrix.platform == 'windows-latest' && matrix.features == 'cuda' && '--config src-tauri/tauri.windows.cuda.conf.json' || '' }}
+
+      - name: Generate dSYM for Sentry (macOS only)
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          # Rust on macOS keeps DWARF in the object files; run dsymutil to
+          # produce a .dSYM bundle next to the binary so Sentry can symbolicate.
+          BIN="src-tauri/target/$RUST_TARGET/release/bili-shadowreplay"
+          if [ -f "$BIN" ]; then
+            echo "Running dsymutil on $BIN"
+            dsymutil "$BIN"
+          else
+            echo "Binary not found, skipping dsymutil: $BIN"
+          fi
+
+      - name: Upload debug symbols to Sentry
+        # Requires repository secrets: SENTRY_URL, SENTRY_AUTH_TOKEN, SENTRY_ORG, SENTRY_PROJECT
+        shell: bash
+        env:
+          SENTRY_URL: ${{ secrets.SENTRY_URL }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          RUST_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SENTRY_AUTH_TOKEN:-}" ]; then
+            echo "SENTRY_AUTH_TOKEN not set, skipping debug symbol upload."
+            exit 0
+          fi
+          # Use the explicit target triple from the matrix to locate the build output.
+          if [ -n "$RUST_TARGET" ]; then
+            DEBUG_DIR="src-tauri/target/$RUST_TARGET/release"
+          else
+            DEBUG_DIR="src-tauri/target/release"
+          fi
+          echo "Uploading debug files from: $DEBUG_DIR"
+          npx --yes @sentry/cli@2 debug-files upload --include-sources "$DEBUG_DIR"

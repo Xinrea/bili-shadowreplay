@@ -49,3 +49,30 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            SENTRY_ENDPOINT=${{ secrets.SENTRY_ENDPOINT }}
+
+      - name: Upload debug symbols to Sentry
+        # Requires repository secrets: SENTRY_URL, SENTRY_AUTH_TOKEN, SENTRY_ORG, SENTRY_PROJECT
+        shell: bash
+        env:
+          SENTRY_URL: ${{ secrets.SENTRY_URL }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SENTRY_AUTH_TOKEN:-}" ]; then
+            echo "SENTRY_AUTH_TOKEN not set, skipping debug symbol upload."
+            exit 0
+          fi
+          # The headless Linux binary keeps DWARF embedded (profile.release debug = 1).
+          # Pull the just-pushed image and extract the binary to upload its debug info.
+          IMAGE=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
+          echo "Extracting binary from image: $IMAGE"
+          docker pull "$IMAGE"
+          mkdir -p debug-files
+          CID=$(docker create "$IMAGE")
+          docker cp "$CID:/app/bili-shadowreplay" debug-files/bili-shadowreplay
+          docker rm "$CID"
+          npx --yes @sentry/cli@2 debug-files upload debug-files

@@ -1,7 +1,8 @@
+use base64::{engine::general_purpose, Engine as _};
 use rand::seq::IndexedRandom;
 use regex::Regex;
 use reqwest::Url;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::core::stream_info::{
     CdnNode, Codec, Format, PlatformStreamInfo, PlatformType, Quality, StreamVariant,
@@ -41,65 +42,47 @@ impl LiveStreamExtractor {
         js_content: &str,
     ) -> Result<(UserInfo, RoomInfo, StreamInfo), super::errors::HuyaClientError> {
         let global_init = Self::extract_variable(js_content, "window.HNF_GLOBAL_INIT")?;
-        let room_info_obj = global_init
-            .get("roomInfo")
-            .and_then(|v| v.as_object())
-            .unwrap();
+        let room_info_obj = Self::required_object(&global_init, &["roomInfo"])?;
+        let profile_info_obj =
+            Self::value_at(&global_init, &["roomInfo", "tProfileInfo"]).and_then(|v| v.as_object());
+        let live_info_obj =
+            Self::value_at(&global_init, &["roomInfo", "tLiveInfo"]).and_then(|v| v.as_object());
+
         // roomInfo.tProfileInfo.lUid
-        let uid = room_info_obj
-            .get("tProfileInfo")
-            .and_then(|v| v.as_object())
-            .unwrap()
-            .get("lUid")
-            .and_then(|v| v.as_i64())
+        let uid = profile_info_obj
+            .and_then(|v| Self::i64_field(v, "lUid"))
+            .or_else(|| live_info_obj.and_then(|v| Self::i64_field(v, "lUid")))
             .unwrap_or(0)
             .to_string();
         // roomInfo.tProfileInfo.sNick
-        let nick = room_info_obj
-            .get("tProfileInfo")
-            .and_then(|v| v.as_object())
-            .unwrap()
-            .get("sNick")
-            .and_then(|v| v.as_str())
+        let nick = profile_info_obj
+            .and_then(|v| Self::str_field(v, "sNick"))
+            .or_else(|| live_info_obj.and_then(|v| Self::str_field(v, "sNick")))
             .unwrap_or("")
             .to_string();
         // roomInfo.tProfileInfo.sAvatar180
-        let avatar = room_info_obj
-            .get("tProfileInfo")
-            .and_then(|v| v.as_object())
-            .unwrap()
-            .get("sAvatar180")
-            .and_then(|v| v.as_str())
+        let avatar = profile_info_obj
+            .and_then(|v| Self::str_field(v, "sAvatar180"))
+            .or_else(|| live_info_obj.and_then(|v| Self::str_field(v, "sAvatar180")))
             .unwrap_or("")
             .to_string();
 
         // roomInfo.tLiveInfo.sScreenshot
-        let cover = room_info_obj
-            .get("tLiveInfo")
-            .and_then(|v| v.as_object())
-            .unwrap()
-            .get("sScreenshot")
-            .and_then(|v| v.as_str())
+        let cover = live_info_obj
+            .and_then(|v| Self::str_field(v, "sScreenshot"))
             .unwrap_or("")
             .to_string();
 
         // roomInfo.tLiveInfo.sIntroduction
-        let title = room_info_obj
-            .get("tLiveInfo")
-            .and_then(|v| v.as_object())
-            .unwrap()
-            .get("sIntroduction")
-            .and_then(|v| v.as_str())
+        let title = live_info_obj
+            .and_then(|v| Self::str_field(v, "sIntroduction"))
             .unwrap_or("")
             .to_string();
 
         // roomInfo.tLiveInfo.lProfileRoom
-        let room_id = room_info_obj
-            .get("tLiveInfo")
-            .and_then(|v| v.as_object())
-            .unwrap()
-            .get("lProfileRoom")
-            .and_then(|v| v.as_i64())
+        let room_id = live_info_obj
+            .and_then(|v| Self::i64_field(v, "lProfileRoom"))
+            .or_else(|| profile_info_obj.and_then(|v| Self::i64_field(v, "lProfileRoom")))
             .unwrap_or(0)
             .to_string();
 
@@ -129,44 +112,68 @@ impl LiveStreamExtractor {
             return Ok((user_info, room_info, stream_info));
         }
 
-        // roomInfo.tLiveInfo.tLiveStreamInfo.vStreamInfo
-        let live_stream_info = room_info_obj
-            .get("tLiveInfo")
-            .and_then(|v| v.as_object())
-            .unwrap()
-            .get("tLiveStreamInfo")
-            .and_then(|v| v.as_object())
-            .unwrap()
-            .get("vStreamInfo")
-            .and_then(|v| v.as_object())
-            .unwrap()
-            .get("value")
-            .and_then(|v| v.as_array())
-            .unwrap();
+        if let Some(stream_info) = Self::stream_info_from_v_stream_info(&global_init)? {
+            return Ok((user_info, room_info, stream_info));
+        }
 
-        // random one from vStreamInfo
-        let stream_info = live_stream_info.choose(&mut rand::rng()).unwrap();
+        if let Some(stream_info) = Self::stream_info_from_live_line_url(&global_init)? {
+            return Ok((user_info, room_info, stream_info));
+        }
 
-        let hls_url = stream_info
-            .get("sHlsUrl")
-            .and_then(|v| v.as_str())
-            .unwrap()
-            .to_string();
-        let hls_anti_code = stream_info
-            .get("sHlsAntiCode")
-            .and_then(|v| v.as_str())
-            .unwrap()
-            .to_string();
-        let presenter_uid = stream_info
-            .get("lPresenterUid")
-            .and_then(|v| v.as_i64())
-            .unwrap()
-            .to_string();
-        let stream_name = stream_info
-            .get("sStreamName")
-            .and_then(|v| v.as_str())
-            .unwrap()
-            .to_string();
+        Err(Self::extractor_error(
+            "No usable Huya HLS stream found in roomInfo.tLiveInfo.tLiveStreamInfo.vStreamInfo.value or roomProfile.liveLineUrl",
+        ))
+    }
+
+    fn stream_info_from_v_stream_info(
+        global_init: &Value,
+    ) -> Result<Option<StreamInfo>, super::errors::HuyaClientError> {
+        let live_stream_info = Self::value_at(
+            global_init,
+            &[
+                "roomInfo",
+                "tLiveInfo",
+                "tLiveStreamInfo",
+                "vStreamInfo",
+                "value",
+            ],
+        )
+        .and_then(|v| v.as_array());
+
+        let Some(live_stream_info) = live_stream_info else {
+            return Ok(None);
+        };
+
+        let usable_streams = live_stream_info
+            .iter()
+            .filter(|stream| {
+                Self::str_value_at(stream, &["sHlsUrl"]).is_some()
+                    && Self::str_value_at(stream, &["sHlsAntiCode"]).is_some()
+                    && Self::i64_value_at(stream, &["lPresenterUid"]).is_some()
+                    && Self::str_value_at(stream, &["sStreamName"]).is_some()
+            })
+            .collect::<Vec<_>>();
+
+        let Some(stream_info) = usable_streams.choose(&mut rand::rng()) else {
+            return Ok(None);
+        };
+
+        let Some(hls_url) = Self::str_value_at(stream_info, &["sHlsUrl"]) else {
+            return Ok(None);
+        };
+        let Some(hls_anti_code) = Self::str_value_at(stream_info, &["sHlsAntiCode"]) else {
+            return Ok(None);
+        };
+        let Some(presenter_uid) = Self::i64_value_at(stream_info, &["lPresenterUid"]) else {
+            return Ok(None);
+        };
+        let Some(stream_name) = Self::str_value_at(stream_info, &["sStreamName"]) else {
+            return Ok(None);
+        };
+        let hls_url = hls_url.to_string();
+        let hls_anti_code = hls_anti_code.to_string();
+        let presenter_uid = presenter_uid.to_string();
+        let stream_name = stream_name.to_string();
 
         let url = format!(
             "{}/{}.{}?{}",
@@ -182,9 +189,74 @@ impl LiveStreamExtractor {
             presenter_uid: Some(presenter_uid),
             s_hls_anti_code: Some(hls_anti_code),
         };
-        let result = UrlBuilder::build_player_url(&player_info).unwrap();
-        let stream_info = StreamInfo { hls_url: result };
-        Ok((user_info, room_info, stream_info))
+        let result = UrlBuilder::build_player_url(&player_info)
+            .map_err(|e| Self::extractor_error(format!("Failed to build Huya player URL: {e}")))?;
+        Ok(Some(StreamInfo { hls_url: result }))
+    }
+
+    fn stream_info_from_live_line_url(
+        global_init: &Value,
+    ) -> Result<Option<StreamInfo>, super::errors::HuyaClientError> {
+        let Some(live_line_url) = Self::str_value_at(global_init, &["roomProfile", "liveLineUrl"])
+        else {
+            return Ok(None);
+        };
+
+        if live_line_url.is_empty() {
+            return Ok(None);
+        }
+
+        let decoded = general_purpose::STANDARD
+            .decode(live_line_url)
+            .map_err(|e| Self::extractor_error(format!("Failed to decode liveLineUrl: {e}")))?;
+        let decoded = String::from_utf8(decoded)
+            .map_err(|e| Self::extractor_error(format!("Invalid UTF-8 in liveLineUrl: {e}")))?;
+
+        Ok(Some(StreamInfo {
+            hls_url: Self::normalize_hls_url(&decoded),
+        }))
+    }
+
+    fn normalize_hls_url(url: &str) -> String {
+        if url.starts_with("//") {
+            format!("https:{url}")
+        } else {
+            url.replace("http://", "https://")
+        }
+    }
+
+    fn required_object<'a>(
+        value: &'a Value,
+        path: &[&str],
+    ) -> Result<&'a Map<String, Value>, super::errors::HuyaClientError> {
+        Self::value_at(value, path)
+            .and_then(|v| v.as_object())
+            .ok_or_else(|| Self::extractor_error(format!("Expected object at {}", path.join("."))))
+    }
+
+    fn str_value_at<'a>(value: &'a Value, path: &[&str]) -> Option<&'a str> {
+        Self::value_at(value, path).and_then(|v| v.as_str())
+    }
+
+    fn i64_value_at(value: &Value, path: &[&str]) -> Option<i64> {
+        Self::value_at(value, path).and_then(|v| v.as_i64())
+    }
+
+    fn value_at<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+        path.iter()
+            .try_fold(value, |current, key| current.as_object()?.get(*key))
+    }
+
+    fn str_field<'a>(object: &'a Map<String, Value>, field: &str) -> Option<&'a str> {
+        object.get(field).and_then(|v| v.as_str())
+    }
+
+    fn i64_field(object: &Map<String, Value>, field: &str) -> Option<i64> {
+        object.get(field).and_then(|v| v.as_i64())
+    }
+
+    fn extractor_error(message: impl Into<String>) -> super::errors::HuyaClientError {
+        super::errors::HuyaClientError::ExtractorError(message.into())
     }
     /// 更健壮的提取方法，处理嵌套的大括号
     fn extract_variable(
@@ -350,6 +422,8 @@ impl LiveStreamExtractor {
 
 #[cfg(test)]
 mod tests {
+    use base64::{engine::general_purpose, Engine as _};
+
     use super::*;
 
     #[test]
@@ -358,6 +432,66 @@ mod tests {
         assert_eq!(
             stream_info.id(),
             "156976698-156976698-674209784144068608-314076852-10057-A-0-1"
+        );
+    }
+
+    #[test]
+    fn test_extract_missing_room_info_returns_error() {
+        let js_content = r#"
+            window.HNF_GLOBAL_INIT = {
+                "roomProfile": {}
+            }
+        "#;
+
+        let result = LiveStreamExtractor::extract_infos(js_content);
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Expected object at roomInfo"));
+    }
+
+    #[test]
+    fn test_extract_uses_live_line_url_fallback() {
+        let hls_url = "//hs.hls.huya.com/huyalive/123-123-456-789-10057-A-0-1.m3u8?ratio=2000";
+        let live_line_url = general_purpose::STANDARD.encode(hls_url);
+        let js_content = format!(
+            r#"
+            window.HNF_GLOBAL_INIT = {{
+                "roomProfile": {{
+                    "liveLineUrl": "{live_line_url}"
+                }},
+                "roomInfo": {{
+                    "eLiveStatus": 2,
+                    "tProfileInfo": {{
+                        "lUid": 123,
+                        "sNick": "fallback-user",
+                        "sAvatar180": "https://example.com/avatar.jpg",
+                        "lProfileRoom": 456
+                    }},
+                    "tLiveInfo": {{
+                        "lUid": 123,
+                        "sNick": "fallback-user",
+                        "sAvatar180": "https://example.com/avatar.jpg",
+                        "sScreenshot": "https://example.com/cover.jpg",
+                        "sIntroduction": "fallback-title",
+                        "lProfileRoom": 456
+                    }}
+                }}
+            }}
+        "#
+        );
+
+        let result = LiveStreamExtractor::extract_infos(&js_content);
+
+        assert!(result.is_ok());
+        let (user_info, room_info, stream_info) = result.unwrap();
+        assert_eq!(user_info.user_id, "123");
+        assert_eq!(room_info.room_id, "456");
+        assert_eq!(
+            stream_info.hls_url,
+            "https://hs.hls.huya.com/huyalive/123-123-456-789-10057-A-0-1.m3u8?ratio=2000"
         );
     }
 

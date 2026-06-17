@@ -999,6 +999,20 @@ async fn encode_video_subtitle_inner(
 
     let output_filename =
         ffmpeg::encode_video_subtitle(reporter, &filepath, &subtitle_path, srt_style).await?;
+    let output_filepath = filepath.with_file_name(&output_filename);
+    let cover_path = filepath.with_extension("jpg");
+    let output_cover_path = output_filepath.with_extension("jpg");
+
+    if cover_path.exists() {
+        tokio::fs::copy(&cover_path, &output_cover_path)
+            .await
+            .map_err(|e| format!("复制字幕视频封面失败: {e}"))?;
+    } else {
+        log::warn!(
+            "Cover file not found for subtitle video: {}",
+            cover_path.display()
+        );
+    }
 
     let new_video = state
         .db

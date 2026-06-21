@@ -1006,7 +1006,13 @@ async fn encode_video_subtitle_inner(
     if cover_path.exists() {
         tokio::fs::copy(&cover_path, &output_cover_path)
             .await
-            .map_err(|e| format!("复制字幕视频封面失败: {e}"))?;
+            .map_err(|e| {
+                format!(
+                    "复制字幕视频封面失败: {} -> {}: {e}",
+                    cover_path.display(),
+                    output_cover_path.display()
+                )
+            })?;
     } else {
         log::warn!(
             "Cover file not found for subtitle video: {}",

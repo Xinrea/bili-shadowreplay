@@ -66,6 +66,28 @@ jobs:
         if: matrix.platform == 'windows-latest' && matrix.features == 'cuda'
         uses: Jimver/cuda-toolkit@v0.2.24
 
+      - name: Configure CUDA CMake generator (Windows CUDA only)
+        if: matrix.platform == 'windows-latest' && matrix.features == 'cuda'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
+            choco install ninja -y --no-progress
+          }
+
+          $cudaBin = Join-Path $env:CUDA_PATH "bin"
+          $nvcc = Join-Path $cudaBin "nvcc.exe"
+          if (-not (Test-Path $nvcc)) {
+            throw "nvcc.exe not found at $nvcc"
+          }
+
+          $env:PATH = "$cudaBin;$env:PATH"
+          $cudaBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "CMAKE_GENERATOR=Ninja" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CUDACXX=$nvcc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          ninja --version
+          & $nvcc --version
+
       - name: Setup ffmpeg
         if: matrix.platform == 'windows-latest'
         working-directory: ./

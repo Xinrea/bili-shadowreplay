@@ -21,10 +21,10 @@ jobs:
           - platform: "ubuntu-22.04"
             args: ""
             target: ""
-          # CUDA 13.1 supports VS 2026, which ships in the windows-latest
-          # image (migrated June 2026). Older CUDA (<=12.x) rejected VS 2026,
-          # so the toolkit version below must stay >=13.1.
-          - platform: "windows-latest"
+          # CUDA 13.1 nvcc only supports MSVC from VS 2019-2022. The
+          # windows-latest image migrated to VS 2026 in June 2026, which
+          # nvcc rejects, so pin the CUDA build to windows-2022.
+          - platform: "windows-2022"
             args: "--features cuda"
             features: "cuda"
             target: ""
@@ -67,11 +67,7 @@ jobs:
 
       - name: Install CUDA toolkit (Windows CUDA only)
         if: matrix.features == 'cuda'
-        uses: Jimver/cuda-toolkit@v0.2.35
-        with:
-          # CUDA 13.1 is the first release that supports VS 2026 (the
-          # windows-latest host compiler). v0.2.24 only knew CUDA <=12.9.
-          cuda: "13.1.1"
+        uses: Jimver/cuda-toolkit@v0.2.24
 
       - name: Configure CUDA CMake generator (Windows CUDA only)
         if: matrix.features == 'cuda'

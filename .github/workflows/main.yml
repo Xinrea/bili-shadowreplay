@@ -21,6 +21,9 @@ jobs:
           - platform: "ubuntu-22.04"
             args: ""
             target: ""
+          # CUDA 13.1 supports VS 2026, which ships in the windows-latest
+          # image (migrated June 2026). Older CUDA (<=12.x) rejected VS 2026,
+          # so the toolkit version below must stay >=13.1.
           - platform: "windows-latest"
             args: "--features cuda"
             features: "cuda"
@@ -63,11 +66,15 @@ jobs:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Install CUDA toolkit (Windows CUDA only)
-        if: matrix.platform == 'windows-latest' && matrix.features == 'cuda'
-        uses: Jimver/cuda-toolkit@v0.2.24
+        if: matrix.features == 'cuda'
+        uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          # CUDA 13.1 is the first release that supports VS 2026 (the
+          # windows-latest host compiler). v0.2.24 only knew CUDA <=12.9.
+          cuda: "13.1.1"
 
       - name: Configure CUDA CMake generator (Windows CUDA only)
-        if: matrix.platform == 'windows-latest' && matrix.features == 'cuda'
+        if: matrix.features == 'cuda'
         shell: pwsh
         run: |
           if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
@@ -89,7 +96,7 @@ jobs:
           & $nvcc --version
 
       - name: Setup ffmpeg
-        if: matrix.platform == 'windows-latest'
+        if: runner.os == 'Windows'
         working-directory: ./
         shell: pwsh
         # running script ffmpeg_setup.ps1 to install ffmpeg on windows.
@@ -101,7 +108,7 @@ jobs:
         run: yarn install # change this to npm or pnpm depending on which one you use.
 
       - name: Copy CUDA DLLs (Windows CUDA only)
-        if: matrix.platform == 'windows-latest' && matrix.features == 'cuda'
+        if: matrix.features == 'cuda'
         shell: pwsh
         run: |
           $cudaPath = "$env:CUDA_PATH\bin"
@@ -139,7 +146,7 @@ jobs:
           releaseBody: "> [!NOTE]\n> 如果你是第一次下载安装，请参考 [安装准备](https://bsr.xinrea.cn/getting-started/installation/desktop.html) 选择合适的版本。\n> Changelog: https://github.com/Xinrea/bili-shadowreplay/compare/${{ steps.get_previous_tag.outputs.previous_tag }}...${{ steps.get_previous_tag.outputs.current_tag }}"
           releaseDraft: true
           prerelease: false
-          args: ${{ matrix.args }} ${{ matrix.platform == 'windows-latest' && matrix.features == 'cuda' && '--config src-tauri/tauri.windows.cuda.conf.json' || '' }}
+          args: ${{ matrix.args }} ${{ matrix.features == 'cuda' && '--config src-tauri/tauri.windows.cuda.conf.json' || '' }}
 
       - name: Generate dSYM for Sentry (macOS only)
         if: matrix.platform == 'macos-latest'

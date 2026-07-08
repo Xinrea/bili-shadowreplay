@@ -1,5 +1,5 @@
 {
-  "productName": "bili-shadowreplay",
+  "productName": "bili-shadowreplay-cuda",
   "app": {
     "windows": [
       {

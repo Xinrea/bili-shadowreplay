@@ -38,6 +38,8 @@
     },
     status_check_interval: 30, // 默认30秒
     whisper_language: "",
+
+
     webhook_url: "",
     danmu_ass_options: {
       font_size: 36,
@@ -114,26 +116,6 @@
     }
   }
 
-  async function handleWhisperModelPathChange() {
-    const selected = await open({
-      multiple: false,
-      filters: [
-        {
-          name: "Whisper Model",
-          extensions: ["bin"],
-        },
-      ],
-    });
-    if (selected) {
-      setting_model.whisper_model = Array.isArray(selected)
-        ? selected[0]
-        : selected;
-      await invoke("update_whisper_model", {
-        whisperModel: setting_model.whisper_model,
-      });
-    }
-  }
-
   async function update_subtitle_setting() {
     await invoke("update_subtitle_setting", {
       autoSubtitle: setting_model.auto_subtitle,
@@ -153,6 +135,17 @@
     await invoke("update_webhook_url", {
       webhookUrl: setting_model.webhook_url,
     });
+  }
+
+  async function handleWhisperModelPathChange() {
+    const selected = await open({
+      multiple: false,
+      filters: [{ name: "Whisper Model", extensions: ["bin"] }],
+    });
+    if (selected) {
+      setting_model.whisper_model = Array.isArray(selected) ? selected[0] : selected;
+      await invoke("update_whisper_model", { whisperModel: setting_model.whisper_model });
+    }
   }
 
   async function update_danmu_ass_options() {
@@ -581,29 +574,13 @@
                   <div class="p-4">
                     <div class="flex items-center justify-between">
                       <div>
-                        <h3
-                          class="text-sm font-medium text-gray-900 dark:text-white"
-                        >
-                          Whisper 模型路径
-                        </h3>
+                        <h3 class="text-sm font-medium text-gray-900 dark:text-white">Whisper 模型路径</h3>
                         <p class="text-sm text-gray-500 dark:text-gray-400">
                           {setting_model.whisper_model || "未设置"}
-                          <span class="block mt-1 text-xs"
-                            >可前往 <a
-                              href="https://huggingface.co/ggerganov/whisper.cpp/tree/main"
-                              class="text-blue-500 hover:underline"
-                              target="_blank"
-                              rel="noopener noreferrer">ggerganov/whisper.cpp</a
-                            > 下载模型文件</span
-                          >
+                          <span class="block mt-1 text-xs">可前往 <a href="https://huggingface.co/ggerganov/whisper.cpp/tree/main" class="text-blue-500 hover:underline" target="_blank" rel="noopener noreferrer">ggerganov/whisper.cpp</a> 下载模型文件</span>
                         </p>
                       </div>
-                      <button
-                        class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
-                        on:click={handleWhisperModelPathChange}
-                      >
-                        变更
-                      </button>
+                      <button class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors" on:click={handleWhisperModelPathChange}>变更</button>
                     </div>
                   </div>
                 {/if}
@@ -665,6 +642,34 @@
                     </div>
                   </div>
                 {/if}
+                {#if setting_model.subtitle_generator_type !== "powerlive"}
+                  <div class="p-4">
+                    <div class="flex items-center justify-between">
+                      <div>
+                        <h3
+                          class="text-sm font-medium text-gray-900 dark:text-white"
+                        >
+                          Whisper 提示词
+                        </h3>
+                        <p class="text-sm text-gray-500 dark:text-gray-400">
+                          生成字幕时使用的提示词，尽量简洁明了，提示音频内容偏向的领域以及字幕的风格
+                        </p>
+                      </div>
+                      <div class="flex items-center space-x-2">
+                        <input
+                          type="text"
+                          class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
+                          bind:value={setting_model.whisper_prompt}
+                          on:change={async () => {
+                            await invoke("update_whisper_prompt", {
+                              whisperPrompt: setting_model.whisper_prompt,
+                            });
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                {/if}
                 <!-- Whisper Language -->
                 <div class="p-4">
                   <div class="flex items-center justify-between">
@@ -675,7 +680,7 @@
                         Whisper 语言
                       </h3>
                       <p class="text-sm text-gray-500 dark:text-gray-400">
-                        （测试）生成字幕时使用的语言，默认自动识别
+                        生成字幕时使用的语言，默认自动识别
                       </p>
                     </div>
                     <div class="flex items-center space-x-2">
@@ -686,32 +691,6 @@
                         on:change={async () => {
                           await invoke("update_whisper_language", {
                             whisperLanguage: setting_model.whisper_language,
-                          });
-                        }}
-                      />
-                    </div>
-                  </div>
-                </div>
-                <div class="p-4">
-                  <div class="flex items-center justify-between">
-                    <div>
-                      <h3
-                        class="text-sm font-medium text-gray-900 dark:text-white"
-                      >
-                        Whisper 提示词
-                      </h3>
-                      <p class="text-sm text-gray-500 dark:text-gray-400">
-                        生成字幕时使用的提示词，尽量简洁明了，提示音频内容偏向的领域以及字幕的风格
-                      </p>
-                    </div>
-                    <div class="flex items-center space-x-2">
-                      <input
-                        type="text"
-                        class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
-                        bind:value={setting_model.whisper_prompt}
-                        on:change={async () => {
-                          await invoke("update_whisper_prompt", {
-                            whisperPrompt: setting_model.whisper_prompt,
                           });
                         }}
                       />

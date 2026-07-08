@@ -1,6 +1,13 @@
 [workspace]
-members = ["crates/danmu_stream", "crates/recorder"]
+members = ["crates/danmu_stream", "crates/recorder", "crates/whisper-cpp-rs"]
 resolver = "2"
+
+[workspace.lints.clippy]
+correctness = "deny"
+suspicious = "deny"
+complexity = "deny"
+style = "deny"
+perf = "deny"
 
 [package]
 name = "bili-shadowreplay"
@@ -11,12 +18,8 @@ license = ""
 repository = ""
 edition = "2021"
 
-[lints.clippy]
-correctness="deny"
-suspicious="deny"
-complexity="deny"
-style="deny"
-perf="deny"
+[lints]
+workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -48,7 +51,7 @@ rand = "0.8.5"
 base64 = "0.21"
 mime_guess = "2.0"
 async-trait = "0.1.87"
-whisper-rs = "0.16.0"
+whisper-cpp-rs = { path = "crates/whisper-cpp-rs" }
 hound = "3.5.1"
 uuid = { workspace = true }
 axum = { version = "0.7", features = ["macros", "multipart"] }
@@ -71,7 +74,7 @@ sentry = { version = "0.46.0", features = ["log", "logs"] }
 # this feature is used for production builds or when `devPath` points to the filesystem
 # DO NOT REMOVE!!
 custom-protocol = ["tauri/custom-protocol"]
-cuda = ["whisper-rs/cuda"]
+cuda = ["whisper-cpp-rs/cuda"]
 headless = []
 default = ["gui"]
 gui = [
@@ -146,12 +149,6 @@ version = "2"
 features = []
 optional = true
 
-[target.'cfg(windows)'.dependencies]
-whisper-rs = { version = "0.16.0", default-features = false }
-
-[target.'cfg(target_os = "macos")'.dependencies.whisper-rs]
-version = "0.16.0"
-features = ["metal"]
 
 [workspace.dependencies]
 reqwest = { version = "0.11", features = ["blocking", "json", "multipart", "gzip"] }

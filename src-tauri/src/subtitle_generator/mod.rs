@@ -25,42 +25,43 @@ pub struct GenerateResult {
 
 impl GenerateResult {
     pub fn concat(&mut self, other: &GenerateResult, offset_seconds: u64) {
+        self.concat_with_offset_ms(other, offset_seconds * 1000);
+    }
+
+    pub fn concat_with_offset_ms(&mut self, other: &GenerateResult, offset_ms: u64) {
         let mut to_extend = other.subtitle_content.clone();
         let last_item_index = self.subtitle_content.len();
         for (i, item) in to_extend.iter_mut().enumerate() {
             item.pos = last_item_index + i + 1;
-            item.start_time = add_offset(&item.start_time, offset_seconds);
-            item.end_time = add_offset(&item.end_time, offset_seconds);
+            item.start_time = add_offset_ms(&item.start_time, offset_ms);
+            item.end_time = add_offset_ms(&item.end_time, offset_ms);
         }
         self.subtitle_content.extend(to_extend);
     }
 }
 
-fn add_offset(item: &srtparse::Time, offset: u64) -> srtparse::Time {
-    let mut total_seconds = item.seconds + offset;
-    let mut total_minutes = item.minutes;
-    let mut total_hours = item.hours;
-
-    // Handle seconds overflow (>= 60)
-    if total_seconds >= 60 {
-        let additional_minutes = total_seconds / 60;
-        total_seconds %= 60;
-        total_minutes += additional_minutes;
-    }
-
-    // Handle minutes overflow (>= 60)
-    if total_minutes >= 60 {
-        let additional_hours = total_minutes / 60;
-        total_minutes %= 60;
-        total_hours += additional_hours;
-    }
+fn add_offset_ms(item: &srtparse::Time, offset_ms: u64) -> srtparse::Time {
+    let total_ms = (((item.hours * 60 + item.minutes) * 60 + item.seconds) * 1000)
+        + item.milliseconds
+        + offset_ms;
+    let total_seconds = total_ms / 1000;
+    let milliseconds = total_ms % 1000;
+    let total_minutes = total_seconds / 60;
+    let seconds = total_seconds % 60;
+    let hours = total_minutes / 60;
+    let minutes = total_minutes % 60;
 
     srtparse::Time {
-        hours: total_hours,
-        minutes: total_minutes,
-        seconds: total_seconds,
-        milliseconds: item.milliseconds,
+        hours,
+        minutes,
+        seconds,
+        milliseconds,
     }
+}
+
+#[cfg(test)]
+fn add_offset(item: &srtparse::Time, offset_seconds: u64) -> srtparse::Time {
+    add_offset_ms(item, offset_seconds * 1000)
 }
 
 pub fn item_to_srt(item: &srtparse::Item) -> String {
@@ -363,5 +364,40 @@ mod tests {
         assert_eq!(result1.subtitle_content[0].pos, 1);
         assert_eq!(result1.subtitle_content[0].start_time.minutes, 1);
         assert_eq!(result1.subtitle_content[0].start_time.seconds, 5);
+    }
+
+    #[test]
+    fn test_generate_result_concat_with_ms_offset() {
+        let mut result1 = GenerateResult {
+            generator_type: SubtitleGeneratorType::Whisper,
+            subtitle_id: "1".to_string(),
+            subtitle_content: vec![],
+        };
+        let result2 = GenerateResult {
+            generator_type: SubtitleGeneratorType::Whisper,
+            subtitle_id: "2".to_string(),
+            subtitle_content: vec![srtparse::Item {
+                pos: 1,
+                start_time: srtparse::Time {
+                    hours: 0,
+                    minutes: 0,
+                    seconds: 0,
+                    milliseconds: 250,
+                },
+                end_time: srtparse::Time {
+                    hours: 0,
+                    minutes: 0,
+                    seconds: 1,
+                    milliseconds: 750,
+                },
+                text: "Only".to_string(),
+            }],
+        };
+
+        result1.concat_with_offset_ms(&result2, 12_340);
+        assert_eq!(result1.subtitle_content[0].start_time.seconds, 12);
+        assert_eq!(result1.subtitle_content[0].start_time.milliseconds, 590);
+        assert_eq!(result1.subtitle_content[0].end_time.seconds, 14);
+        assert_eq!(result1.subtitle_content[0].end_time.milliseconds, 90);
     }
 }

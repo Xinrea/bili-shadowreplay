@@ -368,6 +368,110 @@ pub async fn extract_audio_chunks(file: &Path, format: &str) -> Result<PathBuf, 
     }
 }
 
+/// Extract the full audio track as a single 16kHz mono WAV file.
+/// Returns the path to the extracted WAV.
+pub async fn extract_full_audio(file: &Path) -> Result<PathBuf, String> {
+    log::info!("Extract full audio: {}", file.display());
+    let output_path = file.with_extension("full.wav");
+
+    let mut ffmpeg_process = ffmpeg_command();
+    #[cfg(target_os = "windows")]
+    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
+
+    let child = ffmpeg_process
+        .arg("-i")
+        .arg(file)
+        .args(["-ar", "16000"])
+        .args(["-ac", "1"]) // mono for VAD
+        .args(["-c:a", "pcm_s16le"])
+        .args(["-vn"])
+        .args(["-y"])
+        .args(["-progress", "pipe:2"])
+        .arg(&output_path)
+        .stderr(Stdio::piped())
+        .spawn();
+
+    let mut child = child.map_err(|e| format!("Failed to spawn ffmpeg: {e}"))?;
+    let stderr = child.stderr.take().unwrap();
+    let reader = BufReader::new(stderr);
+    let mut parser = FfmpegLogParser::new(reader);
+
+    while let Ok(event) = parser.parse_next_event().await {
+        match event {
+            FfmpegEvent::Error(e) => {
+                log::error!("Extract full audio error: {e}");
+            }
+            FfmpegEvent::LogEOF => break,
+            _ => {}
+        }
+    }
+
+    child
+        .wait()
+        .await
+        .map_err(|e| format!("ffmpeg wait error: {e}"))?;
+
+    if output_path.exists() {
+        log::info!("Full audio extracted: {}", output_path.display());
+        Ok(output_path)
+    } else {
+        Err("Full audio extraction failed: output file not found".to_string())
+    }
+}
+
+/// Extract a time segment from a video as a 16kHz stereo WAV file.
+/// (whisper_cpp.rs handles stereo→mono conversion internally.)
+pub async fn extract_audio_segment(
+    file: &Path,
+    start_sec: f64,
+    duration_sec: f64,
+    output_path: &Path,
+) -> Result<(), String> {
+    let mut ffmpeg_process = ffmpeg_command();
+    #[cfg(target_os = "windows")]
+    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
+
+    let child = ffmpeg_process
+        .args(["-ss", &start_sec.to_string()])
+        .arg("-i")
+        .arg(file)
+        .args(["-t", &duration_sec.to_string()])
+        .args(["-ar", "16000"])
+        .args(["-c:a", "pcm_s16le"])
+        .args(["-vn"])
+        .args(["-y"])
+        .args(["-progress", "pipe:2"])
+        .arg(output_path)
+        .stderr(Stdio::piped())
+        .spawn();
+
+    let mut child = child.map_err(|e| format!("Failed to spawn ffmpeg: {e}"))?;
+    let stderr = child.stderr.take().unwrap();
+    let reader = BufReader::new(stderr);
+    let mut parser = FfmpegLogParser::new(reader);
+
+    while let Ok(event) = parser.parse_next_event().await {
+        match event {
+            FfmpegEvent::Error(e) => {
+                log::error!("Extract audio segment error: {e}");
+            }
+            FfmpegEvent::LogEOF => break,
+            _ => {}
+        }
+    }
+
+    child
+        .wait()
+        .await
+        .map_err(|e| format!("ffmpeg wait error: {e}"))?;
+
+    if output_path.exists() {
+        Ok(())
+    } else {
+        Err("Audio segment extraction failed: output file not found".to_string())
+    }
+}
+
 /// Get the duration of an audio/video file in seconds
 async fn get_audio_duration(file: &Path) -> Result<u64, String> {
     // Use ffprobe with format option to get duration
@@ -674,52 +778,115 @@ pub async fn generate_video_subtitle(
             if whisper_model.is_empty() {
                 return Err("Whisper model not configured".to_string());
             }
-            if let Ok(generator) = whisper_cpp::new(Path::new(&whisper_model), whisper_prompt).await
-            {
-                let chunk_dir = extract_audio_chunks(file, "wav").await?;
+            let generator = match whisper_cpp::new(Path::new(whisper_model), whisper_prompt).await {
+                Ok(g) => g,
+                Err(e) => return Err(format!("Failed to initialize Whisper model: {e}")),
+            };
 
-                let mut full_result = GenerateResult {
-                    subtitle_id: String::new(),
-                    subtitle_content: vec![],
-                    generator_type: SubtitleGeneratorType::Whisper,
-                };
+            // Extract full audio as single 16kHz mono WAV
+            if let Some(reporter) = reporter {
+                reporter.update("提取完整音频中").await;
+            }
+            let full_wav = extract_full_audio(file).await?;
 
-                let mut chunk_paths = vec![];
-                for entry in std::fs::read_dir(&chunk_dir)
-                    .map_err(|e| format!("Failed to read chunk directory: {e}"))?
-                {
-                    let entry =
-                        entry.map_err(|e| format!("Failed to read directory entry: {e}"))?;
-                    let path = entry.path();
-                    chunk_paths.push(path);
-                }
+            // Read samples for VAD
+            let audio = hound::WavReader::open(&full_wav).map_err(|e| e.to_string())?;
+            let spec = audio.spec();
+            let sample_rate = spec.sample_rate;
+            let raw_samples: Vec<i16> = audio
+                .into_samples::<i16>()
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Failed to decode WAV samples: {e}"))?;
+            let mut f32_samples = vec![0.0f32; raw_samples.len()];
+            whisper_cpp_rs::convert_integer_to_float_audio(&raw_samples, &mut f32_samples)
+                .map_err(|e| format!("Audio conversion error: {e}"))?;
 
-                // sort chunk paths by name
-                chunk_paths
-                    .sort_by_key(|path| path.file_name().unwrap().to_str().unwrap().to_string());
+            // VAD: find speech segments
+            if let Some(reporter) = reporter {
+                reporter.update("检测语音片段中").await;
+            }
+            let (speech_segments, energies, frame_sec) =
+                crate::audio_utils::energy_vad_with_energies(&f32_samples, sample_rate);
+            log::info!(
+                "VAD detected {} speech segments from {:.1}s audio",
+                speech_segments.len(),
+                f32_samples.len() as f64 / sample_rate as f64
+            );
 
-                let mut results = Vec::new();
-                for path in chunk_paths {
-                    let result = generator
-                        .generate_subtitle(reporter, &path, language_hint)
+            // Cut & Merge: normalize to ≤30s chunks
+            let max_chunk = 30.0;
+            let chunks = crate::audio_utils::cut_and_merge(
+                &speech_segments,
+                &energies,
+                frame_sec,
+                max_chunk, // cut_max: split segments >30s
+                10.0,      // merge_max: merge adjacent segments ≤10s
+            );
+            log::info!(
+                "Cut & Merge: {} speech segments → {} chunks (≤{}s each)",
+                speech_segments.len(),
+                chunks.len(),
+                max_chunk
+            );
+
+            // Process each chunk
+            let mut results = Vec::new();
+            let temp_dir =
+                std::env::temp_dir().join(format!("bsr_whisper_{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&temp_dir)
+                .map_err(|e| format!("Failed to create temp dir: {e}"))?;
+
+            let chunk_padding = 0.35;
+            for (i, chunk) in chunks.iter().enumerate() {
+                let segment_path = temp_dir.join(format!("seg_{:03}.wav", i));
+                let padded_start = (chunk.start - chunk_padding).max(0.0);
+                let padded_end = chunk.end + chunk_padding;
+                let duration = padded_end - padded_start;
+                if let Some(reporter) = reporter {
+                    reporter
+                        .update(&format!(
+                            "字幕生成中 ({}/{}, {:.0}s-{:.0}s)",
+                            i + 1,
+                            chunks.len(),
+                            padded_start,
+                            padded_end
+                        ))
                         .await;
-                    results.push(result);
                 }
-
-                for (i, result) in results.iter().enumerate() {
-                    if let Ok(result) = result {
-                        full_result.subtitle_id = result.subtitle_id.clone();
-                        full_result.concat(result, 30 * i as u64);
+                // Trim the original video to get this segment's audio
+                match extract_audio_segment(file, padded_start, duration, &segment_path).await {
+                    Ok(()) => {
+                        let result = generator
+                            .generate_subtitle(reporter, &segment_path, language_hint)
+                            .await;
+                        results.push(((padded_start * 1000.0).round() as u64, result));
+                    }
+                    Err(e) => {
+                        log::error!("Failed to extract segment {}: {e}", i);
+                        continue;
                     }
                 }
-
-                // delete chunk directory
-                let _ = tokio::fs::remove_dir_all(chunk_dir).await;
-
-                Ok(full_result)
-            } else {
-                Err("Failed to initialize Whisper model".to_string())
             }
+
+            // Clean up temp files
+            let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+            let _ = tokio::fs::remove_file(&full_wav).await;
+
+            // Stitch results with time offsets
+            let mut full_result = GenerateResult {
+                subtitle_id: String::new(),
+                subtitle_content: vec![],
+                generator_type: SubtitleGeneratorType::Whisper,
+            };
+
+            for (offset_ms, result) in &results {
+                if let Ok(result) = result {
+                    full_result.subtitle_id = result.subtitle_id.clone();
+                    full_result.concat_with_offset_ms(result, *offset_ms);
+                }
+            }
+
+            Ok(full_result)
         }
         "whisper_online" => {
             if openai_api_key.is_empty() {

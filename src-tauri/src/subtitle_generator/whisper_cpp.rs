@@ -6,7 +6,7 @@ use crate::{
 };
 use async_std::sync::{Arc, RwLock};
 use std::path::Path;
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+use whisper_cpp_rs::{FullParams, SamplingStrategy, WhisperContext};
 
 use super::SubtitleGenerator;
 
@@ -17,11 +17,8 @@ pub struct WhisperCPP {
 }
 
 pub async fn new(model: &Path, prompt: &str) -> Result<WhisperCPP, String> {
-    let ctx = WhisperContext::new_with_params(
-        model.to_str().unwrap(),
-        WhisperContextParameters::default(),
-    )
-    .map_err(|e| {
+    let model_path = model.to_string_lossy();
+    let ctx = WhisperContext::new(&model_path).map_err(|e| {
         log::error!("Create whisper context failed: {e}");
         e.to_string()
     })?;
@@ -43,7 +40,10 @@ impl SubtitleGenerator for WhisperCPP {
         log::info!("Generating subtitle for {:?}", audio_path);
         let start_time = std::time::Instant::now();
         let audio = hound::WavReader::open(audio_path).map_err(|e| e.to_string())?;
-        let samples: Vec<i16> = audio.into_samples::<i16>().map(|x| x.unwrap()).collect();
+        let samples: Vec<i16> = audio
+            .into_samples::<i16>()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to decode WAV samples: {e}"))?;
 
         let state = self.ctx.read().await.create_state();
         if let Err(e) = state {
@@ -64,58 +64,66 @@ impl SubtitleGenerator for WhisperCPP {
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
 
-        params.set_progress_callback_safe(move |p| {
-            log::info!("Progress: {p}%");
-        });
+        // NOTE: token_timestamps is not compatible with GGML format
+        // models — the token data contains garbage timestamps that
+        // produce invalid SRT output.  Use max_len instead for finer
+        // segmentation (whisper splits at word boundaries internally).
+        // params.set_token_timestamps(true);
+        params.set_max_len(15);
 
         let mut inter_samples = vec![Default::default(); samples.len()];
 
         if let Some(reporter) = reporter {
             reporter.update("处理音频中").await;
         }
-        if let Err(e) = whisper_rs::convert_integer_to_float_audio(&samples, &mut inter_samples) {
+        if let Err(e) = whisper_cpp_rs::convert_integer_to_float_audio(&samples, &mut inter_samples)
+        {
             return Err(e.to_string());
         }
 
         let mut samples = vec![Default::default(); samples.len() / 2];
-        if let Err(e) = whisper_rs::convert_stereo_to_mono_audio(&inter_samples, &mut samples) {
+        if let Err(e) = whisper_cpp_rs::convert_stereo_to_mono_audio(&inter_samples, &mut samples) {
             return Err(e.to_string());
         }
 
         if let Some(reporter) = reporter {
             reporter.update("生成字幕中").await;
         }
-        if let Err(e) = state.full(params, &samples[..]) {
+        if let Err(e) = state.full(&*self.ctx.read().await, &params, &samples[..]) {
             log::error!("failed to run model: {e}");
             return Err(e.to_string());
         }
 
-        // fetch the results
+        // Fetch results using whisper's built-in segment-level timestamps.
+        // With max_len=15, whisper internally splits at word boundaries,
+        // producing more segments with tighter timestamps.
         let num_segments = state.full_n_segments();
         let mut subtitle = String::new();
-        for i in 0..num_segments {
-            let segment = state
-                .get_segment(i)
-                .ok_or(format!("Failed to get segment {i}"))?;
-            let start_timestamp = segment.start_timestamp();
-            let end_timestamp = segment.end_timestamp();
 
-            let format_time = |timestamp: f64| {
-                let hours = (timestamp / 3600.0).floor();
-                let minutes = ((timestamp - hours * 3600.0) / 60.0).floor();
-                let seconds = (timestamp - hours * 3600.0 - minutes * 60.0).floor();
-                let milliseconds = ((timestamp - hours * 3600.0 - minutes * 60.0 - seconds)
-                    * 1000.0)
-                    .floor() as u32;
-                format!("{hours:02}:{minutes:02}:{seconds:02},{milliseconds:03}")
-            };
+        let format_time = |timestamp: f64| {
+            let hours = (timestamp / 3600.0).floor();
+            let minutes = ((timestamp - hours * 3600.0) / 60.0).floor();
+            let seconds = (timestamp - hours * 3600.0 - minutes * 60.0).floor();
+            let milliseconds =
+                ((timestamp - hours * 3600.0 - minutes * 60.0 - seconds) * 1000.0).floor() as u32;
+            format!("{hours:02}:{minutes:02}:{seconds:02},{milliseconds:03}")
+        };
+
+        for i in 0..num_segments {
+            let segment_text = state.get_segment_text(i).unwrap_or_default();
+            if segment_text.trim().is_empty() {
+                continue;
+            }
+
+            let start_timestamp = state.get_segment_t0(i);
+            let end_timestamp = state.get_segment_t1(i);
 
             let line = format!(
                 "{}\n{} --> {}\n{}\n\n",
                 i + 1,
                 format_time(start_timestamp as f64 / 100.0),
                 format_time(end_timestamp as f64 / 100.0),
-                segment.to_str().unwrap_or_default(),
+                segment_text.trim(),
             );
 
             subtitle.push_str(&line);
@@ -137,57 +145,161 @@ impl SubtitleGenerator for WhisperCPP {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::progress::progress_reporter::ProgressReporterTrait;
 
-    // create a mock for the ProgressReporterTrait
     #[derive(Clone)]
-    struct MockReporter {}
-    impl MockReporter {
-        #[allow(dead_code)]
-        async fn update(&self, _message: &str) {
-            // mock implementation
+    struct TestReporter;
+    #[async_trait]
+    impl ProgressReporterTrait for TestReporter {
+        async fn update(&self, msg: &str) {
+            println!("  [{msg}]");
+        }
+        async fn finish(&self, success: bool, msg: &str) {
+            println!("  finish({success}): {msg}");
         }
     }
 
-    #[async_trait]
-    impl ProgressReporterTrait for MockReporter {
-        async fn update(&self, message: &str) {
-            println!("Mock update: {message}");
-        }
+    /// Run whisper on test audio and validate output.
+    async fn run_whisper_test(max_len: i32) -> Vec<srtparse::Item> {
+        let model_path = Path::new("tests/model/ggml-tiny-q5_1.bin");
+        let audio_path = Path::new("tests/audio/test.wav");
+        assert!(model_path.exists(), "Model not found");
+        assert!(audio_path.exists(), "Test audio not found");
 
-        async fn finish(&self, success: bool, message: &str) {
-            if success {
-                println!("Mock finish: {message}");
+        // Build params manually to control max_len
+        let whisper = new(model_path, "").await.expect("Failed to create whisper");
+        let audio = hound::WavReader::open(audio_path).unwrap();
+        let audio_samples: Vec<i16> = audio.into_samples::<i16>().map(|x| x.unwrap()).collect();
+        let mut state = whisper
+            .ctx
+            .read()
+            .await
+            .create_state()
+            .expect("Failed to create state");
+
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        params.set_language(Some("auto"));
+        params.set_print_special(false);
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_timestamps(false);
+        params.set_max_len(max_len);
+
+        let mut inter = vec![0.0f32; audio_samples.len()];
+        whisper_cpp_rs::convert_integer_to_float_audio(&audio_samples, &mut inter).unwrap();
+        let mut mono = vec![0.0f32; audio_samples.len() / 2];
+        whisper_cpp_rs::convert_stereo_to_mono_audio(&inter, &mut mono).unwrap();
+        state
+            .full(&*whisper.ctx.read().await, &params, &mono)
+            .unwrap();
+
+        let num_segments = state.full_n_segments();
+        let mut subtitle = String::new();
+        let format_time = |ts: f64| {
+            let h = (ts / 3600.0).floor();
+            let m = ((ts - h * 3600.0) / 60.0).floor();
+            let s = (ts - h * 3600.0 - m * 60.0).floor();
+            let ms = ((ts - h * 3600.0 - m * 60.0 - s) * 1000.0).floor() as u32;
+            format!("{h:02}:{m:02}:{s:02},{ms:03}")
+        };
+        for i in 0..num_segments {
+            let text = state.get_segment_text(i).unwrap_or_default();
+            if text.trim().is_empty() {
+                continue;
+            }
+            let t0 = state.get_segment_t0(i);
+            let t1 = state.get_segment_t1(i);
+            subtitle.push_str(&format!(
+                "{}\n{} --> {}\n{}\n\n",
+                i + 1,
+                format_time(t0 as f64 / 100.0),
+                format_time(t1 as f64 / 100.0),
+                text.trim()
+            ));
+        }
+        srtparse::from_str(&subtitle).unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires whisper model and test audio"]
+    async fn test_parameter_sweep() {
+        for max_len in [0, 5, 10, 15, 30] {
+            let items = run_whisper_test(max_len).await;
+            let avg_dur = if items.is_empty() {
+                0.0
             } else {
-                println!("Mock error: {message}");
+                let total: u64 = items
+                    .iter()
+                    .map(|i| {
+                        (i.end_time.hours * 3600 + i.end_time.minutes * 60 + i.end_time.seconds)
+                            - (i.start_time.hours * 3600
+                                + i.start_time.minutes * 60
+                                + i.start_time.seconds)
+                    })
+                    .sum();
+                total as f64 / items.len() as f64
+            };
+            println!(
+                "max_len={:>3}: {:>3} items, avg {:>5.1}s/item, first='{}'",
+                max_len,
+                items.len(),
+                avg_dur,
+                items.first().map(|i| i.text.as_str()).unwrap_or("")
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires whisper model and test audio"]
+    async fn test_generate_subtitle_with_real_audio() {
+        let items = run_whisper_test(15).await;
+        println!("Generated {} subtitle items", items.len());
+        assert!(!items.is_empty(), "Subtitle content must not be empty");
+
+        for item in &items {
+            assert!(
+                !item.text.trim().is_empty(),
+                "Item {} has empty text",
+                item.pos
+            );
+
+            let st = item.start_time.hours * 3600
+                + item.start_time.minutes * 60
+                + item.start_time.seconds;
+            let et =
+                item.end_time.hours * 3600 + item.end_time.minutes * 60 + item.end_time.seconds;
+            assert!(
+                et > st || (et == st && item.end_time.milliseconds > item.start_time.milliseconds),
+                "Item {} end <= start",
+                item.pos
+            );
+            assert!(
+                !item.text.contains("[_"),
+                "Item {} has special token",
+                item.pos
+            );
+            assert!(
+                !item.text.contains("<|"),
+                "Item {} has special token",
+                item.pos
+            );
+
+            if item.pos <= 8 {
+                println!(
+                    "  #{}: {:02}:{:02}:{:02},{:03} --> {:02}:{:02}:{:02},{:03} |{}|",
+                    item.pos,
+                    item.start_time.hours,
+                    item.start_time.minutes,
+                    item.start_time.seconds,
+                    item.start_time.milliseconds,
+                    item.end_time.hours,
+                    item.end_time.minutes,
+                    item.end_time.seconds,
+                    item.end_time.milliseconds,
+                    item.text
+                );
             }
         }
-    }
-    impl MockReporter {
-        fn new() -> Self {
-            MockReporter {}
-        }
-    }
-
-    #[tokio::test]
-    async fn create_whisper_cpp() {
-        let result = new(Path::new("tests/model/ggml-tiny-q5_1.bin"), "").await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    #[ignore = "Might not have enough memory to run this test"]
-    async fn generate_subtitle() {
-        let whisper = new(Path::new("tests/model/ggml-tiny-q5_1.bin"), "")
-            .await
-            .unwrap();
-        let audio_path = Path::new("tests/audio/test.wav");
-        let reporter = MockReporter::new();
-        let result = whisper
-            .generate_subtitle(Some(&reporter), audio_path, "auto")
-            .await;
-        if let Err(e) = result {
-            println!("Error: {e}");
-            panic!("Failed to generate subtitle");
-        }
+        println!("All validations passed.");
     }
 }

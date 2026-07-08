@@ -379,14 +379,15 @@ pub async fn extract_full_audio(file: &Path) -> Result<PathBuf, String> {
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
     let child = ffmpeg_process
-        .args(["-i", file.to_str().unwrap()])
+        .arg("-i")
+        .arg(file)
         .args(["-ar", "16000"])
         .args(["-ac", "1"]) // mono for VAD
         .args(["-c:a", "pcm_s16le"])
         .args(["-vn"])
         .args(["-y"])
         .args(["-progress", "pipe:2"])
-        .args([output_path.to_str().unwrap()])
+        .arg(&output_path)
         .stderr(Stdio::piped())
         .spawn();
 
@@ -432,14 +433,15 @@ pub async fn extract_audio_segment(
 
     let child = ffmpeg_process
         .args(["-ss", &start_sec.to_string()])
-        .args(["-i", file.to_str().unwrap()])
+        .arg("-i")
+        .arg(file)
         .args(["-t", &duration_sec.to_string()])
         .args(["-ar", "16000"])
         .args(["-c:a", "pcm_s16le"])
         .args(["-vn"])
         .args(["-y"])
         .args(["-progress", "pipe:2"])
-        .args([output_path.to_str().unwrap()])
+        .arg(output_path)
         .stderr(Stdio::piped())
         .spawn();
 
@@ -791,7 +793,10 @@ pub async fn generate_video_subtitle(
             let audio = hound::WavReader::open(&full_wav).map_err(|e| e.to_string())?;
             let spec = audio.spec();
             let sample_rate = spec.sample_rate;
-            let raw_samples: Vec<i16> = audio.into_samples::<i16>().map(|x| x.unwrap()).collect();
+            let raw_samples: Vec<i16> = audio
+                .into_samples::<i16>()
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Failed to decode WAV samples: {e}"))?;
             let mut f32_samples = vec![0.0f32; raw_samples.len()];
             whisper_cpp_rs::convert_integer_to_float_audio(&raw_samples, &mut f32_samples)
                 .map_err(|e| format!("Audio conversion error: {e}"))?;
@@ -800,7 +805,8 @@ pub async fn generate_video_subtitle(
             if let Some(reporter) = reporter {
                 reporter.update("检测语音片段中").await;
             }
-            let speech_segments = crate::audio_utils::energy_vad(&f32_samples, sample_rate);
+            let (speech_segments, energies, frame_sec) =
+                crate::audio_utils::energy_vad_with_energies(&f32_samples, sample_rate);
             log::info!(
                 "VAD detected {} speech segments from {:.1}s audio",
                 speech_segments.len(),
@@ -808,25 +814,7 @@ pub async fn generate_video_subtitle(
             );
 
             // Cut & Merge: normalize to ≤30s chunks
-            let frame_sec = 0.01; // 10ms hop from energy_vad
             let max_chunk = 30.0;
-            // Compute energies for cut_and_merge
-            let frame_len = ((sample_rate as f64 * 0.025) as usize).max(1);
-            let frame_step = ((sample_rate as f64 * 0.010) as usize).max(1);
-            let energies: Vec<f64> = {
-                let mut e = Vec::new();
-                let mut pos = 0;
-                while pos + frame_len <= f32_samples.len() {
-                    let sum_sq: f64 = f32_samples[pos..pos + frame_len]
-                        .iter()
-                        .map(|&s| (s as f64) * (s as f64))
-                        .sum();
-                    let rms = (sum_sq / frame_len as f64).sqrt();
-                    e.push(rms);
-                    pos += frame_step;
-                }
-                e
-            };
             let chunks = crate::audio_utils::cut_and_merge(
                 &speech_segments,
                 &energies,

@@ -16,9 +16,20 @@ pub struct SpeechSegment {
 /// Energy-based VAD on 16kHz mono f32 PCM samples.
 ///
 /// Returns speech segments sorted by start time.
+#[allow(dead_code)]
 pub fn energy_vad(samples: &[f32], sample_rate: u32) -> Vec<SpeechSegment> {
+    energy_vad_with_energies(samples, sample_rate).0
+}
+
+/// Energy-based VAD on 16kHz mono f32 PCM samples.
+///
+/// Returns speech segments, per-frame RMS energies and the frame duration in seconds.
+pub fn energy_vad_with_energies(
+    samples: &[f32],
+    sample_rate: u32,
+) -> (Vec<SpeechSegment>, Vec<f64>, f64) {
     if samples.is_empty() {
-        return vec![];
+        return (vec![], vec![], 0.01);
     }
 
     let frame_len = ((sample_rate as f64 * 0.025) as usize).max(1); // 25ms frames
@@ -38,7 +49,7 @@ pub fn energy_vad(samples: &[f32], sample_rate: u32) -> Vec<SpeechSegment> {
     }
 
     if energies.is_empty() {
-        return vec![];
+        return (vec![], energies, frame_step as f64 / sample_rate as f64);
     }
 
     // Dynamic threshold: use a fraction of the median energy of
@@ -51,7 +62,7 @@ pub fn energy_vad(samples: &[f32], sample_rate: u32) -> Vec<SpeechSegment> {
         .collect();
 
     if active.is_empty() {
-        return vec![];
+        return (vec![], energies, frame_step as f64 / sample_rate as f64);
     }
 
     let mut sorted = active.clone();
@@ -190,7 +201,7 @@ pub fn energy_vad(samples: &[f32], sample_rate: u32) -> Vec<SpeechSegment> {
     // Re-filter: drop any segments that became too short after trimming.
     merged.retain(|s| s.end - s.start >= 0.25);
 
-    merged
+    (merged, energies, frame_sec)
 }
 
 /// Apply WhisperX Cut & Merge to speech segments.

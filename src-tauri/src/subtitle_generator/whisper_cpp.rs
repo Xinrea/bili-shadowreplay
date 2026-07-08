@@ -17,7 +17,8 @@ pub struct WhisperCPP {
 }
 
 pub async fn new(model: &Path, prompt: &str) -> Result<WhisperCPP, String> {
-    let ctx = WhisperContext::new(model.to_str().unwrap()).map_err(|e| {
+    let model_path = model.to_string_lossy();
+    let ctx = WhisperContext::new(&model_path).map_err(|e| {
         log::error!("Create whisper context failed: {e}");
         e.to_string()
     })?;
@@ -39,7 +40,10 @@ impl SubtitleGenerator for WhisperCPP {
         log::info!("Generating subtitle for {:?}", audio_path);
         let start_time = std::time::Instant::now();
         let audio = hound::WavReader::open(audio_path).map_err(|e| e.to_string())?;
-        let samples: Vec<i16> = audio.into_samples::<i16>().map(|x| x.unwrap()).collect();
+        let samples: Vec<i16> = audio
+            .into_samples::<i16>()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to decode WAV samples: {e}"))?;
 
         let state = self.ctx.read().await.create_state();
         if let Err(e) = state {

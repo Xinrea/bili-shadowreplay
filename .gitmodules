@@ -1,3 +1,3 @@
 [submodule "src-tauri/crates/whisper-cpp-rs/whisper.cpp"]
 	path = src-tauri/crates/whisper-cpp-rs/whisper.cpp
-	url = https://github.com/ggerganov/whisper.cpp.git
+	url = https://github.com/Xinrea/whisper.cpp.git

@@ -1,0 +1,15 @@
+[package]
+name = "whisper-cpp-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal Rust binding for whisper.cpp with GPU acceleration support"
+
+[features]
+default = []
+cuda = []
+
+[dependencies]
+
+[build-dependencies]
+cc = "1"
+cmake = "0.1"

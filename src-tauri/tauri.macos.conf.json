@@ -1,4 +1,9 @@
 {
+  "bundle": {
+    "macOS": {
+      "minimumSystemVersion": "15.0"
+    }
+  },
   "app": {
     "windows": [
       {

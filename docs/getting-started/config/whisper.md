@@ -1,25 +1,32 @@
 # Whisper 配置
 
-要使用 AI 字幕识别功能，需要在设置页面配置 Whisper。目前可以选择使用本地运行 Whisper 模型，或是使用在线的 Whisper 服务（通常需要付
-费获取 API Key）。
+要使用 AI 字幕识别功能，需要在设置页面配置 Whisper。目前可以选择使用本地运行 Whisper 模型，或是使用在线的 Whisper 服务（通常需要付费获取 API Key）。
 
 > [!NOTE]
-> 其实有许多更好的中文字幕识别解决方案，但是这类服务通常需要将文件上传到对象存储后异步处理，考虑到实现的复杂度，选择了使用本地运行 Whisper 模型或是使
-> 用在线的 Whisper 服务，在请求返回时能够直接获取字幕生成结果。
+> 其实有许多更好的中文字幕识别解决方案，但是这类服务通常需要将文件上传到对象存储后异步处理，考虑到实现的复杂度，选择了使用本地运行 Whisper 模型或是使用在线的 Whisper 服务，在请求返回时能够直接获取字幕生成结果。
 
 ## 本地运行 Whisper 模型
 
 ![WhisperLocal](/images/whisper_local.png)
 
-如果需要使用本地运行 Whisper 模型进行字幕生成，需要下载 Whisper.cpp 模型，并在设置中指定模型路径。模型文件可以从网络上下载，例如：
+本地 Whisper 字幕生成使用 sherpa-onnx（基于 ONNX Runtime）运行 Whisper 模型。模型会在首次使用时自动下载，无需手动下载模型文件。
 
-- [Whisper.cpp（国内镜像，内容较旧）](https://www.modelscope.cn/models/cjc1887415157/whisper.cpp/files)
-- [Whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp/tree/main)
+### 可用模型
 
-可以跟据自己的需求选择不同的模型，要注意带有 `en` 的模型是英文模型，其他模型为多语言模型。
+| 模型名 | 大小 | 语言 | 说明 |
+|--------|------|------|------|
+| `tiny` | ~75MB | 多语言 | 速度最快，精度较低 |
+| `tiny.en` | ~75MB | 仅英文 | 英文优化版本 |
+| `base` | ~145MB | 多语言 | 速度与精度平衡 |
+| `small` | ~465MB | 多语言 | 较高质量 |
+| `large-v3` | ~2.9GB | 多语言 | 最高精度，速度最慢 |
 
-模型文件的大小通常意味着其在运行时资源占用的大小，因此请根据电脑配置选择合适的模型。此外，GPU 版本与 CPU 版本在字幕生成速度上存在**巨大差异**，因此
-推荐使用 GPU 版本进行本地处理（目前仅支持 Nvidia GPU）。
+模型文件会自动下载到应用数据目录的 `models/` 文件夹中。
+
+### 硬件加速
+
+- **macOS**: 自动使用 CoreML 加速（Apple Silicon / Intel）
+- **Windows / Linux**: 默认使用 CPU，启用 CUDA 后可支持 NVIDIA GPU 加速
 
 ## 使用在线 Whisper 服务
 

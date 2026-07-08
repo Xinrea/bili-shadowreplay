@@ -114,6 +114,11 @@ fn main() {
         println!("cargo:rustc-link-lib=stdc++");
     }
 
+    let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    if target_os == "linux" && target_env == "gnu" {
+        println!("cargo:rustc-link-lib=gomp");
+    }
+
     // Link
     println!("cargo:rustc-link-search=native={}/lib", dst.display());
     println!("cargo:rustc-link-lib=static=whisper");

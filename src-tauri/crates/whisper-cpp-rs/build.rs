@@ -1,4 +1,5 @@
 use std::env;
+use std::path::PathBuf;
 use std::process::Command;
 
 fn xcrun_output(args: &[&str]) -> Option<String> {
@@ -43,6 +44,19 @@ fn macos_deployment_target() -> Option<String> {
             let major = parts.next().unwrap_or("10");
             let minor = parts.next().unwrap_or("0");
             format!("{major}.{minor}")
+        })
+}
+
+fn cuda_root() -> Option<PathBuf> {
+    env::var_os("CUDA_PATH")
+        .map(PathBuf::from)
+        .or_else(|| {
+            env::var_os("CUDACXX").and_then(|value| {
+                let nvcc = PathBuf::from(value);
+                nvcc.parent()
+                    .and_then(|bin| bin.parent())
+                    .map(PathBuf::from)
+            })
         })
 }
 
@@ -136,6 +150,20 @@ fn main() {
 
     if cuda_enabled && !metal_enabled {
         println!("cargo:rustc-link-lib=static=ggml-cuda");
+
+        if target_os == "windows" {
+            if let Some(cuda_root) = cuda_root() {
+                let cuda_lib_dir = cuda_root.join("lib").join("x64");
+                println!("cargo:rustc-link-search=native={}", cuda_lib_dir.display());
+            }
+
+            // ggml-cuda is built by CMake and linked manually from Cargo, so we must
+            // also expose its CUDA toolkit dependencies to the final Rust link step.
+            println!("cargo:rustc-link-lib=cudart_static");
+            println!("cargo:rustc-link-lib=cublas");
+            println!("cargo:rustc-link-lib=cublasLt");
+            println!("cargo:rustc-link-lib=cuda");
+        }
     }
 
     // On macOS with Metal, we also need to link Foundation and Metal frameworks
@@ -152,6 +180,8 @@ fn main() {
     // Regenerate if any header or source in whisper.cpp changes
     println!("cargo:rerun-if-env-changed=SDKROOT");
     println!("cargo:rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
+    println!("cargo:rerun-if-env-changed=CUDA_PATH");
+    println!("cargo:rerun-if-env-changed=CUDACXX");
     println!(
         "cargo:rerun-if-changed={}",
         crate_dir.join("src/ffi_shim.cpp").display()

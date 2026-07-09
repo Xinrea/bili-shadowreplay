@@ -56,6 +56,7 @@ jobs:
 
       - name: Upload debug symbols to Sentry
         # Requires repository secrets: SENTRY_URL, SENTRY_AUTH_TOKEN, SENTRY_ORG, SENTRY_PROJECT
+        continue-on-error: true
         shell: bash
         env:
           SENTRY_URL: ${{ secrets.SENTRY_URL }}

@@ -39,7 +39,6 @@
     status_check_interval: 30, // 默认30秒
     whisper_language: "",
 
-
     webhook_url: "",
     danmu_ass_options: {
       font_size: 36,
@@ -143,8 +142,12 @@
       filters: [{ name: "Whisper Model", extensions: ["bin"] }],
     });
     if (selected) {
-      setting_model.whisper_model = Array.isArray(selected) ? selected[0] : selected;
-      await invoke("update_whisper_model", { whisperModel: setting_model.whisper_model });
+      setting_model.whisper_model = Array.isArray(selected)
+        ? selected[0]
+        : selected;
+      await invoke("update_whisper_model", {
+        whisperModel: setting_model.whisper_model,
+      });
     }
   }
 
@@ -574,13 +577,27 @@
                   <div class="p-4">
                     <div class="flex items-center justify-between">
                       <div>
-                        <h3 class="text-sm font-medium text-gray-900 dark:text-white">Whisper 模型路径</h3>
+                        <h3
+                          class="text-sm font-medium text-gray-900 dark:text-white"
+                        >
+                          Whisper 模型路径
+                        </h3>
                         <p class="text-sm text-gray-500 dark:text-gray-400">
                           {setting_model.whisper_model || "未设置"}
-                          <span class="block mt-1 text-xs">可前往 <a href="https://huggingface.co/ggerganov/whisper.cpp/tree/main" class="text-blue-500 hover:underline" target="_blank" rel="noopener noreferrer">ggerganov/whisper.cpp</a> 下载模型文件</span>
+                          <span class="block mt-1 text-xs"
+                            >可前往 <a
+                              href="https://huggingface.co/ggerganov/whisper.cpp/tree/main"
+                              class="text-blue-500 hover:underline"
+                              target="_blank"
+                              rel="noopener noreferrer">ggerganov/whisper.cpp</a
+                            > 下载模型文件</span
+                          >
                         </p>
                       </div>
-                      <button class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors" on:click={handleWhisperModelPathChange}>变更</button>
+                      <button
+                        class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+                        on:click={handleWhisperModelPathChange}>变更</button
+                      >
                     </div>
                   </div>
                 {/if}
@@ -909,7 +926,6 @@
                     <input
                       type="checkbox"
                       class="peer opacity-0 w-0 h-0"
-                      disabled
                       bind:checked={setting_model.auto_generate.encode_danmu}
                       on:change={async () => {
                         await invoke("update_auto_generate", {

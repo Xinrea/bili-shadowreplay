@@ -6,7 +6,7 @@
     ChevronDown,
     ChevronRight,
   } from "lucide-svelte";
-  import { ToolMessage } from "@langchain/core/messages";
+  import type { ToolMessage } from "../agent/messages";
 
   export let message: ToolMessage;
   export let formatTime: (date: Date) => string;
@@ -14,14 +14,11 @@
   // 折叠状态 - 默认折叠
   let isExpanded = false;
 
-  // 获取消息时间戳，如果没有则使用当前时间
-  $: messageTime = message.additional_kwargs?.timestamp
-    ? new Date(message.additional_kwargs.timestamp as string | number)
-    : new Date();
+  $: messageTime = new Date(message.timestamp);
 
   // 获取状态图标和颜色
   function getStatusInfo() {
-    if (message.status === "success" || !message.status) {
+    if (message.status === "success") {
       return {
         icon: CheckCircle,
         color: "text-green-500",
@@ -39,8 +36,7 @@
   }
 
   // 格式化工具调用ID
-  function formatToolCallId(id: string | undefined): string {
-    if (!id) return "";
+  function formatToolCallId(id: string): string {
     return id.length > 8 ? id.slice(-8) : id;
   }
 
@@ -85,13 +81,11 @@
               <span
                 class="text-sm font-medium text-gray-700 dark:text-gray-300"
               >
-                {message.name || "未知工具"}
+                {message.name}
               </span>
-              {#if message.tool_call_id}
-                <span class="text-xs text-gray-500 dark:text-gray-400">
-                  (ID: {formatToolCallId(message.tool_call_id)})
-                </span>
-              {/if}
+              <span class="text-xs text-gray-500 dark:text-gray-400">
+                (ID: {formatToolCallId(message.toolCallId)})
+              </span>
             </div>
           </div>
 
@@ -125,11 +119,9 @@
           </div>
 
           <!-- 状态信息 -->
-          {#if message.status}
-            <div class="mt-2 text-xs text-gray-500 dark:text-gray-400">
-              状态: {message.status}
-            </div>
-          {/if}
+          <div class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+            状态: {message.status}
+          </div>
         </div>
       </div>
     </div>

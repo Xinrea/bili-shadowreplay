@@ -1,6 +1,7 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod agent;
 mod audio_utils;
 mod config;
 mod constants;
@@ -726,6 +727,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::video_editing::search_danmu_keywords,
         crate::handlers::video_editing::merge_videos,
         crate::handlers::video_editing::extract_video_audio,
+        crate::agent::agent_chat,
     ])
 }
 

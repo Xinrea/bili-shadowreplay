@@ -9,7 +9,7 @@ BiliBili ShadowReplay 是一个基于 Tauri 2 的混合桌面应用，采用前�
 - **框架**: Svelte 3 + TypeScript
 - **构建工具**: Vite
 - **UI 框架**: Tailwind CSS + Flowbite
-- **AI 集成**: LangChain (@langchain/core, @langchain/deepseek, @langchain/ollama)
+- **AI 集成**: Rust Rig Agent（OpenAI 兼容 API、Ollama）
 - **音频可视化**: WaveSurfer.js
 - **实时通信**: Socket.io
 
@@ -144,7 +144,7 @@ src-tauri/
 
 - **Stores**: 使用 Svelte 的响应式存储管理全局状态
 - **Invoker**: 封装 Tauri 命令调用，提供类型安全的前后端通信
-- **Agent**: 基于 LangChain 的 AI 助手，支持内容分析和总结
+- **Agent**: 基于 Rig 的 Rust AI 助手，支持内容分析和工具确认
 - **Components**: 可复用的 UI 组件库
 
 ### 后端核心模块
@@ -243,11 +243,11 @@ sequenceDiagram
   - macOS: 默认启用 Metal 加速
   - Linux: CPU 推理
 
-### LangChain 集成
+### AI Agent 集成
 
-- AI 助手用于内容分析和总结
-- 支持多个 LLM 提供商 (DeepSeek, Ollama)
-- 位于 `src/lib/agent/` 目录
+- Rust Rig Agent 用于内容分析、数据查询和 BSR 工具编排
+- 支持 OpenAI 兼容 API 和 Ollama
+- Agent 位于 `src-tauri/src/agent/`，前端消息与确认执行器位于 `src/lib/agent/`
 
 ## 构建配置
 

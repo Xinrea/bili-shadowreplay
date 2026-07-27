@@ -35,9 +35,9 @@
       <div class="p-6 space-y-5 max-h-[calc(100vh-200px)] overflow-y-auto">
         <!-- Provider Selection -->
         <div>
-          <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
+          <div class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
             选择 AI 提供商
-          </label>
+          </div>
           <div class="grid grid-cols-2 gap-3">
             <button
               type="button"

@@ -145,19 +145,6 @@ impl SubtitleGenerator for WhisperCPP {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::progress::progress_reporter::ProgressReporterTrait;
-
-    #[derive(Clone)]
-    struct TestReporter;
-    #[async_trait]
-    impl ProgressReporterTrait for TestReporter {
-        async fn update(&self, msg: &str) {
-            println!("  [{msg}]");
-        }
-        async fn finish(&self, success: bool, msg: &str) {
-            println!("  finish({success}): {msg}");
-        }
-    }
 
     /// Run whisper on test audio and validate output.
     async fn run_whisper_test(max_len: i32) -> Vec<srtparse::Item> {

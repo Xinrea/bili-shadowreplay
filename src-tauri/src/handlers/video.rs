@@ -512,7 +512,7 @@ async fn clip_range_inner(
             "生成新切片",
             &format!(
                 "生成了房间 {} 的切片，长度 {}s：{}",
-                &params.room_id, duration, filename
+                params.room_id, duration, filename
             ),
         )
         .await?;
@@ -525,7 +525,7 @@ async fn clip_range_inner(
             .title("BiliShadowReplay - 切片完成")
             .body(format!(
                 "生成了房间 {} 的切片: {}",
-                &params.room_id, filename
+                params.room_id, filename
             ))
             .show()
             .unwrap();

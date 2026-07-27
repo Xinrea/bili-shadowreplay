@@ -4,6 +4,7 @@ use tokio::sync::RwLock;
 use crate::config::Config;
 use crate::database::Database;
 use crate::recorder_manager::RecorderManager;
+#[cfg(feature = "gui")]
 use crate::static_server::StaticServer;
 use crate::task::TaskManager;
 use crate::webhook::poster::WebhookPoster;
@@ -18,6 +19,7 @@ pub struct State {
     pub webhook_poster: WebhookPoster,
     pub recorder_manager: Arc<RecorderManager>,
     pub task_manager: Arc<TaskManager>,
+    #[cfg(feature = "gui")]
     pub static_server: Arc<StaticServer>,
     #[cfg(not(feature = "headless"))]
     pub app_handle: tauri::AppHandle,

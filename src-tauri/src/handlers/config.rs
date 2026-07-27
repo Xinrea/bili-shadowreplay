@@ -315,6 +315,7 @@ pub async fn update_danmu_ass_options(
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
+#[cfg(feature = "gui")]
 pub async fn update_powerlive_key(state: state_type!(), powerlive_key: String) -> Result<(), ()> {
     state.config.write().await.powerlive_key = powerlive_key.clone();
     state.config.write().await.save();

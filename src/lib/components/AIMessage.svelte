@@ -5,8 +5,14 @@
     X,
     AlertTriangle,
   } from "lucide-svelte";
-  import type { AssistantMessage, ToolCall } from "../agent/messages";
+  import {
+    messageContentToDisplayParts,
+    messageContentToMarkdown,
+    type AssistantMessage,
+    type ToolCall,
+  } from "../agent/messages";
   import { marked } from "marked";
+  import CopyMarkdownButton from "./CopyMarkdownButton.svelte";
 
   export let message: AssistantMessage;
   export let formatTime: (date: Date) => string;
@@ -20,22 +26,21 @@
   $: isError = message.isError === true;
 
   $: messageTime = new Date(message.timestamp);
+  $: contentParts = messageContentToDisplayParts(message.content);
 
-  // 将 Markdown 转换为 HTML
-  $: htmlContent = marked(
-    typeof message.content === "string"
-      ? message.content
-      : Array.isArray(message.content)
-        ? message.content
-            .map((c) => (typeof c === "string" ? c : JSON.stringify(c)))
-            .join("\n")
-        : JSON.stringify(message.content)
+  function markdownContent(): string {
+    return messageContentToMarkdown(message.content);
+  }
+
+  function containsTable(content: string): boolean {
+    return content.includes('|') || content.includes('---') ||
+      content.includes('|--') || content.includes('| -');
+  }
+
+  $: hasTable = contentParts.some(
+    (part) => part.kind === "text" &&
+      part.format === "markdown" && containsTable(part.text),
   );
-
-  // 检查消息是否包含表格
-  $: hasTable = message.content && typeof message.content === 'string' &&
-    (message.content.includes('|') || message.content.includes('---') ||
-     message.content.includes('|--') || message.content.includes('| -'));
 
   function isExecutedToolCall(toolCall: ToolCall): boolean {
     return toolCall.executed === true;
@@ -76,6 +81,7 @@
         <span class="text-xs text-gray-500 dark:text-gray-400">
           {formatTime(messageTime)}
         </span>
+        <CopyMarkdownButton content={markdownContent} />
       </div>
 
       <div
@@ -92,13 +98,24 @@
         <div
           class="text-gray-900 dark:text-white text-sm leading-relaxed prose prose-sm max-w-none [&_.prose]:bg-transparent [&_.prose_*]:bg-transparent [&_p]:bg-transparent [&_div]:bg-transparent [&_span]:bg-transparent [&_code]:bg-gray-100 dark:bg-gray-700 [&_pre]:bg-gray-100 dark:bg-gray-700 [&_blockquote]:bg-transparent [&_ul]:bg-transparent [&_ol]:bg-transparent [&_li]:bg-transparent [&_h1]:bg-transparent [&_h2]:bg-transparent [&_h3]:bg-transparent [&_h4]:bg-transparent [&_h5]:bg-transparent [&_h6]:bg-transparent [&_p]:m-0 [&_p]:p-0 [&_div]:m-0 [&_div]:p-0 [&_ul]:m-0 [&_ul]:p-0 [&_ol]:m-0 [&_ol]:p-0 [&_li]:m-0 [&_li]:p-0 [&_li]:mb-0 [&_li]:mt-0 [&_h1]:m-0 [&_h1]:p-0 [&_h2]:m-0 [&_h2]:p-0 [&_h3]:m-0 [&_h3]:p-0 [&_h4]:m-0 [&_h4]:p-0 [&_h5]:m-0 [&_h5]:p-0 [&_h6]:m-0 [&_h6]:p-0 [&_blockquote]:m-0 [&_blockquote]:p-0"
         >
-          {#if hasTable}
-            <div class="table-container">
-              {@html htmlContent}
-            </div>
-          {:else}
-            {@html htmlContent}
-          {/if}
+          <div class="space-y-3">
+            {#each contentParts as part}
+              {#if part.kind === "image"}
+                <img
+                  src={part.src}
+                  alt={part.alt}
+                  loading="lazy"
+                  class="max-h-[28rem] max-w-full rounded-lg border border-gray-200 object-contain dark:border-gray-600"
+                />
+              {:else if part.format === "json"}
+                <pre class="overflow-x-auto whitespace-pre-wrap break-words rounded-lg p-3 text-xs">{part.text}</pre>
+              {:else}
+                <div class:table-container={containsTable(part.text)}>
+                  {@html marked(part.text)}
+                </div>
+              {/if}
+            {/each}
+          </div>
         </div>
 
         {#if message.toolCalls.length > 0}

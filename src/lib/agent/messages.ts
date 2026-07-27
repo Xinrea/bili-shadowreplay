@@ -34,6 +34,126 @@ export interface ToolMessage {
 
 export type ChatMessage = HumanMessage | AssistantMessage | ToolMessage;
 
+export interface MessageTextPart {
+  kind: "text";
+  text: string;
+  format: "markdown" | "json";
+}
+
+export interface MessageImagePart {
+  kind: "image";
+  src: string;
+  alt: string;
+}
+
+export type MessageDisplayPart = MessageTextPart | MessageImagePart;
+
+function imageDisplayPart(value: unknown): MessageImagePart | null {
+  if (!isRecord(value)) return null;
+
+  const type = typeof value.type === "string" ? value.type.toLowerCase() : "";
+  const mimeType = typeof value.mimeType === "string"
+    ? value.mimeType
+    : typeof value.mime_type === "string"
+      ? value.mime_type
+      : "";
+  const imageUrl = isRecord(value.image_url)
+    ? value.image_url.url
+    : value.image_url;
+  const source = typeof value.data === "string"
+    ? value.data
+    : typeof value.image_base64 === "string"
+      ? value.image_base64
+      : typeof imageUrl === "string"
+        ? imageUrl
+        : null;
+
+  if (!source) return null;
+  const isImage = type === "image" || type === "image_url" ||
+    typeof value.image_base64 === "string" ||
+    mimeType.startsWith("image/") || source.startsWith("data:image/");
+  if (!isImage) return null;
+
+  const safeMimeType = /^image\/[a-z0-9.+-]+$/i.test(mimeType)
+    ? mimeType
+    : "image/jpeg";
+  const src = source.startsWith("data:") || /^(https?:|blob:)/.test(source)
+    ? source
+    : `data:${safeMimeType};base64,${source}`;
+
+  return {
+    kind: "image",
+    src,
+    alt: typeof value.alt === "string" ? value.alt : "消息图片",
+  };
+}
+
+function displayPartsFromValue(value: unknown): MessageDisplayPart[] {
+  if (typeof value === "string") {
+    return [{ kind: "text", text: value, format: "markdown" }];
+  }
+  if (Array.isArray(value)) return value.flatMap(displayPartsFromValue);
+
+  const image = imageDisplayPart(value);
+  if (image) return [image];
+  const structured = structuredImageParts(value);
+  if (structured) return structured;
+
+  if (isRecord(value) && value.type === "text" && typeof value.text === "string") {
+    return [{ kind: "text", text: value.text, format: "markdown" }];
+  }
+
+  return [{
+    kind: "text",
+    text: JSON.stringify(value, null, 2) ?? String(value),
+    format: "json",
+  }];
+}
+
+function structuredImageParts(value: unknown): MessageDisplayPart[] | null {
+  if (!isRecord(value) || !Array.isArray(value.parts)) return null;
+
+  const parts = value.parts.flatMap(displayPartsFromValue);
+  if (!parts.some((part) => part.kind === "image")) return null;
+
+  const summary = Object.fromEntries(
+    Object.entries(value).filter(([key]) => key !== "parts"),
+  );
+  if (Object.keys(summary).length === 0) return parts;
+
+  return [{
+    kind: "text",
+    text: JSON.stringify(summary, null, 2),
+    format: "json",
+  }, ...parts];
+}
+
+export function messageContentToDisplayParts(
+  content: MessageContent,
+): MessageDisplayPart[] {
+  if (Array.isArray(content)) return content.flatMap(displayPartsFromValue);
+
+  try {
+    const structured = structuredImageParts(JSON.parse(content));
+    if (structured) return structured;
+  } catch {
+    // Ordinary message text is not expected to be valid JSON.
+  }
+
+  return [{ kind: "text", text: content, format: "markdown" }];
+}
+
+export function messageContentToMarkdown(content: MessageContent): string {
+  return messageContentToDisplayParts(content)
+    .map((part) => {
+      if (part.kind === "image") return `![${part.alt}](${part.src})`;
+      return part.format === "json"
+        ? `\`\`\`json\n${part.text}\n\`\`\``
+        : part.text;
+    })
+    .join("\n\n");
+}
+
 export function isAssistantMessage(
   message: ChatMessage,
 ): message is AssistantMessage {

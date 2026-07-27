@@ -1,6 +1,7 @@
 <script lang="ts">
   import { User } from "lucide-svelte";
   import type { HumanMessage } from "../agent/messages";
+  import CopyMarkdownButton from "./CopyMarkdownButton.svelte";
 
   export let message: HumanMessage;
   export let formatTime: (date: Date) => string;
@@ -18,6 +19,7 @@
         <span class="text-xs text-gray-500 dark:text-gray-400">
           {formatTime(messageTime)}
         </span>
+        <CopyMarkdownButton content={message.content} />
       </div>
 
       <div

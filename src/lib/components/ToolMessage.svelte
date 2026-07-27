@@ -6,7 +6,12 @@
     ChevronDown,
     ChevronRight,
   } from "lucide-svelte";
-  import type { ToolMessage } from "../agent/messages";
+  import {
+    messageContentToDisplayParts,
+    messageContentToMarkdown,
+    type ToolMessage,
+  } from "../agent/messages";
+  import CopyMarkdownButton from "./CopyMarkdownButton.svelte";
 
   export let message: ToolMessage;
   export let formatTime: (date: Date) => string;
@@ -15,6 +20,11 @@
   let isExpanded = false;
 
   $: messageTime = new Date(message.timestamp);
+  $: contentParts = messageContentToDisplayParts(message.content);
+
+  function markdownContent(): string {
+    return messageContentToMarkdown(message.content);
+  }
 
   // 获取状态图标和颜色
   function getStatusInfo() {
@@ -65,6 +75,7 @@
         <span class="text-xs text-gray-500 dark:text-gray-400">
           {formatTime(messageTime)}
         </span>
+        <CopyMarkdownButton content={markdownContent} />
       </div>
 
       <div
@@ -110,9 +121,26 @@
                 class="bg-gray-50 dark:bg-gray-700 rounded-lg p-3 border border-gray-200 dark:border-gray-600"
               >
                 <div
-                  class="text-sm text-gray-700 dark:text-gray-300 leading-relaxed"
+                  class="space-y-3 text-sm text-gray-700 dark:text-gray-300 leading-relaxed"
                 >
-                  {message.content || "无响应内容"}
+                  {#if contentParts.length === 0}
+                    无响应内容
+                  {:else}
+                    {#each contentParts as part}
+                      {#if part.kind === "image"}
+                        <img
+                          src={part.src}
+                          alt={part.alt}
+                          loading="lazy"
+                          class="max-h-[28rem] max-w-full rounded-lg border border-gray-200 object-contain dark:border-gray-600"
+                        />
+                      {:else if part.format === "json"}
+                        <pre class="overflow-x-auto whitespace-pre-wrap break-words text-xs">{part.text}</pre>
+                      {:else}
+                        <div class="whitespace-pre-wrap break-words">{part.text}</div>
+                      {/if}
+                    {/each}
+                  {/if}
                 </div>
               </div>
             {/if}

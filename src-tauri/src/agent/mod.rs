@@ -17,7 +17,7 @@ use std::{
 use rig_core::{
     client::{CompletionClient, Nothing},
     completion::{Chat, Message},
-    message::{AssistantContent, ToolCall, ToolFunction},
+    message::{AssistantContent, ToolCall, ToolFunction, ToolResultContent, UserContent},
     providers::{ollama, openai},
     tool::Tool,
     OneOrMany,
@@ -106,6 +106,59 @@ struct BsrToolArgs {
     action: String,
     #[serde(default)]
     args: Value,
+}
+
+impl BsrToolArgs {
+    fn normalize(mut self) -> Result<Self, BsrToolError> {
+        if let Value::String(raw) = &self.args {
+            self.args = serde_json::from_str(raw)
+                .map_err(|error| BsrToolError(format!("Invalid JSON tool arguments: {error}")))?;
+        }
+        self.args = normalize_argument_keys(self.args);
+        Ok(self)
+    }
+}
+
+fn snake_case_key(key: &str) -> String {
+    let mut normalized = String::with_capacity(key.len());
+    for character in key.chars() {
+        if character.is_ascii_uppercase() {
+            if !normalized.is_empty() && !normalized.ends_with('_') {
+                normalized.push('_');
+            }
+            normalized.push(character.to_ascii_lowercase());
+        } else {
+            normalized.push(character);
+        }
+    }
+    normalized
+}
+
+fn normalize_argument_keys(value: Value) -> Value {
+    match value {
+        Value::Object(arguments) => {
+            let mut normalized = serde_json::Map::new();
+
+            for (key, value) in &arguments {
+                let canonical = snake_case_key(key);
+                if canonical == *key {
+                    normalized.insert(canonical, normalize_argument_keys(value.clone()));
+                }
+            }
+            for (key, value) in arguments {
+                let canonical = snake_case_key(&key);
+                normalized
+                    .entry(canonical)
+                    .or_insert_with(|| normalize_argument_keys(value));
+            }
+
+            Value::Object(normalized)
+        }
+        Value::Array(values) => {
+            Value::Array(values.into_iter().map(normalize_argument_keys).collect())
+        }
+        value => value,
+    }
 }
 
 #[derive(Debug)]
@@ -687,6 +740,7 @@ impl Tool for BsrTool {
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
         // Rig owns the agent loop, so this is the one reliable boundary where
         // every provider-triggered tool call can be captured for the UI.
+        let args = args.normalize()?;
         let id = Self::tool_call_id();
         let record_index = {
             let mut calls = self.calls.lock().expect("tool call log mutex poisoned");
@@ -721,9 +775,9 @@ impl Tool for BsrTool {
     }
 }
 
-fn rig_message(message: &AgentMessage) -> Result<Message, String> {
+fn rig_messages(message: &AgentMessage) -> Result<Vec<Message>, String> {
     match message.role.as_str() {
-        "user" => Ok(Message::user(message.content.clone())),
+        "user" => Ok(vec![Message::user(message.content.clone())]),
         "assistant" => {
             let mut content = Vec::new();
             if !message.content.is_empty() {
@@ -741,17 +795,54 @@ fn rig_message(message: &AgentMessage) -> Result<Message, String> {
             if content.is_empty() {
                 content.push(AssistantContent::text(""));
             }
-            Ok(Message::Assistant {
+            Ok(vec![Message::Assistant {
                 id: None,
                 content: OneOrMany::many(content).expect("assistant content is not empty"),
-            })
+            }])
         }
-        "tool" => message
-            .tool_call_id
-            .as_ref()
-            .map(|id| Message::tool_result(id.clone(), message.content.clone()))
-            .ok_or_else(|| "Tool message is missing toolCallId".to_owned()),
-        "system" => Ok(Message::system(message.content.clone())),
+        "tool" => {
+            let id = message
+                .tool_call_id
+                .as_ref()
+                .ok_or_else(|| "Tool message is missing toolCallId".to_owned())?;
+            let parsed = ToolResultContent::from_tool_output(message.content.clone());
+            let mut text = Vec::new();
+            let mut images = Vec::new();
+
+            for content in parsed {
+                match content {
+                    ToolResultContent::Text(value) => text.push(value.text),
+                    ToolResultContent::Image(image) => images.push(image),
+                }
+            }
+
+            if images.is_empty() {
+                return Ok(vec![Message::tool_result(id.clone(), text.join("\n"))]);
+            }
+
+            // OpenAI Chat Completions requires tool results to remain text-only.
+            // Send the image parts in a following user message, while preserving
+            // the matching tool result so the assistant/tool protocol is valid.
+            let result_text = if text.is_empty() {
+                format!("The tool returned {} image(s).", images.len())
+            } else {
+                text.join("\n")
+            };
+            let mut image_content = Vec::with_capacity(images.len() + 1);
+            image_content.push(UserContent::text(
+                "These images are the visual output of the preceding tool result. Inspect them directly and use the timestamps in that result to identify each frame.",
+            ));
+            image_content.extend(images.into_iter().map(UserContent::Image));
+
+            Ok(vec![
+                Message::tool_result(id.clone(), result_text),
+                Message::User {
+                    content: OneOrMany::many(image_content)
+                        .expect("image tool result always has content"),
+                },
+            ])
+        }
+        "system" => Ok(vec![Message::system(message.content.clone())]),
         role => Err(format!("Unsupported message role: {role}")),
     }
 }
@@ -759,8 +850,11 @@ fn rig_message(message: &AgentMessage) -> Result<Message, String> {
 fn prepare_chat(messages: &[AgentMessage]) -> Result<(Message, Vec<Message>), String> {
     let mut history = messages
         .iter()
-        .map(rig_message)
-        .collect::<Result<Vec<_>, _>>()?;
+        .map(rig_messages)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
     let prompt = history
         .pop()
         .ok_or_else(|| "Conversation must contain at least one message".to_owned())?;
@@ -850,5 +944,146 @@ pub async fn agent_chat(
             tool_calls,
             error: Some(error),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rig_core::message::{DocumentSourceKind, ImageMediaType};
+
+    fn tool_message(content: Value) -> AgentMessage {
+        AgentMessage {
+            role: "tool".into(),
+            content: content.to_string(),
+            tool_calls: Vec::new(),
+            tool_call_id: Some("tool-call-1".into()),
+        }
+    }
+
+    #[test]
+    fn stringified_tool_arguments_are_normalized() {
+        let args = BsrToolArgs {
+            action: "extract_video_frames".into(),
+            args: Value::String(r#"{"videoId":75,"timestamps":[120],"maxFrames":1}"#.into()),
+        }
+        .normalize()
+        .unwrap();
+
+        assert_eq!(args.args["video_id"], 75);
+        assert_eq!(args.args["timestamps"][0], 120);
+        assert_eq!(args.args["max_frames"], 1);
+    }
+
+    #[test]
+    fn nested_camel_case_tool_arguments_are_normalized() {
+        let args = BsrToolArgs {
+            action: "clip_range".into(),
+            args: json!({
+                "clipRangeParams": {
+                    "roomId": "123",
+                    "localOffset": 2,
+                    "fixEncoding": true
+                }
+            }),
+        }
+        .normalize()
+        .unwrap();
+
+        assert_eq!(args.args["clip_range_params"]["room_id"], "123");
+        assert_eq!(args.args["clip_range_params"]["local_offset"], 2);
+        assert_eq!(args.args["clip_range_params"]["fix_encoding"], true);
+    }
+
+    #[test]
+    fn plain_tool_results_remain_single_text_messages() {
+        let messages = rig_messages(&tool_message(json!({ "status": "ok" }))).unwrap();
+
+        assert_eq!(messages.len(), 1);
+        let Message::User { content } = &messages[0] else {
+            panic!("expected user tool-result message");
+        };
+        let UserContent::ToolResult(result) = content.first() else {
+            panic!("expected tool result content");
+        };
+        assert_eq!(result.id, "tool-call-1");
+        assert!(matches!(result.content.first(), ToolResultContent::Text(_)));
+    }
+
+    #[test]
+    fn image_tool_results_become_text_result_followed_by_images() {
+        let messages = rig_messages(&tool_message(json!({
+            "response": {
+                "tool": "extract_video_frames",
+                "frames": [{ "index": 0, "timestamp": 12.5 }]
+            },
+            "parts": [{
+                "type": "image",
+                "data": "base64-jpeg-data",
+                "mimeType": "image/jpeg"
+            }]
+        })))
+        .unwrap();
+
+        assert_eq!(messages.len(), 2);
+
+        let Message::User { content } = &messages[0] else {
+            panic!("expected text tool-result message");
+        };
+        let UserContent::ToolResult(result) = content.first() else {
+            panic!("expected tool result content");
+        };
+        assert_eq!(result.id, "tool-call-1");
+        assert!(matches!(result.content.first(), ToolResultContent::Text(_)));
+
+        let Message::User { content } = &messages[1] else {
+            panic!("expected following image message");
+        };
+        assert_eq!(content.len(), 2);
+        assert!(matches!(content.first(), UserContent::Text(_)));
+        let image = content
+            .iter()
+            .find_map(|content| match content {
+                UserContent::Image(image) => Some(image),
+                _ => None,
+            })
+            .expect("image content should be preserved");
+        assert_eq!(
+            image.data,
+            DocumentSourceKind::Base64("base64-jpeg-data".into())
+        );
+        assert_eq!(image.media_type, Some(ImageMediaType::JPEG));
+    }
+
+    #[test]
+    fn image_message_is_used_as_prompt_after_confirmed_tool_result() {
+        let assistant = AgentMessage {
+            role: "assistant".into(),
+            content: "".into(),
+            tool_calls: vec![AgentToolCall {
+                id: "tool-call-1".into(),
+                name: "extract_video_frames".into(),
+                args: json!({ "video_id": 1 }),
+            }],
+            tool_call_id: None,
+        };
+        let result = tool_message(json!({
+            "response": { "frames": [{ "index": 0, "timestamp": 1.0 }] },
+            "parts": [{
+                "type": "image",
+                "data": "frame-data",
+                "mimeType": "image/jpeg"
+            }]
+        }));
+
+        let (prompt, history) = prepare_chat(&[assistant, result]).unwrap();
+
+        assert_eq!(history.len(), 2);
+        let Message::User { content } = prompt else {
+            panic!("expected image user message to be the next model prompt");
+        };
+        assert!(content
+            .iter()
+            .any(|content| matches!(content, UserContent::Image(_))));
     }
 }

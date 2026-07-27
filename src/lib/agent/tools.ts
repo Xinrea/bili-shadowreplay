@@ -4,9 +4,15 @@ import {
   generateEventId,
   type ClipRangeParams,
 } from "../interface";
+import { normalizeToolArguments } from "./messages";
 
 type ToolArguments = Record<string, unknown>;
 type ToolExecutor = (args: ToolArguments) => Promise<unknown>;
+
+interface ExtractedVideoFrame {
+  timestamp: number;
+  image_base64: string;
+}
 
 function executor<T extends ToolArguments>(
   implementation: (args: T) => Promise<unknown>,
@@ -152,11 +158,33 @@ const confirmedToolExecutors: Record<string, ToolExecutor> = {
       video_id: number;
       timestamps?: number[];
       max_frames?: number;
-    }) => invoke("extract_video_frames", {
-      videoId: video_id,
-      timestamps: timestamps ?? [],
-      maxFrames: max_frames ?? 10,
-    }),
+    }) => {
+      const frames = await invoke<ExtractedVideoFrame[]>(
+        "extract_video_frames",
+        {
+          videoId: video_id,
+          timestamps: timestamps ?? [],
+          maxFrames: max_frames ?? 10,
+        },
+      );
+
+      // Rig recognizes this response/parts shape as a multimodal tool result.
+      // The Rust bridge keeps the response as the tool result required by the
+      // provider protocol and sends the parts as a following image message.
+      return {
+        response: {
+          tool: "extract_video_frames",
+          video_id,
+          frame_count: frames.length,
+          frames: frames.map(({ timestamp }, index) => ({ index, timestamp })),
+        },
+        parts: frames.map(({ image_base64 }) => ({
+          type: "image",
+          data: image_base64,
+          mimeType: "image/jpeg",
+        })),
+      };
+    },
   ),
 
   get_video_metadata: executor(
@@ -198,11 +226,11 @@ const confirmedToolExecutors: Record<string, ToolExecutor> = {
 
 export async function invokeToolByName(
   name: string,
-  args: ToolArguments,
+  args: unknown,
 ): Promise<unknown> {
   const selectedTool = confirmedToolExecutors[name];
   if (!selectedTool) {
     throw new Error(`Tool ${name} is not available for frontend confirmation`);
   }
-  return selectedTool(args);
+  return selectedTool(normalizeToolArguments(args));
 }

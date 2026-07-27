@@ -2,9 +2,9 @@ import { invoke } from "../invoker";
 import {
   isAssistantMessage,
   isToolMessage,
+  normalizeToolCalls,
   type AssistantMessage,
   type ChatMessage,
-  type ToolCall,
 } from "./messages";
 
 export interface AgentConfig {
@@ -16,7 +16,7 @@ export interface AgentConfig {
 
 interface AgentChatResponse {
   content: string;
-  toolCalls?: ToolCall[];
+  toolCalls?: unknown;
   error?: string | null;
 }
 
@@ -97,7 +97,7 @@ export async function agentChat(
       ? `❌ **LLM API 错误**\n\n${response.error}`
       : response.content,
     timestamp: new Date().toISOString(),
-    toolCalls: response.toolCalls ?? [],
+    toolCalls: normalizeToolCalls(response.toolCalls),
     isError: Boolean(response.error),
   };
 }

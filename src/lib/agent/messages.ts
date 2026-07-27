@@ -48,6 +48,42 @@ function isRecord(value: unknown): value is Record<string, any> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+export function normalizeToolArguments(value: unknown): Record<string, unknown> {
+  let parsed = value;
+  if (typeof value === "string") {
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      return {};
+    }
+  }
+  if (!isRecord(parsed)) return {};
+
+  return normalizeArgumentValue(parsed) as Record<string, unknown>;
+}
+
+function snakeCaseKey(key: string): string {
+  return key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+}
+
+function normalizeArgumentValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(normalizeArgumentValue);
+  if (!isRecord(value)) return value;
+
+  const normalized: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    const canonical = snakeCaseKey(key);
+    if (canonical === key) normalized[canonical] = normalizeArgumentValue(item);
+  }
+  for (const [key, item] of Object.entries(value)) {
+    const canonical = snakeCaseKey(key);
+    if (!(canonical in normalized)) {
+      normalized[canonical] = normalizeArgumentValue(item);
+    }
+  }
+  return normalized;
+}
+
 function messageContent(value: unknown): MessageContent {
   if (typeof value === "string" || Array.isArray(value)) return value;
   return value == null ? "" : JSON.stringify(value);
@@ -61,7 +97,7 @@ function timestamp(value: unknown): string {
   return new Date().toISOString();
 }
 
-function toolCalls(value: unknown): ToolCall[] {
+export function normalizeToolCalls(value: unknown): ToolCall[] {
   if (!Array.isArray(value)) return [];
 
   return value.flatMap((raw): ToolCall[] => {
@@ -69,7 +105,7 @@ function toolCalls(value: unknown): ToolCall[] {
     return [{
       id: String(raw.id),
       name: String(raw.name),
-      args: isRecord(raw.args) ? raw.args : {},
+      args: normalizeToolArguments(raw.args),
       executed: raw.executed !== false,
       error: raw.error == null ? null : String(raw.error),
     }];
@@ -127,7 +163,7 @@ export function deserializeMessages(stored: unknown): ChatMessage[] {
         kind: "assistant",
         content: messageContent(fields.content ?? raw.content),
         timestamp: timestamp(savedTimestamp),
-        toolCalls: toolCalls(
+        toolCalls: normalizeToolCalls(
           fields.toolCalls ?? raw.toolCalls ?? fields.tool_calls ?? raw.tool_calls,
         ),
         isError: fields.isError === true || raw.isError === true || additional.isError === true,

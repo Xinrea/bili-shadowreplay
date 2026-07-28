@@ -10,6 +10,27 @@ use whisper_cpp_rs::{FullParams, SamplingStrategy, WhisperContext};
 
 use super::SubtitleGenerator;
 
+fn pcm_i16_to_mono_f32(samples: &[i16], channels: u16) -> Result<Vec<f32>, String> {
+    if channels == 0 {
+        return Err("WAV channel count must be greater than zero".to_string());
+    }
+
+    let channels = channels as usize;
+    if !samples.len().is_multiple_of(channels) {
+        return Err(format!(
+            "WAV sample count {} is not divisible by channel count {channels}",
+            samples.len()
+        ));
+    }
+
+    let mut mono = Vec::with_capacity(samples.len() / channels);
+    for frame in samples.chunks_exact(channels) {
+        let sum: f32 = frame.iter().map(|&sample| sample as f32 / 32768.0).sum();
+        mono.push(sum / channels as f32);
+    }
+    Ok(mono)
+}
+
 #[derive(Clone)]
 pub struct WhisperCPP {
     ctx: Arc<RwLock<WhisperContext>>,
@@ -39,9 +60,16 @@ impl SubtitleGenerator for WhisperCPP {
     ) -> Result<GenerateResult, String> {
         log::info!("Generating subtitle for {:?}", audio_path);
         let start_time = std::time::Instant::now();
-        let audio = hound::WavReader::open(audio_path).map_err(|e| e.to_string())?;
+        let mut audio = hound::WavReader::open(audio_path).map_err(|e| e.to_string())?;
+        let spec = audio.spec();
+        if spec.sample_rate != 16_000 {
+            return Err(format!(
+                "Whisper expects 16000 Hz audio, got {} Hz",
+                spec.sample_rate
+            ));
+        }
         let samples: Vec<i16> = audio
-            .into_samples::<i16>()
+            .samples::<i16>()
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("Failed to decode WAV samples: {e}"))?;
 
@@ -52,7 +80,7 @@ impl SubtitleGenerator for WhisperCPP {
 
         let mut state = state.unwrap();
 
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 5 });
 
         // and set the language
         params.set_language(Some(language_hint));
@@ -71,20 +99,10 @@ impl SubtitleGenerator for WhisperCPP {
         // params.set_token_timestamps(true);
         params.set_max_len(15);
 
-        let mut inter_samples = vec![Default::default(); samples.len()];
-
         if let Some(reporter) = reporter {
             reporter.update("处理音频中").await;
         }
-        if let Err(e) = whisper_cpp_rs::convert_integer_to_float_audio(&samples, &mut inter_samples)
-        {
-            return Err(e.to_string());
-        }
-
-        let mut samples = vec![Default::default(); samples.len() / 2];
-        if let Err(e) = whisper_cpp_rs::convert_stereo_to_mono_audio(&inter_samples, &mut samples) {
-            return Err(e.to_string());
-        }
+        let samples = pcm_i16_to_mono_f32(&samples, spec.channels)?;
 
         if let Some(reporter) = reporter {
             reporter.update("生成字幕中").await;
@@ -164,7 +182,7 @@ mod tests {
             .create_state()
             .expect("Failed to create state");
 
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 5 });
         params.set_language(Some("auto"));
         params.set_print_special(false);
         params.set_print_progress(false);
@@ -288,5 +306,22 @@ mod tests {
             }
         }
         println!("All validations passed.");
+    }
+
+    #[test]
+    fn test_pcm_i16_mono_is_not_shortened() {
+        let mono = pcm_i16_to_mono_f32(&[32767, 0, -32768], 1).unwrap();
+        assert_eq!(mono.len(), 3);
+        assert!(mono[0] > 0.99);
+        assert_eq!(mono[1], 0.0);
+        assert_eq!(mono[2], -1.0);
+    }
+
+    #[test]
+    fn test_pcm_i16_stereo_is_averaged_per_frame() {
+        let mono = pcm_i16_to_mono_f32(&[32767, -32768, 16384, 16384], 2).unwrap();
+        assert_eq!(mono.len(), 2);
+        assert!(mono[0].abs() < 0.001);
+        assert!((mono[1] - 0.5).abs() < 0.001);
     }
 }

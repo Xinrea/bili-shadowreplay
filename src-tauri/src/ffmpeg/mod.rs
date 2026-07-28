@@ -252,8 +252,9 @@ pub async fn extract_audio_chunks(file: &Path, format: &str) -> Result<PathBuf, 
     let output_path = file.with_extension(format);
     let mut extract_error = None;
 
-    // 降低采样率以提高处理速度，同时保持足够的音质用于语音识别
-    let sample_rate = if format == "mp3" { "22050" } else { "16000" };
+    // Whisper consumes 16 kHz mono audio. Keep every upload path consistent
+    // and avoid spending bitrate on a second channel.
+    let sample_rate = "16000";
 
     // First, get the duration of the input file
     let duration = get_audio_duration(file).await?;
@@ -287,6 +288,8 @@ pub async fn extract_audio_chunks(file: &Path, format: &str) -> Result<PathBuf, 
         file_str,
         "-ar",
         sample_rate,
+        "-ac",
+        "1",
         "-vn",
         "-f",
         "segment",
@@ -419,8 +422,7 @@ pub async fn extract_full_audio(file: &Path) -> Result<PathBuf, String> {
     }
 }
 
-/// Extract a time segment from a video as a 16kHz stereo WAV file.
-/// (whisper_cpp.rs handles stereo→mono conversion internally.)
+/// Extract a time segment from a video as a 16kHz mono WAV file.
 pub async fn extract_audio_segment(
     file: &Path,
     start_sec: f64,
@@ -437,6 +439,7 @@ pub async fn extract_audio_segment(
         .arg(file)
         .args(["-t", &duration_sec.to_string()])
         .args(["-ar", "16000"])
+        .args(["-ac", "1"])
         .args(["-c:a", "pcm_s16le"])
         .args(["-vn"])
         .args(["-y"])
@@ -899,7 +902,10 @@ pub async fn generate_video_subtitle(
             )
             .await
             {
-                let chunk_dir = extract_audio_chunks(file, "mp3").await?;
+                // Thirty seconds of 16 kHz mono PCM is under 1 MB, so WAV
+                // avoids an unnecessary lossy AAC/Opus -> MP3 transcode while
+                // staying far below the transcription API upload limit.
+                let chunk_dir = extract_audio_chunks(file, "wav").await?;
 
                 let mut full_result = GenerateResult {
                     subtitle_id: String::new(),

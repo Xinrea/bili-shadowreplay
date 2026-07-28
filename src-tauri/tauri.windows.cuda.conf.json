@@ -1,5 +1,6 @@
 {
   "productName": "bili-shadowreplay-cuda",
+  "identifier": "cn.vjoi.bilishadowreplay",
   "app": {
     "windows": [
       {

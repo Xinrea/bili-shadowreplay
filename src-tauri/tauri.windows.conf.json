@@ -1,5 +1,6 @@
 {
   "productName": "bili-shadowreplay-cpu",
+  "identifier": "cn.vjoi.bilishadowreplay",
   "app": {
     "windows": [
       {

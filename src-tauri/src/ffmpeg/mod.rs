@@ -7,6 +7,7 @@ pub mod hwaccel;
 pub mod playlist;
 
 use crate::constants;
+use crate::model_manager;
 use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
 use crate::subtitle_generator::{powerlive, whisper_online};
 use crate::subtitle_generator::{
@@ -770,6 +771,7 @@ pub async fn generate_video_subtitle(
     reporter: Option<&ProgressReporter>,
     file: &Path,
     generator_type: &str,
+    model_cache: &str,
     whisper_model: &str,
     whisper_prompt: &str,
     openai_api_key: &str,
@@ -781,6 +783,8 @@ pub async fn generate_video_subtitle(
             if whisper_model.is_empty() {
                 return Err("Whisper model not configured".to_string());
             }
+            let vad_model =
+                model_manager::ensure_silero_vad_model(Path::new(model_cache), reporter).await?;
             let generator = match whisper_cpp::new(Path::new(whisper_model), whisper_prompt).await {
                 Ok(g) => g,
                 Err(e) => return Err(format!("Failed to initialize Whisper model: {e}")),
@@ -804,16 +808,25 @@ pub async fn generate_video_subtitle(
             whisper_cpp_rs::convert_integer_to_float_audio(&raw_samples, &mut f32_samples)
                 .map_err(|e| format!("Audio conversion error: {e}"))?;
 
-            // VAD: find speech segments
+            // Silero VAD: find speech segments
             if let Some(reporter) = reporter {
                 reporter.update("检测语音片段中").await;
             }
-            let (speech_segments, energies, frame_sec) =
-                crate::audio_utils::energy_vad_with_energies(&f32_samples, sample_rate);
+            let mut speech_segments =
+                crate::audio_utils::silero_vad(&f32_samples, sample_rate, &vad_model)?;
+            let audio_duration = f32_samples.len() as f64 / f64::from(sample_rate);
+            if speech_segments.is_empty() && audio_duration > 0.0 {
+                log::warn!("Silero VAD detected no speech; falling back to the full audio");
+                speech_segments.push(crate::audio_utils::SpeechSegment {
+                    start: 0.0,
+                    end: audio_duration,
+                });
+            }
+            let (energies, frame_sec) = crate::audio_utils::rms_energies(&f32_samples, sample_rate);
             log::info!(
-                "VAD detected {} speech segments from {:.1}s audio",
+                "Silero VAD detected {} speech segments from {:.1}s audio",
                 speech_segments.len(),
-                f32_samples.len() as f64 / sample_rate as f64
+                audio_duration
             );
 
             // Cut & Merge: normalize to ≤30s chunks
@@ -834,6 +847,7 @@ pub async fn generate_video_subtitle(
 
             // Process each chunk
             let mut results = Vec::new();
+            let mut rolling_context = String::new();
             let temp_dir =
                 std::env::temp_dir().join(format!("bsr_whisper_{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&temp_dir)
@@ -859,10 +873,45 @@ pub async fn generate_video_subtitle(
                 // Trim the original video to get this segment's audio
                 match extract_audio_segment(file, padded_start, duration, &segment_path).await {
                     Ok(()) => {
-                        let result = generator
-                            .generate_subtitle(reporter, &segment_path, language_hint)
+                        let chunk_generator = generator.with_previous_context(&rolling_context);
+                        let result = chunk_generator
+                            .generate_subtitle_with_confidence(
+                                reporter,
+                                &segment_path,
+                                language_hint,
+                            )
                             .await;
-                        results.push(((padded_start * 1000.0).round() as u64, result));
+                        if let Ok(generated) = &result {
+                            log::info!(
+                                "Whisper chunk {} quality: confidence={:.3}, low_token_ratio={:.1}%, retried={}, eligible_for_prompt={}",
+                                i,
+                                generated.confidence.geometric_mean,
+                                generated.confidence.low_token_ratio * 100.0,
+                                generated.retried,
+                                generated.eligible_for_prompt
+                            );
+                            if generated.eligible_for_prompt {
+                                rolling_context = whisper_cpp::update_rolling_context(
+                                    &rolling_context,
+                                    &generated.result,
+                                );
+                                log::debug!(
+                                    "Whisper rolling context updated to {} characters",
+                                    rolling_context.chars().count()
+                                );
+                            } else {
+                                log::warn!(
+                                    "Whisper chunk {} excluded from rolling prompt: confidence={:.3}, low_token_ratio={:.1}%",
+                                    i,
+                                    generated.confidence.geometric_mean,
+                                    generated.confidence.low_token_ratio * 100.0
+                                );
+                            }
+                        }
+                        results.push((
+                            (padded_start * 1000.0).round() as u64,
+                            result.map(|generated| generated.result),
+                        ));
                     }
                     Err(e) => {
                         log::error!("Failed to extract segment {}: {e}", i);
@@ -888,6 +937,7 @@ pub async fn generate_video_subtitle(
                     full_result.concat_with_offset_ms(result, *offset_ms);
                 }
             }
+            full_result.clamp_overlaps();
 
             Ok(full_result)
         }
@@ -1586,19 +1636,20 @@ mod tests {
 
         // 测试 Whisper 类型 - 模型未配置
         let result =
-            generate_video_subtitle(None, test_file, "whisper", "", "", "", "", "zh").await;
+            generate_video_subtitle(None, test_file, "whisper", "", "", "", "", "", "zh").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Whisper model not configured"));
 
         // 测试 Whisper Online 类型 - API key 未配置
         let result =
-            generate_video_subtitle(None, test_file, "whisper_online", "", "", "", "", "zh").await;
+            generate_video_subtitle(None, test_file, "whisper_online", "", "", "", "", "", "zh")
+                .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("API key not configured"));
 
         // 测试未知类型
         let result =
-            generate_video_subtitle(None, test_file, "unknown_type", "", "", "", "", "").await;
+            generate_video_subtitle(None, test_file, "unknown_type", "", "", "", "", "", "").await;
         assert!(result.is_err());
         assert!(result
             .unwrap_err()

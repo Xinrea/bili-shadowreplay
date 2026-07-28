@@ -1341,6 +1341,7 @@ impl RecorderManager {
             None,
             Path::new(&media_file_path.full_path()),
             &config.subtitle_generator_type,
+            &config.cache,
             &config.whisper_model,
             &config.whisper_prompt,
             &config.openai_api_key,

@@ -13,6 +13,7 @@ mod handlers;
 #[cfg(feature = "headless")]
 mod http_server;
 mod migration;
+mod model_manager;
 mod progress;
 mod recorder_manager;
 mod state;

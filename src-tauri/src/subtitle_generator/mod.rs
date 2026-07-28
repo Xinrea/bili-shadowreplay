@@ -38,6 +38,18 @@ impl GenerateResult {
         }
         self.subtitle_content.extend(to_extend);
     }
+
+    pub fn clamp_overlaps(&mut self) {
+        for index in 0..self.subtitle_content.len().saturating_sub(1) {
+            let next_start = self.subtitle_content[index + 1].start_time.into_duration();
+            let current_start = self.subtitle_content[index].start_time.into_duration();
+            let current_end = self.subtitle_content[index].end_time.into_duration();
+
+            if current_end > next_start && next_start > current_start {
+                self.subtitle_content[index].end_time = self.subtitle_content[index + 1].start_time;
+            }
+        }
+    }
 }
 
 fn add_offset_ms(item: &srtparse::Time, offset_ms: u64) -> srtparse::Time {
@@ -399,5 +411,53 @@ mod tests {
         assert_eq!(result1.subtitle_content[0].start_time.milliseconds, 590);
         assert_eq!(result1.subtitle_content[0].end_time.seconds, 14);
         assert_eq!(result1.subtitle_content[0].end_time.milliseconds, 90);
+    }
+
+    #[test]
+    fn test_generate_result_clamps_overlapping_end_time() {
+        let mut result = GenerateResult {
+            generator_type: SubtitleGeneratorType::Whisper,
+            subtitle_id: String::new(),
+            subtitle_content: vec![
+                srtparse::Item {
+                    pos: 1,
+                    start_time: srtparse::Time {
+                        hours: 0,
+                        minutes: 0,
+                        seconds: 10,
+                        milliseconds: 0,
+                    },
+                    end_time: srtparse::Time {
+                        hours: 0,
+                        minutes: 0,
+                        seconds: 30,
+                        milliseconds: 0,
+                    },
+                    text: "First".to_string(),
+                },
+                srtparse::Item {
+                    pos: 2,
+                    start_time: srtparse::Time {
+                        hours: 0,
+                        minutes: 0,
+                        seconds: 15,
+                        milliseconds: 250,
+                    },
+                    end_time: srtparse::Time {
+                        hours: 0,
+                        minutes: 0,
+                        seconds: 18,
+                        milliseconds: 0,
+                    },
+                    text: "Second".to_string(),
+                },
+            ],
+        };
+
+        result.clamp_overlaps();
+        assert_eq!(
+            result.subtitle_content[0].end_time,
+            result.subtitle_content[1].start_time
+        );
     }
 }

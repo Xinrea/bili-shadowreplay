@@ -6,7 +6,7 @@
 
 #![allow(non_camel_case_types, dead_code)]
 
-use std::ffi::{c_char, c_int, CStr, CString};
+use std::ffi::{c_char, c_float, c_int, CStr, CString};
 use std::ptr;
 
 // ── Token-level types ──────────────────────────────────────────────
@@ -135,6 +135,11 @@ extern "C" {
 
     fn whisper_print_system_info() -> *const c_char;
     fn whisper_rs_params_set_greedy_best_of(params: *mut whisper_full_params, best_of: c_int);
+    fn whisper_rs_params_set_beam_search(
+        params: *mut whisper_full_params,
+        beam_size: c_int,
+        patience: c_float,
+    );
     fn whisper_rs_params_set_print_special(params: *mut whisper_full_params, value: bool);
     fn whisper_rs_params_set_print_progress(params: *mut whisper_full_params, value: bool);
     fn whisper_rs_params_set_print_realtime(params: *mut whisper_full_params, value: bool);
@@ -151,6 +156,7 @@ extern "C" {
 #[derive(Clone, Copy)]
 pub enum SamplingStrategy {
     Greedy { best_of: i32 },
+    BeamSearch { beam_size: i32, patience: f32 },
 }
 
 /// Thread-safe context holding the loaded whisper model.
@@ -252,14 +258,27 @@ impl FullParams {
             SamplingStrategy::Greedy { .. } => {
                 whisper_sampling_strategy::WHISPER_SAMPLING_GREEDY
             }
+            SamplingStrategy::BeamSearch { .. } => {
+                whisper_sampling_strategy::WHISPER_SAMPLING_BEAM_SEARCH
+            }
         };
 
         let params = unsafe { whisper_full_default_params_by_ref(s) };
         assert!(!params.is_null(), "whisper_full_default_params_by_ref returned null");
 
-        // Set greedy best_of if applicable
-        let SamplingStrategy::Greedy { best_of } = strategy;
-        unsafe { whisper_rs_params_set_greedy_best_of(params, best_of) };
+        unsafe {
+            match strategy {
+                SamplingStrategy::Greedy { best_of } => {
+                    whisper_rs_params_set_greedy_best_of(params, best_of.max(1));
+                }
+                SamplingStrategy::BeamSearch {
+                    beam_size,
+                    patience,
+                } => {
+                    whisper_rs_params_set_beam_search(params, beam_size.max(1), patience);
+                }
+            }
+        }
 
         Self {
             params,

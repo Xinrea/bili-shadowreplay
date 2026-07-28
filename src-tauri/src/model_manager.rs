@@ -25,7 +25,8 @@ pub async fn ensure_silero_vad_model(
         return Ok(model_path);
     }
 
-    std::fs::create_dir_all(&model_dir)
+    async_std::fs::create_dir_all(&model_dir)
+        .await
         .map_err(|error| format!("Failed to create Silero VAD model directory: {error}"))?;
     if let Some(reporter) = reporter {
         reporter.update("下载 Silero VAD 模型中").await;

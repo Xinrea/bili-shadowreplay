@@ -14,6 +14,8 @@ const ROLLING_CONTEXT_MAX_CHARS: usize = 200;
 const SUBTITLE_MAX_CHARS: usize = 15;
 const INITIAL_BEAM_SIZE: i32 = 5;
 const RETRY_BEAM_SIZE: i32 = 8;
+// whisper.cpp's upstream default. Patience is currently not implemented there.
+const BEAM_SEARCH_PATIENCE_DEFAULT: f32 = -1.0;
 const LOW_TOKEN_PROBABILITY: f32 = 0.2;
 const MIN_GEOMETRIC_CONFIDENCE: f32 = 0.35;
 const MAX_LOW_TOKEN_RATIO: f32 = 0.35;
@@ -316,7 +318,7 @@ impl WhisperCPP {
         let mut state = ctx.create_state().map_err(|e| e.to_string())?;
         let mut params = FullParams::new(SamplingStrategy::BeamSearch {
             beam_size,
-            patience: -1.0,
+            patience: BEAM_SEARCH_PATIENCE_DEFAULT,
         });
 
         params.set_language(Some(language_hint));
@@ -618,7 +620,7 @@ mod tests {
 
         let mut params = FullParams::new(SamplingStrategy::BeamSearch {
             beam_size: 5,
-            patience: -1.0,
+            patience: BEAM_SEARCH_PATIENCE_DEFAULT,
         });
         params.set_language(Some("auto"));
         params.set_print_special(false);

@@ -40,6 +40,29 @@ impl GenerateResult {
     }
 
     pub fn clamp_overlaps(&mut self) {
+        self.subtitle_content
+            .sort_by_key(|item| item.start_time.into_duration());
+
+        // Multiple chunks can produce cues with exactly the same start time.
+        // Merge them so the timeline remains valid without dropping text.
+        let mut normalized: Vec<srtparse::Item> = Vec::with_capacity(self.subtitle_content.len());
+        for item in self.subtitle_content.drain(..) {
+            if let Some(last) = normalized.last_mut() {
+                if last.start_time == item.start_time {
+                    if item.end_time.into_duration() > last.end_time.into_duration() {
+                        last.end_time = item.end_time;
+                    }
+                    if item.text.trim() != last.text.trim() {
+                        last.text.push('\n');
+                        last.text.push_str(item.text.trim());
+                    }
+                    continue;
+                }
+            }
+            normalized.push(item);
+        }
+        self.subtitle_content = normalized;
+
         for index in 0..self.subtitle_content.len().saturating_sub(1) {
             let next_start = self.subtitle_content[index + 1].start_time.into_duration();
             let current_start = self.subtitle_content[index].start_time.into_duration();
@@ -48,6 +71,10 @@ impl GenerateResult {
             if current_end > next_start && next_start > current_start {
                 self.subtitle_content[index].end_time = self.subtitle_content[index + 1].start_time;
             }
+        }
+
+        for (index, item) in self.subtitle_content.iter_mut().enumerate() {
+            item.pos = index + 1;
         }
     }
 }
@@ -459,5 +486,39 @@ mod tests {
             result.subtitle_content[0].end_time,
             result.subtitle_content[1].start_time
         );
+    }
+
+    #[test]
+    fn test_generate_result_sorts_and_merges_equal_start_times() {
+        let time = |seconds| srtparse::Time {
+            hours: 0,
+            minutes: 0,
+            seconds,
+            milliseconds: 0,
+        };
+        let item = |pos, start, end, text: &str| srtparse::Item {
+            pos,
+            start_time: time(start),
+            end_time: time(end),
+            text: text.to_string(),
+        };
+        let mut result = GenerateResult {
+            generator_type: SubtitleGeneratorType::Whisper,
+            subtitle_id: String::new(),
+            subtitle_content: vec![
+                item(1, 10, 20, "Later"),
+                item(2, 5, 8, "Earlier"),
+                item(3, 10, 22, "Same start"),
+            ],
+        };
+
+        result.clamp_overlaps();
+
+        assert_eq!(result.subtitle_content.len(), 2);
+        assert_eq!(result.subtitle_content[0].text, "Earlier");
+        assert_eq!(result.subtitle_content[1].text, "Later\nSame start");
+        assert_eq!(result.subtitle_content[1].end_time, time(22));
+        assert_eq!(result.subtitle_content[0].pos, 1);
+        assert_eq!(result.subtitle_content[1].pos, 2);
     }
 }

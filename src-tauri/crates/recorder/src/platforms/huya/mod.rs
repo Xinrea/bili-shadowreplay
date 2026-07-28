@@ -77,7 +77,7 @@ impl HuyaRecorder {
                     // live status changed, reset current record flag
                     log::info!(
                         "[{}]Live status changed to {}, auto_start: {}",
-                        &self.room_id,
+                        self.room_id,
                         live_status,
                         self.enabled.load(atomic::Ordering::Relaxed)
                     );
@@ -116,7 +116,7 @@ impl HuyaRecorder {
                 true
             }
             Err(e) => {
-                log::warn!("[{}]Update room status failed: {}", &self.room_id, e);
+                log::warn!("[{}]Update room status failed: {}", self.room_id, e);
                 pre_live_status
             }
         }
@@ -164,7 +164,7 @@ impl HuyaRecorder {
             recorder: self.info().await,
         });
 
-        log::debug!("[{}]Stream URL: {}", &self.room_id, stream.hls_url);
+        log::debug!("[{}]Stream URL: {}", self.room_id, stream.hls_url);
 
         let hls_stream =
             construct_stream_from_variant(live_id, &stream.hls_url, Format::TS, Codec::Avc)
@@ -188,7 +188,7 @@ impl HuyaRecorder {
         let hls_recorder = hls_recorder.unwrap();
 
         if let Err(e) = hls_recorder.start().await {
-            log::error!("[{}]Failed to start hls recorder: {}", &self.room_id, e);
+            log::error!("[{}]Failed to start hls recorder: {}", self.room_id, e);
             return Err(e);
         }
 
@@ -210,7 +210,7 @@ impl crate::traits::RecorderTrait<HuyaExtra> for HuyaRecorder {
                             .store(true, atomic::Ordering::Relaxed);
                         let live_id = Utc::now().timestamp_millis().to_string();
                         if let Err(e) = self_clone.update_entries(&live_id).await {
-                            log::error!("[{}]Update entries error: {}", &self_clone.room_id, e);
+                            log::error!("[{}]Update entries error: {}", self_clone.room_id, e);
                         }
                     }
                     if self_clone.is_recording.load(atomic::Ordering::Relaxed) {
@@ -233,7 +233,7 @@ impl crate::traits::RecorderTrait<HuyaExtra> for HuyaRecorder {
                 ))
                 .await;
             }
-            log::info!("[{}]Recording thread quit.", &self_clone.room_id);
+            log::info!("[{}]Recording thread quit.", self_clone.room_id);
         }));
     }
 }

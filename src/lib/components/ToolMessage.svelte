@@ -6,7 +6,12 @@
     ChevronDown,
     ChevronRight,
   } from "lucide-svelte";
-  import { ToolMessage } from "@langchain/core/messages";
+  import {
+    messageContentToDisplayParts,
+    messageContentToMarkdown,
+    type ToolMessage,
+  } from "../agent/messages";
+  import CopyMarkdownButton from "./CopyMarkdownButton.svelte";
 
   export let message: ToolMessage;
   export let formatTime: (date: Date) => string;
@@ -14,14 +19,16 @@
   // 折叠状态 - 默认折叠
   let isExpanded = false;
 
-  // 获取消息时间戳，如果没有则使用当前时间
-  $: messageTime = message.additional_kwargs?.timestamp
-    ? new Date(message.additional_kwargs.timestamp as string | number)
-    : new Date();
+  $: messageTime = new Date(message.timestamp);
+  $: contentParts = messageContentToDisplayParts(message.content);
+
+  function markdownContent(): string {
+    return messageContentToMarkdown(message.content);
+  }
 
   // 获取状态图标和颜色
   function getStatusInfo() {
-    if (message.status === "success" || !message.status) {
+    if (message.status === "success") {
       return {
         icon: CheckCircle,
         color: "text-green-500",
@@ -39,8 +46,7 @@
   }
 
   // 格式化工具调用ID
-  function formatToolCallId(id: string | undefined): string {
-    if (!id) return "";
+  function formatToolCallId(id: string): string {
     return id.length > 8 ? id.slice(-8) : id;
   }
 
@@ -69,6 +75,7 @@
         <span class="text-xs text-gray-500 dark:text-gray-400">
           {formatTime(messageTime)}
         </span>
+        <CopyMarkdownButton content={markdownContent} />
       </div>
 
       <div
@@ -85,13 +92,11 @@
               <span
                 class="text-sm font-medium text-gray-700 dark:text-gray-300"
               >
-                {message.name || "未知工具"}
+                {message.name}
               </span>
-              {#if message.tool_call_id}
-                <span class="text-xs text-gray-500 dark:text-gray-400">
-                  (ID: {formatToolCallId(message.tool_call_id)})
-                </span>
-              {/if}
+              <span class="text-xs text-gray-500 dark:text-gray-400">
+                (ID: {formatToolCallId(message.toolCallId)})
+              </span>
             </div>
           </div>
 
@@ -116,20 +121,35 @@
                 class="bg-gray-50 dark:bg-gray-700 rounded-lg p-3 border border-gray-200 dark:border-gray-600"
               >
                 <div
-                  class="text-sm text-gray-700 dark:text-gray-300 leading-relaxed"
+                  class="space-y-3 text-sm text-gray-700 dark:text-gray-300 leading-relaxed"
                 >
-                  {message.content || "无响应内容"}
+                  {#if contentParts.length === 0}
+                    无响应内容
+                  {:else}
+                    {#each contentParts as part}
+                      {#if part.kind === "image"}
+                        <img
+                          src={part.src}
+                          alt={part.alt}
+                          loading="lazy"
+                          class="max-h-[28rem] max-w-full rounded-lg border border-gray-200 object-contain dark:border-gray-600"
+                        />
+                      {:else if part.format === "json"}
+                        <pre class="overflow-x-auto whitespace-pre-wrap break-words text-xs">{part.text}</pre>
+                      {:else}
+                        <div class="whitespace-pre-wrap break-words">{part.text}</div>
+                      {/if}
+                    {/each}
+                  {/if}
                 </div>
               </div>
             {/if}
           </div>
 
           <!-- 状态信息 -->
-          {#if message.status}
-            <div class="mt-2 text-xs text-gray-500 dark:text-gray-400">
-              状态: {message.status}
-            </div>
-          {/if}
+          <div class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+            状态: {message.status}
+          </div>
         </div>
       </div>
     </div>

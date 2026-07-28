@@ -90,8 +90,8 @@ fn main() {
             if let Some(target) = macos_deployment_target() {
                 config.define("CMAKE_OSX_DEPLOYMENT_TARGET", &target);
                 config.define("GGML_METAL_MACOSX_VERSION_MIN", &target);
-                config.cflag(&format!("-mmacosx-version-min={target}"));
-                config.cxxflag(&format!("-mmacosx-version-min={target}"));
+                config.cflag(format!("-mmacosx-version-min={target}"));
+                config.cxxflag(format!("-mmacosx-version-min={target}"));
             }
 
             config.define("WHISPER_METAL", "ON");

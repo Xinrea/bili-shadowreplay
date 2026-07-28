@@ -148,7 +148,7 @@ impl DouyinRecorder {
                     // parse info.stream_data into DouyinStream
                     let stream_data = info.stream_data.clone();
                     let Ok(stream) = serde_json::from_str::<DouyinStream>(&stream_data) else {
-                        log::error!("Failed to parse stream data: {:#?}", &info);
+                        log::error!("Failed to parse stream data: {:#?}", info);
                         return false;
                     };
                     let Some(new_stream_url) = get_best_stream_url(&stream) else {
@@ -164,7 +164,7 @@ impl DouyinRecorder {
                 true
             }
             Err(e) => {
-                log::warn!("[{}]Update room status failed: {}", &self.room_id, e);
+                log::warn!("[{}]Update room status failed: {}", self.room_id, e);
                 pre_live_status
             }
         }

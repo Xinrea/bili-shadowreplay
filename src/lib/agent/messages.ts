@@ -1,0 +1,314 @@
+export type MessageContent = string | unknown[];
+
+export interface ToolCall {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+  executed: boolean;
+  error?: string | null;
+}
+
+export interface HumanMessage {
+  kind: "human";
+  content: string;
+  timestamp: string;
+}
+
+export interface AssistantMessage {
+  kind: "assistant";
+  content: MessageContent;
+  timestamp: string;
+  toolCalls: ToolCall[];
+  isError?: boolean;
+}
+
+export interface ToolMessage {
+  kind: "tool";
+  content: MessageContent;
+  timestamp: string;
+  name: string;
+  toolCallId: string;
+  status: "success" | "error";
+  resolution: "confirmed" | "rejected";
+}
+
+export type ChatMessage = HumanMessage | AssistantMessage | ToolMessage;
+
+export interface MessageTextPart {
+  kind: "text";
+  text: string;
+  format: "markdown" | "json";
+}
+
+export interface MessageImagePart {
+  kind: "image";
+  src: string;
+  alt: string;
+}
+
+export type MessageDisplayPart = MessageTextPart | MessageImagePart;
+
+function imageDisplayPart(value: unknown): MessageImagePart | null {
+  if (!isRecord(value)) return null;
+
+  const type = typeof value.type === "string" ? value.type.toLowerCase() : "";
+  const mimeType = typeof value.mimeType === "string"
+    ? value.mimeType
+    : typeof value.mime_type === "string"
+      ? value.mime_type
+      : "";
+  const imageUrl = isRecord(value.image_url)
+    ? value.image_url.url
+    : value.image_url;
+  const source = typeof value.data === "string"
+    ? value.data
+    : typeof value.image_base64 === "string"
+      ? value.image_base64
+      : typeof imageUrl === "string"
+        ? imageUrl
+        : null;
+
+  if (!source) return null;
+  const isImage = type === "image" || type === "image_url" ||
+    typeof value.image_base64 === "string" ||
+    mimeType.startsWith("image/") || source.startsWith("data:image/");
+  if (!isImage) return null;
+
+  const safeMimeType = /^image\/[a-z0-9.+-]+$/i.test(mimeType)
+    ? mimeType
+    : "image/jpeg";
+  const src = source.startsWith("data:") || /^(https?:|blob:)/.test(source)
+    ? source
+    : `data:${safeMimeType};base64,${source}`;
+
+  return {
+    kind: "image",
+    src,
+    alt: typeof value.alt === "string" ? value.alt : "消息图片",
+  };
+}
+
+function displayPartsFromValue(value: unknown): MessageDisplayPart[] {
+  if (typeof value === "string") {
+    return [{ kind: "text", text: value, format: "markdown" }];
+  }
+  if (Array.isArray(value)) return value.flatMap(displayPartsFromValue);
+
+  const image = imageDisplayPart(value);
+  if (image) return [image];
+  const structured = structuredImageParts(value);
+  if (structured) return structured;
+
+  if (isRecord(value) && value.type === "text" && typeof value.text === "string") {
+    return [{ kind: "text", text: value.text, format: "markdown" }];
+  }
+
+  return [{
+    kind: "text",
+    text: JSON.stringify(value, null, 2) ?? String(value),
+    format: "json",
+  }];
+}
+
+function structuredImageParts(value: unknown): MessageDisplayPart[] | null {
+  if (!isRecord(value) || !Array.isArray(value.parts)) return null;
+
+  const parts = value.parts.flatMap(displayPartsFromValue);
+  if (!parts.some((part) => part.kind === "image")) return null;
+
+  const summary = Object.fromEntries(
+    Object.entries(value).filter(([key]) => key !== "parts"),
+  );
+  if (Object.keys(summary).length === 0) return parts;
+
+  return [{
+    kind: "text",
+    text: JSON.stringify(summary, null, 2),
+    format: "json",
+  }, ...parts];
+}
+
+export function messageContentToDisplayParts(
+  content: MessageContent,
+): MessageDisplayPart[] {
+  if (Array.isArray(content)) return content.flatMap(displayPartsFromValue);
+
+  try {
+    const structured = structuredImageParts(JSON.parse(content));
+    if (structured) return structured;
+  } catch {
+    // Ordinary message text is not expected to be valid JSON.
+  }
+
+  return [{ kind: "text", text: content, format: "markdown" }];
+}
+
+export function messageContentToMarkdown(content: MessageContent): string {
+  return messageContentToDisplayParts(content)
+    .map((part) => {
+      if (part.kind === "image") return `![${part.alt}](${part.src})`;
+      return part.format === "json"
+        ? `\`\`\`json\n${part.text}\n\`\`\``
+        : part.text;
+    })
+    .join("\n\n");
+}
+
+export function isAssistantMessage(
+  message: ChatMessage,
+): message is AssistantMessage {
+  return message.kind === "assistant";
+}
+
+export function isToolMessage(message: ChatMessage): message is ToolMessage {
+  return message.kind === "tool";
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export function normalizeToolArguments(value: unknown): Record<string, unknown> {
+  let parsed = value;
+  if (typeof value === "string") {
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      return {};
+    }
+  }
+  if (!isRecord(parsed)) return {};
+
+  return normalizeArgumentValue(parsed) as Record<string, unknown>;
+}
+
+function snakeCaseKey(key: string): string {
+  return key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+}
+
+function normalizeArgumentValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(normalizeArgumentValue);
+  if (!isRecord(value)) return value;
+
+  const normalized: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    const canonical = snakeCaseKey(key);
+    if (canonical === key) normalized[canonical] = normalizeArgumentValue(item);
+  }
+  for (const [key, item] of Object.entries(value)) {
+    const canonical = snakeCaseKey(key);
+    if (!(canonical in normalized)) {
+      normalized[canonical] = normalizeArgumentValue(item);
+    }
+  }
+  return normalized;
+}
+
+function messageContent(value: unknown): MessageContent {
+  if (typeof value === "string" || Array.isArray(value)) return value;
+  return value == null ? "" : JSON.stringify(value);
+}
+
+function timestamp(value: unknown): string {
+  if (typeof value === "string" || typeof value === "number") {
+    const date = new Date(value);
+    if (!Number.isNaN(date.getTime())) return date.toISOString();
+  }
+  return new Date().toISOString();
+}
+
+export function normalizeToolCalls(value: unknown): ToolCall[] {
+  if (!Array.isArray(value)) return [];
+
+  return value.flatMap((raw): ToolCall[] => {
+    if (!isRecord(raw) || !raw.id || !raw.name) return [];
+    return [{
+      id: String(raw.id),
+      name: String(raw.name),
+      args: normalizeToolArguments(raw.args),
+      executed: raw.executed !== false,
+      error: raw.error == null ? null : String(raw.error),
+    }];
+  });
+}
+
+function wasRejected(content: MessageContent): boolean {
+  if (typeof content !== "string") return false;
+  try {
+    const value = JSON.parse(content);
+    return isRecord(value) && value.rejected === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Reads both the current message shape and the former persisted format.
+ * Legacy fields are normalized here and never leak into the application.
+ */
+export function deserializeMessages(stored: unknown): ChatMessage[] {
+  if (!Array.isArray(stored)) return [];
+
+  return stored.flatMap((raw): ChatMessage[] => {
+    if (!isRecord(raw)) return [];
+
+    const fields = isRecord(raw.kwargs) ? raw.kwargs : raw;
+    const legacyId = Array.isArray(raw.id) ? raw.id.join("/") : String(raw.id ?? "");
+    const kind = raw.kind ??
+      (legacyId.includes("HumanMessage")
+        ? "human"
+        : legacyId.includes("AIMessage")
+          ? "assistant"
+          : legacyId.includes("ToolMessage")
+            ? "tool"
+            : undefined);
+    const additional = isRecord(fields.additional_kwargs)
+      ? fields.additional_kwargs
+      : isRecord(raw.additional_kwargs)
+        ? raw.additional_kwargs
+        : {};
+    const savedTimestamp = fields.timestamp ?? raw.timestamp ?? additional.timestamp;
+
+    if (kind === "human") {
+      const content = messageContent(fields.content ?? raw.content);
+      return [{
+        kind: "human",
+        content: typeof content === "string" ? content : JSON.stringify(content),
+        timestamp: timestamp(savedTimestamp),
+      }];
+    }
+
+    if (kind === "assistant") {
+      return [{
+        kind: "assistant",
+        content: messageContent(fields.content ?? raw.content),
+        timestamp: timestamp(savedTimestamp),
+        toolCalls: normalizeToolCalls(
+          fields.toolCalls ?? raw.toolCalls ?? fields.tool_calls ?? raw.tool_calls,
+        ),
+        isError: fields.isError === true || raw.isError === true || additional.isError === true,
+      }];
+    }
+
+    if (kind === "tool") {
+      const toolCallId = fields.toolCallId ?? raw.toolCallId ??
+        fields.tool_call_id ?? raw.tool_call_id;
+      if (!toolCallId) return [];
+      const content = messageContent(fields.content ?? raw.content);
+      const resolution = fields.resolution ?? raw.resolution;
+      return [{
+        kind: "tool",
+        content,
+        timestamp: timestamp(savedTimestamp),
+        name: String(fields.name ?? raw.name ?? "未知工具"),
+        toolCallId: String(toolCallId),
+        status: fields.status === "error" || raw.status === "error" ? "error" : "success",
+        resolution: resolution === "rejected" || wasRejected(content)
+          ? "rejected"
+          : "confirmed",
+      }];
+    }
+
+    return [];
+  });
+}

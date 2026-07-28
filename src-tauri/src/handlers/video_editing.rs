@@ -63,6 +63,15 @@ fn get_ffprobe_path() -> PathBuf {
     path
 }
 
+fn resolve_video_path(output_dir: &Path, file: &str) -> PathBuf {
+    let path = PathBuf::from(file);
+    if path.is_absolute() {
+        path
+    } else {
+        output_dir.join(path)
+    }
+}
+
 /// Extract frames from a video at specific timestamps or evenly distributed
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn extract_video_frames(
@@ -78,9 +87,10 @@ pub async fn extract_video_frames(
         .await
         .map_err(|e| format!("Failed to get video: {}", e))?;
 
-    let video_path = PathBuf::from(&video.file);
+    let output_dir = PathBuf::from(&state.config.read().await.output);
+    let video_path = resolve_video_path(&output_dir, &video.file);
     if !video_path.exists() {
-        return Err("Video file not found".to_string());
+        return Err(format!("Video file not found: {}", video_path.display()));
     }
 
     // Get video duration
@@ -179,7 +189,8 @@ pub async fn get_video_metadata(
         .await
         .map_err(|e| format!("Failed to get video: {}", e))?;
 
-    let video_path = PathBuf::from(&video.file);
+    let output_dir = PathBuf::from(&state.config.read().await.output);
+    let video_path = resolve_video_path(&output_dir, &video.file);
     get_video_metadata_internal(&video_path).await
 }
 
@@ -441,6 +452,10 @@ pub async fn merge_videos(
 
     // Determine output path
     let output_dir = PathBuf::from(&state.config.read().await.output);
+    let video_paths = videos
+        .iter()
+        .map(|video| resolve_video_path(&output_dir, &video.file))
+        .collect::<Vec<_>>();
     let output_filename = format!(
         "merged_{}_{}.mp4",
         chrono::Local::now().format("%Y%m%d_%H%M%S"),
@@ -457,11 +472,14 @@ pub async fn merge_videos(
         let concat_file = std::env::temp_dir().join(format!("concat_{}.txt", uuid::Uuid::new_v4()));
         let mut concat_content = String::new();
 
-        for video in &videos {
+        for video_path in &video_paths {
             // Escape path for FFmpeg concat demuxer
             // Only escape backslashes and single quotes
             // Square brackets work fine inside single quotes
-            let path_str = video.file.replace('\\', "\\\\").replace('\'', "'\\''");
+            let path_str = video_path
+                .to_string_lossy()
+                .replace('\\', "\\\\")
+                .replace('\'', "'\\''");
             concat_content.push_str(&format!("file '{}'\n", path_str));
         }
 
@@ -583,8 +601,8 @@ pub async fn merge_videos(
         }
 
         // Add all input files
-        for video in &videos {
-            cmd.args(["-i", &video.file]);
+        for video_path in &video_paths {
+            cmd.arg("-i").arg(video_path);
         }
 
         // Add filter complex
@@ -667,13 +685,13 @@ pub async fn extract_video_audio(state: state_type!(), video_id: i64) -> Result<
         .await
         .map_err(|e| format!("Failed to get video: {}", e))?;
 
-    let video_path = PathBuf::from(&video.file);
+    let output_dir = PathBuf::from(&state.config.read().await.output);
+    let video_path = resolve_video_path(&output_dir, &video.file);
     if !video_path.exists() {
-        return Err("Video file not found".to_string());
+        return Err(format!("Video file not found: {}", video_path.display()));
     }
 
     // Determine output path
-    let output_dir = PathBuf::from(&state.config.read().await.output);
     let output_filename = format!(
         "audio_{}_{}.mp3",
         video.id,
@@ -764,4 +782,30 @@ pub async fn get_archive_metadata(
         "created_at": archive.created_at,
         "video_metadata": video_metadata,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relative_video_paths_are_resolved_from_output_directory() {
+        let output_dir = Path::new("/configured/output");
+        assert_eq!(
+            resolve_video_path(output_dir, "clip.mp4"),
+            output_dir.join("clip.mp4")
+        );
+    }
+
+    #[test]
+    fn absolute_video_paths_are_preserved() {
+        let video_path = std::env::temp_dir().join("clip.mp4");
+        assert_eq!(
+            resolve_video_path(
+                Path::new("/configured/output"),
+                video_path.to_str().unwrap()
+            ),
+            video_path
+        );
+    }
 }

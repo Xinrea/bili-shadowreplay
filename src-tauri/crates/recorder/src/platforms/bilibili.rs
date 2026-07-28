@@ -207,7 +207,7 @@ impl BiliRecorder {
 
                         log::info!(
                             "[{}]Update to a new stream: {:#?} => {:#?}",
-                            &self.room_id,
+                            self.room_id,
                             pre_live_stream,
                             stream
                         );
@@ -216,11 +216,11 @@ impl BiliRecorder {
                     }
                     Err(e) => {
                         if let crate::errors::RecorderError::FormatNotFound { format } = e {
-                            log::error!("[{}]Format {} not found", &self.room_id, format);
+                            log::error!("[{}]Format {} not found", self.room_id, format);
 
                             true
                         } else {
-                            log::error!("[{}]Fetch stream failed: {}", &self.room_id, e);
+                            log::error!("[{}]Fetch stream failed: {}", self.room_id, e);
 
                             true
                         }
@@ -228,7 +228,7 @@ impl BiliRecorder {
                 }
             }
             Err(e) => {
-                log::error!("[{}]Update room status failed: {}", &self.room_id, e);
+                log::error!("[{}]Update room status failed: {}", self.room_id, e);
                 // may encounter internet issues, not sure whether the stream is closed or started, just remain
                 pre_live_status
             }
@@ -241,7 +241,7 @@ impl BiliRecorder {
         let danmu_stream = DanmuStream::new(ProviderType::BiliBili, &cookies, &room_id).await;
         if danmu_stream.is_err() {
             let err = danmu_stream.err().unwrap();
-            log::error!("[{}]Failed to create danmu stream: {}", &self.room_id, err);
+            log::error!("[{}]Failed to create danmu stream: {}", self.room_id, err);
             return Err(crate::errors::RecorderError::DanmuStreamError(err));
         }
         let danmu_stream = danmu_stream.unwrap();
@@ -253,11 +253,11 @@ impl BiliRecorder {
                 start_res = &mut start_fut => {
                     match start_res {
                         Ok(_) => {
-                            log::info!("[{}]Danmu stream finished", &self.room_id);
+                            log::info!("[{}]Danmu stream finished", self.room_id);
                             return Ok(());
                         }
                         Err(err) => {
-                            log::error!("[{}]Danmu stream start error: {}", &self.room_id, err);
+                            log::error!("[{}]Danmu stream start error: {}", self.room_id, err);
                             return Err(crate::errors::RecorderError::DanmuStreamError(err));
                         }
                     }
@@ -280,11 +280,11 @@ impl BiliRecorder {
                             }
                         }
                         Ok(None) => {
-                            log::info!("[{}]Danmu stream closed", &self.room_id);
+                            log::info!("[{}]Danmu stream closed", self.room_id);
                             return Ok(());
                         }
                         Err(err) => {
-                            log::error!("[{}]Failed to receive danmu message: {}", &self.room_id, err);
+                            log::error!("[{}]Failed to receive danmu message: {}", self.room_id, err);
                             return Err(crate::errors::RecorderError::DanmuStreamError(err));
                         }
                     }

@@ -1,6 +1,8 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(feature = "gui")]
+mod agent;
 mod audio_utils;
 mod config;
 mod constants;
@@ -14,6 +16,7 @@ mod migration;
 mod progress;
 mod recorder_manager;
 mod state;
+#[cfg(feature = "gui")]
 mod static_server;
 mod subtitle_generator;
 mod task;
@@ -435,7 +438,7 @@ impl MigrationSource<'static> for MigrationList {
 async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Error>> {
     use std::path::PathBuf;
 
-    use crate::{constants::API_PORT, static_server::StaticServer, task::TaskManager};
+    use crate::task::TaskManager;
     use progress::progress_manager::ProgressManager;
     use progress::progress_reporter::EventEmitter;
 
@@ -493,11 +496,6 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
         webhook_poster.clone(),
     ));
 
-    // In headless/Docker, cache and output are served from the API server (API_PORT), so no
-    // separate static server is needed and only one port need be exposed. Use a dedicated
-    // constructor to make this intent explicit.
-    let static_server = Arc::new(StaticServer::headless(API_PORT));
-
     let _ = try_rebuild_archives(&db, config.read().await.cache.clone().into()).await;
     let _ = try_convert_live_covers(&db, config.read().await.cache.clone().into()).await;
     let _ = try_convert_clip_covers(&db, config.read().await.output.clone().into()).await;
@@ -510,7 +508,6 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
         webhook_poster,
         recorder_manager,
         task_manager,
-        static_server,
         progress_manager,
         readonly: args.readonly,
     })
@@ -726,6 +723,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::video_editing::search_danmu_keywords,
         crate::handlers::video_editing::merge_videos,
         crate::handlers::video_editing::extract_video_audio,
+        crate::agent::agent_chat,
     ])
 }
 

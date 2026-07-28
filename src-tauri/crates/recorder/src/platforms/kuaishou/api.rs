@@ -803,7 +803,7 @@ pub async fn get_stream_urls(
         });
     }
 
-    all_representations.sort_by(|a, b| b.bitrate.unwrap_or(0).cmp(&a.bitrate.unwrap_or(0)));
+    all_representations.sort_by_key(|item| std::cmp::Reverse(item.bitrate.unwrap_or(0)));
 
     // Remove duplicates based on URL
     let mut seen_urls = std::collections::HashSet::new();

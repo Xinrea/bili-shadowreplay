@@ -1,25 +1,31 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { Settings, Send, Sparkles, Trash2, Zap, MessageSquare, Bot } from "lucide-svelte";
-  import createAgent, { type AgentConfig } from "../lib/agent/agent";
-  import { tools } from "../lib/agent/tools";
+  import { Settings, Send, Sparkles, Trash2, Zap, Bot } from "lucide-svelte";
   import {
-    HumanMessage,
-    AIMessage,
-    ToolMessage,
-  } from "@langchain/core/messages";
+    agentChat,
+    type AgentConfig,
+  } from "../lib/agent/agent";
+  import { invokeToolByName } from "../lib/agent/tools";
+  import {
+    deserializeMessages,
+    isAssistantMessage,
+    isToolMessage,
+    type ChatMessage,
+    type ToolCall,
+    type ToolMessage,
+  } from "../lib/agent/messages";
   import HumanMessageComponent from "../lib/components/HumanMessage.svelte";
   import AIMessageComponent from "../lib/components/AIMessage.svelte";
   import ProcessingMessageComponent from "../lib/components/ProcessingMessage.svelte";
   import ToolMessageComponent from "../lib/components/ToolMessage.svelte";
   import SettingsModal from "../lib/components/ai/SettingsModal.svelte";
 
-  let messages: any[] = [];
+  let messages: ChatMessage[] = [];
   let inputMessage = "";
   let isProcessing = false;
   let messageContainer: HTMLElement;
   let inputAreaHeight = 0;
-  let agent = null;
+  let agentConfig: AgentConfig | null = null;
 
   // 设置相关状态
   let showSettings = false;
@@ -31,8 +37,8 @@
     model: ""
   };
 
-  let availableModels = [];
-  const toolCallStates = new Map<string, 'confirmed' | 'rejected' | 'none'>();
+  let availableModels: Array<{ value: string; label: string }> = [];
+  type ToolCallState = 'confirmed' | 'rejected' | 'none';
 
   // 预设提示词
   const presetPrompts = [
@@ -47,31 +53,28 @@
   function openSettings() { showSettings = true; }
   function closeSettings() { showSettings = false; }
 
+  function buildAgentConfig(): AgentConfig | null {
+    if (settings.provider === 'ollama') {
+      if (!settings.endpoint && !settings.model) return null;
+      return {
+        provider: 'ollama',
+        baseURL: settings.endpoint || 'http://localhost:11434',
+        model: settings.model.trim() || 'llama2',
+      };
+    }
+    if (!settings.api_key || !settings.endpoint || !settings.model.trim()) return null;
+    return {
+      provider: 'openai',
+      apiKey: settings.api_key,
+      baseURL: settings.endpoint,
+      model: settings.model.trim(),
+    };
+  }
+
   async function saveSettings() {
     localStorage.setItem('ai_settings', JSON.stringify(settings));
-    if (settings.provider === 'ollama') {
-      if (settings.endpoint || settings.model) {
-        agent = createAgent({
-          provider: 'ollama',
-          baseURL: settings.endpoint || 'http://localhost:11434',
-          model: settings.model || 'llama2',
-        });
-      } else {
-        agent = null;
-      }
-    } else {
-      if (settings.api_key && settings.endpoint) {
-        agent = createAgent({
-          provider: 'openai',
-          apiKey: settings.api_key,
-          baseURL: settings.endpoint,
-          model: settings.model || undefined,
-        });
-        await loadModels();
-      } else {
-        agent = null;
-      }
-    }
+    agentConfig = buildAgentConfig();
+    if (settings.provider === 'openai') await loadModels();
     closeSettings();
   }
 
@@ -108,35 +111,51 @@
 
   function loadSettings() {
     const savedSettings = localStorage.getItem('ai_settings');
-    if (savedSettings) {
+    if (!savedSettings) return;
+    try {
       settings = { ...settings, ...JSON.parse(savedSettings) };
-      if (settings.provider === 'ollama') {
-        if (settings.endpoint || settings.model) {
-          agent = createAgent({
-            provider: 'ollama',
-            baseURL: settings.endpoint || 'http://localhost:11434',
-            model: settings.model || 'llama2',
-          });
-        }
-      } else {
-        if (settings.api_key && settings.endpoint) {
-          agent = createAgent({
-            provider: 'openai',
-            apiKey: settings.api_key,
-            baseURL: settings.endpoint,
-            model: settings.model || undefined,
-          });
-          loadModels();
-        }
-      }
+      agentConfig = buildAgentConfig();
+      if (settings.provider === 'openai') loadModels();
+    } catch (error) {
+      console.error('Failed to load AI settings:', error);
     }
   }
 
-  function getToolCallState(message: any): 'confirmed' | 'rejected' | 'none' {
-    if (message.tool_calls && message.tool_calls.length > 0) {
-      return toolCallStates.get(message.tool_calls[0]?.id) || 'none';
+  function getToolCallState(toolCallId: string): ToolCallState {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (isToolMessage(message) && message.toolCallId === toolCallId) {
+        return message.resolution;
+      }
     }
     return 'none';
+  }
+
+  function hasUnresolvedPendingToolCalls(): boolean {
+    return messages.some(
+      (message) =>
+        isAssistantMessage(message) &&
+        message.toolCalls.some(
+          (toolCall) =>
+            toolCall.executed === false &&
+            getToolCallState(toolCall.id) === 'none',
+        ),
+    );
+  }
+
+  $: hasPendingToolCalls = hasUnresolvedPendingToolCalls();
+
+  function persistConversation() {
+    try {
+      localStorage.setItem('messages', JSON.stringify(messages));
+    } catch (error) {
+      console.error('Failed to persist AI conversation:', error);
+    }
+  }
+
+  function toolResultContent(result: unknown): string {
+    if (typeof result === 'string') return result;
+    return JSON.stringify(result) ?? String(result);
   }
 
   function scrollToBottom() {
@@ -145,15 +164,9 @@
     }
   }
 
-  function formatTime(timestamp: string): string {
+  function formatTime(timestamp: string | Date): string {
     const date = new Date(timestamp);
     return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-  }
-
-  function isSensitiveToolCall(message: any): boolean {
-    if (!message.tool_calls || message.tool_calls.length === 0) return false;
-    const sensitiveTools = ['delete_recorder', 'delete_archive', 'delete_video'];
-    return message.tool_calls.some((toolCall: any) => sensitiveTools.includes(toolCall.name));
   }
 
   async function handlePresetPrompt(prompt: string) {
@@ -162,247 +175,139 @@
   }
 
   async function sendMessage() {
-    if (!inputMessage.trim() || isProcessing || !agent) return;
-    const userMessage = new HumanMessage({ content: inputMessage });
-    userMessage.additional_kwargs = { ...userMessage.additional_kwargs, timestamp: new Date().toISOString() };
-    messages = [...messages, userMessage];
+    if (!inputMessage.trim() || isProcessing || hasPendingToolCalls || !agentConfig) return;
+    messages = [...messages, {
+      kind: 'human',
+      content: inputMessage,
+      timestamp: new Date().toISOString(),
+    }];
     inputMessage = "";
     isProcessing = true;
     scrollToBottom();
     try {
-      await continueAgentFlow([userMessage]);
+      await continueAgentFlow();
     } finally {
       isProcessing = false;
       scrollToBottom();
     }
   }
 
-  // Define tool whitelist - tools that auto-execute without user confirmation
-  const autoExecuteTools = new Set([
-    'get_accounts',
-    'get_recorder_list',
-    'get_recorder_info',
-    'get_archives',
-    'get_archive',
-    'get_background_tasks',
-    'get_videos',
-    'get_all_videos',
-    'get_video',
-    'get_video_cover',
-    'get_video_typelist',
-    'get_video_subtitle',
-    'get_danmu_record',
-    'get_recent_record',
-    'get_recent_record_all',
-    'get_archive_subtitle',
-    'get_video_metadata',
-    'get_archive_metadata',
-  ]);
-
-  async function continueAgentFlow(newMessages: any[]) {
-    const config = { configurable: { thread_id: "1" } };
-
+  async function continueAgentFlow() {
+    if (!agentConfig) return;
     try {
-      const stream = await agent.stream({ messages: newMessages }, config);
-
-      let lastAIMessage = null;
-      for await (const chunk of stream) {
-        if (chunk.agent) {
-          const agentMessages = chunk.agent.messages;
-          for (const msg of agentMessages) {
-            if (msg instanceof AIMessage) {
-              msg.additional_kwargs = { ...msg.additional_kwargs, timestamp: new Date().toISOString() };
-              messages = [...messages, msg];
-              lastAIMessage = msg;
-              scrollToBottom();
-            }
-          }
-        }
-      }
-
-    localStorage.setItem('messages', JSON.stringify(messages));
-    const toolCallStatesObj = Object.fromEntries(toolCallStates);
-    localStorage.setItem('toolCallStates', JSON.stringify(toolCallStatesObj));
-
-    // After stream ends, check if we need to auto-execute whitelisted tools
-    if (lastAIMessage?.tool_calls && lastAIMessage.tool_calls.length > 0) {
-      const autoExecutableTools = lastAIMessage.tool_calls.filter(
-        (toolCall: any) => autoExecuteTools.has(toolCall.name)
-      );
-
-      // If all tool calls are whitelisted, auto-execute them
-      if (autoExecutableTools.length === lastAIMessage.tool_calls.length) {
-        const toolResults: any[] = [];
-
-        for (const toolCall of autoExecutableTools) {
-          // Mark as confirmed
-          toolCallStates.set(toolCall.id, 'confirmed');
-
-          // Execute tool
-          const tool = tools.find(t => t.name === toolCall.name);
-          if (!tool) {
-            console.error(`Tool ${toolCall.name} not found`);
-            const errorDetails = {
-              error: true,
-              message: `Tool ${toolCall.name} not found`,
-              tool: toolCall.name,
-            };
-            const errorMessage = new ToolMessage({
-              name: toolCall.name,
-              content: JSON.stringify(errorDetails),
-              tool_call_id: toolCall.id || `tool_${Date.now()}`,
-            });
-            errorMessage.additional_kwargs = { ...errorMessage.additional_kwargs, timestamp: new Date().toISOString() };
-            toolResults.push(errorMessage);
-            continue;
-          }
-
-          try {
-            const result = await tool.invoke(toolCall.args);
-            const resultMessage = new ToolMessage({
-              name: toolCall.name,
-              content: typeof result === 'string' ? result : JSON.stringify(result),
-              tool_call_id: toolCall.id || `tool_${Date.now()}`,
-            });
-            resultMessage.additional_kwargs = { ...resultMessage.additional_kwargs, timestamp: new Date().toISOString() };
-            toolResults.push(resultMessage);
-          } catch (error) {
-            console.error(`Error executing tool ${toolCall.name}:`, error);
-            const errorDetails = {
-              error: true,
-              message: error.message || String(error),
-              tool: toolCall.name,
-              args: toolCall.args,
-            };
-            const errorMessage = new ToolMessage({
-              name: toolCall.name,
-              content: JSON.stringify(errorDetails),
-              tool_call_id: toolCall.id || `tool_${Date.now()}`,
-            });
-            errorMessage.additional_kwargs = { ...errorMessage.additional_kwargs, timestamp: new Date().toISOString() };
-            toolResults.push(errorMessage);
-          }
-        }
-
-        // Add all tool results to messages
-        messages = [...messages, ...toolResults];
-        scrollToBottom();
-
-        // Continue agent flow with all tool results
-        await continueAgentFlow(toolResults);
-      }
-    }
+      const response = await agentChat(agentConfig, messages);
+      messages = [...messages, response];
+      persistConversation();
+      scrollToBottom();
     } catch (error) {
       console.error('LLM API Error:', error);
-
-      // Create error message to display to user
-      const errorMessage = new AIMessage({
-        content: `❌ **LLM API 错误**\n\n${error.message || String(error)}\n\n请检查：\n- API 端点是否正确\n- API 密钥是否有效\n- 网络连接是否正常\n- 模型名称是否正确`,
-      });
-      errorMessage.additional_kwargs = {
-        ...errorMessage.additional_kwargs,
+      const message = error instanceof Error ? error.message : String(error);
+      messages = [...messages, {
+        kind: 'assistant',
+        content: `❌ **LLM API 错误**\n\n${message}\n\n请检查：\n- API 端点是否正确\n- API 密钥是否有效\n- 网络连接是否正常\n- 模型名称是否正确`,
         timestamp: new Date().toISOString(),
-        isError: true
-      };
-      messages = [...messages, errorMessage];
+        toolCalls: [],
+        isError: true,
+      }];
+      persistConversation();
       scrollToBottom();
     }
   }
 
-  async function handleToolCallConfirm(toolCall: any) {
+  async function handleToolCallConfirm(toolCall: ToolCall) {
+    if (
+      isProcessing ||
+      toolCall.executed !== false ||
+      !toolCall.id ||
+      getToolCallState(toolCall.id) !== 'none'
+    ) return;
+
     isProcessing = true;
+    let resultMessage: ToolMessage;
     try {
-      // 立即更新状态为 confirmed
-      toolCallStates.set(toolCall.id, 'confirmed');
-      messages = [...messages]; // 触发响应式更新
-      scrollToBottom();
-
-      const tool = tools.find(t => t.name === toolCall.name);
-      if (!tool) {
-        throw new Error(`Tool ${toolCall.name} not found`);
-      }
-
-      let resultMessage: ToolMessage;
-      try {
-        const result = await tool.invoke(toolCall.args);
-        resultMessage = new ToolMessage({
-          name: toolCall.name,
-          content: typeof result === 'string' ? result : JSON.stringify(result),
-          tool_call_id: toolCall.id || `tool_${Date.now()}`,
-        });
-      } catch (error) {
-        // Wrap error as tool result instead of throwing
-        console.error(`Error executing tool ${toolCall.name}:`, error);
-        const errorDetails = {
+      const result = await invokeToolByName(toolCall.name, toolCall.args);
+      resultMessage = {
+        kind: 'tool',
+        name: toolCall.name,
+        content: toolResultContent(result),
+        timestamp: new Date().toISOString(),
+        toolCallId: toolCall.id,
+        status: 'success',
+        resolution: 'confirmed',
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Error executing tool ${toolCall.name}:`, error);
+      resultMessage = {
+        kind: 'tool',
+        name: toolCall.name,
+        content: JSON.stringify({
           error: true,
-          message: error.message || String(error),
+          message,
           tool: toolCall.name,
           args: toolCall.args,
-        };
-        resultMessage = new ToolMessage({
-          name: toolCall.name,
-          content: JSON.stringify(errorDetails),
-          tool_call_id: toolCall.id || `tool_${Date.now()}`,
-        });
+        }),
+        timestamp: new Date().toISOString(),
+        toolCallId: toolCall.id,
+        status: 'error',
+        resolution: 'confirmed',
+      };
+    }
+
+    messages = [...messages, resultMessage];
+    persistConversation();
+    scrollToBottom();
+
+    try {
+      if (!hasUnresolvedPendingToolCalls()) {
+        await continueAgentFlow();
       }
-
-      resultMessage.additional_kwargs = { ...resultMessage.additional_kwargs, timestamp: new Date().toISOString() };
-
-      // 添加工具结果消息到对话中
-      messages = [...messages, resultMessage];
-      scrollToBottom();
-
-      await continueAgentFlow([resultMessage]);
     } finally {
       isProcessing = false;
       scrollToBottom();
     }
   }
 
-  async function handleToolCallReject(toolCall: any) {
-    // 立即更新状态为 rejected
-    toolCallStates.set(toolCall.id, 'rejected');
-    messages = [...messages]; // 触发响应式更新
-    scrollToBottom();
+  async function handleToolCallReject(toolCall: ToolCall) {
+    if (
+      isProcessing ||
+      toolCall.executed !== false ||
+      !toolCall.id ||
+      getToolCallState(toolCall.id) !== 'none'
+    ) return;
 
-    const resultMessage = new ToolMessage({
+    isProcessing = true;
+    const resultMessage: ToolMessage = {
+      kind: 'tool',
       name: toolCall.name,
-      content: "用户选择拒绝执行工具",
-      tool_call_id: toolCall.id || `tool_${Date.now()}`,
-    });
-    resultMessage.additional_kwargs = { ...resultMessage.additional_kwargs, timestamp: new Date().toISOString() };
-
-    // 添加拒绝消息到对话中
+      content: JSON.stringify({
+        rejected: true,
+        message: '用户拒绝执行该工具调用',
+        tool: toolCall.name,
+        args: toolCall.args,
+      }),
+      timestamp: new Date().toISOString(),
+      toolCallId: toolCall.id,
+      status: 'error',
+      resolution: 'rejected',
+    };
     messages = [...messages, resultMessage];
+    persistConversation();
     scrollToBottom();
 
-    await continueAgentFlow([resultMessage]);
-    scrollToBottom();
+    try {
+      if (!hasUnresolvedPendingToolCalls()) {
+        await continueAgentFlow();
+      }
+    } finally {
+      isProcessing = false;
+      scrollToBottom();
+    }
   }
 
-  async function clearConversation() {
+  function clearConversation() {
     messages = [];
-    toolCallStates.clear();
     localStorage.removeItem('messages');
-    localStorage.removeItem('toolCallStates');
-    if (settings.provider === 'ollama') {
-      if (settings.endpoint || settings.model) {
-        agent = createAgent({
-          provider: 'ollama',
-          baseURL: settings.endpoint || 'http://localhost:11434',
-          model: settings.model || 'llama2',
-        });
-      }
-    } else {
-      if (settings.api_key && settings.endpoint) {
-        agent = createAgent({
-          provider: 'openai',
-          apiKey: settings.api_key,
-          baseURL: settings.endpoint,
-          model: settings.model || undefined,
-        });
-      }
-    }
     scrollToBottom();
   }
 
@@ -413,38 +318,15 @@
     }
   }
 
-  onMount(async () => {
+  onMount(() => {
     loadSettings();
-    const previousMessages = JSON.parse(localStorage.getItem('messages') || '[]');
-    messages = previousMessages.map((message: any) => {
-      if (message.id.includes('HumanMessage')) {
-        const msg = new HumanMessage(message.kwargs);
-        if (message.additional_kwargs?.timestamp) {
-          msg.additional_kwargs = { ...msg.additional_kwargs, timestamp: message.additional_kwargs.timestamp };
-        }
-        return msg;
-      } else if (message.id.includes('AIMessage')) {
-        const msg = new AIMessage(message.kwargs);
-        if (message.additional_kwargs?.timestamp) {
-          msg.additional_kwargs = { ...msg.additional_kwargs, timestamp: message.additional_kwargs.timestamp };
-        }
-        return msg;
-      } else if (message.id.includes('ToolMessage')) {
-        const msg = new ToolMessage(message.kwargs);
-        if (message.additional_kwargs?.timestamp) {
-          msg.additional_kwargs = { ...msg.additional_kwargs, timestamp: message.additional_kwargs.timestamp };
-        }
-        return msg;
-      }
-    });
-    toolCallStates.clear();
-    const toolCallStatesString = localStorage.getItem('toolCallStates');
-    if (toolCallStatesString) {
-      const toolCallStatesObj = JSON.parse(toolCallStatesString);
-      for (const [key, value] of Object.entries(toolCallStatesObj)) {
-        toolCallStates.set(key, value as 'confirmed' | 'rejected' | 'none');
-      }
+    try {
+      const previousMessages = JSON.parse(localStorage.getItem('messages') || '[]');
+      messages = deserializeMessages(previousMessages);
+    } catch (error) {
+      console.error('Failed to load AI conversation:', error);
     }
+    localStorage.removeItem('toolCallStates'); // Remove the obsolete parallel state store.
     scrollToBottom();
   });
 </script>
@@ -455,7 +337,7 @@
     <!-- Messages Area -->
     <div class="flex-1 overflow-y-auto" bind:this={messageContainer}>
       <div class="max-w-4xl mx-auto px-6 py-8" style="padding-bottom: {inputAreaHeight + 16}px;">
-        {#if !agent}
+        {#if !agentConfig}
           <!-- Welcome State -->
           <div class="flex items-center justify-center min-h-[500px]">
             <div class="max-w-md text-center space-y-6">
@@ -522,18 +404,18 @@
           <!-- Messages -->
           <div class="space-y-6">
             {#each messages as message, index (index)}
-              {#if message instanceof HumanMessage}
+              {#if message.kind === 'human'}
                 <HumanMessageComponent {message} {formatTime} />
-              {:else if message instanceof AIMessage}
+              {:else if message.kind === 'assistant'}
                 <AIMessageComponent
                   {message}
                   {formatTime}
+                  {getToolCallState}
                   onToolCallConfirm={handleToolCallConfirm}
                   onToolCallReject={handleToolCallReject}
-                  toolCallState={getToolCallState(message)}
-                  isSensitiveToolCall={isSensitiveToolCall(message)}
+                  confirmationDisabled={isProcessing}
                 />
-              {:else if message instanceof ToolMessage}
+              {:else}
                 <ToolMessageComponent {message} {formatTime} />
               {/if}
             {/each}
@@ -557,10 +439,10 @@
             <textarea
               bind:value={inputMessage}
               on:keypress={handleKeyPress}
-              placeholder={!agent ? "请先配置 AI 模型..." : "输入您的消息..."}
+              placeholder={!agentConfig ? "请先配置 AI 模型..." : hasPendingToolCalls ? "请先确认或拒绝待执行的工具调用..." : "输入您的消息..."}
               class="w-full px-4 pt-3 pb-3 border-0 bg-transparent text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-0 resize-none min-h-[52px] max-h-[200px] text-[15px] leading-relaxed disabled:opacity-50 disabled:cursor-not-allowed"
               rows="1"
-              disabled={isProcessing || !agent}
+              disabled={isProcessing || hasPendingToolCalls || !agentConfig}
             ></textarea>
           </div>
 
@@ -574,7 +456,7 @@
                 title="点击配置模型"
               >
                 <Bot class="w-3.5 h-3.5" />
-                {#if agent}
+                {#if agentConfig}
                   <span>{settings.provider === 'ollama' ? 'Ollama' : 'OpenAI'} · {settings.model || '未设置模型'}</span>
                 {:else}
                   <span>未配置模型</span>
@@ -584,7 +466,7 @@
               <button
                 class="flex items-center space-x-1 px-2 py-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 on:click={clearConversation}
-                disabled={!agent}
+                disabled={!agentConfig}
                 title="清空对话"
               >
                 <Trash2 class="w-3.5 h-3.5" />
@@ -598,7 +480,7 @@
               {/if}
               <button
                 class="px-3 py-1.5 bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 rounded-lg hover:bg-gray-800 dark:hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center space-x-1.5 text-sm font-medium"
-                disabled={!inputMessage.trim() || isProcessing || !agent}
+                disabled={!inputMessage.trim() || isProcessing || hasPendingToolCalls || !agentConfig}
                 on:click={sendMessage}
               >
                 <Send class="w-3.5 h-3.5" />

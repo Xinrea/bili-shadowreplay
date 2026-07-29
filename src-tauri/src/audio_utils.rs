@@ -1,10 +1,8 @@
-/// Audio utility functions: VAD (Voice Activity Detection) and
-/// Cut & Merge segmentation for long-form audio preprocessing.
-///
-/// Based on the WhisperX paper (Bain et al., 2023):
-///   - VAD to find speech boundaries at natural silence points
-///   - Cut segments > 30s at minimum-energy points
-///   - Merge adjacent short segments ≤ 30s
+use std::path::Path;
+
+use sherpa_onnx::{SileroVadModelConfig, VadModelConfig, VoiceActivityDetector};
+
+/// Audio utility functions for Silero VAD and Cut & Merge segmentation.
 ///
 /// A speech segment with start and end times in seconds.
 #[derive(Debug, Clone)]
@@ -13,195 +11,77 @@ pub struct SpeechSegment {
     pub end: f64,
 }
 
-/// Energy-based VAD on 16kHz mono f32 PCM samples.
-///
-/// Returns speech segments sorted by start time.
-#[allow(dead_code)]
-pub fn energy_vad(samples: &[f32], sample_rate: u32) -> Vec<SpeechSegment> {
-    energy_vad_with_energies(samples, sample_rate).0
-}
-
-/// Energy-based VAD on 16kHz mono f32 PCM samples.
-///
-/// Returns speech segments, per-frame RMS energies and the frame duration in seconds.
-pub fn energy_vad_with_energies(
+pub fn silero_vad(
     samples: &[f32],
     sample_rate: u32,
-) -> (Vec<SpeechSegment>, Vec<f64>, f64) {
-    if samples.is_empty() {
-        return (vec![], vec![], 0.01);
+    model_path: &Path,
+) -> Result<Vec<SpeechSegment>, String> {
+    if sample_rate != 16_000 {
+        return Err(format!(
+            "Silero VAD expects 16000 Hz audio, got {sample_rate} Hz"
+        ));
     }
 
-    let frame_len = ((sample_rate as f64 * 0.025) as usize).max(1); // 25ms frames
-    let frame_step = ((sample_rate as f64 * 0.010) as usize).max(1); // 10ms hop
+    let config = VadModelConfig {
+        silero_vad: SileroVadModelConfig {
+            model: Some(model_path.to_string_lossy().into_owned()),
+            threshold: 0.5,
+            min_silence_duration: 0.25,
+            min_speech_duration: 0.25,
+            window_size: 512,
+            max_speech_duration: 28.0,
+        },
+        sample_rate: sample_rate as i32,
+        num_threads: 1,
+        provider: Some("cpu".to_string()),
+        debug: false,
+        ..Default::default()
+    };
+    let vad = VoiceActivityDetector::create(&config, 30.0)
+        .ok_or_else(|| "Failed to create sherpa-onnx Silero VAD".to_string())?;
 
-    // Compute RMS energy per frame
-    let mut energies: Vec<f64> = Vec::new();
+    let mut segments = Vec::new();
+    let mut drain_segments = || {
+        while let Some(segment) = vad.front() {
+            let start = segment.start().max(0) as f64 / f64::from(sample_rate);
+            let end = start + segment.n().max(0) as f64 / f64::from(sample_rate);
+            drop(segment);
+            vad.pop();
+            if end > start {
+                segments.push(SpeechSegment { start, end });
+            }
+        }
+    };
+
+    for chunk in samples.chunks(512) {
+        vad.accept_waveform(chunk);
+        drain_segments();
+    }
+    vad.flush();
+    drain_segments();
+
+    Ok(segments)
+}
+
+pub fn rms_energies(samples: &[f32], sample_rate: u32) -> (Vec<f64>, f64) {
+    if samples.is_empty() || sample_rate == 0 {
+        return (vec![], 0.01);
+    }
+
+    let frame_len = ((sample_rate as f64 * 0.025) as usize).max(1);
+    let frame_step = ((sample_rate as f64 * 0.010) as usize).max(1);
+    let mut energies = Vec::new();
     let mut pos = 0;
     while pos + frame_len <= samples.len() {
         let sum_sq: f64 = samples[pos..pos + frame_len]
             .iter()
-            .map(|&s| (s as f64) * (s as f64))
+            .map(|&sample| f64::from(sample) * f64::from(sample))
             .sum();
-        let rms = (sum_sq / frame_len as f64).sqrt();
-        energies.push(rms);
+        energies.push((sum_sq / frame_len as f64).sqrt());
         pos += frame_step;
     }
 
-    if energies.is_empty() {
-        return (vec![], energies, frame_step as f64 / sample_rate as f64);
-    }
-
-    // Dynamic threshold: use a fraction of the median energy of
-    // frames that are above the absolute silence floor.
-    let silence_floor = 1e-4;
-    let active: Vec<f64> = energies
-        .iter()
-        .copied()
-        .filter(|&e| e > silence_floor)
-        .collect();
-
-    if active.is_empty() {
-        return (vec![], energies, frame_step as f64 / sample_rate as f64);
-    }
-
-    let mut sorted = active.clone();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let median_energy = sorted[sorted.len() / 2];
-
-    // Use a stricter onset threshold to avoid treating background
-    // noise/music as speech.  silence_floor * 20 is a hard floor.
-    let onset_threshold = (median_energy * 0.5).max(silence_floor * 20.0);
-
-    // Classify each frame as speech (true) or silence (false)
-    let frame_sec = frame_step as f64 / sample_rate as f64;
-    let mut is_speech: Vec<bool> = energies.iter().map(|&e| e > onset_threshold).collect();
-
-    // Temporal smoothing: fill short gaps inside phrases and remove only
-    // extremely short speech bursts. The previous thresholds were too
-    // aggressive for conversational clips and dropped many real utterances.
-    let min_speech_frames = ((0.15 / frame_sec) as usize).max(1);
-    let max_gap_frames = ((0.20 / frame_sec) as usize).max(1);
-
-    // Remove short speech bursts
-    let mut i = 0;
-    while i < is_speech.len() {
-        if is_speech[i] {
-            let mut j = i;
-            while j < is_speech.len() && is_speech[j] {
-                j += 1;
-            }
-            if j - i < min_speech_frames {
-                for item in is_speech.iter_mut().take(j).skip(i) {
-                    *item = false;
-                }
-            }
-            i = j;
-        } else {
-            i += 1;
-        }
-    }
-
-    // Fill short gaps
-    i = 0;
-    while i < is_speech.len() {
-        if !is_speech[i] {
-            let mut j = i;
-            while j < is_speech.len() && !is_speech[j] {
-                j += 1;
-            }
-            if j - i < max_gap_frames && i > 0 && j < is_speech.len() {
-                for item in is_speech.iter_mut().take(j).skip(i) {
-                    *item = true;
-                }
-            }
-            i = j;
-        } else {
-            i += 1;
-        }
-    }
-
-    // Extract contiguous speech segments
-    let mut segments = Vec::new();
-    i = 0;
-    while i < is_speech.len() {
-        if is_speech[i] {
-            let start = i as f64 * frame_sec;
-            let mut j = i;
-            while j < is_speech.len() && is_speech[j] {
-                j += 1;
-            }
-            let end = j as f64 * frame_sec;
-            // Drop only clearly spurious segments. Conversational particles
-            // and clipped short replies are often well below 500ms.
-            if end - start >= 0.25 {
-                segments.push(SpeechSegment { start, end });
-            }
-            i = j;
-        } else {
-            i += 1;
-        }
-    }
-
-    // Merge adjacent segments separated by < 0.5s of silence
-    let mut merged: Vec<SpeechSegment> = Vec::new();
-    for seg in segments {
-        if let Some(last) = merged.last_mut() {
-            if seg.start - last.end < 0.5 {
-                last.end = seg.end;
-                continue;
-            }
-        }
-        merged.push(seg);
-    }
-
-    // Trim leading/trailing silence from each segment: re-check the
-    // first and last 500ms and shrink the boundary if energy is below
-    // half the onset threshold.
-    let trim_secs = 0.5;
-    let trim_threshold = onset_threshold * 0.5;
-    for seg in &mut merged {
-        // Trim leading silence
-        let frame_from = (seg.start / frame_sec) as usize;
-        let frame_trim_end = ((seg.start + trim_secs).min(seg.end) / frame_sec) as usize;
-        let mut new_start = seg.start;
-        for (fi, &energy) in energies
-            .iter()
-            .enumerate()
-            .skip(frame_from)
-            .take(frame_trim_end.saturating_sub(frame_from))
-        {
-            if energy > trim_threshold {
-                new_start = fi as f64 * frame_sec;
-                break;
-            }
-        }
-        // Trim trailing silence
-        let frame_to = (seg.end / frame_sec) as usize;
-        let frame_trim_start = ((seg.end - trim_secs).max(seg.start) / frame_sec) as usize;
-        let mut new_end = seg.end;
-        for (fi, &energy) in energies
-            .iter()
-            .enumerate()
-            .skip(frame_trim_start)
-            .take(frame_to.saturating_sub(frame_trim_start))
-        {
-            if energy > trim_threshold {
-                new_end = (fi + 1) as f64 * frame_sec;
-            }
-            // Continue to the end — we want the LAST frame above threshold
-        }
-        // Only apply if the trim doesn't collapse the segment entirely
-        if new_end - new_start >= 0.3 {
-            seg.start = new_start;
-            seg.end = new_end;
-        }
-    }
-
-    // Re-filter: drop any segments that became too short after trimming.
-    merged.retain(|s| s.end - s.start >= 0.25);
-
-    (merged, energies, frame_sec)
+    (energies, frame_step as f64 / sample_rate as f64)
 }
 
 /// Apply WhisperX Cut & Merge to speech segments.
@@ -211,7 +91,7 @@ pub fn energy_vad_with_energies(
 /// - **Merge**: adjacent segments whose combined duration ≤ `merge_max`
 ///   are merged together.
 ///
-/// `energies` is the per-frame RMS energy (same as from `energy_vad`).
+/// `energies` is the per-frame RMS energy returned by [`rms_energies`].
 /// `frame_sec` is the duration of one frame in seconds.
 pub fn cut_and_merge(
     segments: &[SpeechSegment],
@@ -293,23 +173,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_energy_vad_silence() {
+    fn test_rms_energies_silence() {
         let samples = vec![0.0f32; 16000]; // 1 second of silence
-        let segments = energy_vad(&samples, 16000);
-        assert!(segments.is_empty());
+        let (energies, frame_sec) = rms_energies(&samples, 16000);
+        assert!(!energies.is_empty());
+        assert!(energies.iter().all(|energy| *energy == 0.0));
+        assert!((frame_sec - 0.01).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn test_energy_vad_speech() {
+    fn test_rms_energies_speech() {
         // 1 second of loud sine wave
         let samples: Vec<f32> = (0..16000)
             .map(|i| (i as f32 * 440.0 * 2.0 * std::f32::consts::PI / 16000.0).sin() * 0.8)
             .collect();
-        let segments = energy_vad(&samples, 16000);
-        // Should detect one continuous speech segment
-        assert_eq!(segments.len(), 1);
-        assert!(segments[0].start < 0.1);
-        assert!(segments[0].end > 0.9);
+        let (energies, _) = rms_energies(&samples, 16000);
+        assert!(energies.iter().all(|energy| *energy > 0.1));
+    }
+
+    #[test]
+    #[ignore = "requires SILERO_VAD_TEST_MODEL and SILERO_VAD_TEST_AUDIO"]
+    fn test_silero_vad_with_external_audio() {
+        let model = std::env::var("SILERO_VAD_TEST_MODEL").unwrap();
+        let audio = std::env::var("SILERO_VAD_TEST_AUDIO").unwrap();
+        let wave = sherpa_onnx::Wave::read(&audio).unwrap();
+        let segments =
+            silero_vad(wave.samples(), wave.sample_rate() as u32, Path::new(&model)).unwrap();
+        let speech_duration: f64 = segments
+            .iter()
+            .map(|segment| segment.end - segment.start)
+            .sum();
+        let (energies, frame_sec) = rms_energies(wave.samples(), wave.sample_rate() as u32);
+        let chunks = cut_and_merge(&segments, &energies, frame_sec, 30.0, 10.0);
+
+        println!("Detected {} speech segments", segments.len());
+        println!("Total speech duration: {speech_duration:.2}s");
+        println!("Cut & Merge produced {} chunks", chunks.len());
+
+        assert!(segments.len() > 1);
+        assert!(chunks.len() > 1);
+        assert!(speech_duration > 10.0);
+        assert!(segments
+            .iter()
+            .all(|segment| segment.end - segment.start <= 28.1));
     }
 
     #[test]

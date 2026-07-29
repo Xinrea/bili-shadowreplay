@@ -21,6 +21,7 @@
       "ffmpeg.exe",
       "ffplay.exe",
       "ffprobe.exe",
+      "silero_vad.onnx",
       "cudart64*.dll",
       "cublas64*.dll",
       "cublasLt64*.dll"

@@ -252,8 +252,9 @@ pub async fn extract_audio_chunks(file: &Path, format: &str) -> Result<PathBuf, 
     let output_path = file.with_extension(format);
     let mut extract_error = None;
 
-    // 降低采样率以提高处理速度，同时保持足够的音质用于语音识别
-    let sample_rate = if format == "mp3" { "22050" } else { "16000" };
+    // Whisper consumes 16 kHz mono audio. Keep every upload path consistent
+    // and avoid spending bitrate on a second channel.
+    let sample_rate = "16000";
 
     // First, get the duration of the input file
     let duration = get_audio_duration(file).await?;
@@ -287,6 +288,8 @@ pub async fn extract_audio_chunks(file: &Path, format: &str) -> Result<PathBuf, 
         file_str,
         "-ar",
         sample_rate,
+        "-ac",
+        "1",
         "-vn",
         "-f",
         "segment",
@@ -419,8 +422,7 @@ pub async fn extract_full_audio(file: &Path) -> Result<PathBuf, String> {
     }
 }
 
-/// Extract a time segment from a video as a 16kHz stereo WAV file.
-/// (whisper_cpp.rs handles stereo→mono conversion internally.)
+/// Extract a time segment from a video as a 16kHz mono WAV file.
 pub async fn extract_audio_segment(
     file: &Path,
     start_sec: f64,
@@ -437,6 +439,7 @@ pub async fn extract_audio_segment(
         .arg(file)
         .args(["-t", &duration_sec.to_string()])
         .args(["-ar", "16000"])
+        .args(["-ac", "1"])
         .args(["-c:a", "pcm_s16le"])
         .args(["-vn"])
         .args(["-y"])
@@ -767,6 +770,7 @@ pub async fn generate_video_subtitle(
     reporter: Option<&ProgressReporter>,
     file: &Path,
     generator_type: &str,
+    resource_dir: &Path,
     whisper_model: &str,
     whisper_prompt: &str,
     openai_api_key: &str,
@@ -777,6 +781,13 @@ pub async fn generate_video_subtitle(
         "whisper" => {
             if whisper_model.is_empty() {
                 return Err("Whisper model not configured".to_string());
+            }
+            let vad_model = resource_dir.join("silero_vad.onnx");
+            if !vad_model.is_file() {
+                return Err(format!(
+                    "Bundled Silero VAD model not found: {}",
+                    vad_model.display()
+                ));
             }
             let generator = match whisper_cpp::new(Path::new(whisper_model), whisper_prompt).await {
                 Ok(g) => g,
@@ -801,16 +812,25 @@ pub async fn generate_video_subtitle(
             whisper_cpp_rs::convert_integer_to_float_audio(&raw_samples, &mut f32_samples)
                 .map_err(|e| format!("Audio conversion error: {e}"))?;
 
-            // VAD: find speech segments
+            // Silero VAD: find speech segments
             if let Some(reporter) = reporter {
                 reporter.update("检测语音片段中").await;
             }
-            let (speech_segments, energies, frame_sec) =
-                crate::audio_utils::energy_vad_with_energies(&f32_samples, sample_rate);
+            let mut speech_segments =
+                crate::audio_utils::silero_vad(&f32_samples, sample_rate, &vad_model)?;
+            let audio_duration = f32_samples.len() as f64 / f64::from(sample_rate);
+            if speech_segments.is_empty() && audio_duration > 0.0 {
+                log::warn!("Silero VAD detected no speech; falling back to the full audio");
+                speech_segments.push(crate::audio_utils::SpeechSegment {
+                    start: 0.0,
+                    end: audio_duration,
+                });
+            }
+            let (energies, frame_sec) = crate::audio_utils::rms_energies(&f32_samples, sample_rate);
             log::info!(
-                "VAD detected {} speech segments from {:.1}s audio",
+                "Silero VAD detected {} speech segments from {:.1}s audio",
                 speech_segments.len(),
-                f32_samples.len() as f64 / sample_rate as f64
+                audio_duration
             );
 
             // Cut & Merge: normalize to ≤30s chunks
@@ -831,6 +851,7 @@ pub async fn generate_video_subtitle(
 
             // Process each chunk
             let mut results = Vec::new();
+            let mut rolling_context = String::new();
             let temp_dir =
                 std::env::temp_dir().join(format!("bsr_whisper_{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&temp_dir)
@@ -856,10 +877,45 @@ pub async fn generate_video_subtitle(
                 // Trim the original video to get this segment's audio
                 match extract_audio_segment(file, padded_start, duration, &segment_path).await {
                     Ok(()) => {
-                        let result = generator
-                            .generate_subtitle(reporter, &segment_path, language_hint)
+                        let chunk_generator = generator.with_previous_context(&rolling_context);
+                        let result = chunk_generator
+                            .generate_subtitle_with_confidence(
+                                reporter,
+                                &segment_path,
+                                language_hint,
+                            )
                             .await;
-                        results.push(((padded_start * 1000.0).round() as u64, result));
+                        if let Ok(generated) = &result {
+                            log::info!(
+                                "Whisper chunk {} quality: confidence={:.3}, low_token_ratio={:.1}%, retried={}, eligible_for_prompt={}",
+                                i,
+                                generated.confidence.geometric_mean,
+                                generated.confidence.low_token_ratio * 100.0,
+                                generated.retried,
+                                generated.eligible_for_prompt
+                            );
+                            if generated.eligible_for_prompt {
+                                rolling_context = whisper_cpp::update_rolling_context(
+                                    &rolling_context,
+                                    &generated.result,
+                                );
+                                log::debug!(
+                                    "Whisper rolling context updated to {} characters",
+                                    rolling_context.chars().count()
+                                );
+                            } else {
+                                log::warn!(
+                                    "Whisper chunk {} excluded from rolling prompt: confidence={:.3}, low_token_ratio={:.1}%",
+                                    i,
+                                    generated.confidence.geometric_mean,
+                                    generated.confidence.low_token_ratio * 100.0
+                                );
+                            }
+                        }
+                        results.push((
+                            (padded_start * 1000.0).round() as u64,
+                            result.map(|generated| generated.result),
+                        ));
                     }
                     Err(e) => {
                         log::error!("Failed to extract segment {}: {e}", i);
@@ -885,6 +941,7 @@ pub async fn generate_video_subtitle(
                     full_result.concat_with_offset_ms(result, *offset_ms);
                 }
             }
+            full_result.clamp_overlaps();
 
             Ok(full_result)
         }
@@ -899,7 +956,10 @@ pub async fn generate_video_subtitle(
             )
             .await
             {
-                let chunk_dir = extract_audio_chunks(file, "mp3").await?;
+                // Thirty seconds of 16 kHz mono PCM is under 1 MB, so WAV
+                // avoids an unnecessary lossy AAC/Opus -> MP3 transcode while
+                // staying far below the transcription API upload limit.
+                let chunk_dir = extract_audio_chunks(file, "wav").await?;
 
                 let mut full_result = GenerateResult {
                     subtitle_id: String::new(),
@@ -1579,20 +1639,50 @@ mod tests {
         let test_file = Path::new("tests/video/test.mp4");
 
         // 测试 Whisper 类型 - 模型未配置
-        let result =
-            generate_video_subtitle(None, test_file, "whisper", "", "", "", "", "zh").await;
+        let result = generate_video_subtitle(
+            None,
+            test_file,
+            "whisper",
+            Path::new(""),
+            "",
+            "",
+            "",
+            "",
+            "zh",
+        )
+        .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Whisper model not configured"));
 
         // 测试 Whisper Online 类型 - API key 未配置
-        let result =
-            generate_video_subtitle(None, test_file, "whisper_online", "", "", "", "", "zh").await;
+        let result = generate_video_subtitle(
+            None,
+            test_file,
+            "whisper_online",
+            Path::new(""),
+            "",
+            "",
+            "",
+            "",
+            "zh",
+        )
+        .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("API key not configured"));
 
         // 测试未知类型
-        let result =
-            generate_video_subtitle(None, test_file, "unknown_type", "", "", "", "", "").await;
+        let result = generate_video_subtitle(
+            None,
+            test_file,
+            "unknown_type",
+            Path::new(""),
+            "",
+            "",
+            "",
+            "",
+            "",
+        )
+        .await;
         assert!(result.is_err());
         assert!(result
             .unwrap_err()

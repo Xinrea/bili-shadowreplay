@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -19,6 +20,7 @@ pub struct State {
     pub webhook_poster: WebhookPoster,
     pub recorder_manager: Arc<RecorderManager>,
     pub task_manager: Arc<TaskManager>,
+    pub resource_dir: PathBuf,
     #[cfg(feature = "gui")]
     pub static_server: Arc<StaticServer>,
     #[cfg(not(feature = "headless"))]

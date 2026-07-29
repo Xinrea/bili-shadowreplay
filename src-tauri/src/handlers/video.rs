@@ -856,6 +856,7 @@ async fn generate_video_subtitle_inner(
         Some(&reporter),
         file,
         generator_type,
+        &state.resource_dir,
         &whisper_model,
         &whisper_prompt,
         &openai_api_key,

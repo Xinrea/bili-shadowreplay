@@ -6,6 +6,11 @@ void whisper_rs_params_set_greedy_best_of(struct whisper_full_params * params, i
     params->greedy.best_of = best_of;
 }
 
+void whisper_rs_params_set_beam_search(struct whisper_full_params * params, int beam_size, float patience) {
+    params->beam_search.beam_size = beam_size;
+    params->beam_search.patience = patience;
+}
+
 void whisper_rs_params_set_print_special(struct whisper_full_params * params, bool value) {
     params->print_special = value;
 }

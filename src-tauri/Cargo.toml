@@ -11,7 +11,7 @@ perf = "deny"
 
 [package]
 name = "bili-shadowreplay"
-version = "2.20.1"
+version = "2.20.2"
 description = "BiliBili ShadowReplay"
 authors = ["Xinrea"]
 license = ""
@@ -53,7 +53,6 @@ mime_guess = "2.0"
 async-trait = "0.1.87"
 whisper-cpp-rs = { path = "crates/whisper-cpp-rs" }
 hound = "3.5.1"
-sherpa-onnx = "1.13.4"
 uuid = { workspace = true }
 axum = { version = "0.7", features = ["macros", "multipart"] }
 tower-http = { version = "0.5", features = ["cors", "fs"] }
@@ -74,6 +73,12 @@ sentry = { version = "0.46.0", features = ["log", "logs"] }
 # vector-store integration by default, which would add unnecessary native
 # dependencies to the desktop application.
 rig-core = { version = "0.40.0", default-features = false, features = ["derive", "rustls"] }
+
+[target.'cfg(windows)'.dependencies]
+sherpa-onnx = { version = "1.13.4", default-features = false, features = ["shared"] }
+
+[target.'cfg(not(windows))'.dependencies]
+sherpa-onnx = "1.13.4"
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem

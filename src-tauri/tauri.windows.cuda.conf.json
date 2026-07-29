@@ -24,7 +24,11 @@
       "silero_vad.onnx",
       "cudart64*.dll",
       "cublas64*.dll",
-      "cublasLt64*.dll"
+      "cublasLt64*.dll",
+      "onnxruntime.dll",
+      "onnxruntime_providers_shared.dll",
+      "sherpa-onnx-c-api.dll",
+      "sherpa-onnx-cxx-api.dll"
     ]
   }
 }

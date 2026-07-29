@@ -17,6 +17,11 @@
     ]
   },
   "bundle": {
-    "resources": ["ffmpeg.exe", "ffplay.exe", "ffprobe.exe"]
+    "resources": [
+      "ffmpeg.exe",
+      "ffplay.exe",
+      "ffprobe.exe",
+      "silero_vad.onnx"
+    ]
   }
 }

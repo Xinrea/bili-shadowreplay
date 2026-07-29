@@ -841,7 +841,6 @@ async fn generate_video_subtitle_inner(
     log::info!("Create task: {task:?}");
     let config = state.config.read().await;
     let generator_type = config.subtitle_generator_type.as_str();
-    let model_cache = config.cache.clone();
     let whisper_model = config.whisper_model.clone();
     let whisper_prompt = config.whisper_prompt.clone();
     let openai_api_key = config.openai_api_key.clone();
@@ -857,7 +856,7 @@ async fn generate_video_subtitle_inner(
         Some(&reporter),
         file,
         generator_type,
-        &model_cache,
+        &state.resource_dir,
         &whisper_model,
         &whisper_prompt,
         &openai_api_key,

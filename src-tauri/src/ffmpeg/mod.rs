@@ -7,7 +7,6 @@ pub mod hwaccel;
 pub mod playlist;
 
 use crate::constants;
-use crate::model_manager;
 use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
 use crate::subtitle_generator::{powerlive, whisper_online};
 use crate::subtitle_generator::{
@@ -771,7 +770,7 @@ pub async fn generate_video_subtitle(
     reporter: Option<&ProgressReporter>,
     file: &Path,
     generator_type: &str,
-    model_cache: &str,
+    resource_dir: &Path,
     whisper_model: &str,
     whisper_prompt: &str,
     openai_api_key: &str,
@@ -783,8 +782,13 @@ pub async fn generate_video_subtitle(
             if whisper_model.is_empty() {
                 return Err("Whisper model not configured".to_string());
             }
-            let vad_model =
-                model_manager::ensure_silero_vad_model(Path::new(model_cache), reporter).await?;
+            let vad_model = resource_dir.join("silero_vad.onnx");
+            if !vad_model.is_file() {
+                return Err(format!(
+                    "Bundled Silero VAD model not found: {}",
+                    vad_model.display()
+                ));
+            }
             let generator = match whisper_cpp::new(Path::new(whisper_model), whisper_prompt).await {
                 Ok(g) => g,
                 Err(e) => return Err(format!("Failed to initialize Whisper model: {e}")),
@@ -1635,21 +1639,50 @@ mod tests {
         let test_file = Path::new("tests/video/test.mp4");
 
         // 测试 Whisper 类型 - 模型未配置
-        let result =
-            generate_video_subtitle(None, test_file, "whisper", "", "", "", "", "", "zh").await;
+        let result = generate_video_subtitle(
+            None,
+            test_file,
+            "whisper",
+            Path::new(""),
+            "",
+            "",
+            "",
+            "",
+            "zh",
+        )
+        .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Whisper model not configured"));
 
         // 测试 Whisper Online 类型 - API key 未配置
-        let result =
-            generate_video_subtitle(None, test_file, "whisper_online", "", "", "", "", "", "zh")
-                .await;
+        let result = generate_video_subtitle(
+            None,
+            test_file,
+            "whisper_online",
+            Path::new(""),
+            "",
+            "",
+            "",
+            "",
+            "zh",
+        )
+        .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("API key not configured"));
 
         // 测试未知类型
-        let result =
-            generate_video_subtitle(None, test_file, "unknown_type", "", "", "", "", "", "").await;
+        let result = generate_video_subtitle(
+            None,
+            test_file,
+            "unknown_type",
+            Path::new(""),
+            "",
+            "",
+            "",
+            "",
+            "",
+        )
+        .await;
         assert!(result.is_err());
         assert!(result
             .unwrap_err()

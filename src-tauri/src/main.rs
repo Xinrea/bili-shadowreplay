@@ -13,7 +13,6 @@ mod handlers;
 #[cfg(feature = "headless")]
 mod http_server;
 mod migration;
-mod model_manager;
 mod progress;
 mod recorder_manager;
 mod state;
@@ -448,6 +447,14 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     let config_path = PathBuf::from(&args.config);
     let cache_path = PathBuf::from("./cache");
     let output_path = PathBuf::from("./output");
+    let resource_dir = if cfg!(debug_assertions) {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    } else {
+        std::env::current_exe()?
+            .parent()
+            .ok_or("Headless executable has no parent directory")?
+            .to_path_buf()
+    };
     let config = match Config::load(&config_path, &cache_path, &output_path) {
         Ok(config) => config,
         Err(e) => {
@@ -494,6 +501,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
         db.clone(),
         config.clone(),
         task_manager.clone(),
+        resource_dir.clone(),
         webhook_poster.clone(),
     ));
 
@@ -510,6 +518,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
         recorder_manager,
         task_manager,
         progress_manager,
+        resource_dir,
         readonly: args.readonly,
     })
 }
@@ -529,6 +538,11 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     let config_path = app_dirs.config_dir.join("Conf.toml");
     let cache_path = app_dirs.cache_dir.join("cache");
     let output_path = app_dirs.data_dir.join("output");
+    let mut resource_dir = app.path().resource_dir()?;
+    #[cfg(debug_assertions)]
+    if !resource_dir.join("silero_vad.onnx").is_file() {
+        resource_dir = Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf();
+    }
     log::info!("Loading config from {config_path:?}");
     let config = match Config::load(&config_path, &cache_path, &output_path) {
         Ok(config) => config,
@@ -564,6 +578,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         db.clone(),
         config.clone(),
         task_manager.clone(),
+        resource_dir.clone(),
         webhook_poster.clone(),
     ));
 
@@ -587,6 +602,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         task_manager,
         static_server,
         app_handle: app.handle().clone(),
+        resource_dir,
         webhook_poster,
     })
 }

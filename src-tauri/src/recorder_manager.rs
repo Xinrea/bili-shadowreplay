@@ -152,6 +152,7 @@ pub struct RecorderManager {
     db: Arc<Database>,
     config: Arc<RwLock<Config>>,
     task_manager: Arc<TaskManager>,
+    resource_dir: PathBuf,
     recorders: Arc<RwLock<HashMap<String, RecorderType>>>,
     to_remove: Arc<RwLock<HashSet<String>>>,
     event_tx: broadcast::Sender<RecorderEvent>,
@@ -206,6 +207,7 @@ impl RecorderManager {
         db: Arc<Database>,
         config: Arc<RwLock<Config>>,
         task_manager: Arc<TaskManager>,
+        resource_dir: PathBuf,
         webhook_poster: WebhookPoster,
     ) -> RecorderManager {
         let (event_tx, _) = broadcast::channel(100);
@@ -216,6 +218,7 @@ impl RecorderManager {
             db,
             config,
             task_manager,
+            resource_dir,
             recorders: Arc::new(RwLock::new(HashMap::new())),
             to_remove: Arc::new(RwLock::new(HashSet::new())),
             event_tx,
@@ -1337,11 +1340,12 @@ impl RecorderManager {
         };
 
         // generate subtitle file
+        let resource_dir = self.resource_dir.clone();
         let result = crate::ffmpeg::generate_video_subtitle(
             None,
             Path::new(&media_file_path.full_path()),
             &config.subtitle_generator_type,
-            &config.cache,
+            &resource_dir,
             &config.whisper_model,
             &config.whisper_prompt,
             &config.openai_api_key,

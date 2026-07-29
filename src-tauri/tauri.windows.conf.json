@@ -1,9 +1,6 @@
 {
   "productName": "bili-shadowreplay-cpu",
   "identifier": "cn.vjoi.bilishadowreplay",
-  "build": {
-    "beforeBundleCommand": "node scripts/copy_sherpa_runtime.cjs"
-  },
   "app": {
     "windows": [
       {

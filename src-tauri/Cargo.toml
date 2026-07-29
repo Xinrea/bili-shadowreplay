@@ -11,7 +11,7 @@ perf = "deny"
 
 [package]
 name = "bili-shadowreplay"
-version = "2.20.0"
+version = "2.20.1"
 description = "BiliBili ShadowReplay"
 authors = ["Xinrea"]
 license = ""

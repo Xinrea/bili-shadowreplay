@@ -110,16 +110,11 @@ jobs:
         shell: pwsh
         run: |
           $cudaPath = "$env:CUDA_PATH\bin"
-          $targetPath = "src-tauri"
+          $targetPath = "src-tauri/windows-runtime"
           New-Item -ItemType Directory -Force -Path $targetPath
           Copy-Item "$cudaPath\cudart64*.dll" -Destination $targetPath
           Copy-Item "$cudaPath\cublas64*.dll" -Destination $targetPath
           Copy-Item "$cudaPath\cublasLt64*.dll" -Destination $targetPath
-
-      - name: Prepare sherpa-onnx runtime (Windows only)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./sherpa_setup.ps1
 
       - name: Get previous tag
         id: get_previous_tag

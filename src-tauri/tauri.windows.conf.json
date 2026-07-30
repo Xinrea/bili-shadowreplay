@@ -1,6 +1,10 @@
 {
   "productName": "bili-shadowreplay-cpu",
   "identifier": "cn.vjoi.bilishadowreplay",
+  "build": {
+    "beforeBuildCommand": "node scripts/prepare_windows_runtime.cjs && yarn build",
+    "beforeBundleCommand": "node scripts/copy_sherpa_runtime.cjs"
+  },
   "app": {
     "windows": [
       {
@@ -17,15 +21,12 @@
     ]
   },
   "bundle": {
-    "resources": [
-      "ffmpeg.exe",
-      "ffplay.exe",
-      "ffprobe.exe",
-      "silero_vad.onnx",
-      "onnxruntime.dll",
-      "onnxruntime_providers_shared.dll",
-      "sherpa-onnx-c-api.dll",
-      "sherpa-onnx-cxx-api.dll"
-    ]
+    "resources": {
+      "ffmpeg.exe": "ffmpeg.exe",
+      "ffplay.exe": "ffplay.exe",
+      "ffprobe.exe": "ffprobe.exe",
+      "silero_vad.onnx": "silero_vad.onnx",
+      "windows-runtime": "."
+    }
   }
 }

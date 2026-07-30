@@ -19,6 +19,11 @@ pub const H264_SCALE_PAD_FILTER: &str =
 
 const VAAPI_ENCODER: &str = "h264_vaapi";
 const NVENC_ENCODER: &str = "h264_nvenc";
+const VIDEOTOOLBOX_ENCODER: &str = "h264_videotoolbox";
+const QSV_ENCODER: &str = "h264_qsv";
+const AMF_ENCODER: &str = "h264_amf";
+const MF_ENCODER: &str = "h264_mf";
+const V4L2M2M_ENCODER: &str = "h264_v4l2m2m";
 const VAAPI_DEVICE_DIR: &str = "/dev/dri";
 const VAAPI_RENDER_PREFIX: &str = "renderD";
 const VAAPI_FILTER_SUFFIX: &str = "format=nv12,hwupload";
@@ -57,11 +62,6 @@ pub fn is_vaapi_encoder(encoder: &str) -> bool {
     encoder == VAAPI_ENCODER
 }
 
-/// 判断编码器是否为 NVIDIA NVENC。
-pub fn is_nvenc_encoder(encoder: &str) -> bool {
-    encoder == NVENC_ENCODER
-}
-
 /// 返回 VAAPI 硬件上传滤镜片段。
 pub fn vaapi_filter_suffix() -> &'static str {
     VAAPI_FILTER_SUFFIX
@@ -86,17 +86,27 @@ pub fn apply_x264_encoder_only(command: &mut tokio::process::Command, encoder: &
 
 /// 按编码器类型追加质量参数。
 pub fn apply_x264_quality_args(command: &mut tokio::process::Command, encoder: &str) {
-    command.args(quality_args_for_encoder(encoder));
+    let quality_args = quality_args_for_encoder(encoder);
+    log::info!(
+        "Applying H.264 quality parameters: encoder={encoder}, args={}",
+        quality_args.join(" ")
+    );
+    command.args(quality_args);
 }
 
 /// 返回指定 H.264 编码器应使用的质量参数。
 pub fn quality_args_for_encoder(encoder: &str) -> &'static [&'static str] {
-    if is_vaapi_encoder(encoder) {
-        &["-qp", "20"]
-    } else if is_nvenc_encoder(encoder) {
-        &["-preset", "p5", "-rc", "vbr", "-cq", "20", "-b:v", "0"]
-    } else {
-        &["-crf", "20", "-preset", "medium"]
+    match encoder {
+        VAAPI_ENCODER => &["-qp", "20"],
+        NVENC_ENCODER => &["-preset", "p5", "-rc", "vbr", "-cq", "20", "-b:v", "0"],
+        VIDEOTOOLBOX_ENCODER => &["-q:v", "65"],
+        QSV_ENCODER => &["-preset", "medium", "-global_quality", "20"],
+        AMF_ENCODER => &[
+            "-quality", "quality", "-rc", "cqp", "-qp_i", "20", "-qp_p", "20", "-qp_b", "20",
+        ],
+        MF_ENCODER => &["-rate_control", "quality", "-quality", "80"],
+        V4L2M2M_ENCODER => &["-b:v", "6000k"],
+        _ => &["-crf", "20", "-preset", "medium"],
     }
 }
 
@@ -203,6 +213,15 @@ pub async fn list_supported_hwaccels() -> Result<Vec<String>, String> {
     let mut seen = HashSet::new();
     hwaccels.retain(|value| seen.insert(value.clone()));
 
+    if hwaccels.is_empty() {
+        log::info!("No supported H.264 hardware encoders reported by FFmpeg");
+    } else {
+        log::info!(
+            "FFmpeg reported supported H.264 hardware encoders: {}",
+            hwaccels.join(", ")
+        );
+    }
+
     Ok(hwaccels)
 }
 
@@ -225,7 +244,9 @@ async fn test_encoder_availability(encoder: &str) -> bool {
             command.args(["-vaapi_device", device_path.to_string_lossy().as_ref()]);
             Some(vaapi_filter_suffix())
         } else {
-            log::debug!("Encoder {encoder} failed: no /dev/dri/renderD* device was found");
+            log::warn!(
+                "H.264 encoder test skipped: encoder={encoder}, reason=no /dev/dri/renderD* device"
+            );
             return false;
         }
     } else {
@@ -242,6 +263,12 @@ async fn test_encoder_availability(encoder: &str) -> bool {
         command.args(["-vf", filter]);
     }
     command.args(["-c:v", encoder]);
+    let quality_args = quality_args_for_encoder(encoder);
+    log::info!(
+        "Testing H.264 encoder: encoder={encoder}, quality_args={}",
+        quality_args.join(" ")
+    );
+    command.args(quality_args);
 
     let child = command
         .arg("-frames:v")
@@ -260,22 +287,29 @@ async fn test_encoder_availability(encoder: &str) -> bool {
                 Ok(output) => {
                     // 如果退出码为0，说明编码器可用
                     if output.status.success() {
-                        log::debug!("Encoder {encoder} is available");
+                        log::info!(
+                            "H.264 encoder test succeeded: encoder={encoder}, quality_args={}",
+                            quality_args.join(" ")
+                        );
                         true
                     } else {
                         let stderr = String::from_utf8_lossy(&output.stderr);
-                        log::debug!("Encoder {encoder} failed: {stderr}");
+                        log::warn!(
+                            "H.264 encoder test failed: encoder={encoder}, quality_args={}, stderr={}",
+                            quality_args.join(" "),
+                            stderr.trim()
+                        );
                         false
                     }
                 }
                 Err(err) => {
-                    log::debug!("Encoder {encoder} test error: {err}");
+                    log::warn!("H.264 encoder test error: encoder={encoder}, error={err}");
                     false
                 }
             }
         }
         Err(err) => {
-            log::debug!("Failed to spawn ffmpeg process to test {encoder}: {err}");
+            log::warn!("Failed to start H.264 encoder test: encoder={encoder}, error={err}");
             false
         }
     }
@@ -337,7 +371,11 @@ pub async fn get_x264_encoder() -> &'static str {
         }
     };
 
-    log::info!("Selected x264 encoder: {}", encoder);
+    log::info!(
+        "Selected H.264 encoder: encoder={}, quality_args={}",
+        encoder,
+        quality_args_for_encoder(&encoder).join(" ")
+    );
 
     // 存入缓存，如果设置成功则从缓存返回，否则返回刚才得到的值
     // 注意：set() 可能被其他线程抢先，但每个线程都会得到相同的 encoder 值
@@ -376,5 +414,42 @@ mod tests {
     #[test]
     fn test_quality_args_for_vaapi() {
         assert_eq!(quality_args_for_encoder("h264_vaapi"), &["-qp", "20"]);
+    }
+
+    #[test]
+    fn test_quality_args_for_videotoolbox() {
+        assert_eq!(
+            quality_args_for_encoder("h264_videotoolbox"),
+            &["-q:v", "65"]
+        );
+    }
+
+    #[test]
+    fn test_quality_args_for_qsv() {
+        assert_eq!(
+            quality_args_for_encoder("h264_qsv"),
+            &["-preset", "medium", "-global_quality", "20"]
+        );
+    }
+
+    #[test]
+    fn test_quality_args_for_amf() {
+        assert_eq!(
+            quality_args_for_encoder("h264_amf"),
+            &["-quality", "quality", "-rc", "cqp", "-qp_i", "20", "-qp_p", "20", "-qp_b", "20"]
+        );
+    }
+
+    #[test]
+    fn test_quality_args_for_media_foundation() {
+        assert_eq!(
+            quality_args_for_encoder("h264_mf"),
+            &["-rate_control", "quality", "-quality", "80"]
+        );
+    }
+
+    #[test]
+    fn test_quality_args_for_v4l2m2m() {
+        assert_eq!(quality_args_for_encoder("h264_v4l2m2m"), &["-b:v", "6000k"]);
     }
 }

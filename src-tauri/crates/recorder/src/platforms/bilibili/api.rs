@@ -16,11 +16,12 @@ use pct_str::URIReserved;
 use rand::seq::IndexedRandom;
 use rand::seq::SliceRandom;
 use regex::Regex;
-use reqwest::Client;
+use reqwest::{header, redirect, Client, Url};
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::json;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
 use std::time::Duration;
@@ -28,6 +29,8 @@ use std::time::SystemTime;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::time::Instant;
+
+const QR_LOGIN_MAX_REDIRECTS: usize = 5;
 
 #[derive(Clone)]
 struct UploadParams<'a> {
@@ -226,14 +229,143 @@ pub async fn get_qr_status(client: &Client, qrcode_key: &str) -> Result<QrStatus
     let code: u8 = res["data"]["code"].as_u64().unwrap_or(400) as u8;
     let mut cookies: String = String::new();
     if code == 0 {
-        let url = res["data"]["url"]
+        let login_url = res["data"]["url"]
             .as_str()
-            .ok_or(RecorderError::InvalidValue)?
-            .to_string();
-        let query_str = url.split('?').next_back().unwrap();
-        cookies = query_str.replace('&', ";");
+            .ok_or(RecorderError::InvalidValue)?;
+        cookies = resolve_qr_login(login_url).await?;
     }
     Ok(QrStatus { code, cookies })
+}
+
+/// Exchange the ticket URL returned by QR polling for account cookies.
+async fn resolve_qr_login(login_url: &str) -> Result<String, RecorderError> {
+    let client = Client::builder()
+        .redirect(redirect::Policy::none())
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .build()?;
+    let mut current_url = Url::parse(login_url).map_err(|error| RecorderError::ApiError {
+        error: format!("QR login returned an invalid URL: {error}"),
+    })?;
+    let mut cookie_values = HashMap::new();
+
+    for redirect_count in 0..=QR_LOGIN_MAX_REDIRECTS {
+        if current_url.scheme() != "https" {
+            return Err(RecorderError::ApiError {
+                error: "QR login redirected to a non-HTTPS URL".to_string(),
+            });
+        }
+
+        let cookie_header = cookie_values
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let mut request = client
+            .get(current_url.clone())
+            .header(header::REFERER, "https://passport.bilibili.com/");
+        if !cookie_header.is_empty() {
+            request = request.header(header::COOKIE, cookie_header);
+        }
+
+        let response = request.send().await?;
+        for set_cookie in response.headers().get_all(header::SET_COOKIE) {
+            let set_cookie = set_cookie.to_str().map_err(|_| RecorderError::ApiError {
+                error: "QR login returned an invalid Set-Cookie header".to_string(),
+            })?;
+            if let Some((name, value)) = parse_set_cookie(set_cookie) {
+                cookie_values.insert(name.to_string(), value.to_string());
+            }
+        }
+
+        if let Some(cookies) = login_cookies_from_map(&cookie_values) {
+            return Ok(cookies);
+        }
+
+        let location = response.headers().get(header::LOCATION).cloned();
+        drop(response);
+        let Some(location) = location else {
+            return Err(RecorderError::ApiError {
+                error: "QR login succeeded but did not return complete account cookies".to_string(),
+            });
+        };
+        if redirect_count == QR_LOGIN_MAX_REDIRECTS {
+            return Err(RecorderError::ApiError {
+                error: "QR login redirected too many times".to_string(),
+            });
+        }
+        let location = location.to_str().map_err(|_| RecorderError::ApiError {
+            error: "QR login returned an invalid redirect URL".to_string(),
+        })?;
+        current_url = current_url
+            .join(location)
+            .map_err(|error| RecorderError::ApiError {
+                error: format!("QR login returned an invalid redirect URL: {error}"),
+            })?;
+    }
+
+    Err(RecorderError::ApiError {
+        error: "QR login redirected too many times".to_string(),
+    })
+}
+
+fn parse_set_cookie(header: &str) -> Option<(&str, &str)> {
+    let cookie = header.split(';').next()?;
+    let (name, value) = cookie.split_once('=')?;
+    let name = name.trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some((name, value.trim()))
+    }
+}
+
+fn login_cookies_from_map(values: &HashMap<String, String>) -> Option<String> {
+    let dede_user_id = values.get("DedeUserID")?;
+    let sessdata = values.get("SESSDATA")?;
+    let bili_jct = values.get("bili_jct")?;
+    let mut cookies = vec![
+        format!("DedeUserID={dede_user_id}"),
+        format!("SESSDATA={sessdata}"),
+        format!("bili_jct={bili_jct}"),
+    ];
+
+    for optional_name in ["DedeUserID__ckMd5", "sid"] {
+        if let Some(value) = values.get(optional_name) {
+            cookies.push(format!("{optional_name}={value}"));
+        }
+    }
+
+    Some(cookies.join("; "))
+}
+
+#[cfg(test)]
+mod qr_login_tests {
+    use super::{login_cookies_from_map, parse_set_cookie};
+    use std::collections::HashMap;
+
+    #[test]
+    fn parses_set_cookie_without_attributes() {
+        assert_eq!(
+            parse_set_cookie("SESSDATA=value%2Cwith%2Ccommas; Path=/; HttpOnly"),
+            Some(("SESSDATA", "value%2Cwith%2Ccommas"))
+        );
+    }
+
+    #[test]
+    fn requires_complete_login_cookies() {
+        let mut values = HashMap::from([
+            ("DedeUserID".to_string(), "123".to_string()),
+            ("SESSDATA".to_string(), "session".to_string()),
+        ]);
+        assert!(login_cookies_from_map(&values).is_none());
+
+        values.insert("bili_jct".to_string(), "csrf".to_string());
+        values.insert("sid".to_string(), "sid-value".to_string());
+        assert_eq!(
+            login_cookies_from_map(&values).as_deref(),
+            Some("DedeUserID=123; SESSDATA=session; bili_jct=csrf; sid=sid-value")
+        );
+    }
 }
 
 pub async fn logout(client: &Client, account: &Account) -> Result<(), RecorderError> {

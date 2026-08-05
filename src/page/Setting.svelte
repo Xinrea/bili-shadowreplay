@@ -12,6 +12,8 @@
     Captions,
     DiscAlbum,
     SquareBottomDashedScissors,
+    Bot,
+    RefreshCw,
   } from "lucide-svelte";
   import { onMount } from "svelte";
 
@@ -29,6 +31,12 @@
     openai_api_endpoint: "",
     openai_api_key: "",
     powerlive_key: "",
+    llm: {
+      provider: "openai",
+      endpoint: "https://api.openai.com/v1",
+      api_key: "",
+      model: "",
+    },
     whisper_model: "",
     whisper_prompt: "",
     clip_name_format: "",
@@ -50,6 +58,11 @@
   let show_clip_name_help = false;
   let endpoint = localStorage.getItem("endpoint") || "";
   let endpointValue = endpoint;
+  let llmModels: string[] = [];
+  let llmModelsLoading = false;
+  let llmSaving = false;
+  let llmSaveMessage = "";
+  let llmError = "";
 
   function handleEndpointChange() {
     endpointValue = normalizeEndpoint(endpointValue);
@@ -156,6 +169,69 @@
       fontSize: setting_model.danmu_ass_options.font_size,
       opacity: setting_model.danmu_ass_options.opacity,
     });
+  }
+
+  function handleLlmProviderChange() {
+    const endpoint = setting_model.llm.endpoint.trim();
+    if (
+      !endpoint ||
+      endpoint === "https://api.openai.com/v1" ||
+      endpoint === "http://localhost:11434"
+    ) {
+      setting_model.llm.endpoint =
+        setting_model.llm.provider === "ollama"
+          ? "http://localhost:11434"
+          : "https://api.openai.com/v1";
+    }
+    llmModels = [];
+    llmSaveMessage = "";
+    llmError = "";
+    void saveLlmConfig();
+  }
+
+  async function loadLlmModels() {
+    if (!setting_model.llm.endpoint.trim()) return;
+    llmModelsLoading = true;
+    llmError = "";
+    try {
+      llmModels = await invoke<string[]>("list_llm_models", {
+        provider: setting_model.llm.provider,
+        endpoint: setting_model.llm.endpoint,
+        apiKey: setting_model.llm.api_key,
+      });
+      if (llmModels.length === 0) {
+        llmError = "未获取到可用模型，也可以手动输入模型名称";
+      }
+    } catch (error) {
+      llmError = String(error);
+    } finally {
+      llmModelsLoading = false;
+    }
+  }
+
+  async function saveLlmConfig() {
+    llmSaving = true;
+    llmError = "";
+    llmSaveMessage = "";
+    setting_model.llm.endpoint =
+      setting_model.llm.endpoint.trim() ||
+      (setting_model.llm.provider === "ollama"
+        ? "http://localhost:11434"
+        : "https://api.openai.com/v1");
+    try {
+      await invoke("update_llm_config", {
+        provider: setting_model.llm.provider,
+        endpoint: setting_model.llm.endpoint,
+        apiKey: setting_model.llm.api_key,
+        model: setting_model.llm.model,
+      });
+      llmSaveMessage = "模型配置已保存，助手和 Summary 将共用此配置";
+      window.dispatchEvent(new CustomEvent("llm-config-updated"));
+    } catch (error) {
+      llmError = String(error);
+    } finally {
+      llmSaving = false;
+    }
   }
 
   onMount(async () => {
@@ -461,6 +537,144 @@
                       class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
                     ></span>
                   </label>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Shared LLM Settings -->
+          <div class="space-y-4">
+            <h2
+              class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
+            >
+              <Bot class="w-5 h-5 dark:icon-white" />
+              <span>AI 模型</span>
+            </h2>
+            <div
+              class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700"
+            >
+              <div class="p-4">
+                <div class="flex items-center justify-between gap-6">
+                  <div>
+                    <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                      模型提供商
+                    </h3>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                      此模型配置由 AI 助手和录播 Summary 共用
+                    </p>
+                  </div>
+                  <select
+                    class="w-96 px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white"
+                    bind:value={setting_model.llm.provider}
+                    on:change={handleLlmProviderChange}
+                  >
+                    <option value="openai">OpenAI 兼容 API</option>
+                    <option value="ollama">Ollama</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="p-4">
+                <div class="flex items-center justify-between gap-6">
+                  <div>
+                    <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                      API Endpoint
+                    </h3>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                      {setting_model.llm.provider === "ollama"
+                        ? "Ollama 服务地址"
+                        : "兼容 OpenAI Chat Completions 的 API 地址"}
+                    </p>
+                  </div>
+                  <input
+                    type="text"
+                    class="w-96 px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white"
+                    bind:value={setting_model.llm.endpoint}
+                    on:blur={saveLlmConfig}
+                    placeholder={setting_model.llm.provider === "ollama"
+                      ? "http://localhost:11434"
+                      : "https://api.openai.com/v1"}
+                  />
+                </div>
+              </div>
+
+              {#if setting_model.llm.provider === "openai"}
+                <div class="p-4">
+                  <div class="flex items-center justify-between gap-6">
+                    <div>
+                      <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                        API Key
+                      </h3>
+                      <p class="text-sm text-gray-500 dark:text-gray-400">
+                        密钥保存在 BSR 本地配置文件中
+                      </p>
+                    </div>
+                    <input
+                      type="password"
+                      class="w-96 px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white"
+                      bind:value={setting_model.llm.api_key}
+                      on:blur={saveLlmConfig}
+                      placeholder="sk-..."
+                    />
+                  </div>
+                </div>
+              {/if}
+
+              <div class="p-4">
+                <div class="flex items-center justify-between gap-6">
+                  <div>
+                    <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                      模型名称
+                    </h3>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                      可以刷新模型列表或直接输入模型名称
+                    </p>
+                  </div>
+                  <div class="flex w-96 items-center gap-2">
+                    <input
+                      type="text"
+                      class="min-w-0 flex-1 px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white"
+                      bind:value={setting_model.llm.model}
+                      on:blur={saveLlmConfig}
+                      list="llm-model-options"
+                      placeholder={setting_model.llm.provider === "ollama"
+                        ? "qwen3, llama3.2..."
+                        : "gpt-4.1-mini..."}
+                    />
+                    <datalist id="llm-model-options">
+                      {#each llmModels as model}
+                        <option value={model}>{model}</option>
+                      {/each}
+                    </datalist>
+                    <button
+                      class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg border border-gray-200 bg-gray-100 text-gray-700 hover:bg-gray-200 disabled:opacity-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
+                      on:click={loadLlmModels}
+                      disabled={llmModelsLoading ||
+                        !setting_model.llm.endpoint.trim() ||
+                        (setting_model.llm.provider === "openai" &&
+                          !setting_model.llm.api_key.trim())}
+                      title="刷新模型列表"
+                    >
+                      <RefreshCw
+                        class="w-4 h-4 {llmModelsLoading ? 'animate-spin' : ''}"
+                      />
+                    </button>
+                  </div>
+                </div>
+                <div class="mt-2 min-h-[1.25rem] text-right">
+                  {#if llmError}
+                    <span class="text-xs text-red-600 dark:text-red-400">
+                      {llmError}
+                    </span>
+                  {:else if llmSaving}
+                    <span class="text-xs text-gray-500 dark:text-gray-400">
+                      保存中...
+                    </span>
+                  {:else if llmSaveMessage}
+                    <span class="text-xs text-green-600 dark:text-green-400">
+                      {llmSaveMessage}
+                    </span>
+                  {/if}
                 </div>
               </div>
             </div>

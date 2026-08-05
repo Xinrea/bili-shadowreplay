@@ -3,7 +3,6 @@
     invoke,
     set_title,
     TAURI_ENV,
-    listen,
     log,
     get_static_url,
   } from "./lib/invoker";
@@ -12,13 +11,11 @@
   import { ChevronRight, ChevronLeft, Play, Pen } from "lucide-svelte";
   import {
     type VideoItem,
-    type Config,
     type Marker,
     type DanmuEntry,
-    clipRange,
-    generateEventId,
     type Range,
   } from "./lib/interface";
+  import ArchiveClipButton from "./lib/components/ArchiveClipButton.svelte";
   import MarkerPanel from "./lib/components/MarkerPanel.svelte";
   import { onDestroy, onMount } from "svelte";
 
@@ -30,30 +27,6 @@
   const focus_end = parseInt(urlParams.get("end") || "0");
 
   log.info("AppLive loaded", room_id, platform, live_id);
-
-  let config: Config = null;
-
-  invoke("get_config").then((c) => {
-    config = c as Config;
-  });
-
-  let current_clip_event_id = null;
-  let clear_clip_update_listener: (() => void) | null = null;
-  let clear_clip_finished_listener: (() => void) | null = null;
-  let danmu_enabled = false;
-  let fix_encoding = false;
-  let clip_note: string = "";
-  let transition: string = "none";
-
-  const transitionOptions = [
-    { value: "none", label: "无" },
-    { value: "fade", label: "淡入淡出" },
-    { value: "dissolve", label: "溶解" },
-    { value: "wipeleft", label: "向左擦除" },
-    { value: "wiperight", label: "向右擦除" },
-    { value: "slideup", label: "向上滑动" },
-    { value: "slidedown", label: "向下滑动" },
-  ];
 
   // 弹幕相关变量
   let danmu_records: DanmuEntry[] = [];
@@ -413,22 +386,11 @@
     }
   }
 
-  function handleBeforeUnload(event: BeforeUnloadEvent) {
-    if (!current_clip_event_id) {
-      return;
-    }
-    const message = "切片任务将在后台继续运行，可前往任务页面管理后台任务。";
-    event.preventDefault();
-    event.returnValue = message;
-    return message;
-  }
-
   onDestroy(() => {
     // 清理滚动定时器
     if (scroll_timeout) {
       clearTimeout(scroll_timeout);
     }
-    window.removeEventListener("beforeunload", handleBeforeUnload);
   });
 
   let archive: RecordItem = null;
@@ -464,20 +426,8 @@
     ranges = ranges.filter((r) => r.activated === false);
   }
 
-  function generateCover() {
-    const video = document.getElementById("video") as HTMLVideoElement;
-    var w = video.videoWidth;
-    var h = video.videoHeight;
-    var canvas = document.createElement("canvas");
-    canvas.width = 1280;
-    canvas.height = 720;
-    var context = canvas.getContext("2d");
-    context.drawImage(video, 0, 0, w, h, 0, 0, 1280, 720);
-    return canvas.toDataURL();
-  }
-
-  let show_clip_confirm = false;
   let show_selection_list = false;
+  let clip_running = false;
   let text_style = {
     position: { x: 8, y: 8 },
     fontSize: 24,
@@ -507,8 +457,6 @@
     );
     console.log(archive);
 
-    window.addEventListener("beforeunload", handleBeforeUnload);
-
     // 初始化虚拟滚动
     setTimeout(() => {
       if (container_ref) {
@@ -518,14 +466,6 @@
   });
 
   get_video_list();
-
-  function update_clip_prompt(str: string) {
-    // update button text
-    const span = document.getElementById("generate-clip-prompt");
-    if (span) {
-      span.textContent = str;
-    }
-  }
 
   async function get_video_list() {
     const videoList = (await invoke("get_videos", {
@@ -559,83 +499,17 @@
     selected_video = target_video;
   }
 
-  function reset_clip_state() {
-    update_clip_prompt(`生成切片`);
-    current_clip_event_id = null;
-    clear_clip_update_listener?.();
-    clear_clip_update_listener = null;
-    clear_clip_finished_listener?.();
-    clear_clip_finished_listener = null;
-  }
-
-  async function confirm_generate_clip() {
-    show_clip_confirm = false;
-    let new_cover = generateCover();
-    update_clip_prompt(`切片生成中`);
-    let event_id = generateEventId();
-    reset_clip_state();
-    current_clip_event_id = event_id;
-    clear_clip_update_listener = await listen(
-      `progress-update:${event_id}`,
-      (e) => {
-        update_clip_prompt(e.payload.content);
-      }
-    );
-    clear_clip_finished_listener = await listen(
-      `progress-finished:${event_id}`,
-      (e) => {
-        reset_clip_state();
-        if (!e.payload.success) {
-          alert("请检查 ffmpeg 是否配置正确：" + e.payload.message);
-        }
-      }
-    );
-    try {
-      let new_video = (await clipRange(event_id, {
-        title: archive.title,
-        note: clip_note,
-        room_id: room_id,
-        platform: platform,
-        cover: new_cover,
-        live_id: live_id,
-        ranges: activeRanges,
-        danmu: danmu_enabled,
-        local_offset:
-          parseInt(localStorage.getItem(`local_offset:${live_id}`) || "0", 10) ||
-          0,
-        fix_encoding,
-        transition: transition !== "none" ? transition : undefined,
-      })) as VideoItem;
-      await get_video_list();
-      new_video.cover = await get_static_url("output", new_video.cover);
-      video_selected = new_video.id;
-      selected_video = videos.find((v) => {
-        return v.value == new_video.id;
-      });
-      if (selected_video) {
-        selected_video.cover = new_video.cover;
-      }
-
-      // clean up previous input data
-      clip_note = "";
-      transition = "none";
-    } finally {
-      reset_clip_state();
+  async function handleClipGenerated(event: CustomEvent<VideoItem>) {
+    const newVideo = event.detail;
+    await get_video_list();
+    newVideo.cover = await get_static_url("output", newVideo.cover);
+    video_selected = newVideo.id;
+    selected_video = videos.find((video) => {
+      return video.value == newVideo.id;
+    });
+    if (selected_video) {
+      selected_video.cover = newVideo.cover;
     }
-  }
-
-  async function cancel_clip() {
-    if (!current_clip_event_id) {
-      return;
-    }
-    invoke("cancel", { eventId: current_clip_event_id })
-      .then(() => {
-        reset_clip_state();
-      })
-      .catch((error) => {
-        log.warn("Failed to cancel clip task", error);
-        reset_clip_state();
-      });
   }
 
   async function delete_video() {
@@ -782,31 +656,13 @@
                   >
                     选区列表
                   </button>
-                  <button
-                    on:click={() => (show_clip_confirm = true)}
-                    disabled={current_clip_event_id != null}
-                    class="px-4 py-1.5 bg-[#0A84FF] text-white text-sm rounded-lg
-                           transition-all duration-200 hover:bg-[#0A84FF]/90
-                           disabled:opacity-50 disabled:cursor-not-allowed
-                           flex items-center space-x-2"
-                  >
-                    {#if current_clip_event_id != null}
-                      <div
-                        class="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin"
-                      />
-                    {/if}
-                    <span id="generate-clip-prompt">生成切片</span>
-                  </button>
-                  {#if current_clip_event_id != null}
-                    <button
-                      on:click={cancel_clip}
-                      class="px-4 py-1.5 text-red-500 text-sm rounded-lg
-                             transition-all duration-200 hover:bg-red-500/10
-                             disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      取消
-                    </button>
-                  {/if}
+                  <ArchiveClipButton
+                    {archive}
+                    ranges={activeRanges}
+                    captureCover
+                    bind:running={clip_running}
+                    on:generated={handleClipGenerated}
+                  />
                   {#if selected_video}
                     <button
                       on:click={delete_video}
@@ -820,7 +676,7 @@
                 </div>
               </div>
 
-              {#if current_clip_event_id != null}
+              {#if clip_running}
                 <div class="rounded-lg border border-[#0A84FF]/30 bg-[#0A84FF]/10 px-3 py-2 text-xs text-blue-100">
                   切片任务将在后台继续运行，关闭页面不会取消任务；可前往任务页面管理后台任务。
                 </div>
@@ -1082,158 +938,6 @@
     </div>
   </div>
 </main>
-
-<!-- Clip Confirmation Dialog -->
-{#if show_clip_confirm}
-  <div class="fixed inset-0 z-[100] flex items-center justify-center">
-    <div
-      class="absolute inset-0 bg-black/60 backdrop-blur-md"
-      role="button"
-      tabindex="0"
-      aria-label="关闭对话框"
-      on:click={() => (show_clip_confirm = false)}
-      on:keydown={(e) => {
-        if (e.key === "Escape" || e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          show_clip_confirm = false;
-        }
-      }}
-    />
-
-    <div
-      role="dialog"
-      aria-modal="true"
-      class="relative mx-4 w-full max-w-md rounded-2xl bg-[#1c1c1e] border border-white/10 shadow-2xl ring-1 ring-black/5"
-    >
-      <div class="p-5">
-        <h3 class="text-[17px] font-semibold text-white">确认生成切片</h3>
-        <p class="mt-1 text-[13px] text-white/70">请确认以下设置后继续</p>
-
-        <div class="mt-3 space-y-3">
-          <div class="text-[13px] font-medium text-white/90">
-            待合并选区列表
-          </div>
-          <div
-            class="max-h-48 overflow-y-auto space-y-2 custom-scrollbar-light"
-          >
-            {#each activeRanges as range, index}
-              <div
-                class="flex items-center justify-between px-3 py-2 bg-[#2c2c2e] rounded-lg border border-white/5 hover:border-white/10 transition-colors"
-              >
-                <div class="flex items-center space-x-3">
-                  <div
-                    class="flex items-center justify-center w-6 h-6 rounded-full bg-[#0A84FF]/20 text-[#0A84FF] text-[11px] font-semibold"
-                  >
-                    {index + 1}
-                  </div>
-                  <div class="flex flex-col space-y-0.5">
-                    <div class="text-[12px] text-white/90">
-                      {format_time(range.start * 1000)} → {format_time(
-                        range.end * 1000
-                      )}
-                    </div>
-                    <div class="text-[11px] text-white/60">
-                      时长: {format_duration_seconds(range.end - range.start)}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            {:else}
-              <div class="text-center py-4 text-white/60 text-[13px]">
-                没有已激活的选区，请选择或添加选区。
-              </div>
-            {/each}
-          </div>
-          <div
-            class="mt-2 pt-2 border-t border-white/10 text-[15px] font-semibold text-white"
-          >
-            总时长: {format_duration_seconds(
-              activeRanges.reduce(
-                (acc, range) => acc + range.end - range.start,
-                0
-              )
-            )}
-          </div>
-        </div>
-
-        <div class="mt-3 space-y-3">
-          <div class="mt-1 text-[13px] text-white/80">> 切片备注（可选）</div>
-          <input
-            type="text"
-            id="confirm-clip-note-input"
-            bind:value={clip_note}
-            class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg
-                   border border-gray-800/50 focus:border-[#0A84FF]
-                   transition duration-200 outline-none
-                   placeholder-gray-500"
-          />
-        </div>
-
-        <div class="mt-3 space-y-3">
-          <label class="flex items-center gap-2.5">
-            <input
-              type="checkbox"
-              id="confirm-danmu-checkbox"
-              bind:checked={danmu_enabled}
-              class="h-4 w-4 rounded border-white/30 bg-[#2c2c2e] text-[#0A84FF] accent-[#0A84FF] focus:outline-none focus:ring-2 focus:ring-[#0A84FF]/40"
-            />
-            <span class="text-[13px] text-white/80">压制弹幕</span>
-          </label>
-
-          <label class="flex items-center gap-2.5">
-            <input
-              type="checkbox"
-              id="confirm-fix-encoding-checkbox"
-              bind:checked={fix_encoding}
-              class="h-4 w-4 rounded border-white/30 bg-[#2c2c2e] text-[#0A84FF] accent-[#0A84FF] focus:outline-none focus:ring-2 focus:ring-[#0A84FF]/40"
-            />
-            <span class="text-[13px] text-white/80"
-              >修复编码（切片异常时使用）</span
-            >
-          </label>
-        </div>
-
-        {#if activeRanges.length > 1}
-          <div class="mt-3 space-y-2">
-            <div class="text-[13px] font-medium text-white/90">转场效果</div>
-            <div class="grid grid-cols-4 gap-1.5">
-              {#each transitionOptions as opt}
-                <button
-                  type="button"
-                  class="px-2 py-1.5 text-[12px] rounded-lg border transition-colors
-                    {transition === opt.value
-                      ? 'bg-[#0A84FF]/20 border-[#0A84FF] text-[#0A84FF]'
-                      : 'bg-[#2c2c2e] border-white/5 text-white/70 hover:border-white/20'}"
-                  on:click={() => (transition = opt.value)}
-                >
-                  {opt.label}
-                </button>
-              {/each}
-            </div>
-          </div>
-        {/if}
-      </div>
-
-      <div
-        class="flex items-center justify-end gap-2 rounded-b-2xl border-t border-white/10 bg-[#111113] px-5 py-3"
-      >
-        <button
-          on:click={() => (show_clip_confirm = false)}
-          class="px-3.5 py-2 text-[13px] rounded-lg border border-white/20 text-white/90 hover:bg-white/10 transition-colors"
-        >
-          取消
-        </button>
-        <button
-          on:click={confirm_generate_clip}
-          disabled={activeRanges.length === 0}
-          class="px-3.5 py-2 text-[13px] rounded-lg bg-[#0A84FF] text-white shadow-[inset_0_1px_0_rgba(255,255,255,.15)] hover:bg-[#0A84FF]/90 transition-colors"
-        >
-          确认生成
-        </button>
-      </div>
-    </div>
-  </div>
-{/if}
 
 <!-- Selection List Dialog -->
 {#if show_selection_list}

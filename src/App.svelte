@@ -87,7 +87,7 @@
         <Task />
       </div>
       <div class="page" class:visible={active == "助手"}>
-        <AI />
+        <AI on:navigateSettings={() => (active = "设置")} />
       </div>
       <div class="page" class:visible={active == "账号"}>
         <Account />

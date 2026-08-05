@@ -7,13 +7,6 @@ import {
   type ChatMessage,
 } from "./messages";
 
-export interface AgentConfig {
-  provider: "openai" | "ollama";
-  apiKey?: string;
-  baseURL?: string;
-  model?: string;
-}
-
 interface AgentChatResponse {
   content: string;
   toolCalls?: unknown;
@@ -32,7 +25,6 @@ function contentText(message: ChatMessage): string {
  * retained as protocol messages so the model can continue after confirmation.
  */
 export async function agentChat(
-  config: AgentConfig,
   conversation: ChatMessage[],
 ): Promise<AssistantMessage> {
   const toolResultIds = new Set(
@@ -83,10 +75,6 @@ export async function agentChat(
 
   const response = await invoke<AgentChatResponse>("agent_chat", {
     request: {
-      provider: config.provider,
-      endpoint: config.baseURL || "",
-      apiKey: config.apiKey,
-      model: config.model || (config.provider === "ollama" ? "llama2" : ""),
       messages,
     },
   });

@@ -44,6 +44,16 @@ pub struct Config {
     pub update_interval: Arc<AtomicU64>,
     #[serde(default = "default_powerlive_key")]
     pub powerlive_key: String,
+    #[serde(default = "default_llm_config")]
+    pub llm: LlmConfig,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct LlmConfig {
+    pub provider: String,
+    pub endpoint: String,
+    pub api_key: String,
+    pub model: String,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -107,6 +117,15 @@ fn default_powerlive_key() -> String {
     String::new()
 }
 
+fn default_llm_config() -> LlmConfig {
+    LlmConfig {
+        provider: "openai".to_string(),
+        endpoint: "https://api.openai.com/v1".to_string(),
+        api_key: String::new(),
+        model: String::new(),
+    }
+}
+
 impl Config {
     pub fn load(
         config_path: &PathBuf,
@@ -149,6 +168,7 @@ impl Config {
             danmu_ass_options: default_danmu_ass_options(),
             update_interval: Arc::new(AtomicU64::new(default_status_check_interval())),
             powerlive_key: default_powerlive_key(),
+            llm: default_llm_config(),
         };
 
         config.save();

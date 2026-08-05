@@ -11,6 +11,12 @@ whisper_prompt = "这是一段中文 你们好"
 openai_api_key = ""
 clip_name_format = "[{room_id}][{live_id}][{title}][{created_at}].mp4"
 
+[llm]
+provider = "openai"
+endpoint = "https://api.openai.com/v1"
+api_key = ""
+model = ""
+
 [auto_generate]
 enabled = false
 encode_danmu = false

@@ -669,6 +669,7 @@ async fn upload_procedure_inner(
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn cancel(state: state_type!(), event_id: String) -> Result<(), String> {
     log::info!("Cancel task: {event_id}");
+    let task_before_cancel = state.db.get_task(&event_id).await.ok();
     let cancel_result = state.task_manager.cancel_task(&event_id).await;
     match cancel_result {
         Ok(()) => {
@@ -687,6 +688,22 @@ pub async fn cancel(state: state_type!(), event_id: String) -> Result<(), String
             }
         }
         Err(e) => return Err(e),
+    }
+    if let Some(task) = task_before_cancel {
+        if task.task_type == "generate_archive_summary" {
+            if let Ok(metadata) = serde_json::from_str::<serde_json::Value>(&task.metadata) {
+                if let (Some(platform), Some(room_id), Some(live_id)) = (
+                    metadata.get("platform").and_then(|value| value.as_str()),
+                    metadata.get("room_id").and_then(|value| value.as_str()),
+                    metadata.get("live_id").and_then(|value| value.as_str()),
+                ) {
+                    let _ = state
+                        .db
+                        .fail_record_summary(platform, room_id, live_id, "任务已取消")
+                        .await;
+                }
+            }
+        }
     }
     Ok(())
 }

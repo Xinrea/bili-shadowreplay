@@ -16,7 +16,7 @@ use std::{
 
 use rig_core::{
     client::{CompletionClient, Nothing},
-    completion::{Chat, Message},
+    completion::{Chat, Message, Prompt},
     message::{AssistantContent, ToolCall, ToolFunction, ToolResultContent, UserContent},
     providers::{ollama, openai},
     tool::Tool,
@@ -28,7 +28,10 @@ use serde_json::{json, Value};
 #[cfg(feature = "gui")]
 use tauri::State as TauriState;
 
-use crate::{database::Database, recorder_manager::RecorderManager, state::State, state_type};
+use crate::{
+    config::LlmConfig, database::Database, recorder_manager::RecorderManager, state::State,
+    state_type,
+};
 
 const PROMPT: &str = r#"
 你是 BiliBili ShadowReplay（BSR）的虚拟助手小轴。你喜欢橘子，并适度使用 emoji。
@@ -39,15 +42,61 @@ BSR 用 Recorder 表示监控的直播间，Archive 表示缓存的录播，Vide
 只读工具会立即执行。删除、上传、修改配置、生成文件或启动外部操作等工具会返回 confirmation_required=true，此时你必须立即向用户清楚说明待执行的工具及参数，然后停止，不得重复调用该工具、继续调用其他工具或声称操作已完成。前端会让用户手动确认或拒绝；收到对应 tool result 后，再根据实际结果继续回复。每次只申请一个需要确认的操作。
 "#;
 
+pub async fn llm_prompt(
+    config: &LlmConfig,
+    preamble: &str,
+    prompt: &str,
+) -> Result<String, String> {
+    if config.model.trim().is_empty() {
+        return Err("请选择模型".to_string());
+    }
+    match config.provider.as_str() {
+        "openai" => {
+            if config.api_key.trim().is_empty() {
+                return Err("请配置 API Key".to_string());
+            }
+            let client = openai::Client::builder()
+                .api_key(&config.api_key)
+                .base_url(&config.endpoint)
+                .build()
+                .map_err(|e| e.to_string())?
+                .completions_api();
+            client
+                .agent(&config.model)
+                .preamble(preamble)
+                .build()
+                .prompt(prompt)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "ollama" => {
+            let endpoint = if config.endpoint.trim().is_empty() {
+                "http://localhost:11434"
+            } else {
+                &config.endpoint
+            };
+            let client = ollama::Client::builder()
+                .api_key(Nothing)
+                .base_url(endpoint)
+                .build()
+                .map_err(|e| e.to_string())?;
+            client
+                .agent(&config.model)
+                .preamble(preamble)
+                .build()
+                .prompt(prompt)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        _ => Err("Unsupported AI provider".to_string()),
+    }
+}
+
 static TOOL_CALL_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRequest {
-    pub provider: String,
-    pub endpoint: String,
-    pub api_key: Option<String>,
-    pub model: String,
     /// Serialized UI messages. Keeping this wire type deliberately simple
     /// avoids coupling the Rust backend to frontend message implementations.
     #[serde(default)]
@@ -862,20 +911,20 @@ fn prepare_chat(messages: &[AgentMessage]) -> Result<(Message, Vec<Message>), St
 }
 
 async fn openai_chat(
-    request: &AgentRequest,
+    config: &LlmConfig,
     tool: BsrTool,
     prompt: Message,
     mut history: Vec<Message>,
 ) -> Result<String, String> {
     let client = openai::Client::builder()
-        .api_key(request.api_key.as_deref().unwrap_or_default())
-        .base_url(&request.endpoint)
+        .api_key(&config.api_key)
+        .base_url(&config.endpoint)
         .build()
         .map_err(|e| e.to_string())?
         // OpenAI-compatible gateways commonly implement Chat Completions, not Responses.
         .completions_api();
     client
-        .agent(&request.model)
+        .agent(&config.model)
         .preamble(PROMPT)
         .tool(tool)
         .default_max_turns(8)
@@ -886,15 +935,15 @@ async fn openai_chat(
 }
 
 async fn ollama_chat(
-    request: &AgentRequest,
+    config: &LlmConfig,
     tool: BsrTool,
     prompt: Message,
     mut history: Vec<Message>,
 ) -> Result<String, String> {
-    let endpoint = if request.endpoint.trim().is_empty() {
+    let endpoint = if config.endpoint.trim().is_empty() {
         "http://localhost:11434"
     } else {
-        &request.endpoint
+        &config.endpoint
     };
     let client = ollama::Client::builder()
         .api_key(Nothing)
@@ -902,7 +951,7 @@ async fn ollama_chat(
         .build()
         .map_err(|e| e.to_string())?;
     client
-        .agent(&request.model)
+        .agent(&config.model)
         .preamble(PROMPT)
         .tool(tool)
         .default_max_turns(8)
@@ -917,8 +966,12 @@ pub async fn agent_chat(
     state: state_type!(),
     request: AgentRequest,
 ) -> Result<AgentResponse, String> {
-    if request.model.trim().is_empty() {
+    let config = state.config.read().await.llm.clone();
+    if config.model.trim().is_empty() {
         return Err("请选择模型".into());
+    }
+    if config.provider == "openai" && config.api_key.trim().is_empty() {
+        return Err("请配置 API Key".into());
     }
     let tool = BsrTool {
         db: state.db.clone(),
@@ -927,9 +980,9 @@ pub async fn agent_chat(
     };
     let calls = tool.calls.clone();
     let (prompt, history) = prepare_chat(&request.messages)?;
-    let result = match request.provider.as_str() {
-        "ollama" => ollama_chat(&request, tool, prompt, history).await,
-        "openai" => openai_chat(&request, tool, prompt, history).await,
+    let result = match config.provider.as_str() {
+        "ollama" => ollama_chat(&config, tool, prompt, history).await,
+        "openai" => openai_chat(&config, tool, prompt, history).await,
         _ => return Err("Unsupported AI provider".into()),
     };
     let tool_calls = calls.lock().expect("tool call log mutex poisoned").clone();

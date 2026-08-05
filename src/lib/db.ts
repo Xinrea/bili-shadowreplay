@@ -47,3 +47,40 @@ export interface TaskRow {
   metadata: string;
   created_at: string;
 }
+
+export interface SummaryHighlight {
+  title: string;
+  start_seconds: number;
+  end_seconds: number;
+  reason: string;
+  excerpt: string;
+}
+
+export interface RecordSummary {
+  id: number;
+  platform: string;
+  room_id: string;
+  live_id: string;
+  status: "pending" | "processing" | "success" | "failed";
+  stage: string;
+  subtitle_srt: string | null;
+  subtitle_text: string | null;
+  summary_markdown: string | null;
+  highlights_json: string | null;
+  model_provider: string | null;
+  model_name: string | null;
+  prompt_version: number;
+  source_duration: number | null;
+  error_message: string | null;
+  task_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecordSummaryStatus {
+  platform: string;
+  room_id: string;
+  live_id: string;
+  status: RecordSummary["status"];
+  stage: string;
+}

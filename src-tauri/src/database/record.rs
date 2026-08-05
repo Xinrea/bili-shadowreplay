@@ -103,6 +103,14 @@ impl Database {
             .bind(live_id)
             .fetch_one(&lock)
             .await?;
+        sqlx::query(
+            "DELETE FROM record_summaries WHERE platform = $1 AND room_id = $2 AND live_id = $3",
+        )
+        .bind(&to_delete.platform)
+        .bind(&to_delete.room_id)
+        .bind(&to_delete.live_id)
+        .execute(&lock)
+        .await?;
         sqlx::query("DELETE FROM records WHERE live_id = $1")
             .bind(live_id)
             .execute(&lock)

@@ -4,10 +4,15 @@ use std::{
 };
 
 use crate::{
-    config::Config,
+    agent::{agent_chat, AgentRequest, AgentResponse},
+    config::{Config, LlmConfig},
     constants::API_PORT,
     database::{
-        message::MessageRow, record::RecordRow, recorder::RecorderRow, task::TaskRow,
+        message::MessageRow,
+        record::RecordRow,
+        recorder::RecorderRow,
+        summary::{RecordSummaryRow, RecordSummaryStatusRow},
+        task::TaskRow,
         video::VideoRow,
     },
     handlers::{
@@ -15,11 +20,11 @@ use crate::{
             add_account, get_account_count, get_accounts, get_qr, get_qr_status, remove_account,
         },
         config::{
-            get_config, get_static_port, update_auto_generate, update_clip_name_format,
-            update_danmu_ass_options, update_notify, update_openai_api_endpoint,
-            update_openai_api_key, update_status_check_interval, update_subtitle_generator_type,
-            update_subtitle_setting, update_webhook_url, update_whisper_language,
-            update_whisper_model, update_whisper_prompt,
+            get_config, get_llm_config, get_static_port, list_llm_models, update_auto_generate,
+            update_clip_name_format, update_danmu_ass_options, update_llm_config, update_notify,
+            update_openai_api_endpoint, update_openai_api_key, update_status_check_interval,
+            update_subtitle_generator_type, update_subtitle_setting, update_webhook_url,
+            update_whisper_language, update_whisper_model, update_whisper_prompt,
         },
         message::{delete_message, get_messages, read_message},
         recorder::{
@@ -28,6 +33,10 @@ use crate::{
             get_archive_subtitle, get_archives, get_archives_by_parent_id, get_danmu_record,
             get_recent_record, get_recorder_list, get_room_info, get_today_record_count,
             get_total_length, remove_recorder, send_danmaku, set_enable, ExportDanmuOptions,
+        },
+        summary::{
+            delete_archive_summary, generate_archive_summary, get_archive_summary,
+            get_archive_summary_statuses,
         },
         task::{delete_task, get_tasks},
         utils::{console_log, get_disk_info, list_folder, sanitize_filename_advanced, DiskInfo},
@@ -194,6 +203,56 @@ async fn handler_get_config(
 ) -> Result<Json<ApiResponse<Config>>, ApiError> {
     let config = get_config(state.0).await.expect("Failed to get config");
     Ok(Json(ApiResponse::success(config)))
+}
+
+async fn handler_get_llm_config(
+    state: axum::extract::State<State>,
+) -> Result<Json<ApiResponse<LlmConfig>>, ApiError> {
+    Ok(Json(ApiResponse::success(
+        get_llm_config(state.0)
+            .await
+            .map_err(|_| "Failed to get LLM config")?,
+    )))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateLlmConfigRequest {
+    provider: String,
+    endpoint: String,
+    api_key: String,
+    model: String,
+}
+
+async fn handler_update_llm_config(
+    state: axum::extract::State<State>,
+    Json(request): Json<UpdateLlmConfigRequest>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    update_llm_config(
+        state.0,
+        request.provider,
+        request.endpoint,
+        request.api_key,
+        request.model,
+    )
+    .await?;
+    Ok(Json(ApiResponse::success(())))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListLlmModelsRequest {
+    provider: String,
+    endpoint: String,
+    api_key: String,
+}
+
+async fn handler_list_llm_models(
+    Json(request): Json<ListLlmModelsRequest>,
+) -> Result<Json<ApiResponse<Vec<String>>>, ApiError> {
+    Ok(Json(ApiResponse::success(
+        list_llm_models(request.provider, request.endpoint, request.api_key).await?,
+    )))
 }
 
 async fn handler_get_static_port(
@@ -558,6 +617,74 @@ async fn handler_get_archive_subtitle(
     let subtitle =
         get_archive_subtitle(state.0, param.platform, param.room_id, param.live_id).await?;
     Ok(Json(ApiResponse::success(subtitle)))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ArchiveSummaryRequest {
+    platform: String,
+    room_id: String,
+    live_id: String,
+}
+
+async fn handler_get_archive_summary(
+    state: axum::extract::State<State>,
+    Json(request): Json<ArchiveSummaryRequest>,
+) -> Result<Json<ApiResponse<Option<RecordSummaryRow>>>, ApiError> {
+    Ok(Json(ApiResponse::success(
+        get_archive_summary(state.0, request.platform, request.room_id, request.live_id).await?,
+    )))
+}
+
+async fn handler_get_archive_summary_statuses(
+    state: axum::extract::State<State>,
+) -> Result<Json<ApiResponse<Vec<RecordSummaryStatusRow>>>, ApiError> {
+    Ok(Json(ApiResponse::success(
+        get_archive_summary_statuses(state.0).await?,
+    )))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerateArchiveSummaryRequest {
+    platform: String,
+    room_id: String,
+    live_id: String,
+    #[serde(default)]
+    force: bool,
+}
+
+async fn handler_generate_archive_summary(
+    state: axum::extract::State<State>,
+    Json(request): Json<GenerateArchiveSummaryRequest>,
+) -> Result<Json<ApiResponse<TaskRow>>, ApiError> {
+    Ok(Json(ApiResponse::success(
+        generate_archive_summary(
+            state.0,
+            request.platform,
+            request.room_id,
+            request.live_id,
+            request.force,
+        )
+        .await?,
+    )))
+}
+
+async fn handler_delete_archive_summary(
+    state: axum::extract::State<State>,
+    Json(request): Json<ArchiveSummaryRequest>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    delete_archive_summary(state.0, request.platform, request.room_id, request.live_id).await?;
+    Ok(Json(ApiResponse::success(())))
+}
+
+async fn handler_agent_chat(
+    state: axum::extract::State<State>,
+    Json(request): Json<AgentRequest>,
+) -> Result<Json<ApiResponse<AgentResponse>>, ApiError> {
+    Ok(Json(ApiResponse::success(
+        agent_chat(state.0, request).await?,
+    )))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1786,6 +1913,15 @@ pub async fn start_api_server(state: State) {
                 "/api/update_danmu_ass_options",
                 post(handler_update_danmu_ass_options),
             )
+            .route("/api/update_llm_config", post(handler_update_llm_config))
+            .route(
+                "/api/generate_archive_summary",
+                post(handler_generate_archive_summary),
+            )
+            .route(
+                "/api/delete_archive_summary",
+                post(handler_delete_archive_summary),
+            )
             .route(
                 "/api/batch_import_external_videos",
                 post(handler_batch_import_external_videos),
@@ -1806,6 +1942,8 @@ pub async fn start_api_server(state: State) {
     app = app
         // Config commands
         .route("/api/get_config", post(handler_get_config))
+        .route("/api/get_llm_config", post(handler_get_llm_config))
+        .route("/api/list_llm_models", post(handler_list_llm_models))
         .route("/api/get_static_port", post(handler_get_static_port))
         // Message commands
         .route("/api/get_messages", post(handler_get_messages))
@@ -1827,6 +1965,14 @@ pub async fn start_api_server(state: State) {
         .route(
             "/api/get_archive_subtitle",
             post(handler_get_archive_subtitle),
+        )
+        .route(
+            "/api/get_archive_summary",
+            post(handler_get_archive_summary),
+        )
+        .route(
+            "/api/get_archive_summary_statuses",
+            post(handler_get_archive_summary_statuses),
         )
         .route("/api/get_danmu_record", post(handler_get_danmu_record))
         .route("/api/get_total_length", post(handler_get_total_length))
@@ -1857,6 +2003,7 @@ pub async fn start_api_server(state: State) {
         .route("/api/list_folder", post(handler_list_folder))
         .route("/api/fetch", post(handler_fetch))
         .route("/api/upload_file", post(handler_upload_file))
+        .route("/api/agent_chat", post(handler_agent_chat))
         .route("/api/image/:video_id", get(handler_image_base64))
         .route("/hls/*uri", get(handler_hls));
 

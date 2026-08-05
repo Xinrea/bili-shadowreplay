@@ -52,11 +52,11 @@
     startTime: number;
     endTime: number;
     text: string;
+    layerOrder: number;
   }
 
   let subtitles: Subtitle[] = [];
   let currentTime = 0;
-  let currentSubtitle = "";
   let videoElement: HTMLVideoElement;
   let showDefaultCoverIcon = false;
   let timelineWidth = 0;
@@ -78,7 +78,14 @@
   let previousVolume = 1;
   let isMuted = false;
   let currentSubtitleIndex = -1;
+  let currentSubtitleIndices: number[] = [];
+  let currentSubtitles: Subtitle[] = [];
   let subtitleElements: HTMLElement[] = [];
+  let subtitleLanes: number[] = [];
+  let subtitleLaneCount = 1;
+  let subtitleTrackHeight = 48;
+  let timelineTotalHeight = 196;
+  let nextSubtitleLayerOrder = 0;
   let timelineContainer: HTMLElement;
   let showEncodeModal = false;
   let videoWidth = 0;
@@ -129,6 +136,28 @@
   let isWaveformLoaded = false;
   let isWaveformLoading = false;
   let syncTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  $: {
+    const laneLayout = calculateSubtitleLanes(subtitles);
+    subtitleLanes = laneLayout.lanes;
+    subtitleLaneCount = laneLayout.count;
+    subtitleTrackHeight = Math.max(48, subtitleLaneCount * 36 + 8);
+    timelineTotalHeight = 148 + subtitleTrackHeight;
+  }
+
+  $: {
+    currentSubtitleIndices = subtitles
+      .map((subtitle, index) => ({ subtitle, index }))
+      .filter(
+        ({ subtitle }) =>
+          currentTime >= subtitle.startTime && currentTime < subtitle.endTime
+      )
+      .map(({ index }) => index);
+    currentSubtitleIndex = currentSubtitleIndices[0] ?? -1;
+    currentSubtitles = currentSubtitleIndices
+      .map((index) => subtitles[index])
+      .sort((a, b) => a.layerOrder - b.layerOrder);
+  }
 
   // 获取 profile 从 localStorage
   function get_profile(): Profile {
@@ -491,6 +520,7 @@
           startTime,
           endTime,
           text,
+          layerOrder: nextSubtitleLayerOrder++,
         };
       })
       .filter((subtitle): subtitle is Subtitle => subtitle !== null)
@@ -605,7 +635,6 @@
       videoElement.volume = volume;
       isPlaying = false;
       currentTime = 0;
-      currentSubtitle = "";
       currentSubtitleIndex = -1;
       // 获取视频实际尺寸
       videoWidth = videoElement.videoWidth;
@@ -923,10 +952,6 @@
 
   function handleTimeUpdate() {
     currentTime = videoElement.currentTime;
-    // Find current subtitle
-    currentSubtitleIndex = getCurrentSubtitleIndex();
-    const currentSub = subtitles[currentSubtitleIndex];
-    currentSubtitle = currentSub?.text || "";
 
     // 同步波形图进度
     syncWaveformWithVideo();
@@ -1013,6 +1038,42 @@
     }
   }
 
+  function calculateSubtitleLanes(items: Subtitle[]): {
+    lanes: number[];
+    count: number;
+  } {
+    const lanes = new Array(items.length).fill(0);
+    const laneItems: number[][] = [];
+    const sortedIndices = items
+      .map((_, index) => index)
+      .sort(
+        (a, b) =>
+          items[a].layerOrder - items[b].layerOrder ||
+          a - b
+      );
+
+    for (const index of sortedIndices) {
+      const subtitle = items[index];
+      let lane = laneItems.findIndex((assignedIndices) =>
+        assignedIndices.every((assignedIndex) => {
+          const assigned = items[assignedIndex];
+          return (
+            subtitle.endTime <= assigned.startTime + 0.001 ||
+            subtitle.startTime >= assigned.endTime - 0.001
+          );
+        })
+      );
+      if (lane === -1) {
+        lane = laneItems.length;
+        laneItems.push([]);
+      }
+      laneItems[lane].push(index);
+      lanes[index] = lane;
+    }
+
+    return { lanes, count: Math.max(1, laneItems.length) };
+  }
+
   function insertSubtitleAfter(index: number) {
     if (!videoElement?.duration) return;
 
@@ -1040,7 +1101,12 @@
 
     subtitles = [
       ...subtitles.slice(0, index + 1),
-      { startTime, endTime, text: "" },
+      {
+        startTime,
+        endTime,
+        text: "",
+        layerOrder: nextSubtitleLayerOrder++,
+      },
       ...subtitles.slice(index + 1),
     ];
 
@@ -1074,7 +1140,6 @@
         return { ...sub, endTime: newEndTime };
       }
     });
-    subtitles = subtitles.sort((a, b) => a.startTime - b.startTime);
   }
 
   function moveSubtitle(index: number, newStartTime: number) {
@@ -1095,7 +1160,6 @@
         ? { ...s, startTime: finalStartTime, endTime: finalEndTime }
         : s
     );
-    subtitles = subtitles.sort((a, b) => a.startTime - b.startTime);
   }
 
   async function removeSubtitle(index: number) {
@@ -1184,24 +1248,29 @@
 
   function handleTimelineMouseUp() {
     draggingSubtitle = null;
+    subtitles = [...subtitles].sort((a, b) => a.startTime - b.startTime);
     document.removeEventListener("mousemove", handleTimelineMouseMove);
     document.removeEventListener("mouseup", handleTimelineMouseUp);
   }
 
   function handleBlockMouseUp() {
     draggingBlock = null;
+    subtitles = [...subtitles].sort((a, b) => a.startTime - b.startTime);
     document.removeEventListener("mousemove", handleBlockMouseMove);
     document.removeEventListener("mouseup", handleBlockMouseUp);
   }
 
-  function getSubtitleStyle(subtitle: Subtitle) {
+  function getSubtitleStyle(subtitle: Subtitle, index: number) {
     if (!isVideoLoaded || !videoElement?.duration) return "";
     // 字幕块位置应该是相对于时间轴容器的百分比，不需要乘以缩放因子
     // 因为容器本身已经通过 style="width: {100 * timelineScale}%" 进行了缩放
     const start = (subtitle.startTime / videoElement.duration) * 100;
     const width =
       ((subtitle.endTime - subtitle.startTime) / videoElement.duration) * 100;
-    return `left: ${start}%; width: ${width}%;`;
+    const laneFromTop =
+      subtitleLaneCount - 1 - (subtitleLanes[index] || 0);
+    const top = 4 + laneFromTop * 36;
+    return `left: ${start}%; width: ${width}%; top: ${top}px;`;
   }
 
   function handleVolumeChange(e: Event) {
@@ -1227,12 +1296,6 @@
       }
       isMuted = !isMuted;
     }
-  }
-
-  function getCurrentSubtitleIndex(): number {
-    return subtitles.findIndex(
-      (sub) => currentTime >= sub.startTime && currentTime < sub.endTime
-    );
   }
 
   function handleScaleChange(e: Event) {
@@ -1294,7 +1357,6 @@
       // 清空字幕列表
       subtitles = [];
       currentSubtitleIndex = -1;
-      currentSubtitle = "";
       // 重置视频状态
       if (videoElement) {
         videoElement.currentTime = 0;
@@ -1620,9 +1682,9 @@
               </div>
             {/if}
             <!-- 字幕显示 -->
-            {#if currentSubtitle}
+            {#if currentSubtitles.length > 0}
               <div
-                class="absolute bottom-8 left-1/2 -translate-x-1/2 px-4 py-2 rounded-lg text-white"
+                class="absolute bottom-8 left-1/2 -translate-x-1/2 max-w-[90%] px-4 py-2 flex flex-col-reverse items-center gap-1 text-white"
                 style="
                   font-family: {subtitleStyle.fontName};
                   font-size: {videoHeight * (subtitleStyle.fontSize / 720)}px;
@@ -1642,7 +1704,9 @@
                   (subtitleStyle.marginV / 720)}px;
                 "
               >
-                {currentSubtitle}
+                {#each currentSubtitles as subtitle}
+                  <div class="max-w-full whitespace-pre-wrap">{subtitle.text}</div>
+                {/each}
               </div>
             {/if}
           </div>
@@ -1740,7 +1804,10 @@
 
         <!-- 三轨时间轴：字幕、视频、音频共用同一时间坐标 -->
         <div class="bg-[#1c1c1e] border-t border-gray-800/50">
-          <div class="flex h-[196px] overflow-hidden">
+          <div
+            class="flex overflow-hidden"
+            style="height: {timelineTotalHeight}px"
+          >
             <div
               class="w-20 shrink-0 border-r border-gray-800/70 bg-[#242426] text-xs text-gray-400 select-none flex flex-col"
             >
@@ -1760,7 +1827,8 @@
                 音频
               </div>
               <div
-                class="order-1 h-12 px-3 flex items-center gap-2 border-b border-gray-800/70"
+                class="order-1 px-3 flex items-center gap-2 border-b border-gray-800/70"
+                style="height: {subtitleTrackHeight}px"
               >
                 <span class="w-2 h-2 rounded-sm bg-[#0A84FF]"></span>
                 字幕
@@ -1775,8 +1843,8 @@
               <!-- svelte-ignore a11y-click-events-have-key-events -->
               <div
                 bind:this={timelineElement}
-                class="relative min-w-full h-[196px] group select-none flex flex-col"
-                style="width: {100 * timelineScale}%"
+                class="relative min-w-full group select-none flex flex-col"
+                style="width: {100 * timelineScale}%; height: {timelineTotalHeight}px"
                 on:mousemove={() => {
                   if (!timelineElement) return;
                   timelineWidth = timelineElement.getBoundingClientRect().width;
@@ -1884,7 +1952,8 @@
                 </div>
 
                 <div
-                  class="order-1 shrink-0 relative h-12 border-b border-gray-800/70 bg-blue-950/10 overflow-hidden"
+                  class="order-1 shrink-0 relative border-b border-gray-800/70 bg-blue-950/10 overflow-hidden"
+                  style="height: {subtitleTrackHeight}px"
                 >
                   {#if subtitles.length === 0}
                     <div
@@ -1896,8 +1965,12 @@
                   {#each subtitles as subtitle, index}
                     <div
                       bind:this={subtitleElements[index]}
-                      class="absolute top-2 h-8 rounded-md border border-[#0A84FF]/50 bg-[#0A84FF]/20 cursor-move overflow-hidden"
-                      style={getSubtitleStyle(subtitle)}
+                      class="absolute h-8 rounded-md border border-[#0A84FF]/50 bg-[#0A84FF]/20 cursor-move overflow-hidden {currentSubtitleIndices.includes(
+                        index
+                      ) || draggingSubtitle?.index === index || draggingBlock === index
+                        ? 'z-20 border-[#0A84FF]/90 bg-[#0A84FF]/30'
+                        : 'z-10'}"
+                      style={getSubtitleStyle(subtitle, index)}
                       on:mousedown={(e) => handleBlockMouseDown(e, index)}
                       on:click|stopPropagation
                     >
@@ -2052,8 +2125,9 @@
               {#each subtitles as subtitle, index}
                 <div
                   bind:this={subtitleElements[index]}
-                  class="group min-h-[42px] px-3 flex items-center gap-2 border-b border-l-2 border-b-gray-800/70 border-l-transparent transition-colors duration-150 hover:bg-white/[0.03] {currentSubtitleIndex ===
-                  index
+                  class="group min-h-[42px] px-3 flex items-center gap-2 border-b border-l-2 border-b-gray-800/70 border-l-transparent transition-colors duration-150 hover:bg-white/[0.03] {currentSubtitleIndices.includes(
+                    index
+                  )
                     ? 'bg-[#0A84FF]/10 border-l-[#0A84FF]'
                     : ''}"
                 >

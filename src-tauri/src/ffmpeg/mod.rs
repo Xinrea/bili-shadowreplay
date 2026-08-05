@@ -194,6 +194,7 @@ pub async fn extract_audio_sample(file: &Path) -> Result<PathBuf, String> {
     let mut ffmpeg_process = ffmpeg_command();
     #[cfg(target_os = "windows")]
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
+    ffmpeg_process.kill_on_drop(true);
 
     let child = ffmpeg_process
         .args(["-i", file.to_str().unwrap()])
@@ -380,6 +381,7 @@ pub async fn extract_full_audio(file: &Path) -> Result<PathBuf, String> {
     let mut ffmpeg_process = ffmpeg_command();
     #[cfg(target_os = "windows")]
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
+    ffmpeg_process.kill_on_drop(true);
 
     let child = ffmpeg_process
         .arg("-i")
@@ -409,10 +411,15 @@ pub async fn extract_full_audio(file: &Path) -> Result<PathBuf, String> {
         }
     }
 
-    child
+    let status = child
         .wait()
         .await
         .map_err(|e| format!("ffmpeg wait error: {e}"))?;
+
+    if !status.success() {
+        let _ = tokio::fs::remove_file(&output_path).await;
+        return Err(format!("Full audio extraction failed with status {status}"));
+    }
 
     if output_path.exists() {
         log::info!("Full audio extracted: {}", output_path.display());
@@ -1009,12 +1016,20 @@ pub async fn generate_video_subtitle(
             )
             .await
             {
-                let opus_file = file.with_extension("opus");
-                if !opus_file.exists() {
-                    return Err("Opus file not found".to_string());
+                let extension = file
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .unwrap_or_default();
+                let audio_file = if matches!(extension, "opus" | "wav" | "mp3" | "m4a" | "flac") {
+                    file.to_path_buf()
+                } else {
+                    file.with_extension("opus")
+                };
+                if !audio_file.exists() {
+                    return Err("Audio file not found".to_string());
                 }
                 let result = generator
-                    .generate_subtitle(reporter, &opus_file, language_hint)
+                    .generate_subtitle(reporter, &audio_file, language_hint)
                     .await;
                 match result {
                     Ok(result) => Ok(result),

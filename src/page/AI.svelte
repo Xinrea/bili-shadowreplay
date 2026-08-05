@@ -1,10 +1,9 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { createEventDispatcher, onDestroy, onMount } from "svelte";
   import { Settings, Send, Sparkles, Trash2, Zap, Bot } from "lucide-svelte";
-  import {
-    agentChat,
-    type AgentConfig,
-  } from "../lib/agent/agent";
+  import { agentChat } from "../lib/agent/agent";
+  import type { LlmConfig } from "../lib/interface";
+  import { invoke } from "../lib/invoker";
   import { invokeToolByName } from "../lib/agent/tools";
   import {
     deserializeMessages,
@@ -18,18 +17,16 @@
   import AIMessageComponent from "../lib/components/AIMessage.svelte";
   import ProcessingMessageComponent from "../lib/components/ProcessingMessage.svelte";
   import ToolMessageComponent from "../lib/components/ToolMessage.svelte";
-  import SettingsModal from "../lib/components/ai/SettingsModal.svelte";
+
+  const dispatch = createEventDispatcher<{ navigateSettings: void }>();
 
   let messages: ChatMessage[] = [];
   let inputMessage = "";
   let isProcessing = false;
   let messageContainer: HTMLElement;
   let inputAreaHeight = 0;
-  let agentConfig: AgentConfig | null = null;
+  let agentConfigured = false;
 
-  // 设置相关状态
-  let showSettings = false;
-  let isLoadingModels = false;
   let settings = {
     provider: "openai" as "openai" | "ollama",
     endpoint: "",
@@ -37,7 +34,6 @@
     model: ""
   };
 
-  let availableModels: Array<{ value: string; label: string }> = [];
   type ToolCallState = 'confirmed' | 'rejected' | 'none';
 
   // 预设提示词
@@ -50,72 +46,23 @@
     { title: "提取音频", description: "从视频中提取音频", prompt: "帮我提取视频中的音频", icon: "🎵" }
   ];
 
-  function openSettings() { showSettings = true; }
-  function closeSettings() { showSettings = false; }
-
-  function buildAgentConfig(): AgentConfig | null {
-    if (settings.provider === 'ollama') {
-      if (!settings.endpoint && !settings.model) return null;
-      return {
-        provider: 'ollama',
-        baseURL: settings.endpoint || 'http://localhost:11434',
-        model: settings.model.trim() || 'llama2',
-      };
-    }
-    if (!settings.api_key || !settings.endpoint || !settings.model.trim()) return null;
-    return {
-      provider: 'openai',
-      apiKey: settings.api_key,
-      baseURL: settings.endpoint,
-      model: settings.model.trim(),
-    };
+  function openSettings() {
+    dispatch("navigateSettings");
   }
 
-  async function saveSettings() {
-    localStorage.setItem('ai_settings', JSON.stringify(settings));
-    agentConfig = buildAgentConfig();
-    if (settings.provider === 'openai') await loadModels();
-    closeSettings();
+  function updateConfiguredState() {
+    agentConfigured = Boolean(
+      settings.endpoint.trim() &&
+      settings.model.trim() &&
+      (settings.provider === 'ollama' || settings.api_key.trim()),
+    );
   }
 
-  async function fetchModels(endpoint: string, apiKey: string) {
+  async function loadSettings() {
     try {
-      const response = await fetch(`${endpoint}/models`, {
-        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' }
-      });
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-      const data = await response.json();
-      if (data.data && Array.isArray(data.data)) {
-        return data.data.map((model: any) => ({ value: model.id, label: model.id }));
-      }
-      return [];
-    } catch (error) {
-      console.error('Failed to fetch models:', error);
-      return [];
-    }
-  }
-
-  async function loadModels() {
-    if (settings.endpoint && settings.api_key) {
-      isLoadingModels = true;
-      try {
-        const models = await fetchModels(settings.endpoint, settings.api_key);
-        if (models.length > 0) availableModels = models;
-      } catch (error) {
-        console.error('Failed to load models:', error);
-      } finally {
-        isLoadingModels = false;
-      }
-    }
-  }
-
-  function loadSettings() {
-    const savedSettings = localStorage.getItem('ai_settings');
-    if (!savedSettings) return;
-    try {
-      settings = { ...settings, ...JSON.parse(savedSettings) };
-      agentConfig = buildAgentConfig();
-      if (settings.provider === 'openai') loadModels();
+      const savedSettings = await invoke<LlmConfig>('get_llm_config');
+      settings = { ...settings, ...savedSettings };
+      updateConfiguredState();
     } catch (error) {
       console.error('Failed to load AI settings:', error);
     }
@@ -175,7 +122,7 @@
   }
 
   async function sendMessage() {
-    if (!inputMessage.trim() || isProcessing || hasPendingToolCalls || !agentConfig) return;
+    if (!inputMessage.trim() || isProcessing || hasPendingToolCalls || !agentConfigured) return;
     messages = [...messages, {
       kind: 'human',
       content: inputMessage,
@@ -193,9 +140,9 @@
   }
 
   async function continueAgentFlow() {
-    if (!agentConfig) return;
+    if (!agentConfigured) return;
     try {
-      const response = await agentChat(agentConfig, messages);
+      const response = await agentChat(messages);
       messages = [...messages, response];
       persistConversation();
       scrollToBottom();
@@ -319,7 +266,8 @@
   }
 
   onMount(() => {
-    loadSettings();
+    void loadSettings();
+    window.addEventListener("llm-config-updated", loadSettings);
     try {
       const previousMessages = JSON.parse(localStorage.getItem('messages') || '[]');
       messages = deserializeMessages(previousMessages);
@@ -329,6 +277,10 @@
     localStorage.removeItem('toolCallStates'); // Remove the obsolete parallel state store.
     scrollToBottom();
   });
+
+  onDestroy(() => {
+    window.removeEventListener("llm-config-updated", loadSettings);
+  });
 </script>
 
 <div class="flex h-full bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-950 dark:to-gray-900">
@@ -337,7 +289,7 @@
     <!-- Messages Area -->
     <div class="flex-1 overflow-y-auto" bind:this={messageContainer}>
       <div class="max-w-4xl mx-auto px-6 py-8" style="padding-bottom: {inputAreaHeight + 16}px;">
-        {#if !agentConfig}
+        {#if !agentConfigured}
           <!-- Welcome State -->
           <div class="flex items-center justify-center min-h-[500px]">
             <div class="max-w-md text-center space-y-6">
@@ -439,10 +391,10 @@
             <textarea
               bind:value={inputMessage}
               on:keypress={handleKeyPress}
-              placeholder={!agentConfig ? "请先配置 AI 模型..." : hasPendingToolCalls ? "请先确认或拒绝待执行的工具调用..." : "输入您的消息..."}
+              placeholder={!agentConfigured ? "请先配置 AI 模型..." : hasPendingToolCalls ? "请先确认或拒绝待执行的工具调用..." : "输入您的消息..."}
               class="w-full px-4 pt-3 pb-3 border-0 bg-transparent text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-0 resize-none min-h-[52px] max-h-[200px] text-[15px] leading-relaxed disabled:opacity-50 disabled:cursor-not-allowed"
               rows="1"
-              disabled={isProcessing || hasPendingToolCalls || !agentConfig}
+              disabled={isProcessing || hasPendingToolCalls || !agentConfigured}
             ></textarea>
           </div>
 
@@ -456,7 +408,7 @@
                 title="点击配置模型"
               >
                 <Bot class="w-3.5 h-3.5" />
-                {#if agentConfig}
+                {#if agentConfigured}
                   <span>{settings.provider === 'ollama' ? 'Ollama' : 'OpenAI'} · {settings.model || '未设置模型'}</span>
                 {:else}
                   <span>未配置模型</span>
@@ -466,7 +418,7 @@
               <button
                 class="flex items-center space-x-1 px-2 py-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 on:click={clearConversation}
-                disabled={!agentConfig}
+                disabled={!agentConfigured}
                 title="清空对话"
               >
                 <Trash2 class="w-3.5 h-3.5" />
@@ -480,7 +432,7 @@
               {/if}
               <button
                 class="px-3 py-1.5 bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 rounded-lg hover:bg-gray-800 dark:hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center space-x-1.5 text-sm font-medium"
-                disabled={!inputMessage.trim() || isProcessing || hasPendingToolCalls || !agentConfig}
+                disabled={!inputMessage.trim() || isProcessing || hasPendingToolCalls || !agentConfigured}
                 on:click={sendMessage}
               >
                 <Send class="w-3.5 h-3.5" />
@@ -493,16 +445,6 @@
     </div>
   </div>
 
-  <!-- Settings Modal -->
-  <SettingsModal
-    {showSettings}
-    bind:settings
-    {availableModels}
-    {isLoadingModels}
-    onClose={closeSettings}
-    onSave={saveSettings}
-    onLoadModels={loadModels}
-  />
 </div>
 
 <style>

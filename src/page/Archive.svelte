@@ -1,6 +1,6 @@
 <script lang="ts">
   import { invoke, get_static_url } from "../lib/invoker";
-  import type { RecordItem } from "../lib/db";
+  import type { RecordItem, RecordSummaryStatus } from "../lib/db";
   import { onMount } from "svelte";
   import {
     Play,
@@ -16,6 +16,8 @@
     Home,
     FileVideo,
     History,
+    Sparkles,
+    Loader2,
   } from "lucide-svelte";
   import BilibiliIcon from "../lib/components/BilibiliIcon.svelte";
   import DouyinIcon from "../lib/components/DouyinIcon.svelte";
@@ -23,6 +25,7 @@
   import HuyaIcon from "../lib/components/HuyaIcon.svelte";
   import TikTokIcon from "../lib/components/TikTokIcon.svelte";
   import GenerateWholeClipModal from "../lib/components/GenerateWholeClipModal.svelte";
+  import ArchiveSummaryModal from "../lib/components/ArchiveSummaryModal.svelte";
   import type { RecorderInfo, RecorderList } from "src/lib/interface";
 
   let archives: RecordItem[] = [];
@@ -45,6 +48,9 @@
   // 生成完整录播相关状态
   let showWholeClipModal = false;
   let wholeClipArchive: RecordItem | null = null;
+  let showSummaryModal = false;
+  let summaryArchive: RecordItem | null = null;
+  let summaryStatuses: Record<string, RecordSummaryStatus> = {};
 
   // 分页相关状态
   let currentPage = 1;
@@ -130,6 +136,8 @@
         );
       });
 
+      await loadSummaryStatuses();
+
       totalCount = allArchives.length;
       updatePagination();
     } catch (error) {
@@ -139,6 +147,76 @@
       isLoading = false;
       loading = false;
     }
+  }
+
+  async function loadSummaryStatuses() {
+    try {
+      const statuses = await invoke<RecordSummaryStatus[]>(
+        "get_archive_summary_statuses",
+      );
+      summaryStatuses = Object.fromEntries(
+        statuses.map((status) => [summaryStatusKey(status), status]),
+      );
+    } catch (error) {
+      console.warn("Failed to load Summary statuses:", error);
+      summaryStatuses = {};
+    }
+  }
+
+  function summaryStatusKey(
+    record: Pick<RecordItem, "platform" | "room_id" | "live_id">,
+  ) {
+    return `${record.platform}:${record.room_id}:${record.live_id}`;
+  }
+
+  function getSummaryStatus(archive: RecordItem) {
+    return summaryStatuses[summaryStatusKey(archive)]?.status;
+  }
+
+  function summaryButtonClass(archive: RecordItem) {
+    switch (getSummaryStatus(archive)) {
+      case "processing":
+        return "hover:bg-blue-500/10";
+      case "success":
+        return "hover:bg-green-500/10";
+      case "failed":
+        return "hover:bg-red-500/10";
+      default:
+        return "hover:bg-violet-500/10";
+    }
+  }
+
+  function summaryIconClass(archive: RecordItem) {
+    switch (getSummaryStatus(archive)) {
+      case "processing":
+        return "text-blue-500";
+      case "success":
+        return "text-green-500";
+      case "failed":
+        return "text-red-500";
+      default:
+        return "text-violet-500";
+    }
+  }
+
+  function summaryButtonTitle(archive: RecordItem) {
+    switch (getSummaryStatus(archive)) {
+      case "processing":
+        return "Summary 生成中";
+      case "success":
+        return "查看 Summary";
+      case "failed":
+        return "Summary 生成失败，点击重试";
+      default:
+        return "生成 Summary";
+    }
+  }
+
+  function updateSummaryStatus(status: RecordSummaryStatus) {
+    summaryStatuses = {
+      ...summaryStatuses,
+      [summaryStatusKey(status)]: status,
+    };
   }
 
   /**
@@ -427,6 +505,11 @@
   function openWholeClipModal(archive: RecordItem) {
     wholeClipArchive = archive;
     showWholeClipModal = true;
+  }
+
+  function openSummaryModal(archive: RecordItem) {
+    summaryArchive = archive;
+    showSummaryModal = true;
   }
 
   function handleWholeClipGenerated() {
@@ -872,6 +955,17 @@
                         <FileVideo class="w-4 h-4 text-blue-500" />
                       </button>
                       <button
+                        class="p-1.5 rounded-lg transition-colors {summaryButtonClass(archive)}"
+                        title={summaryButtonTitle(archive)}
+                        on:click={() => openSummaryModal(archive)}
+                      >
+                        {#if getSummaryStatus(archive) === "processing"}
+                          <Loader2 class="w-4 h-4 animate-spin {summaryIconClass(archive)}" />
+                        {:else}
+                          <Sparkles class="w-4 h-4 {summaryIconClass(archive)}" />
+                        {/if}
+                      </button>
+                      <button
                         class="p-1.5 rounded-lg hover:bg-red-500/10 transition-colors"
                         title="删除记录"
                         on:click={() => {
@@ -950,6 +1044,12 @@
   roomId={wholeClipArchive?.room_id || ""}
   platform={wholeClipArchive?.platform || ""}
   on:generated={handleWholeClipGenerated}
+/>
+
+<ArchiveSummaryModal
+  bind:showModal={showSummaryModal}
+  archive={summaryArchive}
+  on:updated={(event) => updateSummaryStatus(event.detail)}
 />
 
 <style>

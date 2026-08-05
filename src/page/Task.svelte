@@ -156,6 +156,8 @@
         return "压制字幕";
       case "generate_whole_clip":
         return "生成完整录播";
+      case "generate_archive_summary":
+        return "生成录播 Summary";
       default:
         return task_type;
     }
@@ -171,6 +173,8 @@
         return "bg-blue-500";
       case "encode_video_subtitle":
         return "bg-orange-500";
+      case "generate_archive_summary":
+        return "bg-violet-500";
       default:
         return "bg-gray-500";
     }

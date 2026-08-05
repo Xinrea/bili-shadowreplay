@@ -1,7 +1,6 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-#[cfg(feature = "gui")]
 mod agent;
 mod audio_utils;
 mod config;
@@ -406,6 +405,36 @@ fn get_migrations() -> Vec<Migration> {
             ",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 14,
+            description: "add_record_summaries_table",
+            sql: r#"
+                CREATE TABLE record_summaries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    platform TEXT NOT NULL,
+                    room_id TEXT NOT NULL,
+                    live_id TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    stage TEXT NOT NULL DEFAULT 'pending',
+                    subtitle_srt TEXT,
+                    subtitle_text TEXT,
+                    summary_markdown TEXT,
+                    highlights_json TEXT,
+                    model_provider TEXT,
+                    model_name TEXT,
+                    prompt_version INTEGER NOT NULL DEFAULT 1,
+                    source_duration FLOAT,
+                    error_message TEXT,
+                    task_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(platform, room_id, live_id)
+                );
+                CREATE INDEX idx_record_summaries_record
+                    ON record_summaries(platform, room_id, live_id);
+            "#,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -488,6 +517,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
 
     db.set(db_pool).await;
     db.finish_pending_tasks().await?;
+    db.finish_pending_record_summaries().await?;
 
     let progress_manager = Arc::new(ProgressManager::new());
     let emitter = EventEmitter::new(progress_manager.get_event_sender());
@@ -565,6 +595,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     };
     db_clone.set(sqlite_pool.unwrap().clone()).await;
     db_clone.finish_pending_tasks().await?;
+    db_clone.finish_pending_record_summaries().await?;
     let webhook_poster =
         webhook::poster::create_webhook_poster(&config.read().await.webhook_url, None).unwrap();
     let mut task_manager = TaskManager::new();
@@ -659,6 +690,8 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::account::get_qr_status,
         crate::handlers::account::get_qr,
         crate::handlers::config::get_config,
+        crate::handlers::config::get_llm_config,
+        crate::handlers::config::list_llm_models,
         crate::handlers::config::get_static_port,
         crate::handlers::config::set_cache_path,
         crate::handlers::config::set_output_path,
@@ -676,6 +709,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::config::update_webhook_url,
         crate::handlers::config::update_danmu_ass_options,
         crate::handlers::config::update_powerlive_key,
+        crate::handlers::config::update_llm_config,
         crate::handlers::message::get_messages,
         crate::handlers::message::read_message,
         crate::handlers::message::delete_message,
@@ -700,6 +734,10 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::recorder::set_enable,
         crate::handlers::recorder::fetch_hls,
         crate::handlers::recorder::generate_whole_clip,
+        crate::handlers::summary::get_archive_summary,
+        crate::handlers::summary::get_archive_summary_statuses,
+        crate::handlers::summary::generate_archive_summary,
+        crate::handlers::summary::delete_archive_summary,
         crate::handlers::video::clip_range,
         crate::handlers::video::upload_procedure,
         crate::handlers::video::cancel,

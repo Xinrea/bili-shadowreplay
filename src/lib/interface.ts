@@ -152,6 +152,14 @@ export interface Config {
   webhook_url: string;
   danmu_ass_options: Danmu2AssOptions;
   powerlive_key: string;
+  llm: LlmConfig;
+}
+
+export interface LlmConfig {
+  provider: "openai" | "ollama";
+  endpoint: string;
+  api_key: string;
+  model: string;
 }
 
 export interface Danmu2AssOptions {

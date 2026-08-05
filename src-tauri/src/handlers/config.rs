@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::{Config, LlmConfig};
 #[cfg(feature = "headless")]
 use crate::constants::API_PORT;
 use crate::danmu2ass::Danmu2AssOptions;
@@ -11,6 +11,101 @@ use tauri::State as TauriState;
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_config(state: state_type!()) -> Result<Config, ()> {
     Ok(state.config.read().await.clone())
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_llm_config(state: state_type!()) -> Result<LlmConfig, ()> {
+    Ok(state.config.read().await.llm.clone())
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn update_llm_config(
+    state: state_type!(),
+    provider: String,
+    endpoint: String,
+    api_key: String,
+    model: String,
+) -> Result<(), String> {
+    if !matches!(provider.as_str(), "openai" | "ollama") {
+        return Err("Unsupported AI provider".to_string());
+    }
+    let mut config = state.config.write().await;
+    config.llm = LlmConfig {
+        provider,
+        endpoint: endpoint.trim_end_matches('/').to_string(),
+        api_key,
+        model: model.trim().to_string(),
+    };
+    config.save();
+    Ok(())
+}
+
+#[derive(serde::Deserialize)]
+struct OpenAiModelList {
+    #[serde(default)]
+    data: Vec<OpenAiModel>,
+}
+
+#[derive(serde::Deserialize)]
+struct OpenAiModel {
+    id: String,
+}
+
+#[derive(serde::Deserialize)]
+struct OllamaModelList {
+    #[serde(default)]
+    models: Vec<OllamaModel>,
+}
+
+#[derive(serde::Deserialize)]
+struct OllamaModel {
+    name: String,
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn list_llm_models(
+    provider: String,
+    endpoint: String,
+    api_key: String,
+) -> Result<Vec<String>, String> {
+    let endpoint = endpoint.trim_end_matches('/');
+    let client = reqwest::Client::new();
+    let mut models: Vec<String> = match provider.as_str() {
+        "openai" => {
+            let response = client
+                .get(format!("{endpoint}/models"))
+                .bearer_auth(api_key)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?
+                .error_for_status()
+                .map_err(|e| e.to_string())?
+                .json::<OpenAiModelList>()
+                .await
+                .map_err(|e| e.to_string())?;
+            response.data.into_iter().map(|model| model.id).collect()
+        }
+        "ollama" => {
+            let response = client
+                .get(format!("{endpoint}/api/tags"))
+                .send()
+                .await
+                .map_err(|e| e.to_string())?
+                .error_for_status()
+                .map_err(|e| e.to_string())?
+                .json::<OllamaModelList>()
+                .await
+                .map_err(|e| e.to_string())?;
+            response
+                .models
+                .into_iter()
+                .map(|model| model.name)
+                .collect()
+        }
+        _ => return Err("Unsupported AI provider".to_string()),
+    };
+    models.sort();
+    Ok(models)
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]

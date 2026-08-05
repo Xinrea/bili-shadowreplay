@@ -3,7 +3,6 @@
     Play,
     ArrowLeft,
     Plus,
-    Minus,
     Pause,
     Film,
     Settings,
@@ -174,10 +173,10 @@
       return;
     }
 
-    // 确保容器有正确的尺寸，考虑 timeline scale
-    container.style.width = `${100 * timelineScale}%`;
-    container.style.height = "60px";
-    container.style.minHeight = "60px";
+    // 波形容器跟随时间轴内容宽度，缩放由外层时间轴统一控制
+    container.style.width = "100%";
+    container.style.height = "54px";
+    container.style.minHeight = "54px";
     container.style.display = "block";
 
     console.log("Creating WaveSurfer with:", {
@@ -193,11 +192,11 @@
       wavesurfer = WaveSurfer.create({
         container: container,
         waveColor: "#4a5568",
-        progressColor: "#0A84FF",
-        cursorColor: "#0A84FF",
+        progressColor: "#10B981",
+        cursorColor: "#10B981",
         barWidth: 2,
         barRadius: 1,
-        height: 60,
+        height: 54,
         normalize: true,
         interact: true, // 启用交互，允许点击切换进度
         plugins: [],
@@ -617,6 +616,10 @@
 
     // 初始化波形图
     setTimeout(() => {
+      if (timelineElement) {
+        timelineWidth = timelineElement.getBoundingClientRect().width;
+        updateTimeMarkers();
+      }
       initWaveSurfer();
     }, 100);
   }
@@ -629,8 +632,8 @@
 
     const duration = videoElement.duration;
     const minMarkerWidth = 100; // 最小标记宽度（像素）
-    const maxMarkers = Math.floor(timelineWidth / minMarkerWidth);
-    const interval = Math.ceil(duration / maxMarkers);
+    const maxMarkers = Math.max(1, Math.floor(timelineWidth / minMarkerWidth));
+    const interval = Math.max(1, Math.ceil(duration / maxMarkers));
 
     timeMarkers = Array.from(
       { length: Math.min(Math.ceil(duration / interval) + 1, maxMarkers) },
@@ -642,6 +645,11 @@
     const minutes = Math.floor(seconds / 60);
     const remainingSeconds = seconds % 60;
     return `${minutes}:${remainingSeconds.toFixed(1).padStart(4, "0")}`;
+  }
+
+  function getVideoDisplayName(): string {
+    const item = videos.find((candidate) => candidate.id === video?.id);
+    return item?.name || video?.title || "当前视频";
   }
 
   // 切片功能相关函数
@@ -1005,18 +1013,46 @@
     }
   }
 
-  function addSubtitle() {
-    const newStartTime = currentTime;
-    const newEndTime = Math.min(currentTime + 5, videoElement.duration);
+  function insertSubtitleAfter(index: number) {
+    if (!videoElement?.duration) return;
+
+    const current = subtitles[index];
+    if (!current) return;
+
+    const startTime = current.endTime;
+    if (startTime >= videoElement.duration - 0.1) {
+      alert("当前字幕已位于视频末尾，无法继续添加");
+      return;
+    }
+
+    const currentDuration = Math.max(1, current.endTime - current.startTime);
+    const defaultDuration = Math.min(5, currentDuration);
+    const nextSubtitle = subtitles[index + 1];
+    const availableEnd =
+      nextSubtitle?.startTime > startTime + 0.1
+        ? nextSubtitle.startTime
+        : videoElement.duration;
+    const endTime = Math.min(
+      startTime + defaultDuration,
+      availableEnd,
+      videoElement.duration
+    );
+
     subtitles = [
-      ...subtitles,
-      {
-        startTime: newStartTime,
-        endTime: newEndTime,
-        text: "",
-      },
+      ...subtitles.slice(0, index + 1),
+      { startTime, endTime, text: "" },
+      ...subtitles.slice(index + 1),
     ];
-    subtitles.sort((a, b) => a.startTime - b.startTime);
+
+    videoElement.currentTime = startTime;
+    currentTime = startTime;
+    currentSubtitleIndex = index + 1;
+
+    setTimeout(() => {
+      subtitleElements[index + 1]
+        ?.querySelector<HTMLInputElement>("input")
+        ?.focus();
+    });
   }
 
   function updateSubtitleTime(index: number, isStart: boolean, time: number) {
@@ -1074,35 +1110,6 @@
 
   function seekToTime(time: number) {
     videoElement.currentTime = time;
-  }
-
-  function adjustTime(index: number, isStart: boolean, delta: number) {
-    const sub = subtitles[index];
-    if (isStart) {
-      const newTime = Math.max(0, sub.startTime + delta);
-      if (newTime < sub.endTime - 0.1) {
-        subtitles = subtitles.map((s, i) =>
-          i === index ? { ...s, startTime: newTime } : s
-        );
-        subtitles = subtitles.sort((a, b) => a.startTime - b.startTime);
-      }
-    } else {
-      const newTime = Math.min(videoElement.duration, sub.endTime + delta);
-      if (newTime > sub.startTime + 0.1) {
-        subtitles = subtitles.map((s, i) =>
-          i === index ? { ...s, endTime: newTime } : s
-        );
-        subtitles = subtitles.sort((a, b) => a.startTime - b.startTime);
-      }
-    }
-  }
-
-  function handleTimelineMouseDown(
-    e: MouseEvent,
-    index: number,
-    isStart: boolean
-  ) {
-    startEdgeDragging(index, isStart);
   }
 
   // 辅助函数：统一开始边缘拖拽
@@ -1231,14 +1238,11 @@
   function handleScaleChange(e: Event) {
     const input = e.target as HTMLInputElement;
     timelineScale = parseFloat(input.value);
-    const rect = timelineElement.getBoundingClientRect();
-    timelineWidth = rect.width;
-    updateTimeMarkers();
-
-    // 同步调整 waveform 容器宽度
-    if (waveformContainer) {
-      waveformContainer.style.width = `${100 * timelineScale}%`;
-    }
+    requestAnimationFrame(() => {
+      if (!timelineElement) return;
+      timelineWidth = timelineElement.getBoundingClientRect().width;
+      updateTimeMarkers();
+    });
   }
 
   function handleWheel(e: WheelEvent) {
@@ -1734,167 +1738,213 @@
           </div>
         </div>
 
-        <!-- 时间轴容器（包含波形图和字幕时间轴） -->
+        <!-- 三轨时间轴：字幕、视频、音频共用同一时间坐标 -->
         <div class="bg-[#1c1c1e] border-t border-gray-800/50">
-          <div
-            class="h-48 overflow-x-auto overflow-y-hidden sidebar-scrollbar"
-            bind:this={timelineContainer}
-            on:wheel|preventDefault={handleWheel}
-          >
-            {#if isWaveformLoading}
-              <div
-                class="flex items-center justify-center gap-2 text-gray-400 w-full h-full text-center"
-              >
-                <svg
-                  class="animate-spin h-4 w-4"
-                  xmlns="http://www.w3.org/2000/svg"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                >
-                  <circle
-                    class="opacity-25"
-                    cx="12"
-                    cy="12"
-                    r="10"
-                    stroke="currentColor"
-                    stroke-width="4"
-                  ></circle>
-                  <path
-                    class="opacity-75"
-                    fill="currentColor"
-                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                  ></path>
-                </svg>
-                <span class="text-sm">加载音频波形...</span>
-              </div>
-            {/if}
+          <div class="flex h-[196px] overflow-hidden">
             <div
-              bind:this={waveformContainer}
-              class="w-full h-full waveform-container"
-              style="min-height: 60px; width: 100%; height: 60px;"
-              data-waveform-container
-            ></div>
-
-            <!-- 字幕时间轴 -->
-            <!-- svelte-ignore a11y-click-events-have-key-events -->
-            <div
-              bind:this={timelineElement}
-              class="relative h-32 group"
-              style="width: {100 * timelineScale}%"
-              on:mousemove={(e) => {
-                if (!timelineElement) return;
-                const rect = timelineElement.getBoundingClientRect();
-                timelineWidth = rect.width;
-                updateTimeMarkers();
-              }}
-              on:click|preventDefault|stopPropagation={(e) => {
-                // 只有在不拖动进度条时才处理时间轴点击
-                if (!isDraggingSeekbar) {
-                  handleTimelineClick(e);
-                }
-              }}
+              class="w-20 shrink-0 border-r border-gray-800/70 bg-[#242426] text-xs text-gray-400 select-none flex flex-col"
             >
-              <!-- 切片选区可视化 -->
-              {#if canBeClipped(video) && clipTimesSet}
+              <div
+                class="order-0 h-7 px-3 flex items-center border-b border-gray-800/70 text-[10px] uppercase tracking-wider"
+              >时间</div>
+              <div
+                class="order-2 h-14 px-3 flex items-center gap-2 border-b border-gray-800/70"
+              >
+                <span class="w-2 h-2 rounded-sm bg-violet-500"></span>
+                视频
+              </div>
+              <div
+                class="order-3 h-16 px-3 flex items-center gap-2"
+              >
+                <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+                音频
+              </div>
+              <div
+                class="order-1 h-12 px-3 flex items-center gap-2 border-b border-gray-800/70"
+              >
+                <span class="w-2 h-2 rounded-sm bg-[#0A84FF]"></span>
+                字幕
+              </div>
+            </div>
+
+            <div
+              class="flex-1 overflow-x-auto overflow-y-hidden sidebar-scrollbar"
+              bind:this={timelineContainer}
+              on:wheel|preventDefault={handleWheel}
+            >
+              <!-- svelte-ignore a11y-click-events-have-key-events -->
+              <div
+                bind:this={timelineElement}
+                class="relative min-w-full h-[196px] group select-none flex flex-col"
+                style="width: {100 * timelineScale}%"
+                on:mousemove={() => {
+                  if (!timelineElement) return;
+                  timelineWidth = timelineElement.getBoundingClientRect().width;
+                  updateTimeMarkers();
+                }}
+                on:click|preventDefault|stopPropagation={(e) => {
+                  if (!isDraggingSeekbar) handleTimelineClick(e);
+                }}
+              >
                 <div
-                  class="absolute top-0 left-0 right-0 h-1 group-hover:h-1.5 transition-all duration-200 z-15"
+                  bind:this={seekbarElement}
+                  class="order-0 shrink-0 relative h-7 border-b border-gray-800/70 bg-[#202022] cursor-pointer"
+                  class:dragging={isDraggingSeekbar}
+                  on:mousedown={handleSeekbarMouseDown}
                 >
-                  <!-- 切片选中区域 -->
                   <div
-                    class="absolute h-full bg-green-400/80 transition-all duration-200"
-                    style="left: {(clipStartTime /
+                    class="absolute bottom-0 left-0 h-0.5 bg-[#0A84FF] pointer-events-none"
+                    class:no-transition={isDraggingSeekbar}
+                    style="width: {((isDraggingSeekbar
+                      ? previewTime
+                      : currentTime) /
                       (videoElement?.duration || 1)) *
-                      100}%; right: {100 -
-                      (clipEndTime / (videoElement?.duration || 1)) * 100}%"
+                      100}%"
                   ></div>
-                  <!-- 切片起点标记 -->
+                  {#each timeMarkers as time}
+                    <div
+                      class="absolute inset-y-0 border-l border-gray-600/70"
+                      style="left: {(time / (videoElement?.duration || 1)) * 100}%"
+                    >
+                      <span
+                        class="absolute top-1 left-1 text-[10px] text-gray-400 whitespace-nowrap"
+                        >{formatTime(time)}</span
+                      >
+                    </div>
+                  {/each}
+                </div>
+
+                <div
+                  class="order-2 shrink-0 relative h-14 border-b border-gray-800/70 bg-violet-950/10 overflow-hidden"
+                >
                   <div
-                    class="absolute h-full w-0.5 bg-green-500 transition-all duration-200"
+                    class="absolute inset-x-1 inset-y-1 rounded-md border border-violet-500/50 bg-violet-500/20 overflow-hidden"
+                  >
+                    <div
+                      class="h-full px-3 flex items-center gap-2 text-xs text-violet-100"
+                    >
+                      <Film class="w-4 h-4 shrink-0 text-violet-300" />
+                      <span class="truncate">{getVideoDisplayName()}</span>
+                      <span
+                        class="ml-auto text-[10px] text-violet-200/70 font-mono"
+                        >{formatTime(videoElement?.duration || 0)}</span
+                      >
+                    </div>
+                    {#if canBeClipped(video) && clipTimesSet}
+                      <div
+                        class="absolute inset-y-0 border-x-2 border-green-400 bg-green-400/20 pointer-events-none"
+                        style="left: {(clipStartTime /
+                          (videoElement?.duration || 1)) *
+                          100}%; right: {100 -
+                          (clipEndTime / (videoElement?.duration || 1)) * 100}%"
+                      ></div>
+                    {/if}
+                  </div>
+                </div>
+
+                <div
+                  class="order-3 shrink-0 relative h-16 bg-emerald-950/10 overflow-hidden"
+                >
+                  <div
+                    class="absolute inset-x-1 inset-y-1 rounded-md border border-emerald-500/50 bg-emerald-500/10 overflow-hidden"
+                  >
+                    {#if isWaveformLoading}
+                      <div
+                        class="absolute inset-0 z-10 flex items-center justify-center gap-2 text-xs text-gray-400 bg-[#1c1c1e]/70"
+                      >
+                        <svg
+                          class="animate-spin h-4 w-4"
+                          xmlns="http://www.w3.org/2000/svg"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                        >
+                          <circle
+                            class="opacity-25"
+                            cx="12"
+                            cy="12"
+                            r="10"
+                            stroke="currentColor"
+                            stroke-width="4"
+                          ></circle>
+                          <path
+                            class="opacity-75"
+                            fill="currentColor"
+                            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                          ></path>
+                        </svg>
+                        <span>加载音频波形...</span>
+                      </div>
+                    {/if}
+                    <div
+                      bind:this={waveformContainer}
+                      class="absolute inset-0 waveform-container"
+                      data-waveform-container
+                    ></div>
+                  </div>
+                </div>
+
+                <div
+                  class="order-1 shrink-0 relative h-12 border-b border-gray-800/70 bg-blue-950/10 overflow-hidden"
+                >
+                  {#if subtitles.length === 0}
+                    <div
+                      class="absolute inset-0 flex items-center justify-center text-xs text-gray-600 pointer-events-none"
+                    >
+                      暂无字幕，可使用 AI 生成
+                    </div>
+                  {/if}
+                  {#each subtitles as subtitle, index}
+                    <div
+                      bind:this={subtitleElements[index]}
+                      class="absolute top-2 h-8 rounded-md border border-[#0A84FF]/50 bg-[#0A84FF]/20 cursor-move overflow-hidden"
+                      style={getSubtitleStyle(subtitle)}
+                      on:mousedown={(e) => handleBlockMouseDown(e, index)}
+                      on:click|stopPropagation
+                    >
+                      <div
+                        class="h-full px-1.5 flex items-center text-[10px] text-blue-100"
+                      >
+                        <span class="truncate">{subtitle.text || "空字幕"}</span>
+                      </div>
+                    </div>
+                  {/each}
+                </div>
+
+                {#each timeMarkers as time}
+                  <div
+                    class="absolute top-7 bottom-0 border-l border-gray-700/40 pointer-events-none"
+                    style="left: {(time / (videoElement?.duration || 1)) * 100}%"
+                  ></div>
+                {/each}
+
+                {#if canBeClipped(video) && clipTimesSet}
+                  <div
+                    class="absolute top-7 bottom-0 w-px bg-green-400/80 pointer-events-none z-20"
                     style="left: {(clipStartTime /
                       (videoElement?.duration || 1)) *
                       100}%"
                   ></div>
-                  <!-- 切片终点标记 -->
                   <div
-                    class="absolute h-full w-0.5 bg-green-500 transition-all duration-200"
+                    class="absolute top-7 bottom-0 w-px bg-green-400/80 pointer-events-none z-20"
                     style="left: {(clipEndTime /
                       (videoElement?.duration || 1)) *
-                      100}%; transform: translateX(-100%)"
+                      100}%"
                   ></div>
-                </div>
-              {/if}
-              <!-- 播放进度条容器 (借鉴Shaka Player样式) -->
-              <div
-                bind:this={seekbarElement}
-                class="shaka-seek-bar-container absolute top-2 left-0 right-0 h-1 group-hover:h-1.5 bg-white/30 rounded-full cursor-pointer transition-all duration-200 z-10"
-                class:dragging={isDraggingSeekbar}
-                on:mousedown={handleSeekbarMouseDown}
-              >
-                <!-- 播放进度条 -->
+                {/if}
+
                 <div
-                  class="h-full bg-[#0A84FF] rounded-full pointer-events-none transition-all duration-200"
-                  class:no-transition={isDraggingSeekbar}
-                  style="width: {((isDraggingSeekbar
+                  class="absolute top-0 bottom-0 w-px bg-[#0A84FF] pointer-events-none z-30"
+                  style="left: {((isDraggingSeekbar
                     ? previewTime
                     : currentTime) /
                     (videoElement?.duration || 1)) *
                     100}%"
-                ></div>
-
-                <!-- 播放进度条滑块 (hover或拖动时显示) -->
-                <div
-                  class="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full border-2 border-[#0A84FF] shadow-lg z-30 opacity-0 group-hover:opacity-100 transition-opacity duration-200"
-                  class:opacity-100={isDraggingSeekbar}
-                  style="left: calc({((isDraggingSeekbar
-                    ? previewTime
-                    : currentTime) /
-                    (videoElement?.duration || 1)) *
-                    100}% - 6px)"
-                ></div>
+                >
+                  <div
+                    class="absolute top-0 left-1/2 -translate-x-1/2 w-2.5 h-2.5 bg-[#0A84FF] rounded-b-sm"
+                  ></div>
+                </div>
               </div>
-
-              <!-- 时间刻度 -->
-              {#each timeMarkers as time}
-                <div
-                  class="absolute top-2 bottom-0 border-l border-gray-700"
-                  style="left: {(time / (videoElement?.duration || 1)) * 100}%"
-                >
-                  <div
-                    class="absolute top-2 left-1/2 -translate-x-1/2 text-xs text-gray-400 whitespace-nowrap"
-                  >
-                    {formatTime(time)}
-                  </div>
-                </div>
-              {/each}
-
-              <!-- 字幕块 -->
-              {#each subtitles as subtitle, index}
-                <div
-                  bind:this={subtitleElements[index]}
-                  class="absolute top-6 bottom-6 bg-[#0A84FF]/30 rounded-lg cursor-move"
-                  style={getSubtitleStyle(subtitle)}
-                  on:mousedown={(e) => handleBlockMouseDown(e, index)}
-                >
-                  <!-- 开始时间手柄 -->
-                  <div
-                    class="absolute left-0 top-0 bottom-0 w-1 bg-[#0A84FF] rounded-l cursor-ew-resize"
-                    on:mousedown|stopPropagation={(e) =>
-                      handleTimelineMouseDown(e, index, true)}
-                  />
-                  <!-- 结束时间手柄 -->
-                  <div
-                    class="absolute right-0 top-0 bottom-0 w-1 bg-[#0A84FF] rounded-r cursor-ew-resize"
-                    on:mousedown|stopPropagation={(e) =>
-                      handleTimelineMouseDown(e, index, false)}
-                  />
-                  <!-- 字幕文本预览 -->
-                  <div
-                    class="absolute inset-x-2 inset-y-1 flex items-center justify-center text-xs text-white text-center line-clamp-3 rounded"
-                  >
-                    {subtitle.text || "空字幕"}
-                  </div>
-                </div>
-              {/each}
             </div>
           </div>
         </div>
@@ -1942,8 +1992,8 @@
         <!-- Tab 内容 -->
         {#if activeTab === "subtitle"}
           <!-- 字幕 Tab 内容 -->
-          <div class="p-4 space-y-4">
-            <div class="w-full sticky top-0 bg-[#2c2c2e] z-10 pb-4">
+          <div>
+            <div class="w-full sticky top-0 bg-[#2c2c2e] z-10 p-4 pb-3">
               <div class="flex flex-col space-y-2">
                 <div class="flex space-x-2">
                   <button
@@ -1993,84 +2043,51 @@
                     {/if}
                     <span id="generate-prompt">AI 生成字幕</span>
                   </button>
-                  <button
-                    class="flex-1 px-3 py-1.5 text-sm bg-[#1c1c1e] text-gray-300 rounded-lg hover:bg-[#2c2c2e] transition-colors duration-200 flex items-center justify-center space-x-1 border border-gray-700"
-                    on:click={addSubtitle}
-                  >
-                    <Plus class="w-4 h-4" />
-                    <span>手动添加</span>
-                  </button>
                 </div>
               </div>
             </div>
 
             <!-- 字幕列表 -->
-            <div class="space-y-2">
+            <div class="border-t border-gray-800/70">
               {#each subtitles as subtitle, index}
                 <div
                   bind:this={subtitleElements[index]}
-                  class="p-3 bg-[#1c1c1e] rounded-lg space-y-2 transition-colors duration-200"
-                  class:bg-[#2c2c2e]={currentSubtitleIndex === index}
-                  class:border={currentSubtitleIndex === index}
-                  class:border-[#0A84FF]={currentSubtitleIndex === index}
+                  class="group min-h-[42px] px-3 flex items-center gap-2 border-b border-l-2 border-b-gray-800/70 border-l-transparent transition-colors duration-150 hover:bg-white/[0.03] {currentSubtitleIndex ===
+                  index
+                    ? 'bg-[#0A84FF]/10 border-l-[#0A84FF]'
+                    : ''}"
                 >
-                  <div class="flex justify-between items-center">
-                    <div class="flex items-center space-x-4">
-                      <div class="flex items-center space-x-1">
-                        <button
-                          class="text-sm text-[#0A84FF] hover:text-[#0A84FF]/80"
-                          on:click={() => seekToTime(subtitle.startTime)}
-                        >
-                          {formatTime(subtitle.startTime)}
-                        </button>
-                        <button
-                          class="p-0.5 text-gray-400 hover:text-white"
-                          on:click={() => adjustTime(index, true, -0.1)}
-                        >
-                          <Minus class="w-3 h-3" />
-                        </button>
-                        <button
-                          class="p-0.5 text-gray-400 hover:text-white"
-                          on:click={() => adjustTime(index, true, 0.1)}
-                        >
-                          <Plus class="w-3 h-3" />
-                        </button>
-                      </div>
-                      <span class="text-gray-400">→</span>
-                      <div class="flex items-center space-x-1">
-                        <button
-                          class="text-sm text-[#0A84FF] hover:text-[#0A84FF]/80"
-                          on:click={() => seekToTime(subtitle.endTime)}
-                        >
-                          {formatTime(subtitle.endTime)}
-                        </button>
-                        <button
-                          class="p-0.5 text-gray-400 hover:text-white"
-                          on:click={() => adjustTime(index, false, -0.1)}
-                        >
-                          <Minus class="w-3 h-3" />
-                        </button>
-                        <button
-                          class="p-0.5 text-gray-400 hover:text-white"
-                          on:click={() => adjustTime(index, false, 0.1)}
-                        >
-                          <Plus class="w-3 h-3" />
-                        </button>
-                      </div>
-                    </div>
-                    <button
-                      class="text-sm text-red-500 hover:text-red-400"
-                      on:click={async () => await removeSubtitle(index)}
-                    >
-                      删除
-                    </button>
+                  <button
+                    class="w-6 shrink-0 text-right text-[11px] text-gray-500 hover:text-[#0A84FF] font-mono"
+                    title="跳转到字幕开始"
+                    on:click={() => seekToTime(subtitle.startTime)}
+                  >
+                    {index + 1}
+                  </button>
+
+                  <div class="min-w-0 flex-1 py-1">
+                    <input
+                      type="text"
+                      bind:value={subtitle.text}
+                      class="w-full min-w-0 px-1 py-0.5 bg-transparent text-[13px] text-gray-200 rounded border border-transparent focus:bg-[#1c1c1e] focus:border-[#0A84FF]/70 transition-colors outline-none"
+                      placeholder="输入字幕文本"
+                    />
                   </div>
-                  <input
-                    type="text"
-                    bind:value={subtitle.text}
-                    class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg border border-gray-800/50 focus:border-[#0A84FF] transition duration-200 outline-none hover:border-gray-700/50"
-                    placeholder="输入字幕文本"
-                  />
+
+                  <button
+                    class="p-1 shrink-0 text-gray-600 opacity-60 hover:opacity-100 hover:text-[#0A84FF] transition-all"
+                    title="在后面添加字幕"
+                    on:click={() => insertSubtitleAfter(index)}
+                  >
+                    <Plus class="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    class="p-1 shrink-0 text-gray-600 opacity-60 hover:opacity-100 hover:text-red-400 transition-all"
+                    title="删除字幕"
+                    on:click={async () => await removeSubtitle(index)}
+                  >
+                    <Trash2 class="w-3.5 h-3.5" />
+                  </button>
                 </div>
               {/each}
             </div>
@@ -2282,33 +2299,6 @@
     transition: none !important;
   }
 
-  /* 确保层级顺序正确 */
-  .z-15 {
-    z-index: 15;
-  }
-
-  /* Shaka Player风格的进度条样式 */
-  .shaka-seek-bar-container {
-    position: relative;
-    background: rgba(255, 255, 255, 0.3);
-    transition: height 0.2s cubic-bezier(0.4, 0, 1, 1);
-  }
-
-  .shaka-seek-bar-container:hover {
-    background: rgba(255, 255, 255, 0.4);
-  }
-
-  /* 确保切片选区在hover时也有相同的高度变化 */
-  .group:hover .shaka-seek-bar-container {
-    height: 6px;
-  }
-
-  /* 拖动状态样式 */
-  .shaka-seek-bar-container.dragging {
-    background: rgba(255, 255, 255, 0.5);
-    height: 6px;
-  }
-
   /* 普通range输入框样式（不影响进度条） */
   input[type="range"]:not(.progress-bar) {
     -webkit-appearance: none;
@@ -2349,8 +2339,8 @@
 
   /* WaveSurfer.js 样式 */
   .waveform-container {
-    background: #1c1c1e;
-    border-radius: 4px;
+    background: transparent;
+    border-radius: inherit;
     width: 100%;
     height: 100%;
   }

@@ -3,6 +3,7 @@
   import { marked } from "marked";
   import { AlertCircle, Loader2, RefreshCw, Sparkles, X } from "lucide-svelte";
   import { invoke } from "../invoker";
+  import ArchiveClipButton from "./ArchiveClipButton.svelte";
   import CopyMarkdownButton from "./CopyMarkdownButton.svelte";
   import type {
     RecordItem,
@@ -197,11 +198,24 @@
                 <h3 class="font-semibold text-gray-900 dark:text-white">精彩时间段</h3>
                 {#each highlights as highlight}
                   <div class="rounded-xl border border-violet-200 bg-violet-50 p-4 dark:border-violet-800 dark:bg-violet-950/30">
-                    <div class="flex items-center justify-between gap-3">
+                    <div class="flex items-start justify-between gap-3">
                       <span class="font-medium text-gray-900 dark:text-white">{highlight.title}</span>
-                      <span class="whitespace-nowrap rounded-full bg-white px-2.5 py-1 text-xs text-violet-700 dark:bg-gray-900 dark:text-violet-300">
-                        {formatTime(highlight.start_seconds)}–{formatTime(highlight.end_seconds)}
-                      </span>
+                      <div class="flex shrink-0 items-center gap-2">
+                        <span class="whitespace-nowrap rounded-full bg-white px-2.5 py-1 text-xs text-violet-700 dark:bg-gray-900 dark:text-violet-300">
+                          {formatTime(highlight.start_seconds)}–{formatTime(highlight.end_seconds)}
+                        </span>
+                        <ArchiveClipButton
+                          {archive}
+                          ranges={[
+                            {
+                              start: highlight.start_seconds,
+                              end: highlight.end_seconds,
+                            },
+                          ]}
+                          initialNote={highlight.title}
+                          variant="compact"
+                        />
+                      </div>
                     </div>
                     <p class="mt-2 text-sm text-gray-600 dark:text-gray-300">{highlight.reason}</p>
                   </div>

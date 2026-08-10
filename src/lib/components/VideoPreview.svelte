@@ -484,9 +484,31 @@
     return Math.ceil((duration * 192000) / 8) + 4096;
   }
 
+  type JoiErrorPayload = {
+    code: string;
+    message: string;
+    httpStatus?: number;
+    retryAfterSeconds?: number;
+    durationSeconds?: number;
+    suggestedMaxSeconds?: number;
+  };
+
+  // 后端把结构塞在 `Result<_, String>` 里：前缀 joi_error: 加一段 JSON。
+  // 不用正则拆，是因为 message 可能来自 ffmpeg 的输出，里面带分号或等号。
+  function parseJoiError(raw: string): JoiErrorPayload | null {
+    if (!raw.startsWith("joi_error:")) return null;
+    try {
+      const parsed = JSON.parse(raw.slice("joi_error:".length));
+      return typeof parsed?.code === "string" ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
   function showJoiStatus(error: unknown) {
     const raw = String(error).replace(/^Error: /, "");
-    const code = raw.match(/joi_error_code:([a-z_]+)/)?.[1] || "unknown";
+    const payload = parseJoiError(raw);
+    const code = payload?.code || "unknown";
     joiStatusCode = code;
     if (code === "api_challenge_unavailable" || code === "room_unreachable") {
       joiStatusCode = "room-unreachable";
@@ -505,10 +527,8 @@
       joiStatusMessage = "投稿太频繁。自动重试已达上限，请稍后点击投稿再试。";
     } else if (code === "audio_too_large") {
       joiStatusCode = "audio-too-large";
-      const duration = Number(raw.match(/(?:^|;)durationSeconds=([0-9.]+)/)?.[1]);
-      const suggestedMax = Number(
-        raw.match(/(?:^|;)suggestedMaxSeconds=([0-9.]+)/)?.[1],
-      );
+      const duration = Number(payload?.durationSeconds);
+      const suggestedMax = Number(payload?.suggestedMaxSeconds);
       const durationHint = Number.isFinite(duration)
         ? `这段切片约 ${formatJoiDuration(duration)}，`
         : "";
@@ -523,7 +543,7 @@
       joiStatusMessage = "站点存储空间不足。请联系该站点管理员处理。";
     } else {
       joiStatusCode = "unknown";
-      joiStatusMessage = raw;
+      joiStatusMessage = payload?.message || raw;
     }
   }
 

@@ -126,13 +126,14 @@ async fn decode_json_response<T: for<'de> Deserialize<'de>>(
             .or_else(|| value.get("message"))
             .and_then(Value::as_str)
             .unwrap_or("轴伊按钮请求失败");
-        let retry_after = retry_after_seconds(&value, retry_after_header)
-            .map(|seconds| format!(";retryAfterSeconds={seconds}"))
-            .unwrap_or_default();
-        return Err(format!(
-            "joi_error_code:{code};http_status={};message={message}{retry_after}",
-            status.as_u16()
-        ));
+        return Err(JoiError {
+            code: code.to_string(),
+            message: message.to_string(),
+            http_status: Some(status.as_u16()),
+            retry_after_seconds: retry_after_seconds(&value, retry_after_header),
+            ..Default::default()
+        }
+        .into_error());
     }
     serde_json::from_value(value).map_err(|e| format!("解析轴伊按钮响应失败: {e}"))
 }
@@ -365,11 +366,67 @@ fn metadata_for(form: &JoiButtonSubmitForm) -> Result<JoiMetadata, String> {
     })
 }
 
-fn error_code(error: &str) -> &str {
+/// 跨越 Tauri 命令边界的错误载荷。
+///
+/// 宿主的 handler 层一律是 `Result<_, String>`（103 处，无一例外），所以这里
+/// 不另立错误类型，而是把结构塞进那个 String：前缀 `joi_error:` 加一段 JSON。
+/// 之前用的是 `code;key=value;message=…`，而 message 可能来自 ffmpeg 的输出，
+/// 里面带 `;` 或 `=` 就会把字段切错——JSON 没有这个问题。
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JoiError {
+    code: String,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    http_status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retry_after_seconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    duration_seconds: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    suggested_max_seconds: Option<u64>,
+}
+
+const JOI_ERROR_PREFIX: &str = "joi_error:";
+
+/// 5 MB / 192 kbps 约合 3 分半，取整到 210 秒作为给用户的建议上限。
+const SUGGESTED_MAX_AUDIO_SECONDS: u64 = 210;
+
+impl JoiError {
+    fn new(code: &str, message: impl Into<String>) -> Self {
+        Self {
+            code: code.to_string(),
+            message: message.into(),
+            ..Default::default()
+        }
+    }
+
+    /// 序列化到 handler 的 `Err(String)`。JSON 化本身不会失败（字段都是标量），
+    /// 万一失败也要给出一个前端仍能解析的载荷，而不是裸字符串。
+    fn into_error(self) -> String {
+        match serde_json::to_string(&self) {
+            Ok(json) => format!("{JOI_ERROR_PREFIX}{json}"),
+            Err(_) => format!(
+                "{JOI_ERROR_PREFIX}{{\"code\":\"unknown\",\"message\":\"轴伊按钮请求失败\"}}"
+            ),
+        }
+    }
+}
+
+fn joi_err(code: &str, message: impl Into<String>) -> String {
+    JoiError::new(code, message).into_error()
+}
+
+fn parse_joi_error(error: &str) -> Option<JoiError> {
     error
-        .strip_prefix("joi_error_code:")
-        .and_then(|value| value.split(';').next())
-        .unwrap_or("")
+        .strip_prefix(JOI_ERROR_PREFIX)
+        .and_then(|json| serde_json::from_str::<JoiError>(json).ok())
+}
+
+fn error_code(error: &str) -> String {
+    parse_joi_error(error)
+        .map(|parsed| parsed.code)
+        .unwrap_or_default()
 }
 
 async fn submit_once(
@@ -415,11 +472,8 @@ async fn submit_with_retry(
             Ok(value) => return Ok(value),
             Err(error) if error_code(&error) == "rate_limited" => {
                 if attempt < MAX_RATE_RETRIES {
-                    let retry_after = error
-                        .split("retryAfterSeconds=")
-                        .nth(1)
-                        .and_then(|value| value.split(';').next())
-                        .and_then(|value| value.parse::<u64>().ok())
+                    let retry_after = parse_joi_error(&error)
+                        .and_then(|parsed| parsed.retry_after_seconds)
                         .unwrap_or(1)
                         .min(60);
                     reporter
@@ -430,15 +484,14 @@ async fn submit_with_retry(
                     sleep(Duration::from_secs(retry_after)).await;
                 } else {
                     return Err(
-                        "joi_error_code:rate_limited_exhausted;message=自动重试次数已达上限，请稍后重新投稿"
-                            .to_string(),
+                        joi_err("rate_limited_exhausted", "自动重试次数已达上限，请稍后重新投稿"),
                     );
                 }
             }
             Err(error) => return Err(error),
         }
     }
-    Err("joi_error_code:rate_limited;message=投稿重试次数已达上限".to_string())
+    Err(joi_err("rate_limited", "投稿重试次数已达上限"))
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -460,25 +513,27 @@ pub async fn joi_button_submit(
         .filter(|token| !token.is_empty())
         .is_none()
     {
-        return Err("joi_error_code:expired_api_token;message=轴伊按钮令牌为空".to_string());
+        return Err(joi_err("expired_api_token", "轴伊按钮令牌为空"));
     }
     let metadata = metadata_for(&form)?;
     if metadata.items[0].name.is_empty() {
-        return Err("joi_error_code:invalid_name;message=切片名称不能为空".to_string());
+        return Err(joi_err("invalid_name", "切片名称不能为空"));
     }
 
     let video = state.db.get_video(video_id).await?;
     let estimate = estimate_submission_audio_size(video.length as f64);
     if estimate > MAX_AUDIO_BYTES {
-        return Err(format!(
-            "joi_error_code:audio_too_large;durationSeconds={};suggestedMaxSeconds=210;message=音频预估超过 5 MB",
-            video.length
-        ));
+        return Err(JoiError {
+            duration_seconds: Some(video.length as f64),
+            suggested_max_seconds: Some(SUGGESTED_MAX_AUDIO_SECONDS),
+            ..JoiError::new("audio_too_large", "音频预估超过 5 MB")
+        }
+        .into_error());
     }
     let config = state.config.read().await.clone();
     let input_path = Path::new(&config.output).join(&video.file);
     if !input_path.exists() {
-        return Err("joi_error_code:unreadable_audio;message=切片文件不存在".to_string());
+        return Err(joi_err("unreadable_audio", "切片文件不存在"));
     }
 
     let task = TaskRow {
@@ -494,7 +549,19 @@ pub async fn joi_button_submit(
     let emitter = EventEmitter::new(state.app_handle.clone());
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
-    let reporter = ProgressReporter::new(state.db.clone(), &emitter, &event_id).await?;
+    // 不能用 `?`：任务行已经写进去了，这里直接返回会把它永远留在 pending，
+    // 而任务页只显示状态、不会自己收敛。先把它标成 failed 再退。
+    let reporter = match ProgressReporter::new(state.db.clone(), &emitter, &event_id).await {
+        Ok(reporter) => reporter,
+        Err(error) => {
+            let message = joi_err("submission_failed", error.to_string());
+            let _ = state
+                .db
+                .update_task(&event_id, "failed", &message, None)
+                .await;
+            return Err(message);
+        }
+    };
 
     reporter.update("准备投稿音频").await;
     let temp_dir = PathBuf::from(&config.cache).join("joi-button-submissions");
@@ -517,16 +584,14 @@ pub async fn joi_button_submit(
                 .update_task(&event_id, "failed", &error, None)
                 .await;
             reporter.finish(false, &error).await;
-            return Err(format!(
-                "joi_error_code:audio_processing_failed;message={error}"
-            ));
+            return Err(joi_err("audio_processing_failed", error));
         }
     };
     let bytes = match fs::read(&encoded).await {
         Ok(bytes) => bytes,
         Err(error) => {
             let _ = fs::remove_file(&encoded).await;
-            let message = format!("joi_error_code:unreadable_audio;message={error}");
+            let message = joi_err("unreadable_audio", error.to_string());
             let _ = state
                 .db
                 .update_task(&event_id, "failed", &message, None)
@@ -537,10 +602,12 @@ pub async fn joi_button_submit(
     };
     if bytes.len() as u64 > MAX_AUDIO_BYTES {
         let _ = fs::remove_file(&encoded).await;
-        let message = format!(
-            "joi_error_code:audio_too_large;durationSeconds={};suggestedMaxSeconds=210;message=音频编码后超过 5 MB",
-            video.length
-        );
+        let message = JoiError {
+            duration_seconds: Some(video.length as f64),
+            suggested_max_seconds: Some(SUGGESTED_MAX_AUDIO_SECONDS),
+            ..JoiError::new("audio_too_large", "音频编码后超过 5 MB")
+        }
+        .into_error();
         let _ = state
             .db
             .update_task(&event_id, "failed", &message, None)
@@ -592,18 +659,19 @@ pub async fn joi_button_submit(
     let _ = fs::remove_file(&encoded).await;
     match result {
         Ok(value) => {
-            state
+            // 同上：finish 必须发生，即使这一次写库失败。
+            let _ = state
                 .db
                 .update_task(&event_id, "success", "投稿完成", None)
-                .await?;
+                .await;
             reporter.finish(true, "投稿完成").await;
             Ok(value)
         }
         Err(error) => {
-            state
+            let _ = state
                 .db
                 .update_task(&event_id, "failed", &error, None)
-                .await?;
+                .await;
             reporter.finish(false, &error).await;
             Err(error)
         }
@@ -613,8 +681,9 @@ pub async fn joi_button_submit(
 #[cfg(test)]
 mod tests {
     use super::{
-        estimate_submission_audio_size, metadata_for, parse_time_seconds, retry_after_seconds,
-        JoiButtonSourceForm, JoiButtonSubmitForm,
+        error_code, estimate_submission_audio_size, metadata_for, parse_joi_error,
+        parse_time_seconds, retry_after_seconds, JoiButtonSourceForm, JoiButtonSubmitForm, JoiError,
+        SUGGESTED_MAX_AUDIO_SECONDS,
     };
     use serde_json::json;
 
@@ -666,6 +735,45 @@ mod tests {
         };
         let value = serde_json::to_value(metadata_for(&form).unwrap()).unwrap();
         assert!(value["items"][0]["source"].get("seconds").is_none());
+    }
+
+    #[test]
+    fn error_payload_survives_a_message_that_contains_separators() {
+        // ffmpeg 的报错里带 ; 和 = 是常态；旧的 `code;key=value;message=…` 形式
+        // 会在这种 message 上把字段切错，JSON 不会。
+        let raw = JoiError::new(
+            "audio_processing_failed",
+            "ffmpeg failed; codec=libmp3lame; reason=bad sample rate",
+        )
+        .into_error();
+        let parsed = parse_joi_error(&raw).expect("payload should parse");
+        assert_eq!(parsed.code, "audio_processing_failed");
+        assert_eq!(
+            parsed.message,
+            "ffmpeg failed; codec=libmp3lame; reason=bad sample rate"
+        );
+        assert_eq!(error_code(&raw), "audio_processing_failed");
+    }
+
+    #[test]
+    fn error_payload_carries_the_numeric_fields() {
+        let raw = JoiError {
+            retry_after_seconds: Some(42),
+            duration_seconds: Some(260.0),
+            suggested_max_seconds: Some(SUGGESTED_MAX_AUDIO_SECONDS),
+            ..JoiError::new("audio_too_large", "音频编码后超过 5 MB")
+        }
+        .into_error();
+        let parsed = parse_joi_error(&raw).expect("payload should parse");
+        assert_eq!(parsed.retry_after_seconds, Some(42));
+        assert_eq!(parsed.duration_seconds, Some(260.0));
+        assert_eq!(parsed.suggested_max_seconds, Some(210));
+    }
+
+    #[test]
+    fn a_non_joi_error_string_yields_no_code() {
+        assert_eq!(error_code("读取轴伊按钮响应失败: timed out"), "");
+        assert!(parse_joi_error("读取轴伊按钮响应失败: timed out").is_none());
     }
 
     #[test]

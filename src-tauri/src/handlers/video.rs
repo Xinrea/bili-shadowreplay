@@ -481,6 +481,12 @@ async fn clip_range_inner(
         return Err("Failed to convert metadata length to i64".to_string());
     };
     let duration = params.ranges.iter().map(|r| r.duration()).sum::<f64>();
+    let source_start_seconds = params
+        .ranges
+        .iter()
+        .map(|range| range.start)
+        .filter(|start| start.is_finite() && *start >= 0.0)
+        .min_by(|left, right| left.partial_cmp(right).unwrap());
     let video = state
         .db
         .add_video(&VideoRow {
@@ -499,11 +505,14 @@ async fn clip_range_inner(
             length: duration as i64,
             size,
             bvid: String::new(),
-            title: String::new(),
+            title: params.title.clone(),
             desc: String::new(),
             tags: String::new(),
             area: 0,
             platform: params.platform.clone(),
+            source_start_seconds: source_start_seconds.map(|start| start.round() as i64),
+            source_title: (!params.title.trim().is_empty()).then(|| params.title.clone()),
+            source_date: params.source_date.clone(),
         })
         .await?;
     state
@@ -1056,6 +1065,9 @@ async fn encode_video_subtitle_inner(
             tags: video.tags.clone(),
             area: video.area,
             platform: video.platform,
+            source_start_seconds: video.source_start_seconds,
+            source_title: video.source_title.clone(),
+            source_date: video.source_date.clone(),
         })
         .await?;
 
@@ -1185,6 +1197,9 @@ pub async fn import_external_video(
         bvid: String::new(),
         area: 0,
         created_at: Utc::now().to_rfc3339(),
+        source_start_seconds: None,
+        source_title: None,
+        source_date: None,
     };
 
     let result = state.db.add_video(&video).await?;
@@ -1361,6 +1376,11 @@ async fn clip_video_inner(
         bvid: String::new(),
         area: parent_video.area,
         created_at: Local::now().to_rfc3339(),
+        source_start_seconds: parent_video
+            .source_start_seconds
+            .map(|source_start| source_start.saturating_add(start_time.max(0.0).round() as i64)),
+        source_title: parent_video.source_title.clone(),
+        source_date: parent_video.source_date.clone(),
     };
 
     let result = state.db.add_video(&clip_video).await?;

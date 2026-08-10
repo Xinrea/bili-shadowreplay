@@ -14,9 +14,11 @@ use tauri::State as TauriState;
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_accounts(state: state_type!()) -> Result<super::AccountInfo, String> {
-    let account_info = super::AccountInfo {
-        accounts: state.db.get_accounts().await?,
-    };
+    let mut accounts = state.db.get_accounts().await?;
+    for account in accounts.iter_mut() {
+        account.access_token = None;
+    }
+    let account_info = super::AccountInfo { accounts };
     Ok(account_info)
 }
 
@@ -76,6 +78,7 @@ pub async fn add_account(
                 csrf: csrf.clone().unwrap(),
                 cookies: cookies.into(),
                 created_at: Utc::now().to_rfc3339(),
+                ..AccountRow::default()
             };
             match bilibili::api::get_user_info(&client, &tmp_account.to_account(), &tmp_account.uid)
                 .await
@@ -99,6 +102,7 @@ pub async fn add_account(
                 csrf: "".into(),
                 cookies: cookies.into(),
                 created_at: Utc::now().to_rfc3339(),
+                ..AccountRow::default()
             };
 
             match douyin::api::get_user_info(&client, &tmp_account.to_account()).await {
@@ -133,6 +137,7 @@ pub async fn add_account(
                 csrf: "".into(),
                 cookies: cookies.into(),
                 created_at: Utc::now().to_rfc3339(),
+                ..AccountRow::default()
             };
 
             match huya::api::get_user_info(&client, &tmp_account.to_account()).await {
@@ -159,6 +164,7 @@ pub async fn add_account(
                 csrf: "".into(),
                 cookies: cookies.into(),
                 created_at: Utc::now().to_rfc3339(),
+                ..AccountRow::default()
             };
             match kuaishou::api::get_user_info(&client, &tmp_account.to_account()).await {
                 Ok(user_info) => UserInfo {
@@ -183,6 +189,7 @@ pub async fn add_account(
                 csrf: "".into(),
                 cookies: cookies.into(),
                 created_at: Utc::now().to_rfc3339(),
+                ..AccountRow::default()
             };
             match tiktok::api::get_user_info(&client, &tmp_account.to_account()).await {
                 Ok(user_info) => UserInfo {
@@ -208,6 +215,7 @@ pub async fn add_account(
         csrf: csrf.unwrap(),
         cookies: cookies.into(),
         created_at: Utc::now().to_rfc3339(),
+        ..AccountRow::default()
     };
     state.db.add_account(&account).await?;
     Ok(())

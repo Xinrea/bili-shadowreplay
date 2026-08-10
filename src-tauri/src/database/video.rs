@@ -19,6 +19,9 @@ pub struct VideoRow {
     pub area: i64,
     pub created_at: String,
     pub platform: String,
+    pub source_start_seconds: Option<i64>,
+    pub source_title: Option<String>,
+    pub source_date: Option<String>,
 }
 
 impl Database {
@@ -68,7 +71,7 @@ impl Database {
 
     pub async fn add_video(&self, video: &VideoRow) -> Result<VideoRow, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
-        let sql = sqlx::query("INSERT INTO videos (room_id, cover, file, note, length, size, status, bvid, title, desc, tags, area, created_at, platform) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)")
+        let sql = sqlx::query("INSERT INTO videos (room_id, cover, file, note, length, size, status, bvid, title, desc, tags, area, created_at, platform, source_start_seconds, source_title, source_date) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)")
             .bind(&video.room_id)
             .bind(&video.cover)
             .bind(&video.file)
@@ -83,6 +86,9 @@ impl Database {
             .bind(video.area)
             .bind(&video.created_at)
             .bind(&video.platform)
+            .bind(video.source_start_seconds)
+            .bind(&video.source_title)
+            .bind(&video.source_date)
             .execute(&lock)
             .await?;
         let video = VideoRow {

@@ -247,6 +247,93 @@ pub async fn extract_audio_sample(file: &Path) -> Result<PathBuf, String> {
         Ok(output_path)
     }
 }
+
+/// Return the conservative byte estimate used by the submission preflight.
+/// The estimate intentionally includes a small container margin so a clip at
+/// the 5 MB boundary is not admitted only to be rejected after encoding.
+pub fn estimate_submission_audio_size(duration_seconds: f64) -> u64 {
+    let seconds = duration_seconds.max(0.0);
+    (seconds * 192_000.0 / 8.0).ceil() as u64 + 4096
+}
+
+/// Encode the first audio stream for a joi-button submission.
+///
+/// This is deliberately separate from the Whisper waveform path above: the
+/// upload contract is 192 kbps / 44.1 kHz and preserves the source channel
+/// count. If the local ffmpeg lacks libmp3lame, AAC in an m4a container is the
+/// documented fallback accepted by the server.
+pub async fn extract_submission_audio(file: &Path, output_path: &Path) -> Result<PathBuf, String> {
+    match encode_submission_audio(file, output_path, "libmp3lame").await {
+        Ok(path) => Ok(path),
+        Err(mp3_error) => {
+            // A failed encoder may have created a partial file before ffmpeg
+            // reported the error. Remove it before trying the fallback so a
+            // failed submission can never leave an alternate artifact behind.
+            let _ = tokio::fs::remove_file(output_path).await;
+            let fallback_path = output_path.with_extension("m4a");
+            match encode_submission_audio(file, &fallback_path, "aac").await {
+                Ok(path) => Ok(path),
+                Err(m4a_error) => {
+                    let _ = tokio::fs::remove_file(output_path).await;
+                    let _ = tokio::fs::remove_file(&fallback_path).await;
+                    Err(format!(
+                        "submission audio encoding failed (mp3: {mp3_error}; m4a: {m4a_error})"
+                    ))
+                }
+            }
+        }
+    }
+}
+
+async fn encode_submission_audio(
+    file: &Path,
+    output_path: &Path,
+    encoder: &str,
+) -> Result<PathBuf, String> {
+    let mut ffmpeg_process = ffmpeg_command();
+    #[cfg(target_os = "windows")]
+    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
+    ffmpeg_process.kill_on_drop(true);
+
+    let child = ffmpeg_process
+        .args(["-i", file.to_str().ok_or("invalid input path")?])
+        .args(["-map", "0:a:0", "-vn"])
+        .args(["-c:a", encoder, "-b:a", "192k", "-ar", "44100"])
+        .args(["-y", "-progress", "pipe:2"])
+        .arg(output_path)
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to spawn ffmpeg: {e}"))?;
+
+    let mut child = child;
+    let stderr = child.stderr.take().ok_or("ffmpeg stderr unavailable")?;
+    let reader = BufReader::new(stderr);
+    let mut parser = FfmpegLogParser::new(reader);
+    let mut parser_error = None;
+    while let Ok(event) = parser.parse_next_event().await {
+        match event {
+            FfmpegEvent::Error(error) => parser_error = Some(error.to_string()),
+            FfmpegEvent::LogEOF => break,
+            FfmpegEvent::Progress(progress) => {
+                log::debug!("Submission audio progress: {}", progress.time);
+            }
+            _ => {}
+        }
+    }
+
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| format!("ffmpeg wait error: {e}"))?;
+    if !status.success() {
+        let _ = tokio::fs::remove_file(output_path).await;
+        return Err(parser_error.unwrap_or_else(|| format!("ffmpeg exited with {status}")));
+    }
+    if !output_path.exists() {
+        return Err("ffmpeg produced no submission audio".to_string());
+    }
+    Ok(output_path.to_path_buf())
+}
 pub async fn extract_audio_chunks(file: &Path, format: &str) -> Result<PathBuf, String> {
     // ffmpeg -i fixed_\[30655190\]1742887114_0325084106_81.5.mp4 -ar 16000 test.wav
     log::info!("Extract audio task start: {}", file.display());

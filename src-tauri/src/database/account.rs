@@ -13,6 +13,9 @@ pub struct AccountRow {
     pub csrf: String,
     pub cookies: String,
     pub created_at: String,
+    pub endpoint: Option<String>,
+    pub access_token: Option<String>,
+    pub token_expires_at: Option<String>,
 }
 
 impl AccountRow {
@@ -33,7 +36,50 @@ impl Database {
     // CREATE TABLE accounts (uid INTEGER PRIMARY KEY, name TEXT, avatar TEXT, csrf TEXT, cookies TEXT, created_at TEXT);
     pub async fn add_account(&self, account: &AccountRow) -> Result<(), DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
-        sqlx::query("INSERT INTO accounts (uid, platform, name, avatar, csrf, cookies, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)").bind(&account.uid).bind(&account.platform).bind(&account.name).bind(&account.avatar).bind(&account.csrf).bind(&account.cookies).bind(&account.created_at).execute(&lock).await?;
+        sqlx::query("INSERT INTO accounts (uid, platform, name, avatar, csrf, cookies, created_at, endpoint, access_token, token_expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)")
+            .bind(&account.uid)
+            .bind(&account.platform)
+            .bind(&account.name)
+            .bind(&account.avatar)
+            .bind(&account.csrf)
+            .bind(&account.cookies)
+            .bind(&account.created_at)
+            .bind(&account.endpoint)
+            .bind(&account.access_token)
+            .bind(&account.token_expires_at)
+            .execute(&lock)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn upsert_account(&self, account: &AccountRow) -> Result<(), DatabaseError> {
+        let lock = self.db.read().await.clone().unwrap();
+        sqlx::query(
+            "INSERT INTO accounts (uid, platform, name, avatar, csrf, cookies, created_at, endpoint, access_token, token_expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             ON CONFLICT(uid, platform) DO UPDATE SET
+               name = excluded.name,
+               avatar = excluded.avatar,
+               csrf = excluded.csrf,
+               cookies = excluded.cookies,
+               created_at = excluded.created_at,
+               endpoint = excluded.endpoint,
+               access_token = excluded.access_token,
+               token_expires_at = excluded.token_expires_at",
+        )
+        .bind(&account.uid)
+        .bind(&account.platform)
+        .bind(&account.name)
+        .bind(&account.avatar)
+        .bind(&account.csrf)
+        .bind(&account.cookies)
+        .bind(&account.created_at)
+        .bind(&account.endpoint)
+        .bind(&account.access_token)
+        .bind(&account.token_expires_at)
+        .execute(&lock)
+        .await?;
 
         Ok(())
     }

@@ -52,6 +52,8 @@ pub struct RecorderList {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ClipRangeParams {
     pub title: String,
+    #[serde(default)]
+    pub source_date: Option<String>,
     pub note: String,
     pub cover: String,
     pub platform: String,
@@ -81,6 +83,7 @@ pub struct GenerateWholeClipParams {
 pub struct RelatedPlaylist {
     pub live_id: String,
     pub title: String,
+    pub source_date: String,
     pub path: PathBuf,
 }
 
@@ -910,10 +913,10 @@ impl RecorderManager {
             return Vec::new();
         }
 
-        let archives: Vec<(String, String)> = archives
+        let archives: Vec<(String, String, String)> = archives
             .unwrap()
             .iter()
-            .map(|a| (a.title.clone(), a.live_id.clone()))
+            .map(|a| (a.title.clone(), a.live_id.clone(), a.created_at.clone()))
             .collect();
 
         let playlists = archives
@@ -925,6 +928,7 @@ impl RecorderManager {
                 RelatedPlaylist {
                     live_id: a.1.clone(),
                     title: a.0.clone(),
+                    source_date: a.2.clone(),
                     path: work_dir.with_filename("playlist.m3u8").full_path(),
                 }
             })
@@ -1575,6 +1579,9 @@ impl RecorderManager {
         }
 
         let title = playlists.first().unwrap().title.clone();
+        let source_date = playlists
+            .first()
+            .map(|playlist| playlist.source_date.clone());
 
         // generate archive danmu ass file for all playlists
         let danmu_ass_files = if encode_danmu {
@@ -1682,6 +1689,9 @@ impl RecorderManager {
                 tags: String::new(),
                 area: 0,
                 platform: platform.as_str().to_string(),
+                source_start_seconds: None,
+                source_title: Some(title.clone()),
+                source_date,
             })
             .await?;
 

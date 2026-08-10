@@ -33,6 +33,7 @@
           videos = await Promise.all(
             videoList.map(async (v) => {
               return {
+                ...v,
                 id: v.id,
                 value: v.id,
                 name: v.file,
@@ -73,6 +74,7 @@
       videos = await Promise.all(
         (videosData as VideoItem[]).map(async (v) => {
           return {
+            ...v,
             id: v.id,
             value: v.id,
             name: v.file,

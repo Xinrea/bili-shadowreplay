@@ -127,7 +127,35 @@
   let current_post_event_id = null;
   let config: Config = null;
   let accounts: any[] = [];
-  let uid_selected = 0;
+  let joiAccounts: any[] = [];
+  let uid_selected: string | number = 0;
+  let joi_uid_selected = "";
+  let post_target = "bilibili";
+  let joiContract: any = { groups: [], locales: [] };
+  let joiStatusCode = "";
+  let joiStatusMessage = "";
+  let joiRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastJoiVideoId: number | null = null;
+  let joiForm = {
+    captionLocale: "",
+    name: "",
+    caption: "",
+    groupId: "",
+    newGroup: "",
+    note: "",
+    source: {
+      kind: "stream",
+      title: "",
+      date: "",
+      time: "00:00",
+      url: "",
+    },
+  };
+
+  $: if (video?.id !== lastJoiVideoId) {
+    lastJoiVideoId = video?.id ?? null;
+    if (post_target === "joi-button") resetJoiForm();
+  }
   let show_cover_editor = false;
 
   // WaveSurfer.js 相关变量
@@ -332,6 +360,19 @@
           name: a.name,
           platform: a.platform,
         }));
+      joiAccounts = account_info.accounts
+        .filter((a) => a.platform === "joi-button")
+        .map((a) => ({
+          value: a.uid,
+          name: a.name,
+          endpoint: a.endpoint,
+          expiresAt: a.token_expires_at,
+          platform: a.platform,
+        }));
+      if (joiAccounts.length > 0) {
+        joi_uid_selected = joiAccounts[0].value;
+        await loadJoiContract(joi_uid_selected);
+      }
     } catch (error) {
       console.error("Failed to initialize upload data:", error);
     }
@@ -344,7 +385,188 @@
     }
     // 清理 WaveSurfer 实例
     destroyWaveSurfer();
+    if (joiRetryTimer) clearTimeout(joiRetryTimer);
   });
+
+  function resetJoiForm() {
+    const sourceStart =
+      typeof video?.source_start_seconds === "number" &&
+      Number.isFinite(video.source_start_seconds)
+        ? Math.max(0, Math.round(video.source_start_seconds))
+        : null;
+    const sourceTime =
+      sourceStart === null
+        ? ""
+        : `${Math.floor(sourceStart / 60)}:${String(sourceStart % 60).padStart(2, "0")}`;
+    joiForm = {
+      ...joiForm,
+      name: video?.title || video?.file || "",
+      caption: video?.title || "",
+      source: {
+        ...joiForm.source,
+        kind: "stream",
+        title: video?.source_title || "",
+        date: video?.source_date?.slice(0, 10) || "",
+        time: sourceTime,
+        url: "",
+      },
+    };
+  }
+
+  function joiLocaleStorageKey(endpoint: string): string {
+    return `joi-button-caption-locale:${endpoint}`;
+  }
+
+  function rememberJoiLocale(endpoint: string, locale: string) {
+    if (typeof window !== "undefined" && endpoint && locale) {
+      window.localStorage.setItem(joiLocaleStorageKey(endpoint), locale);
+    }
+  }
+
+  async function loadJoiContract(uid: string) {
+    const account = joiAccounts.find((item) => item.value === uid);
+    if (!account?.endpoint) return;
+    try {
+      joiContract = await invoke("joi_button_get_contract", {
+        endpoint: account.endpoint,
+      });
+      if (joiContract.locales?.length) {
+        const savedLocale =
+          typeof window !== "undefined"
+            ? window.localStorage.getItem(joiLocaleStorageKey(account.endpoint))
+            : null;
+        const preferredLocale = savedLocale || joiForm.captionLocale;
+        if (
+          !joiContract.locales.some((locale) => locale.code === preferredLocale)
+        ) {
+          joiForm.captionLocale = joiContract.locales[0].code;
+        } else {
+          joiForm.captionLocale = preferredLocale;
+        }
+      }
+      if (
+        joiContract.groups?.length &&
+        !joiContract.groups.some((group) => group.id === joiForm.groupId)
+      ) {
+        joiForm.groupId = joiContract.groups[0].id;
+      }
+    } catch (error) {
+      joiStatusCode = "unknown";
+      joiStatusMessage = `无法读取投稿契约：${String(error).replace(/^Error: /, "")}`;
+    }
+  }
+
+  function selectPostTarget(target: string) {
+    post_target = target;
+    if (target === "joi-button") {
+      if (!joi_uid_selected && joiAccounts.length > 0) {
+        joi_uid_selected = joiAccounts[0].value;
+      }
+      resetJoiForm();
+      loadJoiContract(joi_uid_selected);
+    }
+  }
+
+  function formatJoiDuration(seconds: number): string {
+    const totalSeconds = Math.max(0, Math.round(seconds));
+    const minutes = Math.floor(totalSeconds / 60);
+    const remainder = totalSeconds % 60;
+    if (minutes === 0) return `${remainder} 秒`;
+    return `${minutes} 分 ${remainder} 秒`;
+  }
+
+  function formatJoiSize(bytes: number): string {
+    return `${(Math.max(0, bytes) / 1024 / 1024).toFixed(1)} MB`;
+  }
+
+  function estimatedJoiAudioBytes(): number {
+    const duration = Math.max(0, Number(video?.length || 0));
+    return Math.ceil((duration * 192000) / 8) + 4096;
+  }
+
+  function showJoiStatus(error: unknown) {
+    const raw = String(error).replace(/^Error: /, "");
+    const code = raw.match(/joi_error_code:([a-z_]+)/)?.[1] || "unknown";
+    joiStatusCode = code;
+    if (code === "api_challenge_unavailable" || code === "room_unreachable") {
+      joiStatusCode = "room-unreachable";
+      joiStatusMessage = "暂时收不到弹幕。这是站点那边的问题，不是你没发出去。稍后会自动重试。";
+    } else if (code === "expired_api_token") {
+      joiStatusCode = "token-expired";
+      joiStatusMessage = "登录已过期。重新验证一次即可，你填的内容会保留。";
+    } else if (code === "revoked_api_token") {
+      joiStatusCode = "token-expired";
+      joiStatusMessage = "这个账号的令牌已撤销。重新验证一次即可，你填的内容会保留。";
+    } else if (code === "rate_limited") {
+      joiStatusCode = "rate-limited";
+      joiStatusMessage = "投稿太频繁。每分钟只能投一批，稍后会自动继续。";
+    } else if (code === "rate_limited_exhausted") {
+      joiStatusCode = "rate-limited-exhausted";
+      joiStatusMessage = "投稿太频繁。自动重试已达上限，请稍后点击投稿再试。";
+    } else if (code === "audio_too_large") {
+      joiStatusCode = "audio-too-large";
+      const duration = Number(raw.match(/(?:^|;)durationSeconds=([0-9.]+)/)?.[1]);
+      const suggestedMax = Number(
+        raw.match(/(?:^|;)suggestedMaxSeconds=([0-9.]+)/)?.[1],
+      );
+      const durationHint = Number.isFinite(duration)
+        ? `这段切片约 ${formatJoiDuration(duration)}，`
+        : "";
+      const suggestedHint = Number.isFinite(suggestedMax)
+        ? suggestedMax === 210
+          ? "3 分半"
+          : formatJoiDuration(suggestedMax)
+        : "3 分半";
+      joiStatusMessage = `音频超过 5 MB。${durationHint}请裁短到 ${suggestedHint}以内。`;
+    } else if (code === "storage_exhausted") {
+      joiStatusCode = "storage-exhausted";
+      joiStatusMessage = "站点存储空间不足。请联系该站点管理员处理。";
+    } else {
+      joiStatusCode = "unknown";
+      joiStatusMessage = raw;
+    }
+  }
+
+  async function do_joi_post() {
+    if (!video || !joi_uid_selected) return;
+    if (joiRetryTimer) clearTimeout(joiRetryTimer);
+    joiStatusCode = "";
+    joiStatusMessage = "";
+    const event_id = generateEventId();
+    current_post_event_id = event_id;
+    update_post_prompt("投稿上传中");
+    const clear_update_listener = await listen(
+      `progress-update:${event_id}`,
+      (e) => update_post_prompt(e.payload.content),
+    );
+    const clear_finished_listener = await listen(
+      `progress-finished:${event_id}`,
+      (e) => {
+        update_post_prompt("投稿");
+        if (!e.payload.success) showJoiStatus(e.payload.message);
+        current_post_event_id = null;
+        clear_update_listener();
+        clear_finished_listener();
+      },
+    );
+    try {
+      await invoke("joi_button_submit", {
+        uid: joi_uid_selected,
+        eventId: event_id,
+        videoId: video.id,
+        form: joiForm,
+      });
+      joiStatusCode = "success";
+      joiStatusMessage = "投稿已提交。";
+      await onVideoListUpdate?.();
+    } catch (error) {
+      showJoiStatus(error);
+    } finally {
+      current_post_event_id = null;
+      clear_update_listener();
+      clear_finished_listener();
+    }
+  }
 
   function update_encode_prompt(content: string) {
     const encode_prompt = document.getElementById("encode-prompt");
@@ -2222,6 +2444,24 @@
               </section>
             {/if}
 
+            <div class="space-y-2">
+              <label for="post-target" class="block text-sm font-medium text-gray-300"
+                >投稿目标</label
+              >
+              <select
+                id="post-target"
+                value={post_target}
+                on:change={(event) => selectPostTarget(event.currentTarget.value)}
+                class="w-full min-w-0 px-3 py-2 bg-[#1c1c1e] text-gray-300 border border-gray-700 rounded-lg focus:border-[#0A84FF] outline-none appearance-none"
+              >
+                <option value="bilibili">B 站投稿</option>
+                {#if joiAccounts.length > 0}
+                  <option value="joi-button">轴伊按钮</option>
+                {/if}
+              </select>
+            </div>
+
+            {#if post_target === "bilibili"}
             <!-- 基本信息 -->
             <div class="space-y-4">
               <h3 class="text-sm font-medium text-gray-400">基本信息</h3>
@@ -2313,13 +2553,193 @@
               </div>
             </div>
 
+            {:else}
+              <div class="space-y-4">
+                <div class="space-y-2">
+                  <label for="joi-account" class="block text-sm font-medium text-gray-300"
+                    >轴伊按钮账号</label
+                  >
+                  <select
+                    id="joi-account"
+                    bind:value={joi_uid_selected}
+                    on:change={() => loadJoiContract(joi_uid_selected)}
+                    class="w-full min-w-0 px-3 py-2 bg-[#1c1c1e] text-gray-300 border border-gray-700 rounded-lg focus:border-[#0A84FF] outline-none appearance-none"
+                  >
+                    {#each joiAccounts as account}
+                      <option value={account.value}>{account.name} · {account.endpoint}</option>
+                    {/each}
+                  </select>
+                </div>
+
+                <div class="space-y-2">
+                  <label for="joi-name" class="block text-sm font-medium text-gray-300"
+                    >切片名称</label
+                  >
+                  <input
+                    id="joi-name"
+                    type="text"
+                    bind:value={joiForm.name}
+                    class="w-full min-w-0 px-3 py-2 bg-[#1c1c1e] text-gray-300 border border-gray-700 rounded-lg focus:border-[#0A84FF] outline-none"
+                  />
+                </div>
+
+                <div class="space-y-2">
+                  <label for="joi-caption" class="block text-sm font-medium text-gray-300"
+                    >说明</label
+                  >
+                  <textarea
+                    id="joi-caption"
+                    bind:value={joiForm.caption}
+                    class="w-full min-w-0 px-3 py-2 bg-[#1c1c1e] text-gray-300 border border-gray-700 rounded-lg focus:border-[#0A84FF] outline-none resize-none h-20"
+                    placeholder="写一条说明"
+                  ></textarea>
+                </div>
+
+                <div class="grid grid-cols-2 gap-3">
+                  <div class="space-y-2 min-w-0">
+                    <label for="joi-locale" class="block text-sm font-medium text-gray-300"
+                      >语言</label
+                    >
+                      <select
+                        id="joi-locale"
+                        bind:value={joiForm.captionLocale}
+                        on:change={() =>
+                          rememberJoiLocale(
+                            joiAccounts.find((item) => item.value === joi_uid_selected)
+                              ?.endpoint || "",
+                            joiForm.captionLocale,
+                          )}
+                        class="w-full min-w-0 px-3 py-2 bg-[#1c1c1e] text-gray-300 border border-gray-700 rounded-lg focus:border-[#0A84FF] outline-none appearance-none"
+                      >
+                      {#each joiContract.locales || [] as locale}
+                        <option value={locale.code}>{locale.label || locale.code}</option>
+                      {/each}
+                    </select>
+                  </div>
+                  <div class="space-y-2 min-w-0">
+                    <label for="joi-group" class="block text-sm font-medium text-gray-300"
+                      >分组</label
+                    >
+                    <select
+                      id="joi-group"
+                      bind:value={joiForm.groupId}
+                      class="w-full min-w-0 px-3 py-2 bg-[#1c1c1e] text-gray-300 border border-gray-700 rounded-lg focus:border-[#0A84FF] outline-none appearance-none"
+                    >
+                      <option value="">选择分组</option>
+                      {#each joiContract.groups || [] as group}
+                        <option value={group.id}>{group.displayName}</option>
+                      {/each}
+                    </select>
+                    <input
+                      type="text"
+                      bind:value={joiForm.newGroup}
+                      on:input={() => {
+                        if (joiForm.newGroup.trim()) joiForm.groupId = "";
+                      }}
+                      placeholder="或输入新分组"
+                      class="w-full min-w-0 mt-2 px-3 py-2 bg-[#1c1c1e] text-gray-300 border border-gray-700 rounded-lg focus:border-[#0A84FF] outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div class="space-y-2">
+                  <label for="joi-note" class="block text-sm font-medium text-gray-300"
+                    >备注</label
+                  >
+                  <input
+                    id="joi-note"
+                    type="text"
+                    bind:value={joiForm.note}
+                    class="w-full min-w-0 px-3 py-2 bg-[#1c1c1e] text-gray-300 border border-gray-700 rounded-lg focus:border-[#0A84FF] outline-none"
+                  />
+                </div>
+
+                <fieldset class="p-3 rounded-lg bg-[#2c2c2e] border border-gray-700">
+                  <legend class="px-1 bg-[#2c2c2e] text-xs font-semibold text-gray-400">来源信息</legend>
+                  <div class="grid grid-cols-2 gap-3 mt-2">
+                    <div class="space-y-2 min-w-0">
+                      <label for="joi-source-kind" class="block text-sm font-medium text-gray-300"
+                        >类型</label
+                      >
+                      <select
+                        id="joi-source-kind"
+                        bind:value={joiForm.source.kind}
+                        class="w-full min-w-0 px-3 py-2 bg-[#1c1c1e] text-gray-300 border border-gray-700 rounded-lg focus:border-[#0A84FF] outline-none appearance-none"
+                      >
+                        <option value="stream">直播</option>
+                        <option value="video">视频</option>
+                      </select>
+                    </div>
+                    <div class="space-y-2 min-w-0">
+                      <label for="joi-source-time" class="block text-sm font-medium text-gray-300"
+                        >时间</label
+                      >
+                      <input
+                        id="joi-source-time"
+                        type="text"
+                        bind:value={joiForm.source.time}
+                        placeholder="mm:ss"
+                        class="w-full min-w-0 px-3 py-2 bg-[#1c1c1e] text-gray-300 border border-gray-700 rounded-lg focus:border-[#0A84FF] outline-none"
+                      />
+                    </div>
+                  </div>
+                  <div class="grid grid-cols-2 gap-3 mt-3">
+                    <div class="space-y-2 min-w-0">
+                      <label for="joi-source-title" class="block text-sm font-medium text-gray-300"
+                        >标题</label
+                      >
+                      <input
+                        id="joi-source-title"
+                        type="text"
+                        bind:value={joiForm.source.title}
+                        class="w-full min-w-0 px-3 py-2 bg-[#1c1c1e] text-gray-300 border border-gray-700 rounded-lg focus:border-[#0A84FF] outline-none"
+                      />
+                    </div>
+                    <div class="space-y-2 min-w-0">
+                      <label for="joi-source-date" class="block text-sm font-medium text-gray-300"
+                        >日期</label
+                      >
+                      <input
+                        id="joi-source-date"
+                        type="date"
+                        bind:value={joiForm.source.date}
+                        class="w-full min-w-0 px-3 py-2 bg-[#1c1c1e] text-gray-300 border border-gray-700 rounded-lg focus:border-[#0A84FF] outline-none"
+                      />
+                    </div>
+                  </div>
+                  <div class="space-y-2 mt-3 min-w-0">
+                    <label for="joi-source-url" class="block text-sm font-medium text-gray-300"
+                      >来源链接</label
+                    >
+                    <input
+                      id="joi-source-url"
+                      type="url"
+                      bind:value={joiForm.source.url}
+                      placeholder="可选"
+                      class="w-full min-w-0 px-3 py-2 bg-[#1c1c1e] text-gray-300 border border-gray-700 rounded-lg focus:border-[#0A84FF] outline-none"
+                    />
+                  </div>
+                </fieldset>
+
+                <p class="text-xs text-gray-400">
+                  将转码为音频后投稿 · 预计 {formatJoiSize(estimatedJoiAudioBytes())}
+                </p>
+
+                {#if joiStatusMessage}
+                  <div class="p-2.5 rounded-lg text-xs flex gap-2 items-start {joiStatusCode === 'unknown' ? 'bg-red-900/30 text-red-300' : joiStatusCode === 'success' ? 'bg-green-900/30 text-green-300' : 'bg-yellow-900/30 text-yellow-300'}">
+                    {joiStatusMessage}
+                  </div>
+                {/if}
+              </div>
+            {/if}
+
             <!-- 投稿按钮 -->
             {#if video}
               <div class="pt-4">
                 <div class="flex gap-2">
                   <button
-                    on:click={do_post}
-                    disabled={current_post_event_id != null || !uid_selected}
+                    on:click={post_target === "bilibili" ? do_post : do_joi_post}
+                    disabled={current_post_event_id != null || (post_target === "bilibili" ? !uid_selected : !joi_uid_selected)}
                     class="flex-1 px-3 py-2 bg-[#0A84FF] text-white rounded-lg transition-all duration-200 hover:bg-[#0A84FF]/90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2 text-sm"
                   >
                     {#if current_post_event_id != null}
@@ -2329,7 +2749,7 @@
                     {/if}
                     <span id="post-prompt">投稿</span>
                   </button>
-                  {#if current_post_event_id != null}
+                  {#if current_post_event_id != null && post_target === "bilibili"}
                     <button
                       on:click={() => cancel_post()}
                       class="px-3 py-2 bg-red-500 text-white rounded-lg transition-all duration-200 hover:bg-red-500/90 flex items-center justify-center text-sm"

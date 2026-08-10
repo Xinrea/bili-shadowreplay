@@ -435,6 +435,31 @@ fn get_migrations() -> Vec<Migration> {
             "#,
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 15,
+            description: "add_joi_button_account_credentials",
+            sql: r"
+                ALTER TABLE accounts ADD COLUMN endpoint TEXT;
+                ALTER TABLE accounts ADD COLUMN access_token TEXT;
+                ALTER TABLE accounts ADD COLUMN token_expires_at TEXT;
+            ",
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 16,
+            description: "add_clip_source_start_seconds",
+            sql: r"ALTER TABLE videos ADD COLUMN source_start_seconds INTEGER;",
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 17,
+            description: "add_clip_source_metadata",
+            sql: r"
+                ALTER TABLE videos ADD COLUMN source_title TEXT;
+                ALTER TABLE videos ADD COLUMN source_date TEXT;
+            ",
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -689,6 +714,12 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::account::get_account_count,
         crate::handlers::account::get_qr_status,
         crate::handlers::account::get_qr,
+        crate::handlers::joi_button::joi_button_challenge,
+        crate::handlers::joi_button::joi_button_poll,
+        crate::handlers::joi_button::add_joi_button_account,
+        crate::handlers::joi_button::joi_button_get_contract,
+        crate::handlers::joi_button::joi_button_send_danmaku,
+        crate::handlers::joi_button::joi_button_submit,
         crate::handlers::config::get_config,
         crate::handlers::config::get_llm_config,
         crate::handlers::config::list_llm_models,

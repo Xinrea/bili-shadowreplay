@@ -73,6 +73,9 @@ export interface VideoItem {
   area: number;
   created_at: string;
   platform?: string;
+  source_start_seconds?: number;
+  source_title?: string;
+  source_date?: string;
 }
 
 export interface Profile {
@@ -271,6 +274,7 @@ export interface Range {
 
 export interface ClipRangeParams {
   title: string;
+  source_date?: string;
   note: string;
   cover: string;
   platform: string;

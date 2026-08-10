@@ -142,6 +142,7 @@
     try {
       const video = await clipRange(eventId, {
         title: archive.title,
+        source_date: archive.created_at,
         note: clipNote,
         room_id: archive.room_id,
         platform: archive.platform,

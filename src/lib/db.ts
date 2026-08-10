@@ -12,6 +12,9 @@ export interface AccountItem {
   csrf: string;
   cookies: string;
   created_at: string;
+  endpoint?: string | null;
+  access_token?: string | null;
+  token_expires_at?: string | null;
 }
 
 export interface MessageItem {

@@ -26,6 +26,10 @@ use crate::{
             update_subtitle_generator_type, update_subtitle_setting, update_webhook_url,
             update_whisper_language, update_whisper_model, update_whisper_prompt,
         },
+        joi_button::{
+            add_joi_button_account, joi_button_challenge, joi_button_get_contract, joi_button_poll,
+            joi_button_send_danmaku, joi_button_submit, JoiButtonSubmitForm,
+        },
         message::{delete_message, get_messages, read_message},
         recorder::{
             add_recorder, delete_archive, delete_archives, export_danmu, fetch_hls,
@@ -134,6 +138,7 @@ async fn handler_get_accounts(
     let mut accounts = get_accounts(state.0).await?;
     for account in accounts.accounts.iter_mut() {
         account.cookies = "".to_string();
+        account.access_token = None;
     }
     Ok(Json(ApiResponse::success(accounts)))
 }
@@ -196,6 +201,113 @@ async fn handler_get_qr_status(
         .await
         .expect("Failed to get QR status");
     Ok(Json(ApiResponse::success(qr_status)))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JoiButtonEndpointRequest {
+    endpoint: String,
+}
+
+async fn handler_joi_button_challenge(
+    state: axum::extract::State<State>,
+    Json(param): Json<JoiButtonEndpointRequest>,
+) -> Result<Json<ApiResponse<crate::handlers::joi_button::JoiButtonAuthState>>, ApiError> {
+    Ok(Json(ApiResponse::success(
+        joi_button_challenge(state.0, param.endpoint).await?,
+    )))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JoiButtonPollRequest {
+    endpoint: String,
+    poll_token: String,
+}
+
+async fn handler_joi_button_poll(
+    state: axum::extract::State<State>,
+    Json(param): Json<JoiButtonPollRequest>,
+) -> Result<Json<ApiResponse<crate::handlers::joi_button::JoiButtonAuthState>>, ApiError> {
+    Ok(Json(ApiResponse::success(
+        joi_button_poll(state.0, param.endpoint, param.poll_token).await?,
+    )))
+}
+
+async fn handler_joi_button_get_contract(
+    state: axum::extract::State<State>,
+    Json(param): Json<JoiButtonEndpointRequest>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, ApiError> {
+    Ok(Json(ApiResponse::success(
+        joi_button_get_contract(state.0, param.endpoint).await?,
+    )))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddJoiButtonAccountRequest {
+    endpoint: String,
+    access_token: String,
+    token_expires_at: String,
+    open_id: String,
+    display_name: String,
+}
+
+async fn handler_add_joi_button_account(
+    state: axum::extract::State<State>,
+    Json(param): Json<AddJoiButtonAccountRequest>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    add_joi_button_account(
+        state.0,
+        param.endpoint,
+        param.access_token,
+        param.token_expires_at,
+        param.open_id,
+        param.display_name,
+    )
+    .await?;
+    Ok(Json(ApiResponse::success(())))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JoiButtonSendDanmakuRequest {
+    uid: String,
+    room_id: String,
+    message: String,
+}
+
+async fn handler_joi_button_send_danmaku(
+    state: axum::extract::State<State>,
+    Json(param): Json<JoiButtonSendDanmakuRequest>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    joi_button_send_danmaku(state.0, param.uid, param.room_id, param.message).await?;
+    Ok(Json(ApiResponse::success(())))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JoiButtonSubmitRequest {
+    event_id: String,
+    uid: String,
+    video_id: i64,
+    form: JoiButtonSubmitForm,
+}
+
+async fn handler_joi_button_submit(
+    state: axum::extract::State<State>,
+    Json(param): Json<JoiButtonSubmitRequest>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, ApiError> {
+    Ok(Json(ApiResponse::success(
+        joi_button_submit(
+            state.0,
+            param.event_id,
+            param.uid,
+            param.video_id,
+            param.form,
+        )
+        .await?,
+    )))
 }
 
 async fn handler_get_config(
@@ -1818,7 +1930,16 @@ pub async fn start_api_server(state: State) {
         .nest_service("/", ServeDir::new("./dist"))
         // Account commands
         .route("/api/get_accounts", post(handler_get_accounts))
-        .route("/api/get_account_count", post(handler_get_account_count));
+        .route("/api/get_account_count", post(handler_get_account_count))
+        .route(
+            "/api/joi_button_challenge",
+            post(handler_joi_button_challenge),
+        )
+        .route("/api/joi_button_poll", post(handler_joi_button_poll))
+        .route(
+            "/api/joi_button_get_contract",
+            post(handler_joi_button_get_contract),
+        );
 
     // Only add add/remove routes if not in readonly mode
     if !state.readonly {
@@ -1826,6 +1947,10 @@ pub async fn start_api_server(state: State) {
             .route("/api/get_qr", post(handler_get_qr))
             .route("/api/get_qr_status", post(handler_get_qr_status))
             .route("/api/add_account", post(handler_add_account))
+            .route(
+                "/api/add_joi_button_account",
+                post(handler_add_joi_button_account),
+            )
             .route("/api/remove_account", post(handler_remove_account))
             .route(
                 "/api/update_whisper_model",
@@ -1844,8 +1969,13 @@ pub async fn start_api_server(state: State) {
             .route("/api/delete_archive", post(handler_delete_archive))
             .route("/api/delete_archives", post(handler_delete_archives))
             .route("/api/send_danmaku", post(handler_send_danmaku))
+            .route(
+                "/api/joi_button_send_danmaku",
+                post(handler_joi_button_send_danmaku),
+            )
             .route("/api/set_enable", post(handler_set_enable))
             .route("/api/upload_procedure", post(handler_upload_procedure))
+            .route("/api/joi_button_submit", post(handler_joi_button_submit))
             .route("/api/cancel", post(handler_cancel))
             .route("/api/delete_video", post(handler_delete_video))
             .route(

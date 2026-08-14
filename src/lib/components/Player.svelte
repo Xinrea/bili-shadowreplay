@@ -904,7 +904,7 @@ ${mediaPlaylistUrl}`;
                 end: get_total(),
                 activated: true, // 新建区间默认为激活
               };
-              ranges.push(newRange);
+              ranges = [...ranges, newRange];
               currentRangeIndex = ranges.length - 1;
             }
             saveRanges();
@@ -935,7 +935,7 @@ ${mediaPlaylistUrl}`;
                 end: currentTime,
                 activated: true, // 新建区间默认为激活
               };
-              ranges.push(newRange);
+              ranges = [...ranges, newRange];
               currentRangeIndex = ranges.length - 1;
             }
             saveRanges();
@@ -969,7 +969,7 @@ ${mediaPlaylistUrl}`;
               end: get_total(),
               activated: true, // 新建区间默认为激活
             };
-            ranges.push(newRange);
+            ranges = [...ranges, newRange];
             currentRangeIndex = ranges.length - 1;
             saveRanges();
             console.log(
@@ -985,7 +985,7 @@ ${mediaPlaylistUrl}`;
           e.preventDefault();
           {
             if (currentRangeIndex >= 0 && currentRangeIndex < ranges.length) {
-              ranges.splice(currentRangeIndex, 1);
+              ranges = ranges.filter((_, i) => i !== currentRangeIndex);
               // 调整当前索引
               if (ranges.length === 0) {
                 currentRangeIndex = -1;

@@ -943,9 +943,10 @@ async fn update_video_subtitle_inner(
     let filepath = Path::new(state.config.read().await.output.as_str()).join(&video.file);
     let file = Path::new(&filepath);
     let subtitle_path = file.with_extension("srt");
-    if let Err(e) = std::fs::write(subtitle_path, subtitle) {
-        log::warn!("Update video subtitle error: {e}");
-    }
+    std::fs::write(&subtitle_path, subtitle).map_err(|e| {
+        log::error!("Update video subtitle error: {e}");
+        format!("写入字幕文件失败：{} ({e})", subtitle_path.display())
+    })?;
     Ok(())
 }
 

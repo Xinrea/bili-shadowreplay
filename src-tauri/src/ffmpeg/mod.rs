@@ -33,6 +33,24 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[allow(unused_imports)]
 use std::os::windows::process::CommandExt;
 
+/// 等待 ffmpeg 子进程结束，并把非零退出码视为失败。
+///
+/// `child.wait()` 只在无法回收进程时返回 `Err`；ffmpeg 自身以非零码退出时
+/// 依然是 `Ok(status)`。若只判断 `Err`，滤镜初始化失败一类的错误会被当成
+/// 成功，进而产生"任务完成但产物缺失"的假象。
+async fn wait_ffmpeg_exit(child: &mut tokio::process::Child, context: &str) -> Result<(), String> {
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| format!("{context}: 等待 ffmpeg 进程失败: {e}"))?;
+
+    if !status.success() {
+        return Err(format!("{context}: ffmpeg 异常退出（{status}）"));
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Range {
     pub start: f64,
@@ -117,9 +135,7 @@ pub async fn transcode(
         }
     }
 
-    if let Err(e) = child.wait().await {
-        return Err(e.to_string());
-    }
+    wait_ffmpeg_exit(&mut child, "Transcode").await?;
 
     Ok(())
 }
@@ -175,9 +191,9 @@ pub async fn trim_video(
         }
     }
 
-    if let Err(e) = child.wait().await {
+    if let Err(e) = wait_ffmpeg_exit(&mut child, "Trim video").await {
         log::error!("Trim video error: {e}");
-        return Err(e.to_string());
+        return Err(e);
     }
 
     log::info!("Trim video task end: {}", output_path.display());
@@ -234,9 +250,9 @@ pub async fn extract_audio_sample(file: &Path) -> Result<PathBuf, String> {
         }
     }
 
-    if let Err(e) = child.wait().await {
+    if let Err(e) = wait_ffmpeg_exit(&mut child, "Extract audio sample").await {
         log::error!("Extract audio sample error: {e}");
-        return Err(e.to_string());
+        return Err(e);
     }
 
     if let Some(error) = extract_error {
@@ -354,9 +370,9 @@ pub async fn extract_audio_chunks(file: &Path, format: &str) -> Result<PathBuf, 
         }
     }
 
-    if let Err(e) = child.wait().await {
+    if let Err(e) = wait_ffmpeg_exit(&mut child, "Extract audio").await {
         log::error!("Extract audio error: {e}");
-        return Err(e.to_string());
+        return Err(e);
     }
 
     if let Some(error) = extract_error {
@@ -540,6 +556,18 @@ pub async fn encode_video_subtitle(
     // ffmpeg -i fixed_\[30655190\]1742887114_0325084106_81.5.mp4 -vf "subtitles=test.srt:force_style='FontSize=24'" -c:v libx264 -c:a copy output.mp4
     log::info!("Encode video subtitle task start: {}", file.display());
     log::info!("SRT style: {srt_style}");
+
+    // 字幕缺失或为空会让 ffmpeg 在 filter graph 初始化阶段就失败，
+    // 这里提前拦住并给出可读的原因，避免产生空的 [subtitle] 视频。
+    match std::fs::metadata(subtitle) {
+        Ok(metadata) if metadata.len() == 0 => {
+            return Err(format!("字幕文件为空：{}", subtitle.display()));
+        }
+        Ok(_) => {}
+        Err(e) => {
+            return Err(format!("字幕文件不可用：{} ({e})", subtitle.display()));
+        }
+    }
     // output path is file with prefix [subtitle]
     let output_filename = format!(
         "{}{}",
@@ -620,9 +648,9 @@ pub async fn encode_video_subtitle(
         }
     }
 
-    if let Err(e) = child.wait().await {
+    if let Err(e) = wait_ffmpeg_exit(&mut child, "Encode video subtitle").await {
         log::error!("Encode video subtitle error: {e}");
-        return Err(e.to_string());
+        return Err(e);
     }
 
     if let Some(error) = command_error {
@@ -720,9 +748,9 @@ pub async fn encode_video_danmu(
         }
     }
 
-    if let Err(e) = child.wait().await {
+    if let Err(e) = wait_ffmpeg_exit(&mut child, "Encode video danmu").await {
         log::error!("Encode video danmu error: {e}");
-        return Err(e.to_string());
+        return Err(e);
     }
 
     if let Some(error) = command_error {
@@ -764,9 +792,9 @@ pub async fn generic_ffmpeg_command(args: &[&str]) -> Result<String, String> {
         }
     }
 
-    if let Err(e) = child.wait().await {
+    if let Err(e) = wait_ffmpeg_exit(&mut child, "Generic ffmpeg command").await {
         log::error!("Generic ffmpeg command error: {e}");
-        return Err(e.to_string());
+        return Err(e);
     }
 
     Ok(logs.join("\n"))
@@ -1170,8 +1198,9 @@ pub async fn clip_from_video_file(
         }
     }
 
-    if let Err(e) = child.wait().await {
-        return Err(e.to_string());
+    if let Err(e) = wait_ffmpeg_exit(&mut child, "切片").await {
+        log::error!("切片错误: {e}");
+        return Err(e);
     }
 
     if let Some(error) = clip_error {
@@ -1560,6 +1589,72 @@ mod tests {
             end: 2000.0,
         };
         assert_eq!(large_range.duration(), 1000.0);
+    }
+
+    // 非零退出码必须被识别为失败，否则会出现"任务成功但产物缺失"
+    #[tokio::test]
+    async fn test_wait_ffmpeg_exit_rejects_nonzero_status() {
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", "exit 254"])
+            .spawn()
+            .expect("spawn sh");
+
+        let result = wait_ffmpeg_exit(&mut child, "测试").await;
+        assert!(result.is_err(), "非零退出码应当返回 Err");
+        assert!(result.unwrap_err().contains("测试"));
+    }
+
+    #[tokio::test]
+    async fn test_wait_ffmpeg_exit_accepts_success() {
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .expect("spawn sh");
+
+        assert!(wait_ffmpeg_exit(&mut child, "测试").await.is_ok());
+    }
+
+    #[derive(Clone)]
+    struct NoopReporter;
+
+    #[async_trait::async_trait]
+    impl ProgressReporterTrait for NoopReporter {
+        async fn update(&self, _content: &str) {}
+        async fn finish(&self, _success: bool, _message: &str) {}
+    }
+
+    // 字幕缺失/为空时应提前失败，而不是产出没有字幕的视频
+    #[tokio::test]
+    async fn test_encode_video_subtitle_rejects_missing_subtitle() {
+        let result = encode_video_subtitle(
+            &NoopReporter,
+            Path::new("tests/video/test.mp4"),
+            Path::new("tests/video/does_not_exist.srt"),
+            "FontSize=24".to_string(),
+        )
+        .await;
+
+        let err = result.expect_err("缺失字幕应当返回 Err");
+        assert!(err.contains("字幕文件不可用"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn test_encode_video_subtitle_rejects_empty_subtitle() {
+        let empty_srt = std::env::temp_dir().join("bsr_empty_subtitle_test.srt");
+        std::fs::write(&empty_srt, "").expect("write empty srt");
+
+        let result = encode_video_subtitle(
+            &NoopReporter,
+            Path::new("tests/video/test.mp4"),
+            &empty_srt,
+            "FontSize=24".to_string(),
+        )
+        .await;
+
+        let _ = std::fs::remove_file(&empty_srt);
+
+        let err = result.expect_err("空字幕应当返回 Err");
+        assert!(err.contains("字幕文件为空"), "unexpected error: {err}");
     }
 
     // 测试视频元数据提取

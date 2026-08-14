@@ -153,56 +153,38 @@ pub async fn set_cache_path(state: state_type!(), cache_path: String) -> Result<
         )
         .await?;
 
-    let mut old_cache_entries = vec![];
-    if let Ok(entries) = std::fs::read_dir(&old_cache_path) {
-        for entry in entries.flatten() {
-            // check if entry is the same as new cache path
-            if entry.path() == std::path::Path::new(&cache_path) {
-                continue;
-            }
-            old_cache_entries.push(entry.path());
-        }
-    }
-
-    // copy all entries to new cache
-    for entry in &old_cache_entries {
-        let new_entry = std::path::Path::new(&cache_path).join(entry.file_name().unwrap());
-        // if entry is a folder
-        if entry.is_dir() {
-            if let Err(e) = crate::handlers::utils::copy_dir_all(entry, &new_entry) {
-                log::error!("Copy old cache to new cache error: {e}");
-                return Err(e.to_string());
-            }
-        } else if let Err(e) = std::fs::copy(entry, &new_entry) {
-            log::error!("Copy old cache to new cache error: {e}");
-            return Err(e.to_string());
-        }
-    }
-
-    log::info!("Copy old cache to new cache done");
-    state.db.new_message("缓存目录切换", "缓存切换完成").await?;
+    // Only migrate BSR-owned folders: the new directory may already hold the
+    // user's own files, which must be left untouched.
+    let plan =
+        crate::handlers::migrate::plan_cache_migration(old_cache_path_obj, new_cache_path_obj);
+    let migrate_result = crate::handlers::migrate::run_plan(&plan, new_cache_path_obj);
 
     state.recorder_manager.set_migrating(false);
 
-    // remove all old cache entries
-    for entry in old_cache_entries {
-        if entry.is_dir() {
-            if let Err(e) = std::fs::remove_dir_all(&entry) {
-                log::error!("Remove old cache error: {e}");
-            }
-        } else if let Err(e) = std::fs::remove_file(&entry) {
-            log::error!("Remove old cache error: {e}");
+    match migrate_result {
+        Ok(moved) => {
+            log::info!("Cache migration done: {moved} entries moved");
+            state.db.new_message("缓存目录切换", "缓存切换完成").await?;
+            Ok(())
+        }
+        Err(e) => {
+            log::error!("Cache migration failed: {e}");
+            state
+                .db
+                .new_message("缓存目录切换", &format!("缓存迁移失败：{e}"))
+                .await?;
+            Err(e.to_string())
         }
     }
-
-    Ok(())
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
 #[allow(dead_code)]
 pub async fn set_output_path(state: state_type!(), output_path: String) -> Result<(), String> {
-    let mut config = state.config.write().await;
-    let old_output_path = config.output.clone();
+    // Read the old path and release the lock immediately: holding the write
+    // lock across the migration would block every config reader for its whole
+    // duration.
+    let old_output_path = state.config.read().await.output.clone();
     log::info!("Try to set output path: {old_output_path} -> {output_path}");
     if old_output_path == output_path {
         return Ok(());
@@ -216,45 +198,34 @@ pub async fn set_output_path(state: state_type!(), output_path: String) -> Resul
         return Err("New output path cannot be under old output path".to_string());
     }
 
-    // list all file and folder in old output
-    let mut old_output_entries = vec![];
-    if let Ok(entries) = std::fs::read_dir(&old_output_path) {
-        for entry in entries.flatten() {
-            // check if entry is the same as new output path
-            if entry.path() == std::path::Path::new(&output_path) {
-                continue;
-            }
-            old_output_entries.push(entry.path());
-        }
-    }
+    state
+        .db
+        .new_message(
+            "切片目录切换",
+            "切片正在迁移中，根据数据量情况可能花费较长时间",
+        )
+        .await?;
 
-    // rename all entries to new output
-    for entry in &old_output_entries {
-        let new_entry = std::path::Path::new(&output_path).join(entry.file_name().unwrap());
-        // if entry is a folder
-        if entry.is_dir() {
-            if let Err(e) = crate::handlers::utils::copy_dir_all(entry, &new_entry) {
-                log::error!("Copy old output to new output error: {e}");
-                return Err(e.to_string());
-            }
-        } else if let Err(e) = std::fs::copy(entry, &new_entry) {
-            log::error!("Copy old output to new output error: {e}");
+    // Only migrate clips and their sidecars, so pre-existing user files in the
+    // old directory stay where they are.
+    let plan =
+        crate::handlers::migrate::plan_output_migration(old_output_path_obj, new_output_path_obj);
+    let moved = match crate::handlers::migrate::run_plan(&plan, new_output_path_obj) {
+        Ok(moved) => moved,
+        Err(e) => {
+            log::error!("Output migration failed: {e}");
+            state
+                .db
+                .new_message("切片目录切换", &format!("切片迁移失败：{e}"))
+                .await?;
             return Err(e.to_string());
         }
-    }
+    };
 
-    // remove all old output entries
-    for entry in old_output_entries {
-        if entry.is_dir() {
-            if let Err(e) = std::fs::remove_dir_all(&entry) {
-                log::error!("Remove old output error: {e}");
-            }
-        } else if let Err(e) = std::fs::remove_file(&entry) {
-            log::error!("Remove old output error: {e}");
-        }
-    }
+    log::info!("Output migration done: {moved} entries moved");
+    state.config.write().await.set_output_path(&output_path);
+    state.db.new_message("切片目录切换", "切片切换完成").await?;
 
-    config.set_output_path(&output_path);
     Ok(())
 }
 

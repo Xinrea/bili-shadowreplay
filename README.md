@@ -12,14 +12,6 @@ BiliBili ShadowReplay 是一个缓存直播并进行实时编辑投稿的工具�
 
 目前仅支持 B 站和抖音平台的直播。
 
-<a href="https://www.star-history.com/?repos=Xinrea%2Fbili-shadowreplay&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Xinrea/bili-shadowreplay&type=date&theme=dark&legend=top-left&sealed_token=GCmcFpkQTCuEqW_rIRCZ21PScDC720HSMSW-a2072yWtQBwcRI8VWAU75Twihm6-zln36reOXu9jvnli7bOpa5gZCjJU5N9wi7E3mKCOGL0ltlz23581AhmRwC9sXRJTN6-S_LpCiE6KZez6JOEuDEUoAji2HEmndaVPhqgg01fILhVNwqmBdnoy-SJ2" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Xinrea/bili-shadowreplay&type=date&legend=top-left&sealed_token=GCmcFpkQTCuEqW_rIRCZ21PScDC720HSMSW-a2072yWtQBwcRI8VWAU75Twihm6-zln36reOXu9jvnli7bOpa5gZCjJU5N9wi7E3mKCOGL0ltlz23581AhmRwC9sXRJTN6-S_LpCiE6KZez6JOEuDEUoAji2HEmndaVPhqgg01fILhVNwqmBdnoy-SJ2" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Xinrea/bili-shadowreplay&type=date&legend=top-left&sealed_token=GCmcFpkQTCuEqW_rIRCZ21PScDC720HSMSW-a2072yWtQBwcRI8VWAU75Twihm6-zln36reOXu9jvnli7bOpa5gZCjJU5N9wi7E3mKCOGL0ltlz23581AhmRwC9sXRJTN6-S_LpCiE6KZez6JOEuDEUoAji2HEmndaVPhqgg01fILhVNwqmBdnoy-SJ2" />
- </picture>
-</a>
-
 ## 安装和使用
 
 ![rooms](docs/public/images/summary.png)

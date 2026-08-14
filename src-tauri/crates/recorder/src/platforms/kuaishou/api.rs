@@ -775,10 +775,10 @@ pub async fn get_stream_urls(
     let play_urls = live_data
         .live_stream
         .as_ref()
-        .unwrap()
-        .play_urls
-        .as_ref()
-        .unwrap();
+        .and_then(|ls| ls.play_urls.as_ref())
+        .ok_or_else(|| RecorderError::ApiError {
+            error: "No play URLs available in live stream data".to_string(),
+        })?;
 
     let mut all_representations = Vec::new();
 

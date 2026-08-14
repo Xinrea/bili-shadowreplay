@@ -664,8 +664,10 @@ pub async fn get_stream_info(
 
 /// Download file from url to path
 pub async fn download_file(client: &Client, url: &str, path: &Path) -> Result<(), RecorderError> {
-    if !path.parent().unwrap().exists() {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)?;
+        }
     }
     let response = client.get(url).send().await?;
     let bytes = response.bytes().await?;
@@ -784,11 +786,12 @@ async fn post_video_meta(
     preupload_response: &PreuploadResponse,
     video_file: &Path,
 ) -> Result<PostVideoMetaResponse, RecorderError> {
+    let file_size = video_file.metadata()?.len();
     let url = format!(
         "https:{}{}?uploads=&output=json&profile=ugcfx/bup&filesize={}&partsize={}&biz_id={}",
         preupload_response.endpoint,
         preupload_response.upos_uri.replace("upos:/", ""),
-        video_file.metadata().unwrap().len(),
+        file_size,
         preupload_response.chunk_size,
         preupload_response.biz_id
     );
@@ -840,7 +843,7 @@ async fn upload_video(client: &Client, params: UploadParams<'_>) -> Result<usize
                     read_total,
                     chunk * params.preupload_response.chunk_size,
                     chunk * params.preupload_response.chunk_size + read_total,
-                    params.video_file.metadata().unwrap().len()
+                    file_size
                 );
 
             match client

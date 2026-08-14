@@ -42,12 +42,19 @@ impl DanmuStorage {
             let content = parts[1].to_string();
             preload_cache.push(DanmuEntry { ts, content });
         }
+        // lines.next_line() consumes the reader, so the file is closed when lines is dropped
+        drop(lines);
+
         let file = OpenOptions::new()
             .append(true)
             .create(true)
             .open(file_path)
             .await
-            .expect("create danmu.txt failed");
+            .map_err(|e| {
+                log::error!("Failed to open danmu file for append: {}", e);
+                e
+            })
+            .ok()?;
         Some(DanmuStorage {
             cache: RwLock::new(preload_cache),
             file: RwLock::new(file),

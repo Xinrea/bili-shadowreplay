@@ -148,9 +148,10 @@ pub async fn concat_videos_with_transition(
     #[cfg(target_os = "windows")]
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
-    let output_folder = output_path.parent().unwrap();
+    let output_folder = output_path.parent().ok_or("Invalid output path")?;
     if !output_folder.exists() {
-        std::fs::create_dir_all(output_folder).unwrap();
+        std::fs::create_dir_all(output_folder)
+            .map_err(|e| format!("Failed to create output folder: {e}"))?;
     }
 
     // If no transition or only one video, use simple concat
@@ -159,7 +160,7 @@ pub async fn concat_videos_with_transition(
 
         let mut filelist = tokio::fs::File::create(&output_folder.join(&filelist_filename))
             .await
-            .unwrap();
+            .map_err(|e| format!("Failed to create filelist: {e}"))?;
         for video in videos {
             let abs_path = tokio::fs::canonicalize(video).await.unwrap_or_else(|e| {
                 log::warn!("Failed to canonicalize path {}: {e}", video.display());
@@ -169,9 +170,12 @@ pub async fn concat_videos_with_transition(
             filelist
                 .write_all(format!("file '{}'\n", escaped_path).as_bytes())
                 .await
-                .unwrap();
+                .map_err(|e| format!("Failed to write to filelist: {e}"))?;
         }
-        filelist.flush().await.unwrap();
+        filelist
+            .flush()
+            .await
+            .map_err(|e| format!("Failed to flush filelist: {e}"))?;
 
         // Convert &[PathBuf] to &[&Path] for check_videos
         let video_refs: Vec<&Path> = videos.iter().map(|p| p.as_path()).collect();
@@ -183,7 +187,10 @@ pub async fn concat_videos_with_transition(
             "-safe",
             "0",
             "-i",
-            output_folder.join(&filelist_filename).to_str().unwrap(),
+            output_folder
+                .join(&filelist_filename)
+                .to_str()
+                .ok_or("Invalid filelist path")?,
         ]);
         if should_encode {
             let video_encoder = hwaccel::get_x264_encoder().await;
@@ -198,7 +205,7 @@ pub async fn concat_videos_with_transition(
         } else {
             ffmpeg_process.args(["-c", "copy"]);
         }
-        ffmpeg_process.args([output_path.to_str().unwrap()]);
+        ffmpeg_process.args([output_path.to_str().ok_or("Invalid output path")?]);
         ffmpeg_process.args(["-progress", "pipe:2"]);
         ffmpeg_process.args(["-y"]);
 
@@ -221,7 +228,7 @@ pub async fn concat_videos_with_transition(
 
         // Add all input files
         for video in videos {
-            ffmpeg_process.args(["-i", video.to_str().unwrap()]);
+            ffmpeg_process.args(["-i", video.to_str().ok_or("Invalid video path")?]);
         }
 
         // Build xfade filter chain for video
@@ -281,7 +288,7 @@ pub async fn concat_videos_with_transition(
         ffmpeg_process.args(["-c:a", "aac"]);
         ffmpeg_process.args(["-progress", "pipe:2"]);
         ffmpeg_process.args(["-y"]);
-        ffmpeg_process.args([output_path.to_str().unwrap()]);
+        ffmpeg_process.args([output_path.to_str().ok_or("Invalid output path")?]);
 
         handle_ffmpeg_process(reporter, &mut ffmpeg_process).await?;
     }

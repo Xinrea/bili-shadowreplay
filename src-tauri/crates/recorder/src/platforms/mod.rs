@@ -18,6 +18,20 @@ pub enum PlatformType {
 }
 
 impl PlatformType {
+    /// All known platforms. Keep in sync with the enum variants; used by
+    /// cache directory migration to tell BSR-owned folders apart from
+    /// pre-existing user files.
+    pub const ALL: [PlatformType; 8] = [
+        PlatformType::BiliBili,
+        PlatformType::Douyin,
+        PlatformType::Huya,
+        PlatformType::Youtube,
+        PlatformType::Kuaishou,
+        PlatformType::Xiaohongshu,
+        PlatformType::TikTok,
+        PlatformType::Weibo,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             PlatformType::BiliBili => "bilibili",
@@ -92,6 +106,26 @@ mod tests {
         );
         assert_eq!(PlatformType::from_str("tiktok"), Ok(PlatformType::TikTok));
         assert_eq!(PlatformType::from_str("weibo"), Ok(PlatformType::Weibo));
+    }
+
+    #[test]
+    fn test_platform_type_all_covers_every_variant() {
+        // ALL must stay in sync with the enum; a missing variant would make
+        // cache migration silently skip that platform's folder.
+        let names: HashSet<&str> = PlatformType::ALL.iter().map(|p| p.as_str()).collect();
+        assert_eq!(names.len(), PlatformType::ALL.len());
+        for name in [
+            "bilibili",
+            "douyin",
+            "huya",
+            "youtube",
+            "kuaishou",
+            "xiaohongshu",
+            "tiktok",
+            "weibo",
+        ] {
+            assert!(names.contains(name), "ALL is missing {name}");
+        }
     }
 
     #[test]

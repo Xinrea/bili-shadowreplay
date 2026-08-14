@@ -98,7 +98,7 @@ pub fn apply_x264_quality_args(command: &mut tokio::process::Command, encoder: &
 pub fn quality_args_for_encoder(encoder: &str) -> &'static [&'static str] {
     match encoder {
         VAAPI_ENCODER => &["-qp", "20"],
-        NVENC_ENCODER => &["-preset", "p5", "-rc", "vbr", "-cq", "20", "-b:v", "0"],
+        NVENC_ENCODER => &["-preset", "p5", "-rc", "vbr", "-cq", "23", "-b:v", "8000k"],
         VIDEOTOOLBOX_ENCODER => &["-q:v", "65"],
         QSV_ENCODER => &["-preset", "medium", "-global_quality", "20"],
         AMF_ENCODER => &[
@@ -406,7 +406,7 @@ mod tests {
 
         assert_eq!(
             args,
-            &["-preset", "p5", "-rc", "vbr", "-cq", "20", "-b:v", "0"]
+            &["-preset", "p5", "-rc", "vbr", "-cq", "23", "-b:v", "8000k"]
         );
         assert!(!args.contains(&"-crf"));
     }

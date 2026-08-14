@@ -122,6 +122,12 @@ impl From<&str> for ApiError {
     }
 }
 
+impl From<()> for ApiError {
+    fn from(_: ()) -> Self {
+        Self("Unknown error".to_string())
+    }
+}
+
 impl Display for ApiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
@@ -178,7 +184,7 @@ async fn handler_get_account_count(
 async fn handler_get_qr(
     state: axum::extract::State<State>,
 ) -> Result<Json<ApiResponse<QrInfo>>, ApiError> {
-    let qr = get_qr(state.0).await.expect("Failed to get QR code");
+    let qr = get_qr(state.0).await?;
     Ok(Json(ApiResponse::success(qr)))
 }
 
@@ -192,16 +198,14 @@ async fn handler_get_qr_status(
     state: axum::extract::State<State>,
     Json(qr_info): Json<GetQrStatusRequest>,
 ) -> Result<Json<ApiResponse<QrStatus>>, ApiError> {
-    let qr_status = get_qr_status(state.0, &qr_info.qrcode_key)
-        .await
-        .expect("Failed to get QR status");
+    let qr_status = get_qr_status(state.0, &qr_info.qrcode_key).await?;
     Ok(Json(ApiResponse::success(qr_status)))
 }
 
 async fn handler_get_config(
     state: axum::extract::State<State>,
 ) -> Result<Json<ApiResponse<Config>>, ApiError> {
-    let config = get_config(state.0).await.expect("Failed to get config");
+    let config = get_config(state.0).await?;
     Ok(Json(ApiResponse::success(config)))
 }
 
@@ -258,9 +262,7 @@ async fn handler_list_llm_models(
 async fn handler_get_static_port(
     state: axum::extract::State<State>,
 ) -> Result<Json<ApiResponse<u16>>, ApiError> {
-    let static_port = get_static_port(state.0)
-        .await
-        .expect("Failed to get static port");
+    let static_port = get_static_port(state.0).await?;
     Ok(Json(ApiResponse::success(static_port)))
 }
 
@@ -274,9 +276,7 @@ async fn handler_update_status_check_interval(
     state: axum::extract::State<State>,
     Json(request): Json<UpdateStatusCheckIntervalRequest>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
-    update_status_check_interval(state.0, request.interval)
-        .await
-        .expect("Failed to update status check interval");
+    update_status_check_interval(state.0, request.interval).await?;
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -300,8 +300,7 @@ async fn handler_update_notify(
         notify.clip_notify,
         notify.post_notify,
     )
-    .await
-    .expect("Failed to update notify");
+    .await?;
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -315,9 +314,7 @@ async fn handler_update_whisper_model(
     state: axum::extract::State<State>,
     Json(whisper_model): Json<UpdateWhisperModelRequest>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
-    update_whisper_model(state.0, whisper_model.whisper_model)
-        .await
-        .expect("Failed to update whisper model");
+    update_whisper_model(state.0, whisper_model.whisper_model).await?;
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -331,9 +328,7 @@ async fn handler_update_whisper_language(
     state: axum::extract::State<State>,
     Json(whisper_language): Json<UpdateWhisperLanguageRequest>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
-    update_whisper_language(state.0, whisper_language.whisper_language)
-        .await
-        .expect("Failed to update whisper language");
+    update_whisper_language(state.0, whisper_language.whisper_language).await?;
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -347,9 +342,7 @@ async fn handler_update_subtitle_setting(
     state: axum::extract::State<State>,
     Json(subtitle_setting): Json<UpdateSubtitleSettingRequest>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
-    update_subtitle_setting(state.0, subtitle_setting.auto_subtitle)
-        .await
-        .expect("Failed to update subtitle setting");
+    update_subtitle_setting(state.0, subtitle_setting.auto_subtitle).await?;
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -363,9 +356,7 @@ async fn handler_update_clip_name_format(
     state: axum::extract::State<State>,
     Json(clip_name_format): Json<UpdateClipNameFormatRequest>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
-    update_clip_name_format(state.0, clip_name_format.clip_name_format)
-        .await
-        .expect("Failed to update clip name format");
+    update_clip_name_format(state.0, clip_name_format.clip_name_format).await?;
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -379,9 +370,7 @@ async fn handler_update_whisper_prompt(
     state: axum::extract::State<State>,
     Json(whisper_prompt): Json<UpdateWhisperPromptRequest>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
-    update_whisper_prompt(state.0, whisper_prompt.whisper_prompt)
-        .await
-        .expect("Failed to update whisper prompt");
+    update_whisper_prompt(state.0, whisper_prompt.whisper_prompt).await?;
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -395,9 +384,7 @@ async fn handler_update_webhook_url(
     state: axum::extract::State<State>,
     Json(param): Json<UpdateWebhookUrlRequest>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
-    update_webhook_url(state.0, param.webhook_url)
-        .await
-        .expect("Failed to update webhook url");
+    update_webhook_url(state.0, param.webhook_url).await?;
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -411,9 +398,7 @@ async fn handler_update_subtitle_generator_type(
     state: axum::extract::State<State>,
     Json(param): Json<UpdateSubtitleGeneratorTypeRequest>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
-    update_subtitle_generator_type(state.0, param.subtitle_generator_type)
-        .await
-        .expect("Failed to update subtitle generator type");
+    update_subtitle_generator_type(state.0, param.subtitle_generator_type).await?;
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -427,9 +412,7 @@ async fn handler_update_openai_api_endpoint(
     state: axum::extract::State<State>,
     Json(param): Json<UpdateOpenaiApiEndpointRequest>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
-    update_openai_api_endpoint(state.0, param.openai_api_endpoint)
-        .await
-        .expect("Failed to update openai api endpoint");
+    update_openai_api_endpoint(state.0, param.openai_api_endpoint).await?;
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -443,9 +426,7 @@ async fn handler_update_openai_api_key(
     state: axum::extract::State<State>,
     Json(param): Json<UpdateOpenaiApiKeyRequest>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
-    update_openai_api_key(state.0, param.openai_api_key)
-        .await
-        .expect("Failed to update openai api key");
+    update_openai_api_key(state.0, param.openai_api_key).await?;
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -460,16 +441,14 @@ async fn handler_update_auto_generate(
     state: axum::extract::State<State>,
     Json(auto_generate): Json<UpdateAutoGenerateRequest>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
-    update_auto_generate(state.0, auto_generate.enable, auto_generate.encode_danmu)
-        .await
-        .expect("Failed to update auto generate");
+    update_auto_generate(state.0, auto_generate.enable, auto_generate.encode_danmu).await?;
     Ok(Json(ApiResponse::success(())))
 }
 
 async fn handler_get_messages(
     state: axum::extract::State<State>,
 ) -> Result<Json<ApiResponse<Vec<MessageRow>>>, ApiError> {
-    let messages = get_messages(state.0).await.expect("Failed to get messages");
+    let messages = get_messages(state.0).await?;
     Ok(Json(ApiResponse::success(messages)))
 }
 
@@ -483,9 +462,7 @@ async fn handler_read_message(
     state: axum::extract::State<State>,
     Json(message): Json<ReadMessageRequest>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
-    read_message(state.0, message.message_id)
-        .await
-        .expect("Failed to read message");
+    read_message(state.0, message.message_id).await?;
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -499,18 +476,14 @@ async fn handler_delete_message(
     state: axum::extract::State<State>,
     Json(message): Json<DeleteMessageRequest>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
-    delete_message(state.0, message.message_id)
-        .await
-        .expect("Failed to delete message");
+    delete_message(state.0, message.message_id).await?;
     Ok(Json(ApiResponse::success(())))
 }
 
 async fn handler_get_recorder_list(
     state: axum::extract::State<State>,
 ) -> Result<Json<ApiResponse<RecorderList>>, ApiError> {
-    let recorders = get_recorder_list(state.0)
-        .await
-        .expect("Failed to get recorder list");
+    let recorders = get_recorder_list(state.0).await?;
     Ok(Json(ApiResponse::success(recorders)))
 }
 
@@ -526,9 +499,7 @@ async fn handler_add_recorder(
     state: axum::extract::State<State>,
     Json(param): Json<AddRecorderRequest>,
 ) -> Result<Json<ApiResponse<RecorderRow>>, ApiError> {
-    let recorder = add_recorder(state.0, param.platform, param.room_id, param.extra)
-        .await
-        .expect("Failed to add recorder");
+    let recorder = add_recorder(state.0, param.platform, param.room_id, param.extra).await?;
     Ok(Json(ApiResponse::success(recorder)))
 }
 
@@ -543,9 +514,7 @@ async fn handler_remove_recorder(
     state: axum::extract::State<State>,
     Json(param): Json<RemoveRecorderRequest>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
-    remove_recorder(state.0, param.platform, param.room_id)
-        .await
-        .expect("Failed to remove recorder");
+    remove_recorder(state.0, param.platform, param.room_id).await?;
     Ok(Json(ApiResponse::success(())))
 }
 

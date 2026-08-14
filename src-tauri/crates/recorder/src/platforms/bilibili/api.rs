@@ -664,8 +664,10 @@ pub async fn get_stream_info(
 
 /// Download file from url to path
 pub async fn download_file(client: &Client, url: &str, path: &Path) -> Result<(), RecorderError> {
-    if !path.parent().unwrap().exists() {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)?;
+        }
     }
     let response = client.get(url).send().await?;
     let bytes = response.bytes().await?;

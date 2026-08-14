@@ -227,9 +227,22 @@ pub async fn open_live(
         use std::str::FromStr;
 
         let platform = PlatformType::from_str(&platform)?;
+        let label = format!("Live:{clean_room_id}:{live_id}");
+
+        // 窗口已存在时 build 会直接失败，这里改为聚焦到已有窗口，
+        // 否则用户点击后没有任何反应。
+        if let Some(window) = state.app_handle.get_webview_window(&label) {
+            log::info!("Live window already exists, focusing: {label}");
+            let _ = window.unminimize();
+            let _ = window.show();
+            return window
+                .set_focus()
+                .map_err(|e| format!("聚焦已有直播窗口失败：{e}"));
+        }
+
         let builder = tauri::WebviewWindowBuilder::new(
             &state.app_handle,
-            format!("Live:{clean_room_id}:{live_id}"),
+            label.clone(),
             tauri::WebviewUrl::App(
                 format!(
                     "index_live.html?platform={}&room_id={}&live_id={}",
@@ -255,6 +268,7 @@ pub async fn open_live(
 
         if let Err(e) = builder.decorations(true).build() {
             log::error!("live window build failed: {e}");
+            return Err(format!("打开直播窗口失败：{e}"));
         }
     }
 
@@ -265,9 +279,22 @@ pub async fn open_live(
 #[tauri::command]
 pub async fn open_clip(state: state_type!(), video_id: i64) -> Result<(), String> {
     log::info!("Open clip window: {video_id}");
+    let label = format!("Clip:{video_id}");
+
+    // 窗口已存在时 build 会直接失败，这里改为聚焦到已有窗口，
+    // 否则用户重复点击切片时没有任何反应。
+    if let Some(window) = state.app_handle.get_webview_window(&label) {
+        log::info!("Clip window already exists, focusing: {label}");
+        let _ = window.unminimize();
+        let _ = window.show();
+        return window
+            .set_focus()
+            .map_err(|e| format!("聚焦已有切片窗口失败：{e}"));
+    }
+
     let builder = tauri::WebviewWindowBuilder::new(
         &state.app_handle,
-        format!("Clip:{video_id}"),
+        label.clone(),
         tauri::WebviewUrl::App(format!("index_clip.html?id={video_id}").into()),
     )
     .title(format!("Clip window:{video_id}"))
@@ -285,6 +312,7 @@ pub async fn open_clip(state: state_type!(), video_id: i64) -> Result<(), String
 
     if let Err(e) = builder.decorations(true).build() {
         log::error!("clip window build failed: {e}");
+        return Err(format!("打开切片窗口失败：{e}"));
     }
 
     Ok(())

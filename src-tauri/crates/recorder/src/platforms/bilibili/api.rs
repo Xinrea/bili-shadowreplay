@@ -784,11 +784,12 @@ async fn post_video_meta(
     preupload_response: &PreuploadResponse,
     video_file: &Path,
 ) -> Result<PostVideoMetaResponse, RecorderError> {
+    let file_size = video_file.metadata()?.len();
     let url = format!(
         "https:{}{}?uploads=&output=json&profile=ugcfx/bup&filesize={}&partsize={}&biz_id={}",
         preupload_response.endpoint,
         preupload_response.upos_uri.replace("upos:/", ""),
-        video_file.metadata().unwrap().len(),
+        file_size,
         preupload_response.chunk_size,
         preupload_response.biz_id
     );
@@ -840,7 +841,7 @@ async fn upload_video(client: &Client, params: UploadParams<'_>) -> Result<usize
                     read_total,
                     chunk * params.preupload_response.chunk_size,
                     chunk * params.preupload_response.chunk_size + read_total,
-                    params.video_file.metadata().unwrap().len()
+                    file_size
                 );
 
             match client

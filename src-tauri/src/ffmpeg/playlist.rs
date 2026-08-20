@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use m3u8_rs::Map;
+use m3u8_rs::{Map, MediaPlaylist};
 use tokio::io::AsyncWriteExt;
 
 use crate::progress::progress_reporter::ProgressReporterTrait;
@@ -50,12 +50,10 @@ pub async fn clip_from_playlist(
     output_path: &Path,
     range: Option<Range>,
 ) -> Result<(), String> {
-    let (_, playlist) = m3u8_rs::parse_media_playlist(
-        &tokio::fs::read(playlist_path)
-            .await
-            .map_err(|e| e.to_string())?,
-    )
-    .unwrap();
+    let playlist_bytes = tokio::fs::read(playlist_path)
+        .await
+        .map_err(|e| format!("Failed to read playlist '{}': {e}", playlist_path.display()))?;
+    let playlist = parse_media_playlist(&playlist_bytes, playlist_path)?;
     let mut start_offset = None;
     let mut segments = Vec::new();
     if let Some(range) = &range {
@@ -77,15 +75,16 @@ pub async fn clip_from_playlist(
         return Err("No segments found".to_string());
     }
 
-    let first_segment = playlist.segments.first().unwrap().clone();
+    let first_segment = playlist
+        .segments
+        .first()
+        .ok_or_else(|| "Playlist contains no segments".to_string())?;
     let mut header_url = first_segment
         .unknown_tags
         .iter()
         .find(|t| t.tag == "X-MAP")
-        .map(|t| {
-            let rest = t.rest.clone().unwrap();
-            rest.split('=').nth(1).unwrap().replace("\\\"", "")
-        });
+        .and_then(|tag| tag.rest.as_deref())
+        .and_then(parse_map_uri);
     if header_url.is_none() {
         // map: Some(Map { uri: "h1758725308.m4s"
         if let Some(Map { uri, .. }) = &first_segment.map {
@@ -95,10 +94,15 @@ pub async fn clip_from_playlist(
 
     // write all segments to clip_file
     {
-        let playlist_folder = playlist_path.parent().unwrap();
-        let output_folder = output_path.parent().unwrap();
+        let playlist_folder = playlist_path.parent().unwrap_or_else(|| Path::new("."));
+        let output_folder = output_path.parent().unwrap_or_else(|| Path::new("."));
         if !output_folder.exists() {
-            std::fs::create_dir_all(output_folder).unwrap();
+            std::fs::create_dir_all(output_folder).map_err(|e| {
+                format!(
+                    "Failed to create output folder '{}': {e}",
+                    output_folder.display()
+                )
+            })?;
         }
         let mut file = tokio::fs::File::create(&output_path)
             .await
@@ -140,14 +144,14 @@ pub async fn clip_from_playlist(
     }
 
     // trim for precised duration
-    if let Some(start_offset) = start_offset {
+    if let (Some(start_offset), Some(range)) = (start_offset, range.as_ref()) {
         let tmp_output_path = output_path.with_extension("tmp.mp4");
         super::trim_video(
             reporter,
             output_path,
             &tmp_output_path,
             start_offset,
-            range.as_ref().unwrap().duration(),
+            range.duration(),
         )
         .await?;
 
@@ -158,6 +162,83 @@ pub async fn clip_from_playlist(
     }
 
     Ok(())
+}
+
+fn parse_media_playlist(bytes: &[u8], playlist_path: &Path) -> Result<MediaPlaylist, String> {
+    m3u8_rs::parse_media_playlist(bytes)
+        .map(|(_, playlist)| playlist)
+        .map_err(|_| {
+            let input_context = if bytes.is_empty() {
+                "input is empty"
+            } else if bytes.iter().all(|byte| *byte == 0) {
+                "input is zero-filled"
+            } else {
+                "invalid playlist syntax"
+            };
+            format!(
+                "Failed to parse media playlist '{}': {input_context} ({} bytes)",
+                playlist_path.display(),
+                bytes.len()
+            )
+        })
+}
+
+fn parse_map_uri(rest: &str) -> Option<String> {
+    rest.split_once('=').and_then(|(_, value)| {
+        let unescaped = value.trim().replace("\\\"", "\"");
+        let uri = unescaped.trim_matches('"');
+        (!uri.is_empty()).then(|| uri.to_string())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_zero_filled_playlist_without_panicking() {
+        let path = Path::new("recordings/playlist.m3u8");
+        let result = parse_media_playlist(&vec![0; 1024], path);
+
+        assert_eq!(
+            result.unwrap_err(),
+            "Failed to parse media playlist 'recordings/playlist.m3u8': input is zero-filled (1024 bytes)"
+        );
+    }
+
+    #[test]
+    fn reports_empty_playlist_without_exposing_content() {
+        let result = parse_media_playlist(&[], Path::new("empty.m3u8"));
+
+        assert_eq!(
+            result.unwrap_err(),
+            "Failed to parse media playlist 'empty.m3u8': input is empty (0 bytes)"
+        );
+    }
+
+    #[test]
+    fn reports_invalid_playlist_without_exposing_content() {
+        let result = parse_media_playlist(
+            b"sensitive invalid playlist content",
+            Path::new("invalid.m3u8"),
+        );
+
+        let error = result.unwrap_err();
+        assert_eq!(
+            error,
+            "Failed to parse media playlist 'invalid.m3u8': invalid playlist syntax (34 bytes)"
+        );
+        assert!(!error.contains("sensitive"));
+    }
+
+    #[test]
+    fn parses_map_uri() {
+        assert_eq!(
+            parse_map_uri(r#"URI=\"header.m4s\""#),
+            Some("header.m4s".to_string())
+        );
+        assert_eq!(parse_map_uri("malformed"), None);
+    }
 }
 
 pub async fn concat_playlists_to_video(

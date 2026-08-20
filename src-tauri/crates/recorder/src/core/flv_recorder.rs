@@ -51,7 +51,7 @@ impl FlvRecorder {
         let segment_pattern = self.work_dir.join("%d.ts");
 
         if !playlist_path.exists() {
-            let playlist = HlsPlaylist::new(playlist_path.clone()).await;
+            let playlist = HlsPlaylist::new(playlist_path.clone()).await?;
             playlist.flush().await?;
         }
 
@@ -129,8 +129,8 @@ impl FlvRecorder {
         }
 
         if playlist_path.exists() {
-            let mut playlist = HlsPlaylist::new(playlist_path).await;
-            let _ = playlist.close().await;
+            let mut playlist = HlsPlaylist::new(playlist_path).await?;
+            playlist.close().await?;
         }
 
         Ok(())

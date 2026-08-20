@@ -10,7 +10,7 @@ use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::sync::{broadcast, Mutex, RwLock};
 
-use crate::core::playlist::HlsPlaylist;
+use crate::core::playlist::{playlist_content_preview, HlsPlaylist};
 use crate::core::{Codec, Format};
 use crate::errors::RecorderError;
 use crate::ffmpeg::VideoMetadata;
@@ -108,13 +108,15 @@ impl HlsRecorder {
                 .map_err(RecorderError::IoError)?;
         }
 
+        let playlist = HlsPlaylist::new(playlist_path).await?;
+
         Ok(Self {
             room_id,
             stream,
             client,
             event_channel,
             work_dir,
-            playlist: Arc::new(Mutex::new(HlsPlaylist::new(playlist_path).await)),
+            playlist: Arc::new(Mutex::new(playlist)),
             headers,
             enabled,
             sequence: Arc::new(AtomicU64::new(sequence)),
@@ -181,7 +183,7 @@ impl HlsRecorder {
         let bytes = response.bytes().await?;
         let (_, playlist) =
             m3u8_rs::parse_playlist(&bytes).map_err(|_| RecorderError::M3u8ParseFailed {
-                content: String::from_utf8(bytes.to_vec()).unwrap(),
+                content: playlist_content_preview(&bytes),
             })?;
         Ok(playlist)
     }

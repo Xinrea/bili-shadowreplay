@@ -53,7 +53,7 @@ pub async fn clip_from_playlist(
     let playlist_bytes = tokio::fs::read(playlist_path)
         .await
         .map_err(|e| format!("Failed to read playlist '{}': {e}", playlist_path.display()))?;
-    let playlist = parse_media_playlist(&playlist_bytes)?;
+    let playlist = parse_media_playlist(&playlist_bytes, playlist_path)?;
     let mut start_offset = None;
     let mut segments = Vec::new();
     if let Some(range) = &range {
@@ -164,10 +164,23 @@ pub async fn clip_from_playlist(
     Ok(())
 }
 
-fn parse_media_playlist(bytes: &[u8]) -> Result<MediaPlaylist, String> {
+fn parse_media_playlist(bytes: &[u8], playlist_path: &Path) -> Result<MediaPlaylist, String> {
     m3u8_rs::parse_media_playlist(bytes)
         .map(|(_, playlist)| playlist)
-        .map_err(|_| "Failed to parse media playlist".to_string())
+        .map_err(|_| {
+            let input_context = if bytes.is_empty() {
+                "input is empty"
+            } else if bytes.iter().all(|byte| *byte == 0) {
+                "input is zero-filled"
+            } else {
+                "invalid playlist syntax"
+            };
+            format!(
+                "Failed to parse media playlist '{}': {input_context} ({} bytes)",
+                playlist_path.display(),
+                bytes.len()
+            )
+        })
 }
 
 fn parse_map_uri(rest: &str) -> Option<String> {
@@ -184,9 +197,38 @@ mod tests {
 
     #[test]
     fn rejects_zero_filled_playlist_without_panicking() {
-        let result = parse_media_playlist(&vec![0; 1024]);
+        let path = Path::new("recordings/playlist.m3u8");
+        let result = parse_media_playlist(&vec![0; 1024], path);
 
-        assert_eq!(result.unwrap_err(), "Failed to parse media playlist");
+        assert_eq!(
+            result.unwrap_err(),
+            "Failed to parse media playlist 'recordings/playlist.m3u8': input is zero-filled (1024 bytes)"
+        );
+    }
+
+    #[test]
+    fn reports_empty_playlist_without_exposing_content() {
+        let result = parse_media_playlist(&[], Path::new("empty.m3u8"));
+
+        assert_eq!(
+            result.unwrap_err(),
+            "Failed to parse media playlist 'empty.m3u8': input is empty (0 bytes)"
+        );
+    }
+
+    #[test]
+    fn reports_invalid_playlist_without_exposing_content() {
+        let result = parse_media_playlist(
+            b"sensitive invalid playlist content",
+            Path::new("invalid.m3u8"),
+        );
+
+        let error = result.unwrap_err();
+        assert_eq!(
+            error,
+            "Failed to parse media playlist 'invalid.m3u8': invalid playlist syntax (34 bytes)"
+        );
+        assert!(!error.contains("sensitive"));
     }
 
     #[test]

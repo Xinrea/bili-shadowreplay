@@ -795,7 +795,7 @@ impl RecorderManager {
             return Ok(pl);
         }
         Err(RecorderManagerError::M3u8ParseFailed {
-            content: String::from_utf8(bytes).unwrap(),
+            content: String::from_utf8_lossy(&bytes).into_owned(),
         })
     }
 

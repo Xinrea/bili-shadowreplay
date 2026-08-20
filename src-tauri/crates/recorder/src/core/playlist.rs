@@ -9,20 +9,26 @@ pub struct HlsPlaylist {
 }
 
 impl HlsPlaylist {
-    pub async fn new(file_path: PathBuf) -> Self {
+    pub async fn new(file_path: PathBuf) -> Result<Self, RecorderError> {
         if file_path.exists() {
-            let bytes = tokio::fs::read(&file_path).await.unwrap();
-            let (_, playlist) = m3u8_rs::parse_media_playlist(&bytes).unwrap();
+            let bytes = tokio::fs::read(&file_path)
+                .await
+                .map_err(RecorderError::IoError)?;
+            let (_, playlist) = m3u8_rs::parse_media_playlist(&bytes).map_err(|_| {
+                RecorderError::M3u8ParseFailed {
+                    content: playlist_content_preview(&bytes),
+                }
+            })?;
 
-            Self {
+            Ok(Self {
                 playlist,
                 file_path,
-            }
+            })
         } else {
-            Self {
+            Ok(Self {
                 playlist: MediaPlaylist::default(),
                 file_path,
-            }
+            })
         }
     }
 
@@ -84,5 +90,56 @@ impl HlsPlaylist {
 
     pub async fn is_empty(&self) -> bool {
         self.playlist.segments.is_empty()
+    }
+}
+
+pub(super) fn playlist_content_preview(bytes: &[u8]) -> String {
+    const MAX_PREVIEW_CHARS: usize = 256;
+    let content = String::from_utf8_lossy(bytes);
+    let mut chars = content.chars();
+    let mut preview: String = chars.by_ref().take(MAX_PREVIEW_CHARS).collect();
+    if chars.next().is_some() {
+        preview.push_str("...");
+    }
+    preview.escape_debug().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn new_returns_parse_error_for_corrupt_playlist() {
+        let path = std::env::temp_dir().join(format!(
+            "bili-shadowreplay-corrupt-{}.m3u8",
+            uuid::Uuid::new_v4()
+        ));
+        tokio::fs::write(&path, vec![0; 1024]).await.unwrap();
+
+        let result = HlsPlaylist::new(path.clone()).await;
+
+        assert!(matches!(result, Err(RecorderError::M3u8ParseFailed { .. })));
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn new_starts_empty_when_playlist_does_not_exist() {
+        let path = std::env::temp_dir().join(format!(
+            "bili-shadowreplay-missing-{}.m3u8",
+            uuid::Uuid::new_v4()
+        ));
+
+        let playlist = HlsPlaylist::new(path).await.unwrap();
+
+        assert!(playlist.playlist.segments.is_empty());
+    }
+
+    #[test]
+    fn content_preview_is_bounded_and_escaped() {
+        let preview = playlist_content_preview(&vec![0; 1024]);
+
+        assert!(preview.len() < 2048);
+        assert!(preview.ends_with("..."));
+        assert!(preview.contains("\\0"));
     }
 }

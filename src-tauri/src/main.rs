@@ -877,7 +877,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .title("bili-shadowreplay 启动失败")
                     .kind(MessageDialogKind::Error)
                     .blocking_show();
-                app.exit(1);
+                app.handle().exit(1);
                 Ok(())
             })
             .build(context)?

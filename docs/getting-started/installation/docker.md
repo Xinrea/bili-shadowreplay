@@ -2,6 +2,9 @@
 
 BiliBili ShadowReplay 提供了服务端部署的能力，提供 Web 控制界面，可以用于在服务器等无图形界面环境下部署使用。
 
+官方镜像支持 `linux/amd64` 和 `linux/arm64`。Docker 会根据宿主机架构自动
+选择对应镜像；在 Android Termux 中运行请参考 [Termux 部署](./termux)。
+
 ## 镜像获取
 
 ```bash

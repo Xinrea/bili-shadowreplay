@@ -36,7 +36,13 @@ use recorder_manager::RecorderManager;
 use simplelog::ConfigBuilder;
 use state::State;
 use std::fs::File;
+#[cfg(feature = "gui")]
+use std::fs::OpenOptions;
+#[cfg(feature = "gui")]
+use std::io;
 use std::path::Path;
+#[cfg(feature = "gui")]
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -126,6 +132,42 @@ async fn setup_logging(log_dir: &Path) -> Result<(), Box<dyn std::error::Error>>
     log::info!("Current version: {}", env!("CARGO_PKG_VERSION"));
 
     Ok(())
+}
+
+#[cfg(feature = "gui")]
+fn ensure_database_access(app_config_dir: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(app_config_dir)?;
+
+    // SQLite needs to create journal/WAL files beside the database. Checking
+    // only the database file would miss a read-only parent directory.
+    let write_probe = app_config_dir.join(format!(
+        ".bsr-write-test-{}-{}",
+        std::process::id(),
+        Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ));
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&write_probe)?;
+    std::fs::remove_file(write_probe)?;
+
+    // Opening without truncation verifies an existing database is writable,
+    // and creates the empty file that the SQL plugin would otherwise create.
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(app_config_dir.join("data_v2.db"))?;
+
+    Ok(())
+}
+
+#[cfg(feature = "gui")]
+fn app_config_dir(identifier: &str) -> io::Result<PathBuf> {
+    platform_dirs::AppDirs::new(Some(identifier), false)
+        .map(|dirs| dirs.config_dir)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "系统未提供应用配置目录"))
 }
 
 fn get_migrations() -> Vec<Migration> {
@@ -648,7 +690,6 @@ fn setup_plugins(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::W
                 .expect("no main window")
                 .set_focus();
         }))
-        .plugin(tauri_plugin_sql::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_single_instance::init(|_, _, _| {}))
@@ -805,9 +846,44 @@ fn init_sentry_from_env() -> Option<sentry::ClientInitGuard> {
 
 #[cfg(feature = "gui")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+
     let _guard = init_sentry_from_env();
 
     let _ = fix_path_env::fix();
+
+    let context = tauri::generate_context!();
+    let database_access_error = match app_config_dir(&context.config().identifier) {
+        Ok(config_dir) => ensure_database_access(&config_dir)
+            .err()
+            .map(|error| (Some(config_dir), error)),
+        Err(error) => Some((None, error)),
+    };
+    if let Some((config_dir, error)) = database_access_error {
+        let path = config_dir
+            .as_deref()
+            .map_or_else(|| "无法确定".to_string(), |path| path.display().to_string());
+        let message = format!(
+            "应用无法访问数据目录，因此不能启动。\n\n数据目录：{}\n系统错误：{}\n\n请检查该目录及 data_v2.db 的读写权限，然后重新启动应用。",
+            path, error
+        );
+        sentry::capture_message(&message, sentry::Level::Error);
+
+        tauri::Builder::default()
+            .plugin(tauri_plugin_dialog::init())
+            .setup(move |app| {
+                app.dialog()
+                    .message(&message)
+                    .title("bili-shadowreplay 启动失败")
+                    .kind(MessageDialogKind::Error)
+                    .blocking_show();
+                app.handle().exit(1);
+                Ok(())
+            })
+            .build(context)?
+            .run(|_, _| {});
+        return Ok(());
+    }
 
     let builder = tauri::Builder::default().plugin(tauri_plugin_deep_link::init());
     let builder = setup_plugins(builder);
@@ -830,7 +906,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(())
             })
         })
-        .build(tauri::generate_context!())?
+        .build(context)?
         .run(|app_handle: &tauri::AppHandle, event| {
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 // stop all recorders

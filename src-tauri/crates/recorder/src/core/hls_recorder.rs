@@ -296,7 +296,7 @@ impl HlsRecorder {
 
                 duration_delta += segment_metadata.duration;
                 size_delta += size;
-                self.update_sequence(segment_sequence).await;
+                self.update_sequence(segment_sequence).await?;
                 self.updated_at
                     .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
                 updated = true;
@@ -323,7 +323,7 @@ impl HlsRecorder {
 
             duration_delta += segment_metadata.duration;
             size_delta += size;
-            self.update_sequence(segment_sequence).await;
+            self.update_sequence(segment_sequence).await?;
             self.updated_at
                 .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
             updated = true;
@@ -354,17 +354,19 @@ impl HlsRecorder {
         Ok(())
     }
 
-    async fn update_sequence(&self, sequence: u64) {
-        self.sequence.store(sequence, Ordering::Relaxed);
-        // write to file
+    async fn update_sequence(&self, sequence: u64) -> Result<(), RecorderError> {
         let mut file = self.sequence_file.write().await;
-        file.set_len(0).await.unwrap();
-        file.seek(SeekFrom::Start(0)).await.unwrap();
-        file.write_all(sequence.to_string().as_bytes())
-            .await
-            .unwrap();
-        let _ = file.flush().await;
+        persist_sequence(&mut file, sequence).await?;
+        self.sequence.store(sequence, Ordering::Relaxed);
+        Ok(())
     }
+}
+
+async fn persist_sequence(file: &mut File, sequence: u64) -> std::io::Result<()> {
+    file.set_len(0).await?;
+    file.seek(SeekFrom::Start(0)).await?;
+    file.write_all(sequence.to_string().as_bytes()).await?;
+    file.flush().await
 }
 
 /// Download url content into fpath
@@ -373,8 +375,8 @@ async fn download_inner(
     url: &str,
     path: &Path,
 ) -> Result<u64, RecorderError> {
-    if !path.parent().unwrap().exists() {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
     }
     let response = client.get(url).send().await?;
     if !response.status().is_success() {
@@ -480,6 +482,8 @@ pub async fn construct_stream_from_variant(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use crate::core::{Codec, Format};
 
     use super::*;
@@ -508,5 +512,22 @@ mod tests {
         assert_eq!(stream.extra, "ratio=2000&wsSecret=7abc7dec8809146f31f92046eb044e3b&wsTime=68fa41ba&fm=RFdxOEJjSjNoNkRKdDZUWV8kMF8kMV8kMl8kMw%3D%3D&ctype=tars_mobile&fs=bgct&t=103");
         assert_eq!(stream.format, Format::TS);
         assert_eq!(stream.codec, Codec::Avc);
+    }
+
+    #[tokio::test]
+    async fn persist_sequence_returns_write_errors() {
+        let path = std::env::temp_dir().join(format!(
+            "bili-shadowreplay-{}.sequence",
+            uuid::Uuid::new_v4()
+        ));
+        fs::write(&path, "0").unwrap();
+
+        let read_only_file = fs::File::open(&path).unwrap();
+        let mut read_only_file = File::from_std(read_only_file);
+        let result = persist_sequence(&mut read_only_file, 1).await;
+
+        assert!(result.is_err());
+        drop(read_only_file);
+        fs::remove_file(path).unwrap();
     }
 }

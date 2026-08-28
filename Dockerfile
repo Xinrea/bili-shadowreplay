@@ -88,4 +88,4 @@ COPY --from=rust-builder /app/src-tauri/target/release/bili-shadowreplay .
 EXPOSE 3000
 
 # Run the application
-CMD ["sh", "-c", "nscd && ./bili-shadowreplay"]
+CMD ["sh", "-c", "nscd && exec ./bili-shadowreplay"]

@@ -30,6 +30,10 @@ export default withMermaid({
                 text: "Docker 安装",
                 link: "/getting-started/installation/docker",
               },
+              {
+                text: "Termux 安装",
+                link: "/getting-started/installation/termux",
+              },
             ],
           },
           {

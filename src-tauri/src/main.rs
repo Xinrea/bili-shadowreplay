@@ -940,6 +940,30 @@ struct Args {
 }
 
 #[cfg(feature = "headless")]
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        let mut terminate =
+            signal(SignalKind::terminate()).expect("Failed to install SIGTERM handler");
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => {
+                if let Err(error) = result {
+                    log::error!("Failed to listen for Ctrl+C: {error}");
+                }
+            }
+            _ = terminate.recv() => {}
+        }
+    }
+
+    #[cfg(not(unix))]
+    if let Err(error) = tokio::signal::ctrl_c().await {
+        log::error!("Failed to listen for Ctrl+C: {error}");
+    }
+}
+
+#[cfg(feature = "headless")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _guard = init_sentry_from_env();
@@ -955,6 +979,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(v) => log::info!("Checked ffmpeg version: {v}"),
     }
 
-    http_server::api_server::start_api_server(state).await;
+    let recorder_manager = state.recorder_manager.clone();
+    tokio::select! {
+        _ = http_server::api_server::start_api_server(state) => {}
+        _ = shutdown_signal() => {
+            log::info!("Shutdown signal received");
+        }
+    }
+
+    log::info!("Stopping all recorders...");
+    recorder_manager.stop_all().await;
+    log::info!("All recorders stopped successfully.");
     Ok(())
 }

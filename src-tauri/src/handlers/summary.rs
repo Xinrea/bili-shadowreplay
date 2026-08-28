@@ -420,10 +420,10 @@ pub async fn generate_archive_summary(
                 .await
                 {
                     Ok(()) => {
-                        reporter.finish(true, "Summary 生成完成").await;
+                        reporter.finish(true, "总结生成完成").await;
                         state_clone
                             .db
-                            .update_task(&task_id, "success", "Summary 生成完成", None)
+                            .update_task(&task_id, "success", "总结生成完成", None)
                             .await
                             .map_err(String::from)?;
                         Ok(())

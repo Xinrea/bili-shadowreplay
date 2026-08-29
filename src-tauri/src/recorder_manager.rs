@@ -246,7 +246,15 @@ impl RecorderManager {
 
     async fn handle_events(&self) {
         let mut rx = self.event_tx.subscribe();
-        while let Ok(event) = rx.recv().await {
+        loop {
+            let event = match rx.recv().await {
+                Ok(event) => event,
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    log::warn!("Recorder event listener lagged; skipped {skipped} events");
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            };
             match event {
                 RecorderEvent::LiveStart { recorder } => {
                     let event = events::new_webhook_event(
@@ -328,19 +336,26 @@ impl RecorderManager {
                 }
                 RecorderEvent::RecordEnd { recorder } => {
                     log::info!("Record end: {recorder:?}");
+                    let live_id = recorder.live_id.clone();
+                    if live_id.is_empty() {
+                        log::warn!(
+                            "Ignoring record end without live id for room {}",
+                            recorder.room_info.room_id
+                        );
+                        continue;
+                    }
                     let event = events::new_webhook_event(
                         events::RECORD_ENDED,
                         Payload::Room(recorder.clone()),
                     );
                     let _ = self.webhook_poster.post_event(&event).await;
-                    let live_id = recorder.live_id.clone();
                     // check record in db, if length is 0, delete it
                     let room_id = recorder.room_info.room_id.clone();
                     let record = match self.db.get_record(&room_id, &live_id).await {
                         Ok(r) => r,
                         Err(e) => {
                             log::error!("Record not found in db: {recorder:?}, err={e:?}");
-                            return;
+                            continue;
                         }
                     };
                     if record.size == 0 {

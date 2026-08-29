@@ -23,9 +23,43 @@ pub async fn try_rebuild_archives(
                 // use folder name as live_id
                 let live_id = file.file_name();
                 let live_id = live_id.to_str().unwrap();
+                let record_path = file.path();
+                let entry_store = EntryStore::new(record_path.to_string_lossy().as_ref()).await;
+                let existing_record = db.get_record(&room_id, live_id).await;
+
+                // Empty folders are left behind when recording fails before the first segment.
+                // They are not archives and must not be restored as 0-byte records.
+                if entry_store.is_empty() {
+                    match existing_record {
+                        Ok(record) if record.size == 0 => {
+                            db.remove_record(live_id).await?;
+                            tokio::fs::remove_dir_all(&record_path).await?;
+                            log::info!("removed empty archive folder: {}", record_path.display());
+                        }
+                        Ok(_) => {
+                            log::warn!(
+                                "archive {} has database data but no cached entries; preserving it",
+                                record_path.display()
+                            );
+                        }
+                        Err(_) => {
+                            tokio::fs::remove_dir_all(&record_path).await?;
+                            log::info!("removed empty archive folder: {}", record_path.display());
+                        }
+                    }
+                    continue;
+                }
+
                 // check if live_id is in db
-                let record = db.get_record(&room_id, live_id).await;
-                if record.is_ok() {
+                if let Ok(record) = existing_record {
+                    if record.size == 0 {
+                        db.update_record_delta(
+                            live_id,
+                            entry_store.total_duration(),
+                            entry_store.total_size(),
+                        )
+                        .await?;
+                    }
                     continue;
                 }
 
@@ -44,6 +78,12 @@ pub async fn try_rebuild_archives(
                         None,
                     )
                     .await?;
+                db.update_record_delta(
+                    live_id,
+                    entry_store.total_duration(),
+                    entry_store.total_size(),
+                )
+                .await?;
 
                 log::info!("rebuild archive {record:?}");
             }

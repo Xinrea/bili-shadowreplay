@@ -168,6 +168,14 @@ impl EntryStore {
         self.entries.is_empty()
     }
 
+    pub fn total_duration(&self) -> f64 {
+        self.total_duration
+    }
+
+    pub fn total_size(&self) -> u64 {
+        self.total_size
+    }
+
     /// Generate a hls manifest for selected range.
     /// `vod` indicates the manifest is for stream or video.
     /// `force_time` adds DATE-TIME tag for each entry.

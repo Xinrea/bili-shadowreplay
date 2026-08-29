@@ -1,5 +1,5 @@
-# Build frontend
-FROM node:22-bookworm AS frontend-builder
+# Build the architecture-independent frontend once on the native builder.
+FROM --platform=$BUILDPLATFORM node:22-bookworm AS frontend-builder
 
 WORKDIR /app
 
@@ -13,8 +13,8 @@ RUN apt-get update && apt-get install -y \
 # Copy package files
 COPY package.json yarn.lock ./
 
-# Install dependencies with specific flags
-RUN yarn install --frozen-lockfile
+# Allow enough time for large packages when the registry is slow.
+RUN yarn install --frozen-lockfile --network-timeout 600000
 
 # Copy source files
 COPY . .

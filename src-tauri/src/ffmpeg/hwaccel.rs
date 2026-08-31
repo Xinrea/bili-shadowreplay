@@ -97,14 +97,29 @@ pub fn apply_x264_quality_args(command: &mut tokio::process::Command, encoder: &
 /// 返回指定 H.264 编码器应使用的质量参数。
 pub fn quality_args_for_encoder(encoder: &str) -> &'static [&'static str] {
     match encoder {
-        VAAPI_ENCODER => &["-qp", "20"],
-        NVENC_ENCODER => &["-preset", "p5", "-rc", "vbr", "-cq", "23", "-b:v", "8000k"],
-        VIDEOTOOLBOX_ENCODER => &["-q:v", "65"],
-        QSV_ENCODER => &["-preset", "medium", "-global_quality", "20"],
-        AMF_ENCODER => &[
-            "-quality", "quality", "-rc", "cqp", "-qp_i", "20", "-qp_p", "20", "-qp_b", "20",
+        VAAPI_ENCODER => &["-b:v", "8000k", "-maxrate", "10000k", "-bufsize", "16000k"],
+        NVENC_ENCODER => &[
+            "-preset", "p5", "-rc", "vbr", "-cq", "23", "-b:v", "8000k", "-maxrate", "10000k",
+            "-bufsize", "16000k",
         ],
-        MF_ENCODER => &["-rate_control", "quality", "-quality", "80"],
+        VIDEOTOOLBOX_ENCODER => &["-b:v", "8000k", "-maxrate", "10000k", "-bufsize", "16000k"],
+        QSV_ENCODER => &[
+            "-preset", "medium", "-b:v", "8000k", "-maxrate", "10000k", "-bufsize", "16000k",
+        ],
+        AMF_ENCODER => &[
+            "-quality", "quality", "-rc", "vbr_peak", "-b:v", "8000k", "-maxrate", "10000k",
+            "-bufsize", "16000k",
+        ],
+        MF_ENCODER => &[
+            "-rate_control",
+            "pc_vbr",
+            "-b:v",
+            "8000k",
+            "-maxrate",
+            "10000k",
+            "-bufsize",
+            "16000k",
+        ],
         V4L2M2M_ENCODER => &["-b:v", "6000k"],
         _ => &["-crf", "20", "-preset", "medium"],
     }
@@ -406,21 +421,27 @@ mod tests {
 
         assert_eq!(
             args,
-            &["-preset", "p5", "-rc", "vbr", "-cq", "23", "-b:v", "8000k"]
+            &[
+                "-preset", "p5", "-rc", "vbr", "-cq", "23", "-b:v", "8000k", "-maxrate", "10000k",
+                "-bufsize", "16000k"
+            ]
         );
         assert!(!args.contains(&"-crf"));
     }
 
     #[test]
     fn test_quality_args_for_vaapi() {
-        assert_eq!(quality_args_for_encoder("h264_vaapi"), &["-qp", "20"]);
+        assert_eq!(
+            quality_args_for_encoder("h264_vaapi"),
+            &["-b:v", "8000k", "-maxrate", "10000k", "-bufsize", "16000k"]
+        );
     }
 
     #[test]
     fn test_quality_args_for_videotoolbox() {
         assert_eq!(
             quality_args_for_encoder("h264_videotoolbox"),
-            &["-q:v", "65"]
+            &["-b:v", "8000k", "-maxrate", "10000k", "-bufsize", "16000k"]
         );
     }
 
@@ -428,7 +449,7 @@ mod tests {
     fn test_quality_args_for_qsv() {
         assert_eq!(
             quality_args_for_encoder("h264_qsv"),
-            &["-preset", "medium", "-global_quality", "20"]
+            &["-preset", "medium", "-b:v", "8000k", "-maxrate", "10000k", "-bufsize", "16000k"]
         );
     }
 
@@ -436,7 +457,10 @@ mod tests {
     fn test_quality_args_for_amf() {
         assert_eq!(
             quality_args_for_encoder("h264_amf"),
-            &["-quality", "quality", "-rc", "cqp", "-qp_i", "20", "-qp_p", "20", "-qp_b", "20"]
+            &[
+                "-quality", "quality", "-rc", "vbr_peak", "-b:v", "8000k", "-maxrate", "10000k",
+                "-bufsize", "16000k"
+            ]
         );
     }
 
@@ -444,8 +468,53 @@ mod tests {
     fn test_quality_args_for_media_foundation() {
         assert_eq!(
             quality_args_for_encoder("h264_mf"),
-            &["-rate_control", "quality", "-quality", "80"]
+            &[
+                "-rate_control",
+                "pc_vbr",
+                "-b:v",
+                "8000k",
+                "-maxrate",
+                "10000k",
+                "-bufsize",
+                "16000k"
+            ]
         );
+    }
+
+    #[test]
+    fn test_hardware_encoders_have_bitrate_targets() {
+        for encoder in [
+            "h264_nvenc",
+            "h264_videotoolbox",
+            "h264_qsv",
+            "h264_amf",
+            "h264_mf",
+            "h264_vaapi",
+            "h264_v4l2m2m",
+        ] {
+            assert!(
+                quality_args_for_encoder(encoder).contains(&"-b:v"),
+                "{encoder} must have a target bitrate"
+            );
+        }
+    }
+
+    #[test]
+    fn test_vbr_hardware_encoders_have_peak_constraints() {
+        for encoder in [
+            "h264_nvenc",
+            "h264_videotoolbox",
+            "h264_qsv",
+            "h264_amf",
+            "h264_mf",
+            "h264_vaapi",
+        ] {
+            let args = quality_args_for_encoder(encoder);
+            assert!(
+                args.contains(&"-maxrate") && args.contains(&"-bufsize"),
+                "{encoder} must constrain bitrate peaks"
+            );
+        }
     }
 
     #[test]

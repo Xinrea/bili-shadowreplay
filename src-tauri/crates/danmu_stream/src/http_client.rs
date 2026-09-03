@@ -15,7 +15,7 @@ pub struct ApiClient {
 impl ApiClient {
     pub fn new(cookies: &str) -> Self {
         let buvid3 = uuid::Uuid::new_v4().to_string();
-        
+
         Self {
             client: reqwest::Client::new(),
             base_cookie: cookies.to_string(),
@@ -28,7 +28,7 @@ impl ApiClient {
         // Check if buvid3 needs to be refreshed (every 1 hour)
         let now = SystemTime::now();
         let last_updated = *self.buvid3_updated_at.read().await;
-        
+
         if let Ok(elapsed) = now.duration_since(last_updated) {
             if elapsed >= Duration::from_secs(3600) {
                 // Update buvid3
@@ -37,7 +37,7 @@ impl ApiClient {
                 *self.buvid3_updated_at.write().await = now;
             }
         }
-        
+
         let buvid3 = self.buvid3.read().await.clone();
         format!("{};buvid3={}", self.base_cookie, buvid3)
     }
@@ -50,7 +50,7 @@ impl ApiClient {
         let cookie = self.get_current_cookie().await;
         let mut header = HeaderMap::new();
         header.insert("cookie", cookie.parse().unwrap());
-        
+
         let resp = self
             .client
             .get(url)

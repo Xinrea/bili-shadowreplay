@@ -47,9 +47,7 @@ impl DanmuProvider for BiliDanmu {
     async fn new(cookie: &str, room_id: &str) -> Result<Self, DanmuStreamError> {
         // find DedeUserID=<user_id> in cookie str
         let user_id = BiliDanmu::parse_user_id(cookie)?;
-        // add buvid3 to cookie
-        let cookie = format!("{};buvid3={}", cookie, uuid::Uuid::new_v4());
-        let client = ApiClient::new(&cookie);
+        let client = ApiClient::new(cookie);
 
         Ok(Self {
             client,

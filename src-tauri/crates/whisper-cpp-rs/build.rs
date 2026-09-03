@@ -48,16 +48,14 @@ fn macos_deployment_target() -> Option<String> {
 }
 
 fn cuda_root() -> Option<PathBuf> {
-    env::var_os("CUDA_PATH")
-        .map(PathBuf::from)
-        .or_else(|| {
-            env::var_os("CUDACXX").and_then(|value| {
-                let nvcc = PathBuf::from(value);
-                nvcc.parent()
-                    .and_then(|bin| bin.parent())
-                    .map(PathBuf::from)
-            })
+    env::var_os("CUDA_PATH").map(PathBuf::from).or_else(|| {
+        env::var_os("CUDACXX").and_then(|value| {
+            let nvcc = PathBuf::from(value);
+            nvcc.parent()
+                .and_then(|bin| bin.parent())
+                .map(PathBuf::from)
         })
+    })
 }
 
 fn main() {

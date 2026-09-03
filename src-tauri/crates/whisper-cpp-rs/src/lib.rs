@@ -64,8 +64,12 @@ struct whisper_full_params {
     _opaque: [u8; 1024], // opaque; we only ever hold a pointer from whisper
 }
 
-type whisper_progress_callback =
-    unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void, c_int, *mut std::ffi::c_void);
+type whisper_progress_callback = unsafe extern "C" fn(
+    *mut std::ffi::c_void,
+    *mut std::ffi::c_void,
+    c_int,
+    *mut std::ffi::c_void,
+);
 
 extern "C" {
     fn whisper_init_from_file_with_params(
@@ -115,10 +119,7 @@ extern "C" {
         i_segment: c_int,
     ) -> *const c_char;
 
-    fn whisper_full_n_tokens_from_state(
-        state: *mut std::ffi::c_void,
-        i_segment: c_int,
-    ) -> c_int;
+    fn whisper_full_n_tokens_from_state(state: *mut std::ffi::c_void, i_segment: c_int) -> c_int;
 
     fn whisper_full_get_token_text_from_state(
         ctx: *mut std::ffi::c_void,
@@ -255,16 +256,17 @@ impl FullParams {
     /// Create default parameters with the given sampling strategy.
     pub fn new(strategy: SamplingStrategy) -> Self {
         let s = match strategy {
-            SamplingStrategy::Greedy { .. } => {
-                whisper_sampling_strategy::WHISPER_SAMPLING_GREEDY
-            }
+            SamplingStrategy::Greedy { .. } => whisper_sampling_strategy::WHISPER_SAMPLING_GREEDY,
             SamplingStrategy::BeamSearch { .. } => {
                 whisper_sampling_strategy::WHISPER_SAMPLING_BEAM_SEARCH
             }
         };
 
         let params = unsafe { whisper_full_default_params_by_ref(s) };
-        assert!(!params.is_null(), "whisper_full_default_params_by_ref returned null");
+        assert!(
+            !params.is_null(),
+            "whisper_full_default_params_by_ref returned null"
+        );
 
         unsafe {
             match strategy {
@@ -409,29 +411,19 @@ impl WhisperState {
     /// Get all tokens for a segment with their text, timestamps, and
     /// probabilities.  Special tokens (`[_BEG_]`, `[_TT_*]`, etc.)
     /// are included — the caller should filter them.
-    pub fn get_segment_tokens(
-        &self,
-        ctx: &WhisperContext,
-        i_segment: i32,
-    ) -> Vec<TokenData> {
+    pub fn get_segment_tokens(&self, ctx: &WhisperContext, i_segment: i32) -> Vec<TokenData> {
         let n = self.full_n_tokens(i_segment);
         let mut tokens = Vec::with_capacity(n as usize);
         for i in 0..n {
             let text = unsafe {
-                let ptr = whisper_full_get_token_text_from_state(
-                    ctx.ctx,
-                    self.state,
-                    i_segment,
-                    i,
-                );
+                let ptr = whisper_full_get_token_text_from_state(ctx.ctx, self.state, i_segment, i);
                 if ptr.is_null() {
                     String::new()
                 } else {
                     CStr::from_ptr(ptr).to_string_lossy().into_owned()
                 }
             };
-            let data =
-                unsafe { whisper_full_get_token_data_from_state(self.state, i_segment, i) };
+            let data = unsafe { whisper_full_get_token_data_from_state(self.state, i_segment, i) };
             tokens.push(TokenData {
                 text,
                 t0: data.t0,
@@ -446,10 +438,7 @@ impl WhisperState {
 // ── Audio conversion utilities ──────────────────────────────────────
 
 /// Convert i16 PCM samples to f32 in range [-1.0, 1.0].
-pub fn convert_integer_to_float_audio(
-    input: &[i16],
-    output: &mut [f32],
-) -> Result<(), String> {
+pub fn convert_integer_to_float_audio(input: &[i16], output: &mut [f32]) -> Result<(), String> {
     if input.len() != output.len() {
         return Err(format!(
             "Input and output must have the same length: {} != {}",
@@ -465,10 +454,7 @@ pub fn convert_integer_to_float_audio(
 
 /// Convert interleaved stereo f32 samples to mono by averaging channels.
 /// Output length must be half of input length.
-pub fn convert_stereo_to_mono_audio(
-    input: &[f32],
-    output: &mut [f32],
-) -> Result<(), String> {
+pub fn convert_stereo_to_mono_audio(input: &[f32], output: &mut [f32]) -> Result<(), String> {
     if input.len() != output.len() * 2 {
         return Err(format!(
             "Input length ({}) must be 2x output length ({})",

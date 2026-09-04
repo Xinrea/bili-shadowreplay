@@ -14,19 +14,29 @@
   import { marked } from "marked";
   import CopyMarkdownButton from "./CopyMarkdownButton.svelte";
 
-  export let message: AssistantMessage;
-  export let formatTime: (date: Date) => string;
-  export let onToolCallConfirm: ((toolCall: ToolCall) => void) | undefined;
-  export let onToolCallReject: ((toolCall: ToolCall) => void) | undefined;
-  export let getToolCallState: (
-    toolCallId: string,
-  ) => 'confirmed' | 'rejected' | 'none' = () => 'none';
-  export let confirmationDisabled = false;
+  interface Props {
+    message: AssistantMessage;
+    formatTime: (date: Date) => string;
+    onToolCallConfirm?: (toolCall: ToolCall) => void;
+    onToolCallReject?: (toolCall: ToolCall) => void;
+    getToolCallState?: (
+      toolCallId: string,
+    ) => 'confirmed' | 'rejected' | 'none';
+    confirmationDisabled?: boolean;
+  }
 
-  $: isError = message.isError === true;
+  let {
+    message,
+    formatTime,
+    onToolCallConfirm,
+    onToolCallReject,
+    getToolCallState = () => 'none',
+    confirmationDisabled = false
+  }: Props = $props();
 
-  $: messageTime = new Date(message.timestamp);
-  $: contentParts = messageContentToDisplayParts(message.content);
+  let isError = $derived(message.isError === true);
+  let messageTime = $derived(new Date(message.timestamp));
+  let contentParts = $derived(messageContentToDisplayParts(message.content));
 
   function markdownContent(): string {
     return messageContentToMarkdown(message.content);
@@ -37,10 +47,10 @@
       content.includes('|--') || content.includes('| -');
   }
 
-  $: hasTable = contentParts.some(
+  let hasTable = $derived(contentParts.some(
     (part) => part.kind === "text" &&
       part.format === "markdown" && containsTable(part.text),
-  );
+  ));
 
   function isExecutedToolCall(toolCall: ToolCall): boolean {
     return toolCall.executed === true;
@@ -212,7 +222,7 @@
                   {:else if isPendingToolCall(toolCall)}
                     <div class="flex items-center space-x-2 w-full">
                       <button
-                        on:click={() => onToolCallReject?.(toolCall)}
+                        onclick={() => onToolCallReject?.(toolCall)}
                         disabled={confirmationDisabled}
                         class="flex items-center space-x-1 px-4 py-2 bg-red-500 hover:bg-red-600 active:bg-red-700 text-white text-xs font-medium rounded-lg shadow-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
                       >
@@ -220,7 +230,7 @@
                         <span>拒绝</span>
                       </button>
                       <button
-                        on:click={() => onToolCallConfirm?.(toolCall)}
+                        onclick={() => onToolCallConfirm?.(toolCall)}
                         disabled={confirmationDisabled}
                         class="flex items-center justify-center space-x-1 px-4 py-2 bg-blue-500 hover:bg-blue-600 active:bg-blue-700 text-white text-xs font-medium rounded-lg shadow-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800 disabled:opacity-50 disabled:cursor-not-allowed flex-1"
                       >

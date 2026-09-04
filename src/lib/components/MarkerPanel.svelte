@@ -6,16 +6,19 @@
     ClockOutline,
   } from "flowbite-svelte-icons";
   import type { Marker } from "../interface";
-  import { createEventDispatcher } from "svelte";
   import { Tooltip } from "flowbite-svelte";
   import { invoke, TAURI_ENV } from "../invoker";
   import { save } from "@tauri-apps/plugin-dialog";
   import type { RecordItem } from "../db";
-  const dispatch = createEventDispatcher();
-  export let archive: RecordItem;
-  export let markers: Marker[] = [];
+  interface Props {
+    archive: RecordItem;
+    markers?: Marker[];
+    onMarkerClick?: (marker: Marker) => void;
+  }
 
-  let realtime = false;
+  let { archive, markers = $bindable([]), onMarkerClick }: Props = $props();
+
+  let realtime = $state(false);
 
   function format_duration(duration: number) {
     const hours = Math.floor(duration / 3600);
@@ -30,7 +33,7 @@
   }
 
   function dispatch_markerclick(marker: Marker) {
-    dispatch("markerClick", marker);
+    onMarkerClick?.(marker);
   }
 
   async function export_to_file() {
@@ -69,17 +72,17 @@
       <span class="mr-1">标记列表</span>
       <button
         class="mr-1"
-        on:click={() => {
+        onclick={() => {
           realtime = !realtime;
         }}><ClockOutline /></button
       >
       <Tooltip>切换时间形式</Tooltip>
-      <button on:click={export_to_file}><ForwardOutline /></button>
+      <button onclick={export_to_file}><ForwardOutline /></button>
       <Tooltip>导出为文件</Tooltip>
     </div>
     <button
       class="mr-2"
-      on:click={() => {
+      onclick={() => {
         markers = [];
       }}><BanOutline /></button
     >
@@ -90,11 +93,19 @@
     {#each markers as marker, i}
       <div class="marker-entry">
         <div class="marker-control">
-          <!-- svelte-ignore a11y-click-events-have-key-events -->
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
           <span
             class="offset"
-            on:click={() => {
+            role="button"
+            tabindex="0"
+            onclick={() => {
               dispatch_markerclick(marker);
+            }}
+            onkeydown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                dispatch_markerclick(marker);
+              }
             }}
             >{realtime
               ? format_realtime(marker.realtime)
@@ -102,7 +113,7 @@
           >
           <button
             class="hover:bg-red-900"
-            on:click={() => {
+            onclick={() => {
               // remove this entry
               markers = markers.filter((_, idx) => idx !== i);
             }}><CloseOutline /></button
@@ -111,7 +122,7 @@
         <input
           class="content w-full"
           bind:value={marker.content}
-          on:change={(v) => {
+          onchange={(v) => {
             if (marker.content == "") {
               marker.content = "[空标记点]";
             }

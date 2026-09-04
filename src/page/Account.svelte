@@ -1,4 +1,5 @@
 <script lang="ts">
+
   import { get, invoke } from "../lib/invoker";
   import { scale, fade } from "svelte/transition";
   import { Textarea } from "flowbite-svelte";
@@ -6,9 +7,9 @@
   import type { AccountItem, AccountInfo } from "../lib/db";
   import { Ellipsis, Plus } from "lucide-svelte";
 
-  let account_info: AccountInfo = {
+  let account_info: AccountInfo = $state({
     accounts: [],
-  };
+  });
 
   let avatar_cache: Map<string, string> = new Map();
 
@@ -34,16 +35,16 @@
 
   update_accounts();
 
-  let addModal = false;
-  let activeTab = "qr"; // 'qr' or 'manual'
-  let selectedPlatform = "bilibili"; // 'bilibili' or 'douyin'
+  let addModal = $state(false);
+  let activeTab = $state("qr"); // 'qr' or 'manual'
+  let selectedPlatform = $state("bilibili"); // 'bilibili' or 'douyin'
   let oauth_key = "";
   let check_interval = null;
-  let cookie_str = "";
+  let cookie_str = $state("");
 
   let manualModal = false;
 
-  let activeDropdown = null;
+  let activeDropdown = $state(null);
 
   function toggleDropdown(uid) {
     if (activeDropdown === uid) {
@@ -149,8 +150,8 @@
 </script>
 
 <svelte:window
-  on:click={handleClickOutside}
-  on:mousedown={handleModalClickOutside}
+  onclick={handleClickOutside}
+  onmousedown={handleModalClickOutside}
 />
 
 <div
@@ -170,7 +171,7 @@
         </div>
       </div>
       <button
-        on:click={() => {
+        onclick={() => {
           addModal = true;
           if (activeTab === "qr") {
             requestAnimationFrame(handle_qr);
@@ -230,7 +231,10 @@
               <div class="relative dropdown-container">
                 <button
                   class="p-2 rounded-lg hover:bg-[#e5e5e5] dark:hover:bg-[#3a3a3c]"
-                  on:click|stopPropagation={() => toggleDropdown(account.uid)}
+                  onclick={(event) => {
+                    event.stopPropagation();
+                    toggleDropdown(account.uid);
+                  }}
                 >
                   <Ellipsis class="w-5 h-5 dark:icon-white" />
                 </button>
@@ -243,7 +247,7 @@
                   >
                     <button
                       class="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-[#e5e5e5] dark:hover:bg-[#3a3a3c] rounded-t-lg rounded-b-lg"
-                      on:click={async () => {
+                      onclick={async () => {
                         await invoke("remove_account", {
                           platform: account.platform,
                           uid: account.uid,
@@ -265,7 +269,7 @@
       <!-- Add Account Card -->
       <button
         class="w-full p-4 rounded-xl border-2 border-dashed border-gray-300 dark:border-gray-600 hover:border-blue-500 dark:hover:border-blue-400 transition-colors"
-        on:click={() => {
+        onclick={() => {
           addModal = true;
           if (activeTab === "qr") {
             requestAnimationFrame(handle_qr);
@@ -325,7 +329,7 @@
               'bilibili'
                 ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white'
                 : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-              on:click={() => {
+              onclick={() => {
                 selectedPlatform = "bilibili";
                 activeTab = "qr";
                 requestAnimationFrame(handle_qr);
@@ -338,7 +342,7 @@
               'douyin'
                 ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white'
                 : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-              on:click={() => {
+              onclick={() => {
                 selectedPlatform = "douyin";
                 activeTab = "manual";
               }}
@@ -350,7 +354,7 @@
               'huya'
                 ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white'
                 : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-              on:click={() => {
+              onclick={() => {
                 selectedPlatform = "huya";
                 activeTab = "manual";
               }}
@@ -362,7 +366,7 @@
               'kuaishou'
                 ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white'
                 : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-              on:click={() => {
+              onclick={() => {
                 selectedPlatform = "kuaishou";
                 activeTab = "manual";
               }}
@@ -374,7 +378,7 @@
               'tiktok'
                 ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white'
                 : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-              on:click={() => {
+              onclick={() => {
                 selectedPlatform = "tiktok";
                 activeTab = "manual";
               }}
@@ -392,7 +396,7 @@
               'qr'
                 ? 'bg-white dark:bg-[#3c3c3e] shadow-sm font-medium'
                 : 'text-gray-600 dark:text-gray-400'}"
-              on:click={() => {
+              onclick={() => {
                 activeTab = "qr";
                 requestAnimationFrame(handle_qr);
               }}
@@ -404,7 +408,7 @@
               'manual'
                 ? 'bg-white dark:bg-[#3c3c3e] shadow-sm font-medium'
                 : 'text-gray-600 dark:text-gray-400'}"
-              on:click={() => {
+              onclick={() => {
                 activeTab = "manual";
               }}
             >
@@ -418,7 +422,7 @@
           {#if selectedPlatform === "bilibili" && activeTab === "qr"}
             <div class="flex flex-col items-center space-y-4">
               <div class="bg-white p-4 rounded-lg">
-                <canvas id="qr" />
+                <canvas id="qr"></canvas>
               </div>
               <p class="text-sm text-center text-gray-600 dark:text-gray-400">
                 请使用 BiliBili App 扫描二维码登录
@@ -447,7 +451,7 @@
                 {/if}
                 <button
                   class="px-4 py-2 bg-[#0A84FF] hover:bg-[#0A84FF]/90 text-white text-sm font-medium rounded-lg transition-colors"
-                  on:click={() => {
+                  onclick={() => {
                     add_cookie();
                   }}
                 >

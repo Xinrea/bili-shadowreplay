@@ -1,39 +1,42 @@
 <script lang="ts">
   import { invoke, TAURI_ENV, ENDPOINT, listen } from "../invoker";
   import { Upload, X, CheckCircle } from "lucide-svelte";
-  import { createEventDispatcher, onDestroy } from "svelte";
+  import { onDestroy } from "svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import type { ProgressUpdate, ProgressFinished } from "../interface";
 
-  export let showDialog = false;
-  export let roomId: string | null = null;
+  interface Props {
+    showDialog?: boolean;
+    roomId?: string | null;
+    onImported?: () => void;
+  }
 
-  const dispatch = createEventDispatcher();
+  let { showDialog = $bindable(false), roomId = null, onImported }: Props = $props();
   const IMPORTED_VIDEO_ROOM = "bsr:import";
 
-  let selectedFilePath: string | null = null;
-  let selectedFileName: string = "";
-  let selectedFileSize: number = 0;
-  let videoTitle = "";
-  let importing = false;
-  let uploading = false;
-  let uploadProgress = 0;
-  let dragOver = false;
-  let fileInput: HTMLInputElement;
-  let importProgress = "";
+  let selectedFilePath: string | null = $state(null);
+  let selectedFileName: string = $state("");
+  let selectedFileSize: number = $state(0);
+  let videoTitle = $state("");
+  let importing = $state(false);
+  let uploading = $state(false);
+  let uploadProgress = $state(0);
+  let dragOver = $state(false);
+  let fileInput: HTMLInputElement = $state();
+  let importProgress = $state("");
   let currentImportEventId: string | null = null;
 
   // 批量导入状态
-  let selectedFiles: string[] = [];
-  let batchImporting = false;
-  let currentFileIndex = 0;
+  let selectedFiles: string[] = $state([]);
+  let batchImporting = $state(false);
+  let currentFileIndex = $state(0);
   let totalFiles = 0;
 
   // 获取当前正在处理的文件名（从文件路径中提取文件名）
-  $: currentFileName =
-    currentFileIndex > 0 && selectedFiles.length > 0
+  let currentFileName =
+    $derived(currentFileIndex > 0 && selectedFiles.length > 0
       ? selectedFiles[currentFileIndex - 1]?.split(/[/\\]/).pop() || "未知文件"
-      : "";
+      : "");
 
   // 格式化文件大小
   function formatFileSize(sizeInBytes: number): string {
@@ -67,7 +70,7 @@
         currentImportEventId = null;
         importProgress = "";
         resetBatchImportState();
-        dispatch("imported");
+        onImported?.();
       }
     } catch (error) {
       console.error(`[ImportDialog] Failed to check task status:`, error);
@@ -295,7 +298,7 @@
             selectedFileSize = 0;
             videoTitle = "";
             resetBatchImportState();
-            dispatch("imported");
+            onImported?.();
           } else {
             throw new Error(response.message || "批量导入失败");
           }
@@ -374,7 +377,7 @@
             selectedFileSize = 0;
             videoTitle = "";
             resetBatchImportState();
-            dispatch("imported");
+            onImported?.();
           } else {
             alert("导入失败: " + e.payload.message);
             resetBatchImportState();
@@ -447,7 +450,7 @@
             selectedFileSize = 0;
             videoTitle = "";
             resetBatchImportState();
-            dispatch("imported");
+            onImported?.();
           } else {
             alert("导入失败: " + e.payload.message);
             resetBatchImportState();
@@ -518,7 +521,7 @@
     accept=".mp4,.mkv,.avi,.mov,.wmv,.flv,.m4v,.webm,video/*"
     multiple
     style="display: none"
-    on:change={handleFileInputChange}
+    onchange={handleFileInputChange}
   />
 {/if}
 
@@ -536,7 +539,7 @@
               导入外部视频
             </h3>
             <button
-              on:click={closeDialog}
+              onclick={closeDialog}
               class="text-gray-400 hover:text-gray-600"
             >
               <X class="w-5 h-5" />
@@ -548,9 +551,10 @@
             class="border-2 border-dashed rounded-lg p-8 text-center transition-colors {dragOver
               ? 'border-blue-400 bg-blue-50 dark:bg-blue-900/20'
               : 'border-gray-300 dark:border-gray-600'}"
-            on:dragover={handleDragOver}
-            on:dragleave={handleDragLeave}
-            on:drop={handleDrop}
+            role="presentation"
+            ondragover={handleDragOver}
+            ondragleave={handleDragLeave}
+            ondrop={handleDrop}
           >
             {#if uploading}
               <!-- 上传进度 -->
@@ -625,7 +629,7 @@
                   {selectedFilePath}
                 </p>
                 <button
-                  on:click={() => {
+                  onclick={() => {
                     selectedFilePath = null;
                     selectedFileName = "";
                     selectedFileSize = 0;
@@ -657,7 +661,7 @@
 
             {#if !uploading && !selectedFilePath && !batchImporting}
               <button
-                on:click={handleFileSelect}
+                onclick={handleFileSelect}
                 class="mt-4 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
               >
                 {TAURI_ENV ? "选择文件" : "选择或拖拽文件"}
@@ -694,13 +698,13 @@
       >
         <div class="flex justify-end space-x-3">
           <button
-            on:click={closeDialog}
+            onclick={closeDialog}
             class="px-4 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg transition-colors"
           >
             取消
           </button>
           <button
-            on:click={startImport}
+            onclick={startImport}
             disabled={!selectedFilePath ||
               importing ||
               !videoTitle.trim() ||

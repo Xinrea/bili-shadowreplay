@@ -3,10 +3,13 @@
   import type { HumanMessage } from "../agent/messages";
   import CopyMarkdownButton from "./CopyMarkdownButton.svelte";
 
-  export let message: HumanMessage;
-  export let formatTime: (date: Date) => string;
+  interface Props {
+    message: HumanMessage;
+    formatTime: (date: Date) => string;
+  }
 
-  $: messageTime = new Date(message.timestamp);
+  let { message, formatTime }: Props = $props();
+  let messageTime = $derived(new Date(message.timestamp));
 </script>
 
 <div class="flex justify-end">

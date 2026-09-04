@@ -1,14 +1,18 @@
 <script lang="ts">
   import { Play, X, Type, Palette, Move, Plus, Trash2 } from "lucide-svelte";
   import { invoke, log } from "../invoker";
-  import { onMount, createEventDispatcher } from "svelte";
+  import { onMount } from "svelte";
 
-  const dispatch = createEventDispatcher();
-  export let video = null;
-  export let show: boolean = false;
+  interface Props {
+    video?: any;
+    show?: boolean;
+    onCoverUpdate?: (cover: { cover: string }) => void;
+  }
+
+  let { video = null, show = $bindable(false), onCoverUpdate }: Props = $props();
 
   // 文本列表
-  let texts = [
+  let texts = $state([
     {
       id: 1,
       content: "",
@@ -17,22 +21,22 @@
       color: "#FF7F00",
       strokeColor: "#FFFFFF",
     },
-  ];
+  ]);
 
-  let selectedTextId = 1;
+  let selectedTextId = $state(1);
 
-  let isDragging = false;
+  let isDragging = $state(false);
   let startPos = { x: 0, y: 0 };
   let startTextPos = { x: 0, y: 0 };
 
-  let videoElement: HTMLVideoElement;
+  let videoElement: HTMLVideoElement = $state();
   let videoFrame;
-  let isVideoLoaded = false;
-  let currentTime = 0;
-  let duration = 0;
+  let isVideoLoaded = $state(false);
+  let currentTime = $state(0);
+  let duration = $state(0);
 
-  let canvas: HTMLCanvasElement;
-  let ctx: CanvasRenderingContext2D;
+  let canvas: HTMLCanvasElement = $state();
+  let ctx: CanvasRenderingContext2D = $state();
   let canvasWidth = 1280;
   let canvasHeight = 720;
   let scale = 1;
@@ -329,7 +333,7 @@
             });
 
             // 触发自定义事件通知父组件更新封面
-            dispatch("coverUpdate", { cover: newCover });
+            onCoverUpdate?.({ cover: newCover });
             handleClose();
           } catch (e) {
             alert("更新封面失败: " + e);
@@ -346,7 +350,7 @@
     scheduleRedraw();
   }
 
-  $: {
+  $effect(() => {
     // 当文本内容或样式改变时重绘
     if (ctx) {
       texts = texts.map((text) => {
@@ -363,28 +367,30 @@
       });
       scheduleRedraw();
     }
-  }
+  });
 
-  $: selectedText = texts.find((t) => t.id === selectedTextId);
+  let selectedText = $derived(texts.find((t) => t.id === selectedTextId));
 
   // 监听 show 变化，当模态框显示时重新绘制
-  $: if (show && ctx) {
-    setTimeout(() => {
-      if (isVideoLoaded && videoElement) {
-        // 如果视频已加载，更新封面
-        updateCoverFromVideo();
-      }
-      loadBackgroundImage();
-      resizeCanvas();
-    }, 50);
-  }
+  $effect(() => {
+    if (show && ctx) {
+      setTimeout(() => {
+        if (isVideoLoaded && videoElement) {
+          // 如果视频已加载，更新封面
+          updateCoverFromVideo();
+        }
+        loadBackgroundImage();
+        resizeCanvas();
+      }, 50);
+    }
+  });
 </script>
 
 <svelte:window
-  on:mousemove={handleMouseMove}
-  on:mouseup={handleMouseUp}
-  on:blur={() => (isDragging = false)}
-  on:visibilitychange={() => {
+  onmousemove={handleMouseMove}
+  onmouseup={handleMouseUp}
+  onblur={() => (isDragging = false)}
+  onvisibilitychange={() => {
     if (document.hidden) {
       isDragging = false;
     }
@@ -413,7 +419,7 @@
       <h3 class="text-base font-medium text-white">编辑封面</h3>
       <button
         class="w-[22px] h-[22px] rounded-full bg-[#ff5f57] hover:bg-[#ff5f57]/90 transition-colors duration-200 flex items-center justify-center group"
-        on:click={handleClose}
+        onclick={handleClose}
       >
         <X
           class="w-3 h-3 text-[#1c1c1e] opacity-0 group-hover:opacity-100 transition-opacity duration-200"
@@ -435,16 +441,16 @@
         </div>
 
         <!-- Hidden Video Element -->
-        <!-- svelte-ignore a11y-media-has-caption -->
+        <!-- svelte-ignore a11y_media_has_caption -->
         <video
           bind:this={videoElement}
           src={video?.file}
           class="hidden"
           crossorigin="anonymous"
-          on:loadedmetadata={handleVideoLoaded}
-          on:timeupdate={handleTimeUpdate}
-          on:seeked={handleVideoSeeked}
-        />
+          onloadedmetadata={handleVideoLoaded}
+          ontimeupdate={handleTimeUpdate}
+          onseeked={handleVideoSeeked}
+></video>
 
         <!-- Video Controls -->
         <div class="flex items-center space-x-2">
@@ -454,7 +460,7 @@
             max={duration}
             step="0.1"
             bind:value={currentTime}
-            on:input={handleSeek}
+            oninput={handleSeek}
             class="flex-1"
             disabled={!isVideoLoaded}
           />
@@ -475,9 +481,9 @@
         >
           <canvas
             bind:this={canvas}
-            on:mousedown={handleMouseDown}
+            onmousedown={handleMouseDown}
             class="w-full h-full"
-          />
+></canvas>
         </div>
       </div>
 
@@ -488,7 +494,7 @@
           <div class="flex-1 space-y-3">
             <!-- Text List -->
             <div class="flex items-center justify-between">
-              <!-- svelte-ignore a11y-label-has-associated-control -->
+              <!-- svelte-ignore a11y_label_has_associated_control -->
               <label
                 class="flex items-center space-x-2 text-sm font-medium text-gray-300"
               >
@@ -496,7 +502,7 @@
                 <span>文字列表</span>
               </label>
               <button
-                on:click={addNewText}
+                onclick={addNewText}
                 class="p-1.5 rounded-lg bg-[#2c2c2e] hover:bg-[#3c3c3e] transition-colors duration-200 text-white"
               >
                 <Plus class="w-4 h-4" />
@@ -504,21 +510,23 @@
             </div>
             <div class="space-y-1.5">
               {#each texts as text (text.id)}
-                <!-- svelte-ignore a11y-click-events-have-key-events -->
+                <!-- svelte-ignore a11y_click_events_have_key_events -->
                 <div
                   class="flex items-center space-x-2 p-2 rounded-lg transition-colors duration-200 cursor-pointer"
+                  role="button"
+                  tabindex="0"
                   class:bg-[#2c2c2e]={selectedTextId === text.id}
-                  on:click={() => (selectedTextId = text.id)}
+                  onclick={() => (selectedTextId = text.id)}
                 >
                   <textarea
                     value={text.content}
-                    on:input={(e) => handleTextInput(text, e)}
+                    oninput={(e) => handleTextInput(text, e)}
                     placeholder="输入文字内容"
                     class="flex-1 bg-transparent text-white text-sm outline-none resize-none placeholder:text-gray-500"
-                  />
+></textarea>
                   {#if texts.length > 1}
                     <button
-                      on:click={() => deleteText(text.id)}
+                      onclick={() => deleteText(text.id)}
                       class="p-1 rounded hover:bg-[#3c3c3e] transition-colors duration-200 text-red-500"
                     >
                       <Trash2 class="w-4 h-4" />
@@ -532,7 +540,7 @@
           <!-- Text Style Controls -->
           {#if selectedText}
             <div class="w-48 space-y-2">
-              <!-- svelte-ignore a11y-label-has-associated-control -->
+              <!-- svelte-ignore a11y_label_has_associated_control -->
               <label
                 class="flex items-center space-x-2 text-sm font-medium text-gray-300"
               >
@@ -599,13 +607,13 @@
     >
       <button
         class="px-4 py-1.5 text-gray-400 hover:text-white transition-colors duration-200 text-sm font-medium"
-        on:click={handleClose}
+        onclick={handleClose}
       >
         取消
       </button>
       <button
         class="px-4 py-1.5 bg-[#0A84FF] text-white rounded-lg hover:bg-[#0A84FF]/90 transition-colors duration-200 text-sm font-medium"
-        on:click={handleSave}
+        onclick={handleSave}
       >
         确定
       </button>

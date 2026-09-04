@@ -1,13 +1,25 @@
 <script lang="ts">
   import { Send, Trash2, Settings } from "lucide-svelte";
 
-  export let inputMessage: string;
-  export let isProcessing: boolean;
-  export let agent: any;
-  export let onSend: () => void;
-  export let onClear: () => void;
-  export let onSettings: () => void;
-  export let onKeyPress: (e: KeyboardEvent) => void;
+  interface Props {
+    inputMessage: string;
+    isProcessing: boolean;
+    agent: any;
+    onSend: () => void;
+    onClear: () => void;
+    onSettings: () => void;
+    onKeyPress: (e: KeyboardEvent) => void;
+  }
+
+  let {
+    inputMessage = $bindable(),
+    isProcessing,
+    agent,
+    onSend,
+    onClear,
+    onSettings,
+    onKeyPress
+  }: Props = $props();
 </script>
 
 <div class="border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4">
@@ -17,7 +29,7 @@
       <div class="flex-1 relative">
         <textarea
           bind:value={inputMessage}
-          on:keypress={onKeyPress}
+          onkeypress={onKeyPress}
           placeholder={!agent ? "请先配置 AI 模型..." : "输入您的消息..."}
           class="w-full px-4 py-3 pr-16 border border-gray-300 dark:border-gray-700 rounded-xl bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-gray-900 dark:focus:ring-gray-100 focus:border-transparent resize-none min-h-[52px] max-h-[200px] text-[15px] leading-relaxed disabled:opacity-50 disabled:cursor-not-allowed transition-shadow"
           rows="1"
@@ -34,7 +46,7 @@
       <button
         class="px-4 py-3 bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 rounded-xl hover:bg-gray-800 dark:hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center space-x-2"
         disabled={!inputMessage.trim() || isProcessing || !agent}
-        on:click={onSend}
+        onclick={onSend}
       >
         <Send class="w-4 h-4" />
         <span class="text-sm font-medium">发送</span>
@@ -45,7 +57,7 @@
     <div class="flex items-center justify-between">
       <button
         class="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center space-x-1.5"
-        on:click={onClear}
+        onclick={onClear}
         disabled={!agent}
       >
         <Trash2 class="w-3.5 h-3.5" />
@@ -54,7 +66,7 @@
 
       <button
         class="p-1.5 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
-        on:click={onSettings}
+        onclick={onSettings}
         title="设置"
       >
         <Settings class="w-4 h-4" />

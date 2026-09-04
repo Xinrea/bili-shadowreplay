@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
   import {
     FileVideo,
     Info,
@@ -12,17 +12,19 @@
   } from "lucide-svelte";
   import { hasNewVersion } from "../stores/version";
   import SidebarItem from "./SidebarItem.svelte";
-  import { createEventDispatcher } from "svelte";
+  interface Props {
+    activeUrl?: string;
+    onActiveChange?: (label: string) => void;
+  }
 
-  const dispatch = createEventDispatcher();
-
-  export let activeUrl = "总览";
+  let { activeUrl = $bindable("总览"), onActiveChange }: Props = $props();
 
   /**
    * @param {{ detail: String; }} route
    */
-  function navigate(route) {
-    dispatch("activeChange", route.detail);
+  function navigate(label: string) {
+    activeUrl = label;
+    onActiveChange?.(label);
   }
 </script>
 
@@ -30,55 +32,73 @@
   class="w-48 bg-[#f0f0f3]/50 dark:bg-black backdrop-blur-xl border-r border-gray-200 dark:border-gray-700"
 >
   <nav class="p-3 space-y-1">
-    <SidebarItem label="总览" {activeUrl} on:activeChange={navigate}>
-      <div slot="icon">
-        <LayoutDashboard class="w-5 h-5" />
-      </div>
+    <SidebarItem label="总览" {activeUrl} onActiveChange={navigate}>
+      {#snippet icon()}
+            <div >
+          <LayoutDashboard class="w-5 h-5" />
+        </div>
+          {/snippet}
     </SidebarItem>
-    <SidebarItem label="直播间" {activeUrl} on:activeChange={navigate}>
-      <div slot="icon">
-        <Video class="w-5 h-5" />
-      </div>
+    <SidebarItem label="直播间" {activeUrl} onActiveChange={navigate}>
+      {#snippet icon()}
+            <div >
+          <Video class="w-5 h-5" />
+        </div>
+          {/snippet}
     </SidebarItem>
-    <SidebarItem label="录播" {activeUrl} on:activeChange={navigate}>
-      <div slot="icon">
-        <History class="w-5 h-5" />
-      </div>
+    <SidebarItem label="录播" {activeUrl} onActiveChange={navigate}>
+      {#snippet icon()}
+            <div >
+          <History class="w-5 h-5" />
+        </div>
+          {/snippet}
     </SidebarItem>
-    <SidebarItem label="切片" {activeUrl} on:activeChange={navigate}>
-      <div slot="icon">
-        <FileVideo class="w-5 h-5" />
-      </div>
+    <SidebarItem label="切片" {activeUrl} onActiveChange={navigate}>
+      {#snippet icon()}
+            <div >
+          <FileVideo class="w-5 h-5" />
+        </div>
+          {/snippet}
     </SidebarItem>
-    <SidebarItem label="任务" {activeUrl} on:activeChange={navigate}>
-      <div slot="icon">
-        <List class="w-5 h-5" />
-      </div>
+    <SidebarItem label="任务" {activeUrl} onActiveChange={navigate}>
+      {#snippet icon()}
+            <div >
+          <List class="w-5 h-5" />
+        </div>
+          {/snippet}
     </SidebarItem>
-    <SidebarItem label="助手" {activeUrl} on:activeChange={navigate}>
-      <div slot="icon">
-        <Brain class="w-5 h-5" />
-      </div>
+    <SidebarItem label="助手" {activeUrl} onActiveChange={navigate}>
+      {#snippet icon()}
+            <div >
+          <Brain class="w-5 h-5" />
+        </div>
+          {/snippet}
     </SidebarItem>
-    <SidebarItem label="账号" {activeUrl} on:activeChange={navigate}>
-      <div slot="icon">
-        <Users class="w-5 h-5" />
-      </div>
+    <SidebarItem label="账号" {activeUrl} onActiveChange={navigate}>
+      {#snippet icon()}
+            <div >
+          <Users class="w-5 h-5" />
+        </div>
+          {/snippet}
     </SidebarItem>
-    <SidebarItem label="设置" {activeUrl} on:activeChange={navigate}>
-      <div slot="icon">
-        <Settings class="w-5 h-5" />
-      </div>
+    <SidebarItem label="设置" {activeUrl} onActiveChange={navigate}>
+      {#snippet icon()}
+            <div >
+          <Settings class="w-5 h-5" />
+        </div>
+          {/snippet}
     </SidebarItem>
     <SidebarItem
       label="关于"
       {activeUrl}
-      on:activeChange={navigate}
+      onActiveChange={navigate}
       dot={$hasNewVersion}
     >
-      <div slot="icon">
-        <Info class="w-5 h-5" />
-      </div>
+      {#snippet icon()}
+            <div >
+          <Info class="w-5 h-5" />
+        </div>
+          {/snippet}
     </SidebarItem>
   </nav>
 </div>

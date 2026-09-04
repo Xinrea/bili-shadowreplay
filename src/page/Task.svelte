@@ -14,11 +14,11 @@
   import type { TaskRow } from "../lib/db";
   import { onMount, onDestroy } from "svelte";
 
-  let tasks: TaskRow[] = [];
-  let loading = true;
-  let actionTaskId: string | null = null;
+  let tasks: TaskRow[] = $state([]);
+  let loading = $state(true);
+  let actionTaskId: string | null = $state(null);
   let refreshInterval = null;
-  let expandedTasks = new Set<string>();
+  let expandedTasks = $state(new Set<string>());
 
   async function update_tasks() {
     try {
@@ -321,7 +321,7 @@
         </p>
       </div>
       <button
-        on:click={update_tasks}
+        onclick={update_tasks}
         class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
         disabled={loading}
         title="刷新任务列表"
@@ -412,7 +412,7 @@
                   <div class="flex items-center gap-2 min-w-0">
                     <button
                       class="shrink-0 p-1 -ml-1 rounded-md text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-                      on:click={() => toggleMetadata(task.id)}
+                      onclick={() => toggleMetadata(task.id)}
                       title={expandedTasks.has(task.id)
                         ? "收起任务详情"
                         : "展开任务详情"}
@@ -466,8 +466,8 @@
                       {#if task.status.toLowerCase() === "pending" || task.status.toLowerCase() === "processing"}
                         <Loader2 class="w-3 h-3 animate-spin" />
                       {:else}
-                        <svelte:component
-                          this={get_status_icon(task.status)}
+                        {@const SvelteComponent = get_status_icon(task.status)}
+                        <SvelteComponent
                           class="w-3 h-3"
                         />
                       {/if}
@@ -489,7 +489,7 @@
                           ? "text-amber-600 hover:text-amber-700 hover:bg-amber-100 dark:hover:bg-amber-900/20"
                           : "text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20"
                       } ${actionTaskId === task.id ? "cursor-wait" : ""}`}
-                      on:click={() =>
+                      onclick={() =>
                         is_cancelable_status(task.status)
                           ? cancel_task(task.id)
                           : delete_task(task.id)}

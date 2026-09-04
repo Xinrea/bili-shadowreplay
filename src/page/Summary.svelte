@@ -1,4 +1,5 @@
 <script lang="ts">
+
   import { get_static_url, invoke } from "../lib/invoker";
   import type { RecorderList, DiskInfo } from "../lib/interface";
   import type { RecordItem } from "../lib/db";
@@ -21,24 +22,24 @@
     recorders: [],
   };
 
-  let disk_info: DiskInfo = {
+  let disk_info: DiskInfo = $state({
     disk: "",
     total: 0,
     free: 0,
-  };
+  });
 
-  let total = 0;
-  let online = 0;
-  let disk_usage = 0;
-  let account_count = 0;
-  let total_length = 0;
-  let today_record_count = 0;
-  let recent_records: RecordItem[] = [];
-  let activeDropdown = null;
-  let loading = false;
+  let total = $state(0);
+  let online = $state(0);
+  let disk_usage = $state(0);
+  let account_count = $state(0);
+  let total_length = $state(0);
+  let today_record_count = $state(0);
+  let recent_records: RecordItem[] = $state([]);
+  let activeDropdown = $state(null);
+  let loading = $state(false);
   let offset = 0;
-  let hasMore = true;
-  let hasNewRecords = false;
+  let hasMore = $state(true);
+  let hasNewRecords = $state(false);
   const RECORDS_PER_PAGE = 5;
 
   async function update_summary() {
@@ -229,11 +230,11 @@
   }
 </script>
 
-<svelte:window on:click={handleClickOutside} />
+<svelte:window onclick={handleClickOutside} />
 
 <div
   class="flex-1 p-6 overflow-y-auto custom-scrollbar-light bg-gray-50"
-  on:scroll={handleScroll}
+  onscroll={handleScroll}
 >
   <div class="space-y-6">
     <!-- Header -->
@@ -371,7 +372,7 @@
           </h2>
           <button
             class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors text-gray-500 dark:text-gray-400"
-            on:click={refreshRecords}
+            onclick={refreshRecords}
           >
             <RefreshCw class="w-5 h-5 dark:icon-white" />
           </button>
@@ -379,7 +380,7 @@
         {#if hasNewRecords}
           <button
             class="px-3 py-1 text-sm text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-500/10 rounded-full hover:bg-blue-100 dark:hover:bg-blue-500/20 transition-colors"
-            on:click={loadMoreRecords}
+            onclick={loadMoreRecords}
           >
             记录有更新 • 点击刷新
           </button>
@@ -397,7 +398,7 @@
                   src={record.cover}
                   class="w-32 h-18 rounded-lg object-cover"
                   alt="Gaming stream thumbnail"
-                  on:error={(e) =>
+                  onerror={(e) =>
                     console.error("Image error in template:", record.cover, e)}
                 />
               {:else}
@@ -421,7 +422,7 @@
             <div class="flex items-center space-x-2">
               <button
                 class="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
-                on:click={() => {
+                onclick={() => {
                   invoke("open_live", {
                     platform: record.platform,
                     roomId: record.room_id,
@@ -434,8 +435,10 @@
               <div class="relative dropdown-container">
                 <button
                   class="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-red-600 dark:text-red-400"
-                  on:click|stopPropagation={() =>
-                    toggleDropdown(record.live_id)}
+                  onclick={(event) => {
+                    event.stopPropagation();
+                    toggleDropdown(record.live_id);
+                  }}
                 >
                   <Trash2 class="w-5 h-5 icon-danger" />
                 </button>
@@ -461,7 +464,7 @@
                     <div class="p-2 flex space-x-2">
                       <button
                         class="flex-1 px-3 py-1.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700/50 rounded-md transition-colors"
-                        on:click={() => {
+                        onclick={() => {
                           activeDropdown = null;
                         }}
                       >
@@ -469,7 +472,7 @@
                       </button>
                       <button
                         class="flex-1 px-3 py-1.5 text-sm text-white bg-red-600 hover:bg-red-700 rounded-md transition-colors"
-                        on:click={() => {
+                        onclick={() => {
                           deleteRecord(record);
                           activeDropdown = null;
                         }}

@@ -1,10 +1,15 @@
 <script lang="ts">
+
   import { X } from "lucide-svelte";
   import { parseSubtitleStyle, type SubtitleStyle } from "../interface";
 
-  export let show = false;
-  export let onClose: () => void;
-  export let roomId: string;
+  interface Props {
+    show?: boolean;
+    onClose: () => void;
+    roomId: string;
+  }
+
+  let { show = $bindable(false), onClose, roomId }: Props = $props();
 
   // 默认样式
   const defaultStyle: SubtitleStyle = {
@@ -20,10 +25,10 @@
   };
 
   // 从 localStorage 加载样式，如果没有则使用默认值
-  let style: SubtitleStyle = (() => {
+  let style: SubtitleStyle = $state((() => {
     const savedStyle = localStorage.getItem(`subtitle_style_${roomId}`);
     return savedStyle ? JSON.parse(savedStyle) : defaultStyle;
-  })();
+  })());
 
   // 保存样式到 localStorage
   function saveStyle() {
@@ -31,10 +36,10 @@
   }
 
   // 生成 ffmpeg 样式参数
-  $: styleString = parseSubtitleStyle(style);
+  let styleString = $derived(parseSubtitleStyle(style));
 
   // 预览样式
-  $: previewStyle = (() => {
+  let previewStyle = $derived((() => {
     // 将颜色值转换为 rgba 格式
     const fontColor = style.fontColor.startsWith("#")
       ? `rgba(${parseInt(style.fontColor.slice(1, 3), 16)}, ${parseInt(style.fontColor.slice(3, 5), 16)}, ${parseInt(style.fontColor.slice(5, 7), 16)}, 1)`
@@ -59,7 +64,7 @@
       display: inline-block;
       white-space: nowrap;
     `;
-  })();
+  })());
 
   // 对齐方式选项
   const alignmentOptions = [
@@ -81,10 +86,14 @@
 </script>
 
 {#if show}
-  <!-- svelte-ignore a11y-click-events-have-key-events -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div
     class="fixed inset-0 bg-black/50 z-[1100] flex items-center justify-center"
-    on:click|self={handleClose}
+    role="presentation"
+    onclick={(event) => {
+      event.stopPropagation();
+      handleClose();
+    }}
   >
     <div
       class="bg-[#1c1c1e] rounded-lg w-[600px] max-h-[80vh] overflow-y-auto sidebar-scrollbar"
@@ -96,7 +105,7 @@
         <h2 class="text-lg font-medium text-white">字幕压制样式设置</h2>
         <button
           class="text-gray-400 hover:text-white transition-colors duration-200"
-          on:click={handleClose}
+          onclick={handleClose}
         >
           <X class="w-5 h-5" />
         </button>
@@ -109,7 +118,7 @@
           <h3 class="text-sm font-medium text-gray-300">字体设置</h3>
           <div class="grid grid-cols-2 gap-4">
             <div class="space-y-2">
-              <!-- svelte-ignore a11y-label-has-associated-control -->
+              <!-- svelte-ignore a11y_label_has_associated_control -->
               <label class="block text-sm text-gray-400">字体名称</label>
               <input
                 type="text"
@@ -120,7 +129,7 @@
               />
             </div>
             <div class="space-y-2">
-              <!-- svelte-ignore a11y-label-has-associated-control -->
+              <!-- svelte-ignore a11y_label_has_associated_control -->
               <label class="block text-sm text-gray-400">字体大小</label>
               <input
                 type="number"
@@ -138,7 +147,7 @@
           <h3 class="text-sm font-medium text-gray-300">颜色设置</h3>
           <div class="grid grid-cols-2 gap-4">
             <div class="space-y-2">
-              <!-- svelte-ignore a11y-label-has-associated-control -->
+              <!-- svelte-ignore a11y_label_has_associated_control -->
               <label class="block text-sm text-gray-400">字体颜色</label>
               <input
                 type="color"
@@ -149,7 +158,7 @@
               />
             </div>
             <div class="space-y-2">
-              <!-- svelte-ignore a11y-label-has-associated-control -->
+              <!-- svelte-ignore a11y_label_has_associated_control -->
               <label class="block text-sm text-gray-400">描边颜色</label>
               <input
                 type="color"
@@ -166,7 +175,7 @@
         <div class="space-y-4">
           <h3 class="text-sm font-medium text-gray-300">描边设置</h3>
           <div class="space-y-2">
-            <!-- svelte-ignore a11y-label-has-associated-control -->
+            <!-- svelte-ignore a11y_label_has_associated_control -->
             <label class="block text-sm text-gray-400">描边宽度</label>
             <input
               type="range"

@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "moduleResolution": "node",
-    "target": "es2017",
+    "target": "es2021",
     "isolatedModules": true,
     /**
       To have warnings/errors of the Svelte compiler at the correct position,

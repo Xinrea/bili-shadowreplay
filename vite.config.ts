@@ -1,7 +1,6 @@
 import { defineConfig, loadEnv } from "vite";
 import { resolve } from "path";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
-import sveltePreprocess from "svelte-preprocess";
 import { readFileSync } from "fs";
 
 // Read package.json
@@ -25,13 +24,7 @@ export default defineConfig(async ({ mode }) => {
       exclude: ["@ffmpeg/ffmpeg", "@ffmpeg/util"],
     },
     plugins: [
-      svelte({
-        preprocess: [
-          sveltePreprocess({
-            typescript: true,
-          }),
-        ],
-      }),
+      svelte(),
     ],
 
     // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

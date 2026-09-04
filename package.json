@@ -32,9 +32,9 @@
     "wavesurfer.js": "^7.11.0"
   },
   "devDependencies": {
-    "@sveltejs/vite-plugin-svelte": "^2.0.0",
+    "@sveltejs/vite-plugin-svelte": "^4.0.4",
     "@tauri-apps/cli": "^2.4.1",
-    "@tsconfig/svelte": "^3.0.0",
+    "@tsconfig/svelte": "^5.0.8",
     "@types/node": "^18.7.10",
     "@types/qrcode": "^1.5.5",
     "autoprefixer": "^10.4.14",
@@ -43,14 +43,14 @@
     "flowbite-svelte-icons": "^1.6.1",
     "mermaid": "^11.9.0",
     "postcss": "^8.4.21",
-    "svelte": "^3.54.0",
-    "svelte-check": "^3.0.0",
-    "svelte-preprocess": "^5.0.0",
+    "svelte": "^5.57.0",
+    "svelte-check": "^4.7.6",
+    "svelte-preprocess": "^6.0.5",
     "tailwindcss": "^3.3.0",
     "ts-node": "^10.9.1",
     "tslib": "^2.4.1",
     "typescript": "^5.0.0",
-    "vite": "^4.0.0",
+    "vite": "^5.4.21",
     "vitepress": "^1.6.3",
     "vitepress-plugin-mermaid": "^2.0.17"
   }

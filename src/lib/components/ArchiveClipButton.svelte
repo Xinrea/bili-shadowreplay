@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { createEventDispatcher, onDestroy, onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { Loader2, Scissors } from "lucide-svelte";
   import type { RecordItem } from "../db";
   import {
@@ -10,19 +10,31 @@
   } from "../interface";
   import { invoke, listen, log } from "../invoker";
 
-  export let archive: RecordItem | null = null;
-  export let ranges: Range[] = [];
-  export let initialNote = "";
-  export let localOffset: number | null = null;
-  export let captureCover = false;
-  export let variant: "primary" | "compact" = "primary";
-  export let disabled = false;
-  export let running = false;
+  interface Props {
+    archive?: RecordItem | null;
+    ranges?: Range[];
+    initialNote?: string;
+    localOffset?: number | null;
+    captureCover?: boolean;
+    variant?: "primary" | "compact";
+    disabled?: boolean;
+    running?: boolean;
+    onGenerated?: (video: VideoItem) => void;
+    onFailed?: (message: string) => void;
+  }
 
-  const dispatch = createEventDispatcher<{
-    generated: VideoItem;
-    failed: string;
-  }>();
+  let {
+    archive = null,
+    ranges = [],
+    initialNote = "",
+    localOffset = null,
+    captureCover = false,
+    variant = "primary",
+    disabled = false,
+    running = $bindable(false),
+    onGenerated,
+    onFailed
+  }: Props = $props();
 
   const transitionOptions = [
     { value: "none", label: "无" },
@@ -34,17 +46,17 @@
     { value: "slidedown", label: "向下滑动" },
   ];
 
-  let showConfirm = false;
-  let currentEventId: string | null = null;
-  let progressText = "生成切片";
-  let clipNote = "";
-  let danmuEnabled = false;
-  let fixEncoding = false;
-  let transition = "none";
+  let showConfirm = $state(false);
+  let currentEventId: string | null = $state(null);
+  let progressText = $state("生成切片");
+  let clipNote = $state("");
+  let danmuEnabled = $state(false);
+  let fixEncoding = $state(false);
+  let transition = $state("none");
   let clearUpdateListener: (() => void) | null = null;
   let clearFinishedListener: (() => void) | null = null;
 
-  $: activeRanges = ranges.filter((range) => range.activated !== false);
+  let activeRanges = $derived(ranges.filter((range) => range.activated !== false));
 
   function openConfirm() {
     if (!archive || disabled || currentEventId) return;
@@ -133,7 +145,7 @@
         if (!event.payload.success) {
           const message = String(event.payload.message || "未知错误");
           alert("请检查 ffmpeg 是否配置正确：" + message);
-          dispatch("failed", message);
+          onFailed?.(message);
         }
         resetTaskState(eventId);
       },
@@ -160,12 +172,12 @@
       });
       clipNote = "";
       transition = "none";
-      dispatch("generated", video as VideoItem);
+      onGenerated?.(video as VideoItem);
     } catch (error) {
       if (currentEventId === eventId) {
         const message = String(error);
         alert("切片生成失败：" + message);
-        dispatch("failed", message);
+        onFailed?.(message);
       }
     } finally {
       resetTaskState(eventId);
@@ -202,7 +214,7 @@
 <div class={variant === "compact" ? "contents" : "flex items-center gap-2"}>
     <button
       type="button"
-      on:click={openConfirm}
+      onclick={openConfirm}
       disabled={disabled || !archive || currentEventId !== null}
       class={variant === "compact"
         ? "inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-violet-200 bg-white px-2.5 py-1.5 text-xs font-medium text-violet-700 transition-colors hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-violet-700 dark:bg-gray-900 dark:text-violet-300 dark:hover:bg-violet-950/60"
@@ -219,7 +231,7 @@
     {#if currentEventId && variant === "primary"}
       <button
         type="button"
-        on:click={cancelClip}
+        onclick={cancelClip}
         class="rounded-lg px-4 py-1.5 text-sm text-red-500 transition-all duration-200 hover:bg-red-500/10"
       >
         取消
@@ -234,14 +246,14 @@
       role="button"
       tabindex="0"
       aria-label="关闭对话框"
-      on:click={closeConfirm}
-      on:keydown={(event) => {
+      onclick={closeConfirm}
+      onkeydown={(event) => {
         if (event.key === "Escape" || event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           closeConfirm();
         }
       }}
-    />
+></div>
 
     <div
       role="dialog"
@@ -329,7 +341,7 @@
                   class="rounded-lg border px-2 py-1.5 text-[12px] transition-colors {transition === option.value
                     ? 'border-[#0A84FF] bg-[#0A84FF]/20 text-[#0A84FF]'
                     : 'border-white/5 bg-[#2c2c2e] text-white/70 hover:border-white/20'}"
-                  on:click={() => (transition = option.value)}
+                  onclick={() => (transition = option.value)}
                 >
                   {option.label}
                 </button>
@@ -342,14 +354,14 @@
       <div class="flex items-center justify-end gap-2 rounded-b-2xl border-t border-white/10 bg-[#111113] px-5 py-3">
         <button
           type="button"
-          on:click={closeConfirm}
+          onclick={closeConfirm}
           class="rounded-lg border border-white/20 px-3.5 py-2 text-[13px] text-white/90 transition-colors hover:bg-white/10"
         >
           取消
         </button>
         <button
           type="button"
-          on:click={generateClip}
+          onclick={generateClip}
           disabled={activeRanges.length === 0}
           class="rounded-lg bg-[#0A84FF] px-3.5 py-2 text-[13px] text-white shadow-[inset_0_1px_0_rgba(255,255,255,.15)] transition-colors hover:bg-[#0A84FF]/90 disabled:cursor-not-allowed disabled:opacity-50"
         >

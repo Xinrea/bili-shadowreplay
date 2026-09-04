@@ -40,13 +40,23 @@
   import type { AccountInfo } from "../db";
   import WaveSurfer from "wavesurfer.js";
 
-  export let show = false;
-  export let video: VideoItem;
-  export let roomId: string;
-  export let videos: any[] = [];
-  export let onVideoChange: ((video: VideoItem) => void) | undefined =
-    undefined;
-  export let onVideoListUpdate: (() => Promise<void>) | undefined = undefined;
+  interface Props {
+    show?: boolean;
+    video: VideoItem;
+    roomId: string;
+    videos?: any[];
+    onVideoChange?: ((video: VideoItem) => void) | undefined;
+    onVideoListUpdate?: (() => Promise<void>) | undefined;
+  }
+
+  let {
+    show = $bindable(false),
+    video = $bindable(),
+    roomId,
+    videos = [],
+    onVideoChange = undefined,
+    onVideoListUpdate = undefined
+  }: Props = $props();
 
   interface Subtitle {
     startTime: number;
@@ -55,42 +65,38 @@
     layerOrder: number;
   }
 
-  let subtitles: Subtitle[] = [];
-  let currentTime = 0;
-  let videoElement: HTMLVideoElement;
-  let showDefaultCoverIcon = false;
-  let timelineWidth = 0;
+  let subtitles: Subtitle[] = $state([]);
+  let currentTime = $state(0);
+  let videoElement: HTMLVideoElement = $state();
+  let showDefaultCoverIcon = $state(false);
+  let timelineWidth = $state(0);
 
-  // 当视频改变时重置封面错误状态
-  $: if (video) {
-    showDefaultCoverIcon = false;
-  }
-  let timelineElement: HTMLElement;
-  let draggingSubtitle: { index: number; isStart: boolean } | null = null;
-  let draggingBlock: number | null = null;
-  let timelineScale = 1; // 时间轴缩放比例，1 表示正常大小
-  let isPlaying = false;
-  let timeMarkers: number[] = [];
+  let timelineElement: HTMLElement = $state();
+  let draggingSubtitle: { index: number; isStart: boolean } | null = $state(null);
+  let draggingBlock: number | null = $state(null);
+  let timelineScale = $state(1); // 时间轴缩放比例，1 表示正常大小
+  let isPlaying = $state(false);
+  let timeMarkers: number[] = $state([]);
   let dragOffset: number = 0; // 添加拖动偏移量
-  let isVideoLoaded = false;
-  let showStyleEditor = false;
-  let volume = 1;
+  let isVideoLoaded = $state(false);
+  let showStyleEditor = $state(false);
+  let volume = $state(1);
   let previousVolume = 1;
-  let isMuted = false;
-  let currentSubtitleIndex = -1;
-  let currentSubtitleIndices: number[] = [];
-  let currentSubtitles: Subtitle[] = [];
-  let subtitleElements: HTMLElement[] = [];
-  let subtitleLanes: number[] = [];
-  let subtitleLaneCount = 1;
-  let subtitleTrackHeight = 48;
-  let timelineTotalHeight = 196;
+  let isMuted = $state(false);
+  let currentSubtitleIndex = $state(-1);
+  let currentSubtitleIndices: number[] = $state([]);
+  let currentSubtitles: Subtitle[] = $state([]);
+  let subtitleElements: HTMLElement[] = $state([]);
+  let subtitleLanes: number[] = $state([]);
+  let subtitleLaneCount = $state(1);
+  let subtitleTrackHeight = $state(48);
+  let timelineTotalHeight = $state(196);
   let nextSubtitleLayerOrder = 0;
-  let timelineContainer: HTMLElement;
-  let showEncodeModal = false;
+  let timelineContainer: HTMLElement = $state();
+  let showEncodeModal = $state(false);
   let videoWidth = 0;
-  let videoHeight = 0;
-  let subtitleStyle: SubtitleStyle = {
+  let videoHeight = $state(0);
+  let subtitleStyle: SubtitleStyle = $state({
     fontName: "Arial",
     fontSize: 18,
     fontColor: "#FFFFFF",
@@ -100,64 +106,44 @@
     marginV: 20,
     marginL: 20,
     marginR: 20,
-  };
+  });
 
-  let current_encode_event_id = null;
-  let current_generate_event_id = null;
+  let current_encode_event_id = $state(null);
+  let current_generate_event_id = $state(null);
   let windowCloseUnlisten: (() => void) | null = null;
-  let activeTab = "subtitle"; // 添加当前激活的 tab
+  let activeTab = $state("subtitle"); // 添加当前激活的 tab
 
   // 切片功能相关变量
-  let clipStartTime = 0;
-  let clipEndTime = 0;
-  let clipTitle = "";
-  let clipping = false;
-  let current_clip_event_id = null;
-  let show_detail = false; // 控制快捷键说明的展开
-  let lastVideoId = -1; // 记录上一个视频ID，避免重复初始化
-  let clipTimesSet = false; // 标记用户是否主动设置过切片时间
+  let clipStartTime = $state(0);
+  let clipEndTime = $state(0);
+  let clipTitle = $state("");
+  let clipping = $state(false);
+  let current_clip_event_id = $state(null);
+  let show_detail = $state(false); // 控制快捷键说明的展开
+  let lastVideoId = $state(-1); // 记录上一个视频ID，避免重复初始化
+  let clipTimesSet = $state(false); // 标记用户是否主动设置过切片时间
 
   // 进度条拖动相关变量
-  let isDraggingSeekbar = false;
-  let seekbarElement: HTMLElement;
-  let previewTime = 0; // 拖动时预览的时间
+  let isDraggingSeekbar = $state(false);
+  let seekbarElement: HTMLElement = $state();
+  let previewTime = $state(0); // 拖动时预览的时间
   let wasPlayingBeforeDrag = false; // 拖动前的播放状态
 
   // 投稿相关变量
-  let current_post_event_id = null;
+  let current_post_event_id = $state(null);
   let config: Config = null;
-  let accounts: any[] = [];
-  let uid_selected = 0;
-  let show_cover_editor = false;
+  let accounts: any[] = $state([]);
+  let uid_selected = $state(0);
+  let show_cover_editor = $state(false);
 
   // WaveSurfer.js 相关变量
   let wavesurfer: any = null;
-  let waveformContainer: HTMLElement;
+  let waveformContainer: HTMLElement = $state();
   let isWaveformLoaded = false;
-  let isWaveformLoading = false;
+  let isWaveformLoading = $state(false);
   let syncTimeout: ReturnType<typeof setTimeout> | null = null;
 
-  $: {
-    const laneLayout = calculateSubtitleLanes(subtitles);
-    subtitleLanes = laneLayout.lanes;
-    subtitleLaneCount = laneLayout.count;
-    subtitleTrackHeight = Math.max(48, subtitleLaneCount * 36 + 8);
-    timelineTotalHeight = 148 + subtitleTrackHeight;
-  }
 
-  $: {
-    currentSubtitleIndices = subtitles
-      .map((subtitle, index) => ({ subtitle, index }))
-      .filter(
-        ({ subtitle }) =>
-          currentTime >= subtitle.startTime && currentTime < subtitle.endTime
-      )
-      .map(({ index }) => index);
-    currentSubtitleIndex = currentSubtitleIndices[0] ?? -1;
-    currentSubtitles = currentSubtitleIndices
-      .map((index) => subtitles[index])
-      .sort((a, b) => a.layerOrder - b.layerOrder);
-  }
 
   // 获取 profile 从 localStorage
   function get_profile(): Profile {
@@ -168,11 +154,8 @@
     return default_profile();
   }
 
-  let profile: Profile = get_profile();
+  let profile: Profile = $state(get_profile());
 
-  $: {
-    window.localStorage.setItem("profile-" + roomId, JSON.stringify(profile));
-  }
 
   // 初始化 WaveSurfer.js
   async function initWaveSurfer() {
@@ -426,13 +409,6 @@
     }
   }
 
-  // 监听当前字幕索引变化
-  $: if (currentSubtitleIndex >= 0 && subtitleElements[currentSubtitleIndex]) {
-    subtitleElements[currentSubtitleIndex].scrollIntoView({
-      behavior: "smooth",
-      block: "nearest",
-    });
-  }
 
   function parseSrtTime(time: string): number {
     // hours:minutes:seconds,milliseconds
@@ -601,31 +577,8 @@
     }
   }
 
-  $: if (show) {
-    isVideoLoaded = false;
-    subtitles = []; // 清空字幕列表
-    currentSubtitleIndex = -1;
-    subtitleElements = [];
-    loadSubtitleStyle(); // 加载字幕样式
 
-    // 销毁旧的波形图实例
-    destroyWaveSurfer();
-  }
 
-  // 当视频改变时重新初始化切片时间（只在视频ID改变时触发）
-  $: if (video && videoElement?.duration && video.id !== lastVideoId) {
-    lastVideoId = video.id;
-    // 切换视频时重置切片时间 - 不设置默认值，等待用户输入
-    clipStartTime = 0;
-    clipEndTime = 0;
-    clipTitle = "";
-    clipTimesSet = false; // 重置标记，新视频默认透明
-  }
-
-  // 监听样式编辑器关闭，重新加载样式
-  $: if (!showStyleEditor) {
-    loadSubtitleStyle();
-  }
 
   async function handleVideoLoaded() {
     isVideoLoaded = true;
@@ -1378,6 +1331,73 @@
     a.download = video_name;
     a.click();
   }
+  // 当视频改变时重置封面错误状态
+  $effect(() => {
+    if (video) {
+      showDefaultCoverIcon = false;
+    }
+  });
+  $effect(() => {
+    if (show) {
+      isVideoLoaded = false;
+      subtitles = []; // 清空字幕列表
+      currentSubtitleIndex = -1;
+      subtitleElements = [];
+      loadSubtitleStyle(); // 加载字幕样式
+
+      // 销毁旧的波形图实例
+      destroyWaveSurfer();
+    }
+  });
+  $effect(() => {
+    const laneLayout = calculateSubtitleLanes(subtitles);
+    subtitleLanes = laneLayout.lanes;
+    subtitleLaneCount = laneLayout.count;
+    subtitleTrackHeight = Math.max(48, subtitleLaneCount * 36 + 8);
+    timelineTotalHeight = 148 + subtitleTrackHeight;
+  });
+  $effect(() => {
+    currentSubtitleIndices = subtitles
+      .map((subtitle, index) => ({ subtitle, index }))
+      .filter(
+        ({ subtitle }) =>
+          currentTime >= subtitle.startTime && currentTime < subtitle.endTime
+      )
+      .map(({ index }) => index);
+    currentSubtitleIndex = currentSubtitleIndices[0] ?? -1;
+    currentSubtitles = currentSubtitleIndices
+      .map((index) => subtitles[index])
+      .sort((a, b) => a.layerOrder - b.layerOrder);
+  });
+  $effect(() => {
+    window.localStorage.setItem("profile-" + roomId, JSON.stringify(profile));
+  });
+  // 监听当前字幕索引变化
+  $effect(() => {
+    if (currentSubtitleIndex >= 0 && subtitleElements[currentSubtitleIndex]) {
+      subtitleElements[currentSubtitleIndex].scrollIntoView({
+        behavior: "smooth",
+        block: "nearest",
+      });
+    }
+  });
+  // 当视频改变时重新初始化切片时间（只在视频ID改变时触发）
+  $effect(() => {
+    if (video && videoElement?.duration && video.id !== lastVideoId) {
+      lastVideoId = video.id;
+      // 切换视频时重置切片时间 - 不设置默认值，等待用户输入
+      clipStartTime = 0;
+      clipEndTime = 0;
+      clipTitle = "";
+      clipTimesSet = false; // 重置标记，新视频默认透明
+    }
+  });
+  // 监听样式编辑器关闭，重新加载样式
+  $effect(() => {
+    if (!showStyleEditor) {
+      loadSubtitleStyle();
+    }
+  });
 </script>
 
 {#if show}
@@ -1396,7 +1416,7 @@
           <select
             class="bg-[#1c1c1e] text-gray-300 text-sm rounded-md px-3 py-1.5 border border-gray-700 focus:border-[#0A84FF] outline-none appearance-none cursor-pointer hover:bg-[#2c2c2e] transition-colors duration-200"
             value={video.id}
-            on:change={handleVideoSelect}
+            onchange={handleVideoSelect}
           >
             {#each videos as v}
               <option value={v.id}>{v.name}</option>
@@ -1406,7 +1426,7 @@
           {#if !TAURI_ENV}
             <button
               class="text-blue-500 hover:text-blue-400 transition-colors duration-200 px-2 py-1.5 rounded-md hover:bg-blue-500/10"
-              on:click={saveVideo}
+              onclick={saveVideo}
             >
               <Download class="w-4 h-4" />
             </button>
@@ -1414,7 +1434,7 @@
           <!-- 删除按钮 -->
           <button
             class="text-red-500 hover:text-red-400 transition-colors duration-200 px-2 py-1.5 rounded-md hover:bg-red-500/10"
-            on:click={async () => {
+            onclick={async () => {
               if (!video) return;
               try {
                 await invoke("delete_video", { id: video.id });
@@ -1443,7 +1463,7 @@
         {#if canBeClipped(video)}
           <button
             class="px-4 py-1.5 text-sm bg-green-600 text-white rounded-md hover:bg-green-600/90 transition-colors duration-200 border border-gray-600/50 flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
-            on:click={generateClip}
+            onclick={generateClip}
             disabled={clipping || current_clip_event_id != null}
           >
             {#if clipping || current_clip_event_id != null}
@@ -1477,7 +1497,7 @@
         {/if}
         <button
           class="px-4 py-1.5 text-sm bg-[#0A84FF] text-white rounded-md hover:bg-[#0A84FF]/90 transition-colors duration-200 border border-gray-600/50 flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
-          on:click={() => (showEncodeModal = true)}
+          onclick={() => (showEncodeModal = true)}
           disabled={current_encode_event_id != null}
         >
           {#if current_encode_event_id != null}
@@ -1522,7 +1542,8 @@
             <h3 class="text-sm font-medium text-gray-200">确认压制</h3>
             <button
               class="text-gray-400 hover:text-white transition-colors duration-200"
-              on:click={() => (showEncodeModal = false)}
+              aria-label="关闭压制确认"
+              onclick={() => (showEncodeModal = false)}
             >
               <svg
                 xmlns="http://www.w3.org/2000/svg"
@@ -1551,13 +1572,13 @@
           >
             <button
               class="px-4 py-1.5 text-sm bg-gray-700/50 text-gray-200 rounded-md hover:bg-gray-700/70 transition-colors duration-200 border border-gray-600/50"
-              on:click={() => (showEncodeModal = false)}
+              onclick={() => (showEncodeModal = false)}
             >
               取消
             </button>
             <button
               class="px-4 py-1.5 text-sm bg-[#0A84FF] text-white rounded-md hover:bg-[#0A84FF]/90 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-1"
-              on:click={() => {
+              onclick={() => {
                 showEncodeModal = false;
                 encodeVideoSubtitle();
               }}
@@ -1599,16 +1620,16 @@
         <!-- 视频容器 -->
         <div class="flex-1 bg-black relative">
           <div class="absolute inset-0 flex items-center">
-            <!-- svelte-ignore a11y-media-has-caption -->
+            <!-- svelte-ignore a11y_media_has_caption -->
             <video
               bind:this={videoElement}
               src={video?.file}
               class="w-full h-auto max-h-full cursor-pointer"
-              on:timeupdate={handleTimeUpdate}
-              on:ended={handleVideoEnded}
-              on:loadedmetadata={handleVideoLoaded}
-              on:click={togglePlay}
-            />
+              ontimeupdate={handleTimeUpdate}
+              onended={handleVideoEnded}
+              onloadedmetadata={handleVideoLoaded}
+              onclick={togglePlay}
+></video>
 
             <!-- 切片快捷键说明 -->
             {#if canBeClipped(video)}
@@ -1727,7 +1748,7 @@
                 max="10"
                 step="0.1"
                 value={timelineScale}
-                on:input={handleScaleChange}
+                oninput={handleScaleChange}
                 class="w-32 h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
               />
             </div>
@@ -1736,7 +1757,7 @@
             <div class="flex-1 flex justify-center">
               <button
                 class="p-1.5 rounded-lg bg-[#2c2c2e] hover:bg-[#3c3c3e] transition-colors duration-200"
-                on:click={togglePlay}
+                onclick={togglePlay}
               >
                 {#if isPlaying}
                   <Pause class="w-4 h-4 text-white" />
@@ -1750,7 +1771,7 @@
             <div class="flex items-center space-x-2">
               <button
                 class="text-white hover:text-gray-300 transition-colors duration-200"
-                on:click={toggleMute}
+                onclick={toggleMute}
               >
                 {#if isMuted || volume === 0}
                   <svg
@@ -1795,7 +1816,7 @@
                 max="1"
                 step="0.1"
                 bind:value={volume}
-                on:input={handleVolumeChange}
+                oninput={handleVolumeChange}
                 class="w-20 h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
               />
             </div>
@@ -1838,27 +1859,40 @@
             <div
               class="flex-1 overflow-x-auto overflow-y-hidden sidebar-scrollbar"
               bind:this={timelineContainer}
-              on:wheel|preventDefault={handleWheel}
+              onwheel={(event) => {
+                event.preventDefault();
+                handleWheel(event);
+              }}
             >
-              <!-- svelte-ignore a11y-click-events-have-key-events -->
+              <!-- svelte-ignore a11y_click_events_have_key_events -->
               <div
                 bind:this={timelineElement}
+                role="button"
+                tabindex="0"
+                aria-label="视频时间轴"
                 class="relative min-w-full group select-none flex flex-col"
                 style="width: {100 * timelineScale}%; height: {timelineTotalHeight}px"
-                on:mousemove={() => {
+                onmousemove={() => {
                   if (!timelineElement) return;
                   timelineWidth = timelineElement.getBoundingClientRect().width;
                   updateTimeMarkers();
                 }}
-                on:click|preventDefault|stopPropagation={(e) => {
+                onclick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
                   if (!isDraggingSeekbar) handleTimelineClick(e);
                 }}
               >
                 <div
                   bind:this={seekbarElement}
+                  role="slider"
+                  tabindex="0"
+                  aria-valuemin="0"
+                  aria-valuemax={videoElement?.duration || 0}
+                  aria-valuenow={isDraggingSeekbar ? previewTime : currentTime}
                   class="order-0 shrink-0 relative h-7 border-b border-gray-800/70 bg-[#202022] cursor-pointer"
                   class:dragging={isDraggingSeekbar}
-                  on:mousedown={handleSeekbarMouseDown}
+                  onmousedown={handleSeekbarMouseDown}
                 >
                   <div
                     class="absolute bottom-0 left-0 h-0.5 bg-[#0A84FF] pointer-events-none"
@@ -1965,14 +1999,16 @@
                   {#each subtitles as subtitle, index}
                     <div
                       bind:this={subtitleElements[index]}
+                      role="button"
+                      tabindex="0"
                       class="absolute h-8 rounded-md border border-[#0A84FF]/50 bg-[#0A84FF]/20 cursor-move overflow-hidden {currentSubtitleIndices.includes(
                         index
                       ) || draggingSubtitle?.index === index || draggingBlock === index
                         ? 'z-20 border-[#0A84FF]/90 bg-[#0A84FF]/30'
                         : 'z-10'}"
                       style={getSubtitleStyle(subtitle, index)}
-                      on:mousedown={(e) => handleBlockMouseDown(e, index)}
-                      on:click|stopPropagation
+                      onmousedown={(e) => handleBlockMouseDown(e, index)}
+                      onclick={(event) => event.stopPropagation()}
                     >
                       <div
                         class="h-full px-1.5 flex items-center text-[10px] text-blue-100"
@@ -2035,7 +2071,7 @@
             class:text-gray-400={activeTab !== "subtitle"}
             class:bg-[#2c2c2e]={activeTab === "subtitle"}
             class:bg-transparent={activeTab !== "subtitle"}
-            on:click={() => (activeTab = "subtitle")}
+            onclick={() => (activeTab = "subtitle")}
           >
             字幕
             {#if activeTab === "subtitle"}
@@ -2051,7 +2087,7 @@
             class:text-gray-400={activeTab !== "upload"}
             class:bg-[#2c2c2e]={activeTab === "upload"}
             class:bg-transparent={activeTab !== "upload"}
-            on:click={() => (activeTab = "upload")}
+            onclick={() => (activeTab = "upload")}
           >
             快速投稿
             {#if activeTab === "upload"}
@@ -2071,14 +2107,14 @@
                 <div class="flex space-x-2">
                   <button
                     class="flex-1 px-3 py-1.5 text-sm bg-[#1c1c1e] text-gray-300 rounded-lg hover:bg-[#2c2c2e] transition-colors duration-200 flex items-center justify-center space-x-1 border border-gray-700"
-                    on:click={() => (showStyleEditor = true)}
+                    onclick={() => (showStyleEditor = true)}
                   >
                     <Settings class="w-4 h-4" />
                     <span>字幕样式</span>
                   </button>
                   <button
                     class="flex-1 px-3 py-1.5 text-sm bg-[#1c1c1e] text-gray-300 rounded-lg hover:bg-[#2c2c2e] transition-colors duration-200 flex items-center justify-center space-x-1 border border-gray-700"
-                    on:click={clearSubtitles}
+                    onclick={clearSubtitles}
                   >
                     <Eraser class="w-4 h-4" />
                     <span>清空列表</span>
@@ -2087,7 +2123,7 @@
                 <div class="flex space-x-2">
                   <button
                     class="flex-1 px-3 py-1.5 text-sm bg-[#1c1c1e] text-gray-300 rounded-lg hover:bg-[#2c2c2e] transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-1 border border-gray-700"
-                    on:click={generateSubtitles}
+                    onclick={generateSubtitles}
                     disabled={current_generate_event_id !== null}
                   >
                     {#if current_generate_event_id !== null}
@@ -2134,7 +2170,7 @@
                   <button
                     class="w-6 shrink-0 text-right text-[11px] text-gray-500 hover:text-[#0A84FF] font-mono"
                     title="跳转到字幕开始"
-                    on:click={() => seekToTime(subtitle.startTime)}
+                    onclick={() => seekToTime(subtitle.startTime)}
                   >
                     {index + 1}
                   </button>
@@ -2151,14 +2187,14 @@
                   <button
                     class="p-1 shrink-0 text-gray-600 opacity-60 hover:opacity-100 hover:text-[#0A84FF] transition-all"
                     title="在后面添加字幕"
-                    on:click={() => insertSubtitleAfter(index)}
+                    onclick={() => insertSubtitleAfter(index)}
                   >
                     <Plus class="w-3.5 h-3.5" />
                   </button>
                   <button
                     class="p-1 shrink-0 text-gray-600 opacity-60 hover:opacity-100 hover:text-red-400 transition-all"
                     title="删除字幕"
-                    on:click={async () => await removeSubtitle(index)}
+                    onclick={async () => await removeSubtitle(index)}
                   >
                     <Trash2 class="w-3.5 h-3.5" />
                   </button>
@@ -2179,7 +2215,7 @@
                     <span>视频封面</span>
                     <button
                       class="text-[#0A84FF] hover:text-[#0A84FF]/80 transition-colors duration-200 flex items-center space-x-1"
-                      on:click={() => (show_cover_editor = true)}
+                      onclick={() => (show_cover_editor = true)}
                     >
                       <Pen class="w-4 h-4" />
                       <span class="text-xs">创建新封面</span>
@@ -2193,7 +2229,7 @@
                         src={video.cover}
                         alt="视频封面"
                         class="w-full"
-                        on:error={handleCoverError}
+                        onerror={handleCoverError}
                         style:display={showDefaultCoverIcon ? "none" : "block"}
                       />
                     {/if}
@@ -2281,7 +2317,7 @@
                   bind:value={profile.desc}
                   placeholder="输入视频描述"
                   class="w-full px-3 py-2 bg-[#1c1c1e] text-white rounded-lg border border-gray-800/50 focus:border-[#0A84FF] transition duration-200 outline-none resize-none h-24 hover:border-gray-700/50"
-                />
+></textarea>
               </div>
 
               <!-- 标签 -->
@@ -2309,7 +2345,7 @@
                   bind:value={profile.dynamic}
                   placeholder="输入动态内容"
                   class="w-full px-3 py-2 bg-[#1c1c1e] text-white rounded-lg border border-gray-800/50 focus:border-[#0A84FF] transition duration-200 outline-none resize-none h-24 hover:border-gray-700/50"
-                />
+></textarea>
               </div>
             </div>
 
@@ -2318,20 +2354,20 @@
               <div class="pt-4">
                 <div class="flex gap-2">
                   <button
-                    on:click={do_post}
+                    onclick={do_post}
                     disabled={current_post_event_id != null || !uid_selected}
                     class="flex-1 px-3 py-2 bg-[#0A84FF] text-white rounded-lg transition-all duration-200 hover:bg-[#0A84FF]/90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2 text-sm"
                   >
                     {#if current_post_event_id != null}
                       <div
                         class="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin"
-                      />
+></div>
                     {/if}
                     <span id="post-prompt">投稿</span>
                   </button>
                   {#if current_post_event_id != null}
                     <button
-                      on:click={() => cancel_post()}
+                      onclick={() => cancel_post()}
                       class="px-3 py-2 bg-red-500 text-white rounded-lg transition-all duration-200 hover:bg-red-500/90 flex items-center justify-center text-sm"
                     >
                       取消
@@ -2356,16 +2392,16 @@
 <CoverEditor
   bind:show={show_cover_editor}
   {video}
-  on:coverUpdate={(event) => {
+  onCoverUpdate={(event) => {
     video = {
       ...video,
-      cover: event.detail.cover,
+      cover: event.cover,
     };
   }}
 />
 
 <!-- 键盘快捷键监听 -->
-<svelte:window on:keydown={handleKeydown} />
+<svelte:window onkeydown={handleKeydown} />
 
 <style>
   /* 拖动时禁用过渡动画，避免与JS更新冲突 */

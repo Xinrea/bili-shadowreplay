@@ -1,7 +1,11 @@
 <script lang="ts">
   import { Settings, Sparkles, Zap } from "lucide-svelte";
 
-  export let onOpenSettings: () => void;
+  interface Props {
+    onOpenSettings: () => void;
+  }
+
+  let { onOpenSettings }: Props = $props();
 </script>
 
 <div class="flex items-center justify-center min-h-[500px] px-6">
@@ -23,7 +27,7 @@
 
     <!-- CTA Button -->
     <button
-      on:click={onOpenSettings}
+      onclick={onOpenSettings}
       class="inline-flex items-center justify-center space-x-2 px-6 py-3 bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 rounded-xl hover:bg-gray-800 dark:hover:bg-gray-200 transition-colors font-medium"
     >
       <Settings class="w-4 h-4" />

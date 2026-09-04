@@ -3,27 +3,26 @@
   import type { RecordItem } from "../db";
   import { fade, scale } from "svelte/transition";
   import { X, FileVideo, Info } from "lucide-svelte";
-  import { createEventDispatcher, onMount } from "svelte";
+  import { onMount } from "svelte";
   import { clickOutside } from "../actions/clickOutside";
 
-  export let showModal = false;
-  export let archive: RecordItem | null = null;
-  export let roomId: string;
+  interface Props {
+    showModal?: boolean;
+    archive?: RecordItem | null;
+    roomId: string;
+    onGenerated?: () => void;
+  }
+
+  let { showModal = $bindable(false), archive = null, roomId, onGenerated }: Props = $props();
   export const platform: string = "";
 
-  const dispatch = createEventDispatcher();
+  let wholeClipArchives: RecordItem[] = $state([]);
+  let isLoading = $state(false);
+  let encodeDanmu = $state(false);
+  let selectedLiveIds: string[] = $state([]);
+  let outputName = $state("");
+  let showSelectionHelp = $state(false);
 
-  let wholeClipArchives: RecordItem[] = [];
-  let isLoading = false;
-  let encodeDanmu = false;
-  let selectedLiveIds: string[] = [];
-  let outputName = "";
-  let showSelectionHelp = false;
-
-  // 当modal显示且有archive时，加载相关片段
-  $: if (showModal && archive) {
-    loadWholeClipArchives(roomId, archive.parent_id);
-  }
 
   async function loadWholeClipArchives(roomId: string, parentId: string) {
     if (isLoading) return;
@@ -74,7 +73,7 @@
       });
 
       showModal = false;
-      dispatch("generated");
+      onGenerated?.();
     } catch (error) {
       console.error("Failed to generate whole clip:", error);
     }
@@ -160,16 +159,8 @@
     }
   }
 
-  $: selectedArchives = selectedLiveIds
-    .map((id) => wholeClipArchives.find((item) => item.live_id === id))
-    .filter((item): item is RecordItem => Boolean(item));
 
-  $: totalDuration = selectedArchives.reduce(
-    (sum, item) => sum + item.length,
-    0
-  );
 
-  $: totalSize = selectedArchives.reduce((sum, item) => sum + item.size, 0);
 
   function closeModal() {
     showModal = false;
@@ -178,23 +169,38 @@
     outputName = "";
     showSelectionHelp = false;
   }
+  // 当modal显示且有archive时，加载相关片段
+  $effect(() => {
+    if (showModal && archive) {
+      loadWholeClipArchives(roomId, archive.parent_id);
+    }
+  });
+  let selectedArchives = $derived(selectedLiveIds
+    .map((id) => wholeClipArchives.find((item) => item.live_id === id))
+    .filter((item): item is RecordItem => Boolean(item)));
+  let totalDuration = $derived(selectedArchives.reduce(
+    (sum, item) => sum + item.length,
+    0
+  ));
+  let totalSize = $derived(selectedArchives.reduce((sum, item) => sum + item.size, 0));
 </script>
 
 {#if showModal}
   <div
     class="fixed inset-0 bg-black/20 dark:bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center"
     transition:fade={{ duration: 200 }}
-    on:click={closeModal}
-    on:keydown={(e) => e.key === "Escape" && closeModal()}
+    onclick={closeModal}
+    onkeydown={(e) => e.key === "Escape" && closeModal()}
     role="dialog"
+    tabindex="-1"
     aria-modal="true"
   >
-    <!-- svelte-ignore a11y-click-events-have-key-events -->
-    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="mac-modal w-[900px] bg-white dark:bg-[#323234] rounded-xl shadow-xl overflow-hidden flex flex-col max-h-[90vh]"
       transition:scale={{ duration: 150, start: 0.95 }}
-      on:click|stopPropagation
+      onclick={(event) => event.stopPropagation()}
     >
       <!-- Header -->
       <div
@@ -210,7 +216,7 @@
         </div>
         <button
           class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors"
-          on:click={closeModal}
+          onclick={closeModal}
         >
           <X class="w-5 h-5 dark:icon-white" />
         </button>
@@ -245,23 +251,23 @@
                 <div class="flex items-center space-x-3 text-sm">
                   <button
                     class="text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
-                    on:click={selectAll}
+                    onclick={selectAll}
                   >
                     全选
                   </button>
                   <button
                     class="text-gray-500 hover:text-gray-700 dark:text-gray-300 dark:hover:text-gray-100"
-                    on:click={clearSelection}
+                    onclick={clearSelection}
                   >
                     取消全选
                   </button>
                   <div class="relative" use:clickOutside={() => (showSelectionHelp = false)}>
                     <button
                       class="text-gray-500 hover:text-gray-700 dark:text-gray-300 dark:hover:text-gray-100"
-                      on:click={() =>
+                      onclick={() =>
                         (showSelectionHelp = !showSelectionHelp)}
-                      on:mouseenter={() => (showSelectionHelp = true)}
-                      on:mouseleave={() => (showSelectionHelp = false)}
+                      onmouseenter={() => (showSelectionHelp = true)}
+                      onmouseleave={() => (showSelectionHelp = false)}
                       aria-label="选择顺序说明"
                     >
                       <Info class="w-4 h-4" />
@@ -285,7 +291,7 @@
                       type="checkbox"
                       class="h-4 w-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
                       checked={selectedLiveIds.includes(archiveItem.live_id)}
-                      on:change={(event) =>
+                      onchange={(event) =>
                         handleSelectionChange(event, archiveItem.live_id)}
                     />
                     <div class="flex items-center justify-center w-6">
@@ -385,14 +391,14 @@
       >
         <button
           class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg transition-colors"
-          on:click={closeModal}
+          onclick={closeModal}
         >
           取消
         </button>
         <button
           class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           disabled={isLoading || selectedArchives.length === 0}
-          on:click={generateWholeClip}
+          onclick={generateWholeClip}
         >
           开始合成
         </button>

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { createEventDispatcher, onDestroy, onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { Settings, Send, Sparkles, Trash2, Zap, Bot } from "lucide-svelte";
   import { agentChat } from "../lib/agent/agent";
   import type { LlmConfig } from "../lib/interface";
@@ -18,21 +18,25 @@
   import ProcessingMessageComponent from "../lib/components/ProcessingMessage.svelte";
   import ToolMessageComponent from "../lib/components/ToolMessage.svelte";
 
-  const dispatch = createEventDispatcher<{ navigateSettings: void }>();
+  interface Props {
+    onNavigateSettings?: () => void;
+  }
 
-  let messages: ChatMessage[] = [];
-  let inputMessage = "";
-  let isProcessing = false;
-  let messageContainer: HTMLElement;
-  let inputAreaHeight = 0;
-  let agentConfigured = false;
+  let { onNavigateSettings }: Props = $props();
 
-  let settings = {
+  let messages: ChatMessage[] = $state([]);
+  let inputMessage = $state("");
+  let isProcessing = $state(false);
+  let messageContainer: HTMLElement = $state();
+  let inputAreaHeight = $state(0);
+  let agentConfigured = $state(false);
+
+  let settings = $state({
     provider: "openai" as "openai" | "ollama",
     endpoint: "",
     api_key: "",
     model: ""
-  };
+  });
 
   type ToolCallState = 'confirmed' | 'rejected' | 'none';
 
@@ -47,7 +51,7 @@
   ];
 
   function openSettings() {
-    dispatch("navigateSettings");
+    onNavigateSettings?.();
   }
 
   function updateConfiguredState() {
@@ -90,7 +94,7 @@
     );
   }
 
-  $: hasPendingToolCalls = hasUnresolvedPendingToolCalls();
+  let hasPendingToolCalls = $derived(hasUnresolvedPendingToolCalls());
 
   function persistConversation() {
     try {
@@ -303,7 +307,7 @@
                 </p>
               </div>
               <button
-                on:click={openSettings}
+                onclick={openSettings}
                 class="inline-flex items-center space-x-2 px-6 py-3 bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 rounded-xl hover:bg-gray-800 dark:hover:bg-gray-200 transition-colors font-medium shadow-lg"
               >
                 <Settings class="w-4 h-4" />
@@ -338,7 +342,7 @@
             <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {#each presetPrompts as prompt}
                 <button
-                  on:click={() => handlePresetPrompt(prompt.prompt)}
+                  onclick={() => handlePresetPrompt(prompt.prompt)}
                   class="group p-4 text-left bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-md transition-all"
                 >
                   <div class="flex items-start space-x-3">
@@ -390,7 +394,7 @@
           <div class="relative">
             <textarea
               bind:value={inputMessage}
-              on:keypress={handleKeyPress}
+              onkeypress={handleKeyPress}
               placeholder={!agentConfigured ? "请先配置 AI 模型..." : hasPendingToolCalls ? "请先确认或拒绝待执行的工具调用..." : "输入您的消息..."}
               class="w-full px-4 pt-3 pb-3 border-0 bg-transparent text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-0 resize-none min-h-[52px] max-h-[200px] text-[15px] leading-relaxed disabled:opacity-50 disabled:cursor-not-allowed"
               rows="1"
@@ -403,7 +407,7 @@
             <div class="flex items-center space-x-3">
               <!-- Model info -->
               <button
-                on:click={openSettings}
+                onclick={openSettings}
                 class="flex items-center space-x-1.5 px-2 py-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
                 title="点击配置模型"
               >
@@ -417,7 +421,7 @@
 
               <button
                 class="flex items-center space-x-1 px-2 py-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                on:click={clearConversation}
+                onclick={clearConversation}
                 disabled={!agentConfigured}
                 title="清空对话"
               >
@@ -433,7 +437,7 @@
               <button
                 class="px-3 py-1.5 bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 rounded-lg hover:bg-gray-800 dark:hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center space-x-1.5 text-sm font-medium"
                 disabled={!inputMessage.trim() || isProcessing || hasPendingToolCalls || !agentConfigured}
-                on:click={sendMessage}
+                onclick={sendMessage}
               >
                 <Send class="w-3.5 h-3.5" />
                 <span>发送</span>

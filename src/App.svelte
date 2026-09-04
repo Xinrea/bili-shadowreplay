@@ -12,7 +12,7 @@
   import Archive from "./page/Archive.svelte";
   import { onMount } from "svelte";
 
-  let active = "总览";
+  let active = $state("总览");
   onMount(async () => {
     await onOpenUrl((urls: string[]) => {
       console.log("Received Deep Link:", urls);
@@ -65,8 +65,8 @@
     <div class="sidebar">
       <BSidebar
         bind:activeUrl={active}
-        on:activeChange={(e) => {
-          active = e.detail;
+        onActiveChange={(label) => {
+          active = label;
         }}
       />
     </div>
@@ -87,7 +87,7 @@
         <Task />
       </div>
       <div class="page" class:visible={active == "助手"}>
-        <AI on:navigateSettings={() => (active = "设置")} />
+        <AI onNavigateSettings={() => (active = "设置")} />
       </div>
       <div class="page" class:visible={active == "账号"}>
         <Account />

@@ -26,24 +26,28 @@
   import GenerateWholeClipModal from "../lib/components/GenerateWholeClipModal.svelte";
   import { onMount } from "svelte";
 
-  export let room_count = 0;
-  let room_active = 0;
-  let room_inactive = 0;
+  interface Props {
+    room_count?: number;
+  }
 
-  let summary: RecorderList = {
+  let { room_count = $bindable(0) }: Props = $props();
+  let room_active = $state(0);
+  let room_inactive = $state(0);
+
+  let summary: RecorderList = $state({
     count: 0,
     recorders: [],
-  };
+  });
 
-  let searchQuery = "";
-  $: filteredRecorders = summary.recorders.filter((room) => {
+  let searchQuery = $state("");
+  let filteredRecorders = $derived(summary.recorders.filter((room) => {
     const query = searchQuery.toLowerCase();
     return (
       room.room_info.room_title.toLowerCase().includes(query) ||
       room.user_info.user_name.toLowerCase().includes(query) ||
       room.room_info.room_id.toString().includes(query)
     );
-  });
+  }));
 
   function default_avatar(platform: string) {
     const avatarMap = {
@@ -138,23 +142,23 @@
   setInterval(update_summary, 5000);
 
   // modals
-  let deleteModal = false;
-  let deleteRoom = null;
+  let deleteModal = $state(false);
+  let deleteRoom = $state(null);
 
-  let addModal = false;
-  let addRoom = "";
-  let selectedPlatform = "bilibili";
+  let addModal = $state(false);
+  let addRoom = $state("");
+  let selectedPlatform = $state("bilibili");
 
-  let archiveModal = false;
-  let archiveRoom: RecorderInfo = null;
-  let archives: RecordItem[] = [];
+  let archiveModal = $state(false);
+  let archiveRoom: RecorderInfo = $state(null);
+  let archives: RecordItem[] = $state([]);
 
   // 分页相关状态
-  let currentPage = 0;
+  let currentPage = $state(0);
   let pageSize = 20;
-  let hasMore = true;
-  let isLoading = false;
-  let loadError = "";
+  let hasMore = $state(true);
+  let isLoading = $state(false);
+  let loadError = $state("");
 
   async function showArchives(room_id: string) {
     // 重置分页状态
@@ -439,8 +443,8 @@
       });
   }
 
-  let generateWholeClipModal = false;
-  let generateWholeClipArchive: RecordItem = null;
+  let generateWholeClipModal = $state(false);
+  let generateWholeClipArchive: RecordItem = $state(null);
 
   async function openGenerateWholeClipModal(archive: RecordItem) {
     generateWholeClipModal = true;
@@ -525,7 +529,7 @@
         </div>
         <button
           class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center space-x-2"
-          on:click={() => {
+          onclick={() => {
             addModal = true;
           }}
         >
@@ -590,7 +594,7 @@
             <Dropdown class="whitespace-nowrap">
               <button
                 class="px-4 py-2 flex items-center justify-between hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"
-                on:click={() => toggleEnabled(room)}
+                onclick={() => toggleEnabled(room)}
               >
                 <span
                   class="text-sm text-gray-700 dark:text-gray-200 font-medium"
@@ -602,13 +606,13 @@
                 </label>
               </button>
               <DropdownItem
-                on:click={() => {
+                onclick={() => {
                   openLiveUrl(room);
                 }}>打开网页直播间</DropdownItem
               >
               <DropdownItem
                 class="text-red-500"
-                on:click={() => {
+                onclick={() => {
                   deleteRoom = room;
                   deleteModal = true;
                 }}>移除直播间</DropdownItem
@@ -644,7 +648,7 @@
               >
                 <button
                   class="flex items-center space-x-2 p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
-                  on:click={() => {
+                  onclick={() => {
                     openUserUrl(room);
                   }}
                 >
@@ -660,7 +664,7 @@
                 {#if room.recording}
                   <button
                     class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
-                    on:click={() => {
+                    onclick={() => {
                       invoke("open_live", {
                         platform: room.room_info.platform,
                         roomId: room.room_info.room_id,
@@ -673,7 +677,7 @@
                 {/if}
                 <button
                   class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
-                  on:click={() => {
+                  onclick={() => {
                     archiveRoom = room;
                     showArchives(room.room_info.room_id);
                   }}
@@ -689,7 +693,7 @@
       <!-- Add Room Card -->
       <button
         class="p-4 rounded-xl border-2 border-dashed border-gray-300 dark:border-gray-600 hover:border-blue-500 dark:hover:border-blue-400 transition-colors flex flex-col items-center justify-center space-y-2"
-        on:click={() => {
+        onclick={() => {
           addModal = true;
         }}
       >
@@ -729,7 +733,7 @@
         <div class="flex justify-center space-x-3">
           <button
             class="w-24 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg transition-colors"
-            on:click={() => {
+            onclick={() => {
               deleteModal = false;
             }}
           >
@@ -737,7 +741,7 @@
           </button>
           <button
             class="w-24 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors"
-            on:click={async () => {
+            onclick={async () => {
               await invoke("remove_recorder", {
                 roomId: deleteRoom.room_info.room_id,
                 platform: deleteRoom.room_info.platform,
@@ -786,7 +790,7 @@
                 'bilibili'
                   ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white'
                   : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-                on:click={() => (selectedPlatform = "bilibili")}
+                onclick={() => (selectedPlatform = "bilibili")}
               >
                 哔哩哔哩
               </button>
@@ -795,7 +799,7 @@
                 'douyin'
                   ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white'
                   : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-                on:click={() => (selectedPlatform = "douyin")}
+                onclick={() => (selectedPlatform = "douyin")}
               >
                 抖音
               </button>
@@ -804,7 +808,7 @@
                 'huya'
                   ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white'
                   : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-                on:click={() => (selectedPlatform = "huya")}
+                onclick={() => (selectedPlatform = "huya")}
               >
                 虎牙
               </button>
@@ -813,7 +817,7 @@
                 'kuaishou'
                   ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white'
                   : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-                on:click={() => (selectedPlatform = "kuaishou")}
+                onclick={() => (selectedPlatform = "kuaishou")}
               >
                 快手
               </button>
@@ -822,7 +826,7 @@
                 'tiktok'
                   ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white'
                   : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-                on:click={() => (selectedPlatform = "tiktok")}
+                onclick={() => (selectedPlatform = "tiktok")}
               >
                 TikTok
               </button>
@@ -848,7 +852,7 @@
           <div class="flex justify-end space-x-3">
             <button
               class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg transition-colors"
-              on:click={() => {
+              onclick={() => {
                 addModal = false;
               }}
             >
@@ -857,7 +861,7 @@
             <button
               class="px-4 py-2 bg-[#0A84FF] hover:bg-[#0A84FF]/90 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               disabled={!addRoom}
-              on:click={() => {
+              onclick={() => {
                 addNewRecorder(addRoom, selectedPlatform);
                 addModal = false;
                 addRoom = "";
@@ -896,7 +900,7 @@
         </div>
         <button
           class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors"
-          on:click={() => (archiveModal = false)}
+          onclick={() => (archiveModal = false)}
         >
           <X class="w-5 h-5 dark:icon-white" />
         </button>
@@ -904,7 +908,7 @@
 
       <div
         class="flex-1 overflow-auto custom-scrollbar-light"
-        on:scroll={handleScroll}
+        onscroll={handleScroll}
       >
         <div class="p-6">
           <div class="overflow-x-auto custom-scrollbar-light">
@@ -979,7 +983,7 @@
                         <button
                           class="p-1.5 rounded-lg hover:bg-blue-500/10 transition-colors"
                           title="预览录播"
-                          on:click={() => {
+                          onclick={() => {
                             invoke("open_live", {
                               platform: archiveRoom.room_info.platform,
                               roomId: archiveRoom.room_info.room_id,
@@ -992,7 +996,7 @@
                         <button
                           class="p-1.5 rounded-lg hover:bg-blue-500/10 transition-colors"
                           title="生成完整切片"
-                          on:click={() => {
+                          onclick={() => {
                             openGenerateWholeClipModal(archive);
                           }}
                         >
@@ -1001,7 +1005,7 @@
                         <button
                           class="p-1.5 rounded-lg hover:bg-red-500/10 transition-colors"
                           title="删除记录"
-                          on:click={() => {
+                          onclick={() => {
                             invoke("delete_archive", {
                               platform: archiveRoom.room_info.platform,
                               roomId: archiveRoom.room_info.room_id,
@@ -1037,7 +1041,7 @@
                 {loadError}
                 <button
                   class="ml-2 text-blue-500 hover:text-blue-600 underline"
-                  on:click={() => {
+                  onclick={() => {
                     loadError = "";
                     loadMoreArchives();
                   }}
@@ -1082,11 +1086,10 @@
   bind:showModal={generateWholeClipModal}
   archive={generateWholeClipArchive}
   roomId={generateWholeClipArchive?.room_id || ""}
-  platform={generateWholeClipArchive?.platform || ""}
-  on:generated={handleWholeClipGenerated}
+  onGenerated={handleWholeClipGenerated}
 />
 
-<svelte:window on:mousedown={handleModalClickOutside} />
+<svelte:window onmousedown={handleModalClickOutside} />
 
 <style>
   /* macOS style toggle switch */

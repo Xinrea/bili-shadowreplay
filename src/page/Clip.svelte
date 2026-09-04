@@ -30,22 +30,22 @@
   import TikTokIcon from "../lib/components/TikTokIcon.svelte";
 
   let videos: VideoItem[] = [];
-  let filteredVideos: VideoItem[] = [];
-  let loading = false;
-  let sortBy = "created_at";
-  let sortOrder = "desc";
-  let selectedRoomId = null;
-  let roomIds: string[] = [];
+  let filteredVideos: VideoItem[] = $state([]);
+  let loading = $state(false);
+  let sortBy = $state("created_at");
+  let sortOrder = $state("desc");
+  let selectedRoomId = $state(null);
+  let roomIds: string[] = $state([]);
 
-  let selectedVideos: Set<number> = new Set();
-  let showDeleteConfirm = false;
-  let videoToDelete: VideoItem | null = null;
-  let showImportDialog = false;
+  let selectedVideos: Set<number> = $state(new Set());
+  let showDeleteConfirm = $state(false);
+  let videoToDelete: VideoItem | null = $state(null);
+  let showImportDialog = $state(false);
 
   // 编辑备注相关状态
-  let showEditNoteDialog = false;
-  let videoToEditNote: VideoItem | null = null;
-  let editingNote = "";
+  let showEditNoteDialog = $state(false);
+  let videoToEditNote: VideoItem | null = $state(null);
+  let editingNote = $state("");
 
   onMount(async () => {
     await loadVideos();
@@ -55,15 +55,17 @@
     stopProgressPolling();
   });
 
-  let importProgressInfo = null;
+  let importProgressInfo = $state(null);
   let progressPollingTimer = null;
 
   /**
    * 响应式语句：当检测到转换任务时，确保 loading 状态为 true
    */
-  $: if (importProgressInfo) {
-    loading = true;
-  }
+  $effect(() => {
+    if (importProgressInfo) {
+      loading = true;
+    }
+  });
 
   /**
    * 启动进度轮询定时器
@@ -466,8 +468,8 @@
   }
 </script>
 
-<!-- svelte-ignore a11y-click-events-have-key-events -->
-<svelte:window on:keydown={handleKeydown} />
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<svelte:window onkeydown={handleKeydown} />
 
 <div class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50 dark:bg-black">
   <div class="space-y-6">
@@ -485,14 +487,14 @@
       <div class="flex items-center space-x-3">
         <button
           class="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors flex items-center space-x-2"
-          on:click={() => (showImportDialog = true)}
+          onclick={() => (showImportDialog = true)}
         >
           <Upload class="w-4 h-4 text-white" />
           <span>导入视频</span>
         </button>
         <button
           class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
-          on:click={loadVideos}
+          onclick={loadVideos}
           disabled={loading}
         >
           <RefreshCw
@@ -511,7 +513,7 @@
         <div class="flex space-x-3">
           <select
             bind:value={selectedRoomId}
-            on:change={applyFilters}
+            onchange={applyFilters}
             class="px-3 py-2 bg-gray-100 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 cursor-pointer"
           >
             <option value={null}>所有直播间</option>
@@ -528,7 +530,7 @@
             'room_id'
               ? 'bg-blue-500 text-white'
               : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
-            on:click={() => toggleSort("room_id")}
+            onclick={() => toggleSort("room_id")}
           >
             直播间号
             {#if sortBy === "room_id"}
@@ -544,7 +546,7 @@
             'title'
               ? 'bg-blue-500 text-white'
               : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
-            on:click={() => toggleSort("title")}
+            onclick={() => toggleSort("title")}
           >
             文件名
             {#if sortBy === "title"}
@@ -560,7 +562,7 @@
             'note'
               ? 'bg-blue-500 text-white'
               : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
-            on:click={() => toggleSort("note")}
+            onclick={() => toggleSort("note")}
           >
             备注
             {#if sortBy === "note"}
@@ -576,7 +578,7 @@
             'length'
               ? 'bg-blue-500 text-white'
               : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
-            on:click={() => toggleSort("length")}
+            onclick={() => toggleSort("length")}
           >
             时长
             {#if sortBy === "length"}
@@ -592,7 +594,7 @@
             'size'
               ? 'bg-blue-500 text-white'
               : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
-            on:click={() => toggleSort("size")}
+            onclick={() => toggleSort("size")}
           >
             大小
             {#if sortBy === "size"}
@@ -608,7 +610,7 @@
             'created_at'
               ? 'bg-blue-500 text-white'
               : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
-            on:click={() => toggleSort("created_at")}
+            onclick={() => toggleSort("created_at")}
           >
             创建时间
             {#if sortBy === "created_at"}
@@ -633,7 +635,7 @@
         </span>
         <button
           class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors flex items-center space-x-2"
-          on:click={() => {
+          onclick={() => {
             showDeleteConfirm = true;
             videoToDelete = null;
           }}
@@ -706,7 +708,7 @@
                     type="checkbox"
                     checked={selectedVideos.size === filteredVideos.length &&
                       filteredVideos.length > 0}
-                    on:change={selectAllVideos}
+                    onchange={selectAllVideos}
                     class="rounded border-gray-300 dark:border-gray-600"
                   />
                 </th>
@@ -753,7 +755,7 @@
                     <input
                       type="checkbox"
                       checked={selectedVideos.has(video.id)}
-                      on:change={() => toggleVideoSelection(video.id)}
+                      onchange={() => toggleVideoSelection(video.id)}
                       class="rounded border-gray-300 dark:border-gray-600"
                     />
                   </td>
@@ -886,7 +888,7 @@
                             src={video.cover}
                             alt="封面"
                             class="w-full h-full object-cover"
-                            on:error={handleImageError}
+                            onerror={handleImageError}
                           />
                         {:else}
                           <!-- 默认视频图标 -->
@@ -984,14 +986,14 @@
                       <button
                         class="p-1.5 rounded-lg hover:bg-blue-500/10 transition-colors"
                         title="播放"
-                        on:click={() => playVideo(video)}
+                        onclick={() => playVideo(video)}
                       >
                         <Play class="w-4 h-4 text-blue-500" />
                       </button>
                       <button
                         class="p-1.5 rounded-lg hover:bg-green-500/10 transition-colors"
                         title="编辑备注"
-                        on:click={() => openEditNoteDialog(video)}
+                        onclick={() => openEditNoteDialog(video)}
                       >
                         <Edit class="w-4 h-4 text-green-500" />
                       </button>
@@ -999,7 +1001,7 @@
                         <button
                           class="p-1.5 rounded-lg hover:bg-blue-500/10 transition-colors"
                           title="导出"
-                          on:click={async () => await exportVideo(video)}
+                          onclick={async () => await exportVideo(video)}
                         >
                           <Download class="w-4 h-4 text-blue-500" />
                         </button>
@@ -1007,7 +1009,7 @@
                       <button
                         class="p-1.5 rounded-lg hover:bg-red-500/10 transition-colors"
                         title="删除"
-                        on:click={() => {
+                        onclick={() => {
                           videoToDelete = video;
                           showDeleteConfirm = true;
                         }}
@@ -1051,7 +1053,7 @@
         <div class="flex justify-center space-x-3">
           <button
             class="w-24 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg transition-colors"
-            on:click={() => {
+            onclick={() => {
               showDeleteConfirm = false;
               videoToDelete = null;
             }}
@@ -1060,7 +1062,7 @@
           </button>
           <button
             class="w-24 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors"
-            on:click={() => {
+            onclick={() => {
               if (videoToDelete) {
                 deleteVideo(videoToDelete);
               } else {
@@ -1078,18 +1080,19 @@
 
 <!-- Edit Note Dialog -->
 {#if showEditNoteDialog && videoToEditNote}
-  <!-- svelte-ignore a11y-click-events-have-key-events -->
-  <!-- svelte-ignore a11y-no-static-element-interactions -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="fixed inset-0 bg-black/30 dark:bg-black/50 z-50 flex items-center justify-center p-4"
-    on:click={closeEditNoteDialog}
+    onclick={closeEditNoteDialog}
   >
-    <!-- svelte-ignore a11y-click-events-have-key-events -->
-    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="mac-modal w-[480px] max-w-full bg-white dark:bg-[#2d2d30] rounded-xl shadow-xl border border-gray-200 dark:border-gray-600 overflow-hidden"
-      on:click|stopPropagation
+      onclick={(event) => event.stopPropagation()}
       role="dialog"
+      tabindex="-1"
       aria-labelledby="edit-note-title"
       aria-describedby="edit-note-description"
     >
@@ -1141,7 +1144,7 @@
                      focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500
                      transition-colors duration-150 resize-none"
               rows="5"
-              on:keydown={(e) => {
+              onkeydown={(e) => {
                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                   saveNote();
                 }
@@ -1162,13 +1165,13 @@
         <div class="flex justify-end space-x-3">
           <button
             class="w-24 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg transition-colors"
-            on:click={closeEditNoteDialog}
+            onclick={closeEditNoteDialog}
           >
             取消
           </button>
           <button
             class="w-24 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
-            on:click={saveNote}
+            onclick={saveNote}
           >
             保存
           </button>
@@ -1182,7 +1185,7 @@
 <ImportVideoDialog
   bind:showDialog={showImportDialog}
   roomId={selectedRoomId}
-  on:imported={handleVideoImported}
+  onImported={handleVideoImported}
 />
 
 <style>

@@ -1,10 +1,10 @@
-<script type="ts">
+<script lang="ts">
   import { open } from "../lib/invoker";
   import { BookOpen, MessageCircle, Video, Heart } from "lucide-svelte";
   import { hasNewVersion, latestVersion } from "../lib/stores/version";
   let version = `v${__APP_VERSION__}`;
-  let showDonateModal = false;
-  let releases = [];
+  let showDonateModal = $state(false);
+  let releases = $state([]);
 
   // get releases from github api
   fetch("https://api.github.com/repos/Xinrea/bili-shadowreplay/releases")
@@ -77,7 +77,7 @@
     <div class="grid grid-cols-3 gap-4">
       <button
         class="p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
-        on:click={() => {
+        onclick={() => {
           // tauri open url
           open("https://bsr.xinrea.cn/");
         }}
@@ -95,7 +95,7 @@
       </button>
       <button
         class="p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
-        on:click={() => {
+        onclick={() => {
           // tauri open url
           open("https://qm.qq.com/q/v4lrE6gyum");
         }}
@@ -113,7 +113,7 @@
       </button>
       <button
         class="p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
-        on:click={toggleDonateModal}
+        onclick={toggleDonateModal}
       >
         <div class="flex flex-col items-center space-y-2">
           <div
@@ -137,12 +137,14 @@
         class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700"
       >
         {#each releases as release}
-          <!-- svelte-ignore a11y-click-events-have-key-events -->
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
           <div
             class="p-4 cursor-pointer {release !== releases[releases.length - 1]
               ? 'border-b border-gray-200 dark:border-gray-700'
               : ''}"
-            on:click={() => {
+            role="button"
+            tabindex="0"
+            onclick={() => {
               open(release.url);
             }}
           >
@@ -183,7 +185,7 @@
         </h3>
         <button
           class="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
-          on:click={toggleDonateModal}
+          onclick={toggleDonateModal}
         >
           ✕
         </button>
@@ -202,4 +204,4 @@
   </div>
 {/if}
 
-<svelte:window on:mousedown={handleModalClickOutside} />
+<svelte:window onmousedown={handleModalClickOutside} />

@@ -1,4 +1,4 @@
-<script lang="ts" context="module">
+<script lang="ts" module>
   declare const shaka: any;
 </script>
 
@@ -7,14 +7,12 @@
   import type { AccountInfo } from "../db";
   import type { Marker, RecorderList, RecorderInfo, Range } from "../interface";
 
-  import { createEventDispatcher } from "svelte";
   import {
     GridOutline,
     SortHorizontalOutline,
     FileExportOutline,
   } from "flowbite-svelte-icons";
   import { save } from "@tauri-apps/plugin-dialog";
-  const dispatch = createEventDispatcher();
   const DANMU_STATISTIC_GAP = 5;
 
   interface DanmuEntry {
@@ -22,31 +20,50 @@
     content: string;
   }
 
-  export let platform: string;
-  export let room_id: string;
-  export let live_id: string;
-  export let ranges: Range[] = [];
-  export let global_offset = 0;
-  export let focus_start = 0;
-  export let focus_end = 0;
-  export let markers: Marker[] = [];
-  export let danmu_records: DanmuEntry[] = [];
+  interface Props {
+    platform: string;
+    room_id: string;
+    live_id: string;
+    ranges?: Range[];
+    global_offset?: number;
+    focus_start?: number;
+    focus_end?: number;
+    markers?: Marker[];
+    danmu_records?: DanmuEntry[];
+    onMarkerAdd?: (marker: { offset: number; realtime: number }) => void;
+  }
+
+  let {
+    platform,
+    room_id,
+    live_id,
+    ranges = $bindable([]),
+    global_offset = $bindable(0),
+    focus_start = 0,
+    focus_end = 0,
+    markers = [],
+    danmu_records = $bindable([]),
+    onMarkerAdd
+  }: Props = $props();
   export function seek(offset: number) {
     video.currentTime = offset;
   }
   let video: HTMLVideoElement;
-  let show_detail = false;
+  let show_detail = $state(false);
   let show_list = false;
   let show_export = false;
-  let recorders: RecorderInfo[] = [];
+  let recorders: RecorderInfo[] = $state([]);
 
-  let start = 0;
-  let end = 0;
+  let start = $state(0);
+  let end = $state(0);
   let currentRangeIndex: number = -1; // 当前正在编辑的区间索引，-1 表示没有区间
 
   // local setting of danmu offset
-  let local_offset: number =
-    parseInt(localStorage.getItem(`local_offset:${live_id}`) || "0", 10) || 0;
+  let local_offset = $state(0);
+  $effect(() => {
+    local_offset =
+      parseInt(localStorage.getItem(`local_offset:${live_id}`) || "0", 10) || 0;
+  });
 
   // 获取当前区间
   function getCurrentRange(): Range | null {
@@ -199,7 +216,7 @@
   }
 
   // 向后兼容：保持 start 和 end 的 getter/setter
-  $: {
+  $effect(() => {
     const current = getCurrentRange();
     if (current) {
       start = current.start;
@@ -208,7 +225,7 @@
       start = 0;
       end = 0;
     }
-  }
+  });
 
   async function load_metadata(url: string) {
     let offset = 0;
@@ -1036,7 +1053,7 @@ ${mediaPlaylistUrl}`;
             break;
           }
           // dispatch event
-          dispatch("markerAdd", {
+          onMarkerAdd?.({
             offset: video.currentTime,
             realtime: global_offset + video.currentTime,
           });
@@ -1400,7 +1417,7 @@ ${mediaPlaylistUrl}`;
     data-shaka-player-container
     style="width: 100%; height: 100vh;"
   >
-    <!-- svelte-ignore a11y-media-has-caption -->
+    <!-- svelte-ignore a11y_media_has_caption -->
     <video
       autoplay
       data-shaka-player
@@ -1444,10 +1461,11 @@ ${mediaPlaylistUrl}`;
   </button>
   <ul class="shortcut-list">
     {#each recorders as recorder}
-      <!-- svelte-ignore a11y-click-events-have-key-events -->
-      <li
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <button
+        type="button"
         class="shortcut"
-        on:click={() => {
+        onclick={() => {
           go_to(
             recorder.room_info.platform,
             recorder.room_info.room_id,
@@ -1457,7 +1475,7 @@ ${mediaPlaylistUrl}`;
       >
         <SortHorizontalOutline />[{recorder.user_info.user_name}]{recorder
           .room_info.room_title}
-      </li>
+      </button>
     {/each}
     {#if recorders.length == 0}
       <p>没有其它正在直播的房间</p>
@@ -1470,24 +1488,26 @@ ${mediaPlaylistUrl}`;
     <FileExportOutline />
   </button>
   <ul class="export-list">
-    <!-- svelte-ignore a11y-click-events-have-key-events -->
-    <li
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <button
+      type="button"
       class="export-item"
-      on:click={() => {
+      onclick={() => {
         exportDanmu(false);
       }}
     >
       导出弹幕为 TXT
-    </li>
-    <!-- svelte-ignore a11y-click-events-have-key-events -->
-    <li
+    </button>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <button
+      type="button"
       class="export-item"
-      on:click={() => {
+      onclick={() => {
         exportDanmu(true);
       }}
     >
       导出弹幕为 ASS
-    </li>
+    </button>
   </ul>
 </div>
 

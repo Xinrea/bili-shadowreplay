@@ -17,7 +17,7 @@
   } from "lucide-svelte";
   import { onMount } from "svelte";
 
-  let setting_model: Config = {
+  let setting_model: Config = $state({
     cache: "",
     output: "",
     primary_uid: 0,
@@ -52,17 +52,17 @@
       font_size: 36,
       opacity: 0.8,
     },
-  };
+  });
 
-  let showModal = false;
-  let show_clip_name_help = false;
+  let showModal = $state(false);
+  let show_clip_name_help = $state(false);
   let endpoint = localStorage.getItem("endpoint") || "";
-  let endpointValue = endpoint;
-  let llmModels: string[] = [];
-  let llmModelsLoading = false;
-  let llmSaving = false;
-  let llmSaveMessage = "";
-  let llmError = "";
+  let endpointValue = $state(endpoint);
+  let llmModels: string[] = $state([]);
+  let llmModelsLoading = $state(false);
+  let llmSaving = $state(false);
+  let llmSaveMessage = $state("");
+  let llmError = $state("");
 
   function handleEndpointChange() {
     endpointValue = normalizeEndpoint(endpointValue);
@@ -278,7 +278,7 @@
                     type="number"
                     class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-24"
                     bind:value={setting_model.status_check_interval}
-                    on:blur={update_status_check_interval}
+                    onblur={update_status_check_interval}
                   />
                 </div>
               </div>
@@ -302,7 +302,7 @@
                     type="text"
                     class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
                     bind:value={setting_model.webhook_url}
-                    on:change={update_webhook_url}
+                    onchange={update_webhook_url}
                     placeholder="https://example.com/webhook"
                   />
                 </div>
@@ -339,7 +339,7 @@
                       type="text"
                       class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
                       bind:value={endpointValue}
-                      on:blur={handleEndpointChange}
+                      onblur={handleEndpointChange}
                       placeholder="http://localhost:3000"
                     />
                   </div>
@@ -377,7 +377,7 @@
                     </div>
                     <button
                       class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
-                      on:click={handleCacheChange}
+                      onclick={handleCacheChange}
                     >
                       变更
                     </button>
@@ -397,7 +397,7 @@
                     </div>
                     <button
                       class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
-                      on:click={handleOutputChange}
+                      onclick={handleOutputChange}
                     >
                       变更
                     </button>
@@ -417,7 +417,7 @@
                     </div>
                     <button
                       class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
-                      on:click={handleLogFolder}
+                      onclick={handleLogFolder}
                     >
                       打开
                     </button>
@@ -456,7 +456,7 @@
                       type="checkbox"
                       class="peer opacity-0 w-0 h-0"
                       bind:checked={setting_model.live_start_notify}
-                      on:change={update_notify}
+                      onchange={update_notify}
                     />
                     <span
                       class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
@@ -481,7 +481,7 @@
                       type="checkbox"
                       class="peer opacity-0 w-0 h-0"
                       bind:checked={setting_model.live_end_notify}
-                      on:change={update_notify}
+                      onchange={update_notify}
                     />
                     <span
                       class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
@@ -506,7 +506,7 @@
                       type="checkbox"
                       class="peer opacity-0 w-0 h-0"
                       bind:checked={setting_model.clip_notify}
-                      on:change={update_notify}
+                      onchange={update_notify}
                     />
                     <span
                       class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
@@ -531,7 +531,7 @@
                       type="checkbox"
                       class="peer opacity-0 w-0 h-0"
                       bind:checked={setting_model.post_notify}
-                      on:change={update_notify}
+                      onchange={update_notify}
                     />
                     <span
                       class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
@@ -566,7 +566,7 @@
                   <select
                     class="w-96 px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white"
                     bind:value={setting_model.llm.provider}
-                    on:change={handleLlmProviderChange}
+                    onchange={handleLlmProviderChange}
                   >
                     <option value="openai">OpenAI 兼容 API</option>
                     <option value="ollama">Ollama</option>
@@ -590,7 +590,7 @@
                     type="text"
                     class="w-96 px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white"
                     bind:value={setting_model.llm.endpoint}
-                    on:blur={saveLlmConfig}
+                    onblur={saveLlmConfig}
                     placeholder={setting_model.llm.provider === "ollama"
                       ? "http://localhost:11434"
                       : "https://api.openai.com/v1"}
@@ -613,7 +613,7 @@
                       type="password"
                       class="w-96 px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white"
                       bind:value={setting_model.llm.api_key}
-                      on:blur={saveLlmConfig}
+                      onblur={saveLlmConfig}
                       placeholder="sk-..."
                     />
                   </div>
@@ -635,7 +635,7 @@
                       type="text"
                       class="min-w-0 flex-1 px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white"
                       bind:value={setting_model.llm.model}
-                      on:blur={saveLlmConfig}
+                      onblur={saveLlmConfig}
                       list="llm-model-options"
                       placeholder={setting_model.llm.provider === "ollama"
                         ? "qwen3, llama3.2..."
@@ -648,7 +648,7 @@
                     </datalist>
                     <button
                       class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg border border-gray-200 bg-gray-100 text-gray-700 hover:bg-gray-200 disabled:opacity-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
-                      on:click={loadLlmModels}
+                      onclick={loadLlmModels}
                       disabled={llmModelsLoading ||
                         !setting_model.llm.endpoint.trim() ||
                         (setting_model.llm.provider === "openai" &&
@@ -709,7 +709,7 @@
                       type="checkbox"
                       class="peer opacity-0 w-0 h-0"
                       bind:checked={setting_model.auto_subtitle}
-                      on:change={update_subtitle_setting}
+                      onchange={update_subtitle_setting}
                     />
                     <span
                       class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
@@ -739,7 +739,7 @@
                     <select
                       class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white"
                       bind:value={setting_model.subtitle_generator_type}
-                      on:change={async () => {
+                      onchange={async () => {
                         try {
                           await invoke("update_subtitle_generator_type", {
                             subtitleGeneratorType:
@@ -776,7 +776,7 @@
                         type="password"
                         class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
                         bind:value={setting_model.powerlive_key}
-                        on:change={async () => {
+                        onchange={async () => {
                           await invoke("update_powerlive_key", {
                             powerliveKey: setting_model.powerlive_key,
                           });
@@ -810,7 +810,7 @@
                       </div>
                       <button
                         class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
-                        on:click={handleWhisperModelPathChange}>变更</button
+                        onclick={handleWhisperModelPathChange}>变更</button
                       >
                     </div>
                   </div>
@@ -834,7 +834,7 @@
                           type="text"
                           class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
                           bind:value={setting_model.openai_api_endpoint}
-                          on:change={async () => {
+                          onchange={async () => {
                             await invoke("update_openai_api_endpoint", {
                               openaiApiEndpoint:
                                 setting_model.openai_api_endpoint,
@@ -862,7 +862,7 @@
                           type="password"
                           class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
                           bind:value={setting_model.openai_api_key}
-                          on:change={async () => {
+                          onchange={async () => {
                             await invoke("update_openai_api_key", {
                               openaiApiKey: setting_model.openai_api_key,
                             });
@@ -891,7 +891,7 @@
                           type="text"
                           class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
                           bind:value={setting_model.whisper_prompt}
-                          on:change={async () => {
+                          onchange={async () => {
                             await invoke("update_whisper_prompt", {
                               whisperPrompt: setting_model.whisper_prompt,
                             });
@@ -919,7 +919,7 @@
                         type="text"
                         class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
                         bind:value={setting_model.whisper_language}
-                        on:change={async () => {
+                        onchange={async () => {
                           await invoke("update_whisper_language", {
                             whisperLanguage: setting_model.whisper_language,
                           });
@@ -965,14 +965,15 @@
                       </p>
                       <div
                         class="relative"
+                        role="presentation"
                         use:clickOutside={() => (show_clip_name_help = false)}
-                        on:mouseenter={() => (show_clip_name_help = true)}
-                        on:mouseleave={() => (show_clip_name_help = false)}
+                        onmouseenter={() => (show_clip_name_help = true)}
+                        onmouseleave={() => (show_clip_name_help = false)}
                       >
                         <button
                           type="button"
                           class="text-xs text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
-                          on:click={() =>
+                          onclick={() =>
                             (show_clip_name_help = !show_clip_name_help)}
                         >
                           详情
@@ -1002,7 +1003,7 @@
                       type="text"
                       class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
                       bind:value={setting_model.clip_name_format}
-                      on:change={async () => {
+                      onchange={async () => {
                         await invoke("update_clip_name_format", {
                           clipNameFormat: setting_model.clip_name_format,
                         });
@@ -1043,7 +1044,7 @@
                       type="number"
                       class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-24"
                       bind:value={setting_model.danmu_ass_options.font_size}
-                      on:blur={update_danmu_ass_options}
+                      onblur={update_danmu_ass_options}
                       min="12"
                       max="72"
                       step="1"
@@ -1070,7 +1071,7 @@
                       type="number"
                       class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-24"
                       bind:value={setting_model.danmu_ass_options.opacity}
-                      on:blur={update_danmu_ass_options}
+                      onblur={update_danmu_ass_options}
                       min="0.0"
                       max="1.0"
                       step="0.1"
@@ -1110,7 +1111,7 @@
                       type="checkbox"
                       class="peer opacity-0 w-0 h-0"
                       bind:checked={setting_model.auto_generate.enabled}
-                      on:change={async () => {
+                      onchange={async () => {
                         await invoke("update_auto_generate", {
                           enabled: setting_model.auto_generate.enabled,
                           encodeDanmu: setting_model.auto_generate.encode_danmu,
@@ -1141,7 +1142,7 @@
                       type="checkbox"
                       class="peer opacity-0 w-0 h-0"
                       bind:checked={setting_model.auto_generate.encode_danmu}
-                      on:change={async () => {
+                      onchange={async () => {
                         await invoke("update_auto_generate", {
                           enabled: setting_model.auto_generate.enabled,
                           encodeDanmu: setting_model.auto_generate.encode_danmu,
@@ -1188,13 +1189,13 @@
       <div class="flex justify-end space-x-4">
         <button
           class="px-4 py-2 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
-          on:click={() => (showModal = false)}
+          onclick={() => (showModal = false)}
         >
           取消
         </button>
         <button
           class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
-          on:click={confirmChange}
+          onclick={confirmChange}
         >
           确认
         </button>

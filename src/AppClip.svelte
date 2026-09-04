@@ -5,10 +5,10 @@
   import type { Config, VideoItem } from "./lib/interface";
   import { set_title } from "./lib/invoker";
 
-  let video: VideoItem | null = null;
-  let videos: any[] = [];
-  let showVideoPreview = false;
-  let roomId: string = "";
+  let video: VideoItem | null = $state(null);
+  let videos: any[] = $state([]);
+  let showVideoPreview = $state(false);
+  let roomId: string = $state("");
 
   let config: Config = null;
 

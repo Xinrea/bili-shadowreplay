@@ -13,14 +13,18 @@
   } from "../agent/messages";
   import CopyMarkdownButton from "./CopyMarkdownButton.svelte";
 
-  export let message: ToolMessage;
-  export let formatTime: (date: Date) => string;
+  interface Props {
+    message: ToolMessage;
+    formatTime: (date: Date) => string;
+  }
+
+  let { message, formatTime }: Props = $props();
 
   // 折叠状态 - 默认折叠
-  let isExpanded = false;
+  let isExpanded = $state(false);
 
-  $: messageTime = new Date(message.timestamp);
-  $: contentParts = messageContentToDisplayParts(message.content);
+  let messageTime = $derived(new Date(message.timestamp));
+  let contentParts = $derived(messageContentToDisplayParts(message.content));
 
   function markdownContent(): string {
     return messageContentToMarkdown(message.content);
@@ -55,8 +59,8 @@
     isExpanded = !isExpanded;
   }
 
-  $: statusInfo = getStatusInfo();
-  $: StatusIcon = statusInfo.icon;
+  let statusInfo = $derived(getStatusInfo());
+  let StatusIcon = $derived(statusInfo.icon);
 </script>
 
 <div class="flex justify-start">
@@ -85,8 +89,7 @@
           <!-- 工具信息头部 -->
           <div class="mb-3">
             <div class="flex items-center space-x-2 mb-2">
-              <svelte:component
-                this={StatusIcon}
+              <StatusIcon
                 class="w-4 h-4 {statusInfo.color}"
               />
               <span
@@ -104,7 +107,7 @@
           <div class="space-y-2">
             <!-- 折叠按钮 -->
             <button
-              on:click={toggleExpanded}
+              onclick={toggleExpanded}
               class="flex items-center space-x-2 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
             >
               {#if isExpanded}

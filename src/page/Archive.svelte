@@ -29,36 +29,36 @@
   import type { RecorderInfo, RecorderList } from "src/lib/interface";
 
   let archives: RecordItem[] = [];
-  let filteredArchives: RecordItem[] = [];
-  let loading = false;
-  let sortBy = "created_at";
-  let sortOrder = "desc";
+  let filteredArchives: RecordItem[] = $state([]);
+  let loading = $state(false);
+  let sortBy = $state("created_at");
+  let sortOrder = $state("desc");
   type RoomOption = {
     id: string;
     label: string;
   };
 
-  let selectedRoomId: string | null = null;
-  let roomOptions: RoomOption[] = [];
+  let selectedRoomId: string | null = $state(null);
+  let roomOptions: RoomOption[] = $state([]);
 
-  let selectedArchives: Set<string> = new Set();
-  let showDeleteConfirm = false;
-  let archiveToDelete: RecordItem | null = null;
+  let selectedArchives: Set<string> = $state(new Set());
+  let showDeleteConfirm = $state(false);
+  let archiveToDelete: RecordItem | null = $state(null);
 
   // 生成完整录播相关状态
-  let showWholeClipModal = false;
-  let wholeClipArchive: RecordItem | null = null;
-  let showSummaryModal = false;
-  let summaryArchive: RecordItem | null = null;
+  let showWholeClipModal = $state(false);
+  let wholeClipArchive: RecordItem | null = $state(null);
+  let showSummaryModal = $state(false);
+  let summaryArchive: RecordItem | null = $state(null);
   let summaryStatuses: Record<string, RecordSummaryStatus> = {};
 
   // 分页相关状态
-  let currentPage = 1;
-  let pageSize = 20;
-  let totalPages = 1;
-  let totalCount = 0;
+  let currentPage = $state(1);
+  let pageSize = $state(20);
+  let totalPages = $state(1);
+  let totalCount = $state(0);
   let isLoading = false;
-  let loadError = "";
+  let loadError = $state("");
 
   // 页面大小选项
   const pageSizeOptions = [10, 20, 50, 100];
@@ -534,7 +534,7 @@
       <div class="flex items-center space-x-3">
         <button
           class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
-          on:click={loadArchives}
+          onclick={loadArchives}
           disabled={loading}
         >
           <RefreshCw
@@ -554,7 +554,7 @@
         <div class="flex space-x-3">
           <select
             bind:value={selectedRoomId}
-            on:change={applyFilters}
+            onchange={applyFilters}
             class="px-3 py-2 bg-gray-100 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 cursor-pointer"
           >
             <option value={null}>所有直播间</option>
@@ -590,7 +590,7 @@
                 >
                 <select
                   bind:value={pageSize}
-                  on:change={() => changePageSize(pageSize)}
+                  onchange={() => changePageSize(pageSize)}
                   class="px-2 py-1 text-sm bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-500 rounded-md text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 cursor-pointer min-w-[50px]"
                 >
                   {#each pageSizeOptions as size}
@@ -608,7 +608,7 @@
                 <div class="flex items-center space-x-2">
                   <button
                     class="p-1.5 text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-white dark:hover:bg-gray-700 rounded-md transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
-                    on:click={prevPage}
+                    onclick={prevPage}
                     disabled={currentPage === 1}
                     title="上一页"
                   >
@@ -633,7 +633,7 @@
 
                   <button
                     class="p-1.5 text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-white dark:hover:bg-gray-700 rounded-md transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
-                    on:click={nextPage}
+                    onclick={nextPage}
                     disabled={currentPage === totalPages}
                     title="下一页"
                   >
@@ -653,7 +653,7 @@
             'room_id'
               ? 'bg-blue-500 text-white'
               : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
-            on:click={() => toggleSort("room_id")}
+            onclick={() => toggleSort("room_id")}
           >
             直播间号
             {#if sortBy === "room_id"}
@@ -669,7 +669,7 @@
             'title'
               ? 'bg-blue-500 text-white'
               : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
-            on:click={() => toggleSort("title")}
+            onclick={() => toggleSort("title")}
           >
             标题
             {#if sortBy === "title"}
@@ -685,7 +685,7 @@
             'length'
               ? 'bg-blue-500 text-white'
               : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
-            on:click={() => toggleSort("length")}
+            onclick={() => toggleSort("length")}
           >
             时长
             {#if sortBy === "length"}
@@ -701,7 +701,7 @@
             'size'
               ? 'bg-blue-500 text-white'
               : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
-            on:click={() => toggleSort("size")}
+            onclick={() => toggleSort("size")}
           >
             大小
             {#if sortBy === "size"}
@@ -717,7 +717,7 @@
             'created_at'
               ? 'bg-blue-500 text-white'
               : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
-            on:click={() => toggleSort("created_at")}
+            onclick={() => toggleSort("created_at")}
           >
             创建时间
             {#if sortBy === "created_at"}
@@ -746,7 +746,7 @@
           </div>
           <button
             class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors flex items-center space-x-2"
-            on:click={() => {
+            onclick={() => {
               showDeleteConfirm = true;
               archiveToDelete = null;
             }}
@@ -770,7 +770,7 @@
           <p class="text-sm">{loadError}</p>
           <button
             class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
-            on:click={loadArchives}
+            onclick={loadArchives}
           >
             重试
           </button>
@@ -806,7 +806,7 @@
                     type="checkbox"
                     checked={selectedArchives.size ===
                       filteredArchives.length && filteredArchives.length > 0}
-                    on:change={selectAllArchives}
+                    onchange={selectAllArchives}
                     class="rounded border-gray-300 dark:border-gray-600"
                   />
                 </th>
@@ -849,7 +849,7 @@
                     <input
                       type="checkbox"
                       checked={selectedArchives.has(archive.live_id)}
-                      on:change={() => toggleArchiveSelection(archive.live_id)}
+                      onchange={() => toggleArchiveSelection(archive.live_id)}
                       class="rounded border-gray-300 dark:border-gray-600"
                     />
                   </td>
@@ -943,21 +943,21 @@
                       <button
                         class="p-1.5 rounded-lg hover:bg-blue-500/10 transition-colors"
                         title="预览录播"
-                        on:click={() => playArchive(archive)}
+                        onclick={() => playArchive(archive)}
                       >
                         <Play class="w-4 h-4 text-blue-500" />
                       </button>
                       <button
                         class="p-1.5 rounded-lg hover:bg-blue-500/10 transition-colors"
                         title="生成完整切片"
-                        on:click={() => openWholeClipModal(archive)}
+                        onclick={() => openWholeClipModal(archive)}
                       >
                         <FileVideo class="w-4 h-4 text-blue-500" />
                       </button>
                       <button
                         class="p-1.5 rounded-lg transition-colors {summaryButtonClass(archive)}"
                         title={summaryButtonTitle(archive)}
-                        on:click={() => openSummaryModal(archive)}
+                        onclick={() => openSummaryModal(archive)}
                       >
                         {#if getSummaryStatus(archive) === "processing"}
                           <Loader2 class="w-4 h-4 animate-spin {summaryIconClass(archive)}" />
@@ -968,7 +968,7 @@
                       <button
                         class="p-1.5 rounded-lg hover:bg-red-500/10 transition-colors"
                         title="删除记录"
-                        on:click={() => {
+                        onclick={() => {
                           archiveToDelete = archive;
                           showDeleteConfirm = true;
                         }}
@@ -1012,7 +1012,7 @@
         <div class="flex justify-center space-x-3">
           <button
             class="w-24 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg transition-colors"
-            on:click={() => {
+            onclick={() => {
               showDeleteConfirm = false;
               archiveToDelete = null;
             }}
@@ -1021,7 +1021,7 @@
           </button>
           <button
             class="w-24 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors"
-            on:click={() => {
+            onclick={() => {
               if (archiveToDelete) {
                 deleteArchive(archiveToDelete);
               } else {
@@ -1042,14 +1042,13 @@
   bind:showModal={showWholeClipModal}
   archive={wholeClipArchive}
   roomId={wholeClipArchive?.room_id || ""}
-  platform={wholeClipArchive?.platform || ""}
-  on:generated={handleWholeClipGenerated}
+  onGenerated={handleWholeClipGenerated}
 />
 
 <ArchiveSummaryModal
   bind:showModal={showSummaryModal}
   archive={summaryArchive}
-  on:updated={(event) => updateSummaryStatus(event.detail)}
+  onUpdated={updateSummaryStatus}
 />
 
 <style>

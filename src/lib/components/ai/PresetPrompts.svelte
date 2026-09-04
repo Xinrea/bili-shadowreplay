@@ -1,11 +1,15 @@
 <script lang="ts">
-  export let presetPrompts: Array<{
-    title: string;
-    description: string;
-    prompt: string;
-    icon: string;
-  }>;
-  export let onSelectPrompt: (prompt: string) => void;
+  interface Props {
+    presetPrompts: Array<{
+      title: string;
+      description: string;
+      prompt: string;
+      icon: string;
+    }>;
+    onSelectPrompt: (prompt: string) => void;
+  }
+
+  let { presetPrompts, onSelectPrompt }: Props = $props();
 </script>
 
 <div class="py-12 space-y-8">
@@ -28,7 +32,7 @@
   <div class="max-w-4xl mx-auto grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
     {#each presetPrompts as prompt}
       <button
-        on:click={() => onSelectPrompt(prompt.prompt)}
+        onclick={() => onSelectPrompt(prompt.prompt)}
         class="group p-4 text-left bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-sm transition-all"
       >
         <div class="flex items-start space-x-3">

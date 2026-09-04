@@ -3,12 +3,16 @@
   import { ChevronDownOutline } from "flowbite-svelte-icons";
   import { scale } from "svelte/transition";
   import type { Children, VideoType } from "../interface";
-  export let value = 0;
-  let parentSelected: VideoType;
-  let areaSelected: Children;
-  let parentOpen = false;
-  let areaOpen = false;
-  let items: VideoType[] = [];
+  interface Props {
+    value?: number;
+  }
+
+  let { value = $bindable(0) }: Props = $props();
+  let parentSelected: VideoType = $state();
+  let areaSelected: Children = $state();
+  let parentOpen = $state(false);
+  let areaOpen = $state(false);
+  let items: VideoType[] = $state([]);
 
   async function get_video_typelist() {
     items = (await invoke("get_video_typelist")) as VideoType[];
@@ -66,7 +70,7 @@
   get_video_typelist();
 </script>
 
-<svelte:window on:click={handleClickOutside} />
+<svelte:window onclick={handleClickOutside} />
 
 <div class="type-select-container flex w-full max-w-md">
   <!-- Parent Select -->
@@ -74,7 +78,7 @@
     <button
       class="w-full inline-flex justify-between items-center px-3 py-2 text-sm font-medium text-left bg-[#1c1c1e] text-white border border-gray-600 rounded-l-lg hover:bg-[#2c2c2e] focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors duration-200"
       type="button"
-      on:click={handleParentClick}
+      onclick={handleParentClick}
     >
       <span class="truncate">{parentSelected ? parentSelected.name : ""}</span>
       <ChevronDownOutline
@@ -95,7 +99,7 @@
             item.id
               ? 'bg-blue-900/20 text-blue-400'
               : ''}"
-            on:click={() => selectParent(item)}
+            onclick={() => selectParent(item)}
           >
             {item.name}
           </button>
@@ -109,7 +113,7 @@
     <button
       class="w-full inline-flex justify-between items-center px-3 py-2 text-sm font-medium text-left bg-[#1c1c1e] text-white border border-l-0 border-gray-600 rounded-r-lg hover:bg-[#2c2c2e] focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors duration-200"
       type="button"
-      on:click={handleAreaClick}
+      onclick={handleAreaClick}
     >
       <span class="truncate">{areaSelected ? areaSelected.name : ""}</span>
       <ChevronDownOutline
@@ -130,7 +134,7 @@
             child.id
               ? 'bg-blue-900/20 text-blue-400'
               : ''}"
-            on:click={() => selectArea(child)}
+            onclick={() => selectArea(child)}
           >
             {child.name}
           </button>

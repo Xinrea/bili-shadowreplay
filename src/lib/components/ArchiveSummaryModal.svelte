@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { createEventDispatcher, onDestroy } from "svelte";
+  import { onDestroy } from "svelte";
   import { marked } from "marked";
   import { AlertCircle, Loader2, RefreshCw, Sparkles, X } from "lucide-svelte";
   import { invoke } from "../invoker";
@@ -13,27 +13,21 @@
     TaskRow,
   } from "../db";
 
-  export let showModal = false;
-  export let archive: RecordItem | null = null;
+  interface Props {
+    showModal?: boolean;
+    archive?: RecordItem | null;
+    onUpdated?: (status: RecordSummaryStatus) => void;
+  }
 
-  const dispatch = createEventDispatcher<{ updated: RecordSummaryStatus }>();
+  let { showModal = $bindable(false), archive = null, onUpdated }: Props = $props();
 
-  let summary: RecordSummary | null = null;
-  let loading = false;
-  let actionLoading = false;
-  let error = "";
-  let loadedKey = "";
+  let summary: RecordSummary | null = $state(null);
+  let loading = $state(false);
+  let actionLoading = $state(false);
+  let error = $state("");
+  let loadedKey = $state("");
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
-  $: currentKey = archive
-    ? `${archive.platform}:${archive.room_id}:${archive.live_id}`
-    : "";
-  $: if (showModal && archive && currentKey !== loadedKey) {
-    loadedKey = currentKey;
-    void loadSummary();
-  }
-  $: highlights = parseHighlights(summary?.highlights_json);
-  $: summaryMarkdown = summary?.summary_markdown || "";
 
   function clearPoll() {
     if (pollTimer) {
@@ -117,7 +111,7 @@
 
   function emitStatus() {
     if (!summary || !archive) return;
-    dispatch("updated", {
+    onUpdated?.({
       platform: archive.platform,
       room_id: archive.room_id,
       live_id: archive.live_id,
@@ -150,6 +144,17 @@
   }
 
   onDestroy(clearPoll);
+  let currentKey = $derived(archive
+    ? `${archive.platform}:${archive.room_id}:${archive.live_id}`
+    : "");
+  $effect(() => {
+    if (showModal && archive && currentKey !== loadedKey) {
+      loadedKey = currentKey;
+      void loadSummary();
+    }
+  });
+  let highlights = $derived(parseHighlights(summary?.highlights_json));
+  let summaryMarkdown = $derived(summary?.summary_markdown || "");
 </script>
 
 {#if showModal && archive}
@@ -168,7 +173,7 @@
             {archive.title}
           </p>
         </div>
-        <button class="rounded-lg p-2 hover:bg-gray-100 dark:hover:bg-gray-800" on:click={close}>
+        <button class="rounded-lg p-2 hover:bg-gray-100 dark:hover:bg-gray-800" onclick={close}>
           <X class="h-5 w-5" />
         </button>
       </div>
@@ -238,7 +243,7 @@
               <p class="font-medium text-gray-900 dark:text-white">Summary 生成失败</p>
               <p class="mt-2 max-w-xl text-sm text-red-600 dark:text-red-400">{summary.error_message || "未知错误"}</p>
             </div>
-            <button class="flex items-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-sm text-white hover:bg-violet-700" on:click={() => generate(false)} disabled={actionLoading}>
+            <button class="flex items-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-sm text-white hover:bg-violet-700" onclick={() => generate(false)} disabled={actionLoading}>
               <RefreshCw class="h-4 w-4 {actionLoading ? 'animate-spin' : ''}" />
               从失败阶段重试
             </button>
@@ -250,7 +255,7 @@
               <p class="font-medium text-gray-900 dark:text-white">尚未生成 Summary</p>
               <p class="mt-1 text-sm text-gray-500">将依次提取完整音频、生成字幕并总结直播内容。</p>
             </div>
-            <button class="rounded-lg bg-violet-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-50" on:click={() => generate(false)} disabled={actionLoading}>
+            <button class="rounded-lg bg-violet-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-50" onclick={() => generate(false)} disabled={actionLoading}>
               {actionLoading ? "正在创建任务…" : "生成 Summary"}
             </button>
           </div>
@@ -263,8 +268,8 @@
 
       {#if summary?.status === "success"}
         <div class="flex justify-end gap-3 border-t border-gray-200 px-6 py-4 dark:border-gray-700">
-          <button class="rounded-lg px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-800" on:click={close}>关闭</button>
-          <button class="rounded-lg bg-violet-600 px-4 py-2 text-sm text-white hover:bg-violet-700" on:click={() => generate(true)} disabled={actionLoading}>
+          <button class="rounded-lg px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-800" onclick={close}>关闭</button>
+          <button class="rounded-lg bg-violet-600 px-4 py-2 text-sm text-white hover:bg-violet-700" onclick={() => generate(true)} disabled={actionLoading}>
             重新生成
           </button>
         </div>

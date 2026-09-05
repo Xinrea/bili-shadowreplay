@@ -1,14 +1,19 @@
 <script lang="ts">
   import { Diamond, Plus } from "lucide-svelte";
-  import type { DanmuEntry, Marker, Range } from "../interface";
+  import type { Marker, Range } from "../interface";
+
+  type HeatPoint = {
+    time: number;
+    count: number;
+  };
 
   interface Props {
     ranges?: Range[];
     markers?: Marker[];
-    danmuRecords?: DanmuEntry[];
+    heatPoints?: HeatPoint[];
+    heatThreshold?: number;
     currentTime?: number;
     duration?: number;
-    globalOffset?: number;
     selectedRangeIndex?: number;
     onSeek?: (seconds: number) => void;
     onAddRange?: () => void;
@@ -18,36 +23,26 @@
   let {
     ranges = [],
     markers = [],
-    danmuRecords = [],
+    heatPoints = [],
+    heatThreshold = 0,
     currentTime = 0,
     duration = 0,
-    globalOffset = 0,
     selectedRangeIndex = $bindable(-1),
     onSeek,
     onAddRange,
     onAddMarker,
   }: Props = $props();
 
-  const HEAT_BUCKET_COUNT = 72;
-
-  let heatBuckets = $derived.by(() => {
-    const buckets = Array.from({ length: HEAT_BUCKET_COUNT }, () => 0);
-    if (duration <= 0) return buckets;
-
-    for (const danmu of danmuRecords) {
-      const relativeSeconds = danmu.ts / 1000 - globalOffset;
-      if (relativeSeconds < 0 || relativeSeconds > duration) continue;
-      const index = Math.min(
-        HEAT_BUCKET_COUNT - 1,
-        Math.floor((relativeSeconds / duration) * HEAT_BUCKET_COUNT),
-      );
-      buckets[index] += 1;
-    }
-    return buckets;
-  });
-
+  let visibleHeatPoints = $derived(
+    heatPoints.filter(
+      (point) => point.time >= 0 && (duration <= 0 || point.time <= duration),
+    ),
+  );
   let maxHeat = $derived(
-    heatBuckets.reduce((maximum, count) => Math.max(maximum, count), 0),
+    visibleHeatPoints.reduce(
+      (maximum, point) => Math.max(maximum, point.count),
+      0,
+    ),
   );
   let activeRanges = $derived(
     ranges.filter((range) => range.activated !== false),
@@ -63,6 +58,27 @@
     if (duration <= 0) return 0;
     return Math.min(100, Math.max(0, (seconds / duration) * 100));
   }
+
+  function heatHeight(count: number) {
+    if (maxHeat <= 0) return 0;
+    return Math.max(3, (count / maxHeat) * 26);
+  }
+
+  function heatBarWidth(index: number) {
+    if (duration <= 0 || visibleHeatPoints.length < 2) return 0.4;
+    const adjacentPoint =
+      visibleHeatPoints[index + 1] ||
+      visibleHeatPoints[index - 1] ||
+      visibleHeatPoints[index];
+    const gap = Math.abs(adjacentPoint.time - visibleHeatPoints[index].time);
+    return Math.max(0.15, (gap / duration) * 100);
+  }
+
+  let thresholdPosition = $derived(
+    maxHeat > 0
+      ? Math.min(100, Math.max(0, (heatThreshold / maxHeat) * 100))
+      : 0,
+  );
 
   function formatTime(seconds: number) {
     const total = Math.max(0, Math.floor(seconds || 0));
@@ -114,12 +130,22 @@
       <div class="heat-row">
         <span class="heat-label">弹幕热度</span>
         <div class="heat-bars" aria-hidden="true">
-          {#each heatBuckets as count}
+          {#each visibleHeatPoints as point, index}
             <span
-              style:height={`${Math.max(3, maxHeat > 0 ? (count / maxHeat) * 26 : 3)}px`}
-              class:hot={maxHeat > 0 && count / maxHeat >= 0.72}
+              class="heat-bar"
+              class:hot={heatThreshold > 0 && point.count >= heatThreshold}
+              style:left={`${clampPercent(point.time)}%`}
+              style:width={`${heatBarWidth(index)}%`}
+              style:height={`${heatHeight(point.count)}px`}
             ></span>
           {/each}
+          {#if heatThreshold > 0 && maxHeat > 0}
+            <span
+              class="threshold-line"
+              style:bottom={`${thresholdPosition}%`}
+              title={`智能推荐阈值：${Math.ceil(heatThreshold)} 条 / 30 秒`}
+            ></span>
+          {/if}
         </div>
       </div>
 
@@ -291,23 +317,35 @@
   }
 
   .heat-bars {
-    display: flex;
+    position: relative;
     width: 100%;
     height: 28px;
     min-width: 0;
-    align-items: flex-end;
-    gap: 2px;
   }
 
-  .heat-bars span {
-    min-width: 1px;
-    flex: 1;
+  .heat-bar {
+    position: absolute;
+    bottom: 0;
+    min-width: 2px;
+    transform: translateX(-50%);
     border-radius: 2px 2px 0 0;
     background: #3a4b63;
   }
 
-  .heat-bars span.hot {
-    background: #318fd1;
+  .heat-bar.hot {
+    background: #35a7ff;
+    box-shadow: 0 0 6px rgb(53 167 255 / 45%);
+  }
+
+  .threshold-line {
+    position: absolute;
+    right: 0;
+    left: 0;
+    z-index: 3;
+    height: 1px;
+    border-top: 1px dashed #ffc857;
+    filter: drop-shadow(0 0 2px rgb(255 200 87 / 45%));
+    pointer-events: none;
   }
 
   .time-ruler {

@@ -50,7 +50,13 @@
     count: number;
     added: boolean; // 是否已添加为选区
   }
+  interface DanmuHeatPoint {
+    time: number;
+    count: number;
+  }
   let danmu_peaks: DanmuPeak[] = $state([]);
+  let danmu_heat_points: DanmuHeatPoint[] = $state([]);
+  let danmu_heat_threshold = $state(0);
   let peak_threshold = $state(80); // 阈值百分比
   const DENSITY_WINDOW_SEC = 30; // 内部固定密度计算窗口
 
@@ -70,6 +76,8 @@
   function detect_danmu_peaks() {
     if (danmu_records.length === 0) {
       danmu_peaks = [];
+      danmu_heat_points = [];
+      danmu_heat_threshold = 0;
       return;
     }
 
@@ -118,6 +126,8 @@
 
     if (density.length === 0) {
       danmu_peaks = [];
+      danmu_heat_points = [];
+      danmu_heat_threshold = 0;
       return;
     }
 
@@ -134,6 +144,16 @@
 
     // 至少要有一定的弹幕量 (例如平均值的 1.5 倍，或者固定值如 15/30s)
     const abs_min_count = Math.max(15, mean * 1.2);
+    const effective_threshold = Math.max(z_threshold, abs_min_count);
+    const recording_offset_ms =
+      global_offset > 0 ? global_offset * 1000 : min_ts;
+
+    // 时间线与推荐算法共用同一份 30 秒滑动窗口数据和实际阈值。
+    danmu_heat_points = density.map((point) => ({
+      time: (point.center - recording_offset_ms) / 1000,
+      count: point.count,
+    }));
+    danmu_heat_threshold = effective_threshold;
 
     // 动态边界的基准线 (Baseline)
     const expansion_baseline = mean + 0.5 * stdDev;
@@ -146,8 +166,7 @@
       const next = density[i + 1];
 
       if (
-        curr.count >= z_threshold &&
-        curr.count >= abs_min_count && // 增加绝对门槛判断
+        curr.count >= effective_threshold &&
         curr.count > 0 &&
         curr.count >= prev.count &&
         curr.count >= next.count
@@ -180,8 +199,10 @@
       }
 
       // 计算时间 (秒)
-      const start_time = (density[left_idx].center - min_ts) / 1000 - 5; // 再多给5s缓冲
-      const end_time = (density[right_idx].center - min_ts) / 1000 + 5;
+      const start_time =
+        (density[left_idx].center - recording_offset_ms) / 1000 - 5; // 再多给5s缓冲
+      const end_time =
+        (density[right_idx].center - recording_offset_ms) / 1000 + 5;
 
       // 限制最小和最大时长
       const min_duration = 15;
@@ -197,7 +218,7 @@
         final_end = final_end + padding;
       } else if (duration > max_duration) {
         // 如果太长，就只取峰值附近的 max_duration
-        const center_sec = (best.center - min_ts) / 1000;
+        const center_sec = (best.center - recording_offset_ms) / 1000;
         final_start = Math.max(0, center_sec - max_duration / 2);
         final_end = center_sec + max_duration / 2;
       }
@@ -400,11 +421,9 @@
   }
   // 弹幕数据或阈值变化时刷新智能推荐
   $effect(() => {
-    if (danmu_records.length > 0) {
-      // 引用 peak_threshold 以便在其变化时触发重新计算
-      peak_threshold;
-      detect_danmu_peaks();
-    }
+    peak_threshold;
+    global_offset;
+    detect_danmu_peaks();
   });
   // 监听 ranges 变化，更新峰值的添加状态
   $effect(() => {
@@ -458,10 +477,10 @@
       <ArchiveTimeline
         {ranges}
         {markers}
-        danmuRecords={danmu_records}
+        heatPoints={danmu_heat_points}
+        heatThreshold={danmu_heat_threshold}
         currentTime={current_time}
         duration={player_duration || archive?.length || 0}
-        globalOffset={global_offset}
         bind:selectedRangeIndex={selected_range_index}
         onSeek={(seconds) => player?.seek(seconds)}
         onAddRange={addRangeAtCurrentTime}

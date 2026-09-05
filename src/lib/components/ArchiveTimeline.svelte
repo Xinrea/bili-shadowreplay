@@ -5,7 +5,7 @@
     Pause,
     Play,
     Plus,
-    Settings2,
+    Settings,
     Volume2,
     VolumeX,
   } from "lucide-svelte";
@@ -290,7 +290,7 @@
           aria-expanded={show_offset_settings}
           onclick={() => (show_offset_settings = !show_offset_settings)}
         >
-          <Settings2 size={15} />
+          <Settings size={15} />
         </button>
         {#if show_offset_settings}
           <label class="offset-control">
@@ -528,6 +528,12 @@
     padding: 0 8px;
     color: #8490a3;
     font-size: 10px;
+    white-space: nowrap;
+  }
+
+  .settings-control .offset-control {
+    width: 126px;
+    justify-content: space-between;
   }
 
   .offset-control input {

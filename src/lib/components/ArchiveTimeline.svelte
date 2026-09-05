@@ -250,23 +250,33 @@
         </div>
       {/if}
       <div class="volume-control">
-        {#if volume === 0}
-          <VolumeX size={15} />
-        {:else}
-          <Volume2 size={15} />
-        {/if}
-        <input
-          type="range"
-          min="0"
-          max="1"
-          step="0.01"
-          value={volume}
-          aria-label="音量"
-          oninput={(event) =>
-            onVolumeChange?.(
-              Number((event.currentTarget as HTMLInputElement).value),
-            )}
-        />
+        <button
+          type="button"
+          class="control-icon volume-button"
+          title={`音量 ${Math.round(volume * 100)}%`}
+          aria-label={`音量 ${Math.round(volume * 100)}%`}
+        >
+          {#if volume === 0}
+            <VolumeX size={15} />
+          {:else}
+            <Volume2 size={15} />
+          {/if}
+        </button>
+        <div class="volume-popover">
+          <input
+            type="range"
+            min="0"
+            max="1.5"
+            step="0.01"
+            value={volume}
+            aria-label="音量"
+            oninput={(event) =>
+              onVolumeChange?.(
+                Number((event.currentTarget as HTMLInputElement).value),
+              )}
+          />
+          <output>{Math.round(volume * 100)}%</output>
+        </div>
       </div>
       <span class="time-display">
         {formatTime(currentTime)} / {formatTime(duration)}
@@ -516,8 +526,7 @@
     color: #65c2ff;
   }
 
-  .offset-control,
-  .volume-control {
+  .offset-control {
     display: inline-flex;
     height: 30px;
     align-items: center;
@@ -553,9 +562,59 @@
     appearance: none;
   }
 
-  .volume-control input {
-    width: 66px;
+  .volume-control {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  .volume-popover {
+    position: absolute;
+    bottom: 35px;
+    left: 50%;
+    z-index: 20;
+    display: flex;
+    width: 42px;
+    height: 142px;
+    align-items: center;
+    justify-content: space-between;
+    flex-direction: column;
+    border: 1px solid #303947;
+    border-radius: 10px;
+    background: #202733;
+    padding: 10px 5px 7px;
+    opacity: 0;
+    pointer-events: none;
+    transform: translate(-50%, 6px);
+    transition:
+      opacity 150ms ease,
+      transform 150ms ease;
+    box-shadow: 0 8px 20px rgb(0 0 0 / 35%);
+  }
+
+  .volume-control:hover .volume-popover,
+  .volume-control:focus-within .volume-popover {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translate(-50%, 0);
+  }
+
+  .volume-popover input {
+    width: 96px;
+    height: 18px;
     accent-color: #0a84ff;
+    transform: translateY(42px) rotate(-90deg);
+    transform-origin: center;
+  }
+
+  .volume-popover output {
+    color: #dce5f3;
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .volume-button {
+    flex: 0 0 30px;
   }
 
   .time-display {

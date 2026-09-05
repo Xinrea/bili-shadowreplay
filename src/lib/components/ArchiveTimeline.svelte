@@ -567,6 +567,10 @@
       ></span>
     </div>
 
+    <div class="shortcut-hint" aria-label="快捷键说明">
+      快捷键：Space 播放/暂停 · [ 创建前向 10 秒选区 · ] 创建后向 10 秒选区 ·
+      Q/E 跳转选区起点/终点 · Backspace 删除选区 · P 添加标记 · ←/→ 前后跳转 3 秒
+    </div>
   </div>
 </section>
 
@@ -929,6 +933,20 @@
     border-radius: 10px;
     background: #151a23;
     padding: 8px 12px;
+  }
+
+  .shortcut-hint {
+    overflow-x: auto;
+    padding-top: 6px;
+    color: #687589;
+    font-size: 9px;
+    line-height: 14px;
+    white-space: nowrap;
+    scrollbar-width: none;
+  }
+
+  .shortcut-hint::-webkit-scrollbar {
+    display: none;
   }
 
   .time-grid {

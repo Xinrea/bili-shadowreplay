@@ -265,7 +265,7 @@
           />
         </label>
         <div class="peak-list">
-          {#each danmuPeaks.slice(0, 3) as peak}
+          {#each danmuPeaks as peak}
             <button
               type="button"
               class:exists={peak.exists}

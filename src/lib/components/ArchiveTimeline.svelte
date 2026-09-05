@@ -246,6 +246,16 @@
           />
         </div>
       {/if}
+    </div>
+    <div class="playback-cluster">
+      <button
+        type="button"
+        class="control-icon playback-control"
+        title={isPlaying ? "暂停" : "播放"}
+        onclick={onTogglePlayback}
+      >
+        {#if isPlaying}<Pause size={13} />{:else}<Play size={13} />{/if}
+      </button>
       <div class="volume-control">
         <button
           type="button"
@@ -274,16 +284,6 @@
           <output>{Math.round(volume * 100)}%</output>
         </div>
       </div>
-    </div>
-    <div class="playback-cluster">
-      <button
-        type="button"
-        class="control-icon playback-control"
-        title={isPlaying ? "暂停" : "播放"}
-        onclick={onTogglePlayback}
-      >
-        {#if isPlaying}<Pause size={13} />{:else}<Play size={13} />{/if}
-      </button>
       <div class="time-row">
         <span class="time-display">
           {formatTime(currentTime)} / {formatTime(duration)}
@@ -544,11 +544,10 @@
     grid-column: 1;
     grid-row: 1;
     display: flex;
-    width: 220px;
+    width: auto;
     align-items: center;
-    flex-direction: column;
     justify-self: start;
-    gap: 2px;
+    gap: 6px;
   }
 
   .control-icon:hover,

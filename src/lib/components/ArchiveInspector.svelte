@@ -644,7 +644,6 @@
   .range-actions label {
     width: 22px;
     height: 22px;
-    background: #171c25;
     cursor: pointer;
   }
 

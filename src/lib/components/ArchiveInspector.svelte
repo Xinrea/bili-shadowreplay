@@ -556,7 +556,7 @@
 
   .range-card {
     display: flex;
-    min-height: 72px;
+    min-height: 46px;
     align-items: center;
     border: 1px solid transparent;
     border-radius: 10px;
@@ -577,28 +577,41 @@
 
   .range-main {
     display: flex;
+    height: 44px;
     min-width: 0;
     flex: 1;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 4px;
-    padding: 10px 12px;
+    align-items: center;
+    gap: 10px;
+    overflow: hidden;
+    padding: 0 12px;
     text-align: left;
   }
 
   .range-title {
+    width: 45px;
+    flex: 0 0 45px;
+    overflow: hidden;
     font-size: 12px;
     font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .range-time,
-  .range-duration {
+  .range-time {
+    min-width: 0;
+    overflow: hidden;
+    flex: 1 1 auto;
     color: #b6c0cf;
     font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .range-duration {
+    flex: 0 0 auto;
     color: #718095;
+    font-size: 10px;
+    white-space: nowrap;
   }
 
   .range-actions {
@@ -751,10 +764,10 @@
   .danmu-entry {
     display: flex;
     width: 100%;
-    height: 58px;
-    flex-direction: column;
-    justify-content: center;
-    gap: 5px;
+    height: 42px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
     margin-bottom: 8px;
     border: 1px solid #293442;
     border-radius: 9px;
@@ -764,6 +777,8 @@
   }
 
   .danmu-entry span {
+    min-width: 0;
+    flex: 1;
     overflow: hidden;
     color: #d8e0eb;
     font-size: 11px;
@@ -772,6 +787,7 @@
   }
 
   .danmu-entry time {
+    flex: 0 0 auto;
     color: #718095;
     font-size: 9px;
   }

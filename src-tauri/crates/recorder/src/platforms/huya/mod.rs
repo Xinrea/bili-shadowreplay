@@ -148,7 +148,7 @@ impl HuyaRecorder {
         *self.live_id.write().await = live_id.to_string();
 
         // Setup danmu store
-        let danmu_file_path = work_dir.with_filename("danmu.txt");
+        let danmu_file_path = work_dir.with_filename("events.jsonl");
         let danmu_storage = DanmuStorage::new(&danmu_file_path.full_path()).await;
         *self.danmu_storage.write().await = danmu_storage;
 

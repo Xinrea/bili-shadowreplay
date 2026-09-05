@@ -191,7 +191,7 @@ impl TikTokRecorder {
         let cover_path = work_dir.with_filename("cover.jpg");
         let _ = api::download_file(&self.client, &cover_url, &cover_path.full_path()).await;
 
-        let danmu_path = work_dir.with_filename("danmu.txt");
+        let danmu_path = work_dir.with_filename("events.jsonl");
         *self.danmu_storage.write().await = DanmuStorage::new(&danmu_path.full_path()).await;
 
         *self.live_id.write().await = live_id.to_string();

@@ -19,7 +19,7 @@ use crate::platforms::bilibili::api::BiliStream;
 use chrono::Utc;
 use danmu_stream::danmu_stream::DanmuStream;
 use danmu_stream::provider::ProviderType;
-use danmu_stream::DanmuMessageType;
+use danmu_stream::{DanmuMessageType, LiveEvent};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{atomic, Arc};
@@ -276,15 +276,41 @@ impl BiliRecorder {
                     match recv_res {
                         Ok(Some(msg)) => {
                             match msg {
+                                DanmuMessageType::Event(event) => {
+                                    let ts = event.ts;
+                                    if event.event_type == "danmu" {
+                                        let content = event.data
+                                            .get("content")
+                                            .and_then(|value| value.as_str())
+                                            .unwrap_or_default()
+                                            .to_string();
+                                        let _ = self.event_channel.send(
+                                            RecorderEvent::DanmuReceived {
+                                                room: self.room_id.clone(),
+                                                ts,
+                                                content,
+                                            },
+                                        );
+                                    }
+                                    if let Some(storage) = self.danmu_storage.write().await.as_ref() {
+                                        if let Err(error) = storage.add_event(event).await {
+                                            log::error!("Failed to persist live event: {error}");
+                                        }
+                                    }
+                                }
                                 DanmuMessageType::DanmuMessage(danmu) => {
-                                    let ts = Utc::now().timestamp_millis();
+                                    let event = LiveEvent::danmu(danmu, "bilibili");
+                                    let ts = event.ts;
+                                    let content = event.data.get("content")
+                                        .and_then(|value| value.as_str())
+                                        .unwrap_or_default().to_string();
                                     let _ = self.event_channel.send(RecorderEvent::DanmuReceived {
-                                        room: self.room_id.clone(),
-                                        ts,
-                                        content: danmu.message.clone(),
+                                        room: self.room_id.clone(), ts, content,
                                     });
                                     if let Some(storage) = self.danmu_storage.write().await.as_ref() {
-                                        storage.add_line(ts, &danmu.message).await;
+                                        if let Err(error) = storage.add_event(event).await {
+                                            log::error!("Failed to persist danmu event: {error}");
+                                        }
                                     }
                                 }
                             }
@@ -315,7 +341,7 @@ impl BiliRecorder {
 
         let _ = tokio::fs::create_dir_all(&work_dir.full_path()).await;
 
-        let danmu_path = work_dir.with_filename("danmu.txt");
+        let danmu_path = work_dir.with_filename("events.jsonl");
         *self.danmu_storage.write().await = DanmuStorage::new(&danmu_path.full_path()).await;
 
         let cover_path = work_dir.with_filename("cover.jpg");

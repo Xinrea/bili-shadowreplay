@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use danmu_stream::danmu_stream::DanmuStream;
 use danmu_stream::provider::ProviderType;
-use danmu_stream::DanmuMessageType;
+use danmu_stream::{DanmuMessageType, LiveEvent};
 use rand::random;
 use std::path::PathBuf;
 use std::sync::{atomic, Arc};
@@ -208,6 +208,13 @@ impl DouyinRecorder {
                     match recv_res {
                         Ok(Some(msg)) => {
                             match msg {
+                                DanmuMessageType::Event(event) => {
+                                    if let Some(storage) = self.danmu_storage.read().await.as_ref() {
+                                        if let Err(error) = storage.add_event(event).await {
+                                            log::error!("Failed to persist live event: {error}");
+                                        }
+                                    }
+                                }
                                 DanmuMessageType::DanmuMessage(danmu) => {
                                     let ts = Utc::now().timestamp_millis();
                                     let _ = self.event_channel.send(RecorderEvent::DanmuReceived {
@@ -217,7 +224,12 @@ impl DouyinRecorder {
                                     });
 
                                     if let Some(danmu_storage) = self.danmu_storage.read().await.as_ref() {
-                                        danmu_storage.add_line(ts, &danmu.message).await;
+                                        if let Err(error) = danmu_storage
+                                            .add_event(LiveEvent::danmu(danmu, "douyin"))
+                                            .await
+                                        {
+                                            log::error!("Failed to persist danmu event: {error}");
+                                        }
                                     }
                                 }
                             }
@@ -268,7 +280,7 @@ impl DouyinRecorder {
         let _ = api::download_file(&self.client, &cover_url, &cover_path.full_path()).await;
 
         // Setup danmu store
-        let danmu_file_path = work_dir.with_filename("danmu.txt");
+        let danmu_file_path = work_dir.with_filename("events.jsonl");
         let danmu_storage = DanmuStorage::new(&danmu_file_path.full_path()).await;
         *self.danmu_storage.write().await = danmu_storage;
 

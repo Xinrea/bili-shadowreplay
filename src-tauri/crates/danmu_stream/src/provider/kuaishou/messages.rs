@@ -105,10 +105,54 @@ pub struct SimpleUserInfo {
 }
 
 #[derive(Clone, PartialEq, Message)]
-pub struct WebGiftFeed {}
+pub struct WebGiftFeed {
+    #[prost(string, tag = "1")]
+    pub id: String,
+    #[prost(message, optional, tag = "2")]
+    pub user: Option<SimpleUserInfo>,
+    #[prost(uint64, tag = "3")]
+    pub time: u64,
+    #[prost(uint32, tag = "4")]
+    pub gift_id: u32,
+    #[prost(uint64, tag = "5")]
+    pub sort_rank: u64,
+    #[prost(string, tag = "6")]
+    pub merge_key: String,
+    #[prost(uint32, tag = "7")]
+    pub batch_size: u32,
+    #[prost(uint32, tag = "8")]
+    pub combo_count: u32,
+    #[prost(uint32, tag = "9")]
+    pub rank: u32,
+    #[prost(uint64, tag = "10")]
+    pub expire_duration: u64,
+    #[prost(uint64, tag = "11")]
+    pub client_timestamp: u64,
+    #[prost(uint64, tag = "12")]
+    pub slot_display_duration: u64,
+    #[prost(uint32, tag = "13")]
+    pub star_level: u32,
+    #[prost(uint32, tag = "14")]
+    pub style_type: u32,
+    #[prost(uint32, tag = "15")]
+    pub live_assistant_type: u32,
+    #[prost(string, tag = "16")]
+    pub device_hash: String,
+    #[prost(bool, tag = "17")]
+    pub danmaku_display: bool,
+}
 
 #[derive(Clone, PartialEq, Message)]
-pub struct WebLikeFeed {}
+pub struct WebLikeFeed {
+    #[prost(string, tag = "1")]
+    pub id: String,
+    #[prost(message, optional, tag = "2")]
+    pub user: Option<SimpleUserInfo>,
+    #[prost(uint64, tag = "3")]
+    pub sort_rank: u64,
+    #[prost(string, tag = "4")]
+    pub device_hash: String,
+}
 
 #[derive(Clone, PartialEq, Message)]
 pub struct WebComboCommentFeed {}

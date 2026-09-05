@@ -536,7 +536,12 @@
         // 否则直接复制所有弹幕
         filtered_danmu = [...danmu_records];
       }
-      // 重新计算可见区域
+    }
+  });
+  // 过滤结果变化后重新计算可见区域。与过滤 effect 分开，避免读取并写入
+  // filtered_danmu 的同一个 effect 触发无限更新。
+  $effect(() => {
+    if (container_ref && filtered_danmu.length > 0) {
       calculate_visible_danmu();
     }
   });

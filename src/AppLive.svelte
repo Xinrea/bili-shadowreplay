@@ -516,7 +516,7 @@
         />
       </div>
       <ArchiveTimeline
-        {ranges}
+        bind:ranges
         {markers}
         heatPoints={danmu_heat_points}
         heatThreshold={danmu_heat_threshold}

@@ -501,7 +501,8 @@
 
   .timeline-header {
     position: relative;
-    min-height: 34px;
+    min-height: 54px;
+    flex: 0 0 54px;
     justify-content: space-between;
     gap: 12px;
   }
@@ -709,12 +710,15 @@
   }
 
   .danmu-sender select {
-    max-width: 88px;
+    width: 88px;
+    min-width: 0;
     border: 0;
     outline: 0;
     background: transparent;
     color: #aeb9c9;
     font-size: 10px;
+    padding: 0;
+    appearance: none;
   }
 
   .timeline-actions {

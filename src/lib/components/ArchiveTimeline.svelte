@@ -69,7 +69,6 @@
     onSendDanmaku,
   }: Props = $props();
   let danmu_message = $state("");
-  let show_danmu_input = $state(false);
   let show_offset_settings = $state(false);
 
   let visibleHeatPoints = $derived(
@@ -200,14 +199,6 @@
     <div class="timeline-controls">
       <button
         type="button"
-        class="control-icon playback-control"
-        title={isPlaying ? "暂停" : "播放"}
-        onclick={onTogglePlayback}
-      >
-        {#if isPlaying}<Pause size={15} />{:else}<Play size={15} />{/if}
-      </button>
-      <button
-        type="button"
         class="control-icon"
         title={danmuEnabled ? "关闭弹幕预览" : "开启弹幕预览"}
         class:enabled={danmuEnabled}
@@ -218,35 +209,18 @@
       {#if canSendDanmaku}
         <div
           class="danmu-sender"
-          class:expanded={show_danmu_input}
           role="group"
           aria-label="发送弹幕"
-          onmouseenter={() => (show_danmu_input = true)}
-          onmouseleave={() => {
-            if (!danmu_message) show_danmu_input = false;
-          }}
         >
-          <button
-            type="button"
-            class="control-icon"
-            title="发送弹幕"
-            onclick={() => (show_danmu_input = true)}
-          >
-            <MessageCircle size={15} />
-          </button>
-          {#if show_danmu_input}
-            <input
-              bind:value={danmu_message}
-              placeholder="回车发送弹幕"
-              onkeydown={(event) => {
-                if (event.key === "Enter") submitDanmu();
-                if (event.key === "Escape") {
-                  danmu_message = "";
-                  show_danmu_input = false;
-                }
-              }}
-            />
-          {/if}
+          <MessageCircle size={15} />
+          <input
+            bind:value={danmu_message}
+            placeholder="回车发送弹幕"
+            onkeydown={(event) => {
+              if (event.key === "Enter") submitDanmu();
+              if (event.key === "Escape") danmu_message = "";
+            }}
+          />
         </div>
       {/if}
       <div class="volume-control">
@@ -277,6 +251,16 @@
           <output>{Math.round(volume * 100)}%</output>
         </div>
       </div>
+    </div>
+    <div class="playback-cluster">
+      <button
+        type="button"
+        class="control-icon playback-control"
+        title={isPlaying ? "暂停" : "播放"}
+        onclick={onTogglePlayback}
+      >
+        {#if isPlaying}<Pause size={13} />{:else}<Play size={13} />{/if}
+      </button>
       <span class="time-display">
         {formatTime(currentTime)} / {formatTime(duration)}
       </span>
@@ -510,11 +494,18 @@
   }
 
   .playback-control {
+    width: 26px;
+    height: 24px;
+  }
+
+  .playback-cluster {
     position: absolute;
-    top: 2px;
+    top: 0;
     left: 50%;
-    width: 30px;
-    height: 30px;
+    display: flex;
+    align-items: center;
+    flex-direction: column;
+    gap: 2px;
     transform: translateX(-50%);
   }
 
@@ -618,36 +609,31 @@
 
   .time-display {
     color: #b6c0cf;
-    font-size: 10px;
+    font-size: 9px;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
 
   .danmu-sender {
     display: flex;
+    height: 30px;
     align-items: center;
     gap: 5px;
+    border: 1px solid #3b4758;
+    border-radius: 8px;
+    background: #202733;
+    padding: 0 8px;
+    color: #8490a3;
   }
 
   .danmu-sender input {
-    width: 0;
-    height: 30px;
-    border: 1px solid #3b4758;
-    border-radius: 8px;
+    width: 150px;
+    height: 28px;
+    border: 0;
     outline: 0;
-    background: #202733;
+    background: transparent;
     color: #e9eef8;
     font-size: 10px;
-    opacity: 0;
-    transition:
-      width 160ms ease,
-      opacity 160ms ease;
-  }
-
-  .danmu-sender.expanded input {
-    width: 150px;
-    padding: 0 8px;
-    opacity: 1;
   }
 
   .timeline-actions {

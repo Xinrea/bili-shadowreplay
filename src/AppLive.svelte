@@ -137,14 +137,14 @@
     const variance = counts.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / n;
     const stdDev = Math.sqrt(variance);
 
-    // 3. 计算动态阈值
-    // threshold_percent (50-100) 映射为 k (1.0 - 4.0)
-    const k = 1.0 + ((threshold_percent - 50) / 50) * 3.0;
-    const z_threshold = mean + k * stdDev;
-
-    // 至少要有一定的弹幕量 (例如平均值的 1.5 倍，或者固定值如 15/30s)
-    const abs_min_count = Math.max(15, mean * 1.2);
-    const effective_threshold = Math.max(z_threshold, abs_min_count);
+    // 3. 将滑块百分比直接映射到当前录播的最大窗口热度。
+    // 不再叠加固定弹幕数下限，避免下限覆盖滑块导致阈值不变化。
+    const max_density = counts.reduce(
+      (maximum, count) => Math.max(maximum, count),
+      0,
+    );
+    const effective_threshold =
+      max_density * (Math.min(100, Math.max(0, threshold_percent)) / 100);
     const recording_offset_ms =
       global_offset > 0 ? global_offset * 1000 : min_ts;
 
@@ -174,7 +174,10 @@
 
     // 核心区间向两侧扩展至较低的内容完整性基准。相交的扩展区间
     // 合并为一条推荐，避免多个核心峰生成相同或高度重叠的结果。
-    const expansion_baseline = mean + 0.5 * stdDev;
+    const expansion_baseline = Math.min(
+      mean + 0.5 * stdDev,
+      effective_threshold * 0.8,
+    );
     const expanded_runs = core_runs.map((run) => {
       let start = run.start;
       let end = run.end;
@@ -489,6 +492,7 @@
         {markers}
         heatPoints={danmu_heat_points}
         heatThreshold={danmu_heat_threshold}
+        heatThresholdPercent={peak_threshold}
         currentTime={current_time}
         duration={player_duration || archive?.length || 0}
         bind:selectedRangeIndex={selected_range_index}

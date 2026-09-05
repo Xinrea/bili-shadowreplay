@@ -13,6 +13,7 @@
     markers?: Marker[];
     heatPoints?: HeatPoint[];
     heatThreshold?: number;
+    heatThresholdPercent?: number;
     currentTime?: number;
     duration?: number;
     selectedRangeIndex?: number;
@@ -26,6 +27,7 @@
     markers = [],
     heatPoints = [],
     heatThreshold = 0,
+    heatThresholdPercent = 80,
     currentTime = 0,
     duration = 0,
     selectedRangeIndex = $bindable(-1),
@@ -76,9 +78,7 @@
   }
 
   let thresholdPosition = $derived(
-    maxHeat > 0
-      ? Math.min(100, Math.max(0, (heatThreshold / maxHeat) * 100))
-      : 0,
+    Math.min(100, Math.max(0, heatThresholdPercent)),
   );
 
   function formatTime(seconds: number) {

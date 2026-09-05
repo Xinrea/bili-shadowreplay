@@ -514,11 +514,9 @@
 
   .timeline-controls {
     display: flex;
-    flex: 1 1 auto;
     min-width: 0;
     align-items: center;
     gap: 7px;
-    overflow: hidden;
   }
 
   .control-icon {
@@ -702,7 +700,7 @@
   }
 
   .danmu-sender input {
-    width: clamp(80px, 10vw, 150px);
+    width: 150px;
     height: 28px;
     border: 0;
     outline: 0;
@@ -712,7 +710,7 @@
   }
 
   .danmu-sender select {
-    width: clamp(58px, 6vw, 88px);
+    width: 88px;
     min-width: 0;
     border: 0;
     outline: 0;
@@ -995,29 +993,6 @@
 
     .heat-row {
       display: none;
-    }
-  }
-
-  @media (max-width: 1300px) {
-    .timeline-header {
-      gap: 8px;
-    }
-
-    .playback-cluster {
-      position: static;
-      width: auto;
-      flex: 0 0 auto;
-      transform: none;
-    }
-
-    .timeline-actions {
-      gap: 5px;
-    }
-
-    .timeline-actions > button {
-      gap: 4px;
-      padding: 0 7px;
-      font-size: 10px;
     }
   }
 </style>

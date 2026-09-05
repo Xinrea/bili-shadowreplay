@@ -9,6 +9,7 @@
   } from "lucide-svelte";
   import type { RecordItem } from "../db";
   import type { DanmuEntry, Marker, Range, VideoItem } from "../interface";
+  import { onDestroy } from "svelte";
   import ArchiveClipButton from "./ArchiveClipButton.svelte";
   import MarkerPanel from "./MarkerPanel.svelte";
 
@@ -79,8 +80,11 @@
   let danmuSearch = $state("");
   let danmuScrollTop = $state(0);
   let danmuViewportHeight = $state(480);
+  let pendingPeakThreshold = $state(peakThreshold);
+  let peakThresholdTimer: ReturnType<typeof setTimeout> | null = null;
   const DANMU_ITEM_HEIGHT = 66;
   const DANMU_BUFFER = 8;
+  const PEAK_THRESHOLD_DEBOUNCE_MS = 300;
 
   let activeRanges = $derived(
     ranges.filter((range) => range.activated !== false),
@@ -143,6 +147,23 @@
     selectedRangeIndex = index;
     onSeek?.(range.start);
   }
+
+  function schedulePeakThresholdChange(value: number) {
+    pendingPeakThreshold = value;
+    if (peakThresholdTimer) {
+      clearTimeout(peakThresholdTimer);
+    }
+    peakThresholdTimer = setTimeout(() => {
+      onPeakThresholdChange?.(pendingPeakThreshold);
+      peakThresholdTimer = null;
+    }, PEAK_THRESHOLD_DEBOUNCE_MS);
+  }
+
+  onDestroy(() => {
+    if (peakThresholdTimer) {
+      clearTimeout(peakThresholdTimer);
+    }
+  });
 </script>
 
 <aside class="inspector">
@@ -268,14 +289,14 @@
           {/if}
         </div>
         <label class="threshold">
-          <span>峰值阈值 {peakThreshold}%</span>
+          <span>峰值阈值 {pendingPeakThreshold}%</span>
           <input
             type="range"
             min="50"
             max="100"
-            value={peakThreshold}
+            value={pendingPeakThreshold}
             oninput={(event) =>
-              onPeakThresholdChange?.(
+              schedulePeakThresholdChange(
                 Number((event.currentTarget as HTMLInputElement).value),
               )}
           />

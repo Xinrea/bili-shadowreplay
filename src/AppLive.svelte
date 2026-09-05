@@ -7,7 +7,7 @@
     get_static_url,
   } from "./lib/invoker";
   import Player from "./lib/components/Player.svelte";
-  import type { RecordItem } from "./lib/db";
+  import type { AccountItem, RecordItem } from "./lib/db";
   import { PanelRightOpen } from "lucide-svelte";
   import {
     type VideoItem,
@@ -322,6 +322,8 @@
   let danmu_enabled = $state(true);
   let danmu_offset = $state(0);
   let can_send_danmaku = $state(false);
+  let danmu_accounts = $state<AccountItem[]>([]);
+  let danmu_account_uid = $state("");
 
   function pauseForRangeDrag() {
     video?.pause();
@@ -485,6 +487,8 @@
           bind:duration={player_duration}
           bind:is_live={player_is_live}
           bind:can_send_danmaku={can_send_danmaku}
+          bind:danmu_accounts
+          bind:danmu_account_uid
           {focus_start}
           {focus_end}
           {platform}
@@ -517,6 +521,8 @@
         danmuEnabled={danmu_enabled}
         danmuOffset={danmu_offset}
         canSendDanmaku={can_send_danmaku}
+        danmuAccounts={danmu_accounts}
+        danmuAccountUid={danmu_account_uid}
         bind:selectedRangeIndex={selected_range_index}
         onSeek={(seconds) => player?.seek(seconds)}
         onAddRange={addRangeAtCurrentTime}
@@ -527,6 +533,7 @@
         onToggleDanmu={() => player?.toggleDanmu()}
         onDanmuOffsetChange={(value) => player?.setDanmuOffset(value)}
         onSendDanmaku={(message) => player?.sendDanmaku(message)}
+        onDanmuAccountChange={(uid) => (danmu_account_uid = uid)}
         onRangeDragStart={pauseForRangeDrag}
         onRangeDrag={seekDuringRangeDrag}
       />

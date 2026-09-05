@@ -38,6 +38,8 @@
     duration?: number;
     is_live?: boolean;
     can_send_danmaku?: boolean;
+    danmu_accounts?: AccountInfo["accounts"];
+    danmu_account_uid?: string;
     onMarkerAdd?: (marker: { offset: number; realtime: number }) => void;
   }
 
@@ -59,6 +61,8 @@
     duration = $bindable(0),
     is_live = $bindable(false),
     can_send_danmaku = $bindable(false),
+    danmu_accounts = $bindable([]),
+    danmu_account_uid = $bindable(""),
     onMarkerAdd,
   }: Props = $props();
   export function seek(offset: number) {
@@ -110,8 +114,6 @@
   let start = $state(0);
   let end = $state(0);
   let currentRangeIndex: number = -1; // 当前正在编辑的区间索引，-1 表示没有区间
-
-  let danmu_account_uid = "";
 
   $effect(() => {
     local_offset =
@@ -621,7 +623,10 @@ ${mediaPlaylistUrl}`;
         accountSelect.style.fontSize = "1em";
         // get accounts from tauri
         const account_info = (await invoke("get_accounts")) as AccountInfo;
-        account_info.accounts.forEach((account) => {
+        danmu_accounts = account_info.accounts.filter(
+          (account) => account.platform === "bilibili",
+        );
+        danmu_accounts.forEach((account) => {
           if (account.platform !== "bilibili") {
             return;
           }

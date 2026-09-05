@@ -38,12 +38,15 @@
     danmuEnabled?: boolean;
     danmuOffset?: number;
     canSendDanmaku?: boolean;
+    danmuAccounts?: { uid: string; name: string }[];
+    danmuAccountUid?: string;
     onTogglePlayback?: () => void;
     onSeekLive?: () => void;
     onVolumeChange?: (volume: number) => void;
     onToggleDanmu?: () => void;
     onDanmuOffsetChange?: (offset: number) => void;
     onSendDanmaku?: (message: string) => void;
+    onDanmuAccountChange?: (uid: string) => void;
   }
 
   let {
@@ -66,12 +69,15 @@
     danmuEnabled = true,
     danmuOffset = 0,
     canSendDanmaku = false,
+    danmuAccounts = [],
+    danmuAccountUid = "",
     onTogglePlayback,
     onSeekLive,
     onVolumeChange,
     onToggleDanmu,
     onDanmuOffsetChange,
     onSendDanmaku,
+    onDanmuAccountChange,
   }: Props = $props();
   let danmu_message = $state("");
   let show_offset_settings = $state(false);
@@ -218,6 +224,18 @@
           aria-label="发送弹幕"
         >
           <MessageCircle size={15} />
+          <select
+            value={danmuAccountUid}
+            aria-label="发送弹幕账号"
+            onchange={(event) =>
+              onDanmuAccountChange?.(
+                (event.currentTarget as HTMLSelectElement).value,
+              )}
+          >
+            {#each danmuAccounts as account}
+              <option value={account.uid}>{account.name}</option>
+            {/each}
+          </select>
           <input
             bind:value={danmu_message}
             placeholder="回车发送弹幕"
@@ -522,6 +540,7 @@
     top: 0;
     left: 50%;
     display: flex;
+    width: 220px;
     align-items: center;
     flex-direction: column;
     gap: 2px;
@@ -686,6 +705,15 @@
     outline: 0;
     background: transparent;
     color: #e9eef8;
+    font-size: 10px;
+  }
+
+  .danmu-sender select {
+    max-width: 88px;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: #aeb9c9;
     font-size: 10px;
   }
 

@@ -22,10 +22,11 @@ COPY . .
 # Build frontend
 RUN yarn build
 
-# Build Rust backend
-FROM rust:1.90-slim AS rust-builder
+# Build Rust backend. cargo-chef keeps third-party dependencies in a separate
+# Docker layer, so application source changes do not force a full rebuild.
+FROM rust:1.90-slim AS rust-base
 
-WORKDIR /app
+WORKDIR /app/src-tauri
 
 # Install required system dependencies
 RUN apt-get update && apt-get install -y \
@@ -40,10 +41,23 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy Rust project files
-COPY src-tauri/Cargo.toml src-tauri/Cargo.lock ./src-tauri/
-COPY src-tauri/src ./src-tauri/src
-COPY src-tauri/crates ./src-tauri/crates
+RUN cargo install cargo-chef --version 0.1.78 --locked
+
+FROM rust-base AS rust-planner
+
+COPY src-tauri .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM rust-base AS rust-builder
+
+COPY --from=rust-planner /app/src-tauri/recipe.json recipe.json
+RUN cargo chef cook \
+    --no-default-features \
+    --features headless \
+    --release \
+    --recipe-path recipe.json
+
+COPY src-tauri .
 
 # Sentry DSN baked into the binary at build time (option_env! in main.rs).
 # Empty by default so Sentry stays disabled unless a DSN is provided.
@@ -51,8 +65,6 @@ ARG SENTRY_ENDPOINT=""
 ENV SENTRY_ENDPOINT=${SENTRY_ENDPOINT}
 
 # Build Rust backend
-WORKDIR /app/src-tauri
-RUN rustup component add rustfmt
 RUN cargo build --no-default-features --features headless --release
 
 # Final stage

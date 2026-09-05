@@ -477,6 +477,19 @@ fn get_migrations() -> Vec<Migration> {
             "#,
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 15,
+            description: "add_bilibili_user_profiles_cache",
+            sql: r"
+                CREATE TABLE bilibili_user_profiles (
+                    user_id TEXT PRIMARY KEY,
+                    user_name TEXT NOT NULL,
+                    user_avatar TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+            ",
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

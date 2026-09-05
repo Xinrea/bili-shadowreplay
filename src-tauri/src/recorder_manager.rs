@@ -616,6 +616,7 @@ impl RecorderManager {
                     event_tx,
                     update_interval,
                     enabled,
+                    self.db.clone(),
                 )
                 .await?,
             ),

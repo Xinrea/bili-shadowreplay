@@ -1415,7 +1415,7 @@ ${mediaPlaylistUrl}`;
   <div
     class="youtube-theme"
     data-shaka-player-container
-    style="width: 100%; height: 100vh;"
+    style="width: 100%; height: 100%;"
   >
     <!-- svelte-ignore a11y_media_has_caption -->
     <video
@@ -1513,6 +1513,11 @@ ${mediaPlaylistUrl}`;
 
 <style>
   video {
+    width: 100%;
+    height: 100%;
+  }
+
+  #wrap {
     width: 100%;
     height: 100%;
   }

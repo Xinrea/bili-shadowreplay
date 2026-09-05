@@ -18,6 +18,7 @@
   } from "./lib/interface";
   import ArchiveClipButton from "./lib/components/ArchiveClipButton.svelte";
   import MarkerPanel from "./lib/components/MarkerPanel.svelte";
+  import ArchivePreviewHeader from "./lib/components/ArchivePreviewHeader.svelte";
   import { onDestroy, onMount } from "svelte";
 
   interface PlayerHandle {
@@ -571,9 +572,10 @@
 </script>
 
 <main>
-  <div class="flex flex-row overflow-hidden">
+  <ArchivePreviewHeader {archive} {platform} roomId={room_id} />
+  <div class="preview-workspace">
     <div
-      class="flex relative h-screen border-solid bg-gray-950 border-r-2 border-gray-800 z-[501] transition-all duration-300 ease-in-out"
+      class="flex relative h-full border-solid bg-gray-950 border-r-2 border-gray-800 z-[501] transition-all duration-300 ease-in-out"
       class:w-[200px]={!lpanel_collapsed}
       class:w-0={lpanel_collapsed}
     >
@@ -606,7 +608,7 @@
         {/if}
       </button>
     </div>
-    <div class="overflow-hidden h-screen w-full relative">
+    <div class="overflow-hidden h-full w-full relative">
       <Player
         bind:ranges
         bind:global_offset
@@ -629,7 +631,7 @@
       />
     </div>
     <div
-      class="flex relative h-screen border-solid bg-gray-950 border-l-2 border-gray-800 text-white transition-all duration-300 ease-in-out"
+      class="flex relative h-full border-solid bg-gray-950 border-l-2 border-gray-800 text-white transition-all duration-300 ease-in-out"
       class:w-[400px]={!rpanel_collapsed}
       class:w-0={rpanel_collapsed}
     >
@@ -649,7 +651,7 @@
       </button>
       <div
         id="post-panel"
-        class="h-screen bg-[#1c1c1e] text-white w-[400px] flex flex-col transition-opacity duration-300"
+        class="h-full bg-[#1c1c1e] text-white w-[400px] flex flex-col transition-opacity duration-300"
         class:opacity-0={rpanel_collapsed}
         class:opacity-100={!rpanel_collapsed}
         class:invisible={rpanel_collapsed}
@@ -1072,6 +1074,18 @@
   main {
     width: 100vw;
     height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: #0e1219;
+  }
+
+  .preview-workspace {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: row;
+    overflow: hidden;
   }
 
   .collapse-btn {

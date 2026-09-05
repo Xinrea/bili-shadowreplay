@@ -253,7 +253,6 @@
         <button
           type="button"
           class="control-icon volume-button"
-          title={`音量 ${Math.round(volume * 100)}%`}
           aria-label={`音量 ${Math.round(volume * 100)}%`}
         >
           {#if volume === 0}
@@ -512,10 +511,10 @@
 
   .playback-control {
     position: absolute;
-    top: 0;
+    top: 2px;
     left: 50%;
-    width: 38px;
-    height: 34px;
+    width: 30px;
+    height: 30px;
     transform: translateX(-50%);
   }
 
@@ -570,7 +569,7 @@
 
   .volume-popover {
     position: absolute;
-    bottom: 35px;
+    bottom: 28px;
     left: 50%;
     z-index: 20;
     display: flex;
@@ -657,11 +656,11 @@
     gap: 8px;
   }
 
-  .timeline-actions button {
+  .timeline-actions > button {
     height: 30px;
   }
 
-  .timeline-actions button {
+  .timeline-actions > button {
     display: inline-flex;
     height: 30px;
     align-items: center;
@@ -677,7 +676,7 @@
       background-color 150ms ease;
   }
 
-  .timeline-actions button:hover {
+  .timeline-actions > button:hover {
     border-color: #465469;
     background: #293240;
   }
@@ -686,6 +685,12 @@
     position: relative;
     display: flex;
     align-items: center;
+  }
+
+  .settings-control > .control-icon {
+    width: 30px;
+    height: 30px;
+    padding: 0;
   }
 
   .settings-control .offset-control {

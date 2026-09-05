@@ -237,7 +237,9 @@ impl KuaishouRecorder {
                             match msg {
                                 danmu_stream::DanmuMessageType::Event(event) => {
                                     if let Some(storage) = self.danmu_storage.write().await.as_ref() {
-                                        storage.add_event(event).await;
+                                        if let Err(error) = storage.add_event(event).await {
+                                            log::error!("Failed to persist live event: {error}");
+                                        }
                                     }
                                 }
                                 danmu_stream::DanmuMessageType::DanmuMessage(danmu) => {
@@ -248,12 +250,15 @@ impl KuaishouRecorder {
                                         content: danmu.message.clone(),
                                     });
                                     if let Some(storage) = self.danmu_storage.write().await.as_ref() {
-                                        storage
+                                        if let Err(error) = storage
                                             .add_event(danmu_stream::LiveEvent::danmu(
                                                 danmu,
                                                 "kuaishou",
                                             ))
-                                            .await;
+                                            .await
+                                        {
+                                            log::error!("Failed to persist danmu event: {error}");
+                                        }
                                     }
                                 }
                             }

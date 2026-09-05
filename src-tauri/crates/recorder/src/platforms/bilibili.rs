@@ -293,7 +293,9 @@ impl BiliRecorder {
                                         );
                                     }
                                     if let Some(storage) = self.danmu_storage.write().await.as_ref() {
-                                        storage.add_event(event).await;
+                                        if let Err(error) = storage.add_event(event).await {
+                                            log::error!("Failed to persist live event: {error}");
+                                        }
                                     }
                                 }
                                 DanmuMessageType::DanmuMessage(danmu) => {
@@ -306,7 +308,9 @@ impl BiliRecorder {
                                         room: self.room_id.clone(), ts, content,
                                     });
                                     if let Some(storage) = self.danmu_storage.write().await.as_ref() {
-                                        storage.add_event(event).await;
+                                        if let Err(error) = storage.add_event(event).await {
+                                            log::error!("Failed to persist danmu event: {error}");
+                                        }
                                     }
                                 }
                             }

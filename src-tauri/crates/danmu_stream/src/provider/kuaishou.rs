@@ -301,23 +301,55 @@ impl KuaishouDanmu {
                     tx.send(DanmuMessageType::DanmuMessage(danmu))
                         .map_err(|e| DanmuStreamError::WebsocketError { err: e.to_string() })?;
                 }
-                for _gift in feed.gift_feeds {
-                    tx.send(DanmuMessageType::Event(LiveEvent::new(
+                for gift in feed.gift_feeds {
+                    let user_id = gift.user.as_ref().map(|user| user.principal_id.clone());
+                    let user_name = gift.user.as_ref().map(|user| user.user_name.clone());
+                    let event = LiveEvent::new(
                         "kuaishou",
                         &room_id,
                         "gift",
-                        json!({ "count": 1 }),
-                    )))
-                    .map_err(|e| DanmuStreamError::WebsocketError { err: e.to_string() })?;
+                        json!({
+                            "id": gift.id.clone(),
+                            "user_id": user_id,
+                            "user_name": user_name,
+                            "gift_id": gift.gift_id,
+                            "count": gift.batch_size.max(gift.combo_count).max(1),
+                            "combo_count": gift.combo_count,
+                            "star_level": gift.star_level,
+                            "time": gift.time,
+                        }),
+                    )
+                    .with_raw(json!({
+                        "payload_type": "SC_FEED_PUSH",
+                        "gift": {
+                            "id": gift.id.clone(),
+                            "user_id": gift.user.as_ref().map(|user| &user.principal_id),
+                            "user_name": gift.user.as_ref().map(|user| &user.user_name),
+                            "time": gift.time,
+                            "gift_id": gift.gift_id,
+                            "batch_size": gift.batch_size,
+                            "combo_count": gift.combo_count,
+                            "star_level": gift.star_level,
+                        },
+                        "payload_hex": hex::encode(&payload),
+                    }));
+                    tx.send(DanmuMessageType::Event(event))
+                        .map_err(|e| DanmuStreamError::WebsocketError { err: e.to_string() })?;
                 }
                 if feed.pending_like_count > 0 {
-                    tx.send(DanmuMessageType::Event(LiveEvent::new(
+                    let event = LiveEvent::new(
                         "kuaishou",
                         &room_id,
                         "like",
                         json!({ "count": feed.pending_like_count }),
-                    )))
-                    .map_err(|e| DanmuStreamError::WebsocketError { err: e.to_string() })?;
+                    )
+                    .with_raw(json!({
+                        "payload_type": "SC_FEED_PUSH",
+                        "pending_like_count": feed.pending_like_count,
+                        "payload_hex": hex::encode(&payload),
+                    }));
+                    tx.send(DanmuMessageType::Event(event))
+                        .map_err(|e| DanmuStreamError::WebsocketError { err: e.to_string() })?;
                 }
             }
         }

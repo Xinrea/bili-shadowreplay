@@ -78,6 +78,11 @@ impl LiveEvent {
             raw: Value::Null,
         }
     }
+
+    pub fn with_raw(mut self, raw: Value) -> Self {
+        self.raw = raw;
+        self
+    }
 }
 
 #[derive(Debug, Clone)]

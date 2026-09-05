@@ -210,7 +210,9 @@ impl DouyinRecorder {
                             match msg {
                                 DanmuMessageType::Event(event) => {
                                     if let Some(storage) = self.danmu_storage.read().await.as_ref() {
-                                        storage.add_event(event).await;
+                                        if let Err(error) = storage.add_event(event).await {
+                                            log::error!("Failed to persist live event: {error}");
+                                        }
                                     }
                                 }
                                 DanmuMessageType::DanmuMessage(danmu) => {
@@ -222,7 +224,12 @@ impl DouyinRecorder {
                                     });
 
                                     if let Some(danmu_storage) = self.danmu_storage.read().await.as_ref() {
-                                        danmu_storage.add_event(LiveEvent::danmu(danmu, "douyin")).await;
+                                        if let Err(error) = danmu_storage
+                                            .add_event(LiveEvent::danmu(danmu, "douyin"))
+                                            .await
+                                        {
+                                            log::error!("Failed to persist danmu event: {error}");
+                                        }
                                     }
                                 }
                             }

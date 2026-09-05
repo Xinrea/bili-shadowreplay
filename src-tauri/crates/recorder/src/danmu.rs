@@ -77,17 +77,20 @@ impl DanmuStorage {
         })
     }
 
-    pub async fn add_event(&self, event: LiveEvent) {
+    pub async fn add_event(&self, event: LiveEvent) -> Result<(), std::io::Error> {
         let Ok(mut line) = serde_json::to_string(&event) else {
-            log::error!("Serialize live event failed");
-            return;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "serialize live event failed",
+            ));
         };
         line.push('\n');
+        self.file.write().await.write_all(line.as_bytes()).await?;
         self.cache.write().await.push(event);
-        let _ = self.file.write().await.write_all(line.as_bytes()).await;
+        Ok(())
     }
 
-    pub async fn add_line(&self, ts: i64, content: &str) {
+    pub async fn add_line(&self, ts: i64, content: &str) -> Result<(), std::io::Error> {
         self.add_event(LiveEvent {
             ts,
             platform: "unknown".to_string(),
@@ -96,7 +99,7 @@ impl DanmuStorage {
             data: serde_json::json!({ "content": content }),
             raw: Value::Null,
         })
-        .await;
+        .await
     }
 
     // get entries with ts relative to live start time

@@ -583,8 +583,8 @@
 <style>
   .timeline-panel {
     display: flex;
-    height: 176px;
-    flex: 0 0 176px;
+    height: 192px;
+    flex: 0 0 192px;
     flex-direction: column;
     gap: 8px;
     border-top: 1px solid #2b3340;
@@ -935,18 +935,23 @@
   .timeline-surface {
     min-height: 0;
     flex: 1;
+    overflow: hidden;
     border: 1px solid #29313d;
     border-radius: 10px;
     background: #151a23;
-    padding: 8px 20px;
+    padding: 8px 20px 12px;
   }
 
   .shortcut-hint {
+    box-sizing: border-box;
+    width: calc(100% - 8px);
+    min-width: 0;
     overflow-x: auto;
     display: flex;
     align-items: center;
     gap: 5px;
-    padding: 6px 4px 0;
+    margin: 0 4px;
+    padding: 6px 16px 0;
     color: #687589;
     font-size: 9px;
     line-height: 14px;

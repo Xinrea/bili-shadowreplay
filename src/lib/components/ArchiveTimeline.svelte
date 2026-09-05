@@ -501,9 +501,11 @@
 
   .timeline-header {
     position: relative;
+    display: grid;
     min-height: 54px;
     flex: 0 0 54px;
-    justify-content: space-between;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: center;
     gap: 12px;
   }
 
@@ -514,8 +516,10 @@
 
   .timeline-controls {
     display: flex;
+    grid-column: 2;
     min-width: 0;
     align-items: center;
+    justify-content: center;
     gap: 7px;
   }
 
@@ -537,15 +541,14 @@
   }
 
   .playback-cluster {
-    position: absolute;
-    top: 0;
-    left: 50%;
+    grid-column: 1;
+    grid-row: 1;
     display: flex;
     width: 220px;
     align-items: center;
     flex-direction: column;
+    justify-self: start;
     gap: 2px;
-    transform: translateX(-50%);
   }
 
   .control-icon:hover,
@@ -722,9 +725,12 @@
   }
 
   .timeline-actions {
+    grid-column: 3;
+    grid-row: 1;
     position: relative;
     flex: 0 0 auto;
     gap: 8px;
+    justify-self: end;
   }
 
   .timeline-actions > button {

@@ -110,61 +110,71 @@
   </div>
 
   <div class="timeline-surface">
-    <div class="heat-row">
-      <span class="heat-label">弹幕热度</span>
-      <div class="heat-bars" aria-hidden="true">
-        {#each heatBuckets as count}
-          <span
-            style:height={`${Math.max(3, maxHeat > 0 ? (count / maxHeat) * 28 : 3)}px`}
-            class:hot={maxHeat > 0 && count / maxHeat >= 0.72}
-          ></span>
+    <div class="time-grid">
+      <div class="heat-row">
+        <span class="heat-label">弹幕热度</span>
+        <div class="heat-bars" aria-hidden="true">
+          {#each heatBuckets as count}
+            <span
+              style:height={`${Math.max(3, maxHeat > 0 ? (count / maxHeat) * 26 : 3)}px`}
+              class:hot={maxHeat > 0 && count / maxHeat >= 0.72}
+            ></span>
+          {/each}
+        </div>
+      </div>
+
+      <div class="time-ruler" aria-hidden="true">
+        <span>{formatTime(0)}</span>
+        <span>{formatTime(duration * 0.25)}</span>
+        <span>{formatTime(duration * 0.5)}</span>
+        <span>{formatTime(duration * 0.75)}</span>
+        <span>{formatTime(duration)}</span>
+      </div>
+
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <div
+        class="range-track"
+        role="slider"
+        aria-label="录播时间线"
+        aria-valuemin="0"
+        aria-valuemax={duration}
+        aria-valuenow={currentTime}
+        tabindex="0"
+        onclick={handleTrackClick}
+        onkeydown={(event) => {
+          if (event.key === "ArrowLeft") onSeek?.(Math.max(0, currentTime - 3));
+          if (event.key === "ArrowRight")
+            onSeek?.(Math.min(duration, currentTime + 3));
+        }}
+      >
+        {#each ranges as range, index}
+          <button
+            type="button"
+            class="range-block"
+            class:selected={selectedRangeIndex === index}
+            class:inactive={range.activated === false}
+            style:left={`${clampPercent(range.start)}%`}
+            style:width={`${Math.max(0.8, clampPercent(range.end) - clampPercent(range.start))}%`}
+            title={`选区 ${index + 1}：${formatTime(range.start)} → ${formatTime(range.end)}`}
+            onclick={(event) => selectRange(event, index, range.start)}
+          >
+            <span>选区 {index + 1}</span>
+          </button>
+        {/each}
+
+        {#each markers as marker}
+          <button
+            type="button"
+            class="marker"
+            style:left={`${clampPercent(marker.offset)}%`}
+            title={`${marker.content || "标记"} · ${formatTime(marker.offset)}`}
+            onclick={(event) => {
+              event.stopPropagation();
+              onSeek?.(marker.offset);
+            }}
+          ></button>
         {/each}
       </div>
-    </div>
-
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <div
-      class="range-track"
-      role="slider"
-      aria-label="录播时间线"
-      aria-valuemin="0"
-      aria-valuemax={duration}
-      aria-valuenow={currentTime}
-      tabindex="0"
-      onclick={handleTrackClick}
-      onkeydown={(event) => {
-        if (event.key === "ArrowLeft") onSeek?.(Math.max(0, currentTime - 3));
-        if (event.key === "ArrowRight")
-          onSeek?.(Math.min(duration, currentTime + 3));
-      }}
-    >
-      {#each ranges as range, index}
-        <button
-          type="button"
-          class="range-block"
-          class:selected={selectedRangeIndex === index}
-          class:inactive={range.activated === false}
-          style:left={`${clampPercent(range.start)}%`}
-          style:width={`${Math.max(0.8, clampPercent(range.end) - clampPercent(range.start))}%`}
-          title={`选区 ${index + 1}：${formatTime(range.start)} → ${formatTime(range.end)}`}
-          onclick={(event) => selectRange(event, index, range.start)}
-        >
-          <span>选区 {index + 1}</span>
-        </button>
-      {/each}
-
-      {#each markers as marker}
-        <button
-          type="button"
-          class="marker"
-          style:left={`${clampPercent(marker.offset)}%`}
-          title={`${marker.content || "标记"} · ${formatTime(marker.offset)}`}
-          onclick={(event) => {
-            event.stopPropagation();
-            onSeek?.(marker.offset);
-          }}
-        ></button>
-      {/each}
 
       <span
         class="playhead"
@@ -255,26 +265,36 @@
     padding: 8px 12px;
   }
 
+  .time-grid {
+    position: relative;
+  }
+
   .heat-row {
+    position: relative;
     display: flex;
-    height: 36px;
+    width: 100%;
+    height: 30px;
     align-items: flex-end;
-    gap: 12px;
   }
 
   .heat-label {
-    width: 52px;
-    flex: 0 0 52px;
-    padding-bottom: 3px;
+    position: absolute;
+    z-index: 2;
+    top: 2px;
+    left: 0;
+    border-radius: 4px;
+    background: rgb(21 26 35 / 86%);
+    padding: 2px 5px;
     color: #7f8a9c;
     font-size: 10px;
+    pointer-events: none;
   }
 
   .heat-bars {
     display: flex;
-    height: 30px;
+    width: 100%;
+    height: 28px;
     min-width: 0;
-    flex: 1;
     align-items: flex-end;
     gap: 2px;
   }
@@ -290,10 +310,21 @@
     background: #318fd1;
   }
 
+  .time-ruler {
+    display: flex;
+    width: 100%;
+    height: 15px;
+    align-items: flex-end;
+    justify-content: space-between;
+    color: #687589;
+    font-size: 9px;
+    font-variant-numeric: tabular-nums;
+  }
+
   .range-track {
     position: relative;
     height: 42px;
-    margin-top: 7px;
+    margin-top: 4px;
     border-radius: 7px;
     background:
       linear-gradient(90deg, transparent 24.8%, #202733 25%, transparent 25.2%),
@@ -357,8 +388,8 @@
 
   .playhead {
     position: absolute;
-    top: -8px;
-    bottom: -8px;
+    top: 0;
+    bottom: 0;
     z-index: 3;
     width: 1px;
     background: #ff6677;
@@ -367,7 +398,7 @@
 
   .playhead::before {
     position: absolute;
-    top: 0;
+    top: 41px;
     left: -4px;
     width: 9px;
     height: 7px;

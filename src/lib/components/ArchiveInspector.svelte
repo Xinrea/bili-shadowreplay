@@ -173,11 +173,15 @@
   <div class="inspector-content">
     {#if activeTab === "ranges"}
       <section class="range-summary">
-        <div>
+        <div class="summary-value">
           <span>已选内容</span>
           <strong>{formatTime(activeDuration)}</strong>
         </div>
-        <label>
+        <label
+          class="select-all-toggle"
+          class:checked={ranges.length > 0 &&
+            ranges.every((range) => range.activated !== false)}
+        >
           <input
             type="checkbox"
             checked={ranges.length > 0 &&
@@ -187,6 +191,7 @@
               ranges = ranges.map((range) => ({ ...range, activated: active }));
             }}
           />
+          <span class="check-mark"><Check size={13} /></span>
           全选
         </label>
       </section>
@@ -203,7 +208,7 @@
               class="range-main"
               onclick={() => selectRange(index, range)}
             >
-              <span class="range-title">选区 {index + 1}</span>
+              <span class="range-title">{index + 1}</span>
               <span class="range-time">
                 {formatTime(range.start)} → {formatTime(range.end)}
               </span>
@@ -212,7 +217,11 @@
               </span>
             </button>
             <div class="range-actions">
-              <label title={range.activated === false ? "启用选区" : "停用选区"}>
+              <label
+                class="range-toggle"
+                class:checked={range.activated !== false}
+                title={range.activated === false ? "启用选区" : "停用选区"}
+              >
                 <input
                   type="checkbox"
                   checked={range.activated !== false}
@@ -222,7 +231,7 @@
                       (event.currentTarget as HTMLInputElement).checked,
                     )}
                 />
-                <Check size={13} />
+                <span class="check-mark"><Check size={13} /></span>
               </label>
               <button
                 type="button"
@@ -517,8 +526,8 @@
 
   .range-summary div {
     display: flex;
-    flex-direction: column;
-    gap: 3px;
+    align-items: center;
+    gap: 10px;
   }
 
   .range-summary span,
@@ -530,19 +539,23 @@
   }
 
   .range-summary strong {
-    font-size: 19px;
+    font-size: 16px;
     font-weight: 600;
   }
 
-  .range-summary label {
+  .select-all-toggle {
     display: flex;
     align-items: center;
     gap: 6px;
     cursor: pointer;
   }
 
-  input[type="checkbox"] {
-    accent-color: #0a84ff;
+  .select-all-toggle input,
+  .range-toggle input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
   }
 
   .range-list,
@@ -588,8 +601,8 @@
   }
 
   .range-title {
-    width: 45px;
-    flex: 0 0 45px;
+    width: 20px;
+    flex: 0 0 20px;
     overflow: hidden;
     font-size: 12px;
     font-weight: 600;
@@ -633,6 +646,39 @@
     position: absolute;
     width: 1px;
     height: 1px;
+    opacity: 0;
+  }
+
+  .check-mark {
+    display: inline-flex;
+    width: 27px;
+    height: 27px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 7px;
+    background: #171c25;
+    color: #8290a4;
+    transition:
+      background-color 150ms ease,
+      color 150ms ease;
+  }
+
+  .select-all-toggle .check-mark {
+    width: 20px;
+    height: 20px;
+    border: 1px solid #435064;
+    border-radius: 5px;
+  }
+
+  .select-all-toggle.checked .check-mark,
+  .range-toggle.checked .check-mark {
+    border-color: #0a84ff;
+    background: #0a84ff;
+    color: white;
+  }
+
+  .select-all-toggle:not(.checked) .check-mark svg,
+  .range-toggle:not(.checked) .check-mark svg {
     opacity: 0;
   }
 

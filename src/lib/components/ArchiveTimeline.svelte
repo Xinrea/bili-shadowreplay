@@ -198,7 +198,7 @@
     <div class="timeline-controls">
       <button
         type="button"
-        class="control-icon"
+        class="control-icon playback-control"
         title={isPlaying ? "暂停" : "播放"}
         onclick={onTogglePlayback}
       >
@@ -454,6 +454,7 @@
   }
 
   .timeline-header {
+    position: relative;
     min-height: 34px;
     justify-content: space-between;
     gap: 12px;
@@ -483,6 +484,15 @@
     color: #cbd7e8;
   }
 
+  .playback-control {
+    position: absolute;
+    top: 0;
+    left: 50%;
+    width: 38px;
+    height: 34px;
+    transform: translateX(-50%);
+  }
+
   .control-icon:hover,
   .control-icon.enabled {
     border-color: #168de0;
@@ -505,13 +515,20 @@
   }
 
   .offset-control input {
-    width: 38px;
+    width: 46px;
     border: 0;
     outline: 0;
     background: transparent;
     color: #dce5f3;
     font-size: 10px;
     text-align: right;
+    appearance: textfield;
+  }
+
+  .offset-control input::-webkit-outer-spin-button,
+  .offset-control input::-webkit-inner-spin-button {
+    margin: 0;
+    appearance: none;
   }
 
   .volume-control input {

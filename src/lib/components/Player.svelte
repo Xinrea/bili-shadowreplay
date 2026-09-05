@@ -7,11 +7,6 @@
   import type { AccountInfo } from "../db";
   import type { Marker, RecorderList, RecorderInfo, Range } from "../interface";
 
-  import {
-    GridOutline,
-    SortHorizontalOutline,
-    FileExportOutline,
-  } from "flowbite-svelte-icons";
   import { save } from "@tauri-apps/plugin-dialog";
   const DANMU_STATISTIC_GAP = 5;
 
@@ -40,6 +35,7 @@
     can_send_danmaku?: boolean;
     danmu_accounts?: AccountInfo["accounts"];
     danmu_account_uid?: string;
+    recorders?: RecorderInfo[];
     onMarkerAdd?: (marker: { offset: number; realtime: number }) => void;
   }
 
@@ -63,6 +59,7 @@
     can_send_danmaku = $bindable(false),
     danmu_accounts = $bindable([]),
     danmu_account_uid = $bindable(""),
+    recorders = $bindable([]),
     onMarkerAdd,
   }: Props = $props();
   export function seek(offset: number) {
@@ -106,11 +103,6 @@
   }
   let video: HTMLVideoElement;
   let shaka_player: any;
-  let show_detail = $state(false);
-  let show_list = false;
-  let show_export = false;
-  let recorders: RecorderInfo[] = $state([]);
-
   let start = $state(0);
   let end = $state(0);
   let currentRangeIndex: number = -1; // 当前正在编辑的区间索引，-1 表示没有区间
@@ -416,11 +408,6 @@ ${mediaPlaylistUrl}`;
     ).recorders.filter(
       (r) => r.room_info.status && r.room_info.room_id != room_id
     );
-  }
-
-  function go_to(platform: string, room_id: string, live_id: string) {
-    const url = `${window.location.origin}${window.location.pathname}?platform=${platform}&room_id=${room_id}&live_id=${live_id}`;
-    window.location.href = url;
   }
 
   function zoomOnRange(start: number, end: number) {
@@ -1166,10 +1153,6 @@ ${mediaPlaylistUrl}`;
           saveRanges();
           console.log("All ranges cleared");
           break;
-        case "h":
-          e.preventDefault();
-          show_detail = !show_detail;
-          break;
         case "Escape":
           e.preventDefault();
           resetZoom();
@@ -1457,13 +1440,7 @@ ${mediaPlaylistUrl}`;
   // set body background color to black
   document.body.style.backgroundColor = "black";
 
-  // Add blur event listener to close menus
-  window.addEventListener("blur", () => {
-    show_list = false;
-    show_export = false;
-  });
-
-  async function exportDanmu(ass: boolean) {
+  export async function exportDanmu(ass: boolean) {
     console.log("Export danmus");
     const assContent = (await invoke("export_danmu", {
       options: {
@@ -1512,89 +1489,6 @@ ${mediaPlaylistUrl}`;
     ></video>
   </div>
 </section>
-<div id="overlay">
-  <p>
-    快捷键说明
-    <kbd>h</kbd>展开
-  </p>
-  {#if show_detail}
-    <span>
-      <p><kbd>Esc</kbd>返回直播/录播</p>
-      <p><kbd>Space</kbd>播放/暂停</p>
-      <p><kbd>[</kbd>设定当前区间开始（无选中时创建新区间）</p>
-      <p><kbd>]</kbd>设定当前区间结束（无选中时创建新区间）</p>
-      <p><kbd>Enter</kbd>取消选中，进入创建模式</p>
-      <p><kbd>n</kbd>创建新区间</p>
-      <p><kbd>d</kbd>删除当前区间</p>
-      <p><kbd>Tab</kbd>/<kbd>t</kbd>切换到下一个区间</p>
-      <p><kbd>Shift+Tab</kbd>/<kbd>Shift+t</kbd>切换到上一个区间</p>
-      <p><kbd>g</kbd>预览当前区间片段</p>
-      <p><kbd>a</kbd>切换当前区间激活状态</p>
-      <p><kbd>q</kbd>跳转到当前区间开始</p>
-      <p><kbd>e</kbd>跳转到当前区间结束</p>
-      <p><kbd>←</kbd>前进</p>
-      <p><kbd>→</kbd>后退</p>
-      <p><kbd>c</kbd>清除所有区间</p>
-      <p><kbd>p</kbd>创建标记</p>
-    </span>
-  {/if}
-</div>
-<div id="shortcuts">
-  <button id="shortcut-btn">
-    <GridOutline />
-  </button>
-  <ul class="shortcut-list">
-    {#each recorders as recorder}
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <button
-        type="button"
-        class="shortcut"
-        onclick={() => {
-          go_to(
-            recorder.room_info.platform,
-            recorder.room_info.room_id,
-            recorder.live_id
-          );
-        }}
-      >
-        <SortHorizontalOutline />[{recorder.user_info.user_name}]{recorder
-          .room_info.room_title}
-      </button>
-    {/each}
-    {#if recorders.length == 0}
-      <p>没有其它正在直播的房间</p>
-    {/if}
-  </ul>
-</div>
-
-<div id="export">
-  <button id="export-btn">
-    <FileExportOutline />
-  </button>
-  <ul class="export-list">
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <button
-      type="button"
-      class="export-item"
-      onclick={() => {
-        exportDanmu(false);
-      }}
-    >
-      导出弹幕为 TXT
-    </button>
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <button
-      type="button"
-      class="export-item"
-      onclick={() => {
-        exportDanmu(true);
-      }}
-    >
-      导出弹幕为 ASS
-    </button>
-  </ul>
-</div>
-
 <style>
   :global(.shaka-controls-container) {
     display: none !important;
@@ -1614,129 +1508,4 @@ ${mediaPlaylistUrl}`;
     display: none !important;
   }
 
-  p {
-    margin: 0;
-  }
-
-  kbd {
-    border: 1px solid white;
-    padding: 0 0.2em;
-    border-radius: 0.2em;
-    margin: 4px;
-  }
-
-  #overlay {
-    position: absolute;
-    top: 8px;
-    left: 8px;
-    border-radius: 6px;
-    padding: 8px;
-    flex-direction: column;
-    display: flex;
-    background-color: rgba(0, 0, 0, 0.5);
-    color: white;
-    font-size: 0.8em;
-    pointer-events: none;
-  }
-
-  #shortcuts {
-    position: absolute;
-    top: 8px;
-    right: 52px;
-    flex-direction: column;
-    display: flex;
-    align-items: end;
-    color: white;
-    font-size: 0.8em;
-    z-index: 501;
-  }
-
-  #shortcut-btn {
-    width: 36px;
-    padding: 8px;
-    margin-bottom: 4px;
-    border-radius: 4px;
-    cursor: pointer;
-    background-color: rgba(0, 0, 0, 0.5);
-  }
-
-  #shortcut-btn:hover {
-    background-color: rgba(255, 255, 255, 0.3);
-  }
-
-  .shortcut-list {
-    border-radius: 4px;
-    padding: 8px;
-    background-color: rgba(0, 0, 0, 0.5);
-    display: none;
-    position: absolute;
-    top: 100%;
-    right: 0;
-    min-width: 200px;
-  }
-
-  #shortcuts:hover .shortcut-list {
-    display: block;
-  }
-
-  .shortcut {
-    display: flex;
-    flex-direction: row;
-    cursor: pointer;
-  }
-
-  .shortcut:hover {
-    text-decoration: underline;
-  }
-
-  #export {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    flex-direction: column;
-    display: flex;
-    align-items: end;
-    color: white;
-    font-size: 0.8em;
-    z-index: 501;
-  }
-
-  #export-btn {
-    width: 36px;
-    padding: 8px;
-    margin-bottom: 4px;
-    border-radius: 4px;
-    cursor: pointer;
-    background-color: rgba(0, 0, 0, 0.5);
-  }
-
-  #export-btn:hover {
-    background-color: rgba(255, 255, 255, 0.3);
-  }
-
-  .export-list {
-    border-radius: 4px;
-    padding: 8px;
-    background-color: rgba(0, 0, 0, 0.5);
-    display: none;
-    position: absolute;
-    top: 100%;
-    right: 0;
-    min-width: 150px;
-  }
-
-  #export:hover .export-list {
-    display: block;
-  }
-
-  .export-item {
-    display: flex;
-    flex-direction: row;
-    cursor: pointer;
-    padding: 4px 8px;
-  }
-
-  .export-item:hover {
-    background-color: rgba(255, 255, 255, 0.1);
-  }
 </style>

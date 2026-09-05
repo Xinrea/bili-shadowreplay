@@ -14,6 +14,7 @@
     type Marker,
     type DanmuEntry,
     type Range,
+    type RecorderInfo,
   } from "./lib/interface";
   import ArchiveInspector from "./lib/components/ArchiveInspector.svelte";
   import ArchiveTimeline from "./lib/components/ArchiveTimeline.svelte";
@@ -26,6 +27,7 @@
     toggleDanmu(): void;
     setDanmuOffset(offset: number): void;
     sendDanmaku(message: string): Promise<void>;
+    exportDanmu(ass: boolean): Promise<void>;
     seekLive(): void;
   }
 
@@ -324,6 +326,7 @@
   let can_send_danmaku = $state(false);
   let danmu_accounts = $state<AccountItem[]>([]);
   let danmu_account_uid = $state("");
+  let live_recorders = $state<RecorderInfo[]>([]);
 
   function pauseForRangeDrag() {
     video?.pause();
@@ -437,6 +440,15 @@
     await invoke("open_clip", { videoId: video_id });
   }
 
+  function navigate_to_recorder(recorder: RecorderInfo) {
+    const nextUrl =
+      `${window.location.origin}${window.location.pathname}` +
+      `?platform=${recorder.room_info.platform}` +
+      `&room_id=${recorder.room_info.room_id}` +
+      `&live_id=${recorder.live_id}`;
+    window.location.href = nextUrl;
+  }
+
   function handlePeakThresholdChange(value: number) {
     peak_threshold = value;
   }
@@ -489,6 +501,7 @@
           bind:can_send_danmaku={can_send_danmaku}
           bind:danmu_accounts
           bind:danmu_account_uid
+          bind:recorders={live_recorders}
           {focus_start}
           {focus_end}
           {platform}
@@ -534,6 +547,9 @@
         onDanmuOffsetChange={(value) => player?.setDanmuOffset(value)}
         onSendDanmaku={(message) => player?.sendDanmaku(message)}
         onDanmuAccountChange={(uid) => (danmu_account_uid = uid)}
+        recorders={live_recorders}
+        onExportDanmu={(ass) => player?.exportDanmu(ass)}
+        onNavigateLive={navigate_to_recorder}
         onRangeDragStart={pauseForRangeDrag}
         onRangeDrag={seekDuringRangeDrag}
       />

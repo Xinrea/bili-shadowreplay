@@ -10,7 +10,7 @@
     Volume2,
     VolumeX,
   } from "lucide-svelte";
-  import type { Marker, Range } from "../interface";
+  import type { Marker, Range, RecorderInfo } from "../interface";
 
   type HeatPoint = {
     time: number;
@@ -47,6 +47,9 @@
     onDanmuOffsetChange?: (offset: number) => void;
     onSendDanmaku?: (message: string) => void;
     onDanmuAccountChange?: (uid: string) => void;
+    recorders?: RecorderInfo[];
+    onExportDanmu?: (ass: boolean) => void;
+    onNavigateLive?: (recorder: RecorderInfo) => void;
   }
 
   let {
@@ -78,6 +81,9 @@
     onDanmuOffsetChange,
     onSendDanmaku,
     onDanmuAccountChange,
+    recorders = [],
+    onExportDanmu,
+    onNavigateLive,
   }: Props = $props();
   let danmu_message = $state("");
   let show_offset_settings = $state(false);
@@ -323,18 +329,53 @@
           <Settings size={15} />
         </button>
         {#if show_offset_settings}
-          <label class="offset-control">
-            <span>偏移</span>
-            <input
-              type="number"
-              value={danmuOffset}
-              onchange={(event) =>
-                onDanmuOffsetChange?.(
-                  Number((event.currentTarget as HTMLInputElement).value),
-                )}
-            />
-            <span>秒</span>
-          </label>
+          <div class="settings-menu">
+            <label class="offset-control">
+              <span>弹幕偏移</span>
+              <input
+                type="number"
+                value={danmuOffset}
+                onchange={(event) =>
+                  onDanmuOffsetChange?.(
+                    Number((event.currentTarget as HTMLInputElement).value),
+                  )}
+              />
+              <span>秒</span>
+            </label>
+            <div class="menu-divider"></div>
+            <span class="menu-heading">弹幕导出</span>
+            <button
+              type="button"
+              class="menu-item"
+              onclick={() => onExportDanmu?.(false)}
+            >
+              导出弹幕为 TXT
+            </button>
+            <button
+              type="button"
+              class="menu-item"
+              onclick={() => onExportDanmu?.(true)}
+            >
+              导出弹幕为 ASS
+            </button>
+            <div class="menu-divider"></div>
+            <span class="menu-heading">快捷跳转</span>
+            {#each recorders as recorder}
+              <button
+                type="button"
+                class="menu-item live-room-item"
+                onclick={() => onNavigateLive?.(recorder)}
+              >
+                <Radio size={12} />
+                <span>
+                  正在直播 · {recorder.user_info.user_name ||
+                    recorder.room_info.room_title}
+                </span>
+              </button>
+            {:else}
+              <span class="menu-empty">没有其它正在直播的房间</span>
+            {/each}
+          </div>
         {/if}
       </div>
     </div>
@@ -775,6 +816,66 @@
     right: 0;
     z-index: 10;
     box-shadow: 0 8px 20px rgb(0 0 0 / 28%);
+  }
+
+  .settings-menu {
+    position: absolute;
+    top: 38px;
+    right: 0;
+    z-index: 20;
+    display: flex;
+    width: 220px;
+    flex-direction: column;
+    gap: 3px;
+    border: 1px solid #303947;
+    border-radius: 10px;
+    background: #202733;
+    padding: 8px;
+    box-shadow: 0 10px 24px rgb(0 0 0 / 35%);
+  }
+
+  .settings-menu .offset-control {
+    position: static;
+    width: 100%;
+    justify-content: space-between;
+    box-shadow: none;
+  }
+
+  .menu-heading,
+  .menu-empty {
+    padding: 4px 6px 2px;
+    color: #718095;
+    font-size: 10px;
+  }
+
+  .menu-divider {
+    height: 1px;
+    margin: 5px 0;
+    background: #303947;
+  }
+
+  .menu-item {
+    display: flex;
+    width: 100%;
+    height: 28px;
+    align-items: center;
+    gap: 7px;
+    border-radius: 7px;
+    padding: 0 7px;
+    color: #cbd7e8;
+    font-size: 10px;
+    text-align: left;
+  }
+
+  .menu-item:hover {
+    background: #2c3848;
+    color: #65c2ff;
+  }
+
+  .live-room-item span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .timeline-surface {

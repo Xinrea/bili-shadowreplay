@@ -260,7 +260,7 @@
               onpointercancel={endRangeDrag}
               onclick={(event) => event.stopPropagation()}
             ></span>
-            <span>选区 {index + 1}</span>
+            <span class="range-label">选区 {index + 1}</span>
             <span
               class="range-handle range-handle-end"
               role="slider"
@@ -480,9 +480,6 @@
 
   .range-block {
     position: absolute;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
     top: 5px;
     height: 32px;
     min-width: 6px;
@@ -497,22 +494,37 @@
   }
 
   .range-handle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
     z-index: 2;
-    width: 8px;
-    height: 24px;
-    flex: 0 0 8px;
-    border: 1px solid rgb(255 255 255 / 72%);
-    border-radius: 3px;
-    background: rgb(255 255 255 / 24%);
+    width: 10px;
+    height: auto;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
     cursor: ew-resize;
     touch-action: none;
   }
 
-  .range-handle:hover,
+  .range-handle-start {
+    left: -5px;
+  }
+
+  .range-handle-end {
+    right: -5px;
+  }
+
   .range-handle:focus-visible {
-    background: rgb(255 255 255 / 50%);
     outline: 2px solid rgb(255 255 255 / 75%);
     outline-offset: 1px;
+  }
+
+  .range-label {
+    display: block;
+    overflow: hidden;
+    padding: 0 4px;
+    text-overflow: ellipsis;
   }
 
   .range-block:nth-of-type(even) {

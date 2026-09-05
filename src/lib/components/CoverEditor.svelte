@@ -360,6 +360,7 @@
         content: text.content,
         fontSize: text.fontSize,
         color: text.color,
+        strokeColor: text.strokeColor,
         position: text.position,
       }));
       scheduleRedraw();

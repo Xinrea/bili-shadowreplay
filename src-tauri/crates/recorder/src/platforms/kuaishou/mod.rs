@@ -235,6 +235,11 @@ impl KuaishouRecorder {
                     match recv_res {
                         Ok(Some(msg)) => {
                             match msg {
+                                danmu_stream::DanmuMessageType::Event(event) => {
+                                    if let Some(storage) = self.danmu_storage.write().await.as_ref() {
+                                        storage.add_event(event).await;
+                                    }
+                                }
                                 danmu_stream::DanmuMessageType::DanmuMessage(danmu) => {
                                     let ts = Utc::now().timestamp_millis();
                                     let _ = self.event_channel.send(RecorderEvent::DanmuReceived {
@@ -243,7 +248,12 @@ impl KuaishouRecorder {
                                         content: danmu.message.clone(),
                                     });
                                     if let Some(storage) = self.danmu_storage.write().await.as_ref() {
-                                        storage.add_line(ts, &danmu.message).await;
+                                        storage
+                                            .add_event(danmu_stream::LiveEvent::danmu(
+                                                danmu,
+                                                "kuaishou",
+                                            ))
+                                            .await;
                                     }
                                 }
                             }
@@ -280,7 +290,7 @@ impl KuaishouRecorder {
         let cover_path = work_dir.with_filename("cover.jpg");
         let _ = api::download_file(&self.client, &cover_url, &cover_path.full_path()).await;
 
-        let danmu_path = work_dir.with_filename("danmu.txt");
+        let danmu_path = work_dir.with_filename("events.jsonl");
         *self.danmu_storage.write().await = DanmuStorage::new(&danmu_path.full_path()).await;
 
         *self.live_id.write().await = live_id.to_string();

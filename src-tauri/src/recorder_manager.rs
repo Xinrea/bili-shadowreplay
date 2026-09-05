@@ -888,13 +888,19 @@ impl RecorderManager {
     ) -> Result<Vec<DanmuEntry>, RecorderManagerError> {
         let cache_path = self.config.read().await.cache.clone();
         let cache_path = Path::new(&cache_path);
-        let danmus_path = cache_path
+        let mut danmus_path = cache_path
             .join(platform.as_str())
             .join(room_id)
             .join(live_id)
-            .join("danmu.txt");
+            .join("events.jsonl");
         if !danmus_path.exists() {
-            return Ok(Vec::new());
+            // Keep existing archives readable after the storage format
+            // migration. New recordings only create events.jsonl.
+            let legacy_path = danmus_path.with_file_name("danmu.txt");
+            if !legacy_path.exists() {
+                return Ok(Vec::new());
+            }
+            danmus_path = legacy_path;
         }
         let Some(storage) = DanmuStorage::new(&danmus_path).await else {
             log::error!("Failed to load danmu storage: {danmus_path:?}");

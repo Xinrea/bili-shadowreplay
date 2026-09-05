@@ -23,8 +23,9 @@ use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 
 use crate::{
     provider::{DanmuMessageType, DanmuProvider},
-    DanmuMessage, DanmuStreamError,
+    DanmuMessage, DanmuStreamError, LiveEvent,
 };
+use serde_json::json;
 
 use messages::{
     CompressionType, CsHeartbeat, CsWebEnterRoom, PayloadType, ScWebFeedPush, SocketMessage,
@@ -299,6 +300,24 @@ impl KuaishouDanmu {
                     };
                     tx.send(DanmuMessageType::DanmuMessage(danmu))
                         .map_err(|e| DanmuStreamError::WebsocketError { err: e.to_string() })?;
+                }
+                for _gift in feed.gift_feeds {
+                    tx.send(DanmuMessageType::Event(LiveEvent::new(
+                        "kuaishou",
+                        &room_id,
+                        "gift",
+                        json!({ "count": 1 }),
+                    )))
+                    .map_err(|e| DanmuStreamError::WebsocketError { err: e.to_string() })?;
+                }
+                if feed.pending_like_count > 0 {
+                    tx.send(DanmuMessageType::Event(LiveEvent::new(
+                        "kuaishou",
+                        &room_id,
+                        "like",
+                        json!({ "count": feed.pending_like_count }),
+                    )))
+                    .map_err(|e| DanmuStreamError::WebsocketError { err: e.to_string() })?;
                 }
             }
         }

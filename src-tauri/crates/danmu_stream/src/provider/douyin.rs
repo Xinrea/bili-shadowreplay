@@ -22,7 +22,8 @@ use tokio_tungstenite::{
     connect_async, tungstenite::Message as WsMessage, MaybeTlsStream, WebSocketStream,
 };
 
-use crate::{provider::DanmuProvider, DanmuMessage, DanmuMessageType, DanmuStreamError};
+use crate::{provider::DanmuProvider, DanmuMessage, DanmuMessageType, DanmuStreamError, LiveEvent};
+use serde_json::json;
 
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
@@ -351,6 +352,23 @@ async fn handle_binary_message(
                 if let Some(user) = gift_msg.user {
                     if let Some(gift) = gift_msg.gift {
                         log::debug!("Received gift: {} from user: {}", gift.name, user.nick_name);
+                        tx.send(DanmuMessageType::Event(LiveEvent::new(
+                            "douyin",
+                            room_id,
+                            "gift",
+                            json!({
+                                "user_id": user.id,
+                                "user_name": user.nick_name,
+                                "gift_name": gift.name,
+                                "count": gift_msg.repeat_count.max(gift_msg.combo_count).max(1),
+                                "diamond_count": gift.diamond_count,
+                            }),
+                        )))
+                        .map_err(|e| {
+                            DanmuStreamError::WebsocketError {
+                                err: format!("Failed to send gift event: {}", e),
+                            }
+                        })?;
                     }
                 }
             }
@@ -366,6 +384,20 @@ async fn handle_binary_message(
                         like_msg.count,
                         user.nick_name
                     );
+                    tx.send(DanmuMessageType::Event(LiveEvent::new(
+                        "douyin",
+                        room_id,
+                        "like",
+                        json!({
+                            "user_id": user.id,
+                            "user_name": user.nick_name,
+                            "count": like_msg.count,
+                            "total": like_msg.total,
+                        }),
+                    )))
+                    .map_err(|e| DanmuStreamError::WebsocketError {
+                        err: format!("Failed to send like event: {}", e),
+                    })?;
                 }
             }
             "WebcastMemberMessage" => {
@@ -381,6 +413,19 @@ async fn handle_binary_message(
                         user.nick_name,
                         member_msg.action_description
                     );
+                    tx.send(DanmuMessageType::Event(LiveEvent::new(
+                        "douyin",
+                        room_id,
+                        "enter",
+                        json!({
+                            "user_id": user.id,
+                            "user_name": user.nick_name,
+                            "action": member_msg.action_description,
+                        }),
+                    )))
+                    .map_err(|e| DanmuStreamError::WebsocketError {
+                        err: format!("Failed to send member event: {}", e),
+                    })?;
                 }
             }
             _ => {

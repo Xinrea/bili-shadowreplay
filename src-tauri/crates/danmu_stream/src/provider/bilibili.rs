@@ -12,7 +12,8 @@ use futures_util::{SinkExt, StreamExt, TryStreamExt};
 use log::{error, info};
 use pct_str::{PctString, URIReserved};
 use regex::Regex;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde_json::Value;
 use tokio::{
     sync::{mpsc, RwLock},
     time::{sleep, Duration},
@@ -175,7 +176,7 @@ impl BiliDanmu {
 
         tokio::select! {
             v = BiliDanmu::send_heartbeat_packets(Arc::clone(&self.write)) => v,
-            v = BiliDanmu::recv(read, tx, Arc::clone(&self.stop)) => v
+            v = BiliDanmu::recv(read, tx, Arc::clone(&self.stop), self.room_id.clone()) => v
         }?;
 
         Ok(())
@@ -199,6 +200,7 @@ impl BiliDanmu {
         mut read: WsReadType,
         tx: mpsc::UnboundedSender<DanmuMessageType>,
         stop: Arc<RwLock<bool>>,
+        room_id: String,
     ) -> Result<(), DanmuStreamError> {
         while let Ok(Some(msg)) = read.try_next().await {
             if *stop.read().await {
@@ -215,7 +217,10 @@ impl BiliDanmu {
                         let ws = stream::WsStreamCtx::new(&i);
                         if let Ok(ws) = ws {
                             match ws.match_msg() {
-                                Ok(v) => {
+                                Ok(mut v) => {
+                                    if let DanmuMessageType::Event(ref mut event) = v {
+                                        event.room_id = room_id.clone();
+                                    }
                                     log::debug!("Received message: {:?}", v);
                                     tx.send(v).map_err(|e| DanmuStreamError::WebsocketError {
                                         err: e.to_string(),
@@ -252,7 +257,7 @@ impl BiliDanmu {
                 }),
             )
             .await?;
-        let resp = self
+        let body = self
             .client
             .get(
                 &format!(
@@ -262,10 +267,10 @@ impl BiliDanmu {
                 None,
             )
             .await?
-            .json::<DanmuInfo>()
+            .json::<Value>()
             .await?;
 
-        Ok(resp)
+        Self::decode_api_response(body)
     }
 
     async fn get_real_room(&self, wbi_key: &str, room_id: &str) -> Result<i64, DanmuStreamError> {
@@ -278,7 +283,7 @@ impl BiliDanmu {
                 }),
             )
             .await?;
-        let resp = self
+        let body = self
             .client
             .get(
                 &format!(
@@ -288,12 +293,10 @@ impl BiliDanmu {
                 None,
             )
             .await?
-            .json::<RoomInit>()
-            .await?
-            .data
-            .room_id;
+            .json::<Value>()
+            .await?;
 
-        Ok(resp)
+        Ok(Self::decode_api_response::<RoomInit>(body)?.data.room_id)
     }
 
     fn parse_user_id(cookie: &str) -> Result<i64, DanmuStreamError> {
@@ -323,21 +326,56 @@ impl BiliDanmu {
             .await?
             .json()
             .await?;
+        let nav_info = Self::decode_api_response::<Value>(nav_info)?;
         let re = Regex::new(r"wbi/(.*).png").unwrap();
+        let img_url = nav_info["data"]["wbi_img"]["img_url"]
+            .as_str()
+            .ok_or_else(|| DanmuStreamError::MessageParseError {
+                err: "Bilibili nav response has no WBI image URL".to_string(),
+            })?;
+        let sub_url = nav_info["data"]["wbi_img"]["sub_url"]
+            .as_str()
+            .ok_or_else(|| DanmuStreamError::MessageParseError {
+                err: "Bilibili nav response has no WBI sub URL".to_string(),
+            })?;
         let img = re
-            .captures(nav_info["data"]["wbi_img"]["img_url"].as_str().unwrap())
-            .unwrap()
-            .get(1)
-            .unwrap()
-            .as_str();
+            .captures(img_url)
+            .and_then(|captures| captures.get(1))
+            .map(|capture| capture.as_str())
+            .ok_or_else(|| DanmuStreamError::MessageParseError {
+                err: "Invalid WBI image URL".to_string(),
+            })?;
         let sub = re
-            .captures(nav_info["data"]["wbi_img"]["sub_url"].as_str().unwrap())
-            .unwrap()
-            .get(1)
-            .unwrap()
-            .as_str();
+            .captures(sub_url)
+            .and_then(|captures| captures.get(1))
+            .map(|capture| capture.as_str())
+            .ok_or_else(|| DanmuStreamError::MessageParseError {
+                err: "Invalid WBI sub URL".to_string(),
+            })?;
         let raw_string = format!("{}{}", img, sub);
         Ok(raw_string)
+    }
+
+    fn decode_api_response<T>(body: Value) -> Result<T, DanmuStreamError>
+    where
+        T: DeserializeOwned,
+    {
+        if let Some(code) = body.get("code").and_then(Value::as_i64) {
+            if code != 0 {
+                return Err(DanmuStreamError::ApiError {
+                    code,
+                    message: body
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown error")
+                        .to_string(),
+                });
+            }
+        }
+
+        serde_json::from_value(body).map_err(|error| DanmuStreamError::MessageParseError {
+            err: format!("Invalid Bilibili API response: {error}"),
+        })
     }
 
     pub async fn get_sign(
@@ -440,4 +478,25 @@ pub struct RoomInit {
 #[derive(Debug, Deserialize, Clone)]
 pub struct RoomInitData {
     room_id: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reports_bilibili_api_errors_instead_of_deserialization_errors() {
+        let error = BiliDanmu::decode_api_response::<DanmuInfo>(serde_json::json!({
+            "code": -352,
+            "message": "风控校验失败",
+            "ttl": 1
+        }))
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DanmuStreamError::ApiError { code: -352, .. }
+        ));
+        assert!(error.to_string().contains("风控校验失败"));
+    }
 }

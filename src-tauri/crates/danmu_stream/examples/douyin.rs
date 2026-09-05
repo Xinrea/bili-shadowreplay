@@ -21,6 +21,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loop {
             if let Ok(Some(msg)) = stream_clone.recv().await {
                 match msg {
+                    DanmuMessageType::Event(event) => {
+                        log::info!("Received event: {:?}", event.event_type);
+                    }
                     DanmuMessageType::DanmuMessage(danmu) => {
                         log::info!("Received danmu message: {:?}", danmu.message);
                     }

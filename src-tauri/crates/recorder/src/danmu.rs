@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
+use danmu_stream::LiveEvent;
 use serde::Serialize;
+use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 use tokio::{
     fs::{File, OpenOptions},
@@ -15,7 +17,7 @@ pub struct DanmuEntry {
 }
 
 pub struct DanmuStorage {
-    cache: RwLock<Vec<DanmuEntry>>,
+    cache: RwLock<Vec<LiveEvent>>,
     file: RwLock<File>,
 }
 
@@ -35,12 +37,26 @@ impl DanmuStorage {
         let file = file.unwrap();
         let reader = BufReader::new(file);
         let mut lines = reader.lines();
-        let mut preload_cache: Vec<DanmuEntry> = Vec::new();
+        let mut preload_cache: Vec<LiveEvent> = Vec::new();
         while let Ok(Some(line)) = lines.next_line().await {
-            let parts: Vec<&str> = line.split(':').collect();
-            let ts: i64 = parts[0].parse().unwrap();
-            let content = parts[1].to_string();
-            preload_cache.push(DanmuEntry { ts, content });
+            if let Ok(event) = serde_json::from_str::<LiveEvent>(&line) {
+                preload_cache.push(event);
+            } else {
+                // Read old recordings as a migration aid. New writes are
+                // always JSONL and never append to the legacy format.
+                let Some((ts, content)) = line.split_once(':') else {
+                    continue;
+                };
+                let Ok(ts) = ts.parse() else { continue };
+                preload_cache.push(LiveEvent {
+                    ts,
+                    platform: "unknown".to_string(),
+                    room_id: String::new(),
+                    event_type: "danmu".to_string(),
+                    data: serde_json::json!({ "content": content }),
+                    raw: Value::Null,
+                });
+            }
         }
         // lines.next_line() consumes the reader, so the file is closed when lines is dropped
         drop(lines);
@@ -61,17 +77,26 @@ impl DanmuStorage {
         })
     }
 
+    pub async fn add_event(&self, event: LiveEvent) {
+        let Ok(mut line) = serde_json::to_string(&event) else {
+            log::error!("Serialize live event failed");
+            return;
+        };
+        line.push('\n');
+        self.cache.write().await.push(event);
+        let _ = self.file.write().await.write_all(line.as_bytes()).await;
+    }
+
     pub async fn add_line(&self, ts: i64, content: &str) {
-        self.cache.write().await.push(DanmuEntry {
+        self.add_event(LiveEvent {
             ts,
-            content: content.to_string(),
-        });
-        let _ = self
-            .file
-            .write()
-            .await
-            .write(format!("{ts}:{content}\n").as_bytes())
-            .await;
+            platform: "unknown".to_string(),
+            room_id: String::new(),
+            event_type: "danmu".to_string(),
+            data: serde_json::json!({ "content": content }),
+            raw: Value::Null,
+        })
+        .await;
     }
 
     // get entries with ts relative to live start time
@@ -81,9 +106,14 @@ impl DanmuStorage {
             .read()
             .await
             .iter()
-            .map(|entry| DanmuEntry {
-                ts: entry.ts - live_start_ts,
-                content: entry.content.clone(),
+            .filter(|event| event.event_type == "danmu")
+            .filter_map(|event| {
+                event.data.get("content").and_then(|content| {
+                    content.as_str().map(|content| DanmuEntry {
+                        ts: event.ts - live_start_ts,
+                        content: content.to_string(),
+                    })
+                })
             })
             .collect();
         // filter out danmus with ts < 0

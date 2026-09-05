@@ -39,23 +39,27 @@ pub trait DanmuProvider: Send + Sync {
 ///
 /// # Arguments
 ///
-/// * `tx` - An unbounded sender channel that will receive danmu messages
 /// * `provider_type` - The type of platform to fetch danmu from (BiliBili or Douyin)
 /// * `identifier` - User validation information (e.g., cookies) required by the platform
 /// * `room_id` - The unique identifier of the room/channel to fetch danmu from. Notice that douyin room_id is more like a live_id, it changes every time the live starts.
 ///
 /// # Returns
 ///
-/// Returns `Result<(), DanmmuStreamError>` where:
-/// * `Ok(())` indicates successful initialization and start of the provider, only return after disconnect
-/// * `Err(DanmmuStreamError)` indicates an error occurred during initialization or startup
+/// Returns a provider whose `start` method initializes the websocket:
+/// * `Ok(...)` indicates successful provider initialization
+/// * `Err(DanmuStreamError)` indicates an error occurred during initialization
 ///
 /// # Examples
 ///
-/// ```rust
-/// use tokio::sync::mpsc;
-/// let (tx, mut rx) = mpsc::unbounded_channel();
-/// new(tx, ProviderType::BiliBili, "your_cookie", 123456).await?;
+/// ```no_run
+/// use danmu_stream::provider::{new, ProviderType};
+///
+/// #[tokio::main]
+/// async fn main() {
+///     let _provider = new(ProviderType::BiliBili, "your_cookie", "123456")
+///         .await
+///         .expect("provider initialization failed");
+/// }
 /// ```
 pub async fn new(
     provider_type: ProviderType,

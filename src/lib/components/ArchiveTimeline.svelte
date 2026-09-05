@@ -6,6 +6,7 @@
     Play,
     Plus,
     Settings,
+    Radio,
     Volume2,
     VolumeX,
   } from "lucide-svelte";
@@ -32,11 +33,13 @@
     onRangeDragStart?: () => void;
     onRangeDrag?: (seconds: number) => void;
     isPlaying?: boolean;
+    isLive?: boolean;
     volume?: number;
     danmuEnabled?: boolean;
     danmuOffset?: number;
     canSendDanmaku?: boolean;
     onTogglePlayback?: () => void;
+    onSeekLive?: () => void;
     onVolumeChange?: (volume: number) => void;
     onToggleDanmu?: () => void;
     onDanmuOffsetChange?: (offset: number) => void;
@@ -58,11 +61,13 @@
     onRangeDragStart,
     onRangeDrag,
     isPlaying = false,
+    isLive = false,
     volume = 1,
     danmuEnabled = true,
     danmuOffset = 0,
     canSendDanmaku = false,
     onTogglePlayback,
+    onSeekLive,
     onVolumeChange,
     onToggleDanmu,
     onDanmuOffsetChange,
@@ -261,9 +266,23 @@
       >
         {#if isPlaying}<Pause size={13} />{:else}<Play size={13} />{/if}
       </button>
-      <span class="time-display">
-        {formatTime(currentTime)} / {formatTime(duration)}
-      </span>
+      <div class="time-row">
+        <span class="time-display">
+          {formatTime(currentTime)} / {formatTime(duration)}
+        </span>
+        {#if isLive}
+          <button
+            type="button"
+            class="live-button"
+            class:at-live-edge={duration > 0 && duration - currentTime <= 3}
+            title="跳转到直播位置"
+            onclick={onSeekLive}
+          >
+            <span class="live-dot"></span>
+            直播
+          </button>
+        {/if}
+      </div>
     </div>
     <div class="timeline-actions">
       <button type="button" onclick={onAddRange}>
@@ -612,6 +631,40 @@
     font-size: 9px;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
+  }
+
+  .time-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .live-button {
+    display: inline-flex;
+    height: 18px;
+    align-items: center;
+    gap: 4px;
+    border: 1px solid #435064;
+    border-radius: 5px;
+    background: #202733;
+    padding: 0 5px;
+    color: #aeb9c9;
+    font-size: 9px;
+    font-weight: 600;
+  }
+
+  .live-button:hover,
+  .live-button.at-live-edge {
+    border-color: #ef5668;
+    background: #3b2028;
+    color: #ff8591;
+  }
+
+  .live-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: currentColor;
   }
 
   .danmu-sender {

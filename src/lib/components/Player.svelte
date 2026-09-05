@@ -64,6 +64,12 @@
   export function seek(offset: number) {
     video.currentTime = offset;
   }
+  export function seekLive() {
+    const liveEdge = shaka_player?.seekRange?.().end;
+    if (Number.isFinite(liveEdge)) {
+      video.currentTime = liveEdge;
+    }
+  }
   export function togglePlayback() {
     if (!video) return;
     if (video.paused) {
@@ -95,6 +101,7 @@
     });
   }
   let video: HTMLVideoElement;
+  let shaka_player: any;
   let show_detail = $state(false);
   let show_list = false;
   let show_export = false;
@@ -439,6 +446,7 @@ ${mediaPlaylistUrl}`;
     const ui = video["ui"];
     const controls = ui.getControls();
     const player = controls.getPlayer();
+    shaka_player = player;
 
     const config = {
       enableKeyboardPlaybackControls: false,

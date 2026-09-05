@@ -26,6 +26,7 @@
     toggleDanmu(): void;
     setDanmuOffset(offset: number): void;
     sendDanmaku(message: string): Promise<void>;
+    seekLive(): void;
   }
 
   interface PreviewVideo {
@@ -511,6 +512,7 @@
           ? player_duration
           : player_duration || archive?.length || 0}
         isPlaying={player_is_playing}
+        isLive={player_is_live}
         volume={player_volume}
         danmuEnabled={danmu_enabled}
         danmuOffset={danmu_offset}
@@ -520,6 +522,7 @@
         onAddRange={addRangeAtCurrentTime}
         onAddMarker={addMarkerAtCurrentTime}
         onTogglePlayback={() => player?.togglePlayback()}
+        onSeekLive={() => player?.seekLive()}
         onVolumeChange={(value) => player?.setVolume(value)}
         onToggleDanmu={() => player?.toggleDanmu()}
         onDanmuOffsetChange={(value) => player?.setDanmuOffset(value)}

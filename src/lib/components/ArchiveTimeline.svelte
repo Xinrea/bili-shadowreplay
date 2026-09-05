@@ -128,7 +128,22 @@
 
   <div class="timeline-surface">
     <div class="time-grid">
-      <div class="heat-row">
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <div
+        class="heat-row"
+        role="slider"
+        aria-label="弹幕热度时间轴"
+        aria-valuemin="0"
+        aria-valuemax={duration}
+        aria-valuenow={currentTime}
+        tabindex="0"
+        onclick={handleTrackClick}
+        onkeydown={(event) => {
+          if (event.key === "ArrowLeft") onSeek?.(Math.max(0, currentTime - 3));
+          if (event.key === "ArrowRight")
+            onSeek?.(Math.min(duration, currentTime + 3));
+        }}
+      >
         <span class="heat-label">弹幕热度</span>
         <div class="heat-bars" aria-hidden="true">
           {#each visibleHeatPoints as point, index}
@@ -303,6 +318,12 @@
     width: 100%;
     height: 30px;
     align-items: flex-end;
+    cursor: pointer;
+  }
+
+  .heat-row:focus-visible {
+    outline: 2px solid #0a84ff;
+    outline-offset: 2px;
   }
 
   .heat-label {

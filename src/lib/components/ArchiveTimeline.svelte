@@ -439,7 +439,7 @@
     height: 196px;
     flex: 0 0 196px;
     flex-direction: column;
-    gap: 10px;
+    gap: 8px;
     border-top: 1px solid #2b3340;
     background: #0e1219;
     padding: 12px 16px 14px;
@@ -454,7 +454,7 @@
   }
 
   .timeline-header {
-    min-height: 30px;
+    min-height: 34px;
     justify-content: space-between;
     gap: 12px;
   }
@@ -556,6 +556,10 @@
   .timeline-actions {
     flex: 0 0 auto;
     gap: 8px;
+  }
+
+  .timeline-actions button {
+    height: 30px;
   }
 
   .timeline-actions button {

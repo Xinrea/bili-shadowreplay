@@ -353,18 +353,16 @@
   $effect(() => {
     // 当文本内容或样式改变时重绘
     if (ctx) {
-      texts = texts.map((text) => {
-        if (text.id === selectedTextId) {
-          return {
-            ...text,
-            content: text.content,
-            fontSize: text.fontSize,
-            color: text.color,
-            position: text.position,
-          };
-        }
-        return text;
-      });
+      // Read the fields that affect the canvas so nested $state changes
+      // invalidate this effect without writing back to the same state.
+      texts.map((text) => ({
+        id: text.id,
+        content: text.content,
+        fontSize: text.fontSize,
+        color: text.color,
+        strokeColor: text.strokeColor,
+        position: text.position,
+      }));
       scheduleRedraw();
     }
   });

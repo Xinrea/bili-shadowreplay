@@ -1357,17 +1357,20 @@
     timelineTotalHeight = 148 + subtitleTrackHeight;
   });
   $effect(() => {
-    currentSubtitleIndices = subtitles
+    const activeSubtitleIndices = subtitles
       .map((subtitle, index) => ({ subtitle, index }))
       .filter(
         ({ subtitle }) =>
           currentTime >= subtitle.startTime && currentTime < subtitle.endTime
       )
       .map(({ index }) => index);
-    currentSubtitleIndex = currentSubtitleIndices[0] ?? -1;
-    currentSubtitles = currentSubtitleIndices
+    const activeSubtitles = activeSubtitleIndices
       .map((index) => subtitles[index])
       .sort((a, b) => a.layerOrder - b.layerOrder);
+
+    currentSubtitleIndices = activeSubtitleIndices;
+    currentSubtitleIndex = activeSubtitleIndices[0] ?? -1;
+    currentSubtitles = activeSubtitles;
   });
   $effect(() => {
     window.localStorage.setItem("profile-" + roomId, JSON.stringify(profile));

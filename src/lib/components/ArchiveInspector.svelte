@@ -40,6 +40,7 @@
     clipRunning?: boolean;
     selectedRangeIndex?: number;
     onCollapse?: () => void;
+    onPeakThresholdChange?: (value: number) => void;
     onSeek?: (seconds: number) => void;
     onAddPeak?: (peak: DanmuPeak) => void;
     onAddAllPeaks?: () => void;
@@ -57,12 +58,13 @@
     danmuRecords = [],
     globalOffset = 0,
     danmuPeaks = [],
-    peakThreshold = $bindable(80),
+    peakThreshold = 80,
     videos = [],
     selectedVideo = null,
     clipRunning = $bindable(false),
     selectedRangeIndex = $bindable(-1),
     onCollapse,
+    onPeakThresholdChange,
     onSeek,
     onAddPeak,
     onAddAllPeaks,
@@ -255,7 +257,11 @@
             type="range"
             min="50"
             max="100"
-            bind:value={peakThreshold}
+            value={peakThreshold}
+            oninput={(event) =>
+              onPeakThresholdChange?.(
+                Number((event.currentTarget as HTMLInputElement).value),
+              )}
           />
         </label>
         <div class="peak-list">

@@ -74,7 +74,7 @@
   }
 
   // 检测弹幕峰值区间
-  function detect_danmu_peaks() {
+  function detect_danmu_peaks(threshold_percent = peak_threshold) {
     if (danmu_records.length === 0) {
       danmu_peaks = [];
       danmu_heat_points = [];
@@ -138,8 +138,8 @@
     const stdDev = Math.sqrt(variance);
 
     // 3. 计算动态阈值
-    // peak_threshold (50-100) 映射为 k (1.0 - 4.0)
-    const k = 1.0 + ((peak_threshold - 50) / 50) * 3.0;
+    // threshold_percent (50-100) 映射为 k (1.0 - 4.0)
+    const k = 1.0 + ((threshold_percent - 50) / 50) * 3.0;
     const z_threshold = mean + k * stdDev;
 
     // 至少要有一定的弹幕量 (例如平均值的 1.5 倍，或者固定值如 15/30s)
@@ -425,11 +425,15 @@
   async function open_clip(video_id: number) {
     await invoke("open_clip", { videoId: video_id });
   }
+
+  function handlePeakThresholdChange(value: number) {
+    peak_threshold = value;
+  }
+
   // 弹幕数据或阈值变化时刷新智能推荐
   $effect(() => {
-    peak_threshold;
     global_offset;
-    detect_danmu_peaks();
+    detect_danmu_peaks(peak_threshold);
   });
   // 监听 ranges 变化，更新峰值的添加状态
   $effect(() => {
@@ -515,7 +519,8 @@
           danmuRecords={danmu_records}
           globalOffset={global_offset}
           danmuPeaks={danmu_peaks}
-          bind:peakThreshold={peak_threshold}
+          peakThreshold={peak_threshold}
+          onPeakThresholdChange={handlePeakThresholdChange}
           {videos}
           selectedVideo={selected_video}
           bind:clipRunning={clip_running}

@@ -641,7 +641,13 @@
   }
 
   .range-actions button,
-  .range-actions label,
+  .range-actions label {
+    width: 22px;
+    height: 22px;
+    background: #171c25;
+    cursor: pointer;
+  }
+
   .clip-info div button {
     width: 27px;
     height: 27px;
@@ -658,8 +664,8 @@
 
   .check-mark {
     display: inline-flex;
-    width: 27px;
-    height: 27px;
+    width: 22px;
+    height: 22px;
     align-items: center;
     justify-content: center;
     border-radius: 7px;

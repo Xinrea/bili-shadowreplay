@@ -250,8 +250,8 @@
       }];
     });
 
-    // 按弹幕数量降序排列
-    danmu_peaks = final_peaks.sort((a, b) => b.count - a.count);
+    // 与时间线顺序保持一致，按推荐区间起始时间升序排列。
+    danmu_peaks = final_peaks.sort((a, b) => a.start - b.start);
   }
 
   // 将峰值添加到选区

@@ -43,8 +43,6 @@
   const room_id = urlParams.get("room_id");
   const platform = urlParams.get("platform");
   const live_id = urlParams.get("live_id");
-  const focus_start = parseInt(urlParams.get("start") || "0");
-  const focus_end = parseInt(urlParams.get("end") || "0");
 
   log.info("AppLive loaded", room_id, platform, live_id);
 
@@ -503,8 +501,6 @@
           bind:danmu_account_uid
           bind:recorders={live_recorders}
           bind:selected_range_index={selected_range_index}
-          {focus_start}
-          {focus_end}
           {platform}
           {room_id}
           {live_id}

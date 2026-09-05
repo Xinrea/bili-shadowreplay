@@ -21,8 +21,6 @@
     live_id: string;
     ranges?: Range[];
     global_offset?: number;
-    focus_start?: number;
-    focus_end?: number;
     markers?: Marker[];
     danmu_records?: DanmuEntry[];
     danmu_enabled?: boolean;
@@ -46,8 +44,6 @@
     live_id,
     ranges = $bindable([]),
     global_offset = $bindable(0),
-    focus_start = 0,
-    focus_end = 0,
     markers = [],
     danmu_records = $bindable([]),
     danmu_enabled = $bindable(true),
@@ -182,12 +178,12 @@
   }
 
   // 保存区间数组到 localStorage
-  // 注意：区间始终保存为绝对时间（不依赖 focus_start），这样在切换 focus 模式时不会丢失
+  // 区间使用录播时间轴的绝对秒数保存。
   function saveRanges() {
     // 将相对时间转换为绝对时间保存
     const rangesToSave = ranges.map((r) => ({
-      start: r.start + focus_start,
-      end: r.end + focus_start,
+      start: r.start,
+      end: r.end,
       activated: r.activated,
     }));
     localStorage.setItem(`${live_id}_ranges`, JSON.stringify(rangesToSave));
@@ -223,8 +219,8 @@
         // 保存的区间是绝对时间，需要转换为相对时间
         // 但保留所有区间，不进行过滤，因为区间可能跨越多个 focus 范围
         ranges = savedRanges.map((r) => ({
-          start: r.start - focus_start,
-          end: r.end - focus_start,
+          start: r.start,
+          end: r.end,
           activated: r.activated !== false, // 默认为 true
         }));
 
@@ -239,16 +235,13 @@
           if (index >= 0 && index < ranges.length) {
             const range = ranges[index];
             // 如果区间在当前 focus 范围内（至少部分可见），保留索引
-            if (
-              range.end > 0 &&
-              range.start < (focus_end - focus_start || Infinity)
-            ) {
+            if (range.end > 0) {
               currentRangeIndex = index;
             } else {
               // 否则找到第一个在当前范围内的区间，或设为 -1
               const visibleIndex = ranges.findIndex(
                 (r) =>
-                  r.end > 0 && r.start < (focus_end - focus_start || Infinity)
+                  r.end > 0
               );
               currentRangeIndex = visibleIndex >= 0 ? visibleIndex : -1;
             }
@@ -269,8 +262,8 @@
       const oldStart = localStorage.getItem(`${live_id}_start`);
       const oldEnd = localStorage.getItem(`${live_id}_end`);
       if (oldStart && oldEnd) {
-        const s = parseFloat(oldStart) - focus_start;
-        const e = parseFloat(oldEnd) - focus_start;
+        const s = parseFloat(oldStart);
+        const e = parseFloat(oldEnd);
         if (e > s) {
           ranges = [{ start: s, end: e, activated: true }];
           currentRangeIndex = 0;
@@ -428,16 +421,6 @@ ${mediaPlaylistUrl}`;
     );
   }
 
-  function zoomOnRange(start: number, end: number) {
-    const url = `${window.location.origin}${window.location.pathname}?platform=${platform}&room_id=${room_id}&live_id=${live_id}&start=${start}&end=${end}`;
-    window.location.href = url;
-  }
-
-  function resetZoom() {
-    const url = `${window.location.origin}${window.location.pathname}?platform=${platform}&room_id=${room_id}&live_id=${live_id}`;
-    window.location.href = url;
-  }
-
   async function init() {
     update_stream_list();
 
@@ -486,7 +469,7 @@ ${mediaPlaylistUrl}`;
     });
 
     try {
-      let direct_url = `${ENDPOINT ? ENDPOINT : window.location.origin}/hls/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`;
+      let direct_url = `${ENDPOINT ? ENDPOINT : window.location.origin}/hls/${platform}/${room_id}/${live_id}/playlist.m3u8`;
       if (!TAURI_ENV) {
         const { offset, is_fmp4 } = await load_metadata(direct_url);
         global_offset = offset;
@@ -599,7 +582,7 @@ ${mediaPlaylistUrl}`;
       }
 
       const cur = Math.floor(
-        (video.currentTime + focus_start + local_offset + global_offset) * 1000
+        (video.currentTime + local_offset + global_offset) * 1000
       );
 
       let danmus = danmu_records.filter((v) => {
@@ -1157,24 +1140,6 @@ ${mediaPlaylistUrl}`;
           saveRanges();
           console.log("All ranges cleared");
           break;
-        case "Escape":
-          e.preventDefault();
-          resetZoom();
-          break;
-        case "g":
-          e.preventDefault();
-          {
-            const current = getCurrentRange();
-            if (current && current.start < current.end) {
-              // 在跳转前先保存所有区间，确保数据不丢失
-              saveRanges();
-              zoomOnRange(
-                focus_start + current.start,
-                focus_start + current.end
-              );
-            }
-          }
-          break;
         case "a": // Add 'a' key for toggling activated status
           e.preventDefault();
           {
@@ -1363,7 +1328,7 @@ ${mediaPlaylistUrl}`;
         for (let i = 0; i < sortedRanges.length; i++) {
           const range = sortedRanges[i];
           // 计算区间在当前 focus 范围内的可见部分
-          // range.start 和 range.end 是相对于当前 focus_start 的时间
+          // range.start 和 range.end 是录播时间轴上的绝对秒数
           const visibleStart = Math.max(0, range.start);
           const visibleEnd = Math.min(total, range.end);
 
@@ -1451,8 +1416,8 @@ ${mediaPlaylistUrl}`;
         platform: platform,
         roomId: room_id,
         liveId: live_id,
-        x: Math.floor(focus_start + start),
-        y: Math.floor(focus_start + end),
+        x: Math.floor(start),
+        y: Math.floor(end),
         offset: global_offset,
         ass: ass,
       },

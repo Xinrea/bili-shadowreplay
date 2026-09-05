@@ -17,7 +17,7 @@
     start: number;
     end: number;
     count: number;
-    added: boolean;
+    exists: boolean;
   };
   type GeneratedVideo = {
     id: number;
@@ -245,7 +245,7 @@
             <h3>智能推荐</h3>
             <span>基于弹幕热度发现精彩片段</span>
           </div>
-          {#if danmuPeaks.some((peak) => !peak.added)}
+          {#if danmuPeaks.some((peak) => !peak.exists)}
             <button type="button" onclick={onAddAllPeaks}>全部添加</button>
           {/if}
         </div>
@@ -262,9 +262,9 @@
           {#each danmuPeaks.slice(0, 3) as peak}
             <button
               type="button"
-              class:added={peak.added}
+              class:exists={peak.exists}
               onclick={() => {
-                if (peak.added) onSeek?.(peak.start);
+                if (peak.exists) onSeek?.(peak.start);
                 else onAddPeak?.(peak);
               }}
             >
@@ -272,7 +272,7 @@
                 {formatTime(peak.start)} → {formatTime(peak.end)}
                 <small>{peak.count} 条弹幕</small>
               </span>
-              <b>{peak.added ? "已添加" : "+ 添加"}</b>
+              <b>{peak.exists ? "已存在" : "+ 添加"}</b>
             </button>
           {:else}
             <p class="empty-copy">
@@ -687,7 +687,7 @@
     font-size: 9px;
   }
 
-  .peak-list button.added {
+  .peak-list button.exists {
     opacity: 0.65;
   }
 

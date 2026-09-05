@@ -48,7 +48,7 @@
     start: number; // 秒
     end: number; // 秒
     count: number;
-    added: boolean; // 是否已添加为选区
+    exists: boolean; // 是否已存在于选区列表
   }
   interface DanmuHeatPoint {
     time: number;
@@ -239,14 +239,14 @@
       const peak_count = density
         .slice(run.start, run.end + 1)
         .reduce((maximum, point) => Math.max(maximum, point.count), 0);
-      const is_added = ranges.some((range) =>
+      const exists = ranges.some((range) =>
         is_range_similar(range, { start: final_start, end: final_end }),
       );
       return [{
         start: final_start,
         end: final_end,
         count: peak_count,
-        added: is_added,
+        exists,
       }];
     });
 
@@ -263,26 +263,26 @@
     }
 
     ranges = [...ranges, { start: peak.start, end: peak.end, activated: true }];
-    peak.added = true;
+    peak.exists = true;
     danmu_peaks = [...danmu_peaks]; // 触发响应式更新
   }
 
   // 一键添加所有峰值
   function add_all_peaks_to_ranges() {
     for (const peak of danmu_peaks) {
-      if (!peak.added) {
+      if (!peak.exists) {
         add_peak_to_ranges(peak);
       }
     }
   }
 
   // 更新峰值的添加状态（根据当前 ranges）
-  function update_peak_added_status() {
+  function update_peak_exists_status() {
     let changed = false;
     for (const peak of danmu_peaks) {
-      const is_added = ranges.some((r) => is_range_similar(r, peak));
-      if (peak.added !== is_added) {
-        peak.added = is_added;
+      const exists = ranges.some((range) => is_range_similar(range, peak));
+      if (peak.exists !== exists) {
+        peak.exists = exists;
         changed = true;
       }
     }
@@ -434,7 +434,7 @@
   // 监听 ranges 变化，更新峰值的添加状态
   $effect(() => {
     if (ranges && danmu_peaks.length > 0) {
-      update_peak_added_status();
+      update_peak_exists_status();
     }
   });
   // save ranges to local storage when changed

@@ -140,14 +140,22 @@
     return Math.max(3, (count / maxHeat) * 26);
   }
 
-  function heatBarWidth(index: number) {
-    if (timelineDuration <= 0 || visibleHeatPoints.length < 2) return 0.4;
-    const adjacentPoint =
-      visibleHeatPoints[index + 1] ||
-      visibleHeatPoints[index - 1] ||
-      visibleHeatPoints[index];
-    const gap = Math.abs(adjacentPoint.time - visibleHeatPoints[index].time);
-    return Math.max(0.15, (gap / timelineDuration) * 100);
+  function heatBarGap(point: HeatPoint) {
+    const pointIndex = heatPoints.indexOf(point);
+    const next = heatPoints[pointIndex + 1];
+    const previous = heatPoints[pointIndex - 1];
+    return Math.abs((next || previous || point).time - point.time);
+  }
+
+  function heatBarStart(point: HeatPoint) {
+    return clampPercent(point.time - heatBarGap(point) / 2);
+  }
+
+  function heatBarWidth(point: HeatPoint) {
+    if (timelineDuration <= 0) return 0.15;
+    const start = heatBarStart(point);
+    const width = (heatBarGap(point) / timelineDuration) * 100;
+    return Math.max(0.15, Math.min(width, 100 - start));
   }
 
   let thresholdPosition = $derived(
@@ -447,13 +455,13 @@
       >
         <span class="heat-label">弹幕热度</span>
         <div class="heat-bars" aria-hidden="true">
-          {#each visibleHeatPoints as point, index}
+          {#each visibleHeatPoints as point}
             <span
               class="heat-bar"
               class:extension={point.level === "extension"}
               class:hot={point.level === "core"}
-              style:left={`${clampPercent(point.time)}%`}
-              style:width={`${heatBarWidth(index)}%`}
+              style:left={`${heatBarStart(point)}%`}
+              style:width={`${heatBarWidth(point)}%`}
               style:height={`${heatHeight(point.count)}px`}
             ></span>
           {/each}
@@ -965,7 +973,6 @@
     position: absolute;
     bottom: 0;
     min-width: 2px;
-    transform: translateX(-50%);
     border-radius: 2px 2px 0 0;
     background: #3a4b63;
   }

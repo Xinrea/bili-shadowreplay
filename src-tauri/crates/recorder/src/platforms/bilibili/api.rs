@@ -10,6 +10,8 @@ use crate::core::Codec;
 use crate::core::Format;
 use crate::errors::RecorderError;
 use crate::utils::user_agent_generator;
+use crate::UserInfo as RecorderUserInfo;
+use async_trait::async_trait;
 use chrono::TimeZone;
 use pct_str::PctString;
 use pct_str::URIReserved;
@@ -56,6 +58,16 @@ pub struct UserInfo {
     pub user_name: String,
     pub user_sign: String,
     pub user_avatar_url: String,
+}
+
+/// Persistent cache for Bilibili broadcaster profiles.
+///
+/// This is intentionally Bilibili-specific because the other supported
+/// platforms include the broadcaster profile in their room response.
+#[async_trait]
+pub trait UserInfoCache: Send + Sync {
+    async fn get_user_info(&self, user_id: &str) -> Result<Option<RecorderUserInfo>, String>;
+    async fn save_user_info(&self, user_info: &RecorderUserInfo) -> Result<(), String>;
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -437,6 +449,72 @@ pub async fn get_user_info(
         user_sign: res["data"]["sign"].as_str().unwrap_or("").to_string(),
         user_avatar_url: res["data"]["face"].as_str().unwrap_or("").to_string(),
     })
+}
+
+/// Get Bilibili user information, using the persistent profile cache first.
+pub async fn get_user_info_cached(
+    client: &Client,
+    account: &Account,
+    user_id: &str,
+    cache: &dyn UserInfoCache,
+) -> Result<RecorderUserInfo, RecorderError> {
+    match cache.get_user_info(user_id).await {
+        Ok(Some(user_info)) => return Ok(user_info),
+        Ok(None) => {}
+        Err(error) => {
+            // Cache availability must not prevent the recorder from fetching
+            // the profile from Bilibili.
+            log::warn!("Failed to read cached Bilibili user info: {error}");
+        }
+    }
+
+    let user_info = get_user_info(client, account, user_id).await?;
+    let user_info = RecorderUserInfo {
+        user_id: user_info.user_id,
+        user_name: user_info.user_name,
+        user_avatar: user_info.user_avatar_url,
+    };
+
+    // A cache write failure should not make an otherwise successful profile
+    // request fail. The next lookup can fetch the profile again.
+    if let Err(error) = cache.save_user_info(&user_info).await {
+        log::warn!("Failed to persist Bilibili user info: {error}");
+    }
+
+    Ok(user_info)
+}
+
+#[cfg(test)]
+mod user_info_cache_tests {
+    use super::*;
+
+    struct HitCache;
+
+    #[async_trait]
+    impl UserInfoCache for HitCache {
+        async fn get_user_info(&self, user_id: &str) -> Result<Option<RecorderUserInfo>, String> {
+            Ok(Some(RecorderUserInfo {
+                user_id: user_id.to_string(),
+                user_name: "cached name".to_string(),
+                user_avatar: "https://example.com/avatar.jpg".to_string(),
+            }))
+        }
+
+        async fn save_user_info(&self, _user_info: &RecorderUserInfo) -> Result<(), String> {
+            panic!("a cache hit must not be written again");
+        }
+    }
+
+    #[tokio::test]
+    async fn cached_user_info_does_not_require_a_network_request() {
+        let info = get_user_info_cached(&Client::new(), &Account::default(), "123", &HitCache)
+            .await
+            .unwrap();
+
+        assert_eq!(info.user_id, "123");
+        assert_eq!(info.user_name, "cached name");
+        assert_eq!(info.user_avatar, "https://example.com/avatar.jpg");
+    }
 }
 
 pub async fn get_room_info(

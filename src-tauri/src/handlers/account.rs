@@ -4,6 +4,7 @@ use crate::database::account::AccountRow;
 use crate::state::State;
 use crate::state_type;
 use chrono::Utc;
+use recorder::platforms::bilibili::api::UserInfoCache;
 use recorder::platforms::bilibili::api::{QrInfo, QrStatus};
 use recorder::platforms::{bilibili, douyin, huya, kuaishou, tiktok, PlatformType};
 use recorder::UserInfo;
@@ -199,6 +200,12 @@ pub async fn add_account(
             return Err("Unsupported platform".to_string());
         }
     };
+
+    if platform == PlatformType::BiliBili {
+        if let Err(error) = state.db.save_user_info(&user_info).await {
+            log::warn!("Failed to persist Bilibili user info: {error}");
+        }
+    }
 
     let account = AccountRow {
         platform: platform.as_str().to_string(),

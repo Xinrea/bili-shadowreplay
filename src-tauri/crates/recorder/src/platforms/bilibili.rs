@@ -6,6 +6,7 @@ use crate::account::Account;
 use crate::core::hls_recorder::HlsRecorder;
 use crate::errors::RecorderError;
 use crate::events::RecorderEvent;
+use crate::platforms::bilibili::api::UserInfoCache;
 use crate::platforms::bilibili::api::{Protocol, Qn};
 use crate::platforms::PlatformType;
 use crate::traits::RecorderTrait;
@@ -37,6 +38,7 @@ pub struct BiliExtra {
     live_stream: Arc<RwLock<Option<BiliStream>>>,
     pre_live_id: Arc<RwLock<Option<String>>>,
     should_continue: Arc<AtomicBool>,
+    user_info_cache: Arc<dyn UserInfoCache>,
 }
 
 pub type BiliRecorder = Recorder<BiliExtra>;
@@ -49,6 +51,7 @@ impl BiliRecorder {
         event_channel: broadcast::Sender<RecorderEvent>,
         update_interval: Arc<atomic::AtomicU64>,
         enabled: bool,
+        user_info_cache: Arc<dyn UserInfoCache>,
     ) -> Result<Self, crate::errors::RecorderError> {
         let client = reqwest::Client::new();
         let extra = BiliExtra {
@@ -56,6 +59,7 @@ impl BiliRecorder {
             live_stream: Arc::new(RwLock::new(None)),
             pre_live_id: Arc::new(RwLock::new(None)),
             should_continue: Arc::new(AtomicBool::new(false)),
+            user_info_cache,
         };
 
         let recorder = Self {
@@ -117,12 +121,18 @@ impl BiliRecorder {
                 // Only update user info once
                 if self.user_info.read().await.user_id != room_info.user_id {
                     let user_id = room_info.user_id;
-                    let user_info = api::get_user_info(&self.client, &self.account, &user_id).await;
+                    let user_info = api::get_user_info_cached(
+                        &self.client,
+                        &self.account,
+                        &user_id,
+                        self.extra.user_info_cache.as_ref(),
+                    )
+                    .await;
                     if let Ok(user_info) = user_info {
                         *self.user_info.write().await = UserInfo {
                             user_id: user_id.to_string(),
                             user_name: user_info.user_name,
-                            user_avatar: user_info.user_avatar_url,
+                            user_avatar: user_info.user_avatar,
                         }
                     } else {
                         self.log_error(&format!(

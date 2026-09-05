@@ -4,6 +4,7 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 
 pub mod account;
+pub mod bilibili_user;
 pub mod message;
 pub mod record;
 pub mod recorder;

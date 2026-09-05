@@ -254,7 +254,7 @@
         title={isPlaying ? "暂停" : "播放"}
         onclick={onTogglePlayback}
       >
-        {#if isPlaying}<Pause size={13} />{:else}<Play size={13} />{/if}
+        {#if isPlaying}<Pause size={15} />{:else}<Play size={15} />{/if}
       </button>
       <div class="volume-control">
         <button
@@ -536,8 +536,8 @@
   }
 
   .playback-control {
-    width: 26px;
-    height: 24px;
+    width: 30px;
+    height: 30px;
   }
 
   .playback-cluster {

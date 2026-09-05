@@ -482,13 +482,13 @@
 <style>
   .timeline-panel {
     display: flex;
-    height: 196px;
-    flex: 0 0 196px;
+    height: 176px;
+    flex: 0 0 176px;
     flex-direction: column;
     gap: 8px;
     border-top: 1px solid #2b3340;
     background: #0e1219;
-    padding: 12px 16px 14px;
+    padding: 6px 16px 8px;
     color: #e9eef8;
   }
 
@@ -502,8 +502,8 @@
   .timeline-header {
     position: relative;
     display: grid;
-    min-height: 54px;
-    flex: 0 0 54px;
+    min-height: 38px;
+    flex: 0 0 38px;
     grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
     align-items: center;
     gap: 12px;

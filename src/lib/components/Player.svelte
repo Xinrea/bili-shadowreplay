@@ -194,6 +194,12 @@
   // 从 localStorage 加载区间数组
   // 注意：加载时保留所有区间，但只显示在当前 focus 范围内的区间
   function loadRanges() {
+    // AppLive 已从当前版本的存储键恢复选区时，以父组件状态为准。
+    // 只有没有恢复到选区时才读取旧版 `${live_id}_ranges` 数据，
+    // 避免旧数据覆盖智能推荐或新布局保存的选区。
+    if (ranges.length > 0) {
+      return;
+    }
     const saved = localStorage.getItem(`${live_id}_ranges`);
     if (saved) {
       try {

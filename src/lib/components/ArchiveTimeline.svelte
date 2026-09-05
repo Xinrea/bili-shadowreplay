@@ -23,7 +23,7 @@
   }
 
   let {
-    ranges = [],
+    ranges = $bindable([]),
     markers = [],
     heatPoints = [],
     heatThreshold = 0,
@@ -80,6 +80,8 @@
   let thresholdPosition = $derived(
     Math.min(100, Math.max(0, heatThresholdPercent)),
   );
+  let range_track: HTMLElement;
+  let drag_state: { index: number; edge: "start" | "end" } | null = null;
 
   function formatTime(seconds: number) {
     const total = Math.max(0, Math.floor(seconds || 0));
@@ -103,6 +105,47 @@
     event.stopPropagation();
     selectedRangeIndex = index;
     onSeek?.(start);
+  }
+
+  function beginRangeDrag(
+    event: PointerEvent,
+    index: number,
+    edge: "start" | "end",
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    drag_state = { index, edge };
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  }
+
+  function updateRangeDrag(event: PointerEvent) {
+    if (!drag_state || !range_track || duration <= 0) return;
+    const rect = range_track.getBoundingClientRect();
+    const ratio = Math.min(
+      1,
+      Math.max(0, (event.clientX - rect.left) / rect.width),
+    );
+    const seconds = ratio * duration;
+    const { index, edge } = drag_state;
+    const range = ranges[index];
+    if (!range) return;
+
+    const nextRange =
+      edge === "start"
+        ? { ...range, start: Math.min(seconds, range.end) }
+        : { ...range, end: Math.max(seconds, range.start) };
+    ranges = ranges.map((item, rangeIndex) =>
+      rangeIndex === index ? nextRange : item,
+    );
+  }
+
+  function endRangeDrag(event: PointerEvent) {
+    if (!drag_state) return;
+    const target = event.currentTarget as HTMLElement;
+    if (target.hasPointerCapture(event.pointerId)) {
+      target.releasePointerCapture(event.pointerId);
+    }
+    drag_state = null;
   }
 </script>
 
@@ -176,6 +219,7 @@
 
       <!-- svelte-ignore a11y_click_events_have_key_events -->
       <div
+        bind:this={range_track}
         class="range-track"
         role="slider"
         aria-label="录播时间线"
@@ -201,7 +245,36 @@
             title={`选区 ${index + 1}：${formatTime(range.start)} → ${formatTime(range.end)}`}
             onclick={(event) => selectRange(event, index, range.start)}
           >
+            <span
+              class="range-handle range-handle-start"
+              role="slider"
+              aria-label={`调整选区 ${index + 1} 起点`}
+              aria-valuemin="0"
+              aria-valuemax={range.end}
+              aria-valuenow={range.start}
+              tabindex="0"
+              onpointerdown={(event) =>
+                beginRangeDrag(event, index, "start")}
+              onpointermove={updateRangeDrag}
+              onpointerup={endRangeDrag}
+              onpointercancel={endRangeDrag}
+              onclick={(event) => event.stopPropagation()}
+            ></span>
             <span>选区 {index + 1}</span>
+            <span
+              class="range-handle range-handle-end"
+              role="slider"
+              aria-label={`调整选区 ${index + 1} 终点`}
+              aria-valuemin={range.start}
+              aria-valuemax={duration}
+              aria-valuenow={range.end}
+              tabindex="0"
+              onpointerdown={(event) => beginRangeDrag(event, index, "end")}
+              onpointermove={updateRangeDrag}
+              onpointerup={endRangeDrag}
+              onpointercancel={endRangeDrag}
+              onclick={(event) => event.stopPropagation()}
+            ></span>
           </button>
         {/each}
 
@@ -407,6 +480,9 @@
 
   .range-block {
     position: absolute;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     top: 5px;
     height: 32px;
     min-width: 6px;
@@ -418,6 +494,25 @@
     color: white;
     text-align: left;
     white-space: nowrap;
+  }
+
+  .range-handle {
+    z-index: 2;
+    width: 8px;
+    height: 24px;
+    flex: 0 0 8px;
+    border: 1px solid rgb(255 255 255 / 72%);
+    border-radius: 3px;
+    background: rgb(255 255 255 / 24%);
+    cursor: ew-resize;
+    touch-action: none;
+  }
+
+  .range-handle:hover,
+  .range-handle:focus-visible {
+    background: rgb(255 255 255 / 50%);
+    outline: 2px solid rgb(255 255 255 / 75%);
+    outline-offset: 1px;
   }
 
   .range-block:nth-of-type(even) {

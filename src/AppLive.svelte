@@ -298,13 +298,6 @@
       danmu_peaks = [...danmu_peaks]; // 触发响应式更新
     }
   }
-  onDestroy(() => {
-    if (video) {
-      video.removeEventListener("timeupdate", syncPlaybackState);
-      video.removeEventListener("durationchange", syncPlaybackState);
-    }
-  });
-
   let archive: RecordItem = $state(null);
 
   // load ranges from local storage
@@ -324,15 +317,10 @@
   let selected_range_index = $state(-1);
   let player_volume = $state(1);
   let player_is_playing = $state(false);
+  let player_is_live = $state(false);
   let danmu_enabled = $state(true);
   let danmu_offset = $state(0);
   let can_send_danmaku = $state(false);
-
-  function syncPlaybackState() {
-    if (!video) return;
-    current_time = Number.isFinite(video.currentTime) ? video.currentTime : 0;
-    player_duration = Number.isFinite(video.duration) ? video.duration : 0;
-  }
 
   function pauseForRangeDrag() {
     video?.pause();
@@ -346,8 +334,6 @@
   // Initialize video element when component is mounted
   onMount(() => {
     video = document.getElementById("video") as HTMLVideoElement;
-    video?.addEventListener("timeupdate", syncPlaybackState);
-    video?.addEventListener("durationchange", syncPlaybackState);
     invoke("get_archive", { roomId: room_id, liveId: live_id }).then(
       (a: RecordItem) => {
         archive = a;
@@ -496,6 +482,7 @@
           bind:is_playing={player_is_playing}
           bind:playback_time={current_time}
           bind:duration={player_duration}
+          bind:is_live={player_is_live}
           bind:can_send_danmaku={can_send_danmaku}
           {focus_start}
           {focus_end}
@@ -520,7 +507,9 @@
         heatThreshold={danmu_heat_threshold}
         heatThresholdPercent={peak_threshold}
         currentTime={current_time}
-        duration={player_duration || archive?.length || 0}
+        duration={player_is_live
+          ? player_duration
+          : player_duration || archive?.length || 0}
         isPlaying={player_is_playing}
         volume={player_volume}
         danmuEnabled={danmu_enabled}

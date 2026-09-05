@@ -36,6 +36,7 @@
     is_playing?: boolean;
     playback_time?: number;
     duration?: number;
+    is_live?: boolean;
     can_send_danmaku?: boolean;
     onMarkerAdd?: (marker: { offset: number; realtime: number }) => void;
   }
@@ -56,6 +57,7 @@
     is_playing = $bindable(false),
     playback_time = $bindable(0),
     duration = $bindable(0),
+    is_live = $bindable(false),
     can_send_danmaku = $bindable(false),
     onMarkerAdd,
   }: Props = $props();
@@ -555,7 +557,9 @@ ${mediaPlaylistUrl}`;
       playback_time = video.currentTime;
     });
     video.addEventListener("durationchange", () => {
-      duration = Number.isFinite(video.duration) ? video.duration : 0;
+      if (!is_live) {
+        duration = Number.isFinite(video.duration) ? video.duration : 0;
+      }
     });
 
     document.getElementsByClassName("shaka-overflow-menu-button")[0].remove();
@@ -1338,6 +1342,19 @@ ${mediaPlaylistUrl}`;
 
     function updateSeekbar() {
       const total = get_total();
+      const live = isLive();
+      if (is_live !== live) {
+        is_live = live;
+      }
+      if (Number.isFinite(total) && Math.abs(duration - total) >= 0.1) {
+        duration = total;
+      }
+      if (
+        Number.isFinite(video.currentTime) &&
+        Math.abs(playback_time - video.currentTime) >= 0.1
+      ) {
+        playback_time = video.currentTime;
+      }
 
       // 更新当前区间高亮覆盖层
       const currentRange =

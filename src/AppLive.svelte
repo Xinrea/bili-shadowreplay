@@ -82,7 +82,6 @@
     }
 
     const window_ms = DENSITY_WINDOW_SEC * 1000;
-    const half_window_ms = window_ms / 2;
     const step_ms = 5000; // 5秒滑动步长
     const bucket_ms = step_ms; // 桶大小与步长一致
 
@@ -155,93 +154,55 @@
     }));
     danmu_heat_threshold = effective_threshold;
 
-    // 动态边界的基准线 (Baseline)
-    const expansion_baseline = mean + 0.5 * stdDev;
-
-    // 4. 寻找候选峰值 (局部极值)
-    let candidates: { center: number; count: number; index: number }[] = [];
-    for (let i = 1; i < density.length - 1; i++) {
-      const curr = density[i];
-      const prev = density[i - 1];
-      const next = density[i + 1];
-
-      if (
-        curr.count >= effective_threshold &&
-        curr.count > 0 &&
-        curr.count >= prev.count &&
-        curr.count >= next.count
-      ) {
-        candidates.push({ ...curr, index: i });
-      }
-    }
-
-    // 按强度降序排列
-    candidates.sort((a, b) => b.count - a.count);
-
+    // 每一段连续超过阈值的热度柱对应一个推荐区间。区间边界采用
+    // 柱子的左右边缘，因此时间线高亮与推荐结果使用完全相同的范围。
     const final_peaks: DanmuPeak[] = [];
-    while (candidates.length > 0) {
-      const best = candidates.shift();
-      const best_idx = best.index;
+    const half_step_ms = step_ms / 2;
+    let run_start_index = -1;
 
-      // 动态向左扩展
-      let left_idx = best_idx;
-      while (left_idx > 0 && density[left_idx].count > expansion_baseline) {
-        left_idx--;
+    for (let i = 0; i <= density.length; i++) {
+      const is_above_threshold =
+        i < density.length &&
+        density[i].count > 0 &&
+        density[i].count >= effective_threshold;
+
+      if (is_above_threshold && run_start_index === -1) {
+        run_start_index = i;
+        continue;
+      }
+      if (is_above_threshold || run_start_index === -1) {
+        continue;
       }
 
-      // 动态向右扩展
-      let right_idx = best_idx;
-      while (
-        right_idx < density.length - 1 &&
-        density[right_idx].count > expansion_baseline
-      ) {
-        right_idx++;
-      }
-
-      // 计算时间 (秒)
-      const start_time =
-        (density[left_idx].center - recording_offset_ms) / 1000 - 5; // 再多给5s缓冲
-      const end_time =
-        (density[right_idx].center - recording_offset_ms) / 1000 + 5;
-
-      // 限制最小和最大时长
-      const min_duration = 15;
-      const max_duration = 120;
-      let duration = end_time - start_time;
-
-      let final_start = Math.max(0, start_time);
-      let final_end = end_time;
-
-      if (duration < min_duration) {
-        const padding = (min_duration - duration) / 2;
-        final_start = Math.max(0, final_start - padding);
-        final_end = final_end + padding;
-      } else if (duration > max_duration) {
-        // 如果太长，就只取峰值附近的 max_duration
-        const center_sec = (best.center - recording_offset_ms) / 1000;
-        final_start = Math.max(0, center_sec - max_duration / 2);
-        final_end = center_sec + max_duration / 2;
-      }
-
-      const is_added = ranges.some((r) =>
-        is_range_similar(r, { start: final_start, end: final_end }),
+      const run_end_index = i - 1;
+      const final_start = Math.max(
+        0,
+        (density[run_start_index].center -
+          half_step_ms -
+          recording_offset_ms) /
+          1000,
       );
+      const final_end =
+        (density[run_end_index].center +
+          half_step_ms -
+          recording_offset_ms) /
+        1000;
+      const peak_count = density
+        .slice(run_start_index, run_end_index + 1)
+        .reduce((maximum, point) => Math.max(maximum, point.count), 0);
 
-      final_peaks.push({
-        start: final_start,
-        end: final_end,
-        count: best.count,
-        added: is_added,
-      });
-
-      // 抑制相邻的较弱峰值 (基于实际生成的区间进行抑制)
-      // 如果候选点落在我们刚刚生成的区间内，就剔除
-      const current_peak_center_ms = best.center;
-      candidates = candidates.filter(
-        (c) =>
-          Math.abs(c.center - current_peak_center_ms) >=
-          ((final_end - final_start) * 1000) / 2, // 简单起见，只要距离峰值中心超过半个区间长度就算不重叠
-      );
+      if (final_end > final_start) {
+        const is_added = ranges.some((range) =>
+          is_range_similar(range, { start: final_start, end: final_end }),
+        );
+        final_peaks.push({
+          start: final_start,
+          end: final_end,
+          count: peak_count,
+          added: is_added,
+        });
+      }
+      run_start_index = -1;
     }
 
     // 按弹幕数量降序排列

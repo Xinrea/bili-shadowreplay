@@ -13,6 +13,7 @@
   interface DanmuEntry {
     ts: number;
     content: string;
+    user_name?: string;
   }
 
   interface Props {

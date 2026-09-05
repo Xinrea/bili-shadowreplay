@@ -356,7 +356,12 @@
               class="danmu-entry"
               onclick={() => onSeek?.(danmu.ts / 1000 - globalOffset)}
             >
-              <span>{danmu.content}</span>
+              <span class="danmu-content">
+                {#if danmu.user_name}
+                  <b>{danmu.user_name}</b>
+                {/if}
+                {danmu.content}
+              </span>
               <time>{formatTime(danmu.ts / 1000 - globalOffset)}</time>
             </button>
           {:else}
@@ -862,6 +867,12 @@
     font-size: 11px;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .danmu-content b {
+    margin-right: 6px;
+    color: #78c8ff;
+    font-weight: 500;
   }
 
   .danmu-entry time {

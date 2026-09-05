@@ -14,6 +14,7 @@ use tokio::{
 pub struct DanmuEntry {
     pub ts: i64,
     pub content: String,
+    pub user_name: Option<String>,
 }
 
 pub struct DanmuStorage {
@@ -115,6 +116,11 @@ impl DanmuStorage {
                     content.as_str().map(|content| DanmuEntry {
                         ts: event.ts - live_start_ts,
                         content: content.to_string(),
+                        user_name: event
+                            .data
+                            .get("user_name")
+                            .and_then(|name| name.as_str())
+                            .map(str::to_string),
                     })
                 })
             })

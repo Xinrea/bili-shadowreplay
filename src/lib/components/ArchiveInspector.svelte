@@ -191,7 +191,12 @@
               ranges = ranges.map((range) => ({ ...range, activated: active }));
             }}
           />
-          <span class="check-mark"><Check size={13} /></span>
+          <span class="check-mark">
+            {#if ranges.length > 0 &&
+              ranges.every((range) => range.activated !== false)}
+              <Check size={13} />
+            {/if}
+          </span>
           全选
         </label>
       </section>
@@ -231,7 +236,9 @@
                       (event.currentTarget as HTMLInputElement).checked,
                     )}
                 />
-                <span class="check-mark"><Check size={13} /></span>
+                <span class="check-mark">
+                  {#if range.activated !== false}<Check size={13} />{/if}
+                </span>
               </label>
               <button
                 type="button"
@@ -675,11 +682,6 @@
     border-color: #0a84ff;
     background: #0a84ff;
     color: white;
-  }
-
-  .select-all-toggle:not(.checked) .check-mark svg,
-  .range-toggle:not(.checked) .check-mark svg {
-    opacity: 0;
   }
 
   .recommendations {

@@ -1,5 +1,13 @@
 <script lang="ts">
-  import { Diamond, Plus } from "lucide-svelte";
+  import {
+    Diamond,
+    MessageCircle,
+    Pause,
+    Play,
+    Plus,
+    Volume2,
+    VolumeX,
+  } from "lucide-svelte";
   import type { Marker, Range } from "../interface";
 
   type HeatPoint = {
@@ -22,6 +30,16 @@
     onAddMarker?: () => void;
     onRangeDragStart?: () => void;
     onRangeDrag?: (seconds: number) => void;
+    isPlaying?: boolean;
+    volume?: number;
+    danmuEnabled?: boolean;
+    danmuOffset?: number;
+    canSendDanmaku?: boolean;
+    onTogglePlayback?: () => void;
+    onVolumeChange?: (volume: number) => void;
+    onToggleDanmu?: () => void;
+    onDanmuOffsetChange?: (offset: number) => void;
+    onSendDanmaku?: (message: string) => void;
   }
 
   let {
@@ -38,7 +56,19 @@
     onAddMarker,
     onRangeDragStart,
     onRangeDrag,
+    isPlaying = false,
+    volume = 1,
+    danmuEnabled = true,
+    danmuOffset = 0,
+    canSendDanmaku = false,
+    onTogglePlayback,
+    onVolumeChange,
+    onToggleDanmu,
+    onDanmuOffsetChange,
+    onSendDanmaku,
   }: Props = $props();
+  let danmu_message = $state("");
+  let show_danmu_input = $state(false);
 
   let visibleHeatPoints = $derived(
     heatPoints.filter(
@@ -154,15 +184,103 @@
     }
     drag_state = null;
   }
+
+  function submitDanmu() {
+    const message = danmu_message.trim();
+    if (!message) return;
+    onSendDanmaku?.(message);
+    danmu_message = "";
+  }
 </script>
 
 <section class="timeline-panel" aria-label="片段时间线">
   <div class="timeline-header">
-    <div class="min-w-0">
-      <div class="flex items-baseline gap-2">
-        <h2>片段时间线</h2>
-        <span>单击定位，选择片段后可在右侧调整</span>
+    <div class="timeline-controls">
+      <button
+        type="button"
+        class="control-icon"
+        title={isPlaying ? "暂停" : "播放"}
+        onclick={onTogglePlayback}
+      >
+        {#if isPlaying}<Pause size={15} />{:else}<Play size={15} />{/if}
+      </button>
+      <button
+        type="button"
+        class="control-icon"
+        title={danmuEnabled ? "关闭弹幕预览" : "开启弹幕预览"}
+        class:enabled={danmuEnabled}
+        onclick={onToggleDanmu}
+      >
+        <MessageCircle size={15} />
+      </button>
+      <label class="offset-control" title="弹幕偏移时间">
+        <span>偏移</span>
+        <input
+          type="number"
+          value={danmuOffset}
+          onchange={(event) =>
+            onDanmuOffsetChange?.(
+              Number((event.currentTarget as HTMLInputElement).value),
+            )}
+        />
+        <span>秒</span>
+      </label>
+      {#if canSendDanmaku}
+        <div
+          class="danmu-sender"
+          class:expanded={show_danmu_input}
+          role="group"
+          aria-label="发送弹幕"
+          onmouseenter={() => (show_danmu_input = true)}
+          onmouseleave={() => {
+            if (!danmu_message) show_danmu_input = false;
+          }}
+        >
+          <button
+            type="button"
+            class="control-icon"
+            title="发送弹幕"
+            onclick={() => (show_danmu_input = true)}
+          >
+            <MessageCircle size={15} />
+          </button>
+          {#if show_danmu_input}
+            <input
+              bind:value={danmu_message}
+              placeholder="回车发送弹幕"
+              onkeydown={(event) => {
+                if (event.key === "Enter") submitDanmu();
+                if (event.key === "Escape") {
+                  danmu_message = "";
+                  show_danmu_input = false;
+                }
+              }}
+            />
+          {/if}
+        </div>
+      {/if}
+      <div class="volume-control">
+        {#if volume === 0}
+          <VolumeX size={15} />
+        {:else}
+          <Volume2 size={15} />
+        {/if}
+        <input
+          type="range"
+          min="0"
+          max="1"
+          step="0.01"
+          value={volume}
+          aria-label="音量"
+          oninput={(event) =>
+            onVolumeChange?.(
+              Number((event.currentTarget as HTMLInputElement).value),
+            )}
+        />
       </div>
+      <span class="time-display">
+        {formatTime(currentTime)} / {formatTime(duration)}
+      </span>
     </div>
     <div class="timeline-actions">
       <button type="button" onclick={onAddRange}>
@@ -341,16 +459,98 @@
     gap: 12px;
   }
 
-  h2 {
-    margin: 0;
-    font-size: 14px;
-    font-weight: 650;
-  }
-
-  .timeline-header span,
   .timeline-footer {
     color: #7f8a9c;
     font-size: 10px;
+  }
+
+  .timeline-controls {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 7px;
+  }
+
+  .control-icon {
+    display: inline-flex;
+    width: 30px;
+    height: 30px;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #303947;
+    border-radius: 8px;
+    background: #202733;
+    color: #cbd7e8;
+  }
+
+  .control-icon:hover,
+  .control-icon.enabled {
+    border-color: #168de0;
+    background: #153b5c;
+    color: #65c2ff;
+  }
+
+  .offset-control,
+  .volume-control {
+    display: inline-flex;
+    height: 30px;
+    align-items: center;
+    gap: 5px;
+    border: 1px solid #303947;
+    border-radius: 8px;
+    background: #202733;
+    padding: 0 8px;
+    color: #8490a3;
+    font-size: 10px;
+  }
+
+  .offset-control input {
+    width: 38px;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: #dce5f3;
+    font-size: 10px;
+    text-align: right;
+  }
+
+  .volume-control input {
+    width: 66px;
+    accent-color: #0a84ff;
+  }
+
+  .time-display {
+    color: #b6c0cf;
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .danmu-sender {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .danmu-sender input {
+    width: 0;
+    height: 30px;
+    border: 1px solid #3b4758;
+    border-radius: 8px;
+    outline: 0;
+    background: #202733;
+    color: #e9eef8;
+    font-size: 10px;
+    opacity: 0;
+    transition:
+      width 160ms ease,
+      opacity 160ms ease;
+  }
+
+  .danmu-sender.expanded input {
+    width: 150px;
+    padding: 0 8px;
+    opacity: 1;
   }
 
   .timeline-actions {

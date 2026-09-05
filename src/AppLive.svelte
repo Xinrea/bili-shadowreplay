@@ -21,6 +21,11 @@
 
   interface PlayerHandle {
     seek(offset: number): void;
+    togglePlayback(): void;
+    setVolume(volume: number): void;
+    toggleDanmu(): void;
+    setDanmuOffset(offset: number): void;
+    sendDanmaku(message: string): Promise<void>;
   }
 
   interface PreviewVideo {
@@ -317,6 +322,11 @@
   let current_time = $state(0);
   let player_duration = $state(0);
   let selected_range_index = $state(-1);
+  let player_volume = $state(1);
+  let player_is_playing = $state(false);
+  let danmu_enabled = $state(true);
+  let danmu_offset = $state(0);
+  let can_send_danmaku = $state(false);
 
   function syncPlaybackState() {
     if (!video) return;
@@ -480,6 +490,13 @@
           bind:global_offset
           bind:this={player}
           bind:danmu_records
+          bind:danmu_enabled
+          bind:local_offset={danmu_offset}
+          bind:volume={player_volume}
+          bind:is_playing={player_is_playing}
+          bind:playback_time={current_time}
+          bind:duration={player_duration}
+          bind:can_send_danmaku={can_send_danmaku}
           {focus_start}
           {focus_end}
           {platform}
@@ -504,10 +521,20 @@
         heatThresholdPercent={peak_threshold}
         currentTime={current_time}
         duration={player_duration || archive?.length || 0}
+        isPlaying={player_is_playing}
+        volume={player_volume}
+        danmuEnabled={danmu_enabled}
+        danmuOffset={danmu_offset}
+        canSendDanmaku={can_send_danmaku}
         bind:selectedRangeIndex={selected_range_index}
         onSeek={(seconds) => player?.seek(seconds)}
         onAddRange={addRangeAtCurrentTime}
         onAddMarker={addMarkerAtCurrentTime}
+        onTogglePlayback={() => player?.togglePlayback()}
+        onVolumeChange={(value) => player?.setVolume(value)}
+        onToggleDanmu={() => player?.toggleDanmu()}
+        onDanmuOffsetChange={(value) => player?.setDanmuOffset(value)}
+        onSendDanmaku={(message) => player?.sendDanmaku(message)}
         onRangeDragStart={pauseForRangeDrag}
         onRangeDrag={seekDuringRangeDrag}
       />

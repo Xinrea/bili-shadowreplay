@@ -30,6 +30,13 @@
     focus_end?: number;
     markers?: Marker[];
     danmu_records?: DanmuEntry[];
+    danmu_enabled?: boolean;
+    local_offset?: number;
+    volume?: number;
+    is_playing?: boolean;
+    playback_time?: number;
+    duration?: number;
+    can_send_danmaku?: boolean;
     onMarkerAdd?: (marker: { offset: number; realtime: number }) => void;
   }
 
@@ -43,10 +50,47 @@
     focus_end = 0,
     markers = [],
     danmu_records = $bindable([]),
-    onMarkerAdd
+    danmu_enabled = $bindable(true),
+    local_offset = $bindable(0),
+    volume = $bindable(1),
+    is_playing = $bindable(false),
+    playback_time = $bindable(0),
+    duration = $bindable(0),
+    can_send_danmaku = $bindable(false),
+    onMarkerAdd,
   }: Props = $props();
   export function seek(offset: number) {
     video.currentTime = offset;
+  }
+  export function togglePlayback() {
+    if (!video) return;
+    if (video.paused) {
+      void video.play();
+    } else {
+      video.pause();
+    }
+  }
+  export function setVolume(nextVolume: number) {
+    if (!video) return;
+    volume = Math.min(1, Math.max(0, nextVolume));
+    video.volume = volume;
+  }
+  export function toggleDanmu() {
+    danmu_enabled = !danmu_enabled;
+  }
+  export function setDanmuOffset(offset: number) {
+    if (!Number.isFinite(offset)) return;
+    local_offset = offset;
+    localStorage.setItem(`local_offset:${live_id}`, offset.toString());
+  }
+  export async function sendDanmaku(message: string) {
+    const value = message.trim();
+    if (!value || !danmu_account_uid) return;
+    await invoke("send_danmaku", {
+      uid: danmu_account_uid,
+      roomId: room_id,
+      message: value,
+    });
   }
   let video: HTMLVideoElement;
   let show_detail = $state(false);
@@ -58,8 +102,7 @@
   let end = $state(0);
   let currentRangeIndex: number = -1; // 当前正在编辑的区间索引，-1 表示没有区间
 
-  // local setting of danmu offset
-  let local_offset = $state(0);
+  let danmu_account_uid = "";
   $effect(() => {
     local_offset =
       parseInt(localStorage.getItem(`local_offset:${live_id}`) || "0", 10) || 0;
@@ -469,11 +512,21 @@ ${mediaPlaylistUrl}`;
     let localVolume = localStorage.getItem(`volume:${room_id}`);
     if (localVolume != undefined) {
       console.log("Load local volume", localVolume);
-      video.volume = parseFloat(localVolume);
+      volume = parseFloat(localVolume);
+      video.volume = volume;
     }
 
     video.addEventListener("volumechange", (event) => {
+      volume = video.volume;
       localStorage.setItem(`volume:${room_id}`, video.volume.toString());
+    });
+    video.addEventListener("play", () => (is_playing = true));
+    video.addEventListener("pause", () => (is_playing = false));
+    video.addEventListener("timeupdate", () => {
+      playback_time = video.currentTime;
+    });
+    video.addEventListener("durationchange", () => {
+      duration = Number.isFinite(video.duration) ? video.duration : 0;
     });
 
     document.getElementsByClassName("shaka-overflow-menu-button")[0].remove();
@@ -502,7 +555,6 @@ ${mediaPlaylistUrl}`;
     // add to shaka-spacer
     const shakaSpacer = document.querySelector(".shaka-spacer") as HTMLElement;
 
-    let danmu_enabled = true;
     // get danmaku record
     danmu_records = (await invoke("get_danmu_record", {
       roomId: room_id,
@@ -563,6 +615,8 @@ ${mediaPlaylistUrl}`;
           option.text = account.name;
           accountSelect.appendChild(option);
         });
+        danmu_account_uid = accountSelect.value;
+        can_send_danmaku = Boolean(danmu_account_uid);
         // add a danmaku send input
         const danmakuInput = document.createElement("input");
         danmakuInput.type = "text";
@@ -581,11 +635,8 @@ ${mediaPlaylistUrl}`;
             if (value) {
               // get account uid from select
               const uid = accountSelect.value;
-              await invoke("send_danmaku", {
-                uid,
-                roomId: room_id,
-                message: value,
-              });
+              danmu_account_uid = uid;
+              await sendDanmaku(value);
               danmakuInput.value = "";
             }
           }
@@ -1512,6 +1563,10 @@ ${mediaPlaylistUrl}`;
 </div>
 
 <style>
+  :global(.shaka-controls-container) {
+    display: none !important;
+  }
+
   video {
     width: 100%;
     height: 100%;

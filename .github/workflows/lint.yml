@@ -31,6 +31,11 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
       - name: Cache pre-commit
         uses: actions/cache@v4
         with:

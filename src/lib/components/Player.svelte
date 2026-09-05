@@ -965,23 +965,16 @@ ${mediaPlaylistUrl}`;
           e.preventDefault();
           {
             const currentTime = parseFloat(video.currentTime.toFixed(2));
-            if (currentRangeIndex >= 0 && currentRangeIndex < ranges.length) {
-              // 有选中区间：更新当前区间的开始时间
-              ranges[currentRangeIndex].start = currentTime;
-              // 如果结束时间小于开始时间，自动设置为视频结尾
-              if (ranges[currentRangeIndex].end <= currentTime) {
-                ranges[currentRangeIndex].end = get_total();
-              }
-            } else {
-              // 没有选中区间：创建新区间并选中
-              const newRange: Range = {
-                start: currentTime,
-                end: get_total(),
-                activated: true, // 新建区间默认为激活
-              };
-              ranges = [...ranges, newRange];
-              currentRangeIndex = ranges.length - 1;
-            }
+            const total = get_total();
+            const end = Math.min(total, currentTime + 10);
+            const start = end - currentTime > 0 ? currentTime : Math.max(0, total - 10);
+            const newRange: Range = {
+              start,
+              end: Math.max(start, end),
+              activated: true,
+            };
+            ranges = [...ranges, newRange];
+            currentRangeIndex = ranges.length - 1;
             saveRanges();
             console.log(
               "Range updated:",
@@ -996,23 +989,14 @@ ${mediaPlaylistUrl}`;
           e.preventDefault();
           {
             const currentTime = parseFloat(video.currentTime.toFixed(2));
-            if (currentRangeIndex >= 0 && currentRangeIndex < ranges.length) {
-              // 有选中区间：更新当前区间的结束时间
-              ranges[currentRangeIndex].end = currentTime;
-              // 如果开始时间大于结束时间，自动设置为0
-              if (ranges[currentRangeIndex].start >= currentTime) {
-                ranges[currentRangeIndex].start = 0;
-              }
-            } else {
-              // 没有选中区间：创建新区间并选中
-              const newRange: Range = {
-                start: 0,
-                end: currentTime,
-                activated: true, // 新建区间默认为激活
-              };
-              ranges = [...ranges, newRange];
-              currentRangeIndex = ranges.length - 1;
-            }
+            const start = Math.max(0, currentTime - 10);
+            const newRange: Range = {
+              start,
+              end: Math.max(start, currentTime),
+              activated: true,
+            };
+            ranges = [...ranges, newRange];
+            currentRangeIndex = ranges.length - 1;
             saveRanges();
             console.log(
               "Range updated:",

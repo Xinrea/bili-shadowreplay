@@ -820,7 +820,7 @@
 
   .settings-menu {
     position: absolute;
-    top: 38px;
+    bottom: 38px;
     right: 0;
     z-index: 20;
     display: flex;

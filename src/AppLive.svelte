@@ -19,6 +19,7 @@
   import ArchiveClipButton from "./lib/components/ArchiveClipButton.svelte";
   import MarkerPanel from "./lib/components/MarkerPanel.svelte";
   import ArchivePreviewHeader from "./lib/components/ArchivePreviewHeader.svelte";
+  import ArchiveTimeline from "./lib/components/ArchiveTimeline.svelte";
   import { onDestroy, onMount } from "svelte";
 
   interface PlayerHandle {
@@ -369,6 +370,10 @@
     if (scroll_timeout) {
       clearTimeout(scroll_timeout);
     }
+    if (video) {
+      video.removeEventListener("timeupdate", syncPlaybackState);
+      video.removeEventListener("durationchange", syncPlaybackState);
+    }
   });
 
   let archive: RecordItem = $state(null);
@@ -407,6 +412,15 @@
   let selected_video = $state(null);
 
   let video: HTMLVideoElement;
+  let current_time = $state(0);
+  let player_duration = $state(0);
+  let selected_range_index = $state(-1);
+
+  function syncPlaybackState() {
+    if (!video) return;
+    current_time = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+    player_duration = Number.isFinite(video.duration) ? video.duration : 0;
+  }
 
   function pauseVideo() {
     if (video) {
@@ -417,6 +431,8 @@
   // Initialize video element when component is mounted
   onMount(() => {
     video = document.getElementById("video") as HTMLVideoElement;
+    video?.addEventListener("timeupdate", syncPlaybackState);
+    video?.addEventListener("durationchange", syncPlaybackState);
     invoke("get_archive", { roomId: room_id, liveId: live_id }).then(
       (a: RecordItem) => {
         archive = a;
@@ -432,6 +448,32 @@
       }
     }, 100);
   });
+
+  function addRangeAtCurrentTime() {
+    const total = player_duration || archive?.length || 0;
+    if (total <= 0) return;
+    const start = Math.min(current_time, total);
+    ranges = [
+      ...ranges,
+      {
+        start,
+        end: total,
+        activated: true,
+      },
+    ];
+    selected_range_index = ranges.length - 1;
+  }
+
+  function addMarkerAtCurrentTime() {
+    markers = [
+      ...markers,
+      {
+        offset: current_time,
+        realtime: global_offset + current_time,
+        content: "[空标记点]",
+      },
+    ].sort((a, b) => a.offset - b.offset);
+  }
 
   get_video_list();
 
@@ -608,26 +650,40 @@
         {/if}
       </button>
     </div>
-    <div class="overflow-hidden h-full w-full relative">
-      <Player
-        bind:ranges
-        bind:global_offset
-        bind:this={player}
-        bind:danmu_records
-        {focus_start}
-        {focus_end}
-        {platform}
-        {room_id}
-        {live_id}
+    <div class="preview-main">
+      <div class="video-stage">
+        <Player
+          bind:ranges
+          bind:global_offset
+          bind:this={player}
+          bind:danmu_records
+          {focus_start}
+          {focus_end}
+          {platform}
+          {room_id}
+          {live_id}
+          {markers}
+          onMarkerAdd={(marker) => {
+            markers.push({
+              offset: marker.offset,
+              realtime: marker.realtime,
+              content: "[空标记点]",
+            });
+            markers = markers.sort((a, b) => a.offset - b.offset);
+          }}
+        />
+      </div>
+      <ArchiveTimeline
+        {ranges}
         {markers}
-        onMarkerAdd={(marker) => {
-          markers.push({
-            offset: marker.offset,
-            realtime: marker.realtime,
-            content: "[空标记点]",
-          });
-          markers = markers.sort((a, b) => a.offset - b.offset);
-        }}
+        danmuRecords={danmu_records}
+        currentTime={current_time}
+        duration={player_duration || archive?.length || 0}
+        globalOffset={global_offset}
+        bind:selectedRangeIndex={selected_range_index}
+        onSeek={(seconds) => player?.seek(seconds)}
+        onAddRange={addRangeAtCurrentTime}
+        onAddMarker={addMarkerAtCurrentTime}
       />
     </div>
     <div
@@ -1086,6 +1142,23 @@
     flex: 1;
     flex-direction: row;
     overflow: hidden;
+  }
+
+  .preview-main {
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .video-stage {
+    position: relative;
+    min-height: 0;
+    flex: 1;
+    overflow: hidden;
+    background: #05070a;
   }
 
   .collapse-btn {

@@ -74,13 +74,8 @@
   }
   export function setVolume(nextVolume: number) {
     if (!video) return;
-    volume = Math.min(1.5, Math.max(0, nextVolume));
-    if (audio_gain) {
-      audio_gain.gain.value = volume;
-      video.volume = 1;
-    } else {
-      video.volume = Math.min(1, volume);
-    }
+    volume = Math.min(1, Math.max(0, nextVolume));
+    video.volume = volume;
   }
   export function toggleDanmu() {
     danmu_enabled = !danmu_enabled;
@@ -100,8 +95,6 @@
     });
   }
   let video: HTMLVideoElement;
-  let audio_context: AudioContext | null = null;
-  let audio_gain: GainNode | null = null;
   let show_detail = $state(false);
   let show_list = false;
   let show_export = false;
@@ -112,23 +105,6 @@
   let currentRangeIndex: number = -1; // 当前正在编辑的区间索引，-1 表示没有区间
 
   let danmu_account_uid = "";
-
-  function ensureAudioGain() {
-    if (audio_gain || !video || typeof AudioContext === "undefined") return;
-    try {
-      audio_context = new AudioContext();
-      const source = audio_context.createMediaElementSource(video);
-      audio_gain = audio_context.createGain();
-      source.connect(audio_gain);
-      audio_gain.connect(audio_context.destination);
-      audio_gain.gain.value = volume;
-      video.volume = 1;
-    } catch (error) {
-      console.warn("Web Audio volume boost unavailable:", error);
-      audio_context = null;
-      audio_gain = null;
-    }
-  }
 
   $effect(() => {
     local_offset =
@@ -460,7 +436,6 @@ ${mediaPlaylistUrl}`;
     video.disableRemotePlayback = true;
     video.setAttribute("x-webkit-airplay", "deny");
     video.setAttribute("webkit-playsinline", "true");
-    ensureAudioGain();
     const ui = video["ui"];
     const controls = ui.getControls();
     const player = controls.getPlayer();
@@ -540,17 +515,16 @@ ${mediaPlaylistUrl}`;
     let localVolume = localStorage.getItem(`volume:${room_id}`);
     if (localVolume != undefined) {
       console.log("Load local volume", localVolume);
-      volume = Math.min(1.5, Math.max(0, parseFloat(localVolume)));
+      volume = Math.min(1, Math.max(0, parseFloat(localVolume)));
       setVolume(volume);
     }
 
     video.addEventListener("volumechange", (event) => {
-      if (!audio_gain) volume = video.volume;
+      volume = video.volume;
       localStorage.setItem(`volume:${room_id}`, volume.toString());
     });
     video.addEventListener("play", () => {
       is_playing = true;
-      void audio_context?.resume();
     });
     video.addEventListener("pause", () => (is_playing = false));
     video.addEventListener("timeupdate", () => {

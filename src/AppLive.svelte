@@ -502,6 +502,7 @@
           bind:danmu_accounts
           bind:danmu_account_uid
           bind:recorders={live_recorders}
+          bind:selected_range_index={selected_range_index}
           {focus_start}
           {focus_end}
           {platform}

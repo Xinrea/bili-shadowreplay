@@ -36,6 +36,7 @@
     danmu_accounts?: AccountInfo["accounts"];
     danmu_account_uid?: string;
     recorders?: RecorderInfo[];
+    selected_range_index?: number;
     onMarkerAdd?: (marker: { offset: number; realtime: number }) => void;
   }
 
@@ -60,6 +61,7 @@
     danmu_accounts = $bindable([]),
     danmu_account_uid = $bindable(""),
     recorders = $bindable([]),
+    selected_range_index = $bindable(-1),
     onMarkerAdd,
   }: Props = $props();
   export function seek(offset: number) {
@@ -106,6 +108,16 @@
   let start = $state(0);
   let end = $state(0);
   let currentRangeIndex: number = -1; // 当前正在编辑的区间索引，-1 表示没有区间
+
+  $effect(() => {
+    if (selected_range_index !== currentRangeIndex) {
+      currentRangeIndex = selected_range_index;
+    }
+  });
+
+  $effect(() => {
+    selected_range_index = currentRangeIndex;
+  });
 
   $effect(() => {
     local_offset =
@@ -960,8 +972,9 @@ ${mediaPlaylistUrl}`;
     document.addEventListener("keydown", async (e) => {
       const target = e.target as HTMLInputElement;
       if (
-        (target.tagName.toLowerCase() === "input" && target.type === "text") ||
-        target.tagName.toLowerCase() === "textarea"
+        target.tagName.toLowerCase() === "input" ||
+        target.tagName.toLowerCase() === "textarea" ||
+        target.tagName.toLowerCase() === "select"
       ) {
         return;
       }
@@ -1047,6 +1060,7 @@ ${mediaPlaylistUrl}`;
           break;
         case "d":
         case "Delete":
+        case "Backspace":
           e.preventDefault();
           {
             if (currentRangeIndex >= 0 && currentRangeIndex < ranges.length) {

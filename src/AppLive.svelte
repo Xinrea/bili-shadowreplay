@@ -15,7 +15,6 @@
     type DanmuEntry,
     type Range,
   } from "./lib/interface";
-  import ArchivePreviewHeader from "./lib/components/ArchivePreviewHeader.svelte";
   import ArchiveInspector from "./lib/components/ArchiveInspector.svelte";
   import ArchiveTimeline from "./lib/components/ArchiveTimeline.svelte";
   import { onDestroy, onMount } from "svelte";
@@ -432,7 +431,6 @@
 </script>
 
 <main>
-  <ArchivePreviewHeader {archive} {platform} roomId={room_id} />
   <div class="preview-workspace">
     <div class="preview-main">
       <div class="video-stage">

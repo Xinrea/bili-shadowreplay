@@ -90,7 +90,7 @@
 
   let visibleHeatPoints = $derived(
     heatPoints.filter(
-      (point) => point.time >= 0 && (duration <= 0 || point.time <= duration),
+      (point) => point.time >= timelineStart && point.time <= timelineEnd,
     ),
   );
   let maxHeat = $derived(
@@ -99,19 +99,40 @@
       0,
     ),
   );
-  let activeRanges = $derived(
-    ranges.filter((range) => range.activated !== false),
+  let visibleRanges = $derived(
+    ranges
+      .map((range, index) => ({ range, index }))
+      .filter(
+        ({ range }) =>
+          range.end >= timelineStart && range.start <= timelineEnd,
+      ),
   );
-  let activeDuration = $derived(
-    activeRanges.reduce(
-      (total, range) => total + Math.max(0, range.end - range.start),
-      0,
+  let visibleMarkers = $derived(
+    markers.filter(
+      (marker) =>
+        marker.offset >= timelineStart && marker.offset <= timelineEnd,
     ),
   );
+  let zoomed = $state(false);
+  let zoom_start = $state(0);
+  let zoom_end = $state(0);
+  let timelineStart = $derived(zoomed ? zoom_start : 0);
+  let timelineEnd = $derived(zoomed ? Math.min(duration, zoom_end) : duration);
+  let timelineDuration = $derived(Math.max(0.001, timelineEnd - timelineStart));
+
+  $effect(() => {
+    if (!zoomed) {
+      zoom_start = 0;
+      zoom_end = duration;
+    }
+  });
 
   function clampPercent(seconds: number) {
-    if (duration <= 0) return 0;
-    return Math.min(100, Math.max(0, (seconds / duration) * 100));
+    if (timelineDuration <= 0) return 0;
+    return Math.min(
+      100,
+      Math.max(0, ((seconds - timelineStart) / timelineDuration) * 100),
+    );
   }
 
   function heatHeight(count: number) {
@@ -120,13 +141,13 @@
   }
 
   function heatBarWidth(index: number) {
-    if (duration <= 0 || visibleHeatPoints.length < 2) return 0.4;
+    if (timelineDuration <= 0 || visibleHeatPoints.length < 2) return 0.4;
     const adjacentPoint =
       visibleHeatPoints[index + 1] ||
       visibleHeatPoints[index - 1] ||
       visibleHeatPoints[index];
     const gap = Math.abs(adjacentPoint.time - visibleHeatPoints[index].time);
-    return Math.max(0.15, (gap / duration) * 100);
+    return Math.max(0.15, (gap / timelineDuration) * 100);
   }
 
   let thresholdPosition = $derived(
@@ -146,11 +167,36 @@
   }
 
   function handleTrackClick(event: MouseEvent) {
-    if (duration <= 0) return;
+    if (timelineDuration <= 0) return;
     const target = event.currentTarget as HTMLElement;
     const rect = target.getBoundingClientRect();
     const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
-    onSeek?.(ratio * duration);
+    onSeek?.(timelineStart + ratio * timelineDuration);
+  }
+
+  function handleTimelineWheel(event: WheelEvent) {
+    if (duration <= 0) return;
+    event.preventDefault();
+    const target = event.currentTarget as HTMLElement;
+    const rect = target.getBoundingClientRect();
+    const ratio = Math.min(
+      1,
+      Math.max(0, (event.clientX - rect.left) / rect.width),
+    );
+    const focusTime = timelineStart + ratio * timelineDuration;
+    const factor = event.deltaY < 0 ? 0.8 : 1.25;
+    const nextDuration = Math.min(
+      duration,
+      Math.max(30, timelineDuration * factor),
+    );
+    if (nextDuration >= duration * 0.99) {
+      zoomed = false;
+      return;
+    }
+    zoomed = true;
+    zoom_start = Math.max(0, focusTime - ratio * nextDuration);
+    zoom_end = Math.min(duration, zoom_start + nextDuration);
+    zoom_start = Math.max(0, zoom_end - nextDuration);
   }
 
   function selectRange(event: MouseEvent, index: number, start: number) {
@@ -173,13 +219,13 @@
   }
 
   function updateRangeDrag(event: PointerEvent) {
-    if (!drag_state || !range_track || duration <= 0) return;
+    if (!drag_state || !range_track || timelineDuration <= 0) return;
     const rect = range_track.getBoundingClientRect();
     const ratio = Math.min(
       1,
       Math.max(0, (event.clientX - rect.left) / rect.width),
     );
-    const seconds = ratio * duration;
+    const seconds = timelineStart + ratio * timelineDuration;
     const { index, edge } = drag_state;
     const range = ranges[index];
     if (!range) return;
@@ -382,7 +428,7 @@
   </div>
 
   <div class="timeline-surface">
-    <div class="time-grid">
+    <div class="time-grid" onwheel={handleTimelineWheel}>
       <!-- svelte-ignore a11y_click_events_have_key_events -->
       <div
         class="heat-row"
@@ -422,11 +468,11 @@
       </div>
 
       <div class="time-ruler" aria-hidden="true">
-        <span>{formatTime(0)}</span>
-        <span>{formatTime(duration * 0.25)}</span>
-        <span>{formatTime(duration * 0.5)}</span>
-        <span>{formatTime(duration * 0.75)}</span>
-        <span>{formatTime(duration)}</span>
+        <span>{formatTime(timelineStart)}</span>
+        <span>{formatTime(timelineStart + timelineDuration * 0.25)}</span>
+        <span>{formatTime(timelineStart + timelineDuration * 0.5)}</span>
+        <span>{formatTime(timelineStart + timelineDuration * 0.75)}</span>
+        <span>{formatTime(timelineEnd)}</span>
       </div>
 
       <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -436,17 +482,19 @@
         role="slider"
         aria-label="录播时间线"
         aria-valuemin="0"
-        aria-valuemax={duration}
+        aria-valuemax={timelineEnd}
         aria-valuenow={currentTime}
         tabindex="0"
         onclick={handleTrackClick}
         onkeydown={(event) => {
-          if (event.key === "ArrowLeft") onSeek?.(Math.max(0, currentTime - 3));
+          if (event.key === "ArrowLeft") onSeek?.(Math.max(timelineStart, currentTime - 3));
           if (event.key === "ArrowRight")
-            onSeek?.(Math.min(duration, currentTime + 3));
+            onSeek?.(Math.min(timelineEnd, currentTime + 3));
         }}
       >
-        {#each ranges as range, index}
+        {#each visibleRanges as item}
+          {@const range = item.range}
+          {@const index = item.index}
           <button
             type="button"
             class="range-block"
@@ -490,7 +538,7 @@
           </button>
         {/each}
 
-        {#each markers as marker}
+        {#each visibleMarkers as marker}
           <button
             type="button"
             class="marker"
@@ -511,12 +559,6 @@
       ></span>
     </div>
 
-    <div class="timeline-footer">
-      <span>{formatTime(currentTime)} / {formatTime(duration)}</span>
-      <span>
-        已启用 {activeRanges.length} 个选区 · 合成后约 {formatTime(activeDuration)}
-      </span>
-    </div>
   </div>
 </section>
 
@@ -534,8 +576,7 @@
   }
 
   .timeline-header,
-  .timeline-actions,
-  .timeline-footer {
+  .timeline-actions {
     display: flex;
     align-items: center;
   }
@@ -548,11 +589,6 @@
     grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
     align-items: center;
     gap: 12px;
-  }
-
-  .timeline-footer {
-    color: #7f8a9c;
-    font-size: 10px;
   }
 
   .timeline-controls {
@@ -1086,15 +1122,10 @@
     content: "";
   }
 
-  .timeline-footer {
-    justify-content: space-between;
-    padding-top: 8px;
-  }
-
   @media (max-height: 680px) {
     .timeline-panel {
-      height: 164px;
-      flex-basis: 164px;
+      height: 150px;
+      flex-basis: 150px;
     }
 
     .heat-row {

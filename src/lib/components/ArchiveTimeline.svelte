@@ -5,6 +5,7 @@
   type HeatPoint = {
     time: number;
     count: number;
+    level: "normal" | "extension" | "core";
   };
 
   interface Props {
@@ -133,7 +134,8 @@
           {#each visibleHeatPoints as point, index}
             <span
               class="heat-bar"
-              class:hot={heatThreshold > 0 && point.count >= heatThreshold}
+              class:extension={point.level === "extension"}
+              class:hot={point.level === "core"}
               style:left={`${clampPercent(point.time)}%`}
               style:width={`${heatBarWidth(index)}%`}
               style:height={`${heatHeight(point.count)}px`}
@@ -335,6 +337,11 @@
   .heat-bar.hot {
     background: #35a7ff;
     box-shadow: 0 0 6px rgb(53 167 255 / 45%);
+  }
+
+  .heat-bar.extension {
+    background: #737fd1;
+    box-shadow: 0 0 4px rgb(115 127 209 / 30%);
   }
 
   .threshold-line {

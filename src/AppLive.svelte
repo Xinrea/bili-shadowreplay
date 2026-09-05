@@ -53,6 +53,7 @@
   interface DanmuHeatPoint {
     time: number;
     count: number;
+    level: "normal" | "extension" | "core";
   }
   let danmu_peaks: DanmuPeak[] = $state([]);
   let danmu_heat_points: DanmuHeatPoint[] = $state([]);
@@ -147,19 +148,11 @@
     const recording_offset_ms =
       global_offset > 0 ? global_offset * 1000 : min_ts;
 
-    // 时间线与推荐算法共用同一份 30 秒滑动窗口数据和实际阈值。
-    danmu_heat_points = density.map((point) => ({
-      time: (point.center - recording_offset_ms) / 1000,
-      count: point.count,
-    }));
     danmu_heat_threshold = effective_threshold;
 
-    // 每一段连续超过阈值的热度柱对应一个推荐区间。区间边界采用
-    // 柱子的左右边缘，因此时间线高亮与推荐结果使用完全相同的范围。
-    const final_peaks: DanmuPeak[] = [];
-    const half_step_ms = step_ms / 2;
+    // 先将连续超过阈值的柱子聚合为核心区间。
+    const core_runs: { start: number; end: number }[] = [];
     let run_start_index = -1;
-
     for (let i = 0; i <= density.length; i++) {
       const is_above_threshold =
         i < density.length &&
@@ -175,35 +168,87 @@
       }
 
       const run_end_index = i - 1;
+      core_runs.push({ start: run_start_index, end: run_end_index });
+      run_start_index = -1;
+    }
+
+    // 核心区间向两侧扩展至较低的内容完整性基准。相交的扩展区间
+    // 合并为一条推荐，避免多个核心峰生成相同或高度重叠的结果。
+    const expansion_baseline = mean + 0.5 * stdDev;
+    const expanded_runs = core_runs.map((run) => {
+      let start = run.start;
+      let end = run.end;
+      while (
+        start > 0 &&
+        density[start - 1].count > expansion_baseline
+      ) {
+        start -= 1;
+      }
+      while (
+        end < density.length - 1 &&
+        density[end + 1].count > expansion_baseline
+      ) {
+        end += 1;
+      }
+      return { start, end };
+    });
+    const merged_runs: { start: number; end: number }[] = [];
+    for (const run of expanded_runs) {
+      const previous = merged_runs[merged_runs.length - 1];
+      if (previous && run.start <= previous.end + 1) {
+        previous.end = Math.max(previous.end, run.end);
+      } else {
+        merged_runs.push({ ...run });
+      }
+    }
+
+    const extension_flags = Array.from(
+      { length: density.length },
+      () => false,
+    );
+    for (const run of merged_runs) {
+      for (let i = run.start; i <= run.end; i++) {
+        extension_flags[i] = true;
+      }
+    }
+
+    // 时间线与推荐算法共用同一份窗口数据，并区分核心与扩展部分。
+    danmu_heat_points = density.map((point, index) => ({
+      time: (point.center - recording_offset_ms) / 1000,
+      count: point.count,
+      level:
+        point.count > 0 && point.count >= effective_threshold
+          ? "core"
+          : extension_flags[index]
+            ? "extension"
+            : "normal",
+    }));
+
+    const half_step_ms = step_ms / 2;
+    const final_peaks = merged_runs.flatMap((run): DanmuPeak[] => {
       const final_start = Math.max(
         0,
-        (density[run_start_index].center -
-          half_step_ms -
-          recording_offset_ms) /
+        (density[run.start].center - half_step_ms - recording_offset_ms) /
           1000,
       );
       const final_end =
-        (density[run_end_index].center +
-          half_step_ms -
-          recording_offset_ms) /
+        (density[run.end].center + half_step_ms - recording_offset_ms) /
         1000;
-      const peak_count = density
-        .slice(run_start_index, run_end_index + 1)
-        .reduce((maximum, point) => Math.max(maximum, point.count), 0);
+      if (final_end <= final_start) return [];
 
-      if (final_end > final_start) {
-        const is_added = ranges.some((range) =>
-          is_range_similar(range, { start: final_start, end: final_end }),
-        );
-        final_peaks.push({
-          start: final_start,
-          end: final_end,
-          count: peak_count,
-          added: is_added,
-        });
-      }
-      run_start_index = -1;
-    }
+      const peak_count = density
+        .slice(run.start, run.end + 1)
+        .reduce((maximum, point) => Math.max(maximum, point.count), 0);
+      const is_added = ranges.some((range) =>
+        is_range_similar(range, { start: final_start, end: final_end }),
+      );
+      return [{
+        start: final_start,
+        end: final_end,
+        count: peak_count,
+        added: is_added,
+      }];
+    });
 
     // 按弹幕数量降序排列
     danmu_peaks = final_peaks.sort((a, b) => b.count - a.count);

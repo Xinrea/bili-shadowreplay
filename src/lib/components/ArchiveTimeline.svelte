@@ -568,8 +568,14 @@
     </div>
 
     <div class="shortcut-hint" aria-label="快捷键说明">
-      快捷键：Space 播放/暂停 · [ 创建前向 10 秒选区 · ] 创建后向 10 秒选区 ·
-      Q/E 跳转选区起点/终点 · Backspace 删除选区 · P 添加标记 · ←/→ 前后跳转 3 秒
+      <span>快捷键</span>
+      <kbd>Space</kbd><span>播放/暂停</span>
+      <kbd>[</kbd><span>当前时间 → 后 10 秒</span>
+      <kbd>]</kbd><span>前 10 秒 → 当前时间</span>
+      <kbd>Q</kbd>/<kbd>E</kbd><span>跳转选区起点/终点</span>
+      <kbd>Backspace</kbd><span>删除选区</span>
+      <kbd>P</kbd><span>添加标记</span>
+      <kbd>←</kbd>/<kbd>→</kbd><span>前后跳转 3 秒</span>
     </div>
   </div>
 </section>
@@ -932,17 +938,40 @@
     border: 1px solid #29313d;
     border-radius: 10px;
     background: #151a23;
-    padding: 8px 12px;
+    padding: 8px 20px;
   }
 
   .shortcut-hint {
     overflow-x: auto;
-    padding-top: 6px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 4px 0;
     color: #687589;
     font-size: 9px;
     line-height: 14px;
     white-space: nowrap;
     scrollbar-width: none;
+  }
+
+  .shortcut-hint kbd {
+    display: inline-flex;
+    min-width: 18px;
+    height: 17px;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #465469;
+    border-radius: 4px;
+    background: #202733;
+    padding: 0 4px;
+    color: #cbd7e8;
+    font-family: inherit;
+    font-size: 9px;
+    line-height: 1;
+  }
+
+  .shortcut-hint > span {
+    flex: 0 0 auto;
   }
 
   .shortcut-hint::-webkit-scrollbar {

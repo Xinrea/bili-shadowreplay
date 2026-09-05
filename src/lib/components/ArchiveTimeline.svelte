@@ -5,6 +5,7 @@
     Pause,
     Play,
     Plus,
+    Settings2,
     Volume2,
     VolumeX,
   } from "lucide-svelte";
@@ -69,6 +70,7 @@
   }: Props = $props();
   let danmu_message = $state("");
   let show_danmu_input = $state(false);
+  let show_offset_settings = $state(false);
 
   let visibleHeatPoints = $derived(
     heatPoints.filter(
@@ -213,18 +215,6 @@
       >
         <MessageCircle size={15} />
       </button>
-      <label class="offset-control" title="弹幕偏移时间">
-        <span>偏移</span>
-        <input
-          type="number"
-          value={danmuOffset}
-          onchange={(event) =>
-            onDanmuOffsetChange?.(
-              Number((event.currentTarget as HTMLInputElement).value),
-            )}
-        />
-        <span>秒</span>
-      </label>
       {#if canSendDanmaku}
         <div
           class="danmu-sender"
@@ -291,6 +281,32 @@
         <Diamond size={12} />
         添加标记
       </button>
+      <div class="settings-control">
+        <button
+          type="button"
+          class="control-icon"
+          class:enabled={show_offset_settings}
+          title="弹幕偏移设置"
+          aria-expanded={show_offset_settings}
+          onclick={() => (show_offset_settings = !show_offset_settings)}
+        >
+          <Settings2 size={15} />
+        </button>
+        {#if show_offset_settings}
+          <label class="offset-control">
+            <span>偏移</span>
+            <input
+              type="number"
+              value={danmuOffset}
+              onchange={(event) =>
+                onDanmuOffsetChange?.(
+                  Number((event.currentTarget as HTMLInputElement).value),
+                )}
+            />
+            <span>秒</span>
+          </label>
+        {/if}
+      </div>
     </div>
   </div>
 
@@ -571,6 +587,7 @@
   }
 
   .timeline-actions {
+    position: relative;
     flex: 0 0 auto;
     gap: 8px;
   }
@@ -598,6 +615,20 @@
   .timeline-actions button:hover {
     border-color: #465469;
     background: #293240;
+  }
+
+  .settings-control {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  .settings-control .offset-control {
+    position: absolute;
+    top: 38px;
+    right: 0;
+    z-index: 10;
+    box-shadow: 0 8px 20px rgb(0 0 0 / 28%);
   }
 
   .timeline-surface {

@@ -324,6 +324,15 @@
     player_duration = Number.isFinite(video.duration) ? video.duration : 0;
   }
 
+  function pauseForRangeDrag() {
+    video?.pause();
+  }
+
+  function seekDuringRangeDrag(seconds: number) {
+    player?.seek(seconds);
+    current_time = seconds;
+  }
+
   // Initialize video element when component is mounted
   onMount(() => {
     video = document.getElementById("video") as HTMLVideoElement;
@@ -499,6 +508,8 @@
         onSeek={(seconds) => player?.seek(seconds)}
         onAddRange={addRangeAtCurrentTime}
         onAddMarker={addMarkerAtCurrentTime}
+        onRangeDragStart={pauseForRangeDrag}
+        onRangeDrag={seekDuringRangeDrag}
       />
     </div>
     <div

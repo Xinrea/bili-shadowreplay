@@ -20,6 +20,8 @@
     onSeek?: (seconds: number) => void;
     onAddRange?: () => void;
     onAddMarker?: () => void;
+    onRangeDragStart?: () => void;
+    onRangeDrag?: (seconds: number) => void;
   }
 
   let {
@@ -34,6 +36,8 @@
     onSeek,
     onAddRange,
     onAddMarker,
+    onRangeDragStart,
+    onRangeDrag,
   }: Props = $props();
 
   let visibleHeatPoints = $derived(
@@ -115,6 +119,8 @@
     event.preventDefault();
     event.stopPropagation();
     drag_state = { index, edge };
+    selectedRangeIndex = index;
+    onRangeDragStart?.();
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
   }
 
@@ -137,6 +143,7 @@
     ranges = ranges.map((item, rangeIndex) =>
       rangeIndex === index ? nextRange : item,
     );
+    onRangeDrag?.(edge === "start" ? nextRange.start : nextRange.end);
   }
 
   function endRangeDrag(event: PointerEvent) {

@@ -66,6 +66,21 @@
   let danmu_heat_threshold = $state(0);
   let peak_threshold = $state(80); // 阈值百分比
   const DENSITY_WINDOW_SEC = 30; // 内部固定密度计算窗口
+  const keywords_storage_key = `danmu_keywords:${room_id}:${live_id}`;
+  let danmu_keywords: string[] = $state(
+    (() => {
+      try {
+        const saved = JSON.parse(
+          window.localStorage.getItem(keywords_storage_key) || "[]",
+        );
+        return Array.isArray(saved)
+          ? saved.filter((item): item is string => typeof item === "string")
+          : [];
+      } catch {
+        return [];
+      }
+    })(),
+  );
 
   // 辅助函数：判断两个时间范围是否相似（容差 tolerance 秒）
   function is_range_similar(
@@ -79,9 +94,22 @@
     );
   }
 
+  function filter_danmu_by_keywords(
+    records: DanmuEntry[],
+    keywords: string[],
+  ): DanmuEntry[] {
+    if (keywords.length === 0) return records;
+    return records.filter((entry) =>
+      keywords.some((keyword) =>
+        entry.content.toLowerCase().includes(keyword.toLowerCase()),
+      ),
+    );
+  }
+
   // 检测弹幕峰值区间
   function detect_danmu_peaks(threshold_percent = peak_threshold) {
-    if (danmu_records.length === 0) {
+    const records = filter_danmu_by_keywords(danmu_records, danmu_keywords);
+    if (records.length === 0) {
       danmu_peaks = [];
       danmu_heat_points = [];
       danmu_heat_threshold = 0;
@@ -93,13 +121,13 @@
     const bucket_ms = step_ms; // 桶大小与步长一致
 
     // 找出时间范围
-    const min_ts = Math.min(...danmu_records.map((d) => d.ts));
-    const max_ts = Math.max(...danmu_records.map((d) => d.ts));
+    const min_ts = Math.min(...records.map((d) => d.ts));
+    const max_ts = Math.max(...records.map((d) => d.ts));
 
     // 1. 构建弹幕直方图 (O(N))
     const total_buckets = Math.ceil((max_ts - min_ts) / bucket_ms) + 1;
     const histogram = new Array(total_buckets).fill(0);
-    for (const d of danmu_records) {
+    for (const d of records) {
       const bucket_idx = Math.floor((d.ts - min_ts) / bucket_ms);
       if (bucket_idx >= 0 && bucket_idx < total_buckets) {
         histogram[bucket_idx]++;
@@ -451,9 +479,14 @@
     peak_threshold = value;
   }
 
-  // 弹幕数据或阈值变化时刷新智能推荐
+  function handleDanmuKeywordsChange(keywords: string[]) {
+    danmu_keywords = keywords;
+  }
+
+  // 弹幕数据、关键词或阈值变化时刷新智能推荐
   $effect(() => {
     global_offset;
+    danmu_keywords;
     detect_danmu_peaks(peak_threshold);
   });
   // 监听 ranges 变化，更新峰值的添加状态
@@ -476,6 +509,12 @@
     window.localStorage.setItem(
       `markers:${room_id}:${live_id}`,
       JSON.stringify(markers)
+    );
+  });
+  $effect(() => {
+    window.localStorage.setItem(
+      keywords_storage_key,
+      JSON.stringify(danmu_keywords),
     );
   });
 </script>
@@ -521,6 +560,7 @@
         heatPoints={danmu_heat_points}
         heatThreshold={danmu_heat_threshold}
         heatThresholdPercent={peak_threshold}
+        keywordFiltered={danmu_keywords.length > 0}
         currentTime={current_time}
         duration={player_is_live
           ? player_duration
@@ -574,7 +614,9 @@
           globalOffset={global_offset}
           danmuPeaks={danmu_peaks}
           peakThreshold={peak_threshold}
+          danmuKeywords={danmu_keywords}
           onPeakThresholdChange={handlePeakThresholdChange}
+          onDanmuKeywordsChange={handleDanmuKeywordsChange}
           {videos}
           selectedVideo={selected_video}
           bind:clipRunning={clip_running}

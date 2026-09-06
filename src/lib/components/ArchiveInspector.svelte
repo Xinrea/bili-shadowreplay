@@ -36,12 +36,14 @@
     globalOffset?: number;
     danmuPeaks?: DanmuPeak[];
     peakThreshold?: number;
+    danmuKeywords?: string[];
     videos?: GeneratedVideo[];
     selectedVideo?: GeneratedVideo | null;
     clipRunning?: boolean;
     selectedRangeIndex?: number;
     onCollapse?: () => void;
     onPeakThresholdChange?: (value: number) => void;
+    onDanmuKeywordsChange?: (keywords: string[]) => void;
     onSeek?: (seconds: number) => void;
     onAddPeak?: (peak: DanmuPeak) => void;
     onAddAllPeaks?: () => void;
@@ -60,12 +62,14 @@
     globalOffset = 0,
     danmuPeaks = [],
     peakThreshold = 80,
+    danmuKeywords = [],
     videos = [],
     selectedVideo = null,
     clipRunning = $bindable(false),
     selectedRangeIndex = $bindable(-1),
     onCollapse,
     onPeakThresholdChange,
+    onDanmuKeywordsChange,
     onSeek,
     onAddPeak,
     onAddAllPeaks,
@@ -81,9 +85,10 @@
   let danmuScrollTop = $state(0);
   let danmuViewportHeight = $state(480);
   let pendingPeakThreshold = $state(80);
+  let keywordDraft = $state("");
   let peakThresholdTimer: ReturnType<typeof setTimeout> | null = null;
-  const DANMU_ITEM_HEIGHT = 66;
-  const DANMU_BUFFER = 8;
+  const DANMU_ITEM_HEIGHT = 28;
+  const DANMU_BUFFER = 12;
   const PEAK_THRESHOLD_DEBOUNCE_MS = 300;
 
   $effect(() => {
@@ -105,6 +110,15 @@
           entry.content.toLowerCase().includes(danmuSearch.trim().toLowerCase()),
         )
       : danmuRecords,
+  );
+  let keywordMatchedCount = $derived(
+    danmuKeywords.length === 0
+      ? danmuRecords.length
+      : danmuRecords.filter((entry) =>
+          danmuKeywords.some((keyword) =>
+            entry.content.toLowerCase().includes(keyword.toLowerCase()),
+          ),
+        ).length,
   );
   let visibleDanmuStart = $derived(
     Math.max(0, Math.floor(danmuScrollTop / DANMU_ITEM_HEIGHT) - DANMU_BUFFER),
@@ -152,6 +166,52 @@
     onSeek?.(range.start);
   }
 
+  function normalizeKeyword(value: string) {
+    return value.trim().replace(/^,+|,+$/g, "").trim();
+  }
+
+  function commitKeywordDraft() {
+    const parts = keywordDraft
+      .split(/[,，]/)
+      .map(normalizeKeyword)
+      .filter(Boolean);
+    keywordDraft = "";
+    if (parts.length === 0) return;
+
+    const next = [...danmuKeywords];
+    for (const part of parts) {
+      const exists = next.some(
+        (keyword) => keyword.toLowerCase() === part.toLowerCase(),
+      );
+      if (!exists) next.push(part);
+    }
+    if (next.length !== danmuKeywords.length) {
+      onDanmuKeywordsChange?.(next);
+    }
+  }
+
+  function removeKeyword(index: number) {
+    onDanmuKeywordsChange?.(
+      danmuKeywords.filter((_, keywordIndex) => keywordIndex !== index),
+    );
+  }
+
+  function handleKeywordKeydown(event: KeyboardEvent) {
+    if (event.key === "Enter" || event.key === "," || event.key === "，") {
+      event.preventDefault();
+      commitKeywordDraft();
+      return;
+    }
+    if (
+      event.key === "Backspace" &&
+      keywordDraft.length === 0 &&
+      danmuKeywords.length > 0
+    ) {
+      event.preventDefault();
+      removeKeyword(danmuKeywords.length - 1);
+    }
+  }
+
   function schedulePeakThresholdChange(value: number) {
     pendingPeakThreshold = value;
     if (peakThresholdTimer) {
@@ -191,6 +251,9 @@
         {#if tab.id === "ranges" && activeRanges.length > 0}
           <span>{activeRanges.length}</span>
         {/if}
+        {#if tab.id === "markers" && markers.length > 0}
+          <span>{markers.length}</span>
+        {/if}
       </button>
     {/each}
   </div>
@@ -198,9 +261,12 @@
   <div class="inspector-content">
     {#if activeTab === "ranges"}
       <section class="range-summary">
-        <div class="summary-value">
+        <div class="summary-meta">
           <span>已选内容</span>
-          <strong>{formatTime(activeDuration)}</strong>
+          <span class="summary-duration">{formatTime(activeDuration)}</span>
+          {#if ranges.length > 0}
+            <span class="summary-count">{activeRanges.length}/{ranges.length}</span>
+          {/if}
         </div>
         <label
           class="select-all-toggle"
@@ -216,13 +282,13 @@
               ranges = ranges.map((range) => ({ ...range, activated: active }));
             }}
           />
-          <span class="check-mark">
+          <span class="check-mark" aria-hidden="true">
             {#if ranges.length > 0 &&
               ranges.every((range) => range.activated !== false)}
-              <Check size={13} />
+              <Check size={10} strokeWidth={2.5} />
             {/if}
           </span>
-          全选
+          <span>全选</span>
         </label>
       </section>
 
@@ -233,6 +299,26 @@
             class:selected={selectedRangeIndex === index}
             class:inactive={range.activated === false}
           >
+            <label
+              class="range-toggle"
+              class:checked={range.activated !== false}
+              title={range.activated === false ? "启用选区" : "停用选区"}
+            >
+              <input
+                type="checkbox"
+                checked={range.activated !== false}
+                onchange={(event) =>
+                  toggleRange(
+                    index,
+                    (event.currentTarget as HTMLInputElement).checked,
+                  )}
+              />
+              <span class="check-mark" aria-hidden="true">
+                {#if range.activated !== false}
+                  <Check size={10} strokeWidth={2.5} />
+                {/if}
+              </span>
+            </label>
             <button
               type="button"
               class="range-main"
@@ -247,24 +333,6 @@
               </span>
             </button>
             <div class="range-actions">
-              <label
-                class="range-toggle"
-                class:checked={range.activated !== false}
-                title={range.activated === false ? "启用选区" : "停用选区"}
-              >
-                <input
-                  type="checkbox"
-                  checked={range.activated !== false}
-                  onchange={(event) =>
-                    toggleRange(
-                      index,
-                      (event.currentTarget as HTMLInputElement).checked,
-                    )}
-                />
-                <span class="check-mark">
-                  {#if range.activated !== false}<Check size={13} />{/if}
-                </span>
-              </label>
               <button
                 type="button"
                 title="删除选区"
@@ -292,6 +360,31 @@
             <button type="button" onclick={onAddAllPeaks}>全部添加</button>
           {/if}
         </div>
+        <label class="keyword-field">
+          <span>关键词过滤</span>
+          <div class="keyword-editor">
+            {#each danmuKeywords as keyword, index}
+              <span class="keyword-chip">
+                {keyword}
+                <button
+                  type="button"
+                  aria-label={`删除关键词 ${keyword}`}
+                  onclick={() => removeKeyword(index)}
+                >
+                  ×
+                </button>
+              </span>
+            {/each}
+            <input
+              bind:value={keywordDraft}
+              placeholder={danmuKeywords.length === 0
+                ? "输入关键词后回车，留空则使用全部弹幕"
+                : "继续添加…"}
+              onkeydown={handleKeywordKeydown}
+              onblur={commitKeywordDraft}
+            />
+          </div>
+        </label>
         <label class="threshold">
           <span>峰值阈值 {pendingPeakThreshold}%</span>
           <input
@@ -323,9 +416,13 @@
             </button>
           {:else}
             <p class="empty-copy">
-              {danmuRecords.length === 0
-                ? "暂无弹幕数据"
-                : "当前阈值下未发现峰值"}
+              {#if danmuRecords.length === 0}
+                暂无弹幕数据
+              {:else if danmuKeywords.length > 0 && keywordMatchedCount === 0}
+                当前关键词下无匹配弹幕
+              {:else}
+                当前阈值下未发现峰值
+              {/if}
             </p>
           {/each}
         </div>
@@ -333,11 +430,11 @@
     {:else if activeTab === "danmu"}
       <section class="danmu-panel">
         <label class="search-box">
-          <Search size={15} />
+          <Search size={13} />
           <input bind:value={danmuSearch} placeholder="搜索弹幕内容" />
         </label>
         <div class="result-count">
-          共 {danmuRecords.length} 条，显示 {filteredDanmu.length} 条
+          共 {danmuRecords.length} 条 · 显示 {filteredDanmu.length} 条
         </div>
         <div
           class="danmu-list"
@@ -356,13 +453,13 @@
               class="danmu-entry"
               onclick={() => onSeek?.(danmu.ts / 1000 - globalOffset)}
             >
+              <time>{formatTime(danmu.ts / 1000 - globalOffset)}</time>
               <span class="danmu-content">
                 {#if danmu.user_name}
                   <b>{danmu.user_name}</b>
                 {/if}
                 {danmu.content}
               </span>
-              <time>{formatTime(danmu.ts / 1000 - globalOffset)}</time>
             </button>
           {:else}
             <div class="empty-state">
@@ -556,15 +653,17 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 12px;
     border-radius: 10px;
     background: #202733;
-    padding: 11px 13px;
+    padding: 9px 12px;
   }
 
-  .range-summary div {
+  .summary-meta {
     display: flex;
-    align-items: center;
-    gap: 10px;
+    min-width: 0;
+    align-items: baseline;
+    gap: 8px;
   }
 
   .range-summary span,
@@ -575,16 +674,25 @@
     font-size: 10px;
   }
 
-  .range-summary strong {
-    font-size: 16px;
-    font-weight: 600;
+  .summary-duration {
+    color: #d5deea;
+    font-size: 11px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .summary-count {
+    color: #687589;
+    font-variant-numeric: tabular-nums;
   }
 
   .select-all-toggle {
-    display: flex;
+    display: inline-flex;
+    flex: 0 0 auto;
     align-items: center;
     gap: 6px;
     cursor: pointer;
+    user-select: none;
   }
 
   .select-all-toggle input,
@@ -606,11 +714,13 @@
 
   .range-card {
     display: flex;
-    min-height: 46px;
+    min-height: 42px;
     align-items: center;
+    gap: 2px;
     border: 1px solid transparent;
     border-radius: 10px;
     background: #202733;
+    padding-left: 10px;
     transition:
       border-color 150ms ease,
       opacity 150ms ease;
@@ -622,27 +732,29 @@
   }
 
   .range-card.inactive {
-    opacity: 0.55;
+    opacity: 0.48;
   }
 
   .range-main {
     display: flex;
-    height: 44px;
+    height: 40px;
     min-width: 0;
     flex: 1;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
     overflow: hidden;
-    padding: 0 12px;
+    padding: 0 8px 0 6px;
     text-align: left;
   }
 
   .range-title {
-    width: 20px;
-    flex: 0 0 20px;
+    width: 14px;
+    flex: 0 0 14px;
     overflow: hidden;
-    font-size: 12px;
-    font-weight: 600;
+    color: #8490a3;
+    font-size: 10px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -653,28 +765,45 @@
     flex: 1 1 auto;
     color: #b6c0cf;
     font-size: 10px;
+    font-variant-numeric: tabular-nums;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .range-duration {
     flex: 0 0 auto;
-    color: #718095;
+    color: #687589;
     font-size: 10px;
+    font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
 
   .range-actions {
     display: flex;
-    gap: 3px;
-    padding-right: 9px;
+    gap: 2px;
+    padding-right: 8px;
   }
 
   .range-actions button,
-  .range-actions label {
+  .range-toggle {
+    display: inline-flex;
     width: 22px;
     height: 22px;
+    align-items: center;
+    justify-content: center;
     cursor: pointer;
+  }
+
+  .range-actions button {
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: #8290a4;
+  }
+
+  .range-actions button:hover {
+    background: rgb(255 255 255 / 6%);
+    color: #d5deea;
   }
 
   .clip-info div button {
@@ -684,39 +813,32 @@
     cursor: pointer;
   }
 
-  .range-actions label input {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    opacity: 0;
-  }
-
   .check-mark {
     display: inline-flex;
-    width: 22px;
-    height: 22px;
+    width: 14px;
+    height: 14px;
     align-items: center;
     justify-content: center;
-    border-radius: 7px;
-    background: #171c25;
-    color: #8290a4;
+    border: 1px solid #4a5568;
+    border-radius: 4px;
+    background: transparent;
+    color: transparent;
     transition:
+      border-color 150ms ease,
       background-color 150ms ease,
       color 150ms ease;
   }
 
-  .select-all-toggle .check-mark {
-    width: 20px;
-    height: 20px;
-    border: 1px solid #435064;
-    border-radius: 5px;
+  .select-all-toggle:hover .check-mark,
+  .range-toggle:hover .check-mark {
+    border-color: #687589;
   }
 
   .select-all-toggle.checked .check-mark,
   .range-toggle.checked .check-mark {
-    border-color: #0a84ff;
-    background: #0a84ff;
-    color: white;
+    border-color: #3d8fd1;
+    background: rgb(10 132 255 / 14%);
+    color: #7ec8ff;
   }
 
   .recommendations {
@@ -766,6 +888,78 @@
     accent-color: #0a84ff;
   }
 
+  .keyword-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 10px;
+    color: #9aa6b8;
+    font-size: 10px;
+  }
+
+  .keyword-editor {
+    display: flex;
+    min-height: 36px;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid #303947;
+    border-radius: 8px;
+    background: #202733;
+    padding: 6px 8px;
+  }
+
+  .keyword-editor:focus-within {
+    border-color: #0a84ff;
+  }
+
+  .keyword-chip {
+    display: inline-flex;
+    max-width: 100%;
+    align-items: center;
+    gap: 4px;
+    border: 1px solid #3b4758;
+    border-radius: 999px;
+    background: #153b5c;
+    padding: 2px 4px 2px 8px;
+    color: #7ec8ff;
+    font-size: 10px;
+    line-height: 1.4;
+  }
+
+  .keyword-chip button {
+    display: inline-flex;
+    width: 16px;
+    height: 16px;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: #9ecfff;
+    font-size: 12px;
+    line-height: 1;
+  }
+
+  .keyword-chip button:hover {
+    background: rgb(255 255 255 / 10%);
+    color: #e9eef8;
+  }
+
+  .keyword-editor input {
+    min-width: 120px;
+    flex: 1;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: #e9eef8;
+    font-size: 10px;
+  }
+
+  .keyword-editor input::placeholder {
+    color: #718095;
+  }
+
   .peak-list button {
     display: flex;
     align-items: center;
@@ -809,14 +1003,14 @@
 
   .search-box {
     display: flex;
-    height: 36px;
-    flex: 0 0 36px;
+    height: 30px;
+    flex: 0 0 30px;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     border: 1px solid #303947;
-    border-radius: 9px;
+    border-radius: 8px;
     background: #202733;
-    padding: 0 10px;
+    padding: 0 8px;
     color: #718095;
   }
 
@@ -835,50 +1029,59 @@
   }
 
   .result-count {
-    padding: 9px 2px;
+    padding: 5px 2px 4px;
+    color: #687589;
+    font-size: 9px;
   }
 
   .danmu-list {
     min-height: 0;
     flex: 1;
     overflow-y: auto;
+    border-top: 1px solid #242b36;
   }
 
   .danmu-entry {
     display: flex;
     width: 100%;
-    height: 42px;
+    height: 28px;
     align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    margin-bottom: 8px;
-    border: 1px solid #293442;
-    border-radius: 9px;
-    background: #202733;
-    padding: 8px 10px;
+    gap: 8px;
+    border: 0;
+    border-bottom: 1px solid #1c222c;
+    border-radius: 0;
+    background: transparent;
+    padding: 0 4px;
     text-align: left;
+  }
+
+  .danmu-entry:hover {
+    background: rgb(255 255 255 / 3.5%);
   }
 
   .danmu-entry span {
     min-width: 0;
     flex: 1;
     overflow: hidden;
-    color: #d8e0eb;
+    color: #c5cedb;
     font-size: 11px;
+    line-height: 1.2;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .danmu-content b {
-    margin-right: 6px;
-    color: #78c8ff;
+    margin-right: 5px;
+    color: #6eb8ef;
     font-weight: 500;
   }
 
   .danmu-entry time {
-    flex: 0 0 auto;
-    color: #718095;
+    flex: 0 0 58px;
+    color: #5f6b7d;
     font-size: 9px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
 
   .clip-card {
@@ -991,9 +1194,17 @@
     white-space: nowrap;
   }
 
-  button:focus-visible,
-  input:focus-visible {
+  button:focus-visible {
     outline: 2px solid #0a84ff;
     outline-offset: 2px;
+  }
+
+  input:focus,
+  input:focus-visible {
+    outline: none;
+  }
+
+  .keyword-chip button:focus-visible {
+    outline: none;
   }
 </style>

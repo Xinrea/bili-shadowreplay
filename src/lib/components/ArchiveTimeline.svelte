@@ -24,6 +24,7 @@
     heatPoints?: HeatPoint[];
     heatThreshold?: number;
     heatThresholdPercent?: number;
+    keywordFiltered?: boolean;
     currentTime?: number;
     duration?: number;
     selectedRangeIndex?: number;
@@ -58,6 +59,7 @@
     heatPoints = [],
     heatThreshold = 0,
     heatThresholdPercent = 80,
+    keywordFiltered = false,
     currentTime = 0,
     duration = 0,
     selectedRangeIndex = $bindable(-1),
@@ -453,7 +455,7 @@
             onSeek?.(Math.min(duration, currentTime + 3));
         }}
       >
-        <span class="heat-label">弹幕热度</span>
+        <span class="heat-label">{keywordFiltered ? "关键词热度" : "弹幕热度"}</span>
         <div class="heat-bars" aria-hidden="true">
           {#each visibleHeatPoints as point}
             <span
@@ -996,9 +998,9 @@
     cursor: pointer;
   }
 
+  .heat-row:focus,
   .heat-row:focus-visible {
-    outline: 2px solid #0a84ff;
-    outline-offset: 2px;
+    outline: none;
   }
 
   .heat-label {
@@ -1074,9 +1076,9 @@
     cursor: crosshair;
   }
 
+  .range-track:focus,
   .range-track:focus-visible {
-    outline: 2px solid #0a84ff;
-    outline-offset: 2px;
+    outline: none;
   }
 
   .range-block {
@@ -1116,9 +1118,22 @@
     right: -5px;
   }
 
+  .range-handle:focus,
   .range-handle:focus-visible {
-    outline: 2px solid rgb(255 255 255 / 75%);
-    outline-offset: 1px;
+    outline: none;
+  }
+
+  .range-block:focus,
+  .range-block:focus-visible,
+  .marker:focus,
+  .marker:focus-visible,
+  .control-icon:focus,
+  .control-icon:focus-visible,
+  .timeline-actions > button:focus,
+  .timeline-actions > button:focus-visible,
+  .live-button:focus,
+  .live-button:focus-visible {
+    outline: none;
   }
 
   .range-label {

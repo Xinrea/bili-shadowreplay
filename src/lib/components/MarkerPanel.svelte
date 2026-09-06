@@ -11,12 +11,18 @@
   import { save } from "@tauri-apps/plugin-dialog";
   import type { RecordItem } from "../db";
   interface Props {
-    archive: RecordItem;
+    archive?: RecordItem | null;
     markers?: Marker[];
+    embedded?: boolean;
     onMarkerClick?: (marker: Marker) => void;
   }
 
-  let { archive, markers = $bindable([]), onMarkerClick }: Props = $props();
+  let {
+    archive,
+    markers = $bindable([]),
+    embedded = false,
+    onMarkerClick,
+  }: Props = $props();
 
   let realtime = $state(false);
 
@@ -37,6 +43,7 @@
   }
 
   async function export_to_file() {
+    if (!archive) return;
     let r = "# 由 BiliShadowReplay 自动生成\n";
     r += `# ${archive.title} - 直播开始时间：${format_realtime(parseInt(archive.live_id) * 1000)}\n\n`;
     for (let i in markers) {
@@ -66,7 +73,13 @@
   }
 </script>
 
-<div class="flex flex-col w-full h-screen text-white p-4 pr-0">
+<div
+  class="flex w-full flex-col text-white"
+  class:h-full={embedded}
+  class:h-screen={!embedded}
+  class:p-4={!embedded}
+  class:pr-0={!embedded}
+>
   <div class="mb-4 flex flex-row justify-between">
     <div class="flex">
       <span class="mr-1">标记列表</span>
@@ -81,6 +94,7 @@
       <Tooltip>导出为文件</Tooltip>
     </div>
     <button
+      disabled={!archive}
       class="mr-2"
       onclick={() => {
         markers = [];

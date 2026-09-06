@@ -7,17 +7,13 @@
   import type { AccountInfo } from "../db";
   import type { Marker, RecorderList, RecorderInfo, Range } from "../interface";
 
-  import {
-    GridOutline,
-    SortHorizontalOutline,
-    FileExportOutline,
-  } from "flowbite-svelte-icons";
   import { save } from "@tauri-apps/plugin-dialog";
   const DANMU_STATISTIC_GAP = 5;
 
   interface DanmuEntry {
     ts: number;
     content: string;
+    user_name?: string;
   }
 
   interface Props {
@@ -26,10 +22,20 @@
     live_id: string;
     ranges?: Range[];
     global_offset?: number;
-    focus_start?: number;
-    focus_end?: number;
     markers?: Marker[];
     danmu_records?: DanmuEntry[];
+    danmu_enabled?: boolean;
+    local_offset?: number;
+    volume?: number;
+    is_playing?: boolean;
+    playback_time?: number;
+    duration?: number;
+    is_live?: boolean;
+    can_send_danmaku?: boolean;
+    danmu_accounts?: AccountInfo["accounts"];
+    danmu_account_uid?: string;
+    recorders?: RecorderInfo[];
+    selected_range_index?: number;
     onMarkerAdd?: (marker: { offset: number; realtime: number }) => void;
   }
 
@@ -39,27 +45,77 @@
     live_id,
     ranges = $bindable([]),
     global_offset = $bindable(0),
-    focus_start = 0,
-    focus_end = 0,
     markers = [],
     danmu_records = $bindable([]),
-    onMarkerAdd
+    danmu_enabled = $bindable(true),
+    local_offset = $bindable(0),
+    volume = $bindable(1),
+    is_playing = $bindable(false),
+    playback_time = $bindable(0),
+    duration = $bindable(0),
+    is_live = $bindable(false),
+    can_send_danmaku = $bindable(false),
+    danmu_accounts = $bindable([]),
+    danmu_account_uid = $bindable(""),
+    recorders = $bindable([]),
+    selected_range_index = $bindable(-1),
+    onMarkerAdd,
   }: Props = $props();
   export function seek(offset: number) {
     video.currentTime = offset;
   }
+  export function seekLive() {
+    const liveEdge = shaka_player?.seekRange?.().end;
+    if (Number.isFinite(liveEdge)) {
+      video.currentTime = liveEdge;
+    }
+  }
+  export function togglePlayback() {
+    if (!video) return;
+    if (video.paused) {
+      void video.play();
+    } else {
+      video.pause();
+    }
+  }
+  export function setVolume(nextVolume: number) {
+    if (!video) return;
+    volume = Math.min(1, Math.max(0, nextVolume));
+    video.volume = volume;
+  }
+  export function toggleDanmu() {
+    danmu_enabled = !danmu_enabled;
+  }
+  export function setDanmuOffset(offset: number) {
+    if (!Number.isFinite(offset)) return;
+    local_offset = offset;
+    localStorage.setItem(`local_offset:${live_id}`, offset.toString());
+  }
+  export async function sendDanmaku(message: string) {
+    const value = message.trim();
+    if (!value || !danmu_account_uid) return;
+    await invoke("send_danmaku", {
+      uid: danmu_account_uid,
+      roomId: room_id,
+      message: value,
+    });
+  }
   let video: HTMLVideoElement;
-  let show_detail = $state(false);
-  let show_list = false;
-  let show_export = false;
-  let recorders: RecorderInfo[] = $state([]);
-
+  let shaka_player: any;
   let start = $state(0);
   let end = $state(0);
   let currentRangeIndex: number = -1; // 当前正在编辑的区间索引，-1 表示没有区间
 
-  // local setting of danmu offset
-  let local_offset = $state(0);
+  $effect(() => {
+    if (selected_range_index !== currentRangeIndex) {
+      currentRangeIndex = selected_range_index;
+    }
+  });
+
+  $effect(() => {
+    selected_range_index = currentRangeIndex;
+  });
+
   $effect(() => {
     local_offset =
       parseInt(localStorage.getItem(`local_offset:${live_id}`) || "0", 10) || 0;
@@ -123,12 +179,12 @@
   }
 
   // 保存区间数组到 localStorage
-  // 注意：区间始终保存为绝对时间（不依赖 focus_start），这样在切换 focus 模式时不会丢失
+  // 区间使用录播时间轴的绝对秒数保存。
   function saveRanges() {
     // 将相对时间转换为绝对时间保存
     const rangesToSave = ranges.map((r) => ({
-      start: r.start + focus_start,
-      end: r.end + focus_start,
+      start: r.start,
+      end: r.end,
       activated: r.activated,
     }));
     localStorage.setItem(`${live_id}_ranges`, JSON.stringify(rangesToSave));
@@ -147,6 +203,12 @@
   // 从 localStorage 加载区间数组
   // 注意：加载时保留所有区间，但只显示在当前 focus 范围内的区间
   function loadRanges() {
+    // AppLive 已从当前版本的存储键恢复选区时，以父组件状态为准。
+    // 只有没有恢复到选区时才读取旧版 `${live_id}_ranges` 数据，
+    // 避免旧数据覆盖智能推荐或新布局保存的选区。
+    if (ranges.length > 0) {
+      return;
+    }
     const saved = localStorage.getItem(`${live_id}_ranges`);
     if (saved) {
       try {
@@ -158,8 +220,8 @@
         // 保存的区间是绝对时间，需要转换为相对时间
         // 但保留所有区间，不进行过滤，因为区间可能跨越多个 focus 范围
         ranges = savedRanges.map((r) => ({
-          start: r.start - focus_start,
-          end: r.end - focus_start,
+          start: r.start,
+          end: r.end,
           activated: r.activated !== false, // 默认为 true
         }));
 
@@ -174,16 +236,13 @@
           if (index >= 0 && index < ranges.length) {
             const range = ranges[index];
             // 如果区间在当前 focus 范围内（至少部分可见），保留索引
-            if (
-              range.end > 0 &&
-              range.start < (focus_end - focus_start || Infinity)
-            ) {
+            if (range.end > 0) {
               currentRangeIndex = index;
             } else {
               // 否则找到第一个在当前范围内的区间，或设为 -1
               const visibleIndex = ranges.findIndex(
                 (r) =>
-                  r.end > 0 && r.start < (focus_end - focus_start || Infinity)
+                  r.end > 0
               );
               currentRangeIndex = visibleIndex >= 0 ? visibleIndex : -1;
             }
@@ -204,8 +263,8 @@
       const oldStart = localStorage.getItem(`${live_id}_start`);
       const oldEnd = localStorage.getItem(`${live_id}_end`);
       if (oldStart && oldEnd) {
-        const s = parseFloat(oldStart) - focus_start;
-        const e = parseFloat(oldEnd) - focus_start;
+        const s = parseFloat(oldStart);
+        const e = parseFloat(oldEnd);
         if (e > s) {
           ranges = [{ start: s, end: e, activated: true }];
           currentRangeIndex = 0;
@@ -363,21 +422,6 @@ ${mediaPlaylistUrl}`;
     );
   }
 
-  function go_to(platform: string, room_id: string, live_id: string) {
-    const url = `${window.location.origin}${window.location.pathname}?platform=${platform}&room_id=${room_id}&live_id=${live_id}`;
-    window.location.href = url;
-  }
-
-  function zoomOnRange(start: number, end: number) {
-    const url = `${window.location.origin}${window.location.pathname}?platform=${platform}&room_id=${room_id}&live_id=${live_id}&start=${start}&end=${end}`;
-    window.location.href = url;
-  }
-
-  function resetZoom() {
-    const url = `${window.location.origin}${window.location.pathname}?platform=${platform}&room_id=${room_id}&live_id=${live_id}`;
-    window.location.href = url;
-  }
-
   async function init() {
     update_stream_list();
 
@@ -393,6 +437,7 @@ ${mediaPlaylistUrl}`;
     const ui = video["ui"];
     const controls = ui.getControls();
     const player = controls.getPlayer();
+    shaka_player = player;
 
     const config = {
       enableKeyboardPlaybackControls: false,
@@ -425,7 +470,7 @@ ${mediaPlaylistUrl}`;
     });
 
     try {
-      let direct_url = `${ENDPOINT ? ENDPOINT : window.location.origin}/hls/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`;
+      let direct_url = `${ENDPOINT ? ENDPOINT : window.location.origin}/hls/${platform}/${room_id}/${live_id}/playlist.m3u8`;
       if (!TAURI_ENV) {
         const { offset, is_fmp4 } = await load_metadata(direct_url);
         global_offset = offset;
@@ -469,11 +514,25 @@ ${mediaPlaylistUrl}`;
     let localVolume = localStorage.getItem(`volume:${room_id}`);
     if (localVolume != undefined) {
       console.log("Load local volume", localVolume);
-      video.volume = parseFloat(localVolume);
+      volume = Math.min(1, Math.max(0, parseFloat(localVolume)));
+      setVolume(volume);
     }
 
     video.addEventListener("volumechange", (event) => {
-      localStorage.setItem(`volume:${room_id}`, video.volume.toString());
+      volume = video.volume;
+      localStorage.setItem(`volume:${room_id}`, volume.toString());
+    });
+    video.addEventListener("play", () => {
+      is_playing = true;
+    });
+    video.addEventListener("pause", () => (is_playing = false));
+    video.addEventListener("timeupdate", () => {
+      playback_time = video.currentTime;
+    });
+    video.addEventListener("durationchange", () => {
+      if (!is_live) {
+        duration = Number.isFinite(video.duration) ? video.duration : 0;
+      }
     });
 
     document.getElementsByClassName("shaka-overflow-menu-button")[0].remove();
@@ -502,7 +561,6 @@ ${mediaPlaylistUrl}`;
     // add to shaka-spacer
     const shakaSpacer = document.querySelector(".shaka-spacer") as HTMLElement;
 
-    let danmu_enabled = true;
     // get danmaku record
     danmu_records = (await invoke("get_danmu_record", {
       roomId: room_id,
@@ -525,7 +583,7 @@ ${mediaPlaylistUrl}`;
       }
 
       const cur = Math.floor(
-        (video.currentTime + focus_start + local_offset + global_offset) * 1000
+        (video.currentTime + local_offset + global_offset) * 1000
       );
 
       let danmus = danmu_records.filter((v) => {
@@ -554,7 +612,10 @@ ${mediaPlaylistUrl}`;
         accountSelect.style.fontSize = "1em";
         // get accounts from tauri
         const account_info = (await invoke("get_accounts")) as AccountInfo;
-        account_info.accounts.forEach((account) => {
+        danmu_accounts = account_info.accounts.filter(
+          (account) => account.platform === "bilibili",
+        );
+        danmu_accounts.forEach((account) => {
           if (account.platform !== "bilibili") {
             return;
           }
@@ -563,6 +624,8 @@ ${mediaPlaylistUrl}`;
           option.text = account.name;
           accountSelect.appendChild(option);
         });
+        danmu_account_uid = accountSelect.value;
+        can_send_danmaku = Boolean(danmu_account_uid);
         // add a danmaku send input
         const danmakuInput = document.createElement("input");
         danmakuInput.type = "text";
@@ -581,11 +644,8 @@ ${mediaPlaylistUrl}`;
             if (value) {
               // get account uid from select
               const uid = accountSelect.value;
-              await invoke("send_danmaku", {
-                uid,
-                roomId: room_id,
-                message: value,
-              });
+              danmu_account_uid = uid;
+              await sendDanmaku(value);
               danmakuInput.value = "";
             }
           }
@@ -896,8 +956,9 @@ ${mediaPlaylistUrl}`;
     document.addEventListener("keydown", async (e) => {
       const target = e.target as HTMLInputElement;
       if (
-        (target.tagName.toLowerCase() === "input" && target.type === "text") ||
-        target.tagName.toLowerCase() === "textarea"
+        target.tagName.toLowerCase() === "input" ||
+        target.tagName.toLowerCase() === "textarea" ||
+        target.tagName.toLowerCase() === "select"
       ) {
         return;
       }
@@ -907,23 +968,16 @@ ${mediaPlaylistUrl}`;
           e.preventDefault();
           {
             const currentTime = parseFloat(video.currentTime.toFixed(2));
-            if (currentRangeIndex >= 0 && currentRangeIndex < ranges.length) {
-              // 有选中区间：更新当前区间的开始时间
-              ranges[currentRangeIndex].start = currentTime;
-              // 如果结束时间小于开始时间，自动设置为视频结尾
-              if (ranges[currentRangeIndex].end <= currentTime) {
-                ranges[currentRangeIndex].end = get_total();
-              }
-            } else {
-              // 没有选中区间：创建新区间并选中
-              const newRange: Range = {
-                start: currentTime,
-                end: get_total(),
-                activated: true, // 新建区间默认为激活
-              };
-              ranges = [...ranges, newRange];
-              currentRangeIndex = ranges.length - 1;
-            }
+            const total = get_total();
+            const end = Math.min(total, currentTime + 10);
+            const start = end - currentTime > 0 ? currentTime : Math.max(0, total - 10);
+            const newRange: Range = {
+              start,
+              end: Math.max(start, end),
+              activated: true,
+            };
+            ranges = [...ranges, newRange];
+            currentRangeIndex = ranges.length - 1;
             saveRanges();
             console.log(
               "Range updated:",
@@ -938,23 +992,14 @@ ${mediaPlaylistUrl}`;
           e.preventDefault();
           {
             const currentTime = parseFloat(video.currentTime.toFixed(2));
-            if (currentRangeIndex >= 0 && currentRangeIndex < ranges.length) {
-              // 有选中区间：更新当前区间的结束时间
-              ranges[currentRangeIndex].end = currentTime;
-              // 如果开始时间大于结束时间，自动设置为0
-              if (ranges[currentRangeIndex].start >= currentTime) {
-                ranges[currentRangeIndex].start = 0;
-              }
-            } else {
-              // 没有选中区间：创建新区间并选中
-              const newRange: Range = {
-                start: 0,
-                end: currentTime,
-                activated: true, // 新建区间默认为激活
-              };
-              ranges = [...ranges, newRange];
-              currentRangeIndex = ranges.length - 1;
-            }
+            const start = Math.max(0, currentTime - 10);
+            const newRange: Range = {
+              start,
+              end: Math.max(start, currentTime),
+              activated: true,
+            };
+            ranges = [...ranges, newRange];
+            currentRangeIndex = ranges.length - 1;
             saveRanges();
             console.log(
               "Range updated:",
@@ -999,6 +1044,7 @@ ${mediaPlaylistUrl}`;
           break;
         case "d":
         case "Delete":
+        case "Backspace":
           e.preventDefault();
           {
             if (currentRangeIndex >= 0 && currentRangeIndex < ranges.length) {
@@ -1094,28 +1140,6 @@ ${mediaPlaylistUrl}`;
           currentRangeIndex = -1;
           saveRanges();
           console.log("All ranges cleared");
-          break;
-        case "h":
-          e.preventDefault();
-          show_detail = !show_detail;
-          break;
-        case "Escape":
-          e.preventDefault();
-          resetZoom();
-          break;
-        case "g":
-          e.preventDefault();
-          {
-            const current = getCurrentRange();
-            if (current && current.start < current.end) {
-              // 在跳转前先保存所有区间，确保数据不丢失
-              saveRanges();
-              zoomOnRange(
-                focus_start + current.start,
-                focus_start + current.end
-              );
-            }
-          }
           break;
         case "a": // Add 'a' key for toggling activated status
           e.preventDefault();
@@ -1258,6 +1282,19 @@ ${mediaPlaylistUrl}`;
 
     function updateSeekbar() {
       const total = get_total();
+      const live = isLive();
+      if (is_live !== live) {
+        is_live = live;
+      }
+      if (Number.isFinite(total) && Math.abs(duration - total) >= 0.1) {
+        duration = total;
+      }
+      if (
+        Number.isFinite(video.currentTime) &&
+        Math.abs(playback_time - video.currentTime) >= 0.1
+      ) {
+        playback_time = video.currentTime;
+      }
 
       // 更新当前区间高亮覆盖层
       const currentRange =
@@ -1292,7 +1329,7 @@ ${mediaPlaylistUrl}`;
         for (let i = 0; i < sortedRanges.length; i++) {
           const range = sortedRanges[i];
           // 计算区间在当前 focus 范围内的可见部分
-          // range.start 和 range.end 是相对于当前 focus_start 的时间
+          // range.start 和 range.end 是录播时间轴上的绝对秒数
           const visibleStart = Math.max(0, range.start);
           const visibleEnd = Math.min(total, range.end);
 
@@ -1373,21 +1410,15 @@ ${mediaPlaylistUrl}`;
   // set body background color to black
   document.body.style.backgroundColor = "black";
 
-  // Add blur event listener to close menus
-  window.addEventListener("blur", () => {
-    show_list = false;
-    show_export = false;
-  });
-
-  async function exportDanmu(ass: boolean) {
+  export async function exportDanmu(ass: boolean) {
     console.log("Export danmus");
     const assContent = (await invoke("export_danmu", {
       options: {
         platform: platform,
         roomId: room_id,
         liveId: live_id,
-        x: Math.floor(focus_start + start),
-        y: Math.floor(focus_start + end),
+        x: Math.floor(start),
+        y: Math.floor(end),
         offset: global_offset,
         ass: ass,
       },
@@ -1415,7 +1446,7 @@ ${mediaPlaylistUrl}`;
   <div
     class="youtube-theme"
     data-shaka-player-container
-    style="width: 100%; height: 100vh;"
+    style="width: 100%; height: 100%;"
   >
     <!-- svelte-ignore a11y_media_has_caption -->
     <video
@@ -1428,91 +1459,17 @@ ${mediaPlaylistUrl}`;
     ></video>
   </div>
 </section>
-<div id="overlay">
-  <p>
-    快捷键说明
-    <kbd>h</kbd>展开
-  </p>
-  {#if show_detail}
-    <span>
-      <p><kbd>Esc</kbd>返回直播/录播</p>
-      <p><kbd>Space</kbd>播放/暂停</p>
-      <p><kbd>[</kbd>设定当前区间开始（无选中时创建新区间）</p>
-      <p><kbd>]</kbd>设定当前区间结束（无选中时创建新区间）</p>
-      <p><kbd>Enter</kbd>取消选中，进入创建模式</p>
-      <p><kbd>n</kbd>创建新区间</p>
-      <p><kbd>d</kbd>删除当前区间</p>
-      <p><kbd>Tab</kbd>/<kbd>t</kbd>切换到下一个区间</p>
-      <p><kbd>Shift+Tab</kbd>/<kbd>Shift+t</kbd>切换到上一个区间</p>
-      <p><kbd>g</kbd>预览当前区间片段</p>
-      <p><kbd>a</kbd>切换当前区间激活状态</p>
-      <p><kbd>q</kbd>跳转到当前区间开始</p>
-      <p><kbd>e</kbd>跳转到当前区间结束</p>
-      <p><kbd>←</kbd>前进</p>
-      <p><kbd>→</kbd>后退</p>
-      <p><kbd>c</kbd>清除所有区间</p>
-      <p><kbd>p</kbd>创建标记</p>
-    </span>
-  {/if}
-</div>
-<div id="shortcuts">
-  <button id="shortcut-btn">
-    <GridOutline />
-  </button>
-  <ul class="shortcut-list">
-    {#each recorders as recorder}
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <button
-        type="button"
-        class="shortcut"
-        onclick={() => {
-          go_to(
-            recorder.room_info.platform,
-            recorder.room_info.room_id,
-            recorder.live_id
-          );
-        }}
-      >
-        <SortHorizontalOutline />[{recorder.user_info.user_name}]{recorder
-          .room_info.room_title}
-      </button>
-    {/each}
-    {#if recorders.length == 0}
-      <p>没有其它正在直播的房间</p>
-    {/if}
-  </ul>
-</div>
-
-<div id="export">
-  <button id="export-btn">
-    <FileExportOutline />
-  </button>
-  <ul class="export-list">
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <button
-      type="button"
-      class="export-item"
-      onclick={() => {
-        exportDanmu(false);
-      }}
-    >
-      导出弹幕为 TXT
-    </button>
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <button
-      type="button"
-      class="export-item"
-      onclick={() => {
-        exportDanmu(true);
-      }}
-    >
-      导出弹幕为 ASS
-    </button>
-  </ul>
-</div>
-
 <style>
+  :global(.shaka-controls-container) {
+    display: none !important;
+  }
+
   video {
+    width: 100%;
+    height: 100%;
+  }
+
+  #wrap {
     width: 100%;
     height: 100%;
   }
@@ -1521,129 +1478,4 @@ ${mediaPlaylistUrl}`;
     display: none !important;
   }
 
-  p {
-    margin: 0;
-  }
-
-  kbd {
-    border: 1px solid white;
-    padding: 0 0.2em;
-    border-radius: 0.2em;
-    margin: 4px;
-  }
-
-  #overlay {
-    position: absolute;
-    top: 8px;
-    left: 8px;
-    border-radius: 6px;
-    padding: 8px;
-    flex-direction: column;
-    display: flex;
-    background-color: rgba(0, 0, 0, 0.5);
-    color: white;
-    font-size: 0.8em;
-    pointer-events: none;
-  }
-
-  #shortcuts {
-    position: absolute;
-    top: 8px;
-    right: 52px;
-    flex-direction: column;
-    display: flex;
-    align-items: end;
-    color: white;
-    font-size: 0.8em;
-    z-index: 501;
-  }
-
-  #shortcut-btn {
-    width: 36px;
-    padding: 8px;
-    margin-bottom: 4px;
-    border-radius: 4px;
-    cursor: pointer;
-    background-color: rgba(0, 0, 0, 0.5);
-  }
-
-  #shortcut-btn:hover {
-    background-color: rgba(255, 255, 255, 0.3);
-  }
-
-  .shortcut-list {
-    border-radius: 4px;
-    padding: 8px;
-    background-color: rgba(0, 0, 0, 0.5);
-    display: none;
-    position: absolute;
-    top: 100%;
-    right: 0;
-    min-width: 200px;
-  }
-
-  #shortcuts:hover .shortcut-list {
-    display: block;
-  }
-
-  .shortcut {
-    display: flex;
-    flex-direction: row;
-    cursor: pointer;
-  }
-
-  .shortcut:hover {
-    text-decoration: underline;
-  }
-
-  #export {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    flex-direction: column;
-    display: flex;
-    align-items: end;
-    color: white;
-    font-size: 0.8em;
-    z-index: 501;
-  }
-
-  #export-btn {
-    width: 36px;
-    padding: 8px;
-    margin-bottom: 4px;
-    border-radius: 4px;
-    cursor: pointer;
-    background-color: rgba(0, 0, 0, 0.5);
-  }
-
-  #export-btn:hover {
-    background-color: rgba(255, 255, 255, 0.3);
-  }
-
-  .export-list {
-    border-radius: 4px;
-    padding: 8px;
-    background-color: rgba(0, 0, 0, 0.5);
-    display: none;
-    position: absolute;
-    top: 100%;
-    right: 0;
-    min-width: 150px;
-  }
-
-  #export:hover .export-list {
-    display: block;
-  }
-
-  .export-item {
-    display: flex;
-    flex-direction: row;
-    cursor: pointer;
-    padding: 4px 8px;
-  }
-
-  .export-item:hover {
-    background-color: rgba(255, 255, 255, 0.1);
-  }
 </style>

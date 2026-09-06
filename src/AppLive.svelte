@@ -3,52 +3,69 @@
   import {
     invoke,
     set_title,
-    TAURI_ENV,
     log,
     get_static_url,
   } from "./lib/invoker";
   import Player from "./lib/components/Player.svelte";
-  import type { RecordItem } from "./lib/db";
-  import { ChevronRight, ChevronLeft, Play, Pen } from "lucide-svelte";
+  import type { AccountItem, RecordItem } from "./lib/db";
+  import { PanelRightOpen } from "lucide-svelte";
   import {
     type VideoItem,
     type Marker,
     type DanmuEntry,
     type Range,
+    type RecorderInfo,
   } from "./lib/interface";
-  import ArchiveClipButton from "./lib/components/ArchiveClipButton.svelte";
-  import MarkerPanel from "./lib/components/MarkerPanel.svelte";
+  import ArchiveInspector from "./lib/components/ArchiveInspector.svelte";
+  import ArchiveTimeline from "./lib/components/ArchiveTimeline.svelte";
   import { onDestroy, onMount } from "svelte";
 
   interface PlayerHandle {
     seek(offset: number): void;
+    togglePlayback(): void;
+    setVolume(volume: number): void;
+    toggleDanmu(): void;
+    setDanmuOffset(offset: number): void;
+    sendDanmaku(message: string): Promise<void>;
+    exportDanmu(ass: boolean): Promise<void>;
+    seekLive(): void;
+  }
+
+  interface PreviewVideo {
+    id: number;
+    value: number;
+    name: string;
+    file: string;
+    cover: string;
   }
 
   const urlParams = new URLSearchParams(window.location.search);
   const room_id = urlParams.get("room_id");
   const platform = urlParams.get("platform");
   const live_id = urlParams.get("live_id");
-  const focus_start = parseInt(urlParams.get("start") || "0");
-  const focus_end = parseInt(urlParams.get("end") || "0");
 
   log.info("AppLive loaded", room_id, platform, live_id);
 
   // 弹幕相关变量
   let danmu_records: DanmuEntry[] = $state([]);
-  let filtered_danmu: DanmuEntry[] = $state([]);
-  let danmu_search_text = $state("");
 
   // 弹幕峰值检测相关变量
   interface DanmuPeak {
     start: number; // 秒
     end: number; // 秒
     count: number;
-    added: boolean; // 是否已添加为选区
+    exists: boolean; // 是否已存在于选区列表
+  }
+  interface DanmuHeatPoint {
+    time: number;
+    count: number;
+    level: "normal" | "extension" | "core";
   }
   let danmu_peaks: DanmuPeak[] = $state([]);
+  let danmu_heat_points: DanmuHeatPoint[] = $state([]);
+  let danmu_heat_threshold = $state(0);
   let peak_threshold = $state(80); // 阈值百分比
   const DENSITY_WINDOW_SEC = 30; // 内部固定密度计算窗口
-  let show_peak_panel = $state(false);
 
   // 辅助函数：判断两个时间范围是否相似（容差 tolerance 秒）
   function is_range_similar(
@@ -63,14 +80,15 @@
   }
 
   // 检测弹幕峰值区间
-  function detect_danmu_peaks() {
+  function detect_danmu_peaks(threshold_percent = peak_threshold) {
     if (danmu_records.length === 0) {
       danmu_peaks = [];
+      danmu_heat_points = [];
+      danmu_heat_threshold = 0;
       return;
     }
 
     const window_ms = DENSITY_WINDOW_SEC * 1000;
-    const half_window_ms = window_ms / 2;
     const step_ms = 5000; // 5秒滑动步长
     const bucket_ms = step_ms; // 桶大小与步长一致
 
@@ -114,6 +132,8 @@
 
     if (density.length === 0) {
       danmu_peaks = [];
+      danmu_heat_points = [];
+      danmu_heat_threshold = 0;
       return;
     }
 
@@ -123,104 +143,124 @@
     const variance = counts.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / n;
     const stdDev = Math.sqrt(variance);
 
-    // 3. 计算动态阈值
-    // peak_threshold (50-100) 映射为 k (1.0 - 4.0)
-    const k = 1.0 + ((peak_threshold - 50) / 50) * 3.0;
-    const z_threshold = mean + k * stdDev;
+    // 3. 将滑块百分比直接映射到当前录播的最大窗口热度。
+    // 不再叠加固定弹幕数下限，避免下限覆盖滑块导致阈值不变化。
+    const max_density = counts.reduce(
+      (maximum, count) => Math.max(maximum, count),
+      0,
+    );
+    const effective_threshold =
+      max_density * (Math.min(100, Math.max(0, threshold_percent)) / 100);
+    const recording_offset_ms =
+      global_offset > 0 ? global_offset * 1000 : min_ts;
 
-    // 至少要有一定的弹幕量 (例如平均值的 1.5 倍，或者固定值如 15/30s)
-    const abs_min_count = Math.max(15, mean * 1.2);
+    danmu_heat_threshold = effective_threshold;
 
-    // 动态边界的基准线 (Baseline)
-    const expansion_baseline = mean + 0.5 * stdDev;
+    // 先将连续超过阈值的柱子聚合为核心区间。
+    const core_runs: { start: number; end: number }[] = [];
+    let run_start_index = -1;
+    for (let i = 0; i <= density.length; i++) {
+      const is_above_threshold =
+        i < density.length &&
+        density[i].count > 0 &&
+        density[i].count >= effective_threshold;
 
-    // 4. 寻找候选峰值 (局部极值)
-    let candidates: { center: number; count: number; index: number }[] = [];
-    for (let i = 1; i < density.length - 1; i++) {
-      const curr = density[i];
-      const prev = density[i - 1];
-      const next = density[i + 1];
+      if (is_above_threshold && run_start_index === -1) {
+        run_start_index = i;
+        continue;
+      }
+      if (is_above_threshold || run_start_index === -1) {
+        continue;
+      }
 
-      if (
-        curr.count >= z_threshold &&
-        curr.count >= abs_min_count && // 增加绝对门槛判断
-        curr.count > 0 &&
-        curr.count >= prev.count &&
-        curr.count >= next.count
+      const run_end_index = i - 1;
+      core_runs.push({ start: run_start_index, end: run_end_index });
+      run_start_index = -1;
+    }
+
+    // 核心区间向两侧扩展至较低的内容完整性基准。相交的扩展区间
+    // 合并为一条推荐，避免多个核心峰生成相同或高度重叠的结果。
+    const expansion_baseline = Math.min(
+      mean + 0.5 * stdDev,
+      effective_threshold * 0.8,
+    );
+    const expanded_runs = core_runs.map((run) => {
+      let start = run.start;
+      let end = run.end;
+      while (
+        start > 0 &&
+        density[start - 1].count > expansion_baseline
       ) {
-        candidates.push({ ...curr, index: i });
+        start -= 1;
+      }
+      while (
+        end < density.length - 1 &&
+        density[end + 1].count > expansion_baseline
+      ) {
+        end += 1;
+      }
+      return { start, end };
+    });
+    const merged_runs: { start: number; end: number }[] = [];
+    for (const run of expanded_runs) {
+      const previous = merged_runs[merged_runs.length - 1];
+      if (previous && run.start <= previous.end + 1) {
+        previous.end = Math.max(previous.end, run.end);
+      } else {
+        merged_runs.push({ ...run });
       }
     }
 
-    // 按强度降序排列
-    candidates.sort((a, b) => b.count - a.count);
-
-    const final_peaks: DanmuPeak[] = [];
-    while (candidates.length > 0) {
-      const best = candidates.shift();
-      const best_idx = best.index;
-
-      // 动态向左扩展
-      let left_idx = best_idx;
-      while (left_idx > 0 && density[left_idx].count > expansion_baseline) {
-        left_idx--;
+    const extension_flags = Array.from(
+      { length: density.length },
+      () => false,
+    );
+    for (const run of merged_runs) {
+      for (let i = run.start; i <= run.end; i++) {
+        extension_flags[i] = true;
       }
+    }
 
-      // 动态向右扩展
-      let right_idx = best_idx;
-      while (
-        right_idx < density.length - 1 &&
-        density[right_idx].count > expansion_baseline
-      ) {
-        right_idx++;
-      }
+    // 时间线与推荐算法共用同一份窗口数据，并区分核心与扩展部分。
+    danmu_heat_points = density.map((point, index) => ({
+      time: (point.center - recording_offset_ms) / 1000,
+      count: point.count,
+      level:
+        point.count > 0 && point.count >= effective_threshold
+          ? "core"
+          : extension_flags[index]
+            ? "extension"
+            : "normal",
+    }));
 
-      // 计算时间 (秒)
-      const start_time = (density[left_idx].center - min_ts) / 1000 - 5; // 再多给5s缓冲
-      const end_time = (density[right_idx].center - min_ts) / 1000 + 5;
-
-      // 限制最小和最大时长
-      const min_duration = 15;
-      const max_duration = 120;
-      let duration = end_time - start_time;
-
-      let final_start = Math.max(0, start_time);
-      let final_end = end_time;
-
-      if (duration < min_duration) {
-        const padding = (min_duration - duration) / 2;
-        final_start = Math.max(0, final_start - padding);
-        final_end = final_end + padding;
-      } else if (duration > max_duration) {
-        // 如果太长，就只取峰值附近的 max_duration
-        const center_sec = (best.center - min_ts) / 1000;
-        final_start = Math.max(0, center_sec - max_duration / 2);
-        final_end = center_sec + max_duration / 2;
-      }
-
-      const is_added = ranges.some((r) =>
-        is_range_similar(r, { start: final_start, end: final_end }),
+    const half_step_ms = step_ms / 2;
+    const final_peaks = merged_runs.flatMap((run): DanmuPeak[] => {
+      const final_start = Math.max(
+        0,
+        (density[run.start].center - half_step_ms - recording_offset_ms) /
+          1000,
       );
+      const final_end =
+        (density[run.end].center + half_step_ms - recording_offset_ms) /
+        1000;
+      if (final_end <= final_start) return [];
 
-      final_peaks.push({
+      const peak_count = density
+        .slice(run.start, run.end + 1)
+        .reduce((maximum, point) => Math.max(maximum, point.count), 0);
+      const exists = ranges.some((range) =>
+        is_range_similar(range, { start: final_start, end: final_end }),
+      );
+      return [{
         start: final_start,
         end: final_end,
-        count: best.count,
-        added: is_added,
-      });
+        count: peak_count,
+        exists,
+      }];
+    });
 
-      // 抑制相邻的较弱峰值 (基于实际生成的区间进行抑制)
-      // 如果候选点落在我们刚刚生成的区间内，就剔除
-      const current_peak_center_ms = best.center;
-      candidates = candidates.filter(
-        (c) =>
-          Math.abs(c.center - current_peak_center_ms) >=
-          ((final_end - final_start) * 1000) / 2, // 简单起见，只要距离峰值中心超过半个区间长度就算不重叠
-      );
-    }
-
-    // 按弹幕数量降序排列
-    danmu_peaks = final_peaks.sort((a, b) => b.count - a.count);
+    // 与时间线顺序保持一致，按推荐区间起始时间升序排列。
+    danmu_peaks = final_peaks.sort((a, b) => a.start - b.start);
   }
 
   // 将峰值添加到选区
@@ -232,26 +272,26 @@
     }
 
     ranges = [...ranges, { start: peak.start, end: peak.end, activated: true }];
-    peak.added = true;
+    peak.exists = true;
     danmu_peaks = [...danmu_peaks]; // 触发响应式更新
   }
 
   // 一键添加所有峰值
   function add_all_peaks_to_ranges() {
     for (const peak of danmu_peaks) {
-      if (!peak.added) {
+      if (!peak.exists) {
         add_peak_to_ranges(peak);
       }
     }
   }
 
   // 更新峰值的添加状态（根据当前 ranges）
-  function update_peak_added_status() {
+  function update_peak_exists_status() {
     let changed = false;
     for (const peak of danmu_peaks) {
-      const is_added = ranges.some((r) => is_range_similar(r, peak));
-      if (peak.added !== is_added) {
-        peak.added = is_added;
+      const exists = ranges.some((range) => is_range_similar(range, peak));
+      if (peak.exists !== exists) {
+        peak.exists = exists;
         changed = true;
       }
     }
@@ -259,117 +299,6 @@
       danmu_peaks = [...danmu_peaks]; // 触发响应式更新
     }
   }
-
-
-
-  // 虚拟滚动相关变量
-  let danmu_container_height = 0;
-  let danmu_item_height = 80; // 预估每个弹幕项的高度
-  let visible_start_index = $state(0);
-  let visible_end_index = $state(0);
-  let scroll_top = 0;
-  let container_ref: HTMLElement = $state();
-  let scroll_timeout: ReturnType<typeof setTimeout>;
-
-  // 计算可见区域的弹幕
-  function calculate_visible_danmu() {
-    if (!container_ref || filtered_danmu.length === 0) return;
-
-    const container_height = container_ref.clientHeight;
-    const buffer = 10; // 缓冲区，多渲染几个项目
-
-    visible_start_index = Math.max(
-      0,
-      Math.floor(scroll_top / danmu_item_height) - buffer
-    );
-    visible_end_index = Math.min(
-      filtered_danmu.length,
-      Math.ceil((scroll_top + container_height) / danmu_item_height) + buffer
-    );
-  }
-
-  // 处理滚动事件（带防抖）
-  function handle_scroll(event: Event) {
-    const target = event.target as HTMLElement;
-    scroll_top = target.scrollTop;
-
-    // 清除之前的定时器
-    if (scroll_timeout) {
-      clearTimeout(scroll_timeout);
-    }
-
-    // 防抖处理，避免频繁计算
-    scroll_timeout = setTimeout(() => {
-      calculate_visible_danmu();
-    }, 16); // 约60fps
-  }
-
-  // 监听容器大小变化
-  function handle_resize() {
-    if (container_ref) {
-      danmu_container_height = container_ref.clientHeight;
-      calculate_visible_danmu();
-    }
-  }
-
-
-
-  // 过滤弹幕
-  function filter_danmu() {
-    filtered_danmu = danmu_records.filter((danmu) => {
-      // 只按内容过滤
-      if (
-        danmu_search_text &&
-        !danmu.content.toLowerCase().includes(danmu_search_text.toLowerCase())
-      ) {
-        return false;
-      }
-      return true;
-    });
-  }
-
-
-
-  // 格式化时间(ts 为毫秒)
-  function format_time(milliseconds: number): string {
-    const seconds = Math.floor(milliseconds / 1000);
-    const minutes = Math.floor(seconds / 60);
-    const hours = Math.floor(minutes / 60)
-      .toString()
-      .padStart(2, "0");
-    const remaining_seconds = (seconds % 60).toString().padStart(2, "0");
-    const remaining_minutes = (minutes % 60).toString().padStart(2, "0");
-    return `${hours}:${remaining_minutes}:${remaining_seconds}`;
-  }
-
-  // 将时长(单位: 秒)格式化为 "X小时 Y分 Z秒"
-  function format_duration_seconds(totalSecondsFloat: number): string {
-    const totalSeconds = Math.max(0, Math.floor(totalSecondsFloat));
-    const hours = Math.floor(totalSeconds / 3600);
-    const minutes = Math.floor((totalSeconds % 3600) / 60);
-    const seconds = totalSeconds % 60;
-    const parts = [] as string[];
-    if (hours > 0) parts.push(`${hours} 小时`);
-    if (minutes > 0) parts.push(`${minutes} 分`);
-    parts.push(`${seconds} 秒`);
-    return parts.join(" ");
-  }
-
-  // 跳转到弹幕时间点
-  function seek_to_danmu(danmu: DanmuEntry) {
-    if (player) {
-      const time_in_seconds = danmu.ts / 1000 - global_offset;
-      player.seek(time_in_seconds);
-    }
-  }
-
-  onDestroy(() => {
-    // 清理滚动定时器
-    if (scroll_timeout) {
-      clearTimeout(scroll_timeout);
-    }
-  });
-
   let archive: RecordItem = $state(null);
 
   // load ranges from local storage
@@ -378,39 +307,32 @@
   ));
   let global_offset = $state(0);
 
-  function handleSelectAll(e: Event) {
-    const checked = (e.currentTarget as HTMLInputElement).checked;
-    ranges = ranges.map((r) => ({ ...r, activated: checked }));
-  }
-
-  function handleRangeChange(e: Event, range: Range) {
-    range.activated = (e.currentTarget as HTMLInputElement).checked;
-    ranges = ranges; // trigger update
-  }
-
-  function deleteActivatedRanges() {
-    // 删除选区
-    ranges = ranges.filter((r) => r.activated === false);
-  }
-
-  let show_selection_list = $state(false);
   let clip_running = $state(false);
-  let text_style = {
-    position: { x: 8, y: 8 },
-    fontSize: 24,
-    color: "#FF7F00",
-  };
-  let video_selected = $state(0);
-  let videos = $state([]);
+  let videos: PreviewVideo[] = $state([]);
 
-  let selected_video = $state(null);
+  let selected_video: PreviewVideo | null = $state(null);
 
   let video: HTMLVideoElement;
+  let current_time = $state(0);
+  let player_duration = $state(0);
+  let selected_range_index = $state(-1);
+  let player_volume = $state(1);
+  let player_is_playing = $state(false);
+  let player_is_live = $state(false);
+  let danmu_enabled = $state(true);
+  let danmu_offset = $state(0);
+  let can_send_danmaku = $state(false);
+  let danmu_accounts = $state<AccountItem[]>([]);
+  let danmu_account_uid = $state("");
+  let live_recorders = $state<RecorderInfo[]>([]);
 
-  function pauseVideo() {
-    if (video) {
-      video.pause();
-    }
+  function pauseForRangeDrag() {
+    video?.pause();
+  }
+
+  function seekDuringRangeDrag(seconds: number) {
+    player?.seek(seconds);
+    current_time = seconds;
   }
 
   // Initialize video element when component is mounted
@@ -422,15 +344,33 @@
         set_title(`[${room_id}]${archive.title}`);
       }
     );
-    console.log(archive);
-
-    // 初始化虚拟滚动
-    setTimeout(() => {
-      if (container_ref) {
-        handle_resize();
-      }
-    }, 100);
   });
+
+  function addRangeAtCurrentTime() {
+    const total = player_duration || archive?.length || 0;
+    if (total <= 0) return;
+    const start = Math.min(current_time, total);
+    ranges = [
+      ...ranges,
+      {
+        start,
+        end: total,
+        activated: true,
+      },
+    ];
+    selected_range_index = ranges.length - 1;
+  }
+
+  function addMarkerAtCurrentTime() {
+    markers = [
+      ...markers,
+      {
+        offset: current_time,
+        realtime: global_offset + current_time,
+        content: "[空标记点]",
+      },
+    ].sort((a, b) => a.offset - b.offset);
+  }
 
   get_video_list();
 
@@ -445,34 +385,21 @@
           value: v.id,
           name: v.file,
           file: await get_static_url("output", v.file),
-          cover: v.cover,
+          cover: await get_static_url("output", v.cover),
         };
       })
     );
   }
 
-  async function find_video(e) {
-    if (!e.target) {
-      selected_video = null;
-      return;
-    }
-    const id = parseInt(e.target.value);
-    let target_video = videos.find((v) => {
-      return v.value == id;
-    });
-    if (target_video) {
-      target_video.cover = await get_static_url("output", target_video.cover);
-    }
-    selected_video = target_video;
+  async function selectVideo(id: number) {
+    selected_video = videos.find((video) => video.value === id) || null;
   }
 
   async function handleClipGenerated(newVideo: VideoItem) {
     await get_video_list();
     newVideo.cover = await get_static_url("output", newVideo.cover);
-    video_selected = newVideo.id;
-    selected_video = videos.find((video) => {
-      return video.value == newVideo.id;
-    });
+    selected_video =
+      videos.find((video) => video.value === newVideo.id) || null;
     if (selected_video) {
       selected_video.cover = newVideo.cover;
     }
@@ -482,13 +409,11 @@
     if (!selected_video) {
       return;
     }
-    await invoke("delete_video", { id: video_selected });
-    video_selected = 0;
+    await invoke("delete_video", { id: selected_video.id });
     selected_video = null;
     await get_video_list();
   }
   let player: PlayerHandle = $state();
-  let lpanel_collapsed = $state(true);
   let rpanel_collapsed = $state(false);
   let markers: Marker[] = $state([]);
   // load markers from local storage
@@ -512,46 +437,31 @@
   async function open_clip(video_id: number) {
     await invoke("open_clip", { videoId: video_id });
   }
-  // 监听弹幕数据变化、面板状态变化、阈值变化，统一检测峰值
+
+  function navigate_to_recorder(recorder: RecorderInfo) {
+    const nextUrl =
+      `${window.location.origin}${window.location.pathname}` +
+      `?platform=${recorder.room_info.platform}` +
+      `&room_id=${recorder.room_info.room_id}` +
+      `&live_id=${recorder.live_id}`;
+    window.location.href = nextUrl;
+  }
+
+  function handlePeakThresholdChange(value: number) {
+    peak_threshold = value;
+  }
+
+  // 弹幕数据或阈值变化时刷新智能推荐
   $effect(() => {
-    if (show_peak_panel && danmu_records.length > 0) {
-      // 引用 peak_threshold 以便在其变化时触发重新计算
-      peak_threshold;
-      detect_danmu_peaks();
-    }
+    global_offset;
+    detect_danmu_peaks(peak_threshold);
   });
   // 监听 ranges 变化，更新峰值的添加状态
   $effect(() => {
     if (ranges && danmu_peaks.length > 0) {
-      update_peak_added_status();
+      update_peak_exists_status();
     }
   });
-  // 监听弹幕数据变化，更新过滤结果
-  $effect(() => {
-    if (danmu_records) {
-      // 如果当前有搜索文本，重新过滤
-      if (danmu_search_text) {
-        filter_danmu();
-      } else {
-        // 否则直接复制所有弹幕
-        filtered_danmu = [...danmu_records];
-      }
-    }
-  });
-  // 过滤结果变化后重新计算可见区域。与过滤 effect 分开，避免读取并写入
-  // filtered_danmu 的同一个 effect 触发无限更新。
-  $effect(() => {
-    if (container_ref && filtered_danmu.length > 0) {
-      calculate_visible_danmu();
-    }
-  });
-  // 监听容器引用变化
-  $effect(() => {
-    if (container_ref) {
-      handle_resize();
-    }
-  });
-  let activeRanges = $derived(ranges.filter((r) => r.activated !== false));
   // save ranges to local storage when changed
   $effect(() => {
     if (ranges) {
@@ -571,560 +481,192 @@
 </script>
 
 <main>
-  <div class="flex flex-row overflow-hidden">
-    <div
-      class="flex relative h-screen border-solid bg-gray-950 border-r-2 border-gray-800 z-[501] transition-all duration-300 ease-in-out"
-      class:w-[200px]={!lpanel_collapsed}
-      class:w-0={lpanel_collapsed}
-    >
-      <div class="relative flex w-full overflow-hidden">
-        <div
-          class="w-[200px] transition-all duration-300 overflow-hidden flex-shrink-0"
-          style="margin-left: {lpanel_collapsed ? '-200px' : '0'};"
-        >
-          <div class="w-full whitespace-nowrap">
-            <MarkerPanel
-              {archive}
-              bind:markers
-              onMarkerClick={(marker) => {
-                player.seek(marker.offset);
-              }}
-            />
-          </div>
-        </div>
+  <div class="preview-workspace">
+    <div class="preview-main">
+      <div class="video-stage">
+        <Player
+          bind:ranges
+          bind:global_offset
+          bind:this={player}
+          bind:danmu_records
+          bind:danmu_enabled
+          bind:local_offset={danmu_offset}
+          bind:volume={player_volume}
+          bind:is_playing={player_is_playing}
+          bind:playback_time={current_time}
+          bind:duration={player_duration}
+          bind:is_live={player_is_live}
+          bind:can_send_danmaku={can_send_danmaku}
+          bind:danmu_accounts
+          bind:danmu_account_uid
+          bind:recorders={live_recorders}
+          bind:selected_range_index={selected_range_index}
+          {platform}
+          {room_id}
+          {live_id}
+          {markers}
+          onMarkerAdd={(marker) => {
+            markers.push({
+              offset: marker.offset,
+              realtime: marker.realtime,
+              content: "[空标记点]",
+            });
+            markers = markers.sort((a, b) => a.offset - b.offset);
+          }}
+        />
       </div>
-      <button
-        class="collapse-btn lp transition-transform duration-300 absolute"
-        onclick={() => {
-          lpanel_collapsed = !lpanel_collapsed;
-        }}
-      >
-        {#if lpanel_collapsed}
-          <ChevronRight class="text-white" size={20} />
-        {:else}
-          <ChevronLeft class="text-white" size={20} />
-        {/if}
-      </button>
-    </div>
-    <div class="overflow-hidden h-screen w-full relative">
-      <Player
+      <ArchiveTimeline
         bind:ranges
-        bind:global_offset
-        bind:this={player}
-        bind:danmu_records
-        {focus_start}
-        {focus_end}
-        {platform}
-        {room_id}
-        {live_id}
         {markers}
-        onMarkerAdd={(marker) => {
-          markers.push({
-            offset: marker.offset,
-            realtime: marker.realtime,
-            content: "[空标记点]",
-          });
-          markers = markers.sort((a, b) => a.offset - b.offset);
-        }}
+        heatPoints={danmu_heat_points}
+        heatThreshold={danmu_heat_threshold}
+        heatThresholdPercent={peak_threshold}
+        currentTime={current_time}
+        duration={player_is_live
+          ? player_duration
+          : player_duration || archive?.length || 0}
+        isPlaying={player_is_playing}
+        isLive={player_is_live}
+        volume={player_volume}
+        danmuEnabled={danmu_enabled}
+        danmuOffset={danmu_offset}
+        canSendDanmaku={can_send_danmaku}
+        danmuAccounts={danmu_accounts}
+        danmuAccountUid={danmu_account_uid}
+        bind:selectedRangeIndex={selected_range_index}
+        onSeek={(seconds) => player?.seek(seconds)}
+        onAddRange={addRangeAtCurrentTime}
+        onAddMarker={addMarkerAtCurrentTime}
+        onTogglePlayback={() => player?.togglePlayback()}
+        onSeekLive={() => player?.seekLive()}
+        onVolumeChange={(value) => player?.setVolume(value)}
+        onToggleDanmu={() => player?.toggleDanmu()}
+        onDanmuOffsetChange={(value) => player?.setDanmuOffset(value)}
+        onSendDanmaku={(message) => player?.sendDanmaku(message)}
+        onDanmuAccountChange={(uid) => (danmu_account_uid = uid)}
+        recorders={live_recorders}
+        onExportDanmu={(ass) => player?.exportDanmu(ass)}
+        onNavigateLive={navigate_to_recorder}
+        onRangeDragStart={pauseForRangeDrag}
+        onRangeDrag={seekDuringRangeDrag}
       />
     </div>
     <div
-      class="flex relative h-screen border-solid bg-gray-950 border-l-2 border-gray-800 text-white transition-all duration-300 ease-in-out"
-      class:w-[400px]={!rpanel_collapsed}
+      class="inspector-shell"
+      class:w-[340px]={!rpanel_collapsed}
       class:w-0={rpanel_collapsed}
     >
-      <button
-        class="collapse-btn rp transition-transform duration-300"
-        class:translate-x-[-20px]={!rpanel_collapsed}
-        class:translate-x-0={rpanel_collapsed}
-        onclick={() => {
-          rpanel_collapsed = !rpanel_collapsed;
-        }}
-      >
-        {#if rpanel_collapsed}
-          <ChevronLeft class="text-white" size={20} />
-        {:else}
-          <ChevronRight class="text-white" size={20} />
-        {/if}
-      </button>
-      <div
-        id="post-panel"
-        class="h-screen bg-[#1c1c1e] text-white w-[400px] flex flex-col transition-opacity duration-300"
-        class:opacity-0={rpanel_collapsed}
-        class:opacity-100={!rpanel_collapsed}
-        class:invisible={rpanel_collapsed}
-      >
-        <!-- 内容区域 -->
-        <div class="flex-1 overflow-hidden flex flex-col">
-          <div class="px-6 py-4 space-y-8 flex flex-col h-full">
-            <!-- 切片操作区 -->
-            <section class="space-y-3 flex-shrink-0">
-              <div class="flex items-center justify-between">
-                <h3 class="text-sm font-medium text-gray-300">切片列表</h3>
-                <div class="flex space-x-2">
-                  <button
-                    onclick={() => (show_selection_list = true)}
-                    class="px-4 py-1.5 bg-[#2c2c2e] text-white text-sm rounded-lg
-                           hover:bg-[#3c3c3e]/90 transition-all duration-200
-                           disabled:opacity-50 disabled:cursor-not-allowed
-                           flex items-center space-x-2"
-                  >
-                    选区列表
-                  </button>
-                  <ArchiveClipButton
-                    {archive}
-                    ranges={activeRanges}
-                    captureCover
-                    bind:running={clip_running}
-                    onGenerated={handleClipGenerated}
-                  />
-                  {#if selected_video}
-                    <button
-                      onclick={delete_video}
-                      class="px-4 py-1.5 text-red-500 text-sm rounded-lg
-                             transition-all duration-200 hover:bg-red-500/10
-                             disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      删除
-                    </button>
-                  {/if}
-                </div>
-              </div>
-
-              {#if clip_running}
-                <div class="rounded-lg border border-[#0A84FF]/30 bg-[#0A84FF]/10 px-3 py-2 text-xs text-blue-100">
-                  切片任务将在后台继续运行，关闭页面不会取消任务；可前往任务页面管理后台任务。
-                </div>
-              {/if}
-
-              <div class="flex flex-row items-center justify-between">
-                <select
-                  bind:value={video_selected}
-                  onchange={find_video}
-                  class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg
-                       border border-gray-800/50 focus:border-[#0A84FF]
-                       transition duration-200 outline-none appearance-none
-                       hover:border-gray-700/50"
-                >
-                  <option value={0}>选择切片</option>
-                  {#each videos as video}
-                    <option value={video.value}>{video.name}</option>
-                  {/each}
-                </select>
-                {#if !TAURI_ENV && selected_video}
-                  <button
-                    onclick={save_video}
-                    class="w-24 ml-2 px-3 py-2 bg-[#0A84FF] text-white rounded-lg
-                     transition-all duration-200 hover:bg-[#0A84FF]/90
-                     disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    下载
-                  </button>
-                {/if}
-              </div>
-            </section>
-
-            <!-- 弹幕峰值检索区 -->
-            <section class="space-y-3 flex-shrink-0">
-              <div class="flex items-center justify-between">
-                <h3 class="text-sm font-medium text-gray-300">弹幕峰值</h3>
-                {#if show_peak_panel}
-                  <button
-                    onclick={() => (show_peak_panel = false)}
-                    class="text-sm text-gray-400 hover:text-[#0A84FF] transition-colors duration-200"
-                  >
-                    收起
-                  </button>
-                {:else}
-                  <button
-                    onclick={() => (show_peak_panel = true)}
-                    class="px-4 py-1.5 bg-[#2c2c2e] text-white text-sm rounded-lg
-                           transition-all duration-200 hover:bg-[#3c3c3e]"
-                  >
-                    峰值检索
-                  </button>
-                {/if}
-              </div>
-
-              {#if show_peak_panel}
-                <!-- 设置区域 -->
-                <div
-                  class="space-y-2 p-3 bg-[#2c2c2e] rounded-lg border border-gray-800/50"
-                >
-                  <div class="flex items-center justify-between">
-                    <span class="text-xs text-gray-400"
-                      >阈值: {peak_threshold}%</span
-                    >
-                    <input
-                      type="range"
-                      min="50"
-                      max="100"
-                      bind:value={peak_threshold}
-                      class="w-32 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer"
-                    />
-                  </div>
-                </div>
-
-                <!-- 峰值列表 -->
-                {#if danmu_records.length === 0}
-                  <div class="text-center py-4 text-gray-500 text-sm">
-                    暂无弹幕数据
-                  </div>
-                {:else if danmu_peaks.length === 0}
-                  <div class="text-center py-4 text-gray-500 text-sm">
-                    未检测到峰值，请尝试降低阈值
-                  </div>
-                {:else}
-                  <div class="flex items-center justify-between mb-2">
-                    <span class="text-xs text-gray-400">
-                      检测到 {danmu_peaks.length} 个峰值
-                    </span>
-                    <button
-                      onclick={add_all_peaks_to_ranges}
-                      class="text-xs text-gray-400 hover:text-[#0A84FF] transition-colors duration-200 font-medium"
-                    >
-                      + 全部添加
-                    </button>
-                  </div>
-                  <div
-                    class="max-h-48 overflow-y-auto space-y-2 sidebar-scrollbar"
-                  >
-                    {#each danmu_peaks as peak}
-                      <!-- svelte-ignore a11y_click_events_have_key_events -->
-                      <div
-                        class="flex items-center justify-between p-2 bg-[#2c2c2e] rounded-lg border border-gray-800/50
-                               hover:border-[#0A84FF]/50 transition-all duration-200 cursor-pointer"
-                        role="button"
-                        tabindex="0"
-                        onclick={() => {
-                          if (player) {
-                            player.seek(peak.start);
-                          }
-                        }}
-                      >
-                        <div class="flex-1">
-                          <div class="text-xs text-white/90">
-                            {format_time(peak.start * 1000)} → {format_time(
-                              peak.end * 1000,
-                            )}
-                          </div>
-                          <div class="text-xs text-gray-500">
-                            {peak.count} 条弹幕
-                          </div>
-                        </div>
-                        {#if peak.added}
-                          <span class="text-xs text-[#0A84FF]/80 font-medium">
-                            ✓ 已添加
-                          </span>
-                        {:else}
-                          <button
-                            onclick={(event) => {
-                              event.stopPropagation();
-                              add_peak_to_ranges(peak);
-                            }}
-                            class="text-xs text-gray-400 hover:text-[#0A84FF] transition-colors duration-200 font-medium"
-                          >
-                            + 添加
-                          </button>
-                        {/if}
-                      </div>
-                    {/each}
-                  </div>
-                {/if}
-              {/if}
-            </section>
-
-            <!-- 封面预览 -->
-            {#if selected_video && selected_video.id != -1}
-              <section class="flex-shrink-0">
-                <div class="group">
-                  <!-- svelte-ignore a11y_click_events_have_key_events -->
-                  <div
-                    id="capture"
-                    class="relative rounded-xl overflow-hidden bg-black/20 border border-gray-800/50 cursor-pointer group"
-                    role="button"
-                    tabindex="0"
-                    onclick={async () => {
-                      pauseVideo();
-                      await open_clip(selected_video.id);
-                    }}
-                  >
-                    <div
-                      class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100
-                              transition duration-200 flex items-center justify-center backdrop-blur-[2px]"
-                    >
-                      <div
-                        class="bg-white/10 backdrop-blur p-3 rounded-full opacity-0 group-hover:opacity-50"
-                      >
-                        <Play class="w-6 h-6 text-white" />
-                      </div>
-                    </div>
-                    <img
-                      src={selected_video.cover}
-                      alt="视频封面"
-                      class="w-full"
-                    />
-                  </div>
-                </div>
-              </section>
-            {/if}
-
-            <!-- 弹幕列表区 -->
-            <section class="space-y-3 flex flex-col flex-1 min-h-0">
-              <div class="flex items-center justify-between flex-shrink-0">
-                <h3 class="text-sm font-medium text-gray-300">弹幕列表</h3>
-              </div>
-
-              <div class="space-y-3 flex flex-col flex-1 min-h-0">
-                <!-- 搜索 -->
-                <div class="space-y-2 flex-shrink-0">
-                  <input
-                    type="text"
-                    bind:value={danmu_search_text}
-                    placeholder="搜索弹幕内容..."
-                    class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg
-                           border border-gray-800/50 focus:border-[#0A84FF]
-                           transition duration-200 outline-none
-                           placeholder-gray-500"
-                  />
-                </div>
-
-                <!-- 弹幕统计 -->
-                <div class="text-xs text-gray-400 flex-shrink-0">
-                  共 {danmu_records.length} 条弹幕，显示 {filtered_danmu.length}
-                  条
-                </div>
-
-                <!-- 弹幕列表 -->
-                <div
-                  bind:this={container_ref}
-                  onscroll={handle_scroll}
-                  class="flex-1 overflow-y-auto space-y-2 sidebar-scrollbar min-h-0 danmu-container"
-                >
-                  <!-- 顶部占位符 -->
-                  <div
-                    style="height: {visible_start_index * danmu_item_height}px;"
-></div>
-
-                  <!-- 可见的弹幕项 -->
-                  {#each filtered_danmu.slice(visible_start_index, visible_end_index) as danmu, index (visible_start_index + index)}
-                    <!-- svelte-ignore a11y_click_events_have_key_events -->
-                    <div
-                      class="p-3 bg-[#2c2c2e] rounded-lg border border-gray-800/50
-                             hover:border-[#0A84FF]/50 transition-all duration-200
-                             cursor-pointer group danmu-item"
-                      role="button"
-                      tabindex="0"
-                      style="content-visibility: auto; contain-intrinsic-size: {danmu_item_height}px;"
-                      onclick={() => seek_to_danmu(danmu)}
-                    >
-                      <div class="flex items-start justify-between">
-                        <div class="flex-1 min-w-0">
-                          <p
-                            class="text-sm text-white break-words leading-relaxed"
-                          >
-                            {danmu.content}
-                          </p>
-                        </div>
-                        <div class="ml-3 flex-shrink-0">
-                          <span
-                            class="text-xs text-gray-400 bg-[#1c1c1e] px-2 py-1 rounded
-                                     group-hover:text-[#0A84FF] transition-colors duration-200"
-                          >
-                            {format_time(danmu.ts - global_offset * 1000)}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  {/each}
-
-                  <!-- 底部占位符 -->
-                  <div
-                    style="height: {(filtered_danmu.length -
-                      visible_end_index) *
-                      danmu_item_height}px;"
-></div>
-
-                  {#if filtered_danmu.length === 0}
-                    <div class="text-center py-8 text-gray-500">
-                      {danmu_records.length === 0
-                        ? "暂无弹幕数据"
-                        : "没有匹配的弹幕"}
-                    </div>
-                  {/if}
-                </div>
-              </div>
-            </section>
-          </div>
-        </div>
-      </div>
+      {#if rpanel_collapsed}
+        <button
+          type="button"
+          class="open-inspector"
+          title="展开素材检查器"
+          onclick={() => (rpanel_collapsed = false)}
+        >
+          <PanelRightOpen size={17} />
+        </button>
+      {:else}
+        <ArchiveInspector
+          {archive}
+          bind:ranges
+          bind:markers
+          danmuRecords={danmu_records}
+          globalOffset={global_offset}
+          danmuPeaks={danmu_peaks}
+          peakThreshold={peak_threshold}
+          onPeakThresholdChange={handlePeakThresholdChange}
+          {videos}
+          selectedVideo={selected_video}
+          bind:clipRunning={clip_running}
+          bind:selectedRangeIndex={selected_range_index}
+          onCollapse={() => (rpanel_collapsed = true)}
+          onSeek={(seconds) => player?.seek(seconds)}
+          onAddPeak={add_peak_to_ranges}
+          onAddAllPeaks={add_all_peaks_to_ranges}
+          onVideoSelect={selectVideo}
+          onDeleteVideo={delete_video}
+          onDownloadVideo={save_video}
+          onOpenVideo={open_clip}
+          onGenerated={handleClipGenerated}
+        />
+      {/if}
     </div>
   </div>
 </main>
-
-<!-- Selection List Dialog -->
-{#if show_selection_list}
-  <div class="fixed inset-0 z-[100] flex items-center justify-center">
-    <div
-      class="absolute inset-0 bg-black/60 backdrop-blur-md"
-      role="button"
-      tabindex="0"
-      aria-label="关闭对话框"
-      onclick={() => (show_selection_list = false)}
-      onkeydown={(e) => {
-        if (e.key === "Escape" || e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          show_selection_list = false;
-        }
-      }}
-></div>
-
-    <div
-      role="dialog"
-      aria-modal="true"
-      class="relative mx-4 w-full max-w-md rounded-2xl bg-[#1c1c1e] border border-white/10 shadow-2xl ring-1 ring-black/5"
-    >
-      <div class="p-5">
-        <div class="flex items-center justify-between mb-4">
-          <h3 class="text-[17px] font-semibold text-white">选区管理</h3>
-          <div class="flex items-center gap-3">
-            <div class="text-[13px] text-white/60">
-              共 {ranges.length} 个选区，已激活 {activeRanges.length} 个
-            </div>
-            <label class="flex items-center cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={ranges.length > 0 &&
-                  ranges.every((r) => r.activated !== false)}
-                onchange={handleSelectAll}
-                class="h-4 w-4 rounded border-white/30 bg-[#1c1c1e] text-[#0A84FF] accent-[#0A84FF] focus:outline-none focus:ring-2 focus:ring-[#0A84FF]/40 cursor-pointer"
-              />
-            </label>
-          </div>
-        </div>
-
-        <div class="space-y-3">
-          <div
-            class="max-h-[60vh] overflow-y-auto space-y-2 custom-scrollbar-light pr-1"
-          >
-            {#each ranges as range, index}
-              <div
-                class="flex items-center justify-between px-3 py-2 bg-[#2c2c2e] rounded-lg border border-white/5 hover:border-white/10 transition-colors"
-                class:opacity-50={range.activated === false}
-              >
-                <div class="flex items-center space-x-3">
-                  <div
-                    class="flex items-center justify-center w-6 h-6 rounded-full bg-[#0A84FF]/20 text-[#0A84FF] text-[11px] font-semibold"
-                  >
-                    {index + 1}
-                  </div>
-                  <div class="flex flex-col space-y-0.5">
-                    <div class="text-[12px] text-white/90">
-                      {format_time(range.start * 1000)} → {format_time(
-                        range.end * 1000
-                      )}
-                    </div>
-                    <div class="text-[11px] text-white/60">
-                      时长: {format_duration_seconds(range.end - range.start)}
-                    </div>
-                  </div>
-                </div>
-                <label class="flex items-center cursor-pointer p-1">
-                  <input
-                    type="checkbox"
-                    checked={range.activated !== false}
-                    onchange={(e) => handleRangeChange(e, range)}
-                    class="h-5 w-5 rounded border-white/30 bg-[#1c1c1e] text-[#0A84FF] accent-[#0A84FF] focus:outline-none focus:ring-2 focus:ring-[#0A84FF]/40 cursor-pointer"
-                  />
-                </label>
-              </div>
-            {/each}
-            {#if ranges.length === 0}
-              <div class="text-center py-8 text-white/40 text-[13px]">
-                暂无选区
-              </div>
-            {/if}
-          </div>
-        </div>
-      </div>
-
-      <div
-        class="flex items-center justify-end gap-2 rounded-b-2xl border-t border-white/10 bg-[#111113] px-5 py-3"
-      >
-        <button
-          onclick={deleteActivatedRanges}
-          class="px-3.5 py-2 text-[13px] rounded-lg border border-red-500/20 text-red-500 hover:bg-red-500/10 transition-colors"
-        >
-          删除选区
-        </button>
-        <button
-          onclick={() => (show_selection_list = false)}
-          class="px-3.5 py-2 text-[13px] rounded-lg bg-[#0A84FF] text-white shadow-[inset_0_1px_0_rgba(255,255,255,.15)] hover:bg-[#0A84FF]/90 transition-colors"
-        >
-          完成
-        </button>
-      </div>
-    </div>
-  </div>
-{/if}
 
 <style>
   main {
     width: 100vw;
     height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: #0e1219;
   }
 
-  .collapse-btn {
+  .preview-workspace {
+    position: relative;
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: row;
+    overflow: hidden;
+  }
+
+  .preview-main {
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .video-stage {
+    position: relative;
+    min-height: 0;
+    flex: 1;
+    overflow: hidden;
+    background: #05070a;
+  }
+
+  .inspector-shell {
     position: absolute;
-    z-index: 50;
-    top: 50%;
-    width: 20px;
-    height: 40px;
-  }
-  .collapse-btn.rp {
-    left: -20px;
-    border-radius: 4px 0 0 4px;
-    border: 2px solid rgb(31 41 55 / var(--tw-border-opacity));
-    border-right: none;
-    background-color: rgb(3 7 18 / var(--tw-bg-opacity));
-    transform: translateY(-50%);
-  }
-  .collapse-btn.lp {
-    right: -20px;
-    border-radius: 0 4px 4px 0;
-    border: 2px solid rgb(31 41 55 / var(--tw-border-opacity));
-    border-left: none;
-    background-color: rgb(3 7 18 / var(--tw-bg-opacity));
-    transform: translateY(-50%);
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 510;
+    flex: 0 0 auto;
+    overflow: visible;
+    box-shadow: -12px 0 32px rgb(0 0 0 / 28%);
+    transition: width 200ms ease;
   }
 
-  /* 弹幕列表滚动条样式 */
-  .sidebar-scrollbar::-webkit-scrollbar {
-    width: 6px;
+  .open-inspector {
+    position: absolute;
+    top: 12px;
+    right: 8px;
+    display: inline-flex;
+    width: 34px;
+    height: 34px;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #344052;
+    border-radius: 9px;
+    background: #202733;
+    color: #dce5f3;
+    box-shadow: 0 6px 18px rgb(0 0 0 / 30%);
   }
 
-  .sidebar-scrollbar::-webkit-scrollbar-track {
-    background: rgba(44, 44, 46, 0.3);
-    border-radius: 3px;
+  .open-inspector:focus-visible {
+    outline: 2px solid #0a84ff;
+    outline-offset: 2px;
   }
 
-  .sidebar-scrollbar::-webkit-scrollbar-thumb {
-    background: rgba(10, 132, 255, 0.5);
-    border-radius: 3px;
-  }
-
-  .sidebar-scrollbar::-webkit-scrollbar-thumb:hover {
-    background: rgba(10, 132, 255, 0.7);
-  }
-
-  /* 虚拟滚动优化 */
-  .danmu-container {
-    will-change: scroll-position;
-    contain: layout style paint;
-  }
-
-  .danmu-item {
-    contain: layout style paint;
-    will-change: transform;
+  @media (min-width: 1100px) {
+    .inspector-shell {
+      position: relative;
+      box-shadow: none;
+    }
   }
 </style>

@@ -308,10 +308,12 @@ mod tests {
             DanmuEntry {
                 ts: 1000,
                 content: "hello".to_string(),
+                user_name: None,
             },
             DanmuEntry {
                 ts: 5000,
                 content: "world".to_string(),
+                user_name: None,
             },
         ];
         let result = danmu_to_ass(danmus, Danmu2AssOptions::default());

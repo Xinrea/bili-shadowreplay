@@ -1,6 +1,7 @@
 <script lang="ts">
   import { User } from "lucide-svelte";
   import type { HumanMessage } from "../agent/messages";
+  import AgentAttachmentList from "./AgentAttachmentList.svelte";
   import CopyMarkdownButton from "./CopyMarkdownButton.svelte";
 
   interface Props {
@@ -22,15 +23,20 @@
         <span class="text-xs text-gray-500 dark:text-gray-400">
           {formatTime(messageTime)}
         </span>
-        <CopyMarkdownButton content={message.content} />
+        {#if message.content}
+          <CopyMarkdownButton content={message.content} />
+        {/if}
       </div>
 
       <div
         class="bg-white dark:bg-gray-800 rounded-2xl px-4 py-3 shadow-sm border border-gray-200 dark:border-gray-700"
       >
-        <div class="text-gray-900 dark:text-white text-sm leading-relaxed">
-          {message.content}
-        </div>
+        {#if message.content}
+          <div class="text-gray-900 dark:text-white text-sm leading-relaxed whitespace-pre-wrap">
+            {message.content}
+          </div>
+        {/if}
+        <AgentAttachmentList attachments={message.attachments} />
       </div>
     </div>
 

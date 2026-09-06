@@ -99,6 +99,7 @@ impl EventEmitter {
                             DanmuEntry {
                                 ts: *ts,
                                 content: content.clone(),
+                                user_name: None,
                             },
                         )
                         .unwrap();

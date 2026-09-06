@@ -73,6 +73,30 @@ impl Range {
     }
 }
 
+/// Duration of each `xfade` / `acrossfade` overlap when concatenating clips.
+pub const TRANSITION_DURATION_SECS: f64 = 1.0;
+
+pub fn applies_clip_transition(transition: Option<&str>, clip_count: usize) -> bool {
+    clip_count >= 2 && matches!(transition, Some(t) if t != "none")
+}
+
+/// Start timestamps (milliseconds) of each clip on the concatenated timeline.
+///
+/// Video transitions overlap adjacent clips by [`TRANSITION_DURATION_SECS`], so
+/// later danmaku must use the same shortened timeline rather than a simple sum.
+pub fn clip_timeline_anchors(ranges: &[Range], transition: Option<&str>) -> Vec<i64> {
+    let overlap_ms = if applies_clip_transition(transition, ranges.len()) {
+        (TRANSITION_DURATION_SECS * 1000.0) as i64
+    } else {
+        0
+    };
+    let mut anchors = vec![0i64; ranges.len()];
+    for i in 1..ranges.len() {
+        anchors[i] = (ranges[i - 1].duration() * 1000.0) as i64 + anchors[i - 1] - overlap_ms;
+    }
+    anchors
+}
+
 pub async fn transcode(
     reporter: Option<&impl ProgressReporterTrait>,
     file: &Path,
@@ -1589,6 +1613,62 @@ mod tests {
             end: 2000.0,
         };
         assert_eq!(large_range.duration(), 1000.0);
+    }
+
+    fn sample_ranges() -> Vec<Range> {
+        vec![
+            Range {
+                start: 0.0,
+                end: 10.0,
+            },
+            Range {
+                start: 50.0,
+                end: 60.0,
+            },
+            Range {
+                start: 100.0,
+                end: 110.0,
+            },
+        ]
+    }
+
+    #[test]
+    fn clip_timeline_anchors_without_transition_sum_durations() {
+        assert_eq!(
+            clip_timeline_anchors(&sample_ranges(), None),
+            vec![0, 10_000, 20_000]
+        );
+        assert_eq!(
+            clip_timeline_anchors(&sample_ranges(), Some("none")),
+            vec![0, 10_000, 20_000]
+        );
+    }
+
+    #[test]
+    fn clip_timeline_anchors_with_transition_subtract_xfade_overlap() {
+        // 三段各 10s，转场各重叠 1s：0 / 9s / 18s
+        assert_eq!(
+            clip_timeline_anchors(&sample_ranges(), Some("fade")),
+            vec![0, 9_000, 18_000]
+        );
+        assert_eq!(
+            clip_timeline_anchors(&sample_ranges(), Some("dissolve")),
+            vec![0, 9_000, 18_000]
+        );
+    }
+
+    #[test]
+    fn clip_timeline_anchors_single_range_stays_at_zero_with_transition() {
+        let ranges = vec![Range {
+            start: 5.0,
+            end: 15.0,
+        }];
+        assert_eq!(clip_timeline_anchors(&ranges, Some("fade")), vec![0]);
+    }
+
+    #[test]
+    fn clip_timeline_anchors_empty_ranges() {
+        assert!(clip_timeline_anchors(&[], Some("fade")).is_empty());
     }
 
     // 非零退出码必须被识别为失败，否则会出现"任务成功但产物缺失"

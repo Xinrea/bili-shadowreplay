@@ -4,7 +4,7 @@ use crate::database::record::RecordRow;
 use crate::database::recorder::RecorderRow;
 use crate::database::video::VideoRow;
 use crate::database::{Database, DatabaseError};
-use crate::ffmpeg::{encode_video_danmu, transcode, Range};
+use crate::ffmpeg::{clip_timeline_anchors, encode_video_danmu, transcode, Range};
 use crate::progress::progress_reporter::{EventEmitter, ProgressReporter, ProgressReporterTrait};
 use crate::subtitle_generator::item_to_srt;
 use crate::task::{Task, TaskManager, TaskPriority};
@@ -1046,14 +1046,7 @@ impl RecorderManager {
             d.ts -= stream_start_timestamp_milis + params.local_offset * 1000;
         }
 
-        let mut range_anchors = vec![0; params.ranges.len()];
-        for i in 0..params.ranges.len() {
-            if i == 0 {
-                continue;
-            }
-            range_anchors[i] =
-                (params.ranges[i - 1].duration() * 1000.0) as i64 + range_anchors[i - 1];
-        }
+        let range_anchors = clip_timeline_anchors(&params.ranges, params.transition.as_deref());
 
         log::debug!("Range anchors: {:?}", range_anchors);
 

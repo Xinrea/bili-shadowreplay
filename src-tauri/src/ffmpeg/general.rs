@@ -129,6 +129,58 @@ mod tests {
     }
 }
 
+fn build_transition_filter_complex(
+    durations: &[f64],
+    transition_type: &str,
+    transition_duration: f64,
+) -> String {
+    let n = durations.len();
+    let mut parts = Vec::with_capacity((n.saturating_sub(1)) * 2);
+
+    for i in 0..(n.saturating_sub(1)) {
+        let is_last = i + 2 == n;
+        let offset = if i == 0 {
+            durations[0] - transition_duration
+        } else {
+            durations.iter().take(i + 1).sum::<f64>() - (i as f64 + 1.0) * transition_duration
+        };
+        let input_left = if i == 0 {
+            "[0:v]".to_string()
+        } else {
+            format!("[v{i}]")
+        };
+        let output_label = if is_last {
+            "[outv]".to_string()
+        } else {
+            format!("[v{}]", i + 1)
+        };
+        parts.push(format!(
+            "{input_left}[{}:v]xfade=transition={transition_type}:duration={transition_duration}:offset={offset}{output_label}",
+            i + 1
+        ));
+    }
+
+    for i in 0..(n.saturating_sub(1)) {
+        let is_last = i + 2 == n;
+        let input_left = if i == 0 {
+            "[0:a]".to_string()
+        } else {
+            format!("[a{i}]")
+        };
+        let output_label = if is_last {
+            "[outa]".to_string()
+        } else {
+            format!("[a{}]", i + 1)
+        };
+        parts.push(format!(
+            "{input_left}[{}:a]acrossfade=d={transition_duration}{output_label}",
+            i + 1
+        ));
+    }
+
+    parts.join(";")
+}
+
 pub async fn concat_videos(
     reporter: Option<&impl ProgressReporterTrait>,
     videos: &[PathBuf],
@@ -228,8 +280,8 @@ pub async fn concat_videos_with_transition(
         // clean up filelist
         let _ = tokio::fs::remove_file(output_folder.join(&filelist_filename)).await;
     } else {
-        // Use xfade filter for transitions
-        let transition_duration = 1.0;
+        // Use xfade + acrossfade so video and audio share the same overlap timeline
+        let transition_duration = super::TRANSITION_DURATION_SECS;
         // At this point we know transition is Some and not "none"
         let transition_type = transition.unwrap_or("fade");
 
@@ -250,42 +302,8 @@ pub async fn concat_videos_with_transition(
             ]);
         }
 
-        // Build xfade filter chain for video
-        let mut filter_complex = String::new();
-
-        for i in 0..(videos.len() - 1) {
-            let is_last = i == videos.len() - 2;
-            let offset = if i == 0 {
-                durations[0] - transition_duration
-            } else {
-                durations.iter().take(i + 1).sum::<f64>() - (i as f64 + 1.0) * transition_duration
-            };
-            let input_left = if i == 0 {
-                "[0:v]".to_string()
-            } else {
-                format!("[v{}]", i)
-            };
-            let output_label = if is_last {
-                "[outv]".to_string()
-            } else {
-                format!("[v{}]", i + 1)
-            };
-            filter_complex.push_str(&format!(
-                "{}[{}:v]xfade=transition={}:duration={}:offset={}{};",
-                input_left,
-                i + 1,
-                transition_type,
-                transition_duration,
-                offset,
-                output_label
-            ));
-        }
-
-        // Build audio concat filter to merge all audio streams
-        for i in 0..videos.len() {
-            filter_complex.push_str(&format!("[{}:a]", i));
-        }
-        filter_complex.push_str(&format!("concat=n={}:v=0:a=1[outa]", videos.len()));
+        let filter_complex =
+            build_transition_filter_complex(&durations, transition_type, transition_duration);
 
         let video_encoder = hwaccel::get_x264_encoder().await;
 
@@ -316,8 +334,51 @@ pub async fn concat_videos_with_transition(
 }
 
 #[cfg(test)]
+mod transition_filter_tests {
+    use super::build_transition_filter_complex;
+
+    #[test]
+    fn two_clips_use_matching_xfade_and_acrossfade() {
+        let filter = build_transition_filter_complex(&[8.0, 6.0], "dissolve", 1.0);
+        assert!(
+            filter.contains("[0:v][1:v]xfade=transition=dissolve:duration=1:offset=7[outv]"),
+            "unexpected video filter: {filter}"
+        );
+        assert!(
+            filter.contains("[0:a][1:a]acrossfade=d=1[outa]"),
+            "audio should acrossfade to match xfade: {filter}"
+        );
+        assert!(
+            !filter.contains("concat=n="),
+            "audio concat would desync from xfade: {filter}"
+        );
+    }
+
+    #[test]
+    fn three_clips_accumulate_overlap_on_video_and_audio() {
+        let filter = build_transition_filter_complex(&[10.0, 10.0, 10.0], "fade", 1.0);
+        assert!(
+            filter.contains("[0:v][1:v]xfade=transition=fade:duration=1:offset=9[v1]"),
+            "unexpected first xfade: {filter}"
+        );
+        assert!(
+            filter.contains("[v1][2:v]xfade=transition=fade:duration=1:offset=18[outv]"),
+            "unexpected second xfade: {filter}"
+        );
+        assert!(
+            filter.contains("[0:a][1:a]acrossfade=d=1[a1]"),
+            "unexpected first acrossfade: {filter}"
+        );
+        assert!(
+            filter.contains("[a1][2:a]acrossfade=d=1[outa]"),
+            "unexpected second acrossfade: {filter}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod concat_videos_tests {
-    use super::{concat_videos, random_filename};
+    use super::{concat_videos, concat_videos_with_transition, random_filename};
     use crate::ffmpeg::ffmpeg_path;
     use std::path::Path;
 
@@ -429,5 +490,69 @@ mod concat_videos_tests {
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
 
         assert!(result.is_ok(), "Concat should succeed: {:?}", result);
+    }
+
+    async fn probe_stream_duration(path: &Path, codec_type: &str) -> f64 {
+        let output = tokio::process::Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                codec_type,
+                "-show_entries",
+                "stream=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                path.to_str().unwrap(),
+            ])
+            .output()
+            .await
+            .expect("ffprobe");
+        String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse::<f64>()
+            .unwrap_or(0.0)
+    }
+
+    #[tokio::test]
+    async fn concat_with_transition_keeps_audio_in_sync_with_video() {
+        let temp_dir = std::env::temp_dir().join(format!("bili_test_{}", random_filename().await));
+        tokio::fs::create_dir_all(&temp_dir).await.unwrap();
+
+        let video1_path = temp_dir.join("a.mp4");
+        let video2_path = temp_dir.join("b.mp4");
+        let video3_path = temp_dir.join("c.mp4");
+        let output_path = temp_dir.join("out.mp4");
+
+        create_test_video(&video1_path, 3).await.unwrap();
+        create_test_video(&video2_path, 3).await.unwrap();
+        create_test_video(&video3_path, 3).await.unwrap();
+
+        let result = concat_videos_with_transition(
+            None::<&crate::progress::progress_reporter::ProgressReporter>,
+            &[video1_path, video2_path, video3_path],
+            &output_path,
+            Some("fade"),
+        )
+        .await;
+
+        let video_duration = probe_stream_duration(&output_path, "v:0").await;
+        let audio_duration = probe_stream_duration(&output_path, "a:0").await;
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+
+        assert!(
+            result.is_ok(),
+            "transition concat should succeed: {:?}",
+            result
+        );
+        // 3+3+3 minus two 1s overlaps ≈ 7s, not the 9s of naive audio concat
+        assert!(
+            (video_duration - 7.0).abs() < 0.3,
+            "video duration {video_duration} should match xfade timeline"
+        );
+        assert!(
+            (audio_duration - video_duration).abs() < 0.3,
+            "audio duration {audio_duration} drifted from video {video_duration}"
+        );
     }
 }

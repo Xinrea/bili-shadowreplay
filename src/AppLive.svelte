@@ -433,14 +433,14 @@
     }
   }
 
-  async function delete_video() {
-    if (!selected_video) {
-      return;
+  async function delete_video(id: number) {
+    await invoke("delete_video", { id });
+    if (selected_video?.id === id) {
+      selected_video = null;
     }
-    await invoke("delete_video", { id: selected_video.id });
-    selected_video = null;
     await get_video_list();
   }
+
   let player: PlayerHandle = $state();
   let rpanel_collapsed = $state(false);
   let markers: Marker[] = $state([]);
@@ -449,16 +449,15 @@
     window.localStorage.getItem(`markers:${room_id}:${live_id}`) || "[]"
   );
 
-  async function save_video() {
-    if (!selected_video) {
+  async function save_video(id: number) {
+    const video = videos.find((item) => item.id === id);
+    if (!video) {
       return;
     }
     // download video
-    const video_url = selected_video.file;
-    const video_name = selected_video.name;
     const a = document.createElement("a");
-    a.href = video_url;
-    a.download = video_name;
+    a.href = video.file;
+    a.download = video.name;
     a.click();
   }
 

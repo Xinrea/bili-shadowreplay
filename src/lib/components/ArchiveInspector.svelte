@@ -12,6 +12,7 @@
   import { onDestroy } from "svelte";
   import ArchiveClipButton from "./ArchiveClipButton.svelte";
   import MarkerPanel from "./MarkerPanel.svelte";
+  import { TAURI_ENV } from "../invoker";
 
   type InspectorTab = "ranges" | "danmu" | "markers" | "clips";
   type DanmuPeak = {
@@ -48,8 +49,8 @@
     onAddPeak?: (peak: DanmuPeak) => void;
     onAddAllPeaks?: () => void;
     onVideoSelect?: (id: number) => void;
-    onDeleteVideo?: () => void;
-    onDownloadVideo?: () => void;
+    onDeleteVideo?: (id: number) => void;
+    onDownloadVideo?: (id: number) => void;
     onOpenVideo?: (id: number) => void;
     onGenerated?: (video: VideoItem) => void;
   }
@@ -494,23 +495,30 @@
             <article
               class="clip-card"
               class:selected={selectedVideo?.id === item.id}
+              role="button"
+              tabindex="0"
+              onclick={() => onVideoSelect?.(item.id)}
+              onkeydown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onVideoSelect?.(item.id);
+                }
+              }}
             >
-              <button
-                type="button"
-                class="clip-preview"
-                onclick={() => onVideoSelect?.(item.id)}
-              >
+              <div class="clip-preview">
                 {#if item.cover}
                   <img src={item.cover} alt="" />
                 {:else}
                   <span>暂无封面</span>
                 {/if}
-              </button>
+              </div>
               <div class="clip-info">
-                <button type="button" onclick={() => onVideoSelect?.(item.id)}>
-                  {item.name}
-                </button>
-                <div>
+                <span class="clip-name" title={item.name}>{item.name}</span>
+                <div
+                  class="clip-actions"
+                  onclick={(event) => event.stopPropagation()}
+                  onkeydown={(event) => event.stopPropagation()}
+                >
                   <button
                     type="button"
                     title="打开切片"
@@ -518,23 +526,23 @@
                   >
                     <ExternalLink size={13} />
                   </button>
-                  {#if selectedVideo?.id === item.id}
+                  {#if !TAURI_ENV}
                     <button
                       type="button"
                       title="下载切片"
-                      onclick={onDownloadVideo}
+                      onclick={() => onDownloadVideo?.(item.id)}
                     >
                       <Download size={13} />
                     </button>
-                    <button
-                      type="button"
-                      title="删除切片"
-                      class="danger"
-                      onclick={onDeleteVideo}
-                    >
-                      <Trash2 size={13} />
-                    </button>
                   {/if}
+                  <button
+                    type="button"
+                    title="删除切片"
+                    class="danger"
+                    onclick={() => onDeleteVideo?.(item.id)}
+                  >
+                    <Trash2 size={13} />
+                  </button>
                 </div>
               </div>
             </article>
@@ -594,7 +602,7 @@
   .inspector-heading button,
   .range-actions button,
   .range-actions label,
-  .clip-info div button {
+  .clip-actions button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -806,11 +814,16 @@
     color: #d5deea;
   }
 
-  .clip-info div button {
+  .clip-actions button {
     width: 27px;
     height: 27px;
+    border: 0;
     background: #171c25;
     cursor: pointer;
+  }
+
+  .clip-actions button:hover {
+    color: #d5deea;
   }
 
   .check-mark {
@@ -1091,6 +1104,11 @@
     border: 1px solid #293442;
     border-radius: 9px;
     background: #202733;
+    cursor: pointer;
+  }
+
+  .clip-card:hover {
+    border-color: #3a4658;
   }
 
   .clip-card.selected {
@@ -1106,6 +1124,7 @@
     background: #0c1016;
     color: #657186;
     font-size: 9px;
+    pointer-events: none;
   }
 
   .clip-preview img {
@@ -1119,25 +1138,35 @@
     min-width: 0;
     flex-direction: column;
     justify-content: space-between;
+    gap: 8px;
     padding: 8px;
   }
 
-  .clip-info > button {
+  .clip-name {
     overflow: hidden;
     color: #dce5f3;
     font-size: 10px;
-    text-align: left;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .clip-info div {
+  .clip-actions {
     display: flex;
     justify-content: flex-end;
     gap: 4px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 120ms ease;
   }
 
-  .clip-info div button.danger,
+  .clip-card:hover .clip-actions,
+  .clip-card.selected .clip-actions,
+  .clip-card:focus-within .clip-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .clip-actions button.danger,
   .range-actions button:hover {
     color: #ff7181;
   }

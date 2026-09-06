@@ -66,7 +66,7 @@
   let danmu_heat_threshold = $state(0);
   let peak_threshold = $state(80); // 阈值百分比
   const DENSITY_WINDOW_SEC = 30; // 内部固定密度计算窗口
-  const keywords_storage_key = `danmu_keywords:${room_id}:${live_id}`;
+  const keywords_storage_key = `danmu_keywords:${room_id}`;
   let danmu_keywords: string[] = $state(
     (() => {
       try {

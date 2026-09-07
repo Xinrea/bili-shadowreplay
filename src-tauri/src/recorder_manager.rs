@@ -200,6 +200,29 @@ impl From<RecorderManagerError> for String {
     }
 }
 
+/// Resolve the session even when the last recording attempt produced no archive.
+async fn live_end_parent_id(
+    db: &Database,
+    platform: PlatformType,
+    room_id: &str,
+    recorder: &RecorderInfo,
+) -> Result<Option<String>, DatabaseError> {
+    let parent_id = if !recorder.platform_live_id.is_empty() {
+        recorder.platform_live_id.clone()
+    } else if !recorder.live_id.is_empty() {
+        // Keep compatibility with recorders that only retain their current archive ID.
+        db.get_record(room_id, &recorder.live_id).await?.parent_id
+    } else {
+        return Ok(None);
+    };
+
+    let records = db.get_archives_by_parent_id(room_id, &parent_id).await?;
+    Ok(records
+        .iter()
+        .any(|record| record.platform == platform.as_str() && record.size > 0)
+        .then_some(parent_id))
+}
+
 impl RecorderManager {
     pub fn new(
         #[cfg(not(feature = "headless"))] app_handle: AppHandle,
@@ -408,14 +431,17 @@ impl RecorderManager {
 
         let recorder_id = format!("{}:{}", platform.as_str(), room_id);
         log::info!("Start auto generate for {recorder_id}");
-        let live_id = recorder.live_id.clone();
-        let live_record = self.db.get_record(room_id, &live_id).await;
-        if live_record.is_err() {
-            log::error!("Live not found in record: {room_id} {live_id}");
-            return;
-        }
-
-        let live_record = live_record.unwrap();
+        let parent_id = match live_end_parent_id(&self.db, platform, room_id, recorder).await {
+            Ok(Some(parent_id)) => parent_id,
+            Ok(None) => {
+                log::info!("No recorded archives for ended live: {recorder_id}");
+                return;
+            }
+            Err(error) => {
+                log::error!("Failed to find ended live archives for {recorder_id}: {error}");
+                return;
+            }
+        };
 
         let Ok(task) = self
             .db
@@ -425,7 +451,7 @@ impl RecorderManager {
                 &serde_json::json!({
                     "platform": platform.as_str(),
                     "room_id": room_id,
-                    "parent_id": live_record.parent_id,
+                    "parent_id": parent_id,
                 })
                 .to_string(),
             )
@@ -468,7 +494,7 @@ impl RecorderManager {
                                     .encode_danmu,
                                 platform: platform.as_str().to_string(),
                                 room_id,
-                                parent_id: live_record.parent_id,
+                                parent_id,
                                 selected_live_ids: None,
                                 output_name: None,
                             },
@@ -1707,5 +1733,127 @@ impl RecorderManager {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod live_end_tests {
+    use super::*;
+
+    async fn database() -> Database {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE records (
+                live_id TEXT PRIMARY KEY, platform TEXT, parent_id TEXT,
+                room_id TEXT, title TEXT, length REAL, size INTEGER,
+                created_at TEXT, cover TEXT
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let db = Database::new();
+        db.set(pool).await;
+        db
+    }
+
+    fn ended_recorder(parent_id: &str, live_id: &str) -> RecorderInfo {
+        RecorderInfo {
+            platform_live_id: parent_id.into(),
+            live_id: live_id.into(),
+            room_info: RoomInfo::default(),
+            user_info: UserInfo::default(),
+            recording: false,
+            enabled: true,
+        }
+    }
+
+    async fn add_archive(db: &Database, platform: PlatformType, parent: &str, live: &str) {
+        db.add_record(platform, parent, live, "10220184", "test", None)
+            .await
+            .unwrap();
+        db.update_record_delta(live, 4.0, 1024).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn resolves_entire_session_without_a_last_archive() {
+        let db = database().await;
+        add_archive(&db, PlatformType::BiliBili, "session-1", "segment-1").await;
+        add_archive(&db, PlatformType::BiliBili, "session-1", "segment-2").await;
+        add_archive(&db, PlatformType::BiliBili, "old-session", "old-segment").await;
+
+        // Covers both a reset current ID and a removed zero-byte final segment.
+        for live_id in ["", "removed-empty-segment"] {
+            let parent = live_end_parent_id(
+                &db,
+                PlatformType::BiliBili,
+                "10220184",
+                &ended_recorder("session-1", live_id),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(parent, "session-1");
+            let archives = db
+                .get_archives_by_parent_id("10220184", &parent)
+                .await
+                .unwrap();
+            assert_eq!(archives.len(), 2);
+            assert!(archives
+                .iter()
+                .all(|archive| archive.live_id.starts_with("segment-")));
+        }
+    }
+
+    #[tokio::test]
+    async fn skips_unrecorded_sessions_instead_of_using_another_live() {
+        let db = database().await;
+        add_archive(&db, PlatformType::BiliBili, "old-session", "old-segment").await;
+        add_archive(&db, PlatformType::Douyin, "session-1", "other-platform").await;
+        db.add_record(
+            PlatformType::BiliBili,
+            "session-1",
+            "empty-segment",
+            "10220184",
+            "test",
+            None,
+        )
+        .await
+        .unwrap();
+
+        for parent_id in ["", "session-1", "unrecorded-session"] {
+            assert_eq!(
+                live_end_parent_id(
+                    &db,
+                    PlatformType::BiliBili,
+                    "10220184",
+                    &ended_recorder(parent_id, ""),
+                )
+                .await
+                .unwrap(),
+                None
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn supports_recorders_that_only_provide_an_archive_id() {
+        let db = database().await;
+        add_archive(&db, PlatformType::Douyin, "session-1", "segment-1").await;
+        assert_eq!(
+            live_end_parent_id(
+                &db,
+                PlatformType::Douyin,
+                "10220184",
+                &ended_recorder("", "segment-1"),
+            )
+            .await
+            .unwrap(),
+            Some("session-1".into())
+        );
     }
 }

@@ -98,13 +98,31 @@ impl BiliRecorder {
         log::error!("[{}]{}", self.room_id, message);
     }
 
-    pub async fn reset(&self) {
+    // A recording attempt can end while the same live session is still running.
+    async fn reset_recording(&self) {
+        self.is_recording.store(false, Ordering::Relaxed);
         *self.extra.live_stream.write().await = None;
         self.last_update
             .store(Utc::now().timestamp(), atomic::Ordering::Relaxed);
         *self.danmu_storage.write().await = None;
-        *self.platform_live_id.write().await = String::new();
         *self.live_id.write().await = String::new();
+    }
+
+    async fn reset_live(&self) {
+        self.reset_recording().await;
+        self.platform_live_id.write().await.clear();
+        *self.extra.pre_live_id.write().await = None;
+        self.extra.should_continue.store(false, Ordering::Relaxed);
+    }
+
+    async fn end_live(&self) {
+        // The event owns a snapshot, so the session can be cleared after sending it.
+        let _ = self.event_channel.send(RecorderEvent::LiveEnd {
+            platform: PlatformType::BiliBili,
+            room_id: self.room_id.to_string(),
+            recorder: self.info().await,
+        });
+        self.reset_live().await;
     }
 
     async fn check_status(&self) -> bool {
@@ -143,6 +161,13 @@ impl BiliRecorder {
                 }
                 let live_status = room_info.live_status == 1;
 
+                if live_status {
+                    if !pre_live_status {
+                        self.reset_live().await;
+                    }
+                    *self.platform_live_id.write().await = room_info.live_start_time.to_string();
+                }
+
                 // handle live notification
                 if pre_live_status != live_status {
                     self.log_info(&format!(
@@ -172,19 +197,9 @@ impl BiliRecorder {
                             recorder: self.info().await,
                         });
                     } else {
-                        let _ = self.event_channel.send(RecorderEvent::LiveEnd {
-                            platform: PlatformType::BiliBili,
-                            room_id: self.room_id.to_string(),
-                            recorder: self.info().await,
-                        });
-                        *self.live_id.write().await = String::new();
+                        self.end_live().await;
                     }
-
-                    // just doing reset, cuz live status is changed
-                    self.reset().await;
                 }
-
-                *self.platform_live_id.write().await = room_info.live_start_time.to_string();
 
                 if !live_status {
                     return false;
@@ -466,11 +481,7 @@ impl crate::traits::RecorderTrait<BiliExtra> for BiliRecorder {
                         });
                     }
 
-                    self_clone
-                        .is_recording
-                        .store(false, atomic::Ordering::Relaxed);
-
-                    self_clone.reset().await;
+                    self_clone.reset_recording().await;
                     // if should continue with previous recording, no need to sleep
                     if self_clone.extra.should_continue.load(Ordering::Relaxed) {
                         continue;
@@ -492,6 +503,99 @@ impl crate::traits::RecorderTrait<BiliExtra> for BiliRecorder {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    struct UnusedUserInfoCache;
+
+    #[async_trait]
+    impl UserInfoCache for UnusedUserInfoCache {
+        async fn get_user_info(&self, _: &str) -> Result<Option<UserInfo>, String> {
+            panic!("lifecycle tests must not request user info")
+        }
+
+        async fn save_user_info(&self, _: &UserInfo) -> Result<(), String> {
+            panic!("lifecycle tests must not save user info")
+        }
+    }
+
+    async fn recording_fixture() -> (BiliRecorder, broadcast::Receiver<RecorderEvent>) {
+        let (tx, rx) = broadcast::channel(10);
+        let recorder = BiliRecorder::new(
+            "10220184",
+            &Account::default(),
+            std::env::temp_dir().join(format!("bsr-lifecycle-{}", uuid::Uuid::new_v4())),
+            tx,
+            Arc::new(atomic::AtomicU64::new(30)),
+            true,
+            Arc::new(UnusedUserInfoCache),
+        )
+        .await
+        .unwrap();
+        *recorder.platform_live_id.write().await = "session-1".into();
+        *recorder.live_id.write().await = "segment-1".into();
+        *recorder.extra.pre_live_id.write().await = Some("segment-1".into());
+        recorder.extra.should_continue.store(true, Ordering::Relaxed);
+        recorder.is_recording.store(true, Ordering::Relaxed);
+        *recorder.extra.live_stream.write().await = Some(BiliStream::new(
+            Format::TS,
+            Codec::Avc,
+            "/expired.m3u8",
+            vec![],
+            false,
+            None,
+        ));
+        (recorder, rx)
+    }
+
+    #[tokio::test]
+    async fn recording_reset_preserves_session_and_expiry_resume_state() {
+        let (recorder, _) = recording_fixture().await;
+        tokio::fs::create_dir_all(&recorder.cache_dir).await.unwrap();
+        *recorder.danmu_storage.write().await =
+            DanmuStorage::new(&recorder.cache_dir.join("events.jsonl")).await;
+        assert!(recorder.danmu_storage.read().await.is_some());
+
+        recorder.reset_recording().await;
+
+        let info = recorder.info().await;
+        assert_eq!(info.platform_live_id, "session-1");
+        assert!(info.live_id.is_empty());
+        assert!(!info.recording);
+        assert!(recorder.extra.live_stream.read().await.is_none());
+        assert!(recorder.danmu_storage.read().await.is_none());
+        assert_eq!(
+            recorder.extra.pre_live_id.read().await.as_deref(),
+            Some("segment-1")
+        );
+        assert!(recorder.extra.should_continue.load(Ordering::Relaxed));
+        tokio::fs::remove_dir_all(&recorder.cache_dir).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn live_end_after_recording_error_keeps_session_snapshot_and_clears_resume() {
+        let (recorder, mut rx) = recording_fixture().await;
+        recorder.reset_recording().await;
+
+        // A failed restart must not expose the previous segment as the current recording.
+        assert!(matches!(
+            recorder.update_entries("failed-segment").await,
+            Err(RecorderError::NoStreamAvailable)
+        ));
+        assert!(recorder.info().await.live_id.is_empty());
+
+        recorder.end_live().await;
+
+        let RecorderEvent::LiveEnd { recorder: ended, .. } = rx.try_recv().unwrap() else {
+            panic!("expected a live end event")
+        };
+        assert_eq!(ended.platform_live_id, "session-1");
+        assert!(ended.live_id.is_empty());
+        assert!(!ended.recording);
+        assert!(recorder.info().await.platform_live_id.is_empty());
+        assert!(recorder.extra.pre_live_id.read().await.is_none());
+        assert!(!recorder.extra.should_continue.load(Ordering::Relaxed));
+    }
+
     #[test]
     fn parse_fmp4_playlist() {
         let content = r#"#EXTM3U

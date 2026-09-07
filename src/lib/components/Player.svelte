@@ -104,17 +104,6 @@
   let shaka_player: any;
   let start = $state(0);
   let end = $state(0);
-  let currentRangeIndex: number = -1; // 当前正在编辑的区间索引，-1 表示没有区间
-
-  $effect(() => {
-    if (selected_range_index !== currentRangeIndex) {
-      currentRangeIndex = selected_range_index;
-    }
-  });
-
-  $effect(() => {
-    selected_range_index = currentRangeIndex;
-  });
 
   $effect(() => {
     local_offset =
@@ -123,8 +112,8 @@
 
   // 获取当前区间
   function getCurrentRange(): Range | null {
-    if (currentRangeIndex >= 0 && currentRangeIndex < ranges.length) {
-      return ranges[currentRangeIndex];
+    if (selected_range_index >= 0 && selected_range_index < ranges.length) {
+      return ranges[selected_range_index];
     }
     return null;
   }
@@ -190,13 +179,13 @@
     localStorage.setItem(`${live_id}_ranges`, JSON.stringify(rangesToSave));
     localStorage.setItem(
       `${live_id}_currentRangeIndex`,
-      currentRangeIndex.toString()
+      selected_range_index.toString()
     );
     console.log(
       "Saved ranges (absolute time):",
       rangesToSave,
       "current index:",
-      currentRangeIndex
+      selected_range_index
     );
   }
 
@@ -237,25 +226,25 @@
             const range = ranges[index];
             // 如果区间在当前 focus 范围内（至少部分可见），保留索引
             if (range.end > 0) {
-              currentRangeIndex = index;
+              selected_range_index = index;
             } else {
               // 否则找到第一个在当前范围内的区间，或设为 -1
               const visibleIndex = ranges.findIndex(
                 (r) =>
                   r.end > 0
               );
-              currentRangeIndex = visibleIndex >= 0 ? visibleIndex : -1;
+              selected_range_index = visibleIndex >= 0 ? visibleIndex : -1;
             }
           } else {
-            currentRangeIndex = ranges.length > 0 ? 0 : -1;
+            selected_range_index = ranges.length > 0 ? 0 : -1;
           }
         } else {
-          currentRangeIndex = ranges.length > 0 ? 0 : -1;
+          selected_range_index = ranges.length > 0 ? 0 : -1;
         }
       } catch (e) {
         console.error("Failed to load ranges:", e);
         ranges = [];
-        currentRangeIndex = -1;
+        selected_range_index = -1;
       }
     }
     // 兼容旧版本的单个区间数据
@@ -267,7 +256,7 @@
         const e = parseFloat(oldEnd);
         if (e > s) {
           ranges = [{ start: s, end: e, activated: true }];
-          currentRangeIndex = 0;
+          selected_range_index = 0;
           saveRanges();
         }
       }
@@ -968,6 +957,12 @@ ${mediaPlaylistUrl}`;
           e.preventDefault();
           {
             const currentTime = parseFloat(video.currentTime.toFixed(2));
+            const current = getCurrentRange();
+            if (current && currentTime <= current.end) {
+              current.start = currentTime;
+              saveRanges();
+              break;
+            }
             const total = get_total();
             const end = Math.min(total, currentTime + 10);
             const start = end - currentTime > 0 ? currentTime : Math.max(0, total - 10);
@@ -977,11 +972,11 @@ ${mediaPlaylistUrl}`;
               activated: true,
             };
             ranges = [...ranges, newRange];
-            currentRangeIndex = ranges.length - 1;
+            selected_range_index = ranges.length - 1;
             saveRanges();
             console.log(
               "Range updated:",
-              ranges[currentRangeIndex],
+              ranges[selected_range_index],
               "Total ranges:",
               ranges.length
             );
@@ -992,6 +987,12 @@ ${mediaPlaylistUrl}`;
           e.preventDefault();
           {
             const currentTime = parseFloat(video.currentTime.toFixed(2));
+            const current = getCurrentRange();
+            if (current && currentTime >= current.start) {
+              current.end = currentTime;
+              saveRanges();
+              break;
+            }
             const start = Math.max(0, currentTime - 10);
             const newRange: Range = {
               start,
@@ -999,11 +1000,11 @@ ${mediaPlaylistUrl}`;
               activated: true,
             };
             ranges = [...ranges, newRange];
-            currentRangeIndex = ranges.length - 1;
+            selected_range_index = ranges.length - 1;
             saveRanges();
             console.log(
               "Range updated:",
-              ranges[currentRangeIndex],
+              ranges[selected_range_index],
               "Total ranges:",
               ranges.length
             );
@@ -1015,7 +1016,7 @@ ${mediaPlaylistUrl}`;
             // 合并重叠区间
             mergeOverlappingRanges();
             // 取消选中，进入创建模式
-            currentRangeIndex = -1;
+            selected_range_index = -1;
             saveRanges();
             console.log("Entered range creation mode (no range selected)");
           }
@@ -1032,7 +1033,7 @@ ${mediaPlaylistUrl}`;
               activated: true, // 新建区间默认为激活
             };
             ranges = [...ranges, newRange];
-            currentRangeIndex = ranges.length - 1;
+            selected_range_index = ranges.length - 1;
             saveRanges();
             console.log(
               "New range created:",
@@ -1047,13 +1048,13 @@ ${mediaPlaylistUrl}`;
         case "Backspace":
           e.preventDefault();
           {
-            if (currentRangeIndex >= 0 && currentRangeIndex < ranges.length) {
-              ranges = ranges.filter((_, i) => i !== currentRangeIndex);
+            if (selected_range_index >= 0 && selected_range_index < ranges.length) {
+              ranges = ranges.filter((_, i) => i !== selected_range_index);
               // 调整当前索引
               if (ranges.length === 0) {
-                currentRangeIndex = -1;
-              } else if (currentRangeIndex >= ranges.length) {
-                currentRangeIndex = ranges.length - 1;
+                selected_range_index = -1;
+              } else if (selected_range_index >= ranges.length) {
+                selected_range_index = ranges.length - 1;
               }
               saveRanges();
               console.log("Range deleted, remaining:", ranges.length);
@@ -1068,17 +1069,17 @@ ${mediaPlaylistUrl}`;
             if (ranges.length > 0) {
               if (e.shiftKey) {
                 // Shift+Tab or Shift+t: 切换到上一个区间
-                currentRangeIndex =
-                  currentRangeIndex <= 0
+                selected_range_index =
+                  selected_range_index <= 0
                     ? ranges.length - 1
-                    : currentRangeIndex - 1;
+                    : selected_range_index - 1;
               } else {
                 // Tab or t: 切换到下一个区间
-                currentRangeIndex = (currentRangeIndex + 1) % ranges.length;
+                selected_range_index = (selected_range_index + 1) % ranges.length;
               }
               saveRanges();
-              const current = ranges[currentRangeIndex];
-              console.log("Switched to range:", currentRangeIndex, current);
+              const current = ranges[selected_range_index];
+              console.log("Switched to range:", selected_range_index, current);
             }
           }
           break;
@@ -1137,7 +1138,7 @@ ${mediaPlaylistUrl}`;
         case "c":
           e.preventDefault();
           ranges = [];
-          currentRangeIndex = -1;
+          selected_range_index = -1;
           saveRanges();
           console.log("All ranges cleared");
           break;
@@ -1150,7 +1151,7 @@ ${mediaPlaylistUrl}`;
               ranges = [...ranges]; // Trigger Svelte reactivity for array update
               saveRanges();
               console.log(
-                `Range ${currentRangeIndex} activated status toggled to: ${current.activated}`
+                `Range ${selected_range_index} activated status toggled to: ${current.activated}`
               );
             } else {
               console.log("No current range selected to toggle activation.");
@@ -1298,8 +1299,8 @@ ${mediaPlaylistUrl}`;
 
       // 更新当前区间高亮覆盖层
       const currentRange =
-        currentRangeIndex >= 0 && currentRangeIndex < ranges.length
-          ? ranges[currentRangeIndex]
+        selected_range_index >= 0 && selected_range_index < ranges.length
+          ? ranges[selected_range_index]
           : null;
 
       if (currentRange && total > 0) {

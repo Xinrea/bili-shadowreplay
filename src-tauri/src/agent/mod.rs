@@ -18,8 +18,7 @@ use rig_core::{
     client::{CompletionClient, Nothing},
     completion::{Chat, Message, Prompt},
     message::{
-        AssistantContent, ImageMediaType, MimeType, ToolCall, ToolFunction, ToolResultContent,
-        UserContent,
+        AssistantContent, ImageMediaType, ToolCall, ToolFunction, ToolResultContent, UserContent,
     },
     providers::{ollama, openai},
     tool::Tool,
@@ -851,16 +850,21 @@ fn image_base64_data(data: &str) -> String {
     }
 }
 
-fn image_media_type(mime_type: Option<&str>) -> Option<ImageMediaType> {
-    let mime = mime_type
-        .unwrap_or("image/jpeg")
-        .trim()
-        .to_ascii_lowercase();
+fn image_media_type(mime_type: Option<&str>) -> Result<ImageMediaType, String> {
+    let mime = mime_type.unwrap_or("").trim().to_ascii_lowercase();
     let mime = match mime.as_str() {
         "image/jpg" => "image/jpeg",
         other => other,
     };
-    ImageMediaType::from_mime_type(mime).or_else(|| ImageMediaType::from_mime_type("image/jpeg"))
+    match mime {
+        "image/png" => Ok(ImageMediaType::PNG),
+        "image/jpeg" => Ok(ImageMediaType::JPEG),
+        "image/gif" => Ok(ImageMediaType::GIF),
+        "image/webp" => Ok(ImageMediaType::WEBP),
+        _ => Err(format!(
+            "Unsupported image media type: {mime}. Use PNG, JPEG, GIF, or WebP."
+        )),
+    }
 }
 
 fn user_content_parts(message: &AgentMessage) -> Result<OneOrMany<UserContent>, String> {
@@ -878,7 +882,7 @@ fn user_content_parts(message: &AgentMessage) -> Result<OneOrMany<UserContent>, 
                 }
                 contents.push(UserContent::image_base64(
                     data,
-                    image_media_type(part.mime_type.as_deref()),
+                    Some(image_media_type(part.mime_type.as_deref())?),
                     None,
                 ));
             }
@@ -1274,6 +1278,34 @@ mod tests {
             .expect("image part should reach the model");
         assert_eq!(image.data, DocumentSourceKind::Base64("cover-bytes".into()));
         assert_eq!(image.media_type, Some(ImageMediaType::PNG));
+    }
+
+    #[test]
+    fn unsupported_user_images_are_rejected_before_sending() {
+        for mime in ["image/svg+xml", "image/heic", "image/heif", "image/bmp", ""] {
+            let message = parse_user_message(json!({
+                "role": "user",
+                "content": "",
+                "parts": [{ "type": "image", "data": "original-bytes", "mimeType": mime }]
+            }));
+            assert!(rig_messages(&message)
+                .unwrap_err()
+                .contains("Unsupported image media type"));
+        }
+        assert!(image_media_type(None).is_err());
+    }
+
+    #[test]
+    fn supported_image_media_types_are_preserved() {
+        for (mime, expected) in [
+            ("image/png", ImageMediaType::PNG),
+            (" IMAGE/JPG ", ImageMediaType::JPEG),
+            ("image/jpeg", ImageMediaType::JPEG),
+            ("image/gif", ImageMediaType::GIF),
+            ("image/webp", ImageMediaType::WEBP),
+        ] {
+            assert_eq!(image_media_type(Some(mime)).unwrap(), expected);
+        }
     }
 
     #[test]

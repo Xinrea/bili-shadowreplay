@@ -4,7 +4,7 @@ export const MAX_ATTACHMENTS = 8;
 export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 export const MAX_TEXT_BYTES = 256 * 1024;
 export const FILE_ACCEPT =
-  "image/*,.txt,.md,.markdown,.json,.jsonl,.csv,.log,.srt,.ass,.ssa,.xml,.yaml,.yml,.toml,.html,.htm,.css,.js,.ts,.vtt,.lrc";
+  "image/png,image/jpeg,image/gif,image/webp,.png,.jpg,.jpeg,.gif,.webp,.txt,.md,.markdown,.json,.jsonl,.csv,.log,.srt,.ass,.ssa,.xml,.yaml,.yml,.toml,.html,.htm,.css,.js,.ts,.vtt,.lrc";
 
 const IMAGE_EXTENSIONS = new Set([
   "png",
@@ -12,11 +12,9 @@ const IMAGE_EXTENSIONS = new Set([
   "jpeg",
   "gif",
   "webp",
-  "heic",
-  "heif",
-  "bmp",
-  "svg",
 ]);
+
+const IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
 const TEXT_EXTENSIONS = new Set([
   "txt",
@@ -55,10 +53,6 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   jpeg: "image/jpeg",
   gif: "image/gif",
   webp: "image/webp",
-  heic: "image/heic",
-  heif: "image/heif",
-  bmp: "image/bmp",
-  svg: "image/svg+xml",
   txt: "text/plain",
   md: "text/markdown",
   markdown: "text/markdown",
@@ -152,8 +146,19 @@ export function mergeAttachments(
 
 async function loadAttachmentFromPath(path: string): Promise<LoadResult> {
   const name = fileNameFromPath(path);
+  const kind = classifyFile(name, "");
+  if (!kind) return unsupported(name);
+
   try {
-    const { readFile } = await import("@tauri-apps/plugin-fs");
+    const { readFile, stat } = await import("@tauri-apps/plugin-fs");
+    const metadata = await stat(path);
+    if (!metadata.isFile) return unsupported(name);
+    if (kind === "image" && metadata.size > MAX_IMAGE_BYTES) {
+      return tooLarge(name, "图片", MAX_IMAGE_BYTES);
+    }
+    if (kind === "text" && metadata.size > MAX_TEXT_BYTES) {
+      return tooLarge(name, "文本", MAX_TEXT_BYTES);
+    }
     const bytes = await readFile(path);
     return loadAttachmentFromBytes(name, "", bytes);
   } catch (error) {
@@ -247,18 +252,13 @@ async function imageAttachmentFromBlob(
   name: string,
   mimeType: string,
 ): Promise<MessageAttachment> {
-  const type = mimeType || mimeFromName(name) || "image/jpeg";
-  if (
-    type === "image/gif" ||
-    type === "image/svg+xml" ||
-    type === "image/heic" ||
-    type === "image/heif" ||
-    file.size <= 512 * 1024
-  ) {
+  const mime = normalizeMimeType(mimeType);
+  const type = IMAGE_MIME_TYPES.has(mime) ? mime : mimeFromName(name);
+  if (type === "image/gif" || file.size <= 512 * 1024) {
     return {
       kind: "image",
       name,
-      mimeType: type === "image/jpg" ? "image/jpeg" : type,
+      mimeType: type,
       data: await blobToBase64(file),
     };
   }
@@ -269,7 +269,7 @@ async function imageAttachmentFromBlob(
     return {
       kind: "image",
       name,
-      mimeType: type === "image/jpg" ? "image/jpeg" : type,
+      mimeType: type,
       data: await blobToBase64(file),
     };
   }
@@ -304,7 +304,8 @@ async function compressImage(
     return {
       kind: "image",
       name,
-      mimeType: outputType,
+      // Browsers may fall back to PNG when the requested encoder is unavailable.
+      mimeType: dataUrl.slice(5, dataUrl.indexOf(";")),
       data,
     };
   } finally {
@@ -338,15 +339,20 @@ function blobToBase64(file: Blob): Promise<string> {
 }
 
 function classifyFile(name: string, mimeType: string): FileKind | null {
-  const mime = mimeType.toLowerCase();
-  if (mime.startsWith("image/")) return "image";
+  const mime = normalizeMimeType(mimeType);
+  if (mime.startsWith("image/")) return IMAGE_MIME_TYPES.has(mime) ? "image" : null;
   if (mime.startsWith("text/") || mime === "application/json" || mime === "application/xml") {
     return "text";
   }
   const ext = extension(name);
-  if (IMAGE_EXTENSIONS.has(ext)) return "image";
+  if (IMAGE_EXTENSIONS.has(ext) && (!mime || mime === "application/octet-stream")) return "image";
   if (TEXT_EXTENSIONS.has(ext)) return "text";
   return null;
+}
+
+function normalizeMimeType(mimeType: string): string {
+  const mime = mimeType.trim().toLowerCase();
+  return mime === "image/jpg" ? "image/jpeg" : mime;
 }
 
 function mimeFromName(name: string): string {
@@ -364,18 +370,20 @@ function unsupported(name: string) {
     ok: false as const,
     error: {
       name,
-      message: "仅支持图片和文本文件",
+      message: "仅支持 PNG、JPEG、GIF、WebP 图片和文本文件",
     },
   };
 }
 
 function tooLarge(name: string, kind: string, maxBytes: number) {
-  const maxMb = Math.round(maxBytes / (1024 * 1024));
+  const limit = maxBytes >= 1024 * 1024
+    ? `${maxBytes / (1024 * 1024)}MB`
+    : `${maxBytes / 1024}KB`;
   return {
     ok: false as const,
     error: {
       name,
-      message: `${kind}不能超过 ${maxMb}MB`,
+      message: `${kind}不能超过 ${limit}`,
     },
   };
 }

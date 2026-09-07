@@ -2,6 +2,7 @@
   import { onDestroy, onMount } from "svelte";
   import { Settings, Send, Sparkles, Trash2, Zap, Bot, Paperclip } from "lucide-svelte";
   import { agentChat } from "../lib/agent/agent";
+  import { loadConversation, saveConversation } from "../lib/agent/conversation-store";
   import type { LlmConfig } from "../lib/interface";
   import { invoke, TAURI_ENV } from "../lib/invoker";
   import { invokeToolByName } from "../lib/agent/tools";
@@ -13,7 +14,6 @@
     type AttachmentLoadError,
   } from "../lib/agent/attachments";
   import {
-    deserializeMessages,
     isAssistantMessage,
     isToolMessage,
     type ChatMessage,
@@ -37,6 +37,9 @@
   let inputMessage = $state("");
   let attachments: MessageAttachment[] = $state([]);
   let attachmentError = $state("");
+  let storageError = $state("");
+  let conversationLoaded = $state(false);
+  let isRestoringConversation = $state(false);
   let isDraggingFiles = $state(false);
   let isProcessing = $state(false);
   let messageContainer: HTMLElement = $state();
@@ -113,14 +116,33 @@
     Boolean(inputMessage.trim() || attachments.length) &&
       !isProcessing &&
       !hasPendingToolCalls &&
+      conversationLoaded &&
       agentConfigured,
   );
 
-  function persistConversation() {
+  async function persistConversation() {
     try {
-      localStorage.setItem('messages', JSON.stringify(messages));
+      await saveConversation($state.snapshot(messages));
+      storageError = "";
     } catch (error) {
       console.error('Failed to persist AI conversation:', error);
+      storageError = "对话保存失败，请重试保存后再关闭或刷新页面。";
+    }
+  }
+
+  async function restoreConversation() {
+    if (isRestoringConversation) return;
+    isRestoringConversation = true;
+    try {
+      messages = await loadConversation();
+      conversationLoaded = true;
+      storageError = "";
+      scrollToBottom();
+    } catch (error) {
+      console.error('Failed to load AI conversation:', error);
+      storageError = "无法加载历史对话，请重试。";
+    } finally {
+      isRestoringConversation = false;
     }
   }
 
@@ -157,6 +179,7 @@
     attachments = [];
     attachmentError = "";
     isProcessing = true;
+    void persistConversation();
     scrollToBottom();
     try {
       await continueAgentFlow();
@@ -274,6 +297,7 @@
   async function handleToolCallConfirm(toolCall: ToolCall) {
     if (
       isProcessing ||
+      !conversationLoaded ||
       toolCall.executed !== false ||
       !toolCall.id ||
       getToolCallState(toolCall.id) !== 'none'
@@ -328,6 +352,7 @@
   async function handleToolCallReject(toolCall: ToolCall) {
     if (
       isProcessing ||
+      !conversationLoaded ||
       toolCall.executed !== false ||
       !toolCall.id ||
       getToolCallState(toolCall.id) !== 'none'
@@ -363,10 +388,11 @@
   }
 
   function clearConversation() {
+    if (!conversationLoaded || isProcessing) return;
     messages = [];
     attachments = [];
     attachmentError = "";
-    localStorage.removeItem('messages');
+    void persistConversation();
     scrollToBottom();
   }
 
@@ -381,12 +407,7 @@
     void loadSettings();
     window.addEventListener("llm-config-updated", loadSettings);
     window.addEventListener("paste", handlePaste);
-    try {
-      const previousMessages = JSON.parse(localStorage.getItem('messages') || '[]');
-      messages = deserializeMessages(previousMessages);
-    } catch (error) {
-      console.error('Failed to load AI conversation:', error);
-    }
+    void restoreConversation();
     localStorage.removeItem('toolCallStates'); // Remove the obsolete parallel state store.
     scrollToBottom();
 
@@ -502,7 +523,7 @@
                   {getToolCallState}
                   onToolCallConfirm={handleToolCallConfirm}
                   onToolCallReject={handleToolCallReject}
-                  confirmationDisabled={isProcessing}
+                  confirmationDisabled={isProcessing || !conversationLoaded}
                 />
               {:else}
                 <ToolMessageComponent {message} {formatTime} />
@@ -541,13 +562,24 @@
               placeholder={!agentConfigured ? "请先配置 AI 模型..." : hasPendingToolCalls ? "请先确认或拒绝待执行的工具调用..." : "输入消息，或拖入 / 粘贴图片和文本文件..."}
               class="w-full px-4 pt-3 pb-3 border-0 bg-transparent text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-0 resize-none min-h-[52px] max-h-[200px] text-[15px] leading-relaxed disabled:opacity-50 disabled:cursor-not-allowed"
               rows="1"
-              disabled={isProcessing || hasPendingToolCalls || !agentConfigured}
+              disabled={isProcessing || hasPendingToolCalls || !agentConfigured || !conversationLoaded}
             ></textarea>
           </div>
 
           {#if attachmentError}
             <div class="px-4 pb-2 text-xs text-red-500 dark:text-red-400">
               {attachmentError}
+            </div>
+          {/if}
+
+          {#if storageError}
+            <div class="px-4 pb-2 text-xs text-red-500 dark:text-red-400" role="alert">
+              {storageError}
+              <button
+                class="ml-2 underline"
+                disabled={isRestoringConversation}
+                onclick={() => conversationLoaded ? persistConversation() : restoreConversation()}
+              >重试</button>
             </div>
           {/if}
 
@@ -571,7 +603,7 @@
               <button
                 class="flex items-center space-x-1 px-2 py-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 onclick={clearConversation}
-                disabled={!agentConfigured}
+                disabled={!agentConfigured || !conversationLoaded || isProcessing}
                 title="清空对话"
               >
                 <Trash2 class="w-3.5 h-3.5" />

@@ -8,10 +8,34 @@ export interface ToolCall {
   error?: string | null;
 }
 
+export interface ImageAttachment {
+  kind: "image";
+  name: string;
+  mimeType: string;
+  data: string;
+}
+
+export interface TextAttachment {
+  kind: "text";
+  name: string;
+  mimeType: string;
+  text: string;
+}
+
+export type MessageAttachment = ImageAttachment | TextAttachment;
+
 export interface HumanMessage {
   kind: "human";
   content: string;
   timestamp: string;
+  attachments: MessageAttachment[];
+}
+
+export function imageAttachmentSrc(attachment: ImageAttachment): string {
+  if (attachment.data.startsWith("data:") || /^(https?:|blob:)/.test(attachment.data)) {
+    return attachment.data;
+  }
+  return `data:${attachment.mimeType};base64,${attachment.data}`;
 }
 
 export interface AssistantMessage {
@@ -168,6 +192,39 @@ function isRecord(value: unknown): value is Record<string, any> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function deserializeAttachments(value: unknown): MessageAttachment[] {
+  if (!Array.isArray(value)) return [];
+
+  return value.flatMap((raw): MessageAttachment[] => {
+    if (!isRecord(raw) || typeof raw.name !== "string") return [];
+    const mimeType = typeof raw.mimeType === "string"
+      ? raw.mimeType
+      : typeof raw.mime_type === "string"
+        ? raw.mime_type
+        : "";
+
+    if (raw.kind === "image" && typeof raw.data === "string" && raw.data) {
+      return [{
+        kind: "image",
+        name: raw.name,
+        mimeType: mimeType || "image/jpeg",
+        data: raw.data,
+      }];
+    }
+
+    if (raw.kind === "text" && typeof raw.text === "string") {
+      return [{
+        kind: "text",
+        name: raw.name,
+        mimeType: mimeType || "text/plain",
+        text: raw.text,
+      }];
+    }
+
+    return [];
+  });
+}
+
 export function normalizeToolArguments(value: unknown): Record<string, unknown> {
   let parsed = value;
   if (typeof value === "string") {
@@ -275,6 +332,7 @@ export function deserializeMessages(stored: unknown): ChatMessage[] {
         kind: "human",
         content: typeof content === "string" ? content : JSON.stringify(content),
         timestamp: timestamp(savedTimestamp),
+        attachments: deserializeAttachments(fields.attachments ?? raw.attachments),
       }];
     }
 

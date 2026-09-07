@@ -1,18 +1,27 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
-  import { Settings, Send, Sparkles, Trash2, Zap, Bot } from "lucide-svelte";
+  import { Settings, Send, Sparkles, Trash2, Zap, Bot, Paperclip } from "lucide-svelte";
   import { agentChat } from "../lib/agent/agent";
+  import { loadConversation, saveConversation } from "../lib/agent/conversation-store";
   import type { LlmConfig } from "../lib/interface";
-  import { invoke } from "../lib/invoker";
+  import { invoke, TAURI_ENV } from "../lib/invoker";
   import { invokeToolByName } from "../lib/agent/tools";
   import {
-    deserializeMessages,
+    FILE_ACCEPT,
+    loadAttachmentsFromFiles,
+    loadAttachmentsFromPaths,
+    mergeAttachments,
+    type AttachmentLoadError,
+  } from "../lib/agent/attachments";
+  import {
     isAssistantMessage,
     isToolMessage,
     type ChatMessage,
+    type MessageAttachment,
     type ToolCall,
     type ToolMessage,
   } from "../lib/agent/messages";
+  import AgentAttachmentList from "../lib/components/AgentAttachmentList.svelte";
   import HumanMessageComponent from "../lib/components/HumanMessage.svelte";
   import AIMessageComponent from "../lib/components/AIMessage.svelte";
   import ProcessingMessageComponent from "../lib/components/ProcessingMessage.svelte";
@@ -26,10 +35,18 @@
 
   let messages: ChatMessage[] = $state([]);
   let inputMessage = $state("");
+  let attachments: MessageAttachment[] = $state([]);
+  let attachmentError = $state("");
+  let storageError = $state("");
+  let conversationLoaded = $state(false);
+  let isRestoringConversation = $state(false);
+  let isDraggingFiles = $state(false);
   let isProcessing = $state(false);
   let messageContainer: HTMLElement = $state();
   let inputAreaHeight = $state(0);
+  let fileInput: HTMLInputElement | undefined = $state();
   let agentConfigured = $state(false);
+  let stopDragDrop: (() => void) | undefined;
 
   let settings = $state({
     provider: "openai" as "openai" | "ollama",
@@ -95,12 +112,37 @@
   }
 
   let hasPendingToolCalls = $derived(hasUnresolvedPendingToolCalls());
+  let canSend = $derived(
+    Boolean(inputMessage.trim() || attachments.length) &&
+      !isProcessing &&
+      !hasPendingToolCalls &&
+      conversationLoaded &&
+      agentConfigured,
+  );
 
-  function persistConversation() {
+  async function persistConversation() {
     try {
-      localStorage.setItem('messages', JSON.stringify(messages));
+      await saveConversation($state.snapshot(messages));
+      storageError = "";
     } catch (error) {
       console.error('Failed to persist AI conversation:', error);
+      storageError = "对话保存失败，请重试保存后再关闭或刷新页面。";
+    }
+  }
+
+  async function restoreConversation() {
+    if (isRestoringConversation) return;
+    isRestoringConversation = true;
+    try {
+      messages = await loadConversation();
+      conversationLoaded = true;
+      storageError = "";
+      scrollToBottom();
+    } catch (error) {
+      console.error('Failed to load AI conversation:', error);
+      storageError = "无法加载历史对话，请重试。";
+    } finally {
+      isRestoringConversation = false;
     }
   }
 
@@ -126,14 +168,18 @@
   }
 
   async function sendMessage() {
-    if (!inputMessage.trim() || isProcessing || hasPendingToolCalls || !agentConfigured) return;
+    if (!canSend) return;
     messages = [...messages, {
       kind: 'human',
-      content: inputMessage,
+      content: inputMessage.trim(),
       timestamp: new Date().toISOString(),
+      attachments,
     }];
     inputMessage = "";
+    attachments = [];
+    attachmentError = "";
     isProcessing = true;
+    void persistConversation();
     scrollToBottom();
     try {
       await continueAgentFlow();
@@ -141,6 +187,89 @@
       isProcessing = false;
       scrollToBottom();
     }
+  }
+
+  function formatAttachmentErrors(errors: AttachmentLoadError[], skipped: number): string {
+    const parts = errors.map((error) => `${error.name}：${error.message}`);
+    if (skipped > 0) {
+      parts.push(`最多添加 8 个附件，已忽略 ${skipped} 个文件`);
+    }
+    return parts.join("；");
+  }
+
+  async function addLoadedAttachments(
+    loaded: MessageAttachment[],
+    errors: AttachmentLoadError[],
+  ) {
+    const merged = mergeAttachments(attachments, loaded);
+    attachments = merged.attachments;
+    attachmentError = formatAttachmentErrors(errors, merged.skipped);
+  }
+
+  async function addAttachmentsFromFileList(files: Iterable<File>) {
+    const { attachments: loaded, errors } = await loadAttachmentsFromFiles(files);
+    await addLoadedAttachments(loaded, errors);
+  }
+
+  async function addAttachmentsFromPaths(paths: string[]) {
+    const { attachments: loaded, errors } = await loadAttachmentsFromPaths(paths);
+    await addLoadedAttachments(loaded, errors);
+  }
+
+  function removeAttachment(index: number) {
+    attachments = attachments.filter((_, current) => current !== index);
+  }
+
+  function openFilePicker() {
+    if (isProcessing || hasPendingToolCalls) return;
+    fileInput?.click();
+  }
+
+  async function handleFileInput(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const files = input.files;
+    if (files && files.length > 0) {
+      await addAttachmentsFromFileList(files);
+    }
+    input.value = "";
+  }
+
+  function handleDragOver(event: DragEvent) {
+    if (![...(event.dataTransfer?.types ?? [])].includes("Files")) return;
+    event.preventDefault();
+    isDraggingFiles = true;
+  }
+
+  function handleDragLeave(event: DragEvent) {
+    const next = event.relatedTarget as Node | null;
+    if (next && (event.currentTarget as HTMLElement).contains(next)) return;
+    isDraggingFiles = false;
+  }
+
+  async function handleDrop(event: DragEvent) {
+    event.preventDefault();
+    isDraggingFiles = false;
+    if (TAURI_ENV) return;
+    const files = event.dataTransfer?.files;
+    if (files && files.length > 0) {
+      await addAttachmentsFromFileList(files);
+    }
+  }
+
+  async function handlePaste(event: ClipboardEvent) {
+    const files = [...(event.clipboardData?.files ?? [])];
+    if (files.length > 0) {
+      event.preventDefault();
+      await addAttachmentsFromFileList(files);
+      return;
+    }
+
+    const imageItems = [...(event.clipboardData?.items ?? [])]
+      .map((item) => item.type.startsWith("image/") ? item.getAsFile() : null)
+      .filter((file): file is File => Boolean(file));
+    if (imageItems.length === 0) return;
+    event.preventDefault();
+    await addAttachmentsFromFileList(imageItems);
   }
 
   async function continueAgentFlow() {
@@ -168,6 +297,7 @@
   async function handleToolCallConfirm(toolCall: ToolCall) {
     if (
       isProcessing ||
+      !conversationLoaded ||
       toolCall.executed !== false ||
       !toolCall.id ||
       getToolCallState(toolCall.id) !== 'none'
@@ -222,6 +352,7 @@
   async function handleToolCallReject(toolCall: ToolCall) {
     if (
       isProcessing ||
+      !conversationLoaded ||
       toolCall.executed !== false ||
       !toolCall.id ||
       getToolCallState(toolCall.id) !== 'none'
@@ -257,8 +388,11 @@
   }
 
   function clearConversation() {
+    if (!conversationLoaded || isProcessing) return;
     messages = [];
-    localStorage.removeItem('messages');
+    attachments = [];
+    attachmentError = "";
+    void persistConversation();
     scrollToBottom();
   }
 
@@ -272,22 +406,42 @@
   onMount(() => {
     void loadSettings();
     window.addEventListener("llm-config-updated", loadSettings);
-    try {
-      const previousMessages = JSON.parse(localStorage.getItem('messages') || '[]');
-      messages = deserializeMessages(previousMessages);
-    } catch (error) {
-      console.error('Failed to load AI conversation:', error);
-    }
+    window.addEventListener("paste", handlePaste);
+    void restoreConversation();
     localStorage.removeItem('toolCallStates'); // Remove the obsolete parallel state store.
     scrollToBottom();
+
+    if (TAURI_ENV) {
+      void import("@tauri-apps/api/webview").then(async ({ getCurrentWebview }) => {
+        stopDragDrop = await getCurrentWebview().onDragDropEvent((event) => {
+          if (event.payload.type === "enter" || event.payload.type === "over") {
+            isDraggingFiles = true;
+            return;
+          }
+          isDraggingFiles = false;
+          if (event.payload.type === "drop") {
+            void addAttachmentsFromPaths(event.payload.paths);
+          }
+        });
+      });
+    }
   });
 
   onDestroy(() => {
     window.removeEventListener("llm-config-updated", loadSettings);
+    window.removeEventListener("paste", handlePaste);
+    stopDragDrop?.();
   });
 </script>
 
-<div class="flex h-full bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-950 dark:to-gray-900">
+<div
+  class="flex h-full bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-950 dark:to-gray-900 relative"
+  role="region"
+  aria-label="AI 助手"
+  ondragover={handleDragOver}
+  ondragleave={handleDragLeave}
+  ondrop={handleDrop}
+>
   <!-- Main Content -->
   <div class="flex-1 flex flex-col relative">
     <!-- Messages Area -->
@@ -369,7 +523,7 @@
                   {getToolCallState}
                   onToolCallConfirm={handleToolCallConfirm}
                   onToolCallReject={handleToolCallReject}
-                  confirmationDisabled={isProcessing}
+                  confirmationDisabled={isProcessing || !conversationLoaded}
                 />
               {:else}
                 <ToolMessageComponent {message} {formatTime} />
@@ -390,17 +544,44 @@
     <div bind:offsetHeight={inputAreaHeight} class="absolute bottom-0 left-0 right-0 px-6 pb-4 pt-8 bg-gradient-to-t from-gray-50 via-gray-50 to-transparent dark:from-gray-950 dark:via-gray-950">
       <div class="max-w-4xl mx-auto">
         <div class="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 shadow-lg overflow-hidden">
+          {#if attachments.length > 0}
+            <div class="px-4 pt-3">
+              <AgentAttachmentList
+                {attachments}
+                removable
+                compact
+                onRemove={removeAttachment}
+              />
+            </div>
+          {/if}
           <!-- Textarea -->
           <div class="relative">
             <textarea
               bind:value={inputMessage}
               onkeypress={handleKeyPress}
-              placeholder={!agentConfigured ? "请先配置 AI 模型..." : hasPendingToolCalls ? "请先确认或拒绝待执行的工具调用..." : "输入您的消息..."}
+              placeholder={!agentConfigured ? "请先配置 AI 模型..." : hasPendingToolCalls ? "请先确认或拒绝待执行的工具调用..." : "输入消息，或拖入 / 粘贴图片和文本文件..."}
               class="w-full px-4 pt-3 pb-3 border-0 bg-transparent text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-0 resize-none min-h-[52px] max-h-[200px] text-[15px] leading-relaxed disabled:opacity-50 disabled:cursor-not-allowed"
               rows="1"
-              disabled={isProcessing || hasPendingToolCalls || !agentConfigured}
+              disabled={isProcessing || hasPendingToolCalls || !agentConfigured || !conversationLoaded}
             ></textarea>
           </div>
+
+          {#if attachmentError}
+            <div class="px-4 pb-2 text-xs text-red-500 dark:text-red-400">
+              {attachmentError}
+            </div>
+          {/if}
+
+          {#if storageError}
+            <div class="px-4 pb-2 text-xs text-red-500 dark:text-red-400" role="alert">
+              {storageError}
+              <button
+                class="ml-2 underline"
+                disabled={isRestoringConversation}
+                onclick={() => conversationLoaded ? persistConversation() : restoreConversation()}
+              >重试</button>
+            </div>
+          {/if}
 
           <!-- Bottom bar: model info + actions -->
           <div class="flex items-center justify-between px-4 py-2 border-t border-gray-100 dark:border-gray-800/50">
@@ -422,7 +603,7 @@
               <button
                 class="flex items-center space-x-1 px-2 py-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 onclick={clearConversation}
-                disabled={!agentConfigured}
+                disabled={!agentConfigured || !conversationLoaded || isProcessing}
                 title="清空对话"
               >
                 <Trash2 class="w-3.5 h-3.5" />
@@ -431,12 +612,29 @@
             </div>
 
             <div class="flex items-center space-x-2">
+              <input
+                bind:this={fileInput}
+                type="file"
+                class="hidden"
+                multiple
+                accept={FILE_ACCEPT}
+                onchange={handleFileInput}
+              />
+              <button
+                type="button"
+                class="flex items-center justify-center w-8 h-8 text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                onclick={openFilePicker}
+                disabled={isProcessing || hasPendingToolCalls}
+                title="添加图片或文本文件"
+              >
+                <Paperclip class="w-4 h-4" />
+              </button>
               {#if inputMessage.trim()}
                 <span class="text-xs text-gray-400 dark:text-gray-600">{inputMessage.length}</span>
               {/if}
               <button
                 class="px-3 py-1.5 bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 rounded-lg hover:bg-gray-800 dark:hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center space-x-1.5 text-sm font-medium"
-                disabled={!inputMessage.trim() || isProcessing || hasPendingToolCalls || !agentConfigured}
+                disabled={!canSend}
                 onclick={sendMessage}
               >
                 <Send class="w-3.5 h-3.5" />
@@ -448,6 +646,15 @@
       </div>
     </div>
   </div>
+
+  {#if isDraggingFiles}
+    <div class="absolute inset-0 z-20 flex items-center justify-center bg-gray-950/40 backdrop-blur-[2px] pointer-events-none">
+      <div class="px-6 py-4 rounded-2xl bg-white/95 dark:bg-gray-900/95 border border-gray-200 dark:border-gray-700 shadow-xl text-center">
+        <p class="text-sm font-medium text-gray-900 dark:text-gray-100">松开以添加图片或文本文件</p>
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">最多 8 个附件，不支持视频</p>
+      </div>
+    </div>
+  {/if}
 
 </div>
 

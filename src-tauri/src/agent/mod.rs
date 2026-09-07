@@ -17,7 +17,9 @@ use std::{
 use rig_core::{
     client::{CompletionClient, Nothing},
     completion::{Chat, Message, Prompt},
-    message::{AssistantContent, ToolCall, ToolFunction, ToolResultContent, UserContent},
+    message::{
+        AssistantContent, ImageMediaType, ToolCall, ToolFunction, ToolResultContent, UserContent,
+    },
     providers::{ollama, openai},
     tool::Tool,
     OneOrMany,
@@ -109,8 +111,25 @@ pub struct AgentMessage {
     pub role: String,
     pub content: String,
     #[serde(default)]
+    pub parts: Vec<AgentContentPart>,
+    #[serde(default)]
     pub tool_calls: Vec<AgentToolCall>,
     pub tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentContentPart {
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub data: Option<String>,
+    #[serde(default)]
+    pub mime_type: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -824,9 +843,81 @@ impl Tool for BsrTool {
     }
 }
 
+fn image_base64_data(data: &str) -> String {
+    match data.split_once("base64,") {
+        Some((_, payload)) => payload.trim().to_string(),
+        None => data.trim().to_string(),
+    }
+}
+
+fn image_media_type(mime_type: Option<&str>) -> Result<ImageMediaType, String> {
+    let mime = mime_type.unwrap_or("").trim().to_ascii_lowercase();
+    let mime = match mime.as_str() {
+        "image/jpg" => "image/jpeg",
+        other => other,
+    };
+    match mime {
+        "image/png" => Ok(ImageMediaType::PNG),
+        "image/jpeg" => Ok(ImageMediaType::JPEG),
+        "image/gif" => Ok(ImageMediaType::GIF),
+        "image/webp" => Ok(ImageMediaType::WEBP),
+        _ => Err(format!(
+            "Unsupported image media type: {mime}. Use PNG, JPEG, GIF, or WebP."
+        )),
+    }
+}
+
+fn user_content_parts(message: &AgentMessage) -> Result<OneOrMany<UserContent>, String> {
+    let mut contents = Vec::new();
+    if !message.content.is_empty() {
+        contents.push(UserContent::text(message.content.clone()));
+    }
+
+    for part in &message.parts {
+        match part.kind.as_str() {
+            "image" => {
+                let data = image_base64_data(part.data.as_deref().unwrap_or(""));
+                if data.is_empty() {
+                    continue;
+                }
+                contents.push(UserContent::image_base64(
+                    data,
+                    Some(image_media_type(part.mime_type.as_deref())?),
+                    None,
+                ));
+            }
+            "text" => {
+                let body = part.text.as_deref().unwrap_or("").trim();
+                if body.is_empty() {
+                    continue;
+                }
+                let labeled = match part
+                    .name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                {
+                    Some(name) => format!("Attached file `{name}`:\n{body}"),
+                    None => body.to_string(),
+                };
+                contents.push(UserContent::text(labeled));
+            }
+            _ => {}
+        }
+    }
+
+    if contents.is_empty() {
+        contents.push(UserContent::text(String::new()));
+    }
+
+    OneOrMany::many(contents).map_err(|error| error.to_string())
+}
+
 fn rig_messages(message: &AgentMessage) -> Result<Vec<Message>, String> {
     match message.role.as_str() {
-        "user" => Ok(vec![Message::user(message.content.clone())]),
+        "user" => Ok(vec![Message::User {
+            content: user_content_parts(message)?,
+        }]),
         "assistant" => {
             let mut content = Vec::new();
             if !message.content.is_empty() {
@@ -1009,6 +1100,7 @@ mod tests {
         AgentMessage {
             role: "tool".into(),
             content: content.to_string(),
+            parts: Vec::new(),
             tool_calls: Vec::new(),
             tool_call_id: Some("tool-call-1".into()),
         }
@@ -1113,6 +1205,7 @@ mod tests {
         let assistant = AgentMessage {
             role: "assistant".into(),
             content: "".into(),
+            parts: Vec::new(),
             tool_calls: vec![AgentToolCall {
                 id: "tool-call-1".into(),
                 name: "extract_video_frames".into(),
@@ -1138,5 +1231,127 @@ mod tests {
         assert!(content
             .iter()
             .any(|content| matches!(content, UserContent::Image(_))));
+    }
+
+    fn parse_user_message(value: Value) -> AgentMessage {
+        serde_json::from_value(value).expect("user message should deserialize")
+    }
+
+    fn user_text_parts(message: &Message) -> Vec<&str> {
+        let Message::User { content } = message else {
+            panic!("expected user message");
+        };
+        content
+            .iter()
+            .filter_map(|part| match part {
+                UserContent::Text(text) => Some(text.text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn user_image_parts_become_multimodal_content() {
+        let messages = rig_messages(&parse_user_message(json!({
+            "role": "user",
+            "content": "看看这张封面",
+            "parts": [{
+                "type": "image",
+                "data": "cover-bytes",
+                "mimeType": "image/png",
+                "name": "cover.png"
+            }]
+        })))
+        .unwrap();
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(user_text_parts(&messages[0]), ["看看这张封面"]);
+        let Message::User { content } = &messages[0] else {
+            panic!("expected user message");
+        };
+        let image = content
+            .iter()
+            .find_map(|part| match part {
+                UserContent::Image(image) => Some(image),
+                _ => None,
+            })
+            .expect("image part should reach the model");
+        assert_eq!(image.data, DocumentSourceKind::Base64("cover-bytes".into()));
+        assert_eq!(image.media_type, Some(ImageMediaType::PNG));
+    }
+
+    #[test]
+    fn unsupported_user_images_are_rejected_before_sending() {
+        for mime in ["image/svg+xml", "image/heic", "image/heif", "image/bmp", ""] {
+            let message = parse_user_message(json!({
+                "role": "user",
+                "content": "",
+                "parts": [{ "type": "image", "data": "original-bytes", "mimeType": mime }]
+            }));
+            assert!(rig_messages(&message)
+                .unwrap_err()
+                .contains("Unsupported image media type"));
+        }
+        assert!(image_media_type(None).is_err());
+    }
+
+    #[test]
+    fn supported_image_media_types_are_preserved() {
+        for (mime, expected) in [
+            ("image/png", ImageMediaType::PNG),
+            (" IMAGE/JPG ", ImageMediaType::JPEG),
+            ("image/jpeg", ImageMediaType::JPEG),
+            ("image/gif", ImageMediaType::GIF),
+            ("image/webp", ImageMediaType::WEBP),
+        ] {
+            assert_eq!(image_media_type(Some(mime)).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn user_text_attachments_are_labeled_with_filename() {
+        let messages = rig_messages(&parse_user_message(json!({
+            "role": "user",
+            "content": "",
+            "parts": [{
+                "type": "text",
+                "text": "hello danmu",
+                "name": "comments.txt",
+                "mimeType": "text/plain"
+            }]
+        })))
+        .unwrap();
+
+        let texts = user_text_parts(&messages[0]);
+        assert_eq!(texts.len(), 1);
+        assert!(texts[0].contains("comments.txt"), "{texts:?}");
+        assert!(texts[0].contains("hello danmu"), "{texts:?}");
+    }
+
+    #[test]
+    fn user_data_url_images_are_decoded_to_raw_base64() {
+        let messages = rig_messages(&parse_user_message(json!({
+            "role": "user",
+            "content": "图",
+            "parts": [{
+                "type": "image",
+                "data": "data:image/jpeg;base64,abc123",
+                "mimeType": "image/jpg"
+            }]
+        })))
+        .unwrap();
+
+        let Message::User { content } = &messages[0] else {
+            panic!("expected user message");
+        };
+        let image = content
+            .iter()
+            .find_map(|part| match part {
+                UserContent::Image(image) => Some(image),
+                _ => None,
+            })
+            .expect("image part should reach the model");
+        assert_eq!(image.data, DocumentSourceKind::Base64("abc123".into()));
+        assert_eq!(image.media_type, Some(ImageMediaType::JPEG));
     }
 }

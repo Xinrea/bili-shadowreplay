@@ -1,4 +1,5 @@
 import { invoke } from "../invoker";
+import { protocolPartsFromAttachments } from "./attachments";
 import {
   isAssistantMessage,
   isToolMessage,
@@ -55,7 +56,10 @@ export async function agentChat(
     })
     .map((message) => {
       if (message.kind === "human") {
-        return { role: "user", content: message.content };
+        const parts = protocolPartsFromAttachments(message.attachments);
+        return parts.length > 0
+          ? { role: "user", content: message.content, parts }
+          : { role: "user", content: message.content };
       }
       if (message.kind === "tool") {
         return {

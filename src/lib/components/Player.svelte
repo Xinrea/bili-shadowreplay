@@ -196,6 +196,16 @@
     // 只有没有恢复到选区时才读取旧版 `${live_id}_ranges` 数据，
     // 避免旧数据覆盖智能推荐或新布局保存的选区。
     if (ranges.length > 0) {
+      // 父组件只恢复区间数组，仍需将保存的选中索引恢复到共享状态。
+      if (selected_range_index === -1) {
+        const savedIndex = localStorage.getItem(`${live_id}_currentRangeIndex`);
+        if (savedIndex !== null && savedIndex.trim() !== "") {
+          const index = Number(savedIndex);
+          if (Number.isInteger(index) && index >= 0 && index < ranges.length) {
+            selected_range_index = index;
+          }
+        }
+      }
       return;
     }
     const saved = localStorage.getItem(`${live_id}_ranges`);

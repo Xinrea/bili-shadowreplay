@@ -39,6 +39,7 @@
 
       // 处理封面
       for (const archive of sameParentArchives) {
+        if (seq !== loadSeq) return;
         archive.cover = await get_static_url(
           "cache",
           `${archive.platform}/${archive.room_id}/${archive.live_id}/cover.jpg`

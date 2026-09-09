@@ -49,7 +49,12 @@ impl ApiClient {
     ) -> Result<reqwest::Response, DanmuStreamError> {
         let cookie = self.get_current_cookie().await;
         let mut header = HeaderMap::new();
-        header.insert("cookie", cookie.parse().unwrap());
+        let cookie_value = cookie
+            .parse()
+            .map_err(|_| DanmuStreamError::MessageParseError {
+                err: "Invalid cookie header value".to_string(),
+            })?;
+        header.insert("cookie", cookie_value);
 
         let resp = self
             .client

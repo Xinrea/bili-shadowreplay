@@ -1,4 +1,4 @@
-﻿use super::response::LiveStreamResponse;
+use super::response::LiveStreamResponse;
 use crate::core::stream_info::{
     CdnNode, Codec, Format, PlatformStreamInfo, PlatformType, Quality, StreamVariant,
 };
@@ -12,7 +12,12 @@ use serde_json::{json, Map, Value};
 fn generate_user_agent_header() -> reqwest::header::HeaderMap {
     let user_agent = user_agent_generator::UserAgentGenerator::new().generate(false);
     let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert("user-agent", user_agent.parse().unwrap());
+    headers.insert(
+        "user-agent",
+        user_agent
+            .parse()
+            .expect("generated user agent is a valid header value"),
+    );
     headers
 }
 
@@ -306,21 +311,21 @@ async fn fetch_web_html(
     let mut headers = generate_user_agent_header();
     headers.insert(
         "Accept",
-        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-            .parse()
-            .unwrap(),
+        reqwest::header::HeaderValue::from_static(
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        ),
     );
     headers.insert(
         "Accept-Language",
-        "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2"
-            .parse()
-            .unwrap(),
+        reqwest::header::HeaderValue::from_static(
+            "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2",
+        ),
     );
 
     if !account.cookies.is_empty() {
         let cookie = normalize_cookie_header(&account.cookies);
         if !cookie.is_empty() {
-            headers.insert("Cookie", cookie.parse().unwrap());
+            headers.insert("Cookie", crate::utils::header_value("Cookie", &cookie)?);
         }
     }
 
@@ -334,7 +339,10 @@ async fn fetch_web_html(
             "https://live.kuaishou.com/"
         };
         let mut req_headers = headers.clone();
-        req_headers.insert("Referer", referer.parse().unwrap());
+        req_headers.insert(
+            "Referer",
+            reqwest::header::HeaderValue::from_static(referer),
+        );
 
         let response = client.get(&candidate).headers(req_headers).send().await?;
         let status = response.status();
@@ -890,8 +898,14 @@ pub async fn get_stream_urls(
 /// Get QR code for login
 pub async fn get_qr(client: &Client) -> Result<QrInfo, RecorderError> {
     let mut headers = generate_user_agent_header();
-    headers.insert("Content-Type", "application/json".parse().unwrap());
-    headers.insert("Referer", "https://www.kuaishou.com/".parse().unwrap());
+    headers.insert(
+        "Content-Type",
+        reqwest::header::HeaderValue::from_static("application/json"),
+    );
+    headers.insert(
+        "Referer",
+        reqwest::header::HeaderValue::from_static("https://www.kuaishou.com/"),
+    );
 
     let response = client
         .post("https://id.kuaishou.com/rest/c/infra/ks/qr/start")
@@ -1012,15 +1026,15 @@ pub async fn get_user_info(
     let mut headers = generate_user_agent_header();
     headers.insert(
         "Accept-Language",
-        "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2"
-            .parse()
-            .unwrap(),
+        reqwest::header::HeaderValue::from_static(
+            "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2",
+        ),
     );
 
     if !account.cookies.is_empty() {
         let cookie = normalize_cookie_header(&account.cookies);
         if !cookie.is_empty() {
-            headers.insert("Cookie", cookie.parse().unwrap());
+            headers.insert("Cookie", crate::utils::header_value("Cookie", &cookie)?);
         }
     }
 
@@ -1099,8 +1113,14 @@ pub async fn get_qr_status(
     qr_login_signature: &str,
 ) -> Result<QrStatus, RecorderError> {
     let mut headers = generate_user_agent_header();
-    headers.insert("Content-Type", "application/json".parse().unwrap());
-    headers.insert("Referer", "https://www.kuaishou.com/".parse().unwrap());
+    headers.insert(
+        "Content-Type",
+        reqwest::header::HeaderValue::from_static("application/json"),
+    );
+    headers.insert(
+        "Referer",
+        reqwest::header::HeaderValue::from_static("https://www.kuaishou.com/"),
+    );
 
     let payload = json!({
         "qrLoginToken": qr_login_token,
@@ -1238,7 +1258,13 @@ impl PlatformStreamInfo for StreamInfo {
     }
 
     fn all_variants(&self) -> Vec<StreamVariant> {
-        vec![self.primary_variant().unwrap()]
+        match self.primary_variant() {
+            Ok(variant) => vec![variant],
+            Err(e) => {
+                log::warn!("Failed to build primary stream variant: {e}");
+                Vec::new()
+            }
+        }
     }
 
     fn expires_at(&self) -> Option<i64> {

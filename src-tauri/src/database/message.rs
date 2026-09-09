@@ -15,7 +15,7 @@ pub struct MessageRow {
 // CREATE TABLE messages (id INTEGER PRIMARY KEY, title TEXT, content TEXT, read INTEGER, created_at TEXT);
 impl Database {
     pub async fn new_message(&self, title: &str, content: &str) -> Result<(), DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         sqlx::query(
             "INSERT INTO messages (title, content, read, created_at) VALUES ($1, $2, 0, $3)",
         )
@@ -28,7 +28,7 @@ impl Database {
     }
 
     pub async fn read_message(&self, id: i64) -> Result<(), DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         sqlx::query("UPDATE messages SET read = $1 WHERE id = $2")
             .bind(1)
             .bind(id)
@@ -38,7 +38,7 @@ impl Database {
     }
 
     pub async fn delete_message(&self, id: i64) -> Result<(), DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         sqlx::query("DELETE FROM messages WHERE id = $1")
             .bind(id)
             .execute(&lock)
@@ -47,7 +47,7 @@ impl Database {
     }
 
     pub async fn get_messages(&self) -> Result<Vec<MessageRow>, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         Ok(sqlx::query_as::<_, MessageRow>("SELECT * FROM messages;")
             .fetch_all(&lock)
             .await?)

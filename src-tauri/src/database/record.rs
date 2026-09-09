@@ -25,7 +25,7 @@ impl Database {
         offset: i64,
         limit: i64,
     ) -> Result<Vec<RecordRow>, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         Ok(sqlx::query_as::<_, RecordRow>(
             "SELECT * FROM records WHERE room_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
         )
@@ -41,7 +41,7 @@ impl Database {
         room_id: &str,
         live_id: &str,
     ) -> Result<RecordRow, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         Ok(sqlx::query_as::<_, RecordRow>(
             "SELECT * FROM records WHERE room_id = $1 and live_id = $2",
         )
@@ -56,7 +56,7 @@ impl Database {
         room_id: &str,
         parent_id: &str,
     ) -> Result<Vec<RecordRow>, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         Ok(sqlx::query_as::<_, RecordRow>(
             "SELECT * FROM records WHERE room_id = $1 and parent_id = $2",
         )
@@ -75,7 +75,7 @@ impl Database {
         title: &str,
         cover: Option<String>,
     ) -> Result<RecordRow, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         let record = RecordRow {
             platform: platform.as_str().to_string(),
             parent_id: parent_id.to_string(),
@@ -98,7 +98,7 @@ impl Database {
     }
 
     pub async fn remove_record(&self, live_id: &str) -> Result<RecordRow, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         let to_delete = sqlx::query_as::<_, RecordRow>("SELECT * FROM records WHERE live_id = $1")
             .bind(live_id)
             .fetch_one(&lock)
@@ -124,7 +124,7 @@ impl Database {
         length: f64,
         size: u64,
     ) -> Result<(), DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         let size = i64::try_from(size).map_err(|_| DatabaseError::NumberExceedI64Range)?;
         sqlx::query("UPDATE records SET length = length + $1, size = size + $2 WHERE live_id = $3")
             .bind(length)
@@ -140,7 +140,7 @@ impl Database {
         live_id: &str,
         parent_id: &str,
     ) -> Result<(), DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         sqlx::query("UPDATE records SET parent_id = $1 WHERE live_id = $2")
             .bind(parent_id)
             .bind(live_id)
@@ -154,7 +154,7 @@ impl Database {
         live_id: &str,
         cover: Option<String>,
     ) -> Result<(), DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         sqlx::query("UPDATE records SET cover = $1 WHERE live_id = $2")
             .bind(cover)
             .bind(live_id)
@@ -164,7 +164,7 @@ impl Database {
     }
 
     pub async fn get_total_length(&self) -> Result<f64, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         let result: (f64,) = sqlx::query_as("SELECT SUM(length) FROM records;")
             .fetch_one(&lock)
             .await?;
@@ -172,15 +172,9 @@ impl Database {
     }
 
     pub async fn get_today_record_count(&self) -> Result<i64, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         let result: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM records WHERE created_at >= $1;")
-            .bind(
-                Utc::now()
-                    .date_naive()
-                    .and_hms_opt(0, 0, 0)
-                    .unwrap()
-                    .to_string(),
-            )
+            .bind(Utc::now().format("%Y-%m-%d 00:00:00").to_string())
             .fetch_one(&lock)
             .await?;
         Ok(result.0)
@@ -192,7 +186,7 @@ impl Database {
         offset: i64,
         limit: i64,
     ) -> Result<Vec<RecordRow>, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         if room_id.is_empty() {
             Ok(sqlx::query_as::<_, RecordRow>(
                 "SELECT * FROM records ORDER BY created_at DESC LIMIT $1 OFFSET $2",
@@ -214,7 +208,7 @@ impl Database {
     }
 
     pub async fn get_record_disk_usage(&self) -> Result<i64, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         let result: (i64,) = sqlx::query_as("SELECT SUM(size) FROM records;")
             .fetch_one(&lock)
             .await?;

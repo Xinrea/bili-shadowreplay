@@ -85,7 +85,13 @@ impl PlatformStreamInfo for DouyinStream {
     }
 
     fn all_variants(&self) -> Vec<StreamVariant> {
-        vec![self.primary_variant().unwrap()]
+        match self.primary_variant() {
+            Ok(variant) => vec![variant],
+            Err(e) => {
+                log::warn!("Failed to build primary stream variant: {e}");
+                Vec::new()
+            }
+        }
     }
 
     fn expires_at(&self) -> Option<i64> {

@@ -103,7 +103,8 @@ pub struct UrlInfo {
 impl UrlInfo {
     pub fn get_expire(&self) -> i64 {
         // try to match expire from extra with regex
-        let expire_regex = regex::Regex::new(r"expires=(\d+)").unwrap();
+        let expire_regex =
+            regex::Regex::new(r"expires=(\d+)").expect("expires regex is a valid literal");
         if let Some(captures) = expire_regex.captures(&self.extra) {
             captures[1].parse::<i64>().unwrap_or(0)
         } else {
@@ -187,14 +188,20 @@ impl BiliStream {
     }
 
     pub fn index(&self) -> String {
-        let url_info = self.url_info.choose(&mut rand::rng()).unwrap();
+        let Some(url_info) = self.url_info.choose(&mut rand::rng()) else {
+            log::error!("No URL info available for Bilibili stream, using base URL");
+            return self.base_url.clone();
+        };
         format!("{}{}{}", url_info.host, self.base_url, url_info.extra)
     }
 
     pub fn ts_url(&self, seg_name: &str) -> String {
-        let m3u8_filename = self.base_url.split('/').next_back().unwrap();
+        let m3u8_filename = self.base_url.rsplit('/').next().unwrap_or(&self.base_url);
         let base_url = self.base_url.replace(m3u8_filename, seg_name);
-        let url_info = self.url_info.choose(&mut rand::rng()).unwrap();
+        let Some(url_info) = self.url_info.choose(&mut rand::rng()) else {
+            log::error!("No URL info available for Bilibili stream, using base URL");
+            return base_url;
+        };
         format!("{}{}?{}", url_info.host, base_url, url_info.extra)
     }
 }
@@ -202,7 +209,12 @@ impl BiliStream {
 fn generate_user_agent_header() -> reqwest::header::HeaderMap {
     let user_agent = user_agent_generator::UserAgentGenerator::new().generate(false);
     let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert("user-agent", user_agent.parse().unwrap());
+    headers.insert(
+        "user-agent",
+        user_agent
+            .parse()
+            .expect("generated user agent is a valid header value"),
+    );
     headers
 }
 
@@ -769,18 +781,25 @@ pub async fn get_sign(client: &Client, mut parameters: Value) -> Result<String, 
         .await?
         .json()
         .await?;
-    let re = Regex::new(r"wbi/(.*).png").unwrap();
+    let invalid_response = || RecorderError::InvalidResponseJson {
+        resp: nav_info.clone(),
+    };
+    let re = Regex::new(r"wbi/(.*).png").expect("wbi regex is a valid literal");
+    let img_url = nav_info["data"]["wbi_img"]["img_url"]
+        .as_str()
+        .ok_or_else(invalid_response)?;
     let img = re
-        .captures(nav_info["data"]["wbi_img"]["img_url"].as_str().unwrap())
-        .unwrap()
-        .get(1)
-        .unwrap()
+        .captures(img_url)
+        .and_then(|captures| captures.get(1))
+        .ok_or_else(invalid_response)?
         .as_str();
+    let sub_url = nav_info["data"]["wbi_img"]["sub_url"]
+        .as_str()
+        .ok_or_else(invalid_response)?;
     let sub = re
-        .captures(nav_info["data"]["wbi_img"]["sub_url"].as_str().unwrap())
-        .unwrap()
-        .get(1)
-        .unwrap()
+        .captures(sub_url)
+        .and_then(|captures| captures.get(1))
+        .ok_or_else(invalid_response)?
         .as_str();
     let raw_string = format!("{img}{sub}");
     let mut encoded = Vec::new();
@@ -790,41 +809,40 @@ pub async fn get_sign(client: &Client, mut parameters: Value) -> Result<String, 
         }
     }
     // only keep 32 bytes of encoded
-    encoded = encoded[0..32].to_vec();
-    let encoded = String::from_utf8(encoded).unwrap();
+    let encoded = encoded
+        .get(0..32)
+        .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+        .ok_or_else(invalid_response)?;
     // Timestamp in seconds
     let wts = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs();
-    parameters
+    let parameters = parameters
         .as_object_mut()
-        .unwrap()
-        .insert("wts".to_owned(), serde_json::Value::String(wts.to_string()));
+        .ok_or_else(|| RecorderError::InvalidValue)?;
+    parameters.insert("wts".to_owned(), serde_json::Value::String(wts.to_string()));
     // Get all keys from parameters into vec
     let mut keys = parameters
-        .as_object()
-        .unwrap()
         .keys()
         .map(std::borrow::ToOwned::to_owned)
         .collect::<Vec<String>>();
     // sort keys
     keys.sort();
     let mut params = String::new();
-    for x in &keys {
+    for (index, x) in keys.iter().enumerate() {
         params.push_str(x);
         params.push('=');
         // Value filters !'()* characters
         let value = parameters
             .get(x)
-            .unwrap()
-            .as_str()
-            .unwrap()
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| RecorderError::InvalidValue)?
             .replace(['!', '\'', '(', ')', '*'], "");
         let value = PctString::encode(value.chars(), URIReserved);
         params.push_str(value.as_str());
         // add & if not last
-        if x != keys.last().unwrap() {
+        if index != keys.len() - 1 {
             params.push('&');
         }
     }
@@ -845,9 +863,13 @@ async fn preupload_video(
     } else {
         return Err(RecorderError::InvalidCookies);
     }
+    let file_name = video_file
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| RecorderError::InvalidValue)?;
     let url = format!(
         "https://member.bilibili.com/preupload?name={}&r=upos&profile=ugcfx/bup",
-        video_file.file_name().unwrap().to_str().unwrap()
+        file_name
     );
     let response = client
         .get(&url)
@@ -1010,7 +1032,7 @@ pub async fn prepare_video(
     account: &Account,
     video_file: &Path,
 ) -> Result<profile::Video, RecorderError> {
-    log::info!("Start Preparing Video: {}", video_file.to_str().unwrap());
+    log::info!("Start Preparing Video: {}", video_file.display());
     let preupload = preupload_video(client, account, video_file).await?;
     log::info!("Preupload Response: {preupload:?}");
     let metaposted = post_video_meta(client, &preupload, video_file).await?;
@@ -1028,9 +1050,8 @@ pub async fn prepare_video(
     end_upload(client, &preupload, &metaposted, uploaded).await?;
     let filename = Path::new(&metaposted.key)
         .file_stem()
-        .unwrap()
-        .to_str()
-        .unwrap();
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| RecorderError::InvalidValue)?;
     Ok(profile::Video {
         title: filename.to_string(),
         filename: filename.to_string(),

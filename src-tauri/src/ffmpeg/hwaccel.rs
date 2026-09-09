@@ -394,13 +394,9 @@ pub async fn get_x264_encoder() -> &'static str {
 
     // 存入缓存，如果设置成功则从缓存返回，否则返回刚才得到的值
     // 注意：set() 可能被其他线程抢先，但每个线程都会得到相同的 encoder 值
-    match ENCODER_CACHE.set(encoder.clone()) {
-        Ok(_) => ENCODER_CACHE.get().unwrap().as_str(),
-        Err(_) => {
-            // 其他线程已经设置了，返回缓存的值
-            ENCODER_CACHE.get().unwrap().as_str()
-        }
-    }
+    let _ = ENCODER_CACHE.set(encoder);
+    // 其他线程可能抢先设置，但每个线程都会得到相同的 encoder 值
+    ENCODER_CACHE.get().map(String::as_str).unwrap_or("libx264")
 }
 
 #[cfg(test)]

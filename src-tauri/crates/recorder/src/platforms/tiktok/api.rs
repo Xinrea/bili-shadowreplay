@@ -31,7 +31,12 @@ pub struct StreamInfo {
 fn generate_user_agent_header() -> reqwest::header::HeaderMap {
     let user_agent = user_agent_generator::UserAgentGenerator::new().generate(false);
     let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert("user-agent", user_agent.parse().unwrap());
+    headers.insert(
+        "user-agent",
+        user_agent
+            .parse()
+            .expect("generated user agent is a valid header value"),
+    );
     headers
 }
 
@@ -675,10 +680,19 @@ pub async fn get_room_info(
     room_id: &str,
 ) -> Result<RoomInfo, RecorderError> {
     let mut headers = generate_user_agent_header();
-    headers.insert("Referer", "https://www.tiktok.com/".parse().unwrap());
-    headers.insert("accept-language", "en-US,en;q=0.9".parse().unwrap());
+    headers.insert(
+        "Referer",
+        reqwest::header::HeaderValue::from_static("https://www.tiktok.com/"),
+    );
+    headers.insert(
+        "accept-language",
+        reqwest::header::HeaderValue::from_static("en-US,en;q=0.9"),
+    );
     if !account.cookies.is_empty() {
-        headers.insert("Cookie", account.cookies.parse().unwrap());
+        headers.insert(
+            "Cookie",
+            crate::utils::header_value("Cookie", &account.cookies)?,
+        );
     }
 
     // TikTok URLs are typically like: https://www.tiktok.com/@username/live
@@ -788,10 +802,19 @@ pub async fn get_stream_url(
     room_id: &str,
 ) -> Result<StreamInfo, RecorderError> {
     let mut headers = generate_user_agent_header();
-    headers.insert("Referer", "https://www.tiktok.com/".parse().unwrap());
-    headers.insert("accept-language", "en-US,en;q=0.9".parse().unwrap());
+    headers.insert(
+        "Referer",
+        reqwest::header::HeaderValue::from_static("https://www.tiktok.com/"),
+    );
+    headers.insert(
+        "accept-language",
+        reqwest::header::HeaderValue::from_static("en-US,en;q=0.9"),
+    );
     if !account.cookies.is_empty() {
-        headers.insert("Cookie", account.cookies.parse().unwrap());
+        headers.insert(
+            "Cookie",
+            crate::utils::header_value("Cookie", &account.cookies)?,
+        );
     }
 
     // TikTok URLs are typically like: https://www.tiktok.com/@username/live
@@ -900,10 +923,19 @@ pub async fn get_user_info(
     account: &Account,
 ) -> Result<crate::UserInfo, RecorderError> {
     let mut headers = generate_user_agent_header();
-    headers.insert("Referer", "https://www.tiktok.com/".parse().unwrap());
-    headers.insert("accept-language", "en-US,en;q=0.9".parse().unwrap());
+    headers.insert(
+        "Referer",
+        reqwest::header::HeaderValue::from_static("https://www.tiktok.com/"),
+    );
+    headers.insert(
+        "accept-language",
+        reqwest::header::HeaderValue::from_static("en-US,en;q=0.9"),
+    );
     if !account.cookies.is_empty() {
-        headers.insert("Cookie", account.cookies.parse().unwrap());
+        headers.insert(
+            "Cookie",
+            crate::utils::header_value("Cookie", &account.cookies)?,
+        );
     }
 
     // Access TikTok homepage to get user info from state

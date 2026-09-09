@@ -352,25 +352,30 @@ impl RecorderTrait<KuaishouExtra> for KuaishouRecorder {
                 if self_clone.check_status().await {
                     // Live status is ok, start recording
                     if self_clone.should_record().await {
-                        let live_id;
                         // If should continue with previous recording, use the same live id
-                        if self_clone.extra.should_continue.load(Ordering::Relaxed)
-                            && self_clone.extra.pre_live_id.read().await.is_some()
-                        {
-                            live_id = self_clone.extra.pre_live_id.read().await.clone().unwrap();
-                            self_clone
-                                .extra
-                                .should_continue
-                                .store(false, Ordering::Relaxed);
-                        } else {
-                            live_id = Utc::now().timestamp_millis().to_string();
-                            self_clone
-                                .extra
-                                .pre_live_id
-                                .write()
-                                .await
-                                .replace(live_id.clone());
-                        }
+                        let previous_live_id = self_clone.extra.pre_live_id.read().await.clone();
+                        let live_id = match (
+                            self_clone.extra.should_continue.load(Ordering::Relaxed),
+                            previous_live_id,
+                        ) {
+                            (true, Some(previous_live_id)) => {
+                                self_clone
+                                    .extra
+                                    .should_continue
+                                    .store(false, Ordering::Relaxed);
+                                previous_live_id
+                            }
+                            _ => {
+                                let live_id = Utc::now().timestamp_millis().to_string();
+                                self_clone
+                                    .extra
+                                    .pre_live_id
+                                    .write()
+                                    .await
+                                    .replace(live_id.clone());
+                                live_id
+                            }
+                        };
 
                         if let Err(e) = self_clone.update_entries(&live_id).await {
                             match e {

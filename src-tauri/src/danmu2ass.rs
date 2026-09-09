@@ -190,7 +190,7 @@ fn normal_danmaku() -> impl FnMut(f64, f64, f64, bool) -> Option<DanmakuPosition
         }
 
         // Sort suggestions by position
-        suggestions.sort_by(|a, b| a.p.partial_cmp(&b.p).unwrap());
+        suggestions.sort_by(|a, b| a.p.total_cmp(&b.p));
 
         // Filter out suggestions with too much delay
         let mut mr = MAX_DELAY;
@@ -219,9 +219,8 @@ fn normal_danmaku() -> impl FnMut(f64, f64, f64, bool) -> Option<DanmakuPosition
                 };
                 (score, s)
             })
-            .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
-            .unwrap()
-            .1;
+            .max_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, s)| s)?;
 
         let ts = t0s + best.r;
         let tf = (wv / (wv + PLAY_RES_X)) * R2L_TIME + ts;

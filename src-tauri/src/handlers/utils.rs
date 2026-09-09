@@ -37,10 +37,10 @@ pub fn copy_dir_all(
 pub fn show_in_folder(path: String) {
     #[cfg(target_os = "windows")]
     {
-        Command::new("explorer")
-            .args(["/select,", &path]) // The comma after select is not a typo
-            .spawn()
-            .unwrap();
+        // The comma after select is not a typo
+        if let Err(e) = Command::new("explorer").args(["/select,", &path]).spawn() {
+            log::error!("Failed to open folder {path}: {e}");
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -49,44 +49,38 @@ pub fn show_in_folder(path: String) {
         use std::path::PathBuf;
         if path.contains(",") {
             // see https://gitlab.freedesktop.org/dbus/dbus/-/issues/76
-            let new_path = match metadata(&path).unwrap().is_dir() {
-                true => path,
-                false => {
-                    let mut path2 = PathBuf::from(path);
-                    path2.pop();
-                    path2.into_os_string().into_string().unwrap()
-                }
+            let is_dir = metadata(&path).map(|m| m.is_dir()).unwrap_or(false);
+            let new_path = if is_dir {
+                path
+            } else {
+                let mut path2 = PathBuf::from(path);
+                path2.pop();
+                path2.to_string_lossy().into_owned()
             };
-            let _ = Command::new("xdg-open")
-                .arg(&new_path)
-                .spawn()
-                .unwrap()
-                .wait();
-        } else {
-            let _ = Command::new("dbus-send")
-                .args([
-                    "--session",
-                    "--dest=org.freedesktop.FileManager1",
-                    "--type=method_call",
-                    "/org/freedesktop/FileManager1",
-                    "org.freedesktop.FileManager1.ShowItems",
-                    format!("array:string:\"file://{path}\"").as_str(),
-                    "string:\"\"",
-                ])
-                .spawn()
-                .unwrap()
-                .wait();
+            if let Err(e) = Command::new("xdg-open").arg(&new_path).spawn() {
+                log::error!("Failed to open folder {new_path}: {e}");
+            }
+        } else if let Err(e) = Command::new("dbus-send")
+            .args([
+                "--session",
+                "--dest=org.freedesktop.FileManager1",
+                "--type=method_call",
+                "/org/freedesktop/FileManager1",
+                "org.freedesktop.FileManager1.ShowItems",
+                format!("array:string:\"file://{path}\"").as_str(),
+                "string:\"\"",
+            ])
+            .spawn()
+        {
+            log::error!("Failed to reveal {path}: {e}");
         }
     }
 
     #[cfg(target_os = "macos")]
     {
-        Command::new("open")
-            .args(["-R", &path])
-            .spawn()
-            .unwrap()
-            .wait()
-            .unwrap();
+        if let Err(e) = Command::new("open").args(["-R", &path]).spawn() {
+            log::error!("Failed to reveal {path}: {e}");
+        }
     }
 }
 
@@ -104,7 +98,8 @@ pub async fn get_disk_info(state: state_type!()) -> Result<DiskInfo, ()> {
     let mut cache = PathBuf::from(&cache);
     if cache.is_relative() {
         // get current working directory
-        let cwd = std::env::current_dir().unwrap();
+        let cwd = std::env::current_dir()
+            .map_err(|e| log::error!("Failed to get current directory: {e}"))?;
         cache = cwd.join(cache);
     }
 
@@ -130,8 +125,9 @@ pub async fn get_disk_info_inner(target: PathBuf) -> Result<DiskInfo, ()> {
             .arg(target)
             .output()
             .await
-            .unwrap();
-        let output_str = String::from_utf8(output.stdout).unwrap();
+            .map_err(|e| log::error!("Failed to run df: {e}"))?;
+        let output_str =
+            String::from_utf8(output.stdout).map_err(|e| log::error!("Invalid df output: {e}"))?;
         // Filesystem     1K-blocks     Used Available Use% Mounted on
         // /dev/nvme0n1p2 959218776 43826092 866593352   5% /app/cache
         let lines = output_str.lines().collect::<Vec<&str>>();
@@ -140,9 +136,19 @@ pub async fn get_disk_info_inner(target: PathBuf) -> Result<DiskInfo, ()> {
             return Err(());
         }
         let parts = lines[1].split_whitespace().collect::<Vec<&str>>();
+        if parts.len() < 4 {
+            log::error!("Unexpected df output: {}", lines[1]);
+            return Err(());
+        }
         let disk = parts[0].to_string();
-        let total = parts[1].parse::<u64>().unwrap() * 1024;
-        let free = parts[3].parse::<u64>().unwrap() * 1024;
+        let total = parts[1]
+            .parse::<u64>()
+            .map_err(|e| log::error!("Failed to parse total blocks: {e}"))?
+            * 1024;
+        let free = parts[3]
+            .parse::<u64>()
+            .map_err(|e| log::error!("Failed to parse free blocks: {e}"))?
+            * 1024;
 
         Ok(DiskInfo { disk, total, free })
     }
@@ -161,9 +167,9 @@ pub async fn get_disk_info_inner(target: PathBuf) -> Result<DiskInfo, ()> {
         // Find the disk with the longest matching mount point
         let mut longest_match = 0;
         for disk in disks.list() {
-            let mount_point = disk.mount_point().to_str().unwrap();
-            if target.starts_with(mount_point) && mount_point.split('/').count() > longest_match {
-                disk_info.disk = mount_point.into();
+            let mount_point = disk.mount_point().to_string_lossy();
+            if target.starts_with(&*mount_point) && mount_point.split('/').count() > longest_match {
+                disk_info.disk = mount_point.to_string();
                 disk_info.total = disk.total_space();
                 disk_info.free = disk.available_space();
                 longest_match = mount_point.split('/').count();
@@ -181,16 +187,13 @@ pub async fn export_to_file(
     file_name: &str,
     content: &str,
 ) -> Result<(), String> {
-    let file = OpenOptions::new()
+    let mut file = OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(true)
         .open(file_name)
-        .await;
-    if file.is_err() {
-        return Err(format!("Open file failed: {}", file.err().unwrap()));
-    }
-    let mut file = file.unwrap();
+        .await
+        .map_err(|e| format!("Open file failed: {e}"))?;
     if let Err(e) = file.write_all(content.as_bytes()).await {
         return Err(format!("Write file failed: {e}"));
     }
@@ -205,8 +208,12 @@ pub async fn export_to_file(
 pub async fn open_log_folder(state: state_type!()) -> Result<(), String> {
     #[cfg(feature = "gui")]
     {
-        let log_dir = state.app_handle.path().app_log_dir().unwrap();
-        show_in_folder(log_dir.to_str().unwrap().to_string());
+        let log_dir = state
+            .app_handle
+            .path()
+            .app_log_dir()
+            .map_err(|e| format!("Failed to get log dir: {e}"))?;
+        show_in_folder(log_dir.to_string_lossy().into_owned());
     }
     Ok(())
 }
@@ -321,13 +328,10 @@ pub async fn open_clip(state: state_type!(), video_id: i64) -> Result<(), String
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn list_folder(_state: state_type!(), path: String) -> Result<Vec<String>, String> {
     let path = PathBuf::from(path);
-    let entries = std::fs::read_dir(path);
-    if entries.is_err() {
-        return Err(format!("Read directory failed: {}", entries.err().unwrap()));
-    }
+    let entries = std::fs::read_dir(path).map_err(|e| format!("Read directory failed: {e}"))?;
     let mut files = Vec::new();
-    for entry in entries.unwrap().flatten() {
-        files.push(entry.path().to_str().unwrap().to_string());
+    for entry in entries.flatten() {
+        files.push(entry.path().to_string_lossy().into_owned());
     }
     Ok(files)
 }

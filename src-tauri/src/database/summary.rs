@@ -37,7 +37,7 @@ impl Database {
     pub async fn get_record_summary_statuses(
         &self,
     ) -> Result<Vec<RecordSummaryStatusRow>, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         Ok(sqlx::query_as::<_, RecordSummaryStatusRow>(
             "SELECT platform, room_id, live_id, status, stage FROM record_summaries",
         )
@@ -46,7 +46,7 @@ impl Database {
     }
 
     pub async fn finish_pending_record_summaries(&self) -> Result<(), DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         sqlx::query(
             "UPDATE record_summaries SET status = 'failed', error_message = '任务因应用退出而中断', updated_at = $1 WHERE status = 'processing'",
         )
@@ -62,7 +62,7 @@ impl Database {
         room_id: &str,
         live_id: &str,
     ) -> Result<Option<RecordSummaryRow>, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         Ok(sqlx::query_as::<_, RecordSummaryRow>(
             "SELECT * FROM record_summaries WHERE platform = $1 AND room_id = $2 AND live_id = $3",
         )
@@ -81,7 +81,7 @@ impl Database {
         task_id: &str,
         force: bool,
     ) -> Result<RecordSummaryRow, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         let now = Utc::now().to_rfc3339();
         if force {
             sqlx::query(
@@ -138,7 +138,7 @@ impl Database {
         live_id: &str,
         stage: &str,
     ) -> Result<(), DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         sqlx::query(
             "UPDATE record_summaries SET status = 'processing', stage = $1, updated_at = $2 WHERE platform = $3 AND room_id = $4 AND live_id = $5",
         )
@@ -162,7 +162,7 @@ impl Database {
         subtitle_text: &str,
         source_duration: f64,
     ) -> Result<(), DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         sqlx::query(
             "UPDATE record_summaries SET subtitle_srt = $1, subtitle_text = $2, source_duration = $3, stage = 'summarizing', updated_at = $4 WHERE platform = $5 AND room_id = $6 AND live_id = $7",
         )
@@ -189,7 +189,7 @@ impl Database {
         model_provider: &str,
         model_name: &str,
     ) -> Result<(), DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         sqlx::query(
             "UPDATE record_summaries SET status = 'success', stage = 'completed', summary_markdown = $1, highlights_json = $2, model_provider = $3, model_name = $4, error_message = NULL, updated_at = $5 WHERE platform = $6 AND room_id = $7 AND live_id = $8",
         )
@@ -213,7 +213,7 @@ impl Database {
         live_id: &str,
         error: &str,
     ) -> Result<(), DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         sqlx::query(
             "UPDATE record_summaries SET status = 'failed', error_message = $1, updated_at = $2 WHERE platform = $3 AND room_id = $4 AND live_id = $5",
         )
@@ -233,7 +233,7 @@ impl Database {
         room_id: &str,
         live_id: &str,
     ) -> Result<(), DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         sqlx::query(
             "DELETE FROM record_summaries WHERE platform = $1 AND room_id = $2 AND live_id = $3",
         )

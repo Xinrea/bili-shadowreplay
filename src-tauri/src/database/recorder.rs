@@ -21,7 +21,7 @@ impl Database {
         room_id: &str,
         extra: &str,
     ) -> Result<RecorderRow, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         let recorder = RecorderRow {
             room_id: room_id.to_string(),
             created_at: Utc::now().to_rfc3339(),
@@ -43,7 +43,7 @@ impl Database {
     }
 
     pub async fn remove_recorder(&self, room_id: &str) -> Result<RecorderRow, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         let recorder =
             sqlx::query_as::<_, RecorderRow>("SELECT * FROM recorders WHERE room_id = $1")
                 .bind(room_id)
@@ -63,7 +63,7 @@ impl Database {
     }
 
     pub async fn get_recorders(&self) -> Result<Vec<RecorderRow>, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         Ok(sqlx::query_as::<_, RecorderRow>(
             "SELECT room_id, created_at, platform, auto_start, extra FROM recorders",
         )
@@ -72,7 +72,7 @@ impl Database {
     }
 
     pub async fn remove_archive(&self, room_id: &str) -> Result<(), DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         let _ = sqlx::query("DELETE FROM records WHERE room_id = $1")
             .bind(room_id)
             .execute(&lock)
@@ -86,7 +86,7 @@ impl Database {
         room_id: &str,
         auto_start: bool,
     ) -> Result<(), DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         let _ = sqlx::query(
             "UPDATE recorders SET auto_start = $1 WHERE platform = $2 AND room_id = $3",
         )

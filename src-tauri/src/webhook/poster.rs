@@ -153,7 +153,9 @@ impl WebhookPoster {
         }
 
         error!("All webhook post attempts failed");
-        Err(last_error.unwrap())
+        Err(last_error.unwrap_or_else(|| {
+            WebhookPostError::Network("no webhook post attempt was made".to_string())
+        }))
     }
 
     /// Send the actual HTTP request

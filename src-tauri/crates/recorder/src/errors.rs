@@ -52,6 +52,8 @@ pub enum RecorderError {
     CodecNotFound { codecs: String },
     #[error("Invalid cookies")]
     InvalidCookies,
+    #[error("Invalid header value for {name}")]
+    InvalidHeaderValue { name: String },
     #[error("API error: {error}")]
     ApiError { error: String },
     #[error("Invalid value")]

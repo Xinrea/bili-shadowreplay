@@ -1,7 +1,6 @@
 use base64::{engine::general_purpose, Engine as _};
 use rand::seq::IndexedRandom;
 use regex::Regex;
-use reqwest::Url;
 use serde_json::{Map, Value};
 
 use crate::core::stream_info::{
@@ -22,10 +21,8 @@ impl StreamInfo {
     // https://hs.hls.huya.com/huyalive/156976698-156976698-674209784144068608-314076852-10057-A-0-1.m3u8?ratio=200
     // 156976698-156976698-674209784144068608-314076852-10057-A-0-1
     pub fn id(&self) -> String {
-        let url = Url::parse(&self.hls_url).unwrap();
-        let path = url.path();
-        let segments = path.split('/').collect::<Vec<&str>>();
-        let filename = segments[segments.len() - 1];
+        let path = self.hls_url.split('?').next().unwrap_or(&self.hls_url);
+        let filename = path.rsplit('/').next().unwrap_or(path);
         // 去掉 .m3u8 后缀
         filename
             .strip_suffix(".m3u8")
@@ -372,7 +369,10 @@ impl LiveStreamExtractor {
                     // 继续读取完整的键名
                     while let Some(&next_ch) = chars.peek() {
                         if next_ch.is_alphanumeric() || next_ch == '_' {
-                            result.push(chars.next().unwrap());
+                            let Some(next_ch) = chars.next() else {
+                                break;
+                            };
+                            result.push(next_ch);
                         } else {
                             break;
                         }
@@ -1707,7 +1707,13 @@ impl PlatformStreamInfo for StreamInfo {
     }
 
     fn all_variants(&self) -> Vec<StreamVariant> {
-        vec![self.primary_variant().unwrap()]
+        match self.primary_variant() {
+            Ok(variant) => vec![variant],
+            Err(e) => {
+                log::warn!("Failed to build primary stream variant: {e}");
+                Vec::new()
+            }
+        }
     }
 
     fn expires_at(&self) -> Option<i64> {

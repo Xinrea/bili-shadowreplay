@@ -59,7 +59,7 @@ fn cuda_root() -> Option<PathBuf> {
 }
 
 fn main() {
-    let crate_dir = env::current_dir().unwrap();
+    let crate_dir = env::current_dir().expect("build script has a current directory");
     let whisper_dir = crate_dir.join("whisper.cpp");
 
     let mut config = cmake::Config::new(&whisper_dir);
@@ -71,7 +71,7 @@ fn main() {
     config.define("WHISPER_BUILD_SERVER", "OFF");
 
     // Platform-specific GPU acceleration
-    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
+    let target_os = env::var("CARGO_CFG_TARGET_OS").expect("cargo sets CARGO_CFG_TARGET_OS");
     let cuda_enabled = env::var("CARGO_FEATURE_CUDA").is_ok();
     let metal_enabled = target_os == "macos";
 

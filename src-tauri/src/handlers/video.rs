@@ -307,7 +307,8 @@ pub async fn clip_range(
     let mut output = PathBuf::from(&output);
     if output.is_relative() {
         // get current working directory
-        let cwd = std::env::current_dir().unwrap();
+        let cwd =
+            std::env::current_dir().map_err(|e| format!("Failed to get current directory: {e}"))?;
         output = cwd.join(output);
     }
 
@@ -370,18 +371,19 @@ pub async fn clip_range(
                                 video.id,
                             )
                             .await;
-                            if let Ok(subtitle) = result {
-                                let result =
-                                    update_video_subtitle_inner(&state_clone, video.id, subtitle)
-                                        .await;
-                                if let Err(e) = result {
-                                    log::error!("Update video subtitle error: {e}");
+                            match result {
+                                Ok(subtitle) => {
+                                    let result = update_video_subtitle_inner(
+                                        &state_clone,
+                                        video.id,
+                                        subtitle,
+                                    )
+                                    .await;
+                                    if let Err(e) = result {
+                                        log::error!("Update video subtitle error: {e}");
+                                    }
                                 }
-                            } else {
-                                log::error!(
-                                    "Generate video subtitle error: {}",
-                                    result.err().unwrap()
-                                );
+                                Err(e) => log::error!("Generate video subtitle error: {e}"),
                             }
                         }
 
@@ -481,6 +483,11 @@ async fn clip_range_inner(
         return Err("Failed to convert metadata length to i64".to_string());
     };
     let duration = params.ranges.iter().map(|r| r.duration()).sum::<f64>();
+    let cover_name = cover_file
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("Invalid cover path: {}", cover_file.display()))?
+        .to_string();
     let video = state
         .db
         .add_video(&VideoRow {
@@ -488,12 +495,7 @@ async fn clip_range_inner(
             status: 0,
             room_id: params.room_id.clone(),
             created_at: Local::now().to_rfc3339(),
-            cover: cover_file
-                .file_name()
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .to_string(),
+            cover: cover_name,
             file: filename.into(),
             note: params.note.clone(),
             length: duration as i64,
@@ -528,7 +530,7 @@ async fn clip_range_inner(
                 params.room_id, filename
             ))
             .show()
-            .unwrap();
+            .unwrap_or_else(|e| log::warn!("Failed to show clip notification: {e}"));
     }
 
     reporter.finish(true, "切片完成").await;
@@ -648,7 +650,7 @@ async fn upload_procedure_inner(
                         .title("BiliShadowReplay - 投稿成功")
                         .body(format!("投稿了房间 {} 的切片: {}", room_id, ret.bvid))
                         .show()
-                        .unwrap();
+                        .unwrap_or_else(|e| log::warn!("Failed to show post notification: {e}"));
                 }
                 reporter.finish(true, "投稿成功").await;
                 Ok(ret.bvid)
@@ -798,14 +800,20 @@ pub async fn update_video_cover(
     let output_path = Path::new(state.config.read().await.output.as_str()).join(&video.file);
     let cover_path = output_path.with_extension("jpg");
     // decode cover and write into file
-    let base64 = cover.split("base64,").nth(1).unwrap();
+    let base64 = cover
+        .split("base64,")
+        .nth(1)
+        .ok_or_else(|| "Cover is not a base64 data URL".to_string())?;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(base64)
-        .unwrap();
+        .map_err(|e| format!("Failed to decode cover: {e}"))?;
     tokio::fs::write(&cover_path, bytes)
         .await
         .map_err(|e| e.to_string())?;
-    let cover_file_name = cover_path.file_name().unwrap().to_str().unwrap();
+    let cover_file_name = cover_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("Invalid cover path: {}", cover_path.display()))?;
     log::debug!("Update video cover: {id} {cover_file_name}");
     Ok(state.db.update_video_cover(id, cover_file_name).await?)
 }
@@ -1125,9 +1133,8 @@ pub async fn import_external_video(
         // 更新最终文件名和路径
         target_filename = mp4_target_full_path
             .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| format!("Invalid target path: {}", mp4_target_full_path.display()))?
             .to_string();
         mp4_target_full_path
     } else {
@@ -1143,7 +1150,11 @@ pub async fn import_external_video(
     let thumbnail_timestamp = get_optimal_thumbnail_timestamp(metadata.duration);
     let cover_path =
         match ffmpeg::generate_thumbnail(&final_target_full_path, thumbnail_timestamp).await {
-            Ok(path) => path.file_name().unwrap().to_str().unwrap().to_string(),
+            Ok(path) => path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| format!("Invalid thumbnail path: {}", path.display()))?
+                .to_string(),
             Err(e) => {
                 log::warn!("生成缩略图失败: {e}");
                 String::new() // 使用空字符串，前端会显示默认图标
@@ -1334,9 +1345,10 @@ async fn clip_video_inner(
         match ffmpeg::generate_thumbnail(&output_full_path, clip_thumbnail_timestamp).await {
             Ok(_) => thumbnail_full_path
                 .file_name()
-                .unwrap()
-                .to_str()
-                .unwrap()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| {
+                    format!("Invalid thumbnail path: {}", thumbnail_full_path.display())
+                })?
                 .to_string(),
             Err(e) => {
                 log::warn!("生成切片缩略图失败: {e}");

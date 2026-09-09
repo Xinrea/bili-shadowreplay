@@ -181,12 +181,13 @@ impl DouyinRecorder {
             .unwrap_or(0);
         let danmu_stream =
             DanmuStream::new(ProviderType::Douyin, &cookies, &danmu_room_id.to_string()).await;
-        if danmu_stream.is_err() {
-            let err = danmu_stream.err().unwrap();
-            log::error!("Failed to create danmu stream: {err}");
-            return Err(crate::errors::RecorderError::DanmuStreamError(err));
-        }
-        let danmu_stream = danmu_stream.unwrap();
+        let danmu_stream = match danmu_stream {
+            Ok(danmu_stream) => danmu_stream,
+            Err(e) => {
+                log::error!("Failed to create danmu stream: {e}");
+                return Err(crate::errors::RecorderError::DanmuStreamError(e));
+            }
+        };
 
         let mut start_fut = Box::pin(danmu_stream.start());
 
@@ -311,12 +312,13 @@ impl DouyinRecorder {
             self.enabled.clone(),
         )
         .await;
-        if let Err(e) = hls_recorder {
-            log::error!("[{}]Hls recorder creation error: {}", self.room_id, e);
-            return Err(e);
-        }
-
-        let hls_recorder = hls_recorder.unwrap();
+        let hls_recorder = match hls_recorder {
+            Ok(hls_recorder) => hls_recorder,
+            Err(e) => {
+                log::error!("[{}]Hls recorder creation error: {}", self.room_id, e);
+                return Err(e);
+            }
+        };
         if let Err(e) = hls_recorder.start().await {
             log::error!("[{}]Error from hls recorder: {}", self.room_id, e);
             return Err(e);

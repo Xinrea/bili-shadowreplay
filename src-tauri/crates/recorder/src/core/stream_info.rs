@@ -192,7 +192,7 @@ pub trait PlatformStreamInfo: Clone + Send + Sync + Debug {
         if let Some(expires_at) = self.expires_at() {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs() as i64;
             now >= expires_at
         } else {

@@ -132,9 +132,13 @@ impl Config {
         default_cache: &Path,
         default_output: &Path,
     ) -> Result<Self, String> {
+        let config_path_str = config_path
+            .to_str()
+            .ok_or_else(|| format!("Config path is not valid UTF-8: {}", config_path.display()))?
+            .to_string();
         if let Ok(content) = std::fs::read_to_string(config_path) {
             if let Ok(mut config) = toml::from_str::<Config>(&content) {
-                config.config_path = config_path.to_str().unwrap().into();
+                config.config_path = config_path_str;
                 config.update_interval = Arc::new(AtomicU64::new(config.status_check_interval));
                 return Ok(config);
             }
@@ -147,8 +151,8 @@ impl Config {
         }
 
         let config = Config {
-            cache: default_cache.to_str().unwrap().into(),
-            output: default_output.to_str().unwrap().into(),
+            cache: default_cache.to_string_lossy().into_owned(),
+            output: default_output.to_string_lossy().into_owned(),
             live_start_notify: true,
             live_end_notify: true,
             clip_notify: true,
@@ -162,7 +166,7 @@ impl Config {
             clip_name_format: default_clip_name_format(),
             auto_generate: default_auto_generate_config(),
             status_check_interval: default_status_check_interval(),
-            config_path: config_path.to_str().unwrap().into(),
+            config_path: config_path_str,
             whisper_language: default_whisper_language(),
             webhook_url: default_webhook_url(),
             danmu_ass_options: default_danmu_ass_options(),
@@ -177,7 +181,13 @@ impl Config {
     }
 
     pub fn save(&self) {
-        let content = toml::to_string(&self).unwrap();
+        let content = match toml::to_string(&self) {
+            Ok(content) => content,
+            Err(e) => {
+                log::error!("Failed to serialize config: {e}");
+                return;
+            }
+        };
         if let Err(e) = std::fs::write(self.config_path.clone(), content) {
             log::error!("Failed to save config: {} {}", e, self.config_path);
         }

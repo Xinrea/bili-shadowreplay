@@ -86,7 +86,9 @@ impl DouyinDanmu {
                 "V1Yza5x1zcfkembl6u/0Pg==",
             )
             .body(())
-            .unwrap();
+            .map_err(|e| DanmuStreamError::WebsocketError {
+                err: format!("Failed to build douyin websocket request: {e}"),
+            })?;
 
         let (ws_stream, response) =
             connect_async(request)
@@ -137,7 +139,12 @@ impl DouyinDanmu {
         // Get the result from the V8 runtime
         let scope = &mut runtime.handle_scope();
         let local = v8::Local::new(scope, result);
-        let url = local.to_string(scope).unwrap().to_rust_string_lossy(scope);
+        let url = local
+            .to_string(scope)
+            .ok_or_else(|| DanmuStreamError::WebsocketError {
+                err: "Failed to read douyin websocket URL from JavaScript result".to_string(),
+            })?
+            .to_rust_string_lossy(scope);
 
         debug!("Douyin wss url: {}", url);
 

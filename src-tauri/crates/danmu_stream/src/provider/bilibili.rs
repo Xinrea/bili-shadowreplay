@@ -303,10 +303,10 @@ impl BiliDanmu {
         let mut user_id = None;
 
         // find DedeUserID=<user_id> in cookie str
-        let re = Regex::new(r"DedeUserID=(\d+)").unwrap();
+        let re = Regex::new(r"DedeUserID=(\d+)").expect("DedeUserID regex is a valid literal");
         if let Some(captures) = re.captures(cookie) {
             if let Some(user) = captures.get(1) {
-                user_id = Some(user.as_str().parse::<i64>().unwrap());
+                user_id = user.as_str().parse::<i64>().ok();
             }
         }
 
@@ -327,7 +327,7 @@ impl BiliDanmu {
             .json()
             .await?;
         let nav_info = Self::decode_api_response::<Value>(nav_info)?;
-        let re = Regex::new(r"wbi/(.*).png").unwrap();
+        let re = Regex::new(r"wbi/(.*).png").expect("wbi regex is a valid literal");
         let img_url = nav_info["data"]["wbi_img"]["img_url"]
             .as_str()
             .ok_or_else(|| DanmuStreamError::MessageParseError {
@@ -396,35 +396,40 @@ impl BiliDanmu {
             }
         });
         // only keep 32 bytes of encoded
-        encoded = encoded[0..32].to_vec();
-        let encoded = String::from_utf8(encoded).unwrap();
+        let encoded = encoded
+            .get(0..32)
+            .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+            .ok_or_else(|| DanmuStreamError::MessageParseError {
+                err: "Bilibili WBI image URLs are too short".to_string(),
+            })?;
         // Timestamp in seconds
         let wts = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
-        parameters
-            .as_object_mut()
-            .unwrap()
-            .insert("wts".to_owned(), serde_json::Value::String(wts.to_string()));
+        let parameters =
+            parameters
+                .as_object_mut()
+                .ok_or_else(|| DanmuStreamError::MessageParseError {
+                    err: "Bilibili WBI parameters are not an object".to_string(),
+                })?;
+        parameters.insert("wts".to_owned(), serde_json::Value::String(wts.to_string()));
         // Get all keys from parameters into vec
         let mut keys = parameters
-            .as_object()
-            .unwrap()
             .keys()
             .map(|x| x.to_owned())
             .collect::<Vec<String>>();
         // sort keys
         keys.sort();
         let mut params = String::new();
-        keys.iter().for_each(|x| {
+        for (index, x) in keys.iter().enumerate() {
             params.push_str(x);
             params.push('=');
             // Convert value to string based on its type
-            let value = match parameters.get(x).unwrap() {
-                serde_json::Value::String(s) => s.clone(),
-                serde_json::Value::Number(n) => n.to_string(),
-                serde_json::Value::Bool(b) => b.to_string(),
+            let value = match parameters.get(x) {
+                Some(serde_json::Value::String(s)) => s.clone(),
+                Some(serde_json::Value::Number(n)) => n.to_string(),
+                Some(serde_json::Value::Bool(b)) => b.to_string(),
                 _ => "".to_string(),
             };
             // Value filters !'()* characters
@@ -432,10 +437,10 @@ impl BiliDanmu {
             let value = PctString::encode(value.chars(), URIReserved);
             params.push_str(value.as_str());
             // add & if not last
-            if x != keys.last().unwrap() {
+            if index != keys.len() - 1 {
                 params.push('&');
             }
-        });
+        }
         // md5 params+encoded
         let w_rid = md5::compute(params.to_string() + encoded.as_str());
         let params = params + format!("&w_rid={:x}", w_rid).as_str();

@@ -74,7 +74,7 @@ impl EventEmitter {
                             &format!("progress-update:{}", id),
                             UpdateEvent { id, content },
                         )
-                        .unwrap();
+                        .unwrap_or_else(|e| log::error!("Failed to emit progress update: {e}"));
                 }
                 RecorderEvent::ProgressFinished {
                     id,
@@ -90,7 +90,7 @@ impl EventEmitter {
                                 message,
                             },
                         )
-                        .unwrap();
+                        .unwrap_or_else(|e| log::error!("Failed to emit progress finish: {e}"));
                 }
                 RecorderEvent::DanmuReceived { room, ts, content } => {
                     self.app_handle
@@ -102,7 +102,7 @@ impl EventEmitter {
                                 user_name: None,
                             },
                         )
-                        .unwrap();
+                        .unwrap_or_else(|e| log::error!("Failed to emit danmu event: {e}"));
                 }
                 _ => {}
             }

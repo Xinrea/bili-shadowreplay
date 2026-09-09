@@ -3,7 +3,7 @@
   import type { RecordItem } from "../db";
   import { fade, scale } from "svelte/transition";
   import { X, FileVideo, Info } from "lucide-svelte";
-  import { onMount } from "svelte";
+  import { untrack } from "svelte";
   import { clickOutside } from "../actions/clickOutside";
 
   interface Props {
@@ -22,11 +22,11 @@
   let selectedLiveIds: string[] = $state([]);
   let outputName = $state("");
   let showSelectionHelp = $state(false);
+  let loadSeq = 0;
 
 
   async function loadWholeClipArchives(roomId: string, parentId: string) {
-    if (isLoading) return;
-
+    const seq = ++loadSeq;
     isLoading = true;
     try {
       // 获取与当前archive具有相同parent_id的所有archives
@@ -35,6 +35,8 @@
         parentId: parentId,
       })) as RecordItem[];
 
+      if (seq !== loadSeq) return;
+
       // 处理封面
       for (const archive of sameParentArchives) {
         archive.cover = await get_static_url(
@@ -42,6 +44,8 @@
           `${archive.platform}/${archive.room_id}/${archive.live_id}/cover.jpg`
         );
       }
+
+      if (seq !== loadSeq) return;
 
       // 按时间排序
       sameParentArchives.sort((a, b) => {
@@ -55,9 +59,13 @@
       outputName = buildDefaultOutputName();
     } catch (error) {
       console.error("Failed to load whole clip archives:", error);
-      wholeClipArchives = [];
+      if (seq === loadSeq) {
+        wholeClipArchives = [];
+      }
     } finally {
-      isLoading = false;
+      if (seq === loadSeq) {
+        isLoading = false;
+      }
     }
   }
 
@@ -163,17 +171,25 @@
 
 
   function closeModal() {
+    loadSeq++;
     showModal = false;
+    isLoading = false;
     wholeClipArchives = [];
     selectedLiveIds = [];
     outputName = "";
     showSelectionHelp = false;
   }
-  // 当modal显示且有archive时，加载相关片段
+  // 当modal显示且有archive时，加载相关片段。
+  // 用 untrack 包住加载，避免 isLoading 等内部状态把 $effect 重新触发成死循环。
   $effect(() => {
-    if (showModal && archive) {
-      loadWholeClipArchives(roomId, archive.parent_id);
+    if (!showModal || !archive) {
+      return;
     }
+    const parentId = archive.parent_id;
+    const currentRoomId = roomId;
+    untrack(() => {
+      void loadWholeClipArchives(currentRoomId, parentId);
+    });
   });
   let selectedArchives = $derived(selectedLiveIds
     .map((id) => wholeClipArchives.find((item) => item.live_id === id))

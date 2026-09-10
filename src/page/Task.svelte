@@ -13,12 +13,13 @@
   } from "lucide-svelte";
   import type { TaskRow } from "../lib/db";
   import { onMount, onDestroy } from "svelte";
+  import { SvelteSet } from "svelte/reactivity";
 
   let tasks: TaskRow[] = $state([]);
   let loading = $state(true);
   let actionTaskId: string | null = $state(null);
   let refreshInterval = null;
-  let expandedTasks = $state(new Set<string>());
+  let expandedTasks = new SvelteSet<string>();
 
   async function update_tasks() {
     try {
@@ -284,7 +285,6 @@
     } else {
       expandedTasks.add(taskId);
     }
-    expandedTasks = expandedTasks; // 触发响应式更新
   }
 
   // 设置自动刷新

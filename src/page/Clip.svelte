@@ -22,6 +22,7 @@
     RotateCw,
     Edit,
   } from "lucide-svelte";
+  import { SvelteSet } from "svelte/reactivity";
   import { AnnotationOutline } from "flowbite-svelte-icons";
   import BilibiliIcon from "../lib/components/BilibiliIcon.svelte";
   import DouyinIcon from "../lib/components/DouyinIcon.svelte";
@@ -37,7 +38,7 @@
   let selectedRoomId = $state(null);
   let roomIds: string[] = $state([]);
 
-  let selectedVideos: Set<number> = $state(new Set());
+  let selectedVideos = new SvelteSet<number>();
   let showDeleteConfirm = $state(false);
   let videoToDelete: VideoItem | null = $state(null);
   let showImportDialog = $state(false);
@@ -344,7 +345,6 @@
     } else {
       selectedVideos.add(id);
     }
-    selectedVideos = selectedVideos; // Trigger reactivity
   }
 
   function selectAllVideos() {
@@ -354,7 +354,6 @@
     } else {
       currentVideos.forEach((video) => selectedVideos.add(video.id));
     }
-    selectedVideos = selectedVideos; // Trigger reactivity
   }
 
   async function deleteVideo(video: VideoItem) {

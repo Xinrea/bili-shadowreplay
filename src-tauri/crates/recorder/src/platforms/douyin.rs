@@ -6,7 +6,9 @@ use crate::core::hls_recorder::{construct_stream_from_variant, HlsRecorder};
 use crate::core::{Codec, Format};
 use crate::errors::RecorderError;
 use crate::events::RecorderEvent;
-use crate::platforms::douyin::stream_info::DouyinStream;
+use crate::platforms::douyin::stream_info::{
+    collect_available_streams, AvailableStream, DouyinStream,
+};
 use crate::traits::RecorderTrait;
 use crate::{Recorder, RoomInfo, UserInfo};
 use async_trait::async_trait;
@@ -39,6 +41,34 @@ fn get_best_stream_url(stream: &DouyinStream) -> Option<String> {
     }
 
     Some(stream.data.origin.main.hls.clone())
+}
+
+fn log_douyin_stream_choice(room_id: &str, stream_data: &str, hls_pull_url: &str, selected: &str) {
+    let mut available = collect_available_streams(stream_data);
+    if !hls_pull_url.is_empty() && !available.iter().any(|stream| stream.url == hls_pull_url) {
+        available.push(AvailableStream {
+            quality: "hls_pull_url".to_string(),
+            variant: "default".to_string(),
+            format: "hls",
+            url: hls_pull_url.to_string(),
+        });
+    }
+
+    if available.is_empty() {
+        log::info!("[{room_id}] Douyin available streams: (none)");
+    } else {
+        log::info!("[{room_id}] Douyin available streams:");
+        for stream in &available {
+            log::info!("[{room_id}]   {}: {}", stream.label(), stream.url);
+        }
+    }
+
+    let selected_label = available
+        .iter()
+        .find(|stream| stream.url == selected)
+        .map(AvailableStream::label)
+        .unwrap_or_else(|| "origin/main hls".to_string());
+    log::info!("[{room_id}] Douyin selected stream: {selected_label} {selected}");
 }
 
 impl DouyinRecorder {
@@ -156,7 +186,12 @@ impl DouyinRecorder {
                         return false;
                     };
 
-                    log::info!("New douyin stream URL: {}", new_stream_url.clone());
+                    log_douyin_stream_choice(
+                        &self.room_id,
+                        &stream_data,
+                        &info.hls_url,
+                        &new_stream_url,
+                    );
                     *self.extra.live_stream.write().await = Some(stream);
                     (*self.platform_live_id.write().await).clone_from(&info.room_id_str);
                 }

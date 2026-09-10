@@ -711,11 +711,33 @@ fn setup_plugins(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::W
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_dialog::init());
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::AppleScript,
+            None,
+        ));
 
     println!("Plugins initialized");
 
     builder
+}
+
+#[cfg(all(feature = "gui", target_os = "macos"))]
+fn remove_legacy_macos_launch_agent() {
+    let Some(home) = std::env::var_os("HOME") else {
+        return;
+    };
+    let plist = std::path::PathBuf::from(home).join("Library/LaunchAgents/bili-shadowreplay.plist");
+    if plist.is_file() {
+        if let Err(e) = std::fs::remove_file(&plist) {
+            log::warn!(
+                "Failed to remove legacy LaunchAgent {}: {e}",
+                plist.display()
+            );
+        } else {
+            log::info!("Removed legacy LaunchAgent {}", plist.display());
+        }
+    }
 }
 
 #[cfg(feature = "gui")]
@@ -907,6 +929,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             tauri::async_runtime::block_on(async {
                 let state = setup_app_state(app).await?;
                 let _ = tray::create_tray(app.handle());
+                #[cfg(target_os = "macos")]
+                remove_legacy_macos_launch_agent();
 
                 // check ffmpeg status
                 match ffmpeg::check_ffmpeg().await {

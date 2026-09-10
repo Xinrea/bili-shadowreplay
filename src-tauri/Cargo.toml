@@ -99,6 +99,7 @@ gui = [
     "tauri-plugin-os",
     "tauri-plugin-notification",
     "tauri-plugin-deep-link",
+    "tauri-plugin-autostart",
     "fix-path-env",
     "tauri-build",
 ]
@@ -148,6 +149,10 @@ optional = true
 
 [dependencies.tauri-plugin-deep-link]
 version = "2"
+optional = true
+
+[dependencies.tauri-plugin-autostart]
+version = "=2.5.0"
 optional = true
 
 [dependencies.fix-path-env]

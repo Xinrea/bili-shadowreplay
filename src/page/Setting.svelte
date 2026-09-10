@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke, TAURI_ENV, normalizeEndpoint } from "../lib/invoker";
   import { open } from "@tauri-apps/plugin-dialog";
+  import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
   import { clickOutside } from "../lib/actions/clickOutside";
 
   import type { Config } from "../lib/interface";
@@ -63,6 +64,7 @@
   let llmSaving = $state(false);
   let llmSaveMessage = $state("");
   let llmError = $state("");
+  let launchAtLogin = $state(false);
 
   function handleEndpointChange() {
     endpointValue = normalizeEndpoint(endpointValue);
@@ -234,8 +236,32 @@
     }
   }
 
+  async function loadLaunchAtLogin() {
+    if (!TAURI_ENV) return;
+    try {
+      launchAtLogin = await isEnabled();
+    } catch (e) {
+      console.error("Failed to read autostart status:", e);
+    }
+  }
+
+  async function updateLaunchAtLogin() {
+    const next = launchAtLogin;
+    try {
+      if (next) {
+        await enable();
+      } else {
+        await disable();
+      }
+    } catch (e) {
+      launchAtLogin = !next;
+      alert(e);
+    }
+  }
+
   onMount(async () => {
     await get_config();
+    await loadLaunchAtLogin();
   });
 </script>
 
@@ -263,6 +289,33 @@
           <div
             class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700"
           >
+            {#if TAURI_ENV}
+              <div class="p-4">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <h3
+                      class="text-sm font-medium text-gray-900 dark:text-white"
+                    >
+                      开机自动启动
+                    </h3>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                      登录系统后自动打开应用
+                    </p>
+                  </div>
+                  <label class="relative inline-block w-11 h-6">
+                    <input
+                      type="checkbox"
+                      class="peer opacity-0 w-0 h-0"
+                      bind:checked={launchAtLogin}
+                      onchange={updateLaunchAtLogin}
+                    />
+                    <span
+                      class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
+                    ></span>
+                  </label>
+                </div>
+              </div>
+            {/if}
             <div class="p-4">
               <div class="flex items-center justify-between">
                 <div>

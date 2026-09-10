@@ -544,12 +544,14 @@
           {live_id}
           {markers}
           onMarkerAdd={(marker) => {
-            markers.push({
-              offset: marker.offset,
-              realtime: marker.realtime,
-              content: "[空标记点]",
-            });
-            markers = markers.sort((a, b) => a.offset - b.offset);
+            markers = [
+              ...markers,
+              {
+                offset: marker.offset,
+                realtime: marker.realtime,
+                content: "[空标记点]",
+              },
+            ].sort((a, b) => a.offset - b.offset);
           }}
         />
       </div>

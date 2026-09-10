@@ -24,6 +24,7 @@
   import KuaishouIcon from "../lib/components/KuaishouIcon.svelte";
   import HuyaIcon from "../lib/components/HuyaIcon.svelte";
   import TikTokIcon from "../lib/components/TikTokIcon.svelte";
+  import { SvelteSet } from "svelte/reactivity";
   import GenerateWholeClipModal from "../lib/components/GenerateWholeClipModal.svelte";
   import ArchiveSummaryModal from "../lib/components/ArchiveSummaryModal.svelte";
   import type { RecorderInfo, RecorderList } from "src/lib/interface";
@@ -41,7 +42,7 @@
   let selectedRoomId: string | null = $state(null);
   let roomOptions: RoomOption[] = $state([]);
 
-  let selectedArchives: Set<string> = $state(new Set());
+  let selectedArchives = new SvelteSet<string>();
   let showDeleteConfirm = $state(false);
   let archiveToDelete: RecordItem | null = $state(null);
 
@@ -50,7 +51,7 @@
   let wholeClipArchive: RecordItem | null = $state(null);
   let showSummaryModal = $state(false);
   let summaryArchive: RecordItem | null = $state(null);
-  let summaryStatuses: Record<string, RecordSummaryStatus> = {};
+  let summaryStatuses: Record<string, RecordSummaryStatus> = $state({});
 
   // 分页相关状态
   let currentPage = $state(1);
@@ -439,7 +440,6 @@
     } else {
       selectedArchives.add(liveId);
     }
-    selectedArchives = selectedArchives; // Trigger reactivity
   }
 
   function selectAllArchives() {
@@ -451,7 +451,6 @@
         selectedArchives.add(archive.live_id)
       );
     }
-    selectedArchives = selectedArchives; // Trigger reactivity
   }
 
   async function deleteArchive(archive: RecordItem) {

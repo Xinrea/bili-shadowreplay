@@ -39,7 +39,7 @@ pub async fn add_recorder(
     mut extra: String,
 ) -> Result<RecorderRow, String> {
     log::info!("Add recorder: {platform} {room_id}");
-    let platform = PlatformType::from_str(&platform).unwrap();
+    let platform = PlatformType::from_str(&platform).map_err(|e| e.to_string())?;
     let account = match platform {
         PlatformType::BiliBili => {
             if let Ok(account) = state.db.get_account_by_platform("bilibili").await {
@@ -142,7 +142,7 @@ pub async fn remove_recorder(
     room_id: String,
 ) -> Result<(), String> {
     log::info!("Remove recorder: {platform} {room_id}");
-    let platform = PlatformType::from_str(&platform).unwrap();
+    let platform = PlatformType::from_str(&platform).map_err(|e| e.to_string())?;
     match state
         .recorder_manager
         .remove_recorder(platform, &room_id)
@@ -177,7 +177,7 @@ pub async fn get_room_info(
     platform: String,
     room_id: String,
 ) -> Result<RecorderInfo, String> {
-    let platform = PlatformType::from_str(&platform).unwrap();
+    let platform = PlatformType::from_str(&platform).map_err(|e| e.to_string())?;
     if let Some(info) = state
         .recorder_manager
         .get_recorder_info(platform, &room_id)

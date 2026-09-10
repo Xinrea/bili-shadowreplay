@@ -14,7 +14,12 @@ use std::path::Path;
 fn generate_user_agent_header() -> reqwest::header::HeaderMap {
     let user_agent = user_agent_generator::UserAgentGenerator::new().generate(true);
     let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert("user-agent", user_agent.parse().unwrap());
+    headers.insert(
+        "user-agent",
+        user_agent
+            .parse()
+            .expect("generated user agent is a valid header value"),
+    );
     headers
 }
 
@@ -43,8 +48,10 @@ pub async fn get_user_info(
     // </div>
     let document = Html::parse_document(&raw_content);
 
-    let avatar_selector = Selector::parse(".video-list-info .podcast-box img").unwrap();
-    let name_selector = Selector::parse(".video-list-info .podcast-info-intro h2").unwrap();
+    let avatar_selector = Selector::parse(".video-list-info .podcast-box img")
+        .expect("avatar selector is a valid literal");
+    let name_selector = Selector::parse(".video-list-info .podcast-info-intro h2")
+        .expect("name selector is a valid literal");
 
     // 提取 avatar (img src)
     let avatar = document
@@ -78,7 +85,10 @@ pub async fn get_room_info(
     } else {
         return Err(HuyaClientError::InvalidCookie);
     }
-    headers.insert("Referer", "https://m.huya.com/".parse().unwrap());
+    headers.insert(
+        "Referer",
+        reqwest::header::HeaderValue::from_static("https://m.huya.com/"),
+    );
     let url = format!("https://m.huya.com/{room_id}");
     let response = client.get(url).headers(headers).send().await?;
     let raw_content = response.text().await?;
@@ -90,8 +100,10 @@ pub async fn get_room_info(
 
 /// Download file from url to path
 pub async fn download_file(client: &Client, url: &str, path: &Path) -> Result<(), HuyaClientError> {
-    if !path.parent().unwrap().exists() {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)?;
+        }
     }
     let response = client.get(url).send().await?;
     let bytes = response.bytes().await?;

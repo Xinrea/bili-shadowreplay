@@ -250,6 +250,16 @@ impl BsrTool {
         format!("bsr-{timestamp}-{sequence}")
     }
 
+    /// Lock the tool-call log, recovering from a poisoned mutex.
+    ///
+    /// The log is append-only diagnostic data, so a panic in another thread must
+    /// not turn every later tool call into a panic.
+    fn lock_calls(&self) -> std::sync::MutexGuard<'_, Vec<ExecutedToolCall>> {
+        self.calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     fn requires_confirmation(action: &str) -> bool {
         matches!(
             action,
@@ -811,7 +821,7 @@ impl Tool for BsrTool {
         let args = args.normalize()?;
         let id = Self::tool_call_id();
         let record_index = {
-            let mut calls = self.calls.lock().expect("tool call log mutex poisoned");
+            let mut calls = self.lock_calls();
             calls.push(ExecutedToolCall {
                 id: id.clone(),
                 name: args.action.clone(),
@@ -833,7 +843,7 @@ impl Tool for BsrTool {
         }
 
         let result = self.execute(args).await;
-        let mut calls = self.calls.lock().expect("tool call log mutex poisoned");
+        let mut calls = self.lock_calls();
         let record = &mut calls[record_index];
         record.executed = true;
         if let Err(error) = &result {
@@ -935,10 +945,9 @@ fn rig_messages(message: &AgentMessage) -> Result<Vec<Message>, String> {
             if content.is_empty() {
                 content.push(AssistantContent::text(""));
             }
-            Ok(vec![Message::Assistant {
-                id: None,
-                content: OneOrMany::many(content).expect("assistant content is not empty"),
-            }])
+            let content = OneOrMany::many(content)
+                .map_err(|e| format!("Assistant message has no content: {e}"))?;
+            Ok(vec![Message::Assistant { id: None, content }])
         }
         "tool" => {
             let id = message
@@ -974,12 +983,11 @@ fn rig_messages(message: &AgentMessage) -> Result<Vec<Message>, String> {
             ));
             image_content.extend(images.into_iter().map(UserContent::Image));
 
+            let content = OneOrMany::many(image_content)
+                .map_err(|e| format!("Image tool result has no content: {e}"))?;
             Ok(vec![
                 Message::tool_result(id.clone(), result_text),
-                Message::User {
-                    content: OneOrMany::many(image_content)
-                        .expect("image tool result always has content"),
-                },
+                Message::User { content },
             ])
         }
         "system" => Ok(vec![Message::system(message.content.clone())]),
@@ -1076,7 +1084,10 @@ pub async fn agent_chat(
         "openai" => openai_chat(&config, tool, prompt, history).await,
         _ => return Err("Unsupported AI provider".into()),
     };
-    let tool_calls = calls.lock().expect("tool call log mutex poisoned").clone();
+    let tool_calls = calls
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
     match result {
         Ok(content) => Ok(AgentResponse {
             content,

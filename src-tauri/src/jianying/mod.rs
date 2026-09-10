@@ -75,7 +75,7 @@ pub async fn generate_premiere_xml(
         xml.push_str("\">\n");
         xml.push_str(&format!(
             "            <name>{}</name>\n",
-            escape_xml(&clip.file_path.file_name().unwrap().to_string_lossy())
+            escape_xml(&clip.file_path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default())
         ));
         xml.push_str(&format!(
             "            <start>{}</start>\n",
@@ -97,7 +97,7 @@ pub async fn generate_premiere_xml(
         xml.push_str("\">\n");
         xml.push_str(&format!(
             "              <name>{}</name>\n",
-            escape_xml(&clip.file_path.file_name().unwrap().to_string_lossy())
+            escape_xml(&clip.file_path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default())
         ));
         xml.push_str(&format!(
             "              <pathurl>{}</pathurl>\n",

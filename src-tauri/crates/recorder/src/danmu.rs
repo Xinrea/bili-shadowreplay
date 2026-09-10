@@ -24,18 +24,20 @@ pub struct DanmuStorage {
 
 impl DanmuStorage {
     pub async fn new(file_path: &PathBuf) -> Option<DanmuStorage> {
-        let file = OpenOptions::new()
+        let file = match OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .open(file_path)
-            .await;
-        if file.is_err() {
-            log::error!("Open danmu file failed: {}", file.err().unwrap());
-            return None;
-        }
-        let file = file.unwrap();
+            .await
+        {
+            Ok(file) => file,
+            Err(e) => {
+                log::error!("Open danmu file failed: {e}");
+                return None;
+            }
+        };
         let reader = BufReader::new(file);
         let mut lines = reader.lines();
         let mut preload_cache: Vec<LiveEvent> = Vec::new();

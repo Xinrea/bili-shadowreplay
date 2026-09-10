@@ -40,19 +40,16 @@ impl HlsPlaylist {
         &mut self,
         segment: MediaSegment,
     ) -> Result<(), RecorderError> {
-        if self.is_empty().await {
+        let Some(last) = self.playlist.segments.last_mut() else {
             self.add_segment(segment).await?;
             return Ok(());
-        }
+        };
 
-        {
-            let last = self.playlist.segments.last_mut().unwrap();
-            let new_duration = last.duration + segment.duration;
-            last.duration = new_duration;
-            self.playlist.target_duration =
-                std::cmp::max(self.playlist.target_duration, new_duration as u64);
-            self.flush().await?;
-        }
+        let new_duration = last.duration + segment.duration;
+        last.duration = new_duration;
+        self.playlist.target_duration =
+            std::cmp::max(self.playlist.target_duration, new_duration as u64);
+        self.flush().await?;
 
         Ok(())
     }

@@ -58,7 +58,8 @@ impl TsEntry {
     pub fn date_time(&self) -> String {
         let date_str = Utc
             .timestamp_opt(self.ts_seconds(), 0)
-            .unwrap()
+            .single()
+            .unwrap_or_default()
             .to_rfc3339();
         format!("#EXT-X-PROGRAM-DATE-TIME:{date_str}\n")
     }
@@ -102,7 +103,9 @@ impl EntryStore {
     pub async fn new(work_dir: &str) -> Self {
         // if work_dir is not exists, create it
         if !Path::new(work_dir).exists() {
-            std::fs::create_dir_all(work_dir).unwrap();
+            if let Err(e) = std::fs::create_dir_all(work_dir) {
+                log::error!("Failed to create work dir {work_dir}: {e}");
+            }
         }
 
         let mut entry_store = Self {
@@ -139,13 +142,13 @@ impl EntryStore {
         };
         let mut lines = BufReader::new(file_handle).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            let entry = TsEntry::from(line.as_str());
-            if let Err(e) = entry {
-                log::error!("Failed to parse entry: {e} {line}");
-                continue;
-            }
-
-            let entry = entry.unwrap();
+            let entry = match TsEntry::from(line.as_str()) {
+                Ok(entry) => entry,
+                Err(e) => {
+                    log::error!("Failed to parse entry: {e} {line}");
+                    continue;
+                }
+            };
 
             self.last_sequence = std::cmp::max(self.last_sequence, entry.sequence);
 
@@ -189,14 +192,14 @@ impl EntryStore {
         };
         let end_content = if vod { "#EXT-X-ENDLIST" } else { "" };
 
-        if self.entries.is_empty() {
+        let Some(first_entry) = self.entries.first() else {
             m3u8_content += end_content;
             return m3u8_content;
-        }
+        };
 
         m3u8_content += &format!(
             "#EXT-X-TARGETDURATION:{}\n",
-            (0.5 + self.entries.first().unwrap().length).floor()
+            (0.5 + first_entry.length).floor()
         );
 
         // add header, FMP4 need this
@@ -205,7 +208,6 @@ impl EntryStore {
         }
 
         // Collect entries in range
-        let first_entry = self.entries.first().unwrap();
         let first_entry_ts = first_entry.ts_seconds();
         let mut entries_in_range = vec![];
         for e in &self.entries {
@@ -219,13 +221,13 @@ impl EntryStore {
             }
         }
 
-        if entries_in_range.is_empty() {
+        let Some(first_in_range) = entries_in_range.first() else {
             m3u8_content += end_content;
             log::warn!("No entries in range, return empty manifest");
             return m3u8_content;
-        }
+        };
 
-        let mut previous_seq = entries_in_range.first().unwrap().sequence;
+        let mut previous_seq = first_in_range.sequence;
         for (i, e) in entries_in_range.iter().enumerate() {
             let discontinuous = e.sequence < previous_seq || e.sequence - previous_seq > 1;
             if discontinuous {

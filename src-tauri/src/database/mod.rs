@@ -26,6 +26,8 @@ pub enum DatabaseError {
     InvalidCookies,
     #[error("Number exceed i64 range")]
     NumberExceedI64Range,
+    #[error("Database has not been initialized")]
+    NotInitialized,
     #[error("DB error: {0}")]
     DB(#[from] sqlx::Error),
     #[error("SQL is incorret: {sql}")]
@@ -48,5 +50,18 @@ impl Database {
     /// db *must* be set in tauri setup
     pub async fn set(&self, p: Pool<Sqlite>) {
         *self.db.write().await = Some(p);
+    }
+
+    /// Borrow the connection pool.
+    ///
+    /// Every query goes through this helper so a query issued before
+    /// [`Database::set`] returns a typed [`DatabaseError::NotInitialized`]
+    /// instead of panicking.
+    async fn pool(&self) -> Result<Pool<Sqlite>, DatabaseError> {
+        self.db
+            .read()
+            .await
+            .clone()
+            .ok_or(DatabaseError::NotInitialized)
     }
 }

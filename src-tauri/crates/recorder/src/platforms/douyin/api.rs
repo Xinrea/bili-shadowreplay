@@ -52,7 +52,7 @@ async fn generate_a_bogus(params: &str, user_agent: &str) -> Result<String, Reco
     let local = deno_core::v8::Local::new(&mut scope, result);
     let url = local
         .to_string(&mut scope)
-        .unwrap()
+        .ok_or_else(|| RecorderError::JsRuntimeError("a_bogus is not a string".to_string()))?
         .to_rust_string_lossy(&mut scope);
     Ok(url)
 }
@@ -66,7 +66,12 @@ async fn generate_ms_token() -> String {
 pub fn generate_user_agent_header() -> reqwest::header::HeaderMap {
     let user_agent = user_agent_generator::UserAgentGenerator::new().generate(false);
     let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert("user-agent", user_agent.parse().unwrap());
+    headers.insert(
+        "user-agent",
+        user_agent
+            .parse()
+            .expect("generated user agent is a valid header value"),
+    );
     headers
 }
 
@@ -123,10 +128,19 @@ pub async fn get_room_info(
     sec_user_id: &str,
 ) -> Result<DouyinBasicRoomInfo, RecorderError> {
     let mut headers = generate_user_agent_header();
-    headers.insert("Referer", "https://live.douyin.com/".parse().unwrap());
-    headers.insert("Cookie", account.cookies.clone().parse().unwrap());
+    headers.insert(
+        "Referer",
+        reqwest::header::HeaderValue::from_static("https://live.douyin.com/"),
+    );
+    headers.insert(
+        "Cookie",
+        crate::utils::header_value("Cookie", &account.cookies)?,
+    );
     let ms_token = generate_ms_token().await;
-    let user_agent = headers.get("user-agent").unwrap().to_str().unwrap();
+    let user_agent = headers
+        .get("user-agent")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
     let params = format!(
             "aid=6383&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&enter_from=web_live&cookie_enabled=true&screen_width=1920&screen_height=1080&browser_language=zh-CN&browser_platform=MacIntel&browser_name=Chrome&browser_version=122.0.0.0&web_rid={room_id}&ms_token={ms_token}");
     let a_bogus = generate_a_bogus(&params, user_agent).await?;
@@ -194,8 +208,14 @@ pub async fn get_room_info_h5(
     let url = format!("https://webcast.amemv.com/webcast/room/reflow/info/?{query_string}");
 
     let mut headers = generate_user_agent_header();
-    headers.insert("Referer", "https://live.douyin.com/".parse().unwrap());
-    headers.insert("Cookie", account.cookies.clone().parse().unwrap());
+    headers.insert(
+        "Referer",
+        reqwest::header::HeaderValue::from_static("https://live.douyin.com/"),
+    );
+    headers.insert(
+        "Cookie",
+        crate::utils::header_value("Cookie", &account.cookies)?,
+    );
 
     let resp = client.get(&url).headers(headers).send().await?;
 
@@ -303,8 +323,14 @@ pub async fn get_user_info(
     // Use the IM spotlight relation API to get user info
     let url = "https://www.douyin.com/aweme/v1/web/im/spotlight/relation/";
     let mut headers = generate_user_agent_header();
-    headers.insert("Referer", "https://www.douyin.com/".parse().unwrap());
-    headers.insert("Cookie", account.cookies.clone().parse().unwrap());
+    headers.insert(
+        "Referer",
+        reqwest::header::HeaderValue::from_static("https://www.douyin.com/"),
+    );
+    headers.insert(
+        "Cookie",
+        crate::utils::header_value("Cookie", &account.cookies)?,
+    );
 
     let resp = client.get(url).headers(headers).send().await?;
 
@@ -367,7 +393,10 @@ pub async fn get_room_owner_sec_uid(
 ) -> Result<String, RecorderError> {
     let url = format!("https://live.douyin.com/{room_id}");
     let mut headers = generate_user_agent_header();
-    headers.insert("Referer", "https://live.douyin.com/".parse().unwrap());
+    headers.insert(
+        "Referer",
+        reqwest::header::HeaderValue::from_static("https://live.douyin.com/"),
+    );
     let resp = client.get(url).headers(headers).send().await?;
     let status = resp.status();
     let text = resp.text().await?;
@@ -378,7 +407,7 @@ pub async fn get_room_owner_sec_uid(
     }
     // match to get sec_uid from text like \"sec_uid\":\"MS4wLjABAAAAdFmmud36bynPjXOvoMjatb42856_zryHsGmlkpIECDA\"
     let sec_uid = Regex::new(r#"\\"sec_uid\\":\\"(.*?)\\""#)
-        .unwrap()
+        .expect("sec_uid regex is a valid literal")
         .captures(&text)
         .and_then(|c| c.get(1))
         .ok_or_else(|| RecorderError::ApiError {
@@ -391,8 +420,10 @@ pub async fn get_room_owner_sec_uid(
 
 /// Download file from url to path
 pub async fn download_file(client: &Client, url: &str, path: &Path) -> Result<(), RecorderError> {
-    if !path.parent().unwrap().exists() {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)?;
+        }
     }
     let response = client.get(url).send().await?;
     let bytes = response.bytes().await?;

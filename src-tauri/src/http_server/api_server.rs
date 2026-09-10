@@ -1005,11 +1005,11 @@ async fn handler_image_base64(
                 let headers = response.headers_mut();
                 headers.insert(
                     axum::http::header::CONTENT_TYPE,
-                    content_type.parse().unwrap(),
+                    axum::http::HeaderValue::from_static(content_type),
                 );
                 headers.insert(
                     axum::http::header::CACHE_CONTROL,
-                    "public, max-age=3600".parse().unwrap(),
+                    axum::http::HeaderValue::from_static("public, max-age=3600"),
                 );
 
                 return Ok(response);
@@ -1716,11 +1716,13 @@ async fn handler_upload_file(
         }
     }
 
-    if file_name.is_empty() || uploaded_file_path.is_none() {
+    if file_name.is_empty() {
         return Err(ApiError("No file uploaded".to_string()));
     }
 
-    let file_path = uploaded_file_path.unwrap();
+    let Some(file_path) = uploaded_file_path else {
+        return Err(ApiError("No file uploaded".to_string()));
+    };
     let file_path_str = file_path.to_string_lossy().to_string();
 
     log::info!("File uploaded: {} ({} bytes)", file_path_str, file_size);
@@ -1778,17 +1780,23 @@ async fn handler_hls(
     // Set content type
     headers.insert(
         axum::http::header::CONTENT_TYPE,
-        content_type.parse().unwrap(),
+        axum::http::HeaderValue::from_static(content_type),
     );
 
     // Only set cache control for m3u8 files
     if filename.ends_with(".m3u8") {
         headers.insert(
             axum::http::header::CACHE_CONTROL,
-            "no-cache, no-store, must-revalidate".parse().unwrap(),
+            axum::http::HeaderValue::from_static("no-cache, no-store, must-revalidate"),
         );
-        headers.insert(axum::http::header::PRAGMA, "no-cache".parse().unwrap());
-        headers.insert(axum::http::header::EXPIRES, "0".parse().unwrap());
+        headers.insert(
+            axum::http::header::PRAGMA,
+            axum::http::HeaderValue::from_static("no-cache"),
+        );
+        headers.insert(
+            axum::http::header::EXPIRES,
+            axum::http::HeaderValue::from_static("0"),
+        );
     }
 
     Ok(response)

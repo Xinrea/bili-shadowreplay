@@ -38,6 +38,14 @@ impl UserAgentGenerator {
         }
     }
 
+    /// Pick a random entry from a constant list.
+    ///
+    /// Every caller passes a non-empty literal, and the empty fallback keeps the
+    /// generator panic-free if that ever stops being true.
+    fn pick<'a>(&mut self, items: &[&'a str]) -> &'a str {
+        items.choose(&mut self.rng).copied().unwrap_or_default()
+    }
+
     fn generate_mobile(&mut self) -> String {
         let mobile_versions = [
             "120.0.0.0",
@@ -48,13 +56,13 @@ impl UserAgentGenerator {
             "115.0.0.0",
             "114.0.0.0",
         ];
-        let mobile_version = mobile_versions.choose(&mut self.rng).unwrap();
+        let mobile_version = self.pick(&mobile_versions);
 
         // 随机选择 Android 或 iOS
         if self.rng.random_bool(0.7) {
             // Android User-Agent
             let android_versions = ["13", "12", "11", "10", "9"];
-            let android_version = android_versions.choose(&mut self.rng).unwrap();
+            let android_version = self.pick(&android_versions);
             let device_models = [
                 "SM-G991B",
                 "SM-G996B",
@@ -67,15 +75,15 @@ impl UserAgentGenerator {
                 "OnePlus 9",
                 "OnePlus 10",
             ];
-            let device_model = device_models.choose(&mut self.rng).unwrap();
+            let device_model = self.pick(&device_models);
 
             format!("Mozilla/5.0 (Linux; Android {android_version}; {device_model}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{mobile_version} Mobile Safari/537.36")
         } else {
             // iOS User-Agent
             let ios_versions = ["17_1", "16_7", "16_6", "15_7", "14_8"];
-            let ios_version = ios_versions.choose(&mut self.rng).unwrap();
+            let ios_version = self.pick(&ios_versions);
             let device_types = ["iPhone; CPU iPhone OS", "iPad; CPU OS"];
-            let device_type = device_types.choose(&mut self.rng).unwrap();
+            let device_type = self.pick(&device_types);
 
             format!("Mozilla/5.0 ({device_type} {ios_version} like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1")
         }
@@ -94,8 +102,8 @@ impl UserAgentGenerator {
         let webkit_versions = ["537.36", "537.35", "537.34"];
 
         let os = self.get_random_os();
-        let chrome_version = chrome_versions.choose(&mut self.rng).unwrap();
-        let webkit_version = webkit_versions.choose(&mut self.rng).unwrap();
+        let chrome_version = self.pick(&chrome_versions);
+        let webkit_version = self.pick(&webkit_versions);
 
         format!(
             "Mozilla/5.0 ({os}) AppleWebKit/{webkit_version} (KHTML, like Gecko) Chrome/{chrome_version} Safari/{webkit_version}"
@@ -106,7 +114,7 @@ impl UserAgentGenerator {
         let firefox_versions = ["121.0", "120.0", "119.0", "118.0", "117.0", "116.0"];
 
         let os = self.get_random_os_firefox();
-        let firefox_version = firefox_versions.choose(&mut self.rng).unwrap();
+        let firefox_version = self.pick(&firefox_versions);
 
         format!("Mozilla/5.0 ({os}; rv:{firefox_version}) Gecko/20100101 Firefox/{firefox_version}")
     }
@@ -115,25 +123,23 @@ impl UserAgentGenerator {
         let safari_versions = ["17.1", "17.0", "16.6", "16.5", "16.4", "16.3"];
         let webkit_versions = ["605.1.15", "605.1.14", "605.1.13"];
 
-        let safari_version = safari_versions.choose(&mut self.rng).unwrap();
-        let webkit_version = webkit_versions.choose(&mut self.rng).unwrap();
+        let safari_version = self.pick(&safari_versions);
+        let webkit_version = self.pick(&webkit_versions);
 
         // Safari 只在 macOS 和 iOS 上
         let is_mobile = self.rng.random_bool(0.3);
 
         if is_mobile {
             let ios_versions = ["17_1", "16_7", "16_6", "15_7"];
-            let ios_version = ios_versions.choose(&mut self.rng).unwrap();
-            let device = ["iPhone; CPU iPhone OS", "iPad; CPU OS"]
-                .choose(&mut self.rng)
-                .unwrap();
+            let ios_version = self.pick(&ios_versions);
+            let device = self.pick(&["iPhone; CPU iPhone OS", "iPad; CPU OS"]);
 
             format!(
                 "Mozilla/5.0 ({device} {ios_version} like Mac OS X) AppleWebKit/{webkit_version} (KHTML, like Gecko) Version/{safari_version} Mobile/15E148 Safari/{webkit_version}"
             )
         } else {
             let macos_versions = ["14_1", "13_6", "12_7"];
-            let macos_version = macos_versions.choose(&mut self.rng).unwrap();
+            let macos_version = self.pick(&macos_versions);
 
             format!(
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X {macos_version}) AppleWebKit/{webkit_version} (KHTML, like Gecko) Version/{safari_version} Safari/{webkit_version}"
@@ -146,8 +152,8 @@ impl UserAgentGenerator {
         let chrome_versions = ["119.0.0.0", "118.0.0.0", "117.0.0.0", "116.0.0.0"];
 
         let os = self.get_random_os();
-        let edge_version = edge_versions.choose(&mut self.rng).unwrap();
-        let chrome_version = chrome_versions.choose(&mut self.rng).unwrap();
+        let edge_version = self.pick(&edge_versions);
+        let chrome_version = self.pick(&chrome_versions);
 
         format!(
             "Mozilla/5.0 ({os}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{chrome_version} Safari/537.36 Edg/{edge_version}"
@@ -164,7 +170,7 @@ impl UserAgentGenerator {
             "X11; Ubuntu; Linux x86_64",
         ];
 
-        os_list.choose(&mut self.rng).unwrap()
+        self.pick(&os_list)
     }
 
     fn get_random_os_firefox(&mut self) -> &'static str {
@@ -176,7 +182,7 @@ impl UserAgentGenerator {
             "X11; Ubuntu; Linux i686",
         ];
 
-        os_list.choose(&mut self.rng).unwrap()
+        self.pick(&os_list)
     }
 }
 

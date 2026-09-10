@@ -23,7 +23,7 @@ pub struct VideoRow {
 
 impl Database {
     pub async fn get_videos(&self, room_id: &str) -> Result<Vec<VideoRow>, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         let videos = sqlx::query_as::<_, VideoRow>("SELECT * FROM videos WHERE room_id = $1;")
             .bind(room_id)
             .fetch_all(&lock)
@@ -32,7 +32,7 @@ impl Database {
     }
 
     pub async fn get_video(&self, id: i64) -> Result<VideoRow, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         Ok(
             sqlx::query_as::<_, VideoRow>("SELECT * FROM videos WHERE id = $1")
                 .bind(id)
@@ -42,7 +42,7 @@ impl Database {
     }
 
     pub async fn update_video(&self, video_row: &VideoRow) -> Result<(), DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         sqlx::query("UPDATE videos SET status = $1, bvid = $2, title = $3, desc = $4, tags = $5, area = $6, note = $7 WHERE id = $8")
             .bind(video_row.status)
             .bind(&video_row.bvid)
@@ -58,7 +58,7 @@ impl Database {
     }
 
     pub async fn delete_video(&self, id: i64) -> Result<(), DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         sqlx::query("DELETE FROM videos WHERE id = $1")
             .bind(id)
             .execute(&lock)
@@ -67,7 +67,7 @@ impl Database {
     }
 
     pub async fn add_video(&self, video: &VideoRow) -> Result<VideoRow, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         let sql = sqlx::query("INSERT INTO videos (room_id, cover, file, note, length, size, status, bvid, title, desc, tags, area, created_at, platform) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)")
             .bind(&video.room_id)
             .bind(&video.cover)
@@ -93,7 +93,7 @@ impl Database {
     }
 
     pub async fn update_video_cover(&self, id: i64, cover: &str) -> Result<(), DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         sqlx::query("UPDATE videos SET cover = $1 WHERE id = $2")
             .bind(cover)
             .bind(id)
@@ -103,7 +103,7 @@ impl Database {
     }
 
     pub async fn get_all_videos(&self) -> Result<Vec<VideoRow>, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         let videos =
             sqlx::query_as::<_, VideoRow>("SELECT * FROM videos ORDER BY created_at DESC;")
                 .fetch_all(&lock)
@@ -112,7 +112,7 @@ impl Database {
     }
 
     pub async fn get_video_cover(&self, id: i64) -> Result<String, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         let video = sqlx::query_as::<_, VideoRow>("SELECT * FROM videos WHERE id = $1")
             .bind(id)
             .fetch_one(&lock)

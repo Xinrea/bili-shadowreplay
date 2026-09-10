@@ -562,13 +562,8 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     let db_pool: Pool<Sqlite> = Pool::connect(&conn_url).await?;
     let migrations = get_migrations();
 
-    let migrator = Migrator::new(MigrationList(migrations))
-        .await
-        .expect("Failed to create migrator");
-    migrator
-        .run(&db_pool)
-        .await
-        .expect("Failed to run migrations");
+    let migrator = Migrator::new(MigrationList(migrations)).await?;
+    migrator.run(&db_pool).await?;
 
     db.set(db_pool).await;
     db.finish_pending_tasks().await?;
@@ -577,7 +572,8 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     let progress_manager = Arc::new(ProgressManager::new());
     let emitter = EventEmitter::new(progress_manager.get_event_sender());
     let webhook_poster =
-        webhook::poster::create_webhook_poster(&config.read().await.webhook_url, None).unwrap();
+        webhook::poster::create_webhook_poster(&config.read().await.webhook_url, None)
+            .map_err(|e| e.to_string())?;
     let mut task_manager = TaskManager::new();
     task_manager.start();
     let task_manager = Arc::new(task_manager);
@@ -619,7 +615,8 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     setup_logging(&log_dir).await?;
 
     log::info!("Setting up app state...");
-    let app_dirs = AppDirs::new(Some("cn.vjoi.bili-shadowreplay"), false).unwrap();
+    let app_dirs =
+        AppDirs::new(Some("cn.vjoi.bili-shadowreplay"), false).ok_or("系统未提供应用配置目录")?;
     let config_path = app_dirs.config_dir.join("Conf.toml");
     let cache_path = app_dirs.cache_dir.join("cache");
     let output_path = app_dirs.data_dir.join("output");
@@ -644,15 +641,16 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     let db_clone = db.clone();
     let emitter = EventEmitter::new(app.handle().clone());
     let binding = dbs.0.read().await;
-    let dbpool = binding.get("sqlite:data_v2.db").unwrap();
-    let sqlite_pool = match dbpool {
-        tauri_plugin_sql::DbPool::Sqlite(pool) => Some(pool),
-    };
-    db_clone.set(sqlite_pool.unwrap().clone()).await;
+    let dbpool = binding
+        .get("sqlite:data_v2.db")
+        .ok_or("sqlite:data_v2.db is not registered")?;
+    let tauri_plugin_sql::DbPool::Sqlite(sqlite_pool) = dbpool;
+    db_clone.set(sqlite_pool.clone()).await;
     db_clone.finish_pending_tasks().await?;
     db_clone.finish_pending_record_summaries().await?;
     let webhook_poster =
-        webhook::poster::create_webhook_poster(&config.read().await.webhook_url, None).unwrap();
+        webhook::poster::create_webhook_poster(&config.read().await.webhook_url, None)
+            .map_err(|e| e.to_string())?;
     let mut task_manager = TaskManager::new();
     task_manager.start();
 
@@ -698,10 +696,9 @@ fn setup_plugins(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::W
     let migrations = get_migrations();
     let builder = builder
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            let _ = app
-                .get_webview_window("main")
-                .expect("no main window")
-                .set_focus();
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_focus();
+            }
         }))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_os::init())
@@ -727,7 +724,9 @@ fn setup_event_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<t
         if let WindowEvent::CloseRequested { api, .. } = event {
             // main window is not closable
             if window.label() == "main" {
-                window.hide().unwrap();
+                if let Err(e) = window.hide() {
+                    log::error!("Failed to hide main window: {e}");
+                }
                 api.prevent_close();
             }
         }
@@ -958,15 +957,23 @@ async fn shutdown_signal() {
     {
         use tokio::signal::unix::{signal, SignalKind};
 
-        let mut terminate =
-            signal(SignalKind::terminate()).expect("Failed to install SIGTERM handler");
-        tokio::select! {
-            result = tokio::signal::ctrl_c() => {
-                if let Err(error) = result {
+        match signal(SignalKind::terminate()) {
+            Ok(mut terminate) => {
+                tokio::select! {
+                    result = tokio::signal::ctrl_c() => {
+                        if let Err(error) = result {
+                            log::error!("Failed to listen for Ctrl+C: {error}");
+                        }
+                    }
+                    _ = terminate.recv() => {}
+                }
+            }
+            Err(error) => {
+                log::error!("Failed to install SIGTERM handler: {error}");
+                if let Err(error) = tokio::signal::ctrl_c().await {
                     log::error!("Failed to listen for Ctrl+C: {error}");
                 }
             }
-            _ = terminate.recv() => {}
         }
     }
 
@@ -982,9 +989,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _guard = init_sentry_from_env();
     // get params from command line
     let args = Args::parse();
-    let state = setup_server_state(args)
-        .await
-        .expect("Failed to setup server state");
+    let state = setup_server_state(args).await?;
 
     // check ffmpeg status
     match ffmpeg::check_ffmpeg().await {

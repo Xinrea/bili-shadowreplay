@@ -51,6 +51,19 @@ async fn wait_ffmpeg_exit(child: &mut tokio::process::Child, context: &str) -> R
     Ok(())
 }
 
+/// Render a path as a UTF-8 string for an ffmpeg argument.
+fn path_str(path: &Path) -> Result<&str, String> {
+    path.to_str()
+        .ok_or_else(|| format!("Path is not valid UTF-8: {}", path.display()))
+}
+
+/// File name of `path` as UTF-8, for display and ffmpeg filter strings.
+fn file_name_str(path: &Path) -> Result<&str, String> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("Invalid file name: {}", path.display()))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Range {
     pub start: f64,
@@ -109,7 +122,7 @@ pub async fn transcode(
     #[cfg(target_os = "windows")]
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
-    ffmpeg_process.args(["-i", file.to_str().unwrap()]);
+    ffmpeg_process.args(["-i", path_str(file)?]);
 
     if copy_codecs {
         ffmpeg_process.args(["-c:v", "copy"]).args(["-c:a", "copy"]);
@@ -126,29 +139,26 @@ pub async fn transcode(
     }
 
     let child = ffmpeg_process
-        .args([output_path.to_str().unwrap()])
+        .args([path_str(output_path)?])
         .args(["-y"])
         .args(["-progress", "pipe:2"])
         .stderr(Stdio::piped())
         .spawn();
-    if let Err(e) = child {
-        return Err(e.to_string());
-    }
-
-    let mut child = child.unwrap();
-    let stderr = child.stderr.take().unwrap();
+    let mut child = child.map_err(|e| e.to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("ffmpeg stderr pipe unavailable")?;
     let reader = BufReader::new(stderr);
     let mut parser = FfmpegLogParser::new(reader);
     while let Ok(event) = parser.parse_next_event().await {
         match event {
             FfmpegEvent::Progress(p) => {
-                if reporter.is_none() {
-                    continue;
+                if let Some(reporter) = reporter {
+                    reporter
+                        .update(format!("压制中：{}", p.time).as_str())
+                        .await;
                 }
-                reporter
-                    .unwrap()
-                    .update(format!("压制中：{}", p.time).as_str())
-                    .await;
             }
             FfmpegEvent::LogEOF => break,
             FfmpegEvent::Error(e) => {
@@ -178,33 +188,30 @@ pub async fn trim_video(
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
     ffmpeg_process.args(["-ss", &start_time.to_string()]);
-    ffmpeg_process.args(["-i", file.to_str().unwrap()]);
+    ffmpeg_process.args(["-i", path_str(file)?]);
     ffmpeg_process.args(["-t", &duration.to_string()]);
     ffmpeg_process.args(["-c", "copy"]);
-    ffmpeg_process.args([output_path.to_str().unwrap()]);
+    ffmpeg_process.args([path_str(output_path)?]);
     ffmpeg_process.args(["-y"]);
     ffmpeg_process.args(["-progress", "pipe:2"]);
     ffmpeg_process.stderr(Stdio::piped());
     let child = ffmpeg_process.spawn();
-    if let Err(e) = child {
-        return Err(e.to_string());
-    }
-
-    let mut child = child.unwrap();
-    let stderr = child.stderr.take().unwrap();
+    let mut child = child.map_err(|e| e.to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("ffmpeg stderr pipe unavailable")?;
     let reader = BufReader::new(stderr);
     let mut parser = FfmpegLogParser::new(reader);
 
     while let Ok(event) = parser.parse_next_event().await {
         match event {
             FfmpegEvent::Progress(p) => {
-                if reporter.is_none() {
-                    continue;
+                if let Some(reporter) = reporter {
+                    reporter
+                        .update(format!("切片中：{}", p.time).as_str())
+                        .await;
                 }
-                reporter
-                    .unwrap()
-                    .update(format!("切片中：{}", p.time).as_str())
-                    .await;
             }
             FfmpegEvent::LogEOF => break,
             FfmpegEvent::Error(e) => {
@@ -237,7 +244,7 @@ pub async fn extract_audio_sample(file: &Path) -> Result<PathBuf, String> {
     ffmpeg_process.kill_on_drop(true);
 
     let child = ffmpeg_process
-        .args(["-i", file.to_str().unwrap()])
+        .args(["-i", path_str(file)?])
         .args(["-c:a", "libopus"])
         .args(["-ar", "16000"])
         .args(["-ac", "1"])
@@ -245,18 +252,17 @@ pub async fn extract_audio_sample(file: &Path) -> Result<PathBuf, String> {
         .args(["-b:a", "64k"])
         .args(["-vbr", "on"])
         .args(["-compression_level", "10"])
-        .args([output_path.to_str().unwrap()])
+        .args([path_str(&output_path)?])
         .args(["-y"])
         .args(["-progress", "pipe:2"])
         .stderr(Stdio::piped())
         .spawn();
 
-    if let Err(e) = child {
-        return Err(e.to_string());
-    }
-
-    let mut child = child.unwrap();
-    let stderr = child.stderr.take().unwrap();
+    let mut child = child.map_err(|e| e.to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("ffmpeg stderr pipe unavailable")?;
     let reader = BufReader::new(stderr);
     let mut parser = FfmpegLogParser::new(reader);
     while let Ok(event) = parser.parse_next_event().await {
@@ -307,8 +313,13 @@ pub async fn extract_audio_chunks(file: &Path, format: &str) -> Result<PathBuf, 
     log::info!("Splitting into {chunk_count} chunks of {chunk_duration} seconds each");
 
     // Create output directory for chunks
-    let output_dir = output_path.parent().unwrap();
-    let base_name = output_path.file_stem().unwrap().to_str().unwrap();
+    let output_dir = output_path
+        .parent()
+        .ok_or_else(|| format!("Output path has no parent: {}", output_path.display()))?;
+    let base_name = output_path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("Invalid output file name: {}", output_path.display()))?;
     let chunk_dir = output_dir.join(format!("{base_name}_chunks"));
 
     if !chunk_dir.exists() {
@@ -320,9 +331,9 @@ pub async fn extract_audio_chunks(file: &Path, format: &str) -> Result<PathBuf, 
     let segment_pattern = chunk_dir.join(format!("{base_name}_%03d.{format}"));
 
     // 构建优化的ffmpeg命令参数
-    let file_str = file.to_str().unwrap();
+    let file_str = path_str(file)?;
     let chunk_duration_str = chunk_duration.to_string();
-    let segment_pattern_str = segment_pattern.to_str().unwrap();
+    let segment_pattern_str = path_str(&segment_pattern)?;
 
     let mut args = vec![
         "-i",
@@ -373,12 +384,11 @@ pub async fn extract_audio_chunks(file: &Path, format: &str) -> Result<PathBuf, 
 
     let child = ffmpeg_process.args(&args).stderr(Stdio::piped()).spawn();
 
-    if let Err(e) = child {
-        return Err(e.to_string());
-    }
-
-    let mut child = child.unwrap();
-    let stderr = child.stderr.take().unwrap();
+    let mut child = child.map_err(|e| e.to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("ffmpeg stderr pipe unavailable")?;
     let reader = BufReader::new(stderr);
     let mut parser = FfmpegLogParser::new(reader);
 
@@ -437,7 +447,10 @@ pub async fn extract_full_audio(file: &Path) -> Result<PathBuf, String> {
         .spawn();
 
     let mut child = child.map_err(|e| format!("Failed to spawn ffmpeg: {e}"))?;
-    let stderr = child.stderr.take().unwrap();
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("ffmpeg stderr pipe unavailable")?;
     let reader = BufReader::new(stderr);
     let mut parser = FfmpegLogParser::new(reader);
 
@@ -496,7 +509,10 @@ pub async fn extract_audio_segment(
         .spawn();
 
     let mut child = child.map_err(|e| format!("Failed to spawn ffmpeg: {e}"))?;
-    let stderr = child.stderr.take().unwrap();
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("ffmpeg stderr pipe unavailable")?;
     let reader = BufReader::new(stderr);
     let mut parser = FfmpegLogParser::new(reader);
 
@@ -533,17 +549,16 @@ async fn get_audio_duration(file: &Path) -> Result<u64, String> {
         .args(["-v", "quiet"])
         .args(["-show_entries", "format=duration"])
         .args(["-of", "csv=p=0"])
-        .args(["-i", file.to_str().unwrap()])
+        .args(["-i", path_str(file)?])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn();
 
-    if let Err(e) = child {
-        return Err(format!("Failed to spawn ffprobe process: {e}"));
-    }
-
-    let mut child = child.unwrap();
-    let stdout = child.stdout.take().unwrap();
+    let mut child = child.map_err(|e| format!("Failed to spawn ffprobe process: {e}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("ffprobe stdout pipe unavailable")?;
     let reader = BufReader::new(stdout);
     let mut parser = FfmpegLogParser::new(reader);
 
@@ -593,11 +608,7 @@ pub async fn encode_video_subtitle(
         }
     }
     // output path is file with prefix [subtitle]
-    let output_filename = format!(
-        "{}{}",
-        constants::PREFIX_SUBTITLE,
-        file.file_name().unwrap().to_str().unwrap()
-    );
+    let output_filename = format!("{}{}", constants::PREFIX_SUBTITLE, file_name_str(file)?);
     let output_path = file.with_file_name(&output_filename);
 
     // check output path exists - log but allow overwrite
@@ -613,9 +624,7 @@ pub async fn encode_video_subtitle(
     // if windows
     let subtitle = if cfg!(target_os = "windows") {
         // escape characters in subtitle path
-        let subtitle = subtitle
-            .to_str()
-            .unwrap()
+        let subtitle = path_str(subtitle)?
             .replace('\\', "\\\\")
             .replace(':', "\\:");
         format!("'{subtitle}'")
@@ -634,23 +643,22 @@ pub async fn encode_video_subtitle(
 
     let video_encoder = hwaccel::get_x264_encoder().await;
 
-    ffmpeg_process.args(["-i", file.to_str().unwrap()]);
+    ffmpeg_process.args(["-i", path_str(file)?]);
     hwaccel::apply_x264_encoder_args(&mut ffmpeg_process, video_encoder, Some(vf.as_str()));
     ffmpeg_process.args(["-c:a", "copy"]);
     hwaccel::apply_x264_quality_args(&mut ffmpeg_process, video_encoder);
     let child = ffmpeg_process
-        .args([output_path.to_str().unwrap()])
+        .args([path_str(&output_path)?])
         .args(["-y"])
         .args(["-progress", "pipe:2"])
         .stderr(Stdio::piped())
         .spawn();
 
-    if let Err(e) = child {
-        return Err(e.to_string());
-    }
-
-    let mut child = child.unwrap();
-    let stderr = child.stderr.take().unwrap();
+    let mut child = child.map_err(|e| e.to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("ffmpeg stderr pipe unavailable")?;
     let reader = BufReader::new(stderr);
     let mut parser = FfmpegLogParser::new(reader);
 
@@ -693,11 +701,7 @@ pub async fn encode_video_danmu(
 ) -> Result<PathBuf, String> {
     // ffmpeg -i fixed_\[30655190\]1742887114_0325084106_81.5.mp4 -vf ass=subtitle.ass -c:v libx264 -c:a copy output.mp4
     log::info!("Encode video danmu task start: {}", file.display());
-    let danmu_filename = format!(
-        "{}{}",
-        constants::PREFIX_DANMAKU,
-        file.file_name().unwrap().to_str().unwrap()
-    );
+    let danmu_filename = format!("{}{}", constants::PREFIX_DANMAKU, file_name_str(file)?);
     let output_file_path = file.with_file_name(danmu_filename);
 
     // check output path exists - log but allow overwrite
@@ -713,9 +717,7 @@ pub async fn encode_video_danmu(
     // if windows
     let subtitle = if cfg!(target_os = "windows") {
         // escape characters in subtitle path
-        let subtitle = subtitle
-            .to_str()
-            .unwrap()
+        let subtitle = path_str(subtitle)?
             .replace('\\', "\\\\")
             .replace(':', "\\:");
         format!("'{subtitle}'")
@@ -730,23 +732,22 @@ pub async fn encode_video_danmu(
     let video_encoder = hwaccel::get_x264_encoder().await;
 
     let vf = format!("{},ass={subtitle}", hwaccel::H264_SCALE_PAD_FILTER);
-    ffmpeg_process.args(["-i", file.to_str().unwrap()]);
+    ffmpeg_process.args(["-i", path_str(file)?]);
     hwaccel::apply_x264_encoder_args(&mut ffmpeg_process, video_encoder, Some(vf.as_str()));
     ffmpeg_process.args(["-c:a", "copy"]);
     hwaccel::apply_x264_quality_args(&mut ffmpeg_process, video_encoder);
     let child = ffmpeg_process
-        .args([output_file_path.to_str().unwrap()])
+        .args([path_str(&output_file_path)?])
         .args(["-y"])
         .args(["-progress", "pipe:2"])
         .stderr(Stdio::piped())
         .spawn();
 
-    if let Err(e) = child {
-        return Err(e.to_string());
-    }
-
-    let mut child = child.unwrap();
-    let stderr = child.stderr.take().unwrap();
+    let mut child = child.map_err(|e| e.to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("ffmpeg stderr pipe unavailable")?;
     let reader = BufReader::new(stderr);
     let mut parser = FfmpegLogParser::new(reader);
 
@@ -758,13 +759,11 @@ pub async fn encode_video_danmu(
             }
             FfmpegEvent::Progress(p) => {
                 log::debug!("Encode video danmu progress: {}", p.time);
-                if reporter.is_none() {
-                    continue;
+                if let Some(reporter) = reporter {
+                    reporter
+                        .update(format!("压制中：{}", p.time).as_str())
+                        .await;
                 }
-                reporter
-                    .unwrap()
-                    .update(format!("压制中：{}", p.time).as_str())
-                    .await;
             }
             FfmpegEvent::Log(_level, _content) => {}
             FfmpegEvent::LogEOF => break,
@@ -795,12 +794,11 @@ pub async fn generic_ffmpeg_command(args: &[&str]) -> Result<String, String> {
     ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
     let child = ffmpeg_process.args(args).stderr(Stdio::piped()).spawn();
-    if let Err(e) = child {
-        return Err(e.to_string());
-    }
-
-    let mut child = child.unwrap();
-    let stderr = child.stderr.take().unwrap();
+    let mut child = child.map_err(|e| e.to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("ffmpeg stderr pipe unavailable")?;
     let reader = BufReader::new(stderr);
     let mut parser = FfmpegLogParser::new(reader);
 
@@ -1036,8 +1034,11 @@ pub async fn generate_video_subtitle(
                     chunk_paths.push(path);
                 }
                 // sort chunk paths by name
-                chunk_paths
-                    .sort_by_key(|path| path.file_name().unwrap().to_str().unwrap().to_string());
+                chunk_paths.sort_by_key(|path| {
+                    path.file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                });
 
                 let mut results = Vec::new();
                 for path in chunk_paths {
@@ -1097,24 +1098,19 @@ pub async fn generate_video_subtitle(
 
 /// Trying to run ffmpeg for version
 pub async fn check_ffmpeg() -> Result<String, String> {
-    let child = tokio::process::Command::new(ffmpeg_path())
+    let mut child = tokio::process::Command::new(ffmpeg_path())
         .arg("-version")
         .stdout(Stdio::piped())
-        .spawn();
-    if let Err(e) = child {
-        log::error!("Failed to spawn ffmpeg process: {e}");
-        return Err(e.to_string());
-    }
+        .spawn()
+        .map_err(|e| {
+            log::error!("Failed to spawn ffmpeg process: {e}");
+            e.to_string()
+        })?;
 
-    let mut child = child.unwrap();
-
-    let stdout = child.stdout.take();
-    if stdout.is_none() {
+    let stdout = child.stdout.take().ok_or_else(|| {
         log::error!("Failed to take ffmpeg output");
-        return Err("Failed to take ffmpeg output".into());
-    }
-
-    let stdout = stdout.unwrap();
+        "Failed to take ffmpeg output".to_string()
+    })?;
     let reader = BufReader::new(stdout);
     let mut parser = FfmpegLogParser::new(reader);
 
@@ -1166,9 +1162,12 @@ pub async fn clip_from_video_file(
     start_time: f64,
     duration: f64,
 ) -> Result<(), String> {
-    let output_folder = output_path.parent().unwrap();
+    let output_folder = output_path
+        .parent()
+        .ok_or_else(|| format!("Output path has no parent: {}", output_path.display()))?;
     if !output_folder.exists() {
-        std::fs::create_dir_all(output_folder).unwrap();
+        std::fs::create_dir_all(output_folder)
+            .map_err(|e| format!("Failed to create output directory: {e}"))?;
     }
 
     let mut ffmpeg_process = ffmpeg_command();
@@ -1186,17 +1185,16 @@ pub async fn clip_from_video_file(
     hwaccel::apply_x264_quality_args(&mut ffmpeg_process, video_encoder);
     let child = ffmpeg_process
         .args(["-avoid_negative_ts", "make_zero"])
-        .args(["-y", output_path.to_str().unwrap()])
+        .args(["-y", path_str(output_path)?])
         .args(["-progress", "pipe:2"])
         .stderr(Stdio::piped())
         .spawn();
 
-    if let Err(e) = child {
-        return Err(format!("启动ffmpeg进程失败: {e}"));
-    }
-
-    let mut child = child.unwrap();
-    let stderr = child.stderr.take().unwrap();
+    let mut child = child.map_err(|e| format!("启动ffmpeg进程失败: {e}"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("ffmpeg stderr pipe unavailable")?;
     let reader = BufReader::new(stderr);
     let mut parser = FfmpegLogParser::new(reader);
 
@@ -1324,7 +1322,7 @@ pub async fn generate_thumbnail(video_full_path: &Path, timestamp: f64) -> Resul
         .args(["-i", &format!("{}", video_full_path.display())])
         .args(["-ss", &timestamp.to_string()])
         .args(["-vframes", "1"])
-        .args(["-y", thumbnail_full_path.to_str().unwrap()])
+        .args(["-y", path_str(&thumbnail_full_path)?])
         .output()
         .await
         .map_err(|e| format!("生成缩略图失败: {e}"))?;
@@ -1365,7 +1363,10 @@ pub async fn execute_ffmpeg_conversion(
         .spawn()
         .map_err(|e| format!("启动FFmpeg进程失败: {e}"))?;
 
-    let stderr = child.stderr.take().unwrap();
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("ffmpeg stderr pipe unavailable")?;
     let reader = BufReader::new(stderr);
     let mut parser = FfmpegLogParser::new(reader);
 
@@ -1907,7 +1908,7 @@ mod tests {
         let subtitle_filename = format!(
             "{}{}",
             constants::PREFIX_SUBTITLE,
-            test_file.file_name().unwrap().to_str().unwrap()
+            file_name_str(test_file).expect("test path is valid UTF-8")
         );
         assert!(subtitle_filename.starts_with(constants::PREFIX_SUBTITLE));
         assert!(subtitle_filename.contains("test.mp4"));
@@ -1916,7 +1917,7 @@ mod tests {
         let danmu_filename = format!(
             "{}{}",
             constants::PREFIX_DANMAKU,
-            test_file.file_name().unwrap().to_str().unwrap()
+            file_name_str(test_file).expect("test path is valid UTF-8")
         );
         assert!(danmu_filename.starts_with(constants::PREFIX_DANMAKU));
         assert!(danmu_filename.contains("test.mp4"));

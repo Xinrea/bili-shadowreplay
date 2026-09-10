@@ -32,14 +32,14 @@ impl AccountRow {
 impl Database {
     // CREATE TABLE accounts (uid INTEGER PRIMARY KEY, name TEXT, avatar TEXT, csrf TEXT, cookies TEXT, created_at TEXT);
     pub async fn add_account(&self, account: &AccountRow) -> Result<(), DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         sqlx::query("INSERT INTO accounts (uid, platform, name, avatar, csrf, cookies, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)").bind(&account.uid).bind(&account.platform).bind(&account.name).bind(&account.avatar).bind(&account.csrf).bind(&account.cookies).bind(&account.created_at).execute(&lock).await?;
 
         Ok(())
     }
 
     pub async fn remove_account(&self, platform: &str, uid: &str) -> Result<(), DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         let sql = sqlx::query("DELETE FROM accounts WHERE uid = $1 and platform = $2")
             .bind(uid)
             .bind(platform)
@@ -52,7 +52,7 @@ impl Database {
     }
 
     pub async fn get_accounts(&self) -> Result<Vec<AccountRow>, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         Ok(sqlx::query_as::<_, AccountRow>("SELECT * FROM accounts")
             .fetch_all(&lock)
             .await?)
@@ -63,7 +63,7 @@ impl Database {
         platform: &str,
         uid: &str,
     ) -> Result<AccountRow, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         Ok(sqlx::query_as::<_, AccountRow>(
             "SELECT * FROM accounts WHERE uid = $1 and platform = $2",
         )
@@ -77,7 +77,7 @@ impl Database {
         &self,
         platform: &str,
     ) -> Result<AccountRow, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         let accounts =
             sqlx::query_as::<_, AccountRow>("SELECT * FROM accounts WHERE platform = $1")
                 .bind(platform)
@@ -87,7 +87,9 @@ impl Database {
             return Err(DatabaseError::NotFound);
         }
         // randomly select one account
-        let account = accounts.choose(&mut rand::thread_rng()).unwrap();
+        let account = accounts
+            .choose(&mut rand::thread_rng())
+            .ok_or(DatabaseError::NotFound)?;
         Ok(account.clone())
     }
 }

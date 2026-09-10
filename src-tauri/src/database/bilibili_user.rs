@@ -16,7 +16,7 @@ impl Database {
         &self,
         user_id: &str,
     ) -> Result<Option<UserInfo>, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         let row = sqlx::query_as::<_, BilibiliUserInfoRow>(
             "SELECT user_id, user_name, user_avatar
              FROM bilibili_user_profiles
@@ -34,7 +34,7 @@ impl Database {
     }
 
     async fn save_bilibili_user_info(&self, user_info: &UserInfo) -> Result<(), DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
+        let lock = self.pool().await?;
         sqlx::query(
             "INSERT INTO bilibili_user_profiles
                 (user_id, user_name, user_avatar, updated_at)

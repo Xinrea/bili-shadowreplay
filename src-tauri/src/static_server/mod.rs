@@ -33,7 +33,7 @@ pub async fn start_static_server(
         }
     };
 
-    let port = listener.local_addr().unwrap().port();
+    let port = listener.local_addr()?.port();
 
     let output_path = config.read().await.output.clone();
     let cache_path = config.read().await.cache.clone();

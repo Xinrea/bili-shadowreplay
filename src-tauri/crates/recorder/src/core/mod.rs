@@ -99,7 +99,7 @@ impl HlsStream {
 
         // Segment URI is relative, resolve it relative to m3u8 base URL
         let base = self.base.clone();
-        let m3u8_filename = base.split('/').next_back().unwrap();
+        let m3u8_filename = base.rsplit('/').next().unwrap_or(&base);
         let base_url = base.replace(m3u8_filename, seg_name);
 
         // Check if seg_name already contains query parameters

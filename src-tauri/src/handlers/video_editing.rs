@@ -72,6 +72,12 @@ fn resolve_video_path(output_dir: &Path, file: &str) -> PathBuf {
     }
 }
 
+/// Render a path as a UTF-8 string for an ffmpeg argument.
+fn path_str(path: &Path) -> Result<&str, String> {
+    path.to_str()
+        .ok_or_else(|| format!("Path is not valid UTF-8: {}", path.display()))
+}
+
 /// Extract frames from a video at specific timestamps or evenly distributed
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn extract_video_frames(
@@ -143,13 +149,13 @@ async fn extract_frame_at_timestamp(video_path: &Path, timestamp: f64) -> Result
         "-ss",
         &timestamp.to_string(),
         "-i",
-        video_path.to_str().unwrap(),
+        path_str(video_path)?,
         "-vframes",
         "1",
         "-q:v",
         "2",
         "-y",
-        output_path.to_str().unwrap(),
+        path_str(&output_path)?,
     ]);
 
     let output = cmd
@@ -217,7 +223,7 @@ async fn get_video_metadata_internal(video_path: &Path) -> Result<VideoMetadata,
         "json",
         "-show_format",
         "-show_streams",
-        video_path.to_str().unwrap(),
+        path_str(video_path)?,
     ]);
 
     let output = cmd
@@ -503,11 +509,11 @@ pub async fn merge_videos(
             "-safe",
             "0",
             "-i",
-            concat_file.to_str().unwrap(),
+            path_str(&concat_file)?,
             "-c",
             "copy",
             "-y",
-            output_path.to_str().unwrap(),
+            path_str(&output_path)?,
         ]);
 
         let output = cmd
@@ -622,7 +628,7 @@ pub async fn merge_videos(
             "-c:a",
             "aac",
             "-y",
-            output_path.to_str().unwrap(),
+            path_str(&output_path)?,
         ]);
 
         let output = cmd
@@ -712,14 +718,14 @@ pub async fn extract_video_audio(state: state_type!(), video_id: i64) -> Result<
 
     cmd.args([
         "-i",
-        video_path.to_str().unwrap(),
+        path_str(&video_path)?,
         "-vn",
         "-acodec",
         "libmp3lame",
         "-q:a",
         "2",
         "-y",
-        output_path.to_str().unwrap(),
+        path_str(&output_path)?,
     ]);
 
     let output = cmd

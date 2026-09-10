@@ -51,15 +51,15 @@ pub async fn handle_ffmpeg_process(
     ffmpeg_process: &mut tokio::process::Command,
 ) -> Result<(), String> {
     log::info!("[FFmpeg] {:?}", ffmpeg_process);
-    let child = ffmpeg_process
+    let mut child = ffmpeg_process
         .stderr(Stdio::piped())
         .stdout(Stdio::piped())
-        .spawn();
-    if let Err(e) = child {
-        return Err(e.to_string());
-    }
-    let mut child = child.unwrap();
-    let stderr = child.stderr.take().unwrap();
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("ffmpeg stderr pipe unavailable")?;
     let reader = BufReader::new(stderr);
     let mut parser = FfmpegLogParser::new(reader);
     while let Ok(event) = parser.parse_next_event().await {

@@ -64,9 +64,14 @@ impl HlsRecorder {
         let user_agent =
             crate::utils::user_agent_generator::UserAgentGenerator::new().generate(false);
         let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert("user-agent", user_agent.parse().unwrap());
+        headers.insert(
+            "user-agent",
+            user_agent
+                .parse()
+                .expect("generated user agent is a valid header value"),
+        );
         if let Some(cookies) = cookies {
-            headers.insert("cookie", cookies.parse().unwrap());
+            headers.insert("cookie", crate::utils::header_value("cookie", &cookies)?);
         }
 
         let sequence_path = work_dir.join(".sequence");
@@ -275,8 +280,14 @@ impl HlsRecorder {
                     continue;
                 }
 
-                let last_segment = playlist.last_segment().await;
-                let last_segment_uri = last_segment.unwrap().uri.clone();
+                let Some(last_segment) = playlist.last_segment().await else {
+                    log::error!(
+                        "Playlist has no last segment, ignore: {}",
+                        segment_path.display()
+                    );
+                    continue;
+                };
+                let last_segment_uri = last_segment.uri.clone();
                 let last_segment_path = segment_path.with_file_name(last_segment_uri);
                 // append segment data behind last segment data
                 let mut last_segment_file = OpenOptions::new()
@@ -460,7 +471,8 @@ pub async fn construct_stream_from_variant(
     };
 
     // try to match expire from extra with regex
-    let expire_regex = regex::Regex::new(r"expires=(\d+)").unwrap();
+    let expire_regex =
+        regex::Regex::new(r"expires=(\d+)").expect("expires regex is a valid literal");
     let expire = if let Some(captures) = expire_regex.captures(extra) {
         captures[1].parse::<i64>().unwrap_or(0)
     } else {

@@ -21,7 +21,7 @@ impl UrlBuilder {
     fn generate_uid() -> u64 {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_millis();
         let random = fastrand::u32(0..1000000);
         timestamp as u64 * 1000 + random as u64
@@ -30,7 +30,7 @@ impl UrlBuilder {
     fn generate_s_guid() -> String {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_millis();
         let random = fastrand::u32(0..1000000);
         format!("{}_{}", timestamp, random)
@@ -92,7 +92,7 @@ impl UrlBuilder {
         // 添加动态参数
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_millis();
         base_url.push_str(&format!("&t={}", timestamp));
 
@@ -164,7 +164,7 @@ impl UrlBuilder {
     fn generate_seq_id() -> String {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_millis();
         let random = fastrand::u32(0..1000000);
         format!("{}_{}", timestamp, random)

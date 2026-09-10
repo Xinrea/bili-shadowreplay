@@ -74,7 +74,7 @@ pub async fn add_account(
                 uid,
                 name: String::new(),
                 avatar: String::new(),
-                csrf: csrf.clone().unwrap(),
+                csrf: csrf.clone().unwrap_or_default(),
                 cookies: cookies.into(),
                 created_at: Utc::now().to_rfc3339(),
             };
@@ -212,7 +212,7 @@ pub async fn add_account(
         uid: user_info.user_id,
         name: user_info.user_name,
         avatar: user_info.user_avatar,
-        csrf: csrf.unwrap(),
+        csrf: csrf.unwrap_or_default(),
         cookies: cookies.into(),
         created_at: Utc::now().to_rfc3339(),
     };

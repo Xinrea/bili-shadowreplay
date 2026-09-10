@@ -146,17 +146,17 @@ impl BiliRecorder {
                         self.extra.user_info_cache.as_ref(),
                     )
                     .await;
-                    if let Ok(user_info) = user_info {
-                        *self.user_info.write().await = UserInfo {
-                            user_id: user_id.to_string(),
-                            user_name: user_info.user_name,
-                            user_avatar: user_info.user_avatar,
+                    match user_info {
+                        Ok(user_info) => {
+                            *self.user_info.write().await = UserInfo {
+                                user_id: user_id.to_string(),
+                                user_name: user_info.user_name,
+                                user_avatar: user_info.user_avatar,
+                            }
                         }
-                    } else {
-                        self.log_error(&format!(
-                            "Failed to get user info: {}",
-                            user_info.err().unwrap()
-                        ));
+                        Err(e) => {
+                            self.log_error(&format!("Failed to get user info: {e}"));
+                        }
                     }
                 }
                 let live_status = room_info.live_status == 1;
@@ -191,7 +191,7 @@ impl BiliRecorder {
                             .is_ok()
                         {
                             *self.extra.cover.write().await =
-                                Some(room_cover_path.to_str().unwrap().to_string());
+                                Some(room_cover_path.to_string_lossy().into_owned());
                         }
                         let _ = self.event_channel.send(RecorderEvent::LiveStart {
                             recorder: self.info().await,
@@ -263,13 +263,14 @@ impl BiliRecorder {
     async fn danmu(&self) -> Result<(), crate::errors::RecorderError> {
         let cookies = self.account.cookies.clone();
         let room_id = self.room_id.clone();
-        let danmu_stream = DanmuStream::new(ProviderType::BiliBili, &cookies, &room_id).await;
-        if danmu_stream.is_err() {
-            let err = danmu_stream.err().unwrap();
-            log::error!("[{}]Failed to create danmu stream: {}", self.room_id, err);
-            return Err(crate::errors::RecorderError::DanmuStreamError(err));
-        }
-        let danmu_stream = danmu_stream.unwrap();
+        let danmu_stream = match DanmuStream::new(ProviderType::BiliBili, &cookies, &room_id).await
+        {
+            Ok(danmu_stream) => danmu_stream,
+            Err(e) => {
+                log::error!("[{}]Failed to create danmu stream: {}", self.room_id, e);
+                return Err(crate::errors::RecorderError::DanmuStreamError(e));
+            }
+        };
 
         let mut start_fut = Box::pin(danmu_stream.start());
 
@@ -379,7 +380,9 @@ impl BiliRecorder {
 
         self.is_recording.store(true, atomic::Ordering::Relaxed);
 
-        let first_url_info = current_stream.url_info.first().unwrap();
+        let Some(first_url_info) = current_stream.url_info.first() else {
+            return Err(crate::errors::RecorderError::NoStreamAvailable);
+        };
         let expire = first_url_info.get_expire();
 
         let stream = Arc::new(HlsStream::new(
@@ -402,12 +405,13 @@ impl BiliRecorder {
             self.enabled.clone(),
         )
         .await;
-        if let Err(e) = hls_recorder {
-            log::error!("[{}]Hls recorder creation error: {}", self.room_id, e);
-            return Err(e);
-        }
-
-        let hls_recorder = hls_recorder.unwrap();
+        let hls_recorder = match hls_recorder {
+            Ok(hls_recorder) => hls_recorder,
+            Err(e) => {
+                log::error!("[{}]Hls recorder creation error: {}", self.room_id, e);
+                return Err(e);
+            }
+        };
         if let Err(e) = hls_recorder.start().await {
             log::error!("[{}]Hls recorder quit with error: {}", self.room_id, e);
             return Err(e);
@@ -433,25 +437,30 @@ impl crate::traits::RecorderTrait<BiliExtra> for BiliRecorder {
                 if self_clone.check_status().await {
                     // Live status is ok, start recording.
                     if self_clone.should_record().await {
-                        let live_id;
                         // if should continue with previous recording, using the same live id
-                        if self_clone.extra.should_continue.load(Ordering::Relaxed)
-                            && self_clone.extra.pre_live_id.read().await.is_some()
-                        {
-                            live_id = self_clone.extra.pre_live_id.read().await.clone().unwrap();
-                            self_clone
-                                .extra
-                                .should_continue
-                                .store(false, Ordering::Relaxed);
-                        } else {
-                            live_id = Utc::now().timestamp_millis().to_string();
-                            self_clone
-                                .extra
-                                .pre_live_id
-                                .write()
-                                .await
-                                .replace(live_id.clone());
-                        }
+                        let previous_live_id = self_clone.extra.pre_live_id.read().await.clone();
+                        let live_id = match (
+                            self_clone.extra.should_continue.load(Ordering::Relaxed),
+                            previous_live_id,
+                        ) {
+                            (true, Some(previous_live_id)) => {
+                                self_clone
+                                    .extra
+                                    .should_continue
+                                    .store(false, Ordering::Relaxed);
+                                previous_live_id
+                            }
+                            _ => {
+                                let live_id = Utc::now().timestamp_millis().to_string();
+                                self_clone
+                                    .extra
+                                    .pre_live_id
+                                    .write()
+                                    .await
+                                    .replace(live_id.clone());
+                                live_id
+                            }
+                        };
 
                         if let Err(e) = self_clone.update_entries(&live_id).await {
                             match e {
@@ -534,7 +543,10 @@ mod tests {
         *recorder.platform_live_id.write().await = "session-1".into();
         *recorder.live_id.write().await = "segment-1".into();
         *recorder.extra.pre_live_id.write().await = Some("segment-1".into());
-        recorder.extra.should_continue.store(true, Ordering::Relaxed);
+        recorder
+            .extra
+            .should_continue
+            .store(true, Ordering::Relaxed);
         recorder.is_recording.store(true, Ordering::Relaxed);
         *recorder.extra.live_stream.write().await = Some(BiliStream::new(
             Format::TS,
@@ -550,7 +562,9 @@ mod tests {
     #[tokio::test]
     async fn recording_reset_preserves_session_and_expiry_resume_state() {
         let (recorder, _) = recording_fixture().await;
-        tokio::fs::create_dir_all(&recorder.cache_dir).await.unwrap();
+        tokio::fs::create_dir_all(&recorder.cache_dir)
+            .await
+            .unwrap();
         *recorder.danmu_storage.write().await =
             DanmuStorage::new(&recorder.cache_dir.join("events.jsonl")).await;
         assert!(recorder.danmu_storage.read().await.is_some());
@@ -568,7 +582,9 @@ mod tests {
             Some("segment-1")
         );
         assert!(recorder.extra.should_continue.load(Ordering::Relaxed));
-        tokio::fs::remove_dir_all(&recorder.cache_dir).await.unwrap();
+        tokio::fs::remove_dir_all(&recorder.cache_dir)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -585,7 +601,10 @@ mod tests {
 
         recorder.end_live().await;
 
-        let RecorderEvent::LiveEnd { recorder: ended, .. } = rx.try_recv().unwrap() else {
+        let RecorderEvent::LiveEnd {
+            recorder: ended, ..
+        } = rx.try_recv().unwrap()
+        else {
             panic!("expected a live end event")
         };
         assert_eq!(ended.platform_live_id, "session-1");

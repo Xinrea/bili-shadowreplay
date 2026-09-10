@@ -21,8 +21,11 @@ pub async fn try_rebuild_archives(
         while let Some(file) = files.next_entry().await? {
             if file.file_type().await?.is_dir() {
                 // use folder name as live_id
-                let live_id = file.file_name();
-                let live_id = live_id.to_str().unwrap();
+                let file_name = file.file_name();
+                let Some(live_id) = file_name.to_str() else {
+                    log::warn!("Skipping archive with non-UTF-8 name: {:?}", file.path());
+                    continue;
+                };
                 let record_path = file.path();
                 let entry_store = EntryStore::new(record_path.to_string_lossy().as_ref()).await;
                 let existing_record = db.get_record(&room_id, live_id).await;
@@ -103,17 +106,21 @@ pub async fn try_convert_live_covers(
         let records = db.get_records(&room_id, 0, 999_999_999).await?;
         for record in &records {
             let record_path = room_cache_path.join(record.live_id.clone());
-            let cover = record.cover.clone();
-            if cover.is_none() {
+            let Some(cover) = record.cover.clone() else {
                 continue;
-            }
-
-            let cover = cover.unwrap();
+            };
             if cover.starts_with("data:") {
-                let base64 = cover.split("base64,").nth(1).unwrap();
-                let bytes = base64::engine::general_purpose::STANDARD
-                    .decode(base64)
-                    .unwrap();
+                let Some(base64) = cover.split("base64,").nth(1) else {
+                    log::warn!("Skipping cover with invalid data URL: {}", record.live_id);
+                    continue;
+                };
+                let bytes = match base64::engine::general_purpose::STANDARD.decode(base64) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        log::warn!("Skipping invalid cover for {}: {e}", record.live_id);
+                        continue;
+                    }
+                };
                 let path = record_path.join("cover.jpg");
                 tokio::fs::write(&path, bytes).await?;
 
@@ -142,10 +149,17 @@ pub async fn try_convert_clip_covers(
     for video in &videos {
         let cover = video.cover.clone();
         if cover.starts_with("data:") {
-            let base64 = cover.split("base64,").nth(1).unwrap();
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(base64)
-                .unwrap();
+            let Some(base64) = cover.split("base64,").nth(1) else {
+                log::warn!("Skipping cover with invalid data URL: {}", video.file);
+                continue;
+            };
+            let bytes = match base64::engine::general_purpose::STANDARD.decode(base64) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    log::warn!("Skipping invalid cover for {}: {e}", video.file);
+                    continue;
+                }
+            };
 
             let video_file_path = output_path.join(video.file.clone());
             let cover_file_path = video_file_path.with_extension("jpg");
@@ -153,12 +167,12 @@ pub async fn try_convert_clip_covers(
             tokio::fs::write(&cover_file_path, bytes).await?;
 
             log::info!("convert clip cover: {}", cover_file_path.display());
+            let cover_name = cover_file_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| format!("Invalid cover path: {}", cover_file_path.display()))?;
             // update record
-            db.update_video_cover(
-                video.id,
-                cover_file_path.file_name().unwrap().to_str().unwrap(),
-            )
-            .await?;
+            db.update_video_cover(video.id, cover_name).await?;
         }
     }
     Ok(())
@@ -197,7 +211,7 @@ pub async fn try_convert_entry_to_m3u8(
             if !entry_file.exists() || m3u8_file_path.exists() {
                 continue;
             }
-            let entry_store = EntryStore::new(record_path.to_str().unwrap()).await;
+            let entry_store = EntryStore::new(record_path.to_string_lossy().as_ref()).await;
             if entry_store.is_empty() {
                 continue;
             }

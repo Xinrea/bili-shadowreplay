@@ -2,7 +2,7 @@ use recorder::account::Account;
 
 use super::Database;
 use super::DatabaseError;
-use rand::seq::SliceRandom;
+use rand::seq::IndexedRandom;
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, sqlx::FromRow)]
 pub struct AccountRow {
@@ -88,7 +88,7 @@ impl Database {
         }
         // randomly select one account
         let account = accounts
-            .choose(&mut rand::thread_rng())
+            .choose(&mut rand::rng())
             .ok_or(DatabaseError::NotFound)?;
         Ok(account.clone())
     }

@@ -196,7 +196,7 @@ mod tests {
     #[test]
     fn test_encode_unicode() {
         let packet = encode("你好", 7);
-        let data_len = "你好".as_bytes().len(); // 6 bytes for UTF-8
+        let data_len = "你好".len(); // 6 bytes for UTF-8
         assert_eq!(packet.len(), 16 + data_len);
         assert_eq!(&packet[16..], "你好".as_bytes());
     }

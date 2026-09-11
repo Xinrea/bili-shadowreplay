@@ -191,6 +191,38 @@ fn parse_map_uri(rest: &str) -> Option<String> {
     })
 }
 
+pub async fn concat_playlists_to_video(
+    reporter: Option<&impl ProgressReporterTrait>,
+    playlists: &[&Path],
+    danmu_ass_files: Vec<Option<PathBuf>>,
+    output_path: &Path,
+) -> Result<(), String> {
+    let mut to_remove = Vec::new();
+    let mut segments = Vec::new();
+    for (i, playlist) in playlists.iter().enumerate() {
+        let mut video_path = output_path.with_extension(format!("{}.mp4", i));
+        if let Err(e) = clip_from_playlist(reporter, playlist, &video_path, None).await {
+            log::error!("Failed to generate playlist video: {e}");
+            continue;
+        }
+        to_remove.push(video_path.clone());
+        if let Some(danmu_ass_file) = &danmu_ass_files[i] {
+            video_path = super::encode_video_danmu(reporter, &video_path, danmu_ass_file).await?;
+            to_remove.push(video_path.clone());
+        }
+        segments.push(video_path);
+    }
+
+    super::general::concat_videos(reporter, &segments, output_path).await?;
+
+    // clean up segments
+    for segment in to_remove {
+        let _ = tokio::fs::remove_file(segment).await;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,36 +271,4 @@ mod tests {
         );
         assert_eq!(parse_map_uri("malformed"), None);
     }
-}
-
-pub async fn concat_playlists_to_video(
-    reporter: Option<&impl ProgressReporterTrait>,
-    playlists: &[&Path],
-    danmu_ass_files: Vec<Option<PathBuf>>,
-    output_path: &Path,
-) -> Result<(), String> {
-    let mut to_remove = Vec::new();
-    let mut segments = Vec::new();
-    for (i, playlist) in playlists.iter().enumerate() {
-        let mut video_path = output_path.with_extension(format!("{}.mp4", i));
-        if let Err(e) = clip_from_playlist(reporter, playlist, &video_path, None).await {
-            log::error!("Failed to generate playlist video: {e}");
-            continue;
-        }
-        to_remove.push(video_path.clone());
-        if let Some(danmu_ass_file) = &danmu_ass_files[i] {
-            video_path = super::encode_video_danmu(reporter, &video_path, danmu_ass_file).await?;
-            to_remove.push(video_path.clone());
-        }
-        segments.push(video_path);
-    }
-
-    super::general::concat_videos(reporter, &segments, output_path).await?;
-
-    // clean up segments
-    for segment in to_remove {
-        let _ = tokio::fs::remove_file(segment).await;
-    }
-
-    Ok(())
 }

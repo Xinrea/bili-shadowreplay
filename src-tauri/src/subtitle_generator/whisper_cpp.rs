@@ -4,8 +4,10 @@ use crate::{
     progress::progress_reporter::ProgressReporterTrait,
     subtitle_generator::{GenerateResult, SubtitleGeneratorType},
 };
-use async_std::sync::{Arc, RwLock};
 use std::path::Path;
+use std::sync::Arc;
+
+use tokio::sync::RwLock;
 use whisper_cpp_rs::{FullParams, SamplingStrategy, WhisperContext};
 
 use super::SubtitleGenerator;

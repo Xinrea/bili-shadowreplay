@@ -882,7 +882,7 @@ impl RecorderManager {
         Ok(playlist)
     }
 
-    async fn first_segment_timestamp(
+    pub(crate) async fn first_segment_timestamp(
         &self,
         platform: PlatformType,
         room_id: &str,

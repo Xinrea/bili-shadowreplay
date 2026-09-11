@@ -346,6 +346,10 @@ pub struct ExportDanmuOptions {
     live_id: String,
     x: i64,
     y: i64,
+    /// Archive start timestamp in seconds (PROGRAM-DATE-TIME). Used when the
+    /// playlist start time cannot be read from cache.
+    #[serde(default)]
+    offset: f64,
     ass: bool,
 }
 
@@ -355,19 +359,29 @@ pub async fn export_danmu(
     options: ExportDanmuOptions,
 ) -> Result<String, String> {
     let platform = PlatformType::from_str(&options.platform)?;
-    let mut danmus = state
+    let danmus = state
         .recorder_manager
         .load_danmus(platform, &options.room_id, &options.live_id)
         .await?;
 
     log::debug!("First danmu entry: {:?}", danmus.first());
-    // update entry ts to offset
-    for d in &mut danmus {
-        d.ts -= (options.x + options.y) * 1000;
-    }
-    if options.x != 0 || options.y != 0 {
-        danmus.retain(|e| e.ts >= 0 && e.ts <= (options.y - options.x) * 1000);
-    }
+
+    let stream_start_ms = match state
+        .recorder_manager
+        .first_segment_timestamp(platform, &options.room_id, &options.live_id)
+        .await
+    {
+        Ok(ts) => ts,
+        Err(e) => {
+            if options.offset != 0.0 {
+                (options.offset * 1000.0).round() as i64
+            } else {
+                return Err(e.to_string());
+            }
+        }
+    };
+
+    let danmus = prepare_danmus_for_export(danmus, stream_start_ms, options.x, options.y);
 
     if options.ass {
         Ok(danmu2ass::danmu_to_ass(
@@ -544,4 +558,107 @@ pub async fn generate_whole_clip(
         ))
         .await?;
     Ok(task)
+}
+
+/// Shift absolute danmu timestamps to be relative to the exported timeline.
+///
+/// `stream_start_ms` is the first media segment timestamp. `range_start_s` /
+/// `range_end_s` are the selected preview range in seconds; both 0 means the
+/// full archive.
+fn prepare_danmus_for_export(
+    mut danmus: Vec<DanmuEntry>,
+    stream_start_ms: i64,
+    range_start_s: i64,
+    range_end_s: i64,
+) -> Vec<DanmuEntry> {
+    let start_ms = stream_start_ms + range_start_s * 1000;
+    for d in &mut danmus {
+        d.ts -= start_ms;
+    }
+    if range_start_s != 0 || range_end_s != 0 {
+        danmus.retain(|e| e.ts >= 0 && e.ts <= (range_end_s - range_start_s) * 1000);
+    } else {
+        danmus.retain(|e| e.ts >= 0);
+    }
+    danmus
+}
+
+#[cfg(test)]
+mod prepare_danmus_for_export_tests {
+    use super::*;
+    use crate::danmu2ass::{danmu_to_ass, Danmu2AssOptions};
+
+    const STREAM_START_MS: i64 = 1_700_000_000_000;
+
+    fn entry(ts: i64, content: &str) -> DanmuEntry {
+        DanmuEntry {
+            ts,
+            content: content.to_string(),
+            user_name: None,
+        }
+    }
+
+    #[test]
+    fn full_export_converts_unix_ms_to_relative_ms() {
+        let danmus = vec![
+            entry(STREAM_START_MS + 1_000, "a"),
+            entry(STREAM_START_MS + 5_000, "b"),
+        ];
+
+        let result = prepare_danmus_for_export(danmus, STREAM_START_MS, 0, 0);
+
+        assert_eq!(
+            result
+                .iter()
+                .map(|d| (d.ts, d.content.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(1_000, "a"), (5_000, "b")]
+        );
+    }
+
+    #[test]
+    fn range_export_keeps_in_range_danmus_relative_to_range_start() {
+        let danmus = vec![
+            entry(STREAM_START_MS + 50_000, "before"),
+            entry(STREAM_START_MS + 120_000, "in"),
+            entry(STREAM_START_MS + 250_000, "after"),
+        ];
+
+        let result = prepare_danmus_for_export(danmus, STREAM_START_MS, 100, 200);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].content, "in");
+        assert_eq!(result[0].ts, 20_000);
+    }
+
+    #[test]
+    fn drops_danmus_before_stream_start() {
+        let danmus = vec![
+            entry(STREAM_START_MS - 1_000, "early"),
+            entry(STREAM_START_MS + 1_000, "ok"),
+        ];
+
+        let result = prepare_danmus_for_export(danmus, STREAM_START_MS, 0, 0);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].content, "ok");
+        assert_eq!(result[0].ts, 1_000);
+    }
+
+    #[test]
+    fn ass_times_use_relative_clock_not_unix_epoch() {
+        let danmus = prepare_danmus_for_export(
+            vec![entry(STREAM_START_MS + 3_661_990, "hi")],
+            STREAM_START_MS,
+            0,
+            0,
+        );
+        let ass = danmu_to_ass(danmus, Danmu2AssOptions::default());
+
+        assert!(ass.contains("1:01:01.99"), "{ass}");
+        assert!(
+            !ass.contains("472222:"),
+            "unix-epoch timestamps leaked into ASS: {ass}"
+        );
+    }
 }

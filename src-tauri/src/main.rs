@@ -23,7 +23,6 @@ mod task;
 mod tray;
 mod webhook;
 
-use async_std::fs;
 use chrono::Utc;
 use config::Config;
 use database::Database;
@@ -44,6 +43,7 @@ use std::path::Path;
 #[cfg(feature = "gui")]
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::fs;
 use tokio::sync::RwLock;
 
 #[cfg(not(target_os = "windows"))]

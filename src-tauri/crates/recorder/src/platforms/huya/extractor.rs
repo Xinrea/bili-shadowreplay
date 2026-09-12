@@ -395,6 +395,40 @@ impl LiveStreamExtractor {
     }
 }
 
+// 实现 PlatformStreamInfo trait
+impl PlatformStreamInfo for StreamInfo {
+    fn primary_variant(&self) -> Result<StreamVariant, RecorderError> {
+        Ok(StreamVariant {
+            url: self.hls_url.clone(),
+            format: Format::HLS,
+            codec: Codec::AVC,
+            quality: Quality::Origin,
+            bitrate: None,
+        })
+    }
+
+    fn all_variants(&self) -> Vec<StreamVariant> {
+        match self.primary_variant() {
+            Ok(variant) => vec![variant],
+            Err(e) => {
+                log::warn!("Failed to build primary stream variant: {e}");
+                Vec::new()
+            }
+        }
+    }
+
+    fn expires_at(&self) -> Option<i64> {
+        None // Huya 流不过期
+    }
+
+    fn cdn_nodes(&self) -> Vec<CdnNode> {
+        Vec::new() // Huya 单 CDN
+    }
+
+    fn platform(&self) -> PlatformType {
+        PlatformType::Huya
+    }
+}
 #[cfg(test)]
 mod tests {
     use base64::{engine::general_purpose, Engine as _};
@@ -1691,40 +1725,5 @@ mod tests {
         assert_eq!(user_info.user_avatar, "https://huyaimg.msstatic.com/avatar/1003/23/3be5ff7cff0f6d08fee796ac537ef0_180_135.jpg?1525686175");
         assert_eq!(room_info.room_id, "857824");
         assert!(stream_info.hls_url.starts_with("https://"));
-    }
-}
-
-// 实现 PlatformStreamInfo trait
-impl PlatformStreamInfo for StreamInfo {
-    fn primary_variant(&self) -> Result<StreamVariant, RecorderError> {
-        Ok(StreamVariant {
-            url: self.hls_url.clone(),
-            format: Format::HLS,
-            codec: Codec::AVC,
-            quality: Quality::Origin,
-            bitrate: None,
-        })
-    }
-
-    fn all_variants(&self) -> Vec<StreamVariant> {
-        match self.primary_variant() {
-            Ok(variant) => vec![variant],
-            Err(e) => {
-                log::warn!("Failed to build primary stream variant: {e}");
-                Vec::new()
-            }
-        }
-    }
-
-    fn expires_at(&self) -> Option<i64> {
-        None // Huya 流不过期
-    }
-
-    fn cdn_nodes(&self) -> Vec<CdnNode> {
-        Vec::new() // Huya 单 CDN
-    }
-
-    fn platform(&self) -> PlatformType {
-        PlatformType::Huya
     }
 }

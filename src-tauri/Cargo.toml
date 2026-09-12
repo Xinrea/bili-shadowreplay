@@ -31,43 +31,31 @@ reqwest = { workspace = true}
 serde_derive = "1.0.158"
 serde = "1.0.158"
 sysinfo = "0.32.0"
-m3u8-rs = "5.0.3"
-async-std = "1.12.0"
-async-ffmpeg-sidecar = "0.0.1"
+m3u8-rs = { workspace = true }
+async-ffmpeg-sidecar = { workspace = true }
 chrono = { version = "0.4.24", features = ["serde"] }
-toml = "0.7.3"
-regex = "1.7.3"
-tokio = { version = "1.27.0", features = ["process"] }
+toml = "0.9"
+tokio = { version = "1.27.0", features = ["process", "fs", "sync"] }
 platform-dirs = "0.3.0"
-pct-str = "1.2.0"
-md5 = "0.7.0"
-hyper = { version = "0.14", features = ["full"] }
-dashmap = "6.1.0"
-urlencoding = "2.1.3"
 log = "0.4.22"
 simplelog = "0.12.2"
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
-rand = "0.8.5"
-base64 = "0.21"
-mime_guess = "2.0"
+rand = { workspace = true }
+base64 = { workspace = true }
 async-trait = "0.1.87"
 whisper-cpp-rs = { path = "crates/whisper-cpp-rs" }
 hound = "3.5.1"
 uuid = { workspace = true }
 axum = { version = "0.7", features = ["macros", "multipart"] }
-tower-http = { version = "0.5", features = ["cors", "fs"] }
+tower-http = { version = "0.6", features = ["cors", "fs"] }
 futures-core = "0.3"
 futures = "0.3"
-tokio-util = { version = "0.7", features = ["io"] }
-tokio-stream = "0.1"
 clap = { version = "4.5.37", features = ["derive"] }
 url = "2.5.4"
 srtparse = "0.2.0"
 thiserror = "2"
-deno_core = "0.355"
 sanitize-filename = "0.6.0"
 socketioxide = "0.17.2"
-scraper = "0.24.0"
 sentry = { version = "0.46.0", features = ["log", "logs"] }
 # Use Rig's core crate directly. The facade crate enables every provider and
 # vector-store integration by default, which would add unnecessary native
@@ -166,8 +154,16 @@ optional = true
 
 
 [workspace.dependencies]
-reqwest = { version = "0.11", features = ["blocking", "json", "multipart", "gzip"] }
+# Crates shared by the app and the workspace members. Declared once here so a
+# single version is resolved and compiled instead of one copy per crate.
+reqwest = { version = "0.12", features = ["json", "multipart", "gzip"] }
 uuid = { version = "1.4", features = ["v4"] }
+base64 = "0.22"
+md5 = "0.8"
+pct-str = "2.0"
+rand = "0.9"
+m3u8-rs = "6.0"
+async-ffmpeg-sidecar = "0.0.3"
 
 [profile.release]
 debug = 1

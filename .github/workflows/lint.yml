@@ -35,10 +35,23 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache Rust dependencies
+        id: rust-cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
           save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # On a partial cache hit Swatinem/rust-cache deletes every file under
+      # non-profile `target/` subdirectories, which strips the prebuilt native
+      # libs from `target/sherpa-onnx-prebuilt` but keeps the extracted `lib`
+      # directory. `sherpa-onnx-sys`'s build script only checks that the
+      # directory exists, so it never re-downloads and linking fails. Drop the
+      # whole directory and force the crate to rebuild so it fetches them again.
+      - name: Repair sherpa-onnx prebuilt libs
+        if: steps.rust-cache.outputs.cache-hit != 'true'
+        run: |
+          rm -rf src-tauri/target/sherpa-onnx-prebuilt
+          cargo clean -p sherpa-onnx-sys --manifest-path src-tauri/Cargo.toml
 
       - name: Cache pre-commit
         uses: actions/cache@v4

@@ -9,7 +9,7 @@ use recorder::platforms::bilibili::api::{QrInfo, QrStatus};
 use recorder::platforms::{bilibili, douyin, huya, kuaishou, tiktok, PlatformType};
 use recorder::UserInfo;
 
-use hyper::header::HeaderValue;
+use axum::http::HeaderValue;
 #[cfg(feature = "gui")]
 use tauri::State as TauriState;
 

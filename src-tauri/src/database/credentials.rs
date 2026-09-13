@@ -1,5 +1,5 @@
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::Path;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -16,8 +16,17 @@ impl CredentialCipher {
     }
 
     pub fn load(path: &Path) -> io::Result<Self> {
-        let key = match fs::read(path) {
-            Ok(key) => key,
+        let key = match fs::File::open(path) {
+            Ok(mut file) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+                }
+                let mut key = Vec::new();
+                file.read_to_end(&mut key)?;
+                key
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 let mut key = [0; 32];
                 SystemRandom::new()
@@ -81,6 +90,15 @@ mod tests {
         let cipher = CredentialCipher::load(&path).unwrap();
         let ciphertext = cipher.encrypt("SESSDATA=test-session").unwrap();
         assert_ne!(ciphertext, cipher.encrypt("SESSDATA=test-session").unwrap());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        }
         let reloaded = CredentialCipher::load(&path).unwrap();
         assert_eq!(
             reloaded.decrypt(&ciphertext).unwrap(),

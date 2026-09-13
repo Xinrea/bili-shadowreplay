@@ -65,6 +65,7 @@
   let llmSaveMessage = $state("");
   let llmError = $state("");
   let showModelList = $state(false);
+  let llmSaveChain: Promise<void> = Promise.resolve();
   let launchAtLogin = $state(false);
 
   function handleEndpointChange() {
@@ -233,25 +234,34 @@
     llmSaving = true;
     llmError = "";
     llmSaveMessage = "";
-    setting_model.llm.endpoint =
-      setting_model.llm.endpoint.trim() ||
-      (setting_model.llm.provider === "ollama"
-        ? "http://localhost:11434"
-        : "https://api.openai.com/v1");
-    try {
-      await invoke("update_llm_config", {
+    // endpoint/provider 任一变化都可能指向不同服务商，旧的模型列表立即失效
+    llmModels = [];
+    showModelList = false;
+    // 串行保存：blur 触发与下拉选择触发的保存排队执行，
+    // payload 在真正调用时读取最新状态，避免旧值覆盖新选中的模型
+    const run = llmSaveChain.then(async () => {
+      setting_model.llm.endpoint =
+        setting_model.llm.endpoint.trim() ||
+        (setting_model.llm.provider === "ollama"
+          ? "http://localhost:11434"
+          : "https://api.openai.com/v1");
+      const payload = {
         provider: setting_model.llm.provider,
         endpoint: setting_model.llm.endpoint,
         apiKey: setting_model.llm.api_key,
         model: setting_model.llm.model,
-      });
-      llmSaveMessage = "模型配置已保存，助手和 Summary 将共用此配置";
-      window.dispatchEvent(new CustomEvent("llm-config-updated"));
-    } catch (error) {
-      llmError = String(error);
-    } finally {
-      llmSaving = false;
-    }
+      };
+      try {
+        await invoke("update_llm_config", payload);
+        llmSaveMessage = "模型配置已保存，助手和 Summary 将共用此配置";
+        window.dispatchEvent(new CustomEvent("llm-config-updated"));
+      } catch (error) {
+        llmError = String(error);
+      }
+    });
+    llmSaveChain = run;
+    await run;
+    llmSaving = false;
   }
 
   async function loadLaunchAtLogin() {

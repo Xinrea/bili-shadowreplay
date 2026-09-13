@@ -25,6 +25,7 @@ mod webhook;
 
 use chrono::Utc;
 use config::Config;
+use database::credentials::CredentialCipher;
 use database::Database;
 use migration::migration_methods::try_add_parent_id_to_records;
 use migration::migration_methods::try_convert_clip_covers;
@@ -490,6 +491,13 @@ fn get_migrations() -> Vec<Migration> {
             ",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 16,
+            description: "encrypt_account_credentials",
+            sql:
+                "ALTER TABLE accounts ADD COLUMN credentials_encrypted INTEGER NOT NULL DEFAULT 0;",
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -547,7 +555,6 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
         }
     };
     let config = Arc::new(RwLock::new(config));
-    let db = Arc::new(Database::new());
     // connect to sqlite database
 
     let conn_url = format!("sqlite:{}/data_v2.db", args.db);
@@ -555,6 +562,9 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     if !Path::new(&args.db).exists() {
         std::fs::create_dir_all(&args.db)?;
     }
+    let db = Arc::new(Database::new(CredentialCipher::load(
+        &Path::new(&args.db).join("credentials.key"),
+    )?));
 
     if !Sqlite::database_exists(&conn_url).await.unwrap_or(false) {
         Sqlite::create_database(&conn_url).await?;
@@ -566,6 +576,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     migrator.run(&db_pool).await?;
 
     db.set(db_pool).await;
+    db.migrate_account_credentials().await?;
     db.finish_pending_tasks().await?;
     db.finish_pending_record_summaries().await?;
 
@@ -637,7 +648,9 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     let config = Arc::new(RwLock::new(config));
     let config_clone = config.clone();
     let dbs = app.state::<tauri_plugin_sql::DbInstances>().inner();
-    let db = Arc::new(Database::new());
+    let db = Arc::new(Database::new(CredentialCipher::load(
+        &app.path().app_config_dir()?.join("credentials.key"),
+    )?));
     let db_clone = db.clone();
     let emitter = EventEmitter::new(app.handle().clone());
     let binding = dbs.0.read().await;
@@ -646,6 +659,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         .ok_or("sqlite:data_v2.db is not registered")?;
     let tauri_plugin_sql::DbPool::Sqlite(sqlite_pool) = dbpool;
     db_clone.set(sqlite_pool.clone()).await;
+    db_clone.migrate_account_credentials().await?;
     db_clone.finish_pending_tasks().await?;
     db_clone.finish_pending_record_summaries().await?;
     let webhook_poster =

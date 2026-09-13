@@ -5,6 +5,7 @@ use tokio::sync::RwLock;
 
 pub mod account;
 pub mod bilibili_user;
+pub mod credentials;
 pub mod message;
 pub mod record;
 pub mod recorder;
@@ -14,6 +15,7 @@ pub mod video;
 
 pub struct Database {
     db: RwLock<Option<Pool<Sqlite>>>,
+    credentials: credentials::CredentialCipher,
 }
 
 #[derive(Error, Debug)]
@@ -28,6 +30,8 @@ pub enum DatabaseError {
     NumberExceedI64Range,
     #[error("Database has not been initialized")]
     NotInitialized,
+    #[error("Account credential storage error: {0}")]
+    Credentials(#[from] std::io::Error),
     #[error("DB error: {0}")]
     DB(#[from] sqlx::Error),
     #[error("SQL is incorret: {sql}")]
@@ -41,9 +45,10 @@ impl From<DatabaseError> for String {
 }
 
 impl Database {
-    pub fn new() -> Database {
+    pub fn new(credentials: credentials::CredentialCipher) -> Database {
         Database {
             db: RwLock::new(None),
+            credentials,
         }
     }
 

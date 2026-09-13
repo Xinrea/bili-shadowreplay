@@ -42,6 +42,7 @@ simplelog = "0.12.2"
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
 rand = { workspace = true }
 base64 = { workspace = true }
+ring = "0.17"
 async-trait = "0.1.87"
 whisper-cpp-rs = { path = "crates/whisper-cpp-rs" }
 hound = "3.5.1"

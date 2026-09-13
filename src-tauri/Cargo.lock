@@ -725,6 +725,7 @@ dependencies = [
  "recorder",
  "reqwest 0.12.24",
  "rig-core",
+ "ring",
  "sanitize-filename",
  "sentry",
  "serde",

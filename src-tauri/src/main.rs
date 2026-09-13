@@ -61,7 +61,7 @@ use {
 
 #[cfg(feature = "headless")]
 use {
-    clap::{arg, command, Parser},
+    clap::Parser,
     futures_core::future::BoxFuture,
     migration::{Migration, MigrationKind},
     sqlx::error::BoxDynError,
@@ -562,9 +562,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     if !Path::new(&args.db).exists() {
         std::fs::create_dir_all(&args.db)?;
     }
-    let db = Arc::new(Database::new(CredentialCipher::load(
-        &Path::new(&args.db).join("credentials.key"),
-    )?));
+    let db = Arc::new(Database::new(CredentialCipher::load()?));
 
     if !Sqlite::database_exists(&conn_url).await.unwrap_or(false) {
         Sqlite::create_database(&conn_url).await?;
@@ -648,9 +646,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     let config = Arc::new(RwLock::new(config));
     let config_clone = config.clone();
     let dbs = app.state::<tauri_plugin_sql::DbInstances>().inner();
-    let db = Arc::new(Database::new(CredentialCipher::load(
-        &app.path().app_config_dir()?.join("credentials.key"),
-    )?));
+    let db = Arc::new(Database::new(CredentialCipher::load()?));
     let db_clone = db.clone();
     let emitter = EventEmitter::new(app.handle().clone());
     let binding = dbs.0.read().await;

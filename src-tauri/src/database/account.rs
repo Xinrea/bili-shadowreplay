@@ -1,5 +1,6 @@
 use recorder::account::Account;
 
+use super::credentials::CredentialCipher;
 use super::Database;
 use super::DatabaseError;
 use rand::seq::IndexedRandom;
@@ -32,6 +33,18 @@ impl AccountRow {
 impl Database {
     pub async fn migrate_account_credentials(&self) -> Result<(), DatabaseError> {
         let pool = self.pool().await?;
+        if !CredentialCipher::ENCRYPTED {
+            let encrypted: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM accounts WHERE credentials_encrypted = 1)",
+            )
+            .fetch_one(&pool)
+            .await?;
+            if encrypted {
+                return Err(DatabaseError::EncryptionRequired);
+            }
+            return Ok(());
+        }
+
         let mut transaction = pool.begin().await?;
         let accounts = sqlx::query_as::<_, AccountRow>(
             "SELECT * FROM accounts WHERE credentials_encrypted = 0",
@@ -75,7 +88,7 @@ impl Database {
 
     pub async fn add_account(&self, account: &AccountRow) -> Result<(), DatabaseError> {
         let lock = self.pool().await?;
-        sqlx::query("INSERT INTO accounts (uid, platform, name, avatar, csrf, cookies, created_at, credentials_encrypted) VALUES ($1, $2, $3, $4, $5, $6, $7, 1)").bind(&account.uid).bind(&account.platform).bind(&account.name).bind(&account.avatar).bind(self.credentials.encrypt(&account.csrf)?).bind(self.credentials.encrypt(&account.cookies)?).bind(&account.created_at).execute(&lock).await?;
+        sqlx::query("INSERT INTO accounts (uid, platform, name, avatar, csrf, cookies, created_at, credentials_encrypted) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)").bind(&account.uid).bind(&account.platform).bind(&account.name).bind(&account.avatar).bind(self.credentials.encrypt(&account.csrf)?).bind(self.credentials.encrypt(&account.cookies)?).bind(&account.created_at).bind(CredentialCipher::ENCRYPTED).execute(&lock).await?;
 
         Ok(())
     }
@@ -143,10 +156,9 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::database::credentials::CredentialCipher;
 
     #[tokio::test]
-    async fn encrypts_new_and_existing_accounts() {
+    async fn stores_accounts_in_the_selected_mode() {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -165,9 +177,9 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert_ne!(stored.0, "test-csrf");
-        assert_ne!(stored.1, "test-cookies");
-        assert_eq!(stored.2, 1);
+        assert_eq!(stored.0 != "test-csrf", CredentialCipher::ENCRYPTED);
+        assert_eq!(stored.1 != "test-cookies", CredentialCipher::ENCRYPTED);
+        assert_eq!(stored.2, i64::from(CredentialCipher::ENCRYPTED));
         db.migrate_account_credentials().await.unwrap();
         let migrated = db.get_account("bilibili", "123").await.unwrap();
         assert_eq!(migrated.csrf, "test-csrf");
@@ -192,12 +204,25 @@ mod tests {
                 .fetch_all(&pool)
                 .await
                 .unwrap();
-        assert!(stored
-            .iter()
-            .all(|(csrf, cookies, encrypted)| !csrf.is_empty()
-                && cookies != "test-cookies"
-                && *encrypted == 1));
+        assert!(stored.iter().all(|(csrf, cookies, encrypted)| {
+            *encrypted == i64::from(CredentialCipher::ENCRYPTED)
+                && if CredentialCipher::ENCRYPTED {
+                    !csrf.is_empty() && cookies != "test-cookies"
+                } else {
+                    (csrf.is_empty() || csrf == "test-csrf") && cookies == "test-cookies"
+                }
+        }));
         db.remove_account("douyin", "123").await.unwrap();
         assert_eq!(db.get_accounts().await.unwrap().len(), 1);
+        if !CredentialCipher::ENCRYPTED {
+            sqlx::query("UPDATE accounts SET credentials_encrypted = 1")
+                .execute(&pool)
+                .await
+                .unwrap();
+            assert!(matches!(
+                db.migrate_account_credentials().await,
+                Err(DatabaseError::EncryptionRequired)
+            ));
+        }
     }
 }

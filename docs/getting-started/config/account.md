@@ -7,9 +7,11 @@
 
 ## 账号凭据存储
 
-Cookie 和 CSRF Token 使用 AES-256-GCM 加密后写入 SQLite，已有账号会在启动时自动迁移。密钥保存在数据库同目录的 `credentials.key` 文件中（Unix 权限为 `0600`），桌面版使用应用配置目录，无界面版使用 `--db` 指定的目录，Docker 默认为 `/app/data`。
+桌面版默认启用 `credential-encryption` 编译特性，Cookie 和 CSRF Token 使用 AES-256-GCM 加密后写入 SQLite，已有明文账号会在启动时自动迁移。主密钥保存在系统凭据存储中：macOS Keychain、Windows Credential Manager 或 Linux Secret Service。Linux 需要安装并解锁 Secret Service；系统凭据存储不可用时，启用加密的程序会启动失败。
 
-备份或迁移账号时需要同时保存 `data_v2.db` 和 `credentials.key`，丢失密钥后无法解密已有账号。此加密保护单独泄露的数据库文件；同时获得数据库和密钥仍可读取凭据，升级前的备份也仍可能含有明文凭据。
+Docker、Termux 和默认无界面构建使用 `--no-default-features --features headless`，关闭加密并以明文保存账号凭据，无需系统密钥库。系统支持密钥库时，可以使用 `--no-default-features --features headless,credential-encryption` 构建启用加密的无界面版本。桌面版也可使用 `--no-default-features --features gui` 关闭加密。
+
+关闭加密的版本不能打开包含已加密账号的数据库，需要改用启用 `credential-encryption` 的版本。恢复加密数据库时仍需访问系统密钥库中的原主密钥；仅复制数据库到其他设备无法恢复账号。升级前的备份仍可能含有明文凭据。
 
 ## 抖音账号配置
 

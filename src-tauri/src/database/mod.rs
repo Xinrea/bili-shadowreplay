@@ -5,6 +5,10 @@ use tokio::sync::RwLock;
 
 pub mod account;
 pub mod bilibili_user;
+#[cfg_attr(
+    not(feature = "credential-encryption"),
+    path = "credentials_plaintext.rs"
+)]
 pub mod credentials;
 pub mod message;
 pub mod record;
@@ -32,6 +36,8 @@ pub enum DatabaseError {
     NotInitialized,
     #[error("Account credential storage error: {0}")]
     Credentials(#[from] std::io::Error),
+    #[error("Database contains encrypted accounts; enable the credential-encryption feature")]
+    EncryptionRequired,
     #[error("DB error: {0}")]
     DB(#[from] sqlx::Error),
     #[error("SQL is incorret: {sql}")]

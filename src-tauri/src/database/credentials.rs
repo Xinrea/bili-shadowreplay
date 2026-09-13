@@ -1,6 +1,4 @@
-use std::fs::{self, OpenOptions};
-use std::io::{self, Read, Write};
-use std::path::Path;
+use std::io;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM, NONCE_LEN};
@@ -9,42 +7,30 @@ use ring::rand::{SecureRandom, SystemRandom};
 pub struct CredentialCipher(LessSafeKey);
 
 impl CredentialCipher {
+    pub const ENCRYPTED: bool = true;
+
     pub fn new(key: &[u8]) -> io::Result<Self> {
         let key = UnboundKey::new(&AES_256_GCM, key)
             .map_err(|_| io::Error::other("Invalid account encryption key"))?;
         Ok(Self(LessSafeKey::new(key)))
     }
 
-    pub fn load(path: &Path) -> io::Result<Self> {
-        let key = match fs::File::open(path) {
-            Ok(mut file) => {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    file.set_permissions(fs::Permissions::from_mode(0o600))?;
-                }
-                let mut key = Vec::new();
-                file.read_to_end(&mut key)?;
-                key
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+    pub fn load() -> io::Result<Self> {
+        let entry = keyring::Entry::new("cn.vjoi.bilishadowreplay", "account-encryption-key")
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        let key = match entry.get_secret() {
+            Ok(key) => key,
+            Err(keyring::Error::NoEntry) => {
                 let mut key = [0; 32];
                 SystemRandom::new()
                     .fill(&mut key)
                     .map_err(|_| io::Error::other("Could not generate account encryption key"))?;
-                let mut options = OpenOptions::new();
-                options.write(true).create_new(true);
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::OpenOptionsExt;
-                    options.mode(0o600);
-                }
-                let mut file = options.open(path)?;
-                file.write_all(&key)?;
-                file.sync_all()?;
+                entry
+                    .set_secret(&key)
+                    .map_err(|error| io::Error::other(error.to_string()))?;
                 key.to_vec()
             }
-            Err(error) => return Err(error),
+            Err(error) => return Err(io::Error::other(error.to_string())),
         };
         Self::new(&key)
     }
@@ -85,21 +71,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn persists_key_and_authenticates_ciphertext() {
-        let path = std::env::temp_dir().join(format!("bsr-key-{}", uuid::Uuid::new_v4()));
-        let cipher = CredentialCipher::load(&path).unwrap();
+    fn authenticates_ciphertext() {
+        let cipher = CredentialCipher::new(&[0; 32]).unwrap();
         let ciphertext = cipher.encrypt("SESSDATA=test-session").unwrap();
         assert_ne!(ciphertext, cipher.encrypt("SESSDATA=test-session").unwrap());
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-                0o600
-            );
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-        }
-        let reloaded = CredentialCipher::load(&path).unwrap();
+        let reloaded = CredentialCipher::new(&[0; 32]).unwrap();
         assert_eq!(
             reloaded.decrypt(&ciphertext).unwrap(),
             "SESSDATA=test-session"
@@ -112,14 +88,5 @@ mod tests {
         let mut tampered = STANDARD.decode(ciphertext).unwrap();
         tampered[NONCE_LEN] ^= 1;
         assert!(cipher.decrypt(&STANDARD.encode(tampered)).is_err());
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-                0o600
-            );
-        }
-        fs::remove_file(path).unwrap();
     }
 }

@@ -12,6 +12,7 @@
     SummaryHighlight,
     TaskRow,
   } from "../db";
+  import type { LlmConfig } from "../interface";
 
   interface Props {
     showModal?: boolean;
@@ -27,6 +28,10 @@
   let error = $state("");
   let loadedKey = $state("");
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  let llmConfig: LlmConfig | null = $state(null);
+  let llmLoadedKey = $state("");
+  let llmConfigLoading = $state(true);
+  let llmConfigError = $state(false);
 
 
   function clearPoll() {
@@ -40,6 +45,15 @@
     clearPoll();
     showModal = false;
     loadedKey = "";
+    llmLoadedKey = "";
+    llmConfig = null;
+    llmConfigLoading = true;
+    llmConfigError = false;
+  }
+
+  function goToSettings() {
+    close();
+    window.dispatchEvent(new CustomEvent("navigate-settings"));
   }
 
   async function loadSummary(showLoading = true) {
@@ -67,6 +81,21 @@
     pollTimer = setTimeout(async () => {
       await loadSummary(false);
     }, 2000);
+  }
+
+  async function loadLlmConfig(key: string) {
+    llmConfigLoading = true;
+    llmConfigError = false;
+    try {
+      llmConfig = await invoke<LlmConfig>("get_llm_config");
+      llmLoadedKey = key;
+    } catch {
+      // 读取失败时无法校验 API Key，保守禁止生成并提示前往设置
+      llmConfig = null;
+      llmConfigError = true;
+    } finally {
+      llmConfigLoading = false;
+    }
   }
 
   async function generate(force: boolean) {
@@ -147,12 +176,22 @@
   let currentKey = $derived(archive
     ? `${archive.platform}:${archive.room_id}:${archive.live_id}`
     : "");
+  let llmKey = $derived(showModal && archive ? "load" : "");
+  $effect(() => {
+    if (llmKey && !llmLoadedKey) {
+      void loadLlmConfig(llmKey);
+    }
+  });
   $effect(() => {
     if (showModal && archive && currentKey !== loadedKey) {
       loadedKey = currentKey;
       void loadSummary();
     }
   });
+  let needsApiKey = $derived(
+    llmConfig?.provider === "openai" && !(llmConfig.api_key || "").trim()
+  );
+  let llmConfigUnavailable = $derived(llmConfigLoading || llmConfigError);
   let highlights = $derived(parseHighlights(summary?.highlights_json));
   let summaryMarkdown = $derived(summary?.summary_markdown || "");
 </script>
@@ -255,8 +294,36 @@
               <p class="font-medium text-gray-900 dark:text-white">尚未生成 Summary</p>
               <p class="mt-1 text-sm text-gray-500">将依次提取完整音频、生成字幕并总结直播内容。</p>
             </div>
-            <button class="rounded-lg bg-violet-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-50" onclick={() => generate(false)} disabled={actionLoading}>
-              {actionLoading ? "正在创建任务…" : "生成 Summary"}
+            {#if needsApiKey}
+              <div class="max-w-md rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-left text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
+                <p class="font-medium">尚未配置 LLM API Key</p>
+                <p class="mt-1">生成 Summary 需要调用 LLM 接口。请在「设置」页填写 OpenAI 兼容接口的 API Key（若使用本地 Ollama 则无需配置）。</p>
+                <button
+                  class="mt-3 rounded-lg border border-amber-400 bg-amber-100 px-3 py-1.5 text-xs font-medium text-amber-900 hover:bg-amber-200 dark:border-amber-700 dark:bg-amber-900/50 dark:text-amber-200 dark:hover:bg-amber-900"
+                  onclick={goToSettings}
+                >
+                  前往设置
+                </button>
+              </div>
+            {:else if llmConfigError}
+              <div class="max-w-md rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-left text-sm text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300">
+                <p class="font-medium">无法读取 LLM 配置</p>
+                <p class="mt-1">暂时无法校验 API Key，请在「设置」页确认模型配置后重试。</p>
+                <button
+                  class="mt-3 rounded-lg border border-red-400 bg-red-100 px-3 py-1.5 text-xs font-medium text-red-900 hover:bg-red-200 dark:border-red-700 dark:bg-red-900/50 dark:text-red-200 dark:hover:bg-red-900"
+                  onclick={goToSettings}
+                >
+                  前往设置
+                </button>
+              </div>
+            {/if}
+            <button
+              class="rounded-lg bg-violet-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+              onclick={() => generate(false)}
+              disabled={actionLoading || needsApiKey || llmConfigUnavailable}
+              title={needsApiKey || llmConfigError ? "请先在设置中配置 LLM API Key" : ""}
+            >
+              {actionLoading ? "正在创建任务…" : needsApiKey || llmConfigError ? "请先配置 LLM API Key" : llmConfigLoading ? "检测配置中…" : "生成 Summary"}
             </button>
           </div>
         {/if}

@@ -58,6 +58,12 @@
   });
 
   log.info("App loaded");
+
+  onMount(() => {
+    const onNavSettings = () => (active = "设置");
+    window.addEventListener("navigate-settings", onNavSettings);
+    return () => window.removeEventListener("navigate-settings", onNavSettings);
+  });
 </script>
 
 <main>

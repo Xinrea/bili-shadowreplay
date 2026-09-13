@@ -64,6 +64,8 @@
   let llmSaving = $state(false);
   let llmSaveMessage = $state("");
   let llmError = $state("");
+  let showModelList = $state(false);
+  let llmSaveChain: Promise<void> = Promise.resolve();
   let launchAtLogin = $state(false);
 
   function handleEndpointChange() {
@@ -211,29 +213,55 @@
     }
   }
 
+  async function toggleModelList() {
+    if (!setting_model.llm.endpoint.trim()) return;
+    if (!llmModels.length) {
+      await loadLlmModels();
+    }
+    if (!llmError) {
+      showModelList = !showModelList;
+      llmSaveMessage = "";
+    }
+  }
+
+  function selectModel(model: string) {
+    setting_model.llm.model = model;
+    showModelList = false;
+    void saveLlmConfig();
+  }
+
   async function saveLlmConfig() {
     llmSaving = true;
     llmError = "";
     llmSaveMessage = "";
-    setting_model.llm.endpoint =
-      setting_model.llm.endpoint.trim() ||
-      (setting_model.llm.provider === "ollama"
-        ? "http://localhost:11434"
-        : "https://api.openai.com/v1");
-    try {
-      await invoke("update_llm_config", {
+    // endpoint/provider 任一变化都可能指向不同服务商，旧的模型列表立即失效
+    llmModels = [];
+    showModelList = false;
+    // 串行保存：blur 触发与下拉选择触发的保存排队执行，
+    // payload 在真正调用时读取最新状态，避免旧值覆盖新选中的模型
+    const run = llmSaveChain.then(async () => {
+      setting_model.llm.endpoint =
+        setting_model.llm.endpoint.trim() ||
+        (setting_model.llm.provider === "ollama"
+          ? "http://localhost:11434"
+          : "https://api.openai.com/v1");
+      const payload = {
         provider: setting_model.llm.provider,
         endpoint: setting_model.llm.endpoint,
         apiKey: setting_model.llm.api_key,
         model: setting_model.llm.model,
-      });
-      llmSaveMessage = "模型配置已保存，助手和 Summary 将共用此配置";
-      window.dispatchEvent(new CustomEvent("llm-config-updated"));
-    } catch (error) {
-      llmError = String(error);
-    } finally {
-      llmSaving = false;
-    }
+      };
+      try {
+        await invoke("update_llm_config", payload);
+        llmSaveMessage = "模型配置已保存，助手和 Summary 将共用此配置";
+        window.dispatchEvent(new CustomEvent("llm-config-updated"));
+      } catch (error) {
+        llmError = String(error);
+      }
+    });
+    llmSaveChain = run;
+    await run;
+    llmSaving = false;
   }
 
   async function loadLaunchAtLogin() {
@@ -683,35 +711,76 @@
                       可以刷新模型列表或直接输入模型名称
                     </p>
                   </div>
-                  <div class="flex w-96 items-center gap-2">
-                    <input
-                      type="text"
-                      class="min-w-0 flex-1 px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white"
-                      bind:value={setting_model.llm.model}
-                      onblur={saveLlmConfig}
-                      list="llm-model-options"
-                      placeholder={setting_model.llm.provider === "ollama"
-                        ? "qwen3, llama3.2..."
-                        : "gpt-4.1-mini..."}
-                    />
-                    <datalist id="llm-model-options">
-                      {#each llmModels as model}
-                        <option value={model}>{model}</option>
-                      {/each}
-                    </datalist>
-                    <button
-                      class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg border border-gray-200 bg-gray-100 text-gray-700 hover:bg-gray-200 disabled:opacity-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
-                      onclick={loadLlmModels}
-                      disabled={llmModelsLoading ||
-                        !setting_model.llm.endpoint.trim() ||
-                        (setting_model.llm.provider === "openai" &&
-                          !setting_model.llm.api_key.trim())}
-                      title="刷新模型列表"
-                    >
-                      <RefreshCw
-                        class="w-4 h-4 {llmModelsLoading ? 'animate-spin' : ''}"
+                  <div class="relative flex w-96 flex-col">
+                    <div class="flex items-center gap-2">
+                      <input
+                        type="text"
+                        class="min-w-0 flex-1 px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white"
+                        bind:value={setting_model.llm.model}
+                        onblur={saveLlmConfig}
+                        list="llm-model-options"
+                        placeholder={setting_model.llm.provider === "ollama"
+                          ? "qwen3, llama3.2..."
+                          : "gpt-4.1-mini..."}
                       />
-                    </button>
+                      <datalist id="llm-model-options">
+                        {#each llmModels as model}
+                          <option value={model}>{model}</option>
+                        {/each}
+                      </datalist>
+                      <button
+                        class="flex shrink-0 items-center gap-1.5 rounded-lg bg-violet-600 px-3 py-2 text-sm text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        onclick={toggleModelList}
+                        disabled={llmModelsLoading ||
+                          !setting_model.llm.endpoint.trim() ||
+                          (setting_model.llm.provider === "openai" &&
+                            !setting_model.llm.api_key.trim())}
+                        title="获取模型列表"
+                      >
+                        <RefreshCw
+                          class="h-4 w-4 {llmModelsLoading ? 'animate-spin' : ''}"
+                        />
+                        {llmModelsLoading ? "获取中…" : "获取模型列表"}
+                      </button>
+                    </div>
+                    {#if showModelList}
+                      <div
+                        use:clickOutside={() => (showModelList = false)}
+                        role="listbox"
+                        class="absolute right-0 top-9 z-20 mt-1 w-96 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-600 dark:bg-[#2c2c2e]"
+                      >
+                        {#if llmModelsLoading}
+                          <div
+                            class="flex items-center justify-center gap-2 px-3 py-3 text-sm text-gray-500 dark:text-gray-400"
+                          >
+                            <RefreshCw
+                              class="h-4 w-4 animate-spin"
+                            />
+                            获取中...
+                          </div>
+                        {:else if llmModels.length === 0}
+                          <div
+                            class="px-3 py-3 text-sm text-gray-500 dark:text-gray-400"
+                          >
+                            未获取到可用模型，也可以手动输入模型名称
+                          </div>
+                        {:else}
+                          <ul class="max-h-60 overflow-auto p-1">
+                            {#each llmModels as model}
+                              <li role="presentation">
+                                <button
+                                  type="button"
+                                  class="w-full rounded-md px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
+                                  onclick={() => selectModel(model)}
+                                >
+                                  {model}
+                                </button>
+                              </li>
+                            {/each}
+                          </ul>
+                        {/if}
+                      </div>
+                    {/if}
                   </div>
                 </div>
                 <div class="mt-2 min-h-[1.25rem] text-right">

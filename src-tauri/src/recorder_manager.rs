@@ -1766,7 +1766,8 @@ mod live_end_tests {
         .execute(&pool)
         .await
         .unwrap();
-        let db = Database::new();
+        let db =
+            Database::new(crate::database::credentials::CredentialCipher::new(&[0; 32]).unwrap());
         db.set(pool).await;
         db
     }

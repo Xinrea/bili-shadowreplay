@@ -654,7 +654,14 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
     let tauri_plugin_sql::DbPool::Sqlite(sqlite_pool) = dbpool;
     let credentials = match CredentialCipher::load(sqlite_pool).await {
         Ok(credentials) => credentials,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound
+                    | io::ErrorKind::PermissionDenied
+                    | io::ErrorKind::InvalidData
+            ) =>
+        {
             let pool = sqlite_pool.clone();
             let handle = app.handle().clone();
             app.dialog()

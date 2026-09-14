@@ -6,18 +6,31 @@ use ring::rand::{SecureRandom, SystemRandom};
 
 pub struct CredentialCipher(LessSafeKey);
 
+fn keyring_error(error: keyring::Error) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!(
+            "The application cannot access your keychain. Unlock it, allow access, or configure a keychain service, then restart. Clearing login information will not fix a keychain access problem.\n\nSystem error: {error}"
+        ),
+    )
+}
+
 impl CredentialCipher {
     pub const ENCRYPTED: bool = true;
 
     pub fn new(key: &[u8]) -> io::Result<Self> {
-        let key = UnboundKey::new(&AES_256_GCM, key)
-            .map_err(|_| io::Error::other("Invalid account encryption key"))?;
+        let key = UnboundKey::new(&AES_256_GCM, key).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "The encryption key in your keychain is invalid. Quit and configure your keychain, then restart. Clearing login information will not repair an invalid key.",
+            )
+        })?;
         Ok(Self(LessSafeKey::new(key)))
     }
 
     pub async fn load(pool: &sqlx::SqlitePool) -> io::Result<Self> {
         let entry = keyring::Entry::new("cn.vjoi.bilishadowreplay", "account-encryption-key")
-            .map_err(|error| io::Error::other(error.to_string()))?;
+            .map_err(keyring_error)?;
         let key = match entry.get_secret() {
             Ok(key) => key,
             Err(keyring::Error::NoEntry) => {
@@ -37,14 +50,33 @@ impl CredentialCipher {
                 SystemRandom::new()
                     .fill(&mut key)
                     .map_err(|_| io::Error::other("Could not generate account encryption key"))?;
-                entry
-                    .set_secret(&key)
-                    .map_err(|error| io::Error::other(error.to_string()))?;
+                entry.set_secret(&key).map_err(keyring_error)?;
                 key.to_vec()
             }
-            Err(error) => return Err(io::Error::other(error.to_string())),
+            Err(error) => return Err(keyring_error(error)),
         };
-        Self::new(&key)
+        let cipher = Self::new(&key)?;
+        cipher.validate_accounts(pool).await?;
+        Ok(cipher)
+    }
+
+    async fn validate_accounts(&self, pool: &sqlx::SqlitePool) -> io::Result<()> {
+        let accounts: Vec<(String, String)> =
+            sqlx::query_as("SELECT csrf, cookies FROM accounts WHERE credentials_encrypted = 1")
+                .fetch_all(pool)
+                .await
+                .map_err(io::Error::other)?;
+        for (csrf, cookies) in accounts {
+            for value in [&csrf, &cookies] {
+                self.decrypt(value).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "The encryption key in your keychain cannot decrypt your saved accounts. Clear all login information and restart, or quit and restore access to the original keychain.",
+                    )
+                })?;
+            }
+        }
+        Ok(())
     }
 
     pub fn encrypt(&self, value: &str) -> io::Result<String> {
@@ -81,6 +113,54 @@ impl CredentialCipher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn reports_credential_startup_errors() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE accounts (csrf TEXT, cookies TEXT, credentials_encrypted INTEGER)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO accounts VALUES ('plaintext-csrf', 'plaintext-cookies', 0)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let original = CredentialCipher::new(&[0; 32]).unwrap();
+        let wrong = CredentialCipher::new(&[1; 32]).unwrap();
+        wrong.validate_accounts(&pool).await.unwrap();
+
+        let csrf = original.encrypt("test-csrf").unwrap();
+        let cookies = original.encrypt("test-cookies").unwrap();
+        sqlx::query("INSERT INTO accounts VALUES ($1, $2, 1)")
+            .bind(&csrf)
+            .bind(&cookies)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let error = wrong.validate_accounts(&pool).await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        original.validate_accounts(&pool).await.unwrap();
+        let stored: (String, String) =
+            sqlx::query_as("SELECT csrf, cookies FROM accounts WHERE credentials_encrypted = 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stored, (csrf, cookies));
+
+        for error in [
+            keyring::Error::NoDefaultStore,
+            keyring::Error::NoStorageAccess(Box::new(io::Error::other("Keychain locked"))),
+            keyring::Error::PlatformFailure(Box::new(io::Error::other("Access denied"))),
+        ] {
+            assert_eq!(keyring_error(error).kind(), io::ErrorKind::PermissionDenied);
+        }
+    }
 
     #[test]
     fn authenticates_ciphertext() {

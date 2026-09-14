@@ -13,9 +13,11 @@ Docker、Termux 和默认无界面构建使用 `--no-default-features --features
 
 关闭加密的版本不能打开包含已加密账号的数据库，需要改用启用 `credential-encryption` 的版本。恢复加密数据库时仍需访问系统密钥库中的原主密钥；仅复制数据库到其他设备无法恢复账号。升级前的备份仍可能含有明文凭据。
 
+桌面版遇到密钥缺失、钥匙串访问失败或现有密钥无法解密账号时，会显示对应原因，并提供“清空所有登录信息并重启”或“退出并配置钥匙串”两个选项。清空只删除已保存的账号；钥匙串访问问题仍需手动解决。
+
 ### 密钥生命周期
 
-启用加密时，所有账号共享一个主密钥，正常退出和重启应用不会删除或轮换该密钥。桌面版的启动与密钥缺失处理流程如下：
+启用加密时，所有账号共享一个主密钥，正常退出和重启应用不会删除或轮换该密钥。桌面版的启动与密钥异常处理流程如下：
 
 ```mermaid
 flowchart TD
@@ -23,17 +25,19 @@ flowchart TD
 
     Read -->|Key exists| Memory["Load the same key into memory"]
     Read -->|Key missing| Accounts{"Encrypted logins exist?"}
-    Read -->|Access error| Error["Startup fails"]
+    Read -->|Access error| Dialog
 
     Accounts -->|No| Create["Generate a random 256-bit key<br/>Save it in OS keyring"]
     Create --> Memory
+    Create -->|Keyring access error| Dialog
 
-    Memory --> Use["Encrypt / decrypt account credentials<br/>SQLite stores ciphertext"]
+    Memory --> Validate{"Key valid and encrypted logins decryptable?"}
+    Validate -->|Yes| Use["Encrypt / decrypt account credentials<br/>SQLite stores ciphertext"]
+    Validate -->|No| Dialog
     Use -->|Key stays in OS keyring| Exit["App exits"]
     Exit -->|Next launch| Start
-    Error --> Exit
 
-    Accounts -->|Yes| Dialog["Missing-key dialog"]
+    Accounts -->|Yes| Dialog["Account encryption error dialog<br/>Explanation depends on the cause"]
     Dialog --> Clear["Clear all login information<br/>and restart"]
     Clear -->|Saved accounts deleted| Start
     Dialog --> Quit["Quit & configure keychain<br/>Saved accounts unchanged"]

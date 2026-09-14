@@ -15,12 +15,24 @@ impl CredentialCipher {
         Ok(Self(LessSafeKey::new(key)))
     }
 
-    pub fn load() -> io::Result<Self> {
+    pub async fn load(pool: &sqlx::SqlitePool) -> io::Result<Self> {
         let entry = keyring::Entry::new("cn.vjoi.bilishadowreplay", "account-encryption-key")
             .map_err(|error| io::Error::other(error.to_string()))?;
         let key = match entry.get_secret() {
             Ok(key) => key,
             Err(keyring::Error::NoEntry) => {
+                let encrypted: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT 1 FROM accounts WHERE credentials_encrypted = 1)",
+                )
+                .fetch_one(pool)
+                .await
+                .map_err(io::Error::other)?;
+                if encrypted {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "The encryption key for your saved accounts is missing. Clear all login information and restart, or quit and configure your keychain.",
+                    ));
+                }
                 let mut key = [0; 32];
                 SystemRandom::new()
                     .fill(&mut key)

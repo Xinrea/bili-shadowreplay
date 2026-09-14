@@ -9,7 +9,7 @@ impl CredentialCipher {
         Ok(Self)
     }
 
-    pub fn load() -> io::Result<Self> {
+    pub async fn load(_pool: &sqlx::SqlitePool) -> io::Result<Self> {
         Self::new(&[])
     }
 

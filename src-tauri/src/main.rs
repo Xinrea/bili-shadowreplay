@@ -562,8 +562,6 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     if !Path::new(&args.db).exists() {
         std::fs::create_dir_all(&args.db)?;
     }
-    let db = Arc::new(Database::new(CredentialCipher::load()?));
-
     if !Sqlite::database_exists(&conn_url).await.unwrap_or(false) {
         Sqlite::create_database(&conn_url).await?;
     }
@@ -573,6 +571,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     let migrator = Migrator::new(MigrationList(migrations)).await?;
     migrator.run(&db_pool).await?;
 
+    let db = Arc::new(Database::new(CredentialCipher::load(&db_pool).await?));
     db.set(db_pool).await;
     db.migrate_account_credentials().await?;
     db.finish_pending_tasks().await?;
@@ -614,9 +613,10 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
 }
 
 #[cfg(feature = "gui")]
-async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::Error>> {
+async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std::error::Error>> {
     use platform_dirs::AppDirs;
     use progress::progress_reporter::EventEmitter;
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
     use crate::{static_server::start_static_server, task::TaskManager};
 
@@ -646,14 +646,46 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     let config = Arc::new(RwLock::new(config));
     let config_clone = config.clone();
     let dbs = app.state::<tauri_plugin_sql::DbInstances>().inner();
-    let db = Arc::new(Database::new(CredentialCipher::load()?));
-    let db_clone = db.clone();
     let emitter = EventEmitter::new(app.handle().clone());
     let binding = dbs.0.read().await;
     let dbpool = binding
         .get("sqlite:data_v2.db")
         .ok_or("sqlite:data_v2.db is not registered")?;
     let tauri_plugin_sql::DbPool::Sqlite(sqlite_pool) = dbpool;
+    let credentials = match CredentialCipher::load(sqlite_pool).await {
+        Ok(credentials) => credentials,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let pool = sqlite_pool.clone();
+            let handle = app.handle().clone();
+            app.dialog()
+                .message(error.to_string())
+                .title("bili-shadowreplay")
+                .kind(MessageDialogKind::Error)
+                .buttons(MessageDialogButtons::OkCancelCustom(
+                    "Clear all login information and restart".into(),
+                    "Quit & configure keychain".into(),
+                ))
+                .show(move |clear| {
+                    if !clear {
+                        handle.exit(0);
+                        return;
+                    }
+                    match tauri::async_runtime::block_on(
+                        sqlx::query("DELETE FROM accounts").execute(&pool),
+                    ) {
+                        Ok(_) => handle.request_restart(),
+                        Err(error) => {
+                            log::error!("Failed to clear saved logins: {error}");
+                            handle.exit(1);
+                        }
+                    }
+                });
+            return Ok(None);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let db = Arc::new(Database::new(credentials));
+    let db_clone = db.clone();
     db_clone.set(sqlite_pool.clone()).await;
     db_clone.migrate_account_credentials().await?;
     db_clone.finish_pending_tasks().await?;
@@ -689,7 +721,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     let _ = try_add_parent_id_to_records(&db_clone).await;
     let _ = try_convert_entry_to_m3u8(&db_clone, cache_path.clone().into()).await;
 
-    Ok(State {
+    Ok(Some(State {
         db,
         config,
         recorder_manager,
@@ -698,7 +730,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         app_handle: app.handle().clone(),
         resource_dir,
         webhook_poster,
-    })
+    }))
 }
 
 #[cfg(feature = "gui")]
@@ -937,7 +969,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     builder
         .setup(|app| {
             tauri::async_runtime::block_on(async {
-                let state = setup_app_state(app).await?;
+                let Some(state) = setup_app_state(app).await? else {
+                    return Ok(());
+                };
                 let _ = tray::create_tray(app.handle());
                 #[cfg(target_os = "macos")]
                 remove_legacy_macos_launch_agent();
@@ -955,8 +989,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build(context)?
         .run(|app_handle: &tauri::AppHandle, event| {
             if let tauri::RunEvent::ExitRequested { .. } = event {
+                let Some(state) = app_handle.try_state::<State>() else {
+                    return;
+                };
                 // stop all recorders
-                let recorder_manager = app_handle.state::<State>().recorder_manager.clone();
+                let recorder_manager = state.recorder_manager.clone();
                 log::info!("Stopping all recorders...");
                 tauri::async_runtime::block_on(async move {
                     recorder_manager.stop_all().await;

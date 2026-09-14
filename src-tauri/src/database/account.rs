@@ -51,9 +51,6 @@ impl Database {
         )
         .fetch_all(&mut *transaction)
         .await?;
-        if accounts.is_empty() {
-            return Ok(());
-        }
 
         sqlx::query("PRAGMA secure_delete = ON")
             .execute(&mut *transaction)
@@ -72,7 +69,8 @@ impl Database {
         }
         transaction.commit().await?;
 
-        // Remove the old plaintext from unused database pages and the WAL.
+        // Always remove old plaintext from unused pages and the WAL: a previous
+        // startup may have committed the migration without finishing cleanup.
         sqlx::query("VACUUM").execute(&pool).await?;
         sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
             .execute(&pool)
@@ -156,6 +154,65 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "credential-encryption")]
+    #[tokio::test]
+    async fn cleans_up_plaintext_when_accounts_are_already_encrypted() {
+        let path =
+            std::env::temp_dir().join(format!("account-cleanup-{}.db", uuid::Uuid::new_v4()));
+        let wal_path = path.with_extension("db-wal");
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(&path)
+                    .create_if_missing(true)
+                    .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                    .pragma("wal_autocheckpoint", "0")
+                    .pragma("secure_delete", "ON"),
+            )
+            .await
+            .unwrap();
+        for migration in crate::get_migrations() {
+            sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
+        }
+        let cookies = "unfinished-migration-cookies";
+        sqlx::query(
+            "INSERT INTO accounts VALUES ('123', 'bilibili', 'test', '', 'test-csrf', $1, '', 0)",
+        )
+        .bind(cookies)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let db = Database::new(CredentialCipher::new(&[0; 32]).unwrap());
+        db.set(pool.clone()).await;
+
+        // Simulate the committed migration before VACUUM and WAL cleanup run.
+        sqlx::query("UPDATE accounts SET csrf = $1, cookies = $2, credentials_encrypted = 1")
+            .bind(db.credentials.encrypt("test-csrf").unwrap())
+            .bind(db.credentials.encrypt(cookies).unwrap())
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(std::fs::read(&wal_path)
+            .unwrap()
+            .windows(cookies.len())
+            .any(|bytes| bytes == cookies.as_bytes()));
+
+        db.migrate_account_credentials().await.unwrap();
+
+        assert_eq!(std::fs::metadata(&wal_path).unwrap().len(), 0);
+        assert!(!std::fs::read(&path)
+            .unwrap()
+            .windows(cookies.len())
+            .any(|bytes| bytes == cookies.as_bytes()));
+        assert_eq!(
+            db.get_account("bilibili", "123").await.unwrap().cookies,
+            cookies
+        );
+        pool.close().await;
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[tokio::test]
     async fn stores_accounts_in_the_selected_mode() {

@@ -498,6 +498,12 @@ fn get_migrations() -> Vec<Migration> {
                 "ALTER TABLE accounts ADD COLUMN credentials_encrypted INTEGER NOT NULL DEFAULT 0;",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 17,
+            description: "track_account_credential_cleanup",
+            sql: "CREATE TABLE account_credential_cleanup (id INTEGER PRIMARY KEY);",
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

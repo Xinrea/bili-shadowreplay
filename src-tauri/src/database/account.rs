@@ -52,6 +52,22 @@ impl Database {
         .fetch_all(&mut *transaction)
         .await?;
 
+        if accounts.is_empty() {
+            let cleanup_pending: bool =
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM account_credential_cleanup)")
+                    .fetch_one(&mut *transaction)
+                    .await?;
+            if !cleanup_pending {
+                // Skip VACUUM when there are no accounts to migrate or unfinished cleanups to retry.
+                return Ok(());
+            }
+        } else {
+            // Commit the cleanup marker together with the encrypted accounts.
+            sqlx::query("INSERT OR IGNORE INTO account_credential_cleanup (id) VALUES (1)")
+                .execute(&mut *transaction)
+                .await?;
+        }
+
         sqlx::query("PRAGMA secure_delete = ON")
             .execute(&mut *transaction)
             .await?;
@@ -69,12 +85,17 @@ impl Database {
         }
         transaction.commit().await?;
 
-        // Always remove old plaintext from unused pages and the WAL: a previous
-        // startup may have committed the migration without finishing cleanup.
+        // Keep the marker until both database and WAL cleanup succeed so an
+        // interrupted cleanup is retried on the next startup.
         sqlx::query("VACUUM").execute(&pool).await?;
-        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
-            .execute(&pool)
+        let busy: i64 = sqlx::query_scalar("PRAGMA wal_checkpoint(TRUNCATE)")
+            .fetch_one(&pool)
             .await?;
+        if busy == 0 {
+            sqlx::query("DELETE FROM account_credential_cleanup")
+                .execute(&pool)
+                .await?;
+        }
         Ok(())
     }
 
@@ -188,12 +209,18 @@ mod tests {
         db.set(pool.clone()).await;
 
         // Simulate the committed migration before VACUUM and WAL cleanup run.
+        let mut transaction = pool.begin().await.unwrap();
+        sqlx::query("INSERT INTO account_credential_cleanup (id) VALUES (1)")
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
         sqlx::query("UPDATE accounts SET csrf = $1, cookies = $2, credentials_encrypted = 1")
             .bind(db.credentials.encrypt("test-csrf").unwrap())
             .bind(db.credentials.encrypt(cookies).unwrap())
-            .execute(&pool)
+            .execute(&mut *transaction)
             .await
             .unwrap();
+        transaction.commit().await.unwrap();
         assert!(std::fs::read(&wal_path)
             .unwrap()
             .windows(cookies.len())
@@ -201,7 +228,10 @@ mod tests {
 
         db.migrate_account_credentials().await.unwrap();
 
-        assert_eq!(std::fs::metadata(&wal_path).unwrap().len(), 0);
+        let wal = std::fs::read(&wal_path).unwrap();
+        assert!(!wal
+            .windows(cookies.len())
+            .any(|bytes| bytes == cookies.as_bytes()));
         assert!(!std::fs::read(&path)
             .unwrap()
             .windows(cookies.len())
@@ -210,6 +240,9 @@ mod tests {
             db.get_account("bilibili", "123").await.unwrap().cookies,
             cookies
         );
+        // A normal startup after cleanup must not rewrite the database or WAL.
+        db.migrate_account_credentials().await.unwrap();
+        assert_eq!(std::fs::read(&wal_path).unwrap(), wal);
         pool.close().await;
         std::fs::remove_file(path).unwrap();
     }

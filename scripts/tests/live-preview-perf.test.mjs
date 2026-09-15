@@ -120,6 +120,34 @@ test("danmu statistic buckets use seconds, not milliseconds", async () => {
   assert.equal(points[1].ts, 15_000);
 });
 
+test("statistics signature changes when an existing bucket count changes", async () => {
+  const api = await loadModule();
+  const before = api.danmuStatisticsSignature([
+    { ts: 10_000, count: 2 },
+    { ts: 15_000, count: 1 },
+  ]);
+  const after = api.danmuStatisticsSignature([
+    { ts: 10_000, count: 3 },
+    { ts: 15_000, count: 1 },
+  ]);
+
+  assert.notEqual(before, after);
+});
+
+test("statistics signature changes when buckets are redistributed without changing length", async () => {
+  const api = await loadModule();
+  const before = api.danmuStatisticsSignature([
+    { ts: 10_000, count: 2 },
+    { ts: 15_000, count: 1 },
+  ]);
+  const after = api.danmuStatisticsSignature([
+    { ts: 10_000, count: 1 },
+    { ts: 20_000, count: 2 },
+  ]);
+
+  assert.notEqual(before, after);
+});
+
 test("virtual list keeps a stable total height while the window slides", async () => {
   const api = await loadModule();
   const first = api.virtualListWindow(0, 480, 28, 2000, 12);

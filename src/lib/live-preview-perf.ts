@@ -193,6 +193,16 @@ export function bucketDanmuStatistics(
     .sort((a, b) => a.ts - b.ts);
 }
 
+export function danmuStatisticsSignature(
+  points: { ts: number; count: number }[],
+): string {
+  let signature = "";
+  for (const point of points) {
+    signature += `${point.ts}:${point.count},`;
+  }
+  return signature;
+}
+
 export function virtualListWindow(
   scrollTop: number,
   viewportHeight: number,

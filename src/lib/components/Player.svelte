@@ -11,6 +11,7 @@
   import {
     bucketDanmuStatistics,
     createDanmuBatcher,
+    danmuStatisticsSignature,
     DANMU_FLUSH_INTERVAL_MS,
   } from "../live-preview-perf";
   const DANMU_STATISTIC_GAP = 5;
@@ -896,6 +897,7 @@ ${mediaPlaylistUrl}`;
     shakaSpacer.appendChild(SettingMenu);
 
     let danmu_statistics: { ts: number; count: number }[] = [];
+    let statsDataSignature = "";
 
     // create a danmu statistics select into shaka-spacer
     let statisticKey = "";
@@ -919,6 +921,7 @@ ${mediaPlaylistUrl}`;
         gapSec: DANMU_STATISTIC_GAP,
         filter: statisticKey,
       });
+      statsDataSignature = danmuStatisticsSignature(danmu_statistics);
     }
 
     update_statistics();
@@ -1390,7 +1393,7 @@ ${mediaPlaylistUrl}`;
       const markerSignature = `${total.toFixed(2)}:${markers
         .map((marker) => marker.offset)
         .join(",")}`;
-      const statsSignature = `${total.toFixed(1)}:${danmu_statistics.length}:${seekbarContainer.clientWidth}`;
+      const statsSignature = `${total.toFixed(1)}:${statsDataSignature}:${seekbarContainer.clientWidth}`;
       const adMarkers = document.querySelector(
         ".shaka-ad-markers"
       ) as HTMLElement;

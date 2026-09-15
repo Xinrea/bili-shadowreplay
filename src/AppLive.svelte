@@ -19,6 +19,10 @@
   import ArchiveInspector from "./lib/components/ArchiveInspector.svelte";
   import ArchiveTimeline from "./lib/components/ArchiveTimeline.svelte";
   import { onDestroy, onMount } from "svelte";
+  import {
+    createThrottledRunner,
+    PEAK_DETECT_INTERVAL_MS,
+  } from "./lib/live-preview-perf";
 
   interface PlayerHandle {
     seek(offset: number): void;
@@ -120,9 +124,12 @@
     const step_ms = 5000; // 5秒滑动步长
     const bucket_ms = step_ms; // 桶大小与步长一致
 
-    // 找出时间范围
-    const min_ts = Math.min(...records.map((d) => d.ts));
-    const max_ts = Math.max(...records.map((d) => d.ts));
+    let min_ts = records[0].ts;
+    let max_ts = records[0].ts;
+    for (const record of records) {
+      if (record.ts < min_ts) min_ts = record.ts;
+      if (record.ts > max_ts) max_ts = record.ts;
+    }
 
     // 1. 构建弹幕直方图 (O(N))
     const total_buckets = Math.ceil((max_ts - min_ts) / bucket_ms) + 1;
@@ -482,11 +489,19 @@
     danmu_keywords = keywords;
   }
 
-  // 弹幕数据、关键词或阈值变化时刷新智能推荐
+  // 弹幕数据、关键词或阈值变化时刷新智能推荐；直播中批量到达时节流，避免每条都全量重算。
+  const schedulePeakDetect = createThrottledRunner(() => {
+    detect_danmu_peaks(peak_threshold);
+  }, PEAK_DETECT_INTERVAL_MS);
   $effect(() => {
     global_offset;
     danmu_keywords;
-    detect_danmu_peaks(peak_threshold);
+    peak_threshold;
+    danmu_records;
+    schedulePeakDetect();
+  });
+  onDestroy(() => {
+    schedulePeakDetect.cancel();
   });
   // 监听 ranges 变化，更新峰值的添加状态
   $effect(() => {

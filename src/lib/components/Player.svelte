@@ -8,6 +8,12 @@
   import type { Marker, RecorderList, RecorderInfo, Range } from "../interface";
 
   import { save } from "@tauri-apps/plugin-dialog";
+  import {
+    bucketDanmuStatistics,
+    createDanmuBatcher,
+    danmuStatisticsSignature,
+    DANMU_FLUSH_INTERVAL_MS,
+  } from "../live-preview-perf";
   const DANMU_STATISTIC_GAP = 5;
 
   interface DanmuEntry {
@@ -655,6 +661,9 @@ ${mediaPlaylistUrl}`;
       }
 
       // listen to danmaku event
+      const danmuBatcher = createDanmuBatcher<DanmuEntry>((batch) => {
+        danmu_records = danmu_records.concat(batch);
+      }, DANMU_FLUSH_INTERVAL_MS);
       await listen(`danmu:${room_id}`, (event: { payload: DanmuEntry }) => {
         if (global_offset == 0) {
           return;
@@ -668,14 +677,14 @@ ${mediaPlaylistUrl}`;
         let danmu_record = event.payload;
         // if not enabled or playback is not keep up with live, ignore the danmaku
         if (!danmu_enabled || get_total() - video.currentTime > 5) {
-          danmu_records = [...danmu_records, danmu_record];
+          danmuBatcher.push(danmu_record);
           return;
         }
         if (Object.keys(danmu_displayed).length > 1000) {
           danmu_displayed = {};
         }
         danmu_displayed[event.payload.ts] = true;
-        danmu_records = [...danmu_records, danmu_record];
+        danmuBatcher.push(danmu_record);
         danmu_handler(danmu_record.content);
       });
     }
@@ -888,6 +897,7 @@ ${mediaPlaylistUrl}`;
     shakaSpacer.appendChild(SettingMenu);
 
     let danmu_statistics: { ts: number; count: number }[] = [];
+    let statsDataSignature = "";
 
     // create a danmu statistics select into shaka-spacer
     let statisticKey = "";
@@ -905,22 +915,13 @@ ${mediaPlaylistUrl}`;
     statisticKeyInput.style.position = "absolute";
 
     function update_statistics() {
-      let counts = {};
-      danmu_records.forEach((e) => {
-        if (statisticKey != "" && !e.content.includes(statisticKey)) {
-          return;
-        }
-        const timestamp = e.ts + local_offset * 1000 - global_offset * 1000;
-        if (timestamp < 0) {
-          return;
-        }
-        const timeSlot = timestamp - (timestamp % DANMU_STATISTIC_GAP);
-        counts[timeSlot] = (counts[timeSlot] || 0) + 1;
+      danmu_statistics = bucketDanmuStatistics(danmu_records, {
+        localOffsetSec: local_offset,
+        globalOffsetSec: global_offset,
+        gapSec: DANMU_STATISTIC_GAP,
+        filter: statisticKey,
       });
-      danmu_statistics = [];
-      for (let ts in counts) {
-        danmu_statistics.push({ ts: parseInt(ts), count: counts[ts] });
-      }
+      statsDataSignature = danmuStatisticsSignature(danmu_statistics);
     }
 
     update_statistics();
@@ -1297,13 +1298,18 @@ ${mediaPlaylistUrl}`;
       }
     }
 
+    let lastRangeSignature = "";
+    let lastMarkerSignature = "";
+    let lastStatsSignature = "";
+
     function updateSeekbar() {
       const total = get_total();
       const live = isLive();
       if (is_live !== live) {
         is_live = live;
       }
-      if (Number.isFinite(total) && Math.abs(duration - total) >= 0.1) {
+      const durationStep = live ? 0.5 : 0.1;
+      if (Number.isFinite(total) && Math.abs(duration - total) >= durationStep) {
         duration = total;
       }
       if (
@@ -1333,64 +1339,66 @@ ${mediaPlaylistUrl}`;
         currentRangeHighlight.style.display = "none";
       }
 
-      // 构建多区间渐变背景
-      if (ranges.length === 0) {
-        // 没有区间时，显示默认背景
-        seekbarContainer.style.background = "rgba(255, 255, 255, 0.4)";
-      } else {
-        // 按时间顺序排序区间
-        const sortedRanges = [...ranges].sort((a, b) => a.start - b.start);
-        const gradientStops: string[] = [];
-        let lastPos = 0;
+      const rangeSignature = `${total.toFixed(2)}:${selected_range_index}:${ranges
+        .map((range) => `${range.start}:${range.end}:${range.activated}`)
+        .join("|")}`;
+      if (rangeSignature !== lastRangeSignature) {
+        lastRangeSignature = rangeSignature;
+        // 构建多区间渐变背景
+        if (ranges.length === 0) {
+          seekbarContainer.style.background = "rgba(255, 255, 255, 0.4)";
+        } else {
+          const sortedRanges = [...ranges].sort((a, b) => a.start - b.start);
+          const gradientStops: string[] = [];
+          let lastPos = 0;
 
-        for (let i = 0; i < sortedRanges.length; i++) {
-          const range = sortedRanges[i];
-          // 计算区间在当前 focus 范围内的可见部分
-          // range.start 和 range.end 是录播时间轴上的绝对秒数
-          const visibleStart = Math.max(0, range.start);
-          const visibleEnd = Math.min(total, range.end);
+          for (let i = 0; i < sortedRanges.length; i++) {
+            const range = sortedRanges[i];
+            const visibleStart = Math.max(0, range.start);
+            const visibleEnd = Math.min(total, range.end);
 
-          // 如果区间在当前 focus 范围内有可见部分，才显示
-          if (visibleEnd > visibleStart) {
-            const rangeStart = visibleStart / total;
-            const rangeEnd = visibleEnd / total;
+            if (visibleEnd > visibleStart) {
+              const rangeStart = visibleStart / total;
+              const rangeEnd = visibleEnd / total;
 
-            // 添加区间前的背景
-            if (rangeStart > lastPos) {
-              gradientStops.push(`rgba(255, 255, 255, 0.4) ${lastPos * 100}%`);
-              gradientStops.push(
-                `rgba(255, 255, 255, 0.4) ${rangeStart * 100}%`
-              );
+              if (rangeStart > lastPos) {
+                gradientStops.push(`rgba(255, 255, 255, 0.4) ${lastPos * 100}%`);
+                gradientStops.push(
+                  `rgba(255, 255, 255, 0.4) ${rangeStart * 100}%`
+                );
+              }
+
+              const rangeColor =
+                range.activated !== false
+                  ? "rgb(0, 200, 0)"
+                  : "rgb(80, 80, 80)";
+              gradientStops.push(`${rangeColor} ${rangeStart * 100}%`);
+              gradientStops.push(`${rangeColor} ${rangeEnd * 100}%`);
+
+              lastPos = rangeEnd;
             }
-
-            // 'activated' 默认为 true
-            const rangeColor =
-              range.activated !== false
-                ? "rgb(0, 200, 0)"
-                : "rgb(80, 80, 80)"; // Active: green, Inactive: gray
-            gradientStops.push(`${rangeColor} ${rangeStart * 100}%`);
-            gradientStops.push(`${rangeColor} ${rangeEnd * 100}%`);
-
-            lastPos = rangeEnd;
           }
-        }
 
-        // 添加最后一个区间后的背景
-        if (lastPos < 1) {
-          gradientStops.push(`rgba(255, 255, 255, 0.4) ${lastPos * 100}%`);
-          gradientStops.push(`rgba(255, 255, 255, 0.4) 100%`);
-        }
+          if (lastPos < 1) {
+            gradientStops.push(`rgba(255, 255, 255, 0.4) ${lastPos * 100}%`);
+            gradientStops.push(`rgba(255, 255, 255, 0.4) 100%`);
+          }
 
-        seekbarContainer.style.background = `linear-gradient(to right, ${gradientStops.join(
-          ", "
-        )})`;
+          seekbarContainer.style.background = `linear-gradient(to right, ${gradientStops.join(
+            ", "
+          )})`;
+        }
       }
-      // render markers in shaka-ad-markers
+
+      const markerSignature = `${total.toFixed(2)}:${markers
+        .map((marker) => marker.offset)
+        .join(",")}`;
+      const statsSignature = `${total.toFixed(1)}:${statsDataSignature}:${seekbarContainer.clientWidth}`;
       const adMarkers = document.querySelector(
         ".shaka-ad-markers"
       ) as HTMLElement;
-      if (adMarkers) {
-        // clean previous markers
+      if (adMarkers && markerSignature !== lastMarkerSignature) {
+        lastMarkerSignature = markerSignature;
         adMarkers.innerHTML = "";
         for (const marker of markers) {
           const markerElement = document.createElement("div");
@@ -1401,7 +1409,6 @@ ${mediaPlaylistUrl}`;
           markerElement.style.left = `calc(${(marker.offset / total) * 100}% - 3px)`;
           markerElement.style.top = "-12px";
           markerElement.style.zIndex = "30";
-          // little triangle on the bottom
           const triangle = document.createElement("div");
           triangle.style.width = "0";
           triangle.style.height = "0";
@@ -1414,6 +1421,9 @@ ${mediaPlaylistUrl}`;
           markerElement.appendChild(triangle);
           adMarkers.appendChild(markerElement);
         }
+      }
+      if (adMarkers && statsSignature !== lastStatsSignature) {
+        lastStatsSignature = statsSignature;
         drawStatistics(danmu_statistics);
       }
       requestAnimationFrame(updateSeekbar);

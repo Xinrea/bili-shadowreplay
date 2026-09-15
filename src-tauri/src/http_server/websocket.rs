@@ -47,12 +47,18 @@ pub async fn create_websocket_server(state: State) -> SocketIoLayer {
                                         "message": message
                                 }),
                             ),
-                            RecorderEvent::DanmuReceived { room, ts, content } => (
+                            RecorderEvent::DanmuReceived {
+                                room,
+                                ts,
+                                content,
+                                user_name,
+                            } => (
                                 "danmu",
                                 json!({
                                         "room": room,
                                         "ts": ts,
-                                        "content": content
+                                        "content": content,
+                                        "user_name": user_name
                                 }),
                             ),
                             _ => continue,

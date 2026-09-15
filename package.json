@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "test:agent": "node --experimental-vm-modules --test scripts/tests/agent-attachments.test.mjs",
+    "test:live-preview": "node --experimental-vm-modules --test scripts/tests/live-preview-perf.test.mjs",
     "tauri": "tauri",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",

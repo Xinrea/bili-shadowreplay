@@ -92,14 +92,19 @@ impl EventEmitter {
                         )
                         .unwrap_or_else(|e| log::error!("Failed to emit progress finish: {e}"));
                 }
-                RecorderEvent::DanmuReceived { room, ts, content } => {
+                RecorderEvent::DanmuReceived {
+                    room,
+                    ts,
+                    content,
+                    user_name,
+                } => {
                     self.app_handle
                         .emit(
                             &format!("danmu:{room}"),
                             DanmuEntry {
                                 ts: *ts,
                                 content: content.clone(),
-                                user_name: None,
+                                user_name: user_name.clone(),
                             },
                         )
                         .unwrap_or_else(|e| log::error!("Failed to emit danmu event: {e}"));

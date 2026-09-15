@@ -13,6 +13,7 @@
   import ArchiveClipButton from "./ArchiveClipButton.svelte";
   import MarkerPanel from "./MarkerPanel.svelte";
   import { TAURI_ENV } from "../invoker";
+  import { virtualListWindow } from "../live-preview-perf";
 
   type InspectorTab = "ranges" | "danmu" | "markers" | "clips";
   type DanmuPeak = {
@@ -85,6 +86,7 @@
   let danmuSearch = $state("");
   let danmuScrollTop = $state(0);
   let danmuViewportHeight = $state(480);
+  let danmuListEl: HTMLElement | null = $state(null);
   let pendingPeakThreshold = $state(80);
   let keywordDraft = $state("");
   let peakThresholdTimer: ReturnType<typeof setTimeout> | null = null;
@@ -121,17 +123,25 @@
           ),
         ).length,
   );
-  let visibleDanmuStart = $derived(
-    Math.max(0, Math.floor(danmuScrollTop / DANMU_ITEM_HEIGHT) - DANMU_BUFFER),
-  );
-  let visibleDanmuEnd = $derived(
-    Math.min(
+  let danmuWindow = $derived(
+    virtualListWindow(
+      danmuScrollTop,
+      danmuViewportHeight,
+      DANMU_ITEM_HEIGHT,
       filteredDanmu.length,
-      Math.ceil(
-        (danmuScrollTop + danmuViewportHeight) / DANMU_ITEM_HEIGHT,
-      ) + DANMU_BUFFER,
+      DANMU_BUFFER,
     ),
   );
+
+  $effect(() => {
+    if (activeTab !== "danmu") return;
+    const element = danmuListEl;
+    if (!element) return;
+    const nextHeight = element.clientHeight;
+    if (nextHeight > 0 && Math.abs(nextHeight - danmuViewportHeight) >= 1) {
+      danmuViewportHeight = nextHeight;
+    }
+  });
 
   const tabs: { id: InspectorTab; label: string }[] = [
     { id: "ranges", label: "选区" },
@@ -259,7 +269,10 @@
     {/each}
   </div>
 
-  <div class="inspector-content">
+  <div
+    class="inspector-content"
+    class:panel-fill={activeTab === "danmu"}
+  >
     {#if activeTab === "ranges"}
       <section class="range-summary">
         <div class="summary-meta">
@@ -439,40 +452,44 @@
         </div>
         <div
           class="danmu-list"
+          bind:this={danmuListEl}
           onscroll={(event) => {
             const element = event.currentTarget as HTMLElement;
             danmuScrollTop = element.scrollTop;
             danmuViewportHeight = element.clientHeight;
           }}
         >
-          <div
-            style:height={`${visibleDanmuStart * DANMU_ITEM_HEIGHT}px`}
-          ></div>
-          {#each filteredDanmu.slice(visibleDanmuStart, visibleDanmuEnd) as danmu}
-            <button
-              type="button"
-              class="danmu-entry"
-              onclick={() => onSeek?.(danmu.ts / 1000 - globalOffset)}
-            >
-              <time>{formatTime(danmu.ts / 1000 - globalOffset)}</time>
-              <span class="danmu-content">
-                {#if danmu.user_name}
-                  <b>{danmu.user_name}</b>
-                {/if}
-                {danmu.content}
-              </span>
-            </button>
-          {:else}
+          {#if filteredDanmu.length === 0}
             <div class="empty-state">
               <strong>没有匹配的弹幕</strong>
             </div>
-          {/each}
-          <div
-            style:height={`${Math.max(
-              0,
-              filteredDanmu.length - visibleDanmuEnd,
-            ) * DANMU_ITEM_HEIGHT}px`}
-          ></div>
+          {:else}
+            <div
+              class="danmu-list-spacer"
+              style:height={`${danmuWindow.totalHeight}px`}
+            >
+              <div
+                class="danmu-list-window"
+                style:transform={`translateY(${danmuWindow.offsetY}px)`}
+              >
+                {#each filteredDanmu.slice(danmuWindow.start, danmuWindow.end) as danmu, index (`${danmu.ts}:${danmu.user_name ?? ""}:${danmu.content}:${danmuWindow.start + index}`)}
+                  <button
+                    type="button"
+                    class="danmu-entry"
+                    onclick={() => onSeek?.(danmu.ts / 1000 - globalOffset)}
+                  >
+                    <time>{formatTime(danmu.ts / 1000 - globalOffset)}</time>
+                    <span class="danmu-content">
+                      {#if danmu.user_name}
+                        <b>{danmu.user_name}</b>
+                      {/if}
+                      {danmu.content}
+                    </span>
+                  </button>
+                {/each}
+              </div>
+            </div>
+          {/if}
         </div>
       </section>
     {:else if activeTab === "markers"}
@@ -655,6 +672,12 @@
     flex: 1;
     overflow-y: auto;
     padding: 0 16px 16px;
+  }
+
+  .inspector-content.panel-fill {
+    display: flex;
+    overflow: hidden;
+    flex-direction: column;
   }
 
   .range-summary {
@@ -1011,6 +1034,7 @@
     display: flex;
     height: 100%;
     min-height: 0;
+    flex: 1;
     flex-direction: column;
   }
 
@@ -1051,13 +1075,28 @@
     min-height: 0;
     flex: 1;
     overflow-y: auto;
+    overflow-anchor: none;
+    overscroll-behavior: contain;
     border-top: 1px solid #242b36;
+  }
+
+  .danmu-list-spacer {
+    position: relative;
+    width: 100%;
+  }
+
+  .danmu-list-window {
+    width: 100%;
   }
 
   .danmu-entry {
     display: flex;
+    box-sizing: border-box;
     width: 100%;
     height: 28px;
+    min-height: 28px;
+    max-height: 28px;
+    flex-shrink: 0;
     align-items: center;
     gap: 8px;
     border: 0;

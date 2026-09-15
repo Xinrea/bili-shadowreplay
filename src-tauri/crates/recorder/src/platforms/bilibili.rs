@@ -293,20 +293,11 @@ impl BiliRecorder {
                         Ok(Some(msg)) => {
                             match msg {
                                 DanmuMessageType::Event(event) => {
-                                    let ts = event.ts;
-                                    if event.event_type == "danmu" {
-                                        let content = event.data
-                                            .get("content")
-                                            .and_then(|value| value.as_str())
-                                            .unwrap_or_default()
-                                            .to_string();
-                                        let _ = self.event_channel.send(
-                                            RecorderEvent::DanmuReceived {
-                                                room: self.room_id.clone(),
-                                                ts,
-                                                content,
-                                            },
-                                        );
+                                    if let Some(received) = RecorderEvent::danmu_received_from_event(
+                                        self.room_id.clone(),
+                                        &event,
+                                    ) {
+                                        let _ = self.event_channel.send(received);
                                     }
                                     if let Some(storage) = self.danmu_storage.write().await.as_ref() {
                                         if let Err(error) = storage.add_event(event).await {
@@ -316,13 +307,12 @@ impl BiliRecorder {
                                 }
                                 DanmuMessageType::DanmuMessage(danmu) => {
                                     let event = LiveEvent::danmu(danmu, "bilibili");
-                                    let ts = event.ts;
-                                    let content = event.data.get("content")
-                                        .and_then(|value| value.as_str())
-                                        .unwrap_or_default().to_string();
-                                    let _ = self.event_channel.send(RecorderEvent::DanmuReceived {
-                                        room: self.room_id.clone(), ts, content,
-                                    });
+                                    if let Some(received) = RecorderEvent::danmu_received_from_event(
+                                        self.room_id.clone(),
+                                        &event,
+                                    ) {
+                                        let _ = self.event_channel.send(received);
+                                    }
                                     if let Some(storage) = self.danmu_storage.write().await.as_ref() {
                                         if let Err(error) = storage.add_event(event).await {
                                             log::error!("Failed to persist danmu event: {error}");

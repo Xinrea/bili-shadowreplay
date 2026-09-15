@@ -11,6 +11,10 @@
     VolumeX,
   } from "lucide-svelte";
   import type { Marker, Range, RecorderInfo } from "../interface";
+  import {
+    downsampleHeatPoints,
+    layoutHeatBars,
+  } from "../live-preview-perf";
 
   type HeatPoint = {
     time: number;
@@ -121,6 +125,14 @@
   let timelineStart = $derived(zoomed ? zoom_start : 0);
   let timelineEnd = $derived(zoomed ? Math.min(duration, zoom_end) : duration);
   let timelineDuration = $derived(Math.max(0.001, timelineEnd - timelineStart));
+  let displayHeatBars = $derived(
+    layoutHeatBars(
+      downsampleHeatPoints(visibleHeatPoints),
+      timelineStart,
+      timelineDuration,
+      maxHeat,
+    ),
+  );
 
   $effect(() => {
     if (!zoomed) {
@@ -135,29 +147,6 @@
       100,
       Math.max(0, ((seconds - timelineStart) / timelineDuration) * 100),
     );
-  }
-
-  function heatHeight(count: number) {
-    if (maxHeat <= 0) return 0;
-    return Math.max(3, (count / maxHeat) * 26);
-  }
-
-  function heatBarGap(point: HeatPoint) {
-    const pointIndex = heatPoints.indexOf(point);
-    const next = heatPoints[pointIndex + 1];
-    const previous = heatPoints[pointIndex - 1];
-    return Math.abs((next || previous || point).time - point.time);
-  }
-
-  function heatBarStart(point: HeatPoint) {
-    return clampPercent(point.time - heatBarGap(point) / 2);
-  }
-
-  function heatBarWidth(point: HeatPoint) {
-    if (timelineDuration <= 0) return 0.15;
-    const start = heatBarStart(point);
-    const width = (heatBarGap(point) / timelineDuration) * 100;
-    return Math.max(0.15, Math.min(width, 100 - start));
   }
 
   let thresholdPosition = $derived(
@@ -457,14 +446,14 @@
       >
         <span class="heat-label">{keywordFiltered ? "关键词热度" : "弹幕热度"}</span>
         <div class="heat-bars" aria-hidden="true">
-          {#each visibleHeatPoints as point}
+          {#each displayHeatBars as bar}
             <span
               class="heat-bar"
-              class:extension={point.level === "extension"}
-              class:hot={point.level === "core"}
-              style:left={`${heatBarStart(point)}%`}
-              style:width={`${heatBarWidth(point)}%`}
-              style:height={`${heatHeight(point.count)}px`}
+              class:extension={bar.level === "extension"}
+              class:hot={bar.level === "core"}
+              style:left={`${bar.left}%`}
+              style:width={`${bar.width}%`}
+              style:height={`${bar.height}px`}
             ></span>
           {/each}
           {#if heatThreshold > 0 && maxHeat > 0}

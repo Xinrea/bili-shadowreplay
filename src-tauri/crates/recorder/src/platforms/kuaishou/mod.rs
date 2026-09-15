@@ -236,6 +236,12 @@ impl KuaishouRecorder {
                         Ok(Some(msg)) => {
                             match msg {
                                 danmu_stream::DanmuMessageType::Event(event) => {
+                                    if let Some(received) = RecorderEvent::danmu_received_from_event(
+                                        self.room_id.clone(),
+                                        &event,
+                                    ) {
+                                        let _ = self.event_channel.send(received);
+                                    }
                                     if let Some(storage) = self.danmu_storage.write().await.as_ref() {
                                         if let Err(error) = storage.add_event(event).await {
                                             log::error!("Failed to persist live event: {error}");
@@ -244,11 +250,12 @@ impl KuaishouRecorder {
                                 }
                                 danmu_stream::DanmuMessageType::DanmuMessage(danmu) => {
                                     let ts = Utc::now().timestamp_millis();
-                                    let _ = self.event_channel.send(RecorderEvent::DanmuReceived {
-                                        room: self.room_id.clone(),
+                                    let _ = self.event_channel.send(RecorderEvent::danmu_received(
+                                        self.room_id.clone(),
                                         ts,
-                                        content: danmu.message.clone(),
-                                    });
+                                        danmu.message.clone(),
+                                        Some(danmu.user_name.as_str()),
+                                    ));
                                     if let Some(storage) = self.danmu_storage.write().await.as_ref() {
                                         if let Err(error) = storage
                                             .add_event(danmu_stream::LiveEvent::danmu(

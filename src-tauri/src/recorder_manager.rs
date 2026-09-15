@@ -423,9 +423,18 @@ impl RecorderManager {
                         message,
                     });
                 }
-                RecorderEvent::DanmuReceived { room, ts, content } => {
-                    self.emitter
-                        .emit(&RecorderEvent::DanmuReceived { room, ts, content });
+                RecorderEvent::DanmuReceived {
+                    room,
+                    ts,
+                    content,
+                    user_name,
+                } => {
+                    self.emitter.emit(&RecorderEvent::DanmuReceived {
+                        room,
+                        ts,
+                        content,
+                        user_name,
+                    });
                 }
             }
         }

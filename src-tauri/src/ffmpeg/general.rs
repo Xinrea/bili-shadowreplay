@@ -133,12 +133,29 @@ mod tests {
 /// before joining. Concat demuxer + stream copy ignores those edit lists and
 /// dumps AAC priming/pre-roll packets onto the join, which players hear as a
 /// stutter.
-fn build_hardcut_concat_filter_complex(n: usize) -> String {
-    let mut inputs = String::new();
-    for i in 0..n {
-        inputs.push_str(&format!("[{i}:v][{i}:a]"));
+///
+/// When `normalize` is true, video is scaled/padded to a common 1920x1080 canvas
+/// and audio is resampled first. Concat requires matching resolution; sample
+/// rate and layout are converted automatically, but `aresample` also absorbs
+/// leftover timestamp gaps on mismatched clips.
+fn build_hardcut_concat_filter_complex(n: usize, normalize: bool) -> String {
+    if !normalize {
+        let mut inputs = String::new();
+        for i in 0..n {
+            inputs.push_str(&format!("[{i}:v][{i}:a]"));
+        }
+        return format!("{inputs}concat=n={n}:v=1:a=1[outv][outa]");
     }
-    format!("{inputs}concat=n={n}:v=1:a=1[outv][outa]")
+
+    let mut parts = Vec::with_capacity(n * 2 + 1);
+    let mut concat_inputs = String::new();
+    for i in 0..n {
+        parts.push(format!("[{i}:v]{}[v{i}]", hwaccel::H264_SCALE_PAD_FILTER));
+        parts.push(format!("[{i}:a]aresample=async=1:first_pts=0[a{i}]"));
+        concat_inputs.push_str(&format!("[v{i}][a{i}]"));
+    }
+    parts.push(format!("{concat_inputs}concat=n={n}:v=1:a=1[outv][outa]"));
+    parts.join(";")
 }
 
 fn build_transition_filter_complex(
@@ -363,7 +380,9 @@ pub async fn concat_videos_with_transition(
     // MP4 edit list (AAC pre-roll from `-c copy` trim) is applied per input.
     // Concat demuxer + `-c copy` would dump those packets at every join.
     if transition.is_none() || transition == Some("none") {
-        let filter_complex = build_hardcut_concat_filter_complex(videos.len());
+        let video_refs: Vec<&Path> = videos.iter().map(|p| p.as_path()).collect();
+        let normalize = !super::check_videos(&video_refs).await;
+        let filter_complex = build_hardcut_concat_filter_complex(videos.len(), normalize);
         return encode_filter_concat(reporter, videos, output_path, filter_complex).await;
     }
 
@@ -388,12 +407,33 @@ mod transition_filter_tests {
     #[test]
     fn hardcut_concat_maps_all_streams_in_order() {
         assert_eq!(
-            build_hardcut_concat_filter_complex(2),
+            build_hardcut_concat_filter_complex(2, false),
             "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[outv][outa]"
         );
         assert_eq!(
-            build_hardcut_concat_filter_complex(3),
+            build_hardcut_concat_filter_complex(3, false),
             "[0:v][0:a][1:v][1:a][2:v][2:a]concat=n=3:v=1:a=1[outv][outa]"
+        );
+    }
+
+    #[test]
+    fn hardcut_concat_normalizes_mismatched_inputs() {
+        let filter = build_hardcut_concat_filter_complex(2, true);
+        assert!(
+            filter.contains("[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2[v0]"),
+            "video 0 should scale/pad: {filter}"
+        );
+        assert!(
+            filter.contains("[1:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2[v1]"),
+            "video 1 should scale/pad: {filter}"
+        );
+        assert!(
+            filter.contains("[0:a]aresample=async=1:first_pts=0[a0]"),
+            "audio 0 should resample: {filter}"
+        );
+        assert!(
+            filter.contains("[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]"),
+            "normalized streams should concat: {filter}"
         );
     }
 
@@ -447,6 +487,14 @@ mod concat_videos_tests {
 
     /// Helper function to create a minimal valid MP4 file for testing
     async fn create_test_video(path: &Path, duration_secs: u32) -> Result<(), String> {
+        create_test_video_with_size(path, duration_secs, "1280x720").await
+    }
+
+    async fn create_test_video_with_size(
+        path: &Path,
+        duration_secs: u32,
+        size: &str,
+    ) -> Result<(), String> {
         // Create parent directory if it doesn't exist
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
@@ -463,11 +511,11 @@ mod concat_videos_tests {
             "-f",
             "lavfi",
             "-i",
-            &format!("color=c=blue:s=1280x720:d={}", duration_secs),
+            &format!("color=c=blue:s={size}:d={duration_secs}"),
             "-f",
             "lavfi",
             "-i",
-            &format!("anullsrc=r=44100:cl=stereo:d={}", duration_secs),
+            &format!("anullsrc=r=44100:cl=stereo:d={duration_secs}"),
             "-c:v",
             "libx264",
             "-preset",
@@ -762,6 +810,11 @@ mod concat_videos_tests {
             None,
         )
         .await;
+        assert!(
+            result.is_ok(),
+            "hard-cut concat should succeed: {:?}",
+            result
+        );
 
         let video_duration = probe_stream_duration(&output_path, "v:0").await;
         let audio_duration = probe_stream_duration(&output_path, "a:0").await;
@@ -771,12 +824,6 @@ mod concat_videos_tests {
             .count();
         let decoded_duration = decoded_audio_duration(&output_path).await;
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
-
-        assert!(
-            result.is_ok(),
-            "hard-cut concat should succeed: {:?}",
-            result
-        );
         assert_eq!(
             tiny_packets, 0,
             "copy-trim edit lists must not produce 1-sample audio packets at the join"
@@ -789,5 +836,42 @@ mod concat_videos_tests {
             (decoded_duration - audio_duration).abs() < 0.15,
             "decoded audio {decoded_duration}s must match container {audio_duration}s (edit-list pre-roll was dumped)"
         );
+    }
+
+    #[tokio::test]
+    async fn concat_without_transition_normalizes_mismatched_resolutions() {
+        let temp_dir = std::env::temp_dir().join(format!("bili_test_{}", random_filename().await));
+        tokio::fs::create_dir_all(&temp_dir).await.unwrap();
+
+        let video1_path = temp_dir.join("small.mp4");
+        let video2_path = temp_dir.join("large.mp4");
+        let output_path = temp_dir.join("out.mp4");
+
+        create_test_video_with_size(&video1_path, 2, "640x360")
+            .await
+            .unwrap();
+        create_test_video_with_size(&video2_path, 2, "1280x720")
+            .await
+            .unwrap();
+
+        let result = concat_videos_with_transition(
+            None::<&crate::progress::progress_reporter::ProgressReporter>,
+            &[video1_path, video2_path],
+            &output_path,
+            None,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "mismatched hard-cut concat should succeed: {:?}",
+            result
+        );
+
+        let metadata = crate::ffmpeg::extract_video_metadata(&output_path)
+            .await
+            .expect("output metadata");
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+        assert_eq!(metadata.width, 1920);
+        assert_eq!(metadata.height, 1080);
     }
 }

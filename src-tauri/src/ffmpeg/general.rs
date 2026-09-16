@@ -129,6 +129,18 @@ mod tests {
     }
 }
 
+/// Hard-cut concat at the frame level so each input's MP4 edit list is applied
+/// before joining. Concat demuxer + stream copy ignores those edit lists and
+/// dumps AAC priming/pre-roll packets onto the join, which players hear as a
+/// stutter.
+fn build_hardcut_concat_filter_complex(n: usize) -> String {
+    let mut inputs = String::new();
+    for i in 0..n {
+        inputs.push_str(&format!("[{i}:v][{i}:a]"));
+    }
+    format!("{inputs}concat=n={n}:v=1:a=1[outv][outa]")
+}
+
 fn build_transition_filter_complex(
     durations: &[f64],
     transition_type: &str,
@@ -181,25 +193,7 @@ fn build_transition_filter_complex(
     parts.join(";")
 }
 
-pub async fn concat_videos(
-    reporter: Option<&impl ProgressReporterTrait>,
-    videos: &[PathBuf],
-    output_path: &Path,
-) -> Result<(), String> {
-    concat_videos_with_transition(reporter, videos, output_path, None).await
-}
-
-/// Concatenate videos with optional transition effects
-pub async fn concat_videos_with_transition(
-    reporter: Option<&impl ProgressReporterTrait>,
-    videos: &[PathBuf],
-    output_path: &Path,
-    transition: Option<&str>,
-) -> Result<(), String> {
-    let mut ffmpeg_process = ffmpeg_command();
-    #[cfg(target_os = "windows")]
-    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
-
+fn ensure_output_folder(output_path: &Path) -> Result<&Path, String> {
     let output_folder = output_path.parent().ok_or_else(|| {
         format!(
             "Invalid output path (no parent directory): {}",
@@ -214,128 +208,194 @@ pub async fn concat_videos_with_transition(
             )
         })?;
     }
+    Ok(output_folder)
+}
 
-    // If no transition or only one video, use simple concat
-    if transition.is_none() || transition == Some("none") || videos.len() == 1 {
-        let filelist_filename = format!("filelist_{}.txt", random_filename().await);
+/// Concatenate full recordings with stream copy when codecs match.
+///
+/// This path is for already-muxed files (e.g. whole playlists), not copy-trimmed
+/// clip ranges. Copy-trimmed MP4s must go through [`concat_videos_with_transition`]
+/// so edit lists are applied.
+pub async fn concat_videos(
+    reporter: Option<&impl ProgressReporterTrait>,
+    videos: &[PathBuf],
+    output_path: &Path,
+) -> Result<(), String> {
+    concat_videos_with_demuxer(reporter, videos, output_path).await
+}
 
-        let mut filelist = tokio::fs::File::create(&output_folder.join(&filelist_filename))
-            .await
-            .map_err(|e| format!("Failed to create filelist: {e}"))?;
-        for video in videos {
-            let abs_path = tokio::fs::canonicalize(video).await.unwrap_or_else(|e| {
-                log::warn!("Failed to canonicalize path {}: {e}", video.display());
-                video.to_path_buf()
-            });
-            let escaped_path = escape_concat_path(&abs_path);
-            filelist
-                .write_all(format!("file '{}'\n", escaped_path).as_bytes())
-                .await
-                .map_err(|e| format!("Failed to write to filelist: {e}"))?;
-        }
+async fn concat_videos_with_demuxer(
+    reporter: Option<&impl ProgressReporterTrait>,
+    videos: &[PathBuf],
+    output_path: &Path,
+) -> Result<(), String> {
+    let mut ffmpeg_process = ffmpeg_command();
+    #[cfg(target_os = "windows")]
+    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
+
+    let output_folder = ensure_output_folder(output_path)?;
+    let filelist_filename = format!("filelist_{}.txt", random_filename().await);
+
+    let mut filelist = tokio::fs::File::create(&output_folder.join(&filelist_filename))
+        .await
+        .map_err(|e| format!("Failed to create filelist: {e}"))?;
+    for video in videos {
+        let abs_path = tokio::fs::canonicalize(video).await.unwrap_or_else(|e| {
+            log::warn!("Failed to canonicalize path {}: {e}", video.display());
+            video.to_path_buf()
+        });
+        let escaped_path = escape_concat_path(&abs_path);
         filelist
-            .flush()
+            .write_all(format!("file '{}'\n", escaped_path).as_bytes())
             .await
-            .map_err(|e| format!("Failed to flush filelist: {e}"))?;
+            .map_err(|e| format!("Failed to write to filelist: {e}"))?;
+    }
+    filelist
+        .flush()
+        .await
+        .map_err(|e| format!("Failed to flush filelist: {e}"))?;
 
-        // Convert &[PathBuf] to &[&Path] for check_videos
-        let video_refs: Vec<&Path> = videos.iter().map(|p| p.as_path()).collect();
-        let should_encode = !super::check_videos(&video_refs).await;
+    let video_refs: Vec<&Path> = videos.iter().map(|p| p.as_path()).collect();
+    let should_encode = !super::check_videos(&video_refs).await;
 
-        let filelist_path = output_folder.join(&filelist_filename);
-        ffmpeg_process.args([
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            filelist_path.to_str().ok_or_else(|| {
-                format!(
-                    "Invalid filelist path (non-UTF8): {}",
-                    filelist_path.display()
-                )
-            })?,
-        ]);
-        if should_encode {
-            let video_encoder = hwaccel::get_x264_encoder().await;
-            hwaccel::apply_x264_encoder_args(
-                &mut ffmpeg_process,
-                video_encoder,
-                Some(hwaccel::H264_SCALE_PAD_FILTER),
-            );
-            ffmpeg_process.args(["-c:a", "aac"]);
-            hwaccel::apply_x264_quality_args(&mut ffmpeg_process, video_encoder);
-            ffmpeg_process.args(["-threads", "0"]);
-        } else {
-            ffmpeg_process.args(["-c", "copy"]);
-        }
-        ffmpeg_process.args([output_path.to_str().ok_or_else(|| {
-            format!("Invalid output path (non-UTF8): {}", output_path.display())
-        })?]);
-        ffmpeg_process.args(["-progress", "pipe:2"]);
-        ffmpeg_process.args(["-y"]);
-
-        handle_ffmpeg_process(reporter, &mut ffmpeg_process).await?;
-
-        // clean up filelist
-        let _ = tokio::fs::remove_file(output_folder.join(&filelist_filename)).await;
-    } else {
-        // Use xfade + acrossfade so video and audio share the same overlap timeline
-        let transition_duration = super::TRANSITION_DURATION_SECS;
-        // At this point we know transition is Some and not "none"
-        let transition_type = transition.unwrap_or("fade");
-
-        // Get video durations
-        let mut durations = Vec::new();
-        for video in videos {
-            let metadata = super::extract_video_metadata(video).await?;
-            durations.push(metadata.duration);
-        }
-
-        // Add all input files
-        for video in videos {
-            ffmpeg_process.args([
-                "-i",
-                video
-                    .to_str()
-                    .ok_or_else(|| format!("Invalid video path (non-UTF8): {}", video.display()))?,
-            ]);
-        }
-
-        let filter_complex =
-            build_transition_filter_complex(&durations, transition_type, transition_duration);
-
+    let filelist_path = output_folder.join(&filelist_filename);
+    ffmpeg_process.args([
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        filelist_path.to_str().ok_or_else(|| {
+            format!(
+                "Invalid filelist path (non-UTF8): {}",
+                filelist_path.display()
+            )
+        })?,
+    ]);
+    if should_encode {
         let video_encoder = hwaccel::get_x264_encoder().await;
-
-        if hwaccel::is_vaapi_encoder(video_encoder) {
-            let filter_complex = format!(
-                "{filter_complex};[outv]{}[outv_hw]",
-                hwaccel::vaapi_filter_suffix()
-            );
-            ffmpeg_process.args(["-filter_complex", filter_complex.as_str()]);
-            ffmpeg_process.args(["-map", "[outv_hw]"]);
-        } else {
-            ffmpeg_process.args(["-filter_complex", &filter_complex]);
-            ffmpeg_process.args(["-map", "[outv]"]);
-        }
-        ffmpeg_process.args(["-map", "[outa]"]);
-
-        hwaccel::apply_x264_encoder_only(&mut ffmpeg_process, video_encoder);
-        hwaccel::apply_x264_quality_args(&mut ffmpeg_process, video_encoder);
+        hwaccel::apply_x264_encoder_args(
+            &mut ffmpeg_process,
+            video_encoder,
+            Some(hwaccel::H264_SCALE_PAD_FILTER),
+        );
         ffmpeg_process.args(["-c:a", "aac"]);
-        ffmpeg_process.args(["-progress", "pipe:2"]);
-        ffmpeg_process.args(["-y"]);
-        ffmpeg_process.args([output_path.to_str().ok_or("Invalid output path")?]);
+        hwaccel::apply_x264_quality_args(&mut ffmpeg_process, video_encoder);
+        ffmpeg_process.args(["-threads", "0"]);
+    } else {
+        ffmpeg_process.args(["-c", "copy"]);
+    }
+    ffmpeg_process.args([output_path
+        .to_str()
+        .ok_or_else(|| format!("Invalid output path (non-UTF8): {}", output_path.display()))?]);
+    ffmpeg_process.args(["-progress", "pipe:2"]);
+    ffmpeg_process.args(["-y"]);
 
-        handle_ffmpeg_process(reporter, &mut ffmpeg_process).await?;
+    let result = handle_ffmpeg_process(reporter, &mut ffmpeg_process).await;
+    let _ = tokio::fs::remove_file(output_folder.join(&filelist_filename)).await;
+    result
+}
+
+async fn encode_filter_concat(
+    reporter: Option<&impl ProgressReporterTrait>,
+    videos: &[PathBuf],
+    output_path: &Path,
+    filter_complex: String,
+) -> Result<(), String> {
+    let mut ffmpeg_process = ffmpeg_command();
+    #[cfg(target_os = "windows")]
+    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
+
+    ensure_output_folder(output_path)?;
+
+    for video in videos {
+        ffmpeg_process.args([
+            "-i",
+            video
+                .to_str()
+                .ok_or_else(|| format!("Invalid video path (non-UTF8): {}", video.display()))?,
+        ]);
     }
 
-    Ok(())
+    let video_encoder = hwaccel::get_x264_encoder().await;
+    if hwaccel::is_vaapi_encoder(video_encoder) {
+        let filter_complex = format!(
+            "{filter_complex};[outv]{}[outv_hw]",
+            hwaccel::vaapi_filter_suffix()
+        );
+        ffmpeg_process.args(["-filter_complex", filter_complex.as_str()]);
+        ffmpeg_process.args(["-map", "[outv_hw]"]);
+    } else {
+        ffmpeg_process.args(["-filter_complex", &filter_complex]);
+        ffmpeg_process.args(["-map", "[outv]"]);
+    }
+    ffmpeg_process.args(["-map", "[outa]"]);
+
+    hwaccel::apply_x264_encoder_only(&mut ffmpeg_process, video_encoder);
+    hwaccel::apply_x264_quality_args(&mut ffmpeg_process, video_encoder);
+    ffmpeg_process.args(["-c:a", "aac"]);
+    ffmpeg_process.args(["-progress", "pipe:2"]);
+    ffmpeg_process.args(["-y"]);
+    ffmpeg_process.args([output_path
+        .to_str()
+        .ok_or_else(|| format!("Invalid output path (non-UTF8): {}", output_path.display()))?]);
+
+    handle_ffmpeg_process(reporter, &mut ffmpeg_process).await
+}
+
+/// Concatenate videos with optional transition effects
+pub async fn concat_videos_with_transition(
+    reporter: Option<&impl ProgressReporterTrait>,
+    videos: &[PathBuf],
+    output_path: &Path,
+    transition: Option<&str>,
+) -> Result<(), String> {
+    if videos.is_empty() {
+        return Err("No videos to concatenate".to_string());
+    }
+
+    // Single file: remux/copy, no join to fix
+    if videos.len() == 1 {
+        return concat_videos_with_demuxer(reporter, videos, output_path).await;
+    }
+
+    // No visual transition: still re-encode via concat filter so each clip's
+    // MP4 edit list (AAC pre-roll from `-c copy` trim) is applied per input.
+    // Concat demuxer + `-c copy` would dump those packets at every join.
+    if transition.is_none() || transition == Some("none") {
+        let filter_complex = build_hardcut_concat_filter_complex(videos.len());
+        return encode_filter_concat(reporter, videos, output_path, filter_complex).await;
+    }
+
+    let transition_duration = super::TRANSITION_DURATION_SECS;
+    let transition_type = transition.unwrap_or("fade");
+
+    let mut durations = Vec::new();
+    for video in videos {
+        let metadata = super::extract_video_metadata(video).await?;
+        durations.push(metadata.duration);
+    }
+
+    let filter_complex =
+        build_transition_filter_complex(&durations, transition_type, transition_duration);
+    encode_filter_concat(reporter, videos, output_path, filter_complex).await
 }
 
 #[cfg(test)]
 mod transition_filter_tests {
-    use super::build_transition_filter_complex;
+    use super::{build_hardcut_concat_filter_complex, build_transition_filter_complex};
+
+    #[test]
+    fn hardcut_concat_maps_all_streams_in_order() {
+        assert_eq!(
+            build_hardcut_concat_filter_complex(2),
+            "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[outv][outa]"
+        );
+        assert_eq!(
+            build_hardcut_concat_filter_complex(3),
+            "[0:v][0:a][1:v][1:a][2:v][2:a]concat=n=3:v=1:a=1[outv][outa]"
+        );
+    }
 
     #[test]
     fn two_clips_use_matching_xfade_and_acrossfade() {
@@ -553,6 +613,181 @@ mod concat_videos_tests {
         assert!(
             (audio_duration - video_duration).abs() < 0.3,
             "audio duration {audio_duration} drifted from video {video_duration}"
+        );
+    }
+
+    /// Source matching the clip pipeline: H.264 with a 1s GOP plus AAC, so
+    /// `-c copy` trim writes an MP4 edit list instead of a clean cut.
+    async fn create_gop_tone_video(path: &Path, duration_secs: u32) -> Result<(), String> {
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("Failed to create parent dir: {e}"))?;
+        }
+
+        let mut cmd = tokio::process::Command::new(ffmpeg_path());
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        cmd.args([
+            "-f",
+            "lavfi",
+            "-i",
+            &format!("color=c=blue:s=1280x720:r=30:d={duration_secs}"),
+            "-f",
+            "lavfi",
+            "-i",
+            &format!("sine=frequency=440:sample_rate=44100:duration={duration_secs}"),
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-g",
+            "30",
+            "-keyint_min",
+            "30",
+            "-sc_threshold",
+            "0",
+            "-c:a",
+            "aac",
+            "-ar",
+            "44100",
+            "-ac",
+            "2",
+            "-y",
+            path.to_str().unwrap(),
+        ]);
+
+        let output = cmd
+            .output()
+            .await
+            .map_err(|e| format!("Failed to run ffmpeg: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "FFmpeg failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(())
+    }
+
+    fn audio_packet_durations(path: &Path) -> Vec<f64> {
+        let output = std::process::Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_packets",
+                "-show_entries",
+                "packet=duration_time",
+                "-of",
+                "csv=p=0",
+                path.to_str().unwrap(),
+            ])
+            .output()
+            .expect("ffprobe packets");
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.split(',').next()?.parse::<f64>().ok())
+            .collect()
+    }
+
+    async fn decoded_audio_duration(path: &Path) -> f64 {
+        let pcm_path = path.with_extension("pcm");
+        let mut cmd = tokio::process::Command::new(ffmpeg_path());
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd.args([
+            "-i",
+            path.to_str().unwrap(),
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "44100",
+            "-f",
+            "f32le",
+            "-y",
+            pcm_path.to_str().unwrap(),
+        ]);
+        let output = cmd.output().await.expect("decode pcm");
+        assert!(
+            output.status.success(),
+            "pcm decode failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let bytes = tokio::fs::metadata(&pcm_path)
+            .await
+            .expect("pcm size")
+            .len();
+        let _ = tokio::fs::remove_file(&pcm_path).await;
+        bytes as f64 / 4.0 / 44100.0
+    }
+
+    #[tokio::test]
+    async fn concat_without_transition_does_not_dump_edit_list_audio_at_join() {
+        let temp_dir = std::env::temp_dir().join(format!("bili_test_{}", random_filename().await));
+        tokio::fs::create_dir_all(&temp_dir).await.unwrap();
+
+        let source_path = temp_dir.join("source.mp4");
+        let clip0_path = temp_dir.join("clip0.mp4");
+        let clip1_path = temp_dir.join("clip1.mp4");
+        let output_path = temp_dir.join("out.mp4");
+
+        create_gop_tone_video(&source_path, 12).await.unwrap();
+        crate::ffmpeg::trim_video(
+            None::<&crate::progress::progress_reporter::ProgressReporter>,
+            &source_path,
+            &clip0_path,
+            1.37,
+            3.11,
+        )
+        .await
+        .unwrap();
+        crate::ffmpeg::trim_video(
+            None::<&crate::progress::progress_reporter::ProgressReporter>,
+            &source_path,
+            &clip1_path,
+            6.83,
+            3.07,
+        )
+        .await
+        .unwrap();
+
+        let result = concat_videos_with_transition(
+            None::<&crate::progress::progress_reporter::ProgressReporter>,
+            &[clip0_path, clip1_path],
+            &output_path,
+            None,
+        )
+        .await;
+
+        let video_duration = probe_stream_duration(&output_path, "v:0").await;
+        let audio_duration = probe_stream_duration(&output_path, "a:0").await;
+        let tiny_packets = audio_packet_durations(&output_path)
+            .into_iter()
+            .filter(|d| *d < 0.001)
+            .count();
+        let decoded_duration = decoded_audio_duration(&output_path).await;
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+
+        assert!(
+            result.is_ok(),
+            "hard-cut concat should succeed: {:?}",
+            result
+        );
+        assert_eq!(
+            tiny_packets, 0,
+            "copy-trim edit lists must not produce 1-sample audio packets at the join"
+        );
+        assert!(
+            (audio_duration - video_duration).abs() < 0.15,
+            "audio duration {audio_duration} drifted from video {video_duration}"
+        );
+        assert!(
+            (decoded_duration - audio_duration).abs() < 0.15,
+            "decoded audio {decoded_duration}s must match container {audio_duration}s (edit-list pre-roll was dumped)"
         );
     }
 }

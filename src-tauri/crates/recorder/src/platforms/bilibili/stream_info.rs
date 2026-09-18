@@ -1,8 +1,9 @@
 use super::api::{BiliStream, UrlInfo};
 use crate::core::stream_info::{
-    CdnNode, Codec, Format, PlatformStreamInfo, PlatformType, Quality, StreamVariant,
+    CdnNode, Codec, Format, PlatformStreamInfo, Quality, StreamVariant,
 };
 use crate::errors::RecorderError;
+use crate::platforms::PlatformType;
 
 /// Bilibili 流信息包装器
 /// 包装现有的 BiliStream，实现统一的 PlatformStreamInfo trait
@@ -109,6 +110,30 @@ impl PlatformStreamInfo for BiliStreamInfo {
     }
 
     fn platform(&self) -> PlatformType {
-        PlatformType::Bilibili
+        PlatformType::BiliBili
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn platform_uses_the_shared_platform_type() {
+        let info = BiliStreamInfo::new(
+            BiliStream::new(
+                crate::core::Format::TS,
+                crate::core::Codec::Avc,
+                "/live/stream.m3u8",
+                Vec::new(),
+                false,
+                None,
+            ),
+            Quality::Origin,
+        );
+
+        // 变体名跟随 platforms::PlatformType，对外字符串保持不变
+        assert_eq!(info.platform(), PlatformType::BiliBili);
+        assert_eq!(info.platform().as_str(), "bilibili");
     }
 }

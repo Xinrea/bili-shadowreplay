@@ -5,8 +5,8 @@ pub mod playlist;
 pub mod stream_info;
 
 pub use stream_info::{
-    CdnNode, Codec as StreamCodec, Format as StreamFormat, PlatformStreamInfo, PlatformType,
-    Quality, RecorderType, StreamVariant,
+    CdnNode, Codec as StreamCodec, Format as StreamFormat, PlatformStreamInfo, Quality,
+    RecorderType, StreamVariant,
 };
 
 #[derive(Clone, Debug, PartialEq)]

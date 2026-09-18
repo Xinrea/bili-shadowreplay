@@ -1,5 +1,6 @@
 use crate::core::{Codec as CoreCodec, Format as CoreFormat, HlsStream};
 use crate::errors::RecorderError;
+use crate::platforms::PlatformType;
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -148,28 +149,6 @@ pub enum RecorderType {
     Flv(String),
 }
 
-/// 平台类型
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlatformType {
-    Bilibili,
-    Douyin,
-    Kuaishou,
-    Huya,
-    TikTok,
-}
-
-impl PlatformType {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            PlatformType::Bilibili => "bilibili",
-            PlatformType::Douyin => "douyin",
-            PlatformType::Kuaishou => "kuaishou",
-            PlatformType::Huya => "huya",
-            PlatformType::TikTok => "tiktok",
-        }
-    }
-}
-
 /// 所有平台流信息必须实现的核心 trait
 pub trait PlatformStreamInfo: Clone + Send + Sync + Debug {
     /// 获取主流变体（最高质量）
@@ -184,7 +163,7 @@ pub trait PlatformStreamInfo: Clone + Send + Sync + Debug {
     /// 获取 CDN 节点列表
     fn cdn_nodes(&self) -> Vec<CdnNode>;
 
-    /// 获取平台类型
+    /// 获取平台类型，统一使用 [`PlatformType`]
     fn platform(&self) -> PlatformType;
 
     /// 检查是否过期
@@ -331,15 +310,6 @@ mod tests {
         };
         let rt = sv.to_recorder_type("live_123".to_string(), None).unwrap();
         assert!(matches!(rt, RecorderType::Flv(_)));
-    }
-
-    #[test]
-    fn test_platform_type_as_str() {
-        assert_eq!(PlatformType::Bilibili.as_str(), "bilibili");
-        assert_eq!(PlatformType::Douyin.as_str(), "douyin");
-        assert_eq!(PlatformType::Kuaishou.as_str(), "kuaishou");
-        assert_eq!(PlatformType::Huya.as_str(), "huya");
-        assert_eq!(PlatformType::TikTok.as_str(), "tiktok");
     }
 
     #[test]

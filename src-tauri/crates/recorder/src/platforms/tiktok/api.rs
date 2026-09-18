@@ -1,9 +1,10 @@
 use super::response::{RoomInfo as SigiRoomInfo, SigiStateResponse, StreamUrl as SigiStreamUrl};
 use crate::account::Account;
 use crate::core::stream_info::{
-    CdnNode, Codec, Format, PlatformStreamInfo, PlatformType, Quality, StreamVariant,
+    CdnNode, Codec, Format, PlatformStreamInfo, Quality, StreamVariant,
 };
 use crate::errors::RecorderError;
+use crate::platforms::PlatformType;
 use crate::utils::user_agent_generator;
 use regex::Regex;
 use reqwest::header::HeaderMap;

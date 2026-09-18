@@ -1,0 +1,239 @@
+{
+  "code": 0,
+  "message": "OK",
+  "ttl": 1,
+  "data": {
+    "room_id": 545068,
+    "short_id": 7777,
+    "uid": 8739477,
+    "is_hidden": false,
+    "is_locked": false,
+    "is_portrait": false,
+    "live_status": 1,
+    "hidden_till": 0,
+    "lock_till": 0,
+    "encrypted": false,
+    "pwd_verified": true,
+    "live_time": 1789703918,
+    "room_shield": 0,
+    "all_special_types": [
+      50
+    ],
+    "playurl_info": {
+      "conf_json": "{\"cdn_rate\":10000,\"report_interval_sec\":150}",
+      "playurl": {
+        "cid": 545068,
+        "g_qn_desc": [
+          {
+            "qn": 30000,
+            "desc": "杜比",
+            "hdr_desc": "",
+            "attr_desc": null,
+            "hdr_type": 0,
+            "media_base_desc": null,
+            "eotf": 0
+          },
+          {
+            "qn": 20000,
+            "desc": "4K",
+            "hdr_desc": "",
+            "attr_desc": null,
+            "hdr_type": 0,
+            "media_base_desc": null,
+            "eotf": 0
+          },
+          {
+            "qn": 15000,
+            "desc": "2K",
+            "hdr_desc": "",
+            "attr_desc": null,
+            "hdr_type": 0,
+            "media_base_desc": null,
+            "eotf": 0
+          },
+          {
+            "qn": 10000,
+            "desc": "原画",
+            "hdr_desc": "",
+            "attr_desc": null,
+            "hdr_type": 0,
+            "media_base_desc": {
+              "detail_desc": {
+                "desc": "1080P 原画",
+                "tag": [
+                  "高帧率"
+                ]
+              },
+              "brief_desc": {
+                "desc": "1080P",
+                "badge": "原画"
+              }
+            },
+            "eotf": 0
+          },
+          {
+            "qn": 400,
+            "desc": "蓝光",
+            "hdr_desc": "",
+            "attr_desc": null,
+            "hdr_type": 0,
+            "media_base_desc": {
+              "detail_desc": {
+                "desc": "1080P 蓝光"
+              },
+              "brief_desc": {
+                "desc": "1080P"
+              }
+            },
+            "eotf": 0
+          },
+          {
+            "qn": 250,
+            "desc": "超清",
+            "hdr_desc": "",
+            "attr_desc": null,
+            "hdr_type": 0,
+            "media_base_desc": {
+              "detail_desc": {
+                "desc": "720P 超清"
+              },
+              "brief_desc": {
+                "desc": "720P"
+              }
+            },
+            "eotf": 0
+          },
+          {
+            "qn": 150,
+            "desc": "高清",
+            "hdr_desc": "",
+            "attr_desc": null,
+            "hdr_type": 0,
+            "media_base_desc": null,
+            "eotf": 0
+          },
+          {
+            "qn": 80,
+            "desc": "流畅",
+            "hdr_desc": "",
+            "attr_desc": null,
+            "hdr_type": 0,
+            "media_base_desc": null,
+            "eotf": 0
+          }
+        ],
+        "stream": [
+          {
+            "protocol_name": "http_hls",
+            "format": [
+              {
+                "format_name": "fmp4",
+                "codec": [
+                  {
+                    "codec_name": "avc",
+                    "current_qn": 10000,
+                    "accept_qn": [
+                      10000,
+                      400,
+                      250
+                    ],
+                    "base_url": "/live-bvc/834213/live_57bf9_Snd4bAr_27l4b_bluray/index.m3u8?",
+                    "url_info": [
+                      {
+                        "host": "https://d1--cn-gotcha209.bilivideo.com",
+                        "extra": "expires=1789710850&len=0&oi=3030305131&pt=h5&qn=10000&trid=10070225b5ad08e60dd42d083675cb6aacc3&bmt=2&sigparams=cdn,expires,len,oi,pt,qn,trid,bmt&cdn=cn-gotcha209&sign=7c4e53fd1d5e782946cd046d5793de7d&site=0d8b1759b7c7ab4a9222a0092cd2f75c&free_type=0&mid=475210&sche=ban&bvchls=1&trace=16&isp=ct&rg=East&pv=Shanghai&suffix=bluray&hdr_type=0&hot_cdn=909773&p2p_type=-1&origin_bitrate=2602&strategy_types=1&sk=b48cd6ac619a3170e774970e9737b8a3f7ce7c435362f7344758d8f3b48bc08d&flvsk=2487e85526f35520ed475cba8f2c70c9133444a97c6691cfc42c8ad80f8c4219&pp=rtmp&codec=0&deploy_env=prod&strategy_ids=24&info_source=hot_cache&sl=7&score=100&source=puv3_onetier&media_type=0&vd=bc&src=puv3&order=1",
+                        "stream_ttl": 0
+                      },
+                      {
+                        "host": "https://d1--cn-gotcha209b.bilivideo.com",
+                        "extra": "expires=1789710850&len=0&oi=3030305131&pt=h5&qn=10000&trid=10070225b5ad08e60dd42d083675cb6aacc3&bmt=2&sigparams=cdn,expires,len,oi,pt,qn,trid,bmt&cdn=cn-gotcha209&sign=7c4e53fd1d5e782946cd046d5793de7d&site=0d8b1759b7c7ab4a9222a0092cd2f75c&free_type=0&mid=475210&sche=ban&bvchls=1&trace=16&isp=ct&rg=East&pv=Shanghai&suffix=bluray&hdr_type=0&hot_cdn=909773&p2p_type=-1&origin_bitrate=2602&strategy_types=1&sk=b48cd6ac619a3170e774970e9737b8a3f7ce7c435362f7344758d8f3b48bc08d&flvsk=2487e85526f35520ed475cba8f2c70c9133444a97c6691cfc42c8ad80f8c4219&pp=rtmp&codec=0&deploy_env=prod&strategy_ids=24&info_source=hot_cache&sl=7&score=100&source=puv3_onetier&media_type=0&vd=bc&src=puv3&order=2",
+                        "stream_ttl": 0
+                      }
+                    ],
+                    "hdr_qn": null,
+                    "dolby_type": 0,
+                    "attr_name": "",
+                    "hdr_type": 0,
+                    "drm": false,
+                    "drm_key_systems": null,
+                    "video_codecs": {
+                      "base": "avc1.640032",
+                      "ext": [
+                        ""
+                      ]
+                    },
+                    "audio_codecs": {
+                      "base": "mp4a.40.2",
+                      "ext": [
+                        ""
+                      ]
+                    },
+                    "session": "live_57bf9_Snd4bAr_27l4b",
+                    "is_pushing": true,
+                    "stream_resource_req": null,
+                    "video_color_info": {
+                      "colorspace": "bt709",
+                      "metadata_types": [
+                        "none"
+                      ]
+                    },
+                    "media_info": {
+                      "height": 1080,
+                      "width": 1920,
+                      "realtime_avg_bw": 394447
+                    }
+                  }
+                ],
+                "master_url": "https://api.live.bilibili.com/xlive/play-gateway/master/url?cid=545068&mid=475210&pt=h5&p2p_type=-1&net=0&free_type=0&build=0&feature=0&qn=10000&drm_type=0&cam_id=0"
+              }
+            ]
+          }
+        ],
+        "p2p_data": {
+          "p2p": false,
+          "p2p_type": -1,
+          "m_p2p": false,
+          "m_servers": null
+        },
+        "dolby_qn": null,
+        "hot": true,
+        "hdr_metadata_degrade_desc": [
+          {
+            "type": "smpte_st2086",
+            "display_badge": "HDR"
+          },
+          {
+            "type": "t_uwa_005_1",
+            "display_badge": "HDR Vivid"
+          },
+          {
+            "type": "smpte_st2094_10",
+            "display_badge": "杜比视界"
+          },
+          {
+            "type": "smpte_st2094_40",
+            "display_badge": "HDR10+"
+          },
+          {
+            "type": "none",
+            "display_badge": "HDR"
+          }
+        ]
+      },
+      "expected_quality": {
+        "qn": 10000,
+        "hdr_type": 0,
+        "eotf": 0
+      },
+      "qn_desc_more_ab": 1
+    },
+    "official_type": 0,
+    "official_room_id": 0,
+    "risk_with_delay": 0,
+    "multi_screen_info": "",
+    "pure_control_function": null,
+    "degraded_playurl": null,
+    "subtitle_cfg": null,
+    "relay_room_id": 0
+  }
+}

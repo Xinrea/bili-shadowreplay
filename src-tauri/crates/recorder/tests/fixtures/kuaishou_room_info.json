@@ -1,0 +1,14 @@
+{
+  "result": 1,
+  "data": {
+    "liveStream": {},
+    "author": {},
+    "isLiving": false,
+    "errorType": {
+      "type": 22,
+      "title": "错误代码22",
+      "content": "浏览其他内容",
+      "url": "/"
+    }
+  }
+}

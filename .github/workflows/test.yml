@@ -1,0 +1,47 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Run tests
+        working-directory: src-tauri
+        run: |
+          # Run all workspace tests except whisper-cpp-rs (requires CMake and whisper.cpp submodule)
+          cargo test --workspace --lib --exclude whisper-cpp-rs
+        env:
+          RUST_BACKTRACE: 1
+          PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig
+
+      - name: Run recorder integration tests
+        working-directory: src-tauri
+        run: |
+          cargo test --package recorder --tests
+        env:
+          RUST_BACKTRACE: 1
+          PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig

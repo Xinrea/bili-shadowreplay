@@ -84,66 +84,6 @@ pub struct RelatedPlaylist {
     pub path: PathBuf,
 }
 
-pub enum RecorderType {
-    BiliBili(BiliRecorder),
-    Douyin(DouyinRecorder),
-    Huya(HuyaRecorder),
-    Kuaishou(KuaishouRecorder),
-    TikTok(TikTokRecorder),
-}
-
-impl RecorderType {
-    async fn run(&self) {
-        match self {
-            RecorderType::BiliBili(recorder) => recorder.run().await,
-            RecorderType::Douyin(recorder) => recorder.run().await,
-            RecorderType::Huya(recorder) => recorder.run().await,
-            RecorderType::Kuaishou(recorder) => recorder.run().await,
-            RecorderType::TikTok(recorder) => recorder.run().await,
-        }
-    }
-
-    async fn stop(&self) {
-        match self {
-            RecorderType::BiliBili(recorder) => recorder.stop().await,
-            RecorderType::Douyin(recorder) => recorder.stop().await,
-            RecorderType::Huya(recorder) => recorder.stop().await,
-            RecorderType::Kuaishou(recorder) => recorder.stop().await,
-            RecorderType::TikTok(recorder) => recorder.stop().await,
-        }
-    }
-
-    async fn info(&self) -> RecorderInfo {
-        match self {
-            RecorderType::BiliBili(recorder) => recorder.info().await,
-            RecorderType::Douyin(recorder) => recorder.info().await,
-            RecorderType::Huya(recorder) => recorder.info().await,
-            RecorderType::Kuaishou(recorder) => recorder.info().await,
-            RecorderType::TikTok(recorder) => recorder.info().await,
-        }
-    }
-
-    async fn enable(&self) {
-        match self {
-            RecorderType::BiliBili(recorder) => recorder.enable().await,
-            RecorderType::Douyin(recorder) => recorder.enable().await,
-            RecorderType::Huya(recorder) => recorder.enable().await,
-            RecorderType::Kuaishou(recorder) => recorder.enable().await,
-            RecorderType::TikTok(recorder) => recorder.enable().await,
-        }
-    }
-
-    async fn disable(&self) {
-        match self {
-            RecorderType::BiliBili(recorder) => recorder.disable().await,
-            RecorderType::Douyin(recorder) => recorder.disable().await,
-            RecorderType::Huya(recorder) => recorder.disable().await,
-            RecorderType::Kuaishou(recorder) => recorder.disable().await,
-            RecorderType::TikTok(recorder) => recorder.disable().await,
-        }
-    }
-}
-
 #[derive(Clone)]
 pub struct RecorderManager {
     #[cfg(not(feature = "headless"))]
@@ -153,7 +93,7 @@ pub struct RecorderManager {
     config: Arc<RwLock<Config>>,
     task_manager: Arc<TaskManager>,
     resource_dir: PathBuf,
-    recorders: Arc<RwLock<HashMap<String, RecorderType>>>,
+    recorders: Arc<RwLock<HashMap<String, Box<dyn RecorderTrait + Send + Sync>>>>,
     to_remove: Arc<RwLock<HashSet<String>>>,
     event_tx: broadcast::Sender<RecorderEvent>,
     is_migrating: Arc<AtomicBool>,
@@ -662,8 +602,8 @@ impl RecorderManager {
 
         let event_tx = self.get_event_sender();
         let update_interval = self.config.read().await.update_interval.clone();
-        let recorder: RecorderType = match platform {
-            PlatformType::BiliBili => RecorderType::BiliBili(
+        let recorder: Box<dyn RecorderTrait + Send + Sync> = match platform {
+            PlatformType::BiliBili => Box::new(
                 BiliRecorder::new(
                     room_id,
                     account,
@@ -675,7 +615,7 @@ impl RecorderManager {
                 )
                 .await?,
             ),
-            PlatformType::Douyin => RecorderType::Douyin(
+            PlatformType::Douyin => Box::new(
                 DouyinRecorder::new(
                     room_id,
                     extra,
@@ -687,7 +627,7 @@ impl RecorderManager {
                 )
                 .await?,
             ),
-            PlatformType::Huya => RecorderType::Huya(
+            PlatformType::Huya => Box::new(
                 HuyaRecorder::new(
                     room_id,
                     account,
@@ -698,7 +638,7 @@ impl RecorderManager {
                 )
                 .await?,
             ),
-            PlatformType::Kuaishou => RecorderType::Kuaishou(
+            PlatformType::Kuaishou => Box::new(
                 KuaishouRecorder::new(
                     room_id,
                     account,
@@ -709,7 +649,7 @@ impl RecorderManager {
                 )
                 .await?,
             ),
-            PlatformType::TikTok => RecorderType::TikTok(
+            PlatformType::TikTok => Box::new(
                 TikTokRecorder::new(
                     room_id,
                     account,

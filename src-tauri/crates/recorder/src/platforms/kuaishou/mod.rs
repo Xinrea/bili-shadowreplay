@@ -350,7 +350,7 @@ impl KuaishouRecorder {
 }
 
 #[async_trait]
-impl RecorderTrait<KuaishouExtra> for KuaishouRecorder {
+impl RecorderTrait for KuaishouRecorder {
     async fn run(&self) {
         let self_clone = self.clone();
         *self.record_task.lock().await = Some(tokio::spawn(async move {

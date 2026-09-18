@@ -99,7 +99,7 @@ where
     extra: T,
 }
 
-impl<T: Send + Sync> traits::RecorderBasicTrait<T> for Recorder<T> {
+impl<T: Send + Sync> traits::RecorderBasicTrait for Recorder<T> {
     fn platform(&self) -> PlatformType {
         self.platform
     }
@@ -170,10 +170,6 @@ impl<T: Send + Sync> traits::RecorderBasicTrait<T> for Recorder<T> {
 
     fn last_sequence(&self) -> &atomic::AtomicU64 {
         &self.last_sequence
-    }
-
-    fn extra(&self) -> &T {
-        &self.extra
     }
 }
 

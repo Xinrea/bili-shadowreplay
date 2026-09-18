@@ -93,7 +93,7 @@ pub struct RecorderManager {
     config: Arc<RwLock<Config>>,
     task_manager: Arc<TaskManager>,
     resource_dir: PathBuf,
-    recorders: Arc<RwLock<HashMap<String, Box<dyn RecorderTrait + Send + Sync>>>>,
+    recorders: Arc<RwLock<HashMap<String, Arc<dyn RecorderTrait + Send + Sync>>>>,
     to_remove: Arc<RwLock<HashSet<String>>>,
     event_tx: broadcast::Sender<RecorderEvent>,
     is_migrating: Arc<AtomicBool>,
@@ -602,7 +602,7 @@ impl RecorderManager {
 
         let event_tx = self.get_event_sender();
         let update_interval = self.config.read().await.update_interval.clone();
-        let recorder: Box<dyn RecorderTrait + Send + Sync> = match platform {
+        let recorder_boxed: Box<dyn RecorderTrait + Send + Sync> = match platform {
             PlatformType::BiliBili => Box::new(
                 BiliRecorder::new(
                     room_id,
@@ -666,23 +666,31 @@ impl RecorderManager {
                 })
             }
         };
+        let recorder: Arc<dyn RecorderTrait + Send + Sync> = Arc::from(recorder_boxed);
         self.recorders
             .write()
             .await
-            .insert(recorder_id.clone(), recorder);
-        if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
-            recorder_ref.run().await;
+            .insert(recorder_id.clone(), recorder.clone());
+        // Run without holding the map's read lock: run() awaits internal locks.
+        recorder.run().await;
+        // A concurrent remove_recorder/stop_all may have removed the recorder
+        // while run() was starting its tasks; stop it so the tasks don't
+        // outlive the removal.
+        if !self.recorders.read().await.contains_key(&recorder_id) {
+            recorder.stop().await;
         }
         Ok(())
     }
 
     pub async fn stop_all(&self) {
-        for recorder_ref in self.recorders.read().await.values() {
-            recorder_ref.stop().await;
+        // Deliberately hold the write lock across shutdown: it serializes
+        // against add_recorder so a recorder inserted mid-shutdown can't be
+        // dropped by clear() without being stopped.
+        let mut recorders = self.recorders.write().await;
+        for recorder in recorders.values().cloned().collect::<Vec<_>>() {
+            recorder.stop().await;
         }
-
-        // remove all recorders
-        self.recorders.write().await.clear();
+        recorders.clear();
     }
 
     /// Remove a recorder from the manager
@@ -711,7 +719,9 @@ impl RecorderManager {
 
         // stop recorder
         log::debug!("Stop recorder: {recorder_id}");
-        if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
+        // Stop without holding the map's read lock: stop() awaits task shutdown.
+        let recorder_ref = self.recorders.read().await.get(&recorder_id).cloned();
+        if let Some(recorder_ref) = recorder_ref {
             recorder_ref.stop().await;
         }
 
@@ -1146,8 +1156,10 @@ impl RecorderManager {
 
         // initialized recorder set
         let mut recorder_set = HashSet::new();
-        for recorder_ref in self.recorders.read().await.iter() {
-            let recorder_info = recorder_ref.1.info().await;
+        // Clone the Arcs out of the map so info().await doesn't hold the read lock.
+        let recorders: Vec<_> = self.recorders.read().await.values().cloned().collect();
+        for recorder in recorders {
+            let recorder_info = recorder.info().await;
             summary.recorders.push(recorder_info.clone());
             recorder_set.insert(recorder_info.room_info.room_id);
         }
@@ -1197,9 +1209,9 @@ impl RecorderManager {
         room_id: &str,
     ) -> Option<RecorderInfo> {
         let recorder_id = format!("{}:{}", platform.as_str(), room_id);
-        if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
-            let room_info = recorder_ref.info().await;
-            Some(room_info)
+        let recorder = self.recorders.read().await.get(&recorder_id).cloned();
+        if let Some(recorder) = recorder {
+            Some(recorder.info().await)
         } else {
             None
         }
@@ -1525,11 +1537,12 @@ impl RecorderManager {
         }
 
         let recorder_id = format!("{}:{}", platform.as_str(), room_id);
-        if let Some(recorder_ref) = self.recorders.read().await.get(&recorder_id) {
+        let recorder = self.recorders.read().await.get(&recorder_id).cloned();
+        if let Some(recorder) = recorder {
             if enabled {
-                recorder_ref.enable().await;
+                recorder.enable().await;
             } else {
-                recorder_ref.disable().await;
+                recorder.disable().await;
             }
         }
     }

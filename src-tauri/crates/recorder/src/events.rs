@@ -54,7 +54,10 @@ impl RecorderEvent {
         }
     }
 
-    pub fn danmu_received_from_event(room: String, event: &danmu_stream::LiveEvent) -> Option<Self> {
+    pub fn danmu_received_from_event(
+        room: String,
+        event: &danmu_stream::LiveEvent,
+    ) -> Option<Self> {
         if event.event_type != "danmu" {
             return None;
         }

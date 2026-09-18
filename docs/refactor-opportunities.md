@@ -1,7 +1,7 @@
 # bili-shadowreplay 架构分析与重构机会报告
 
-**分析日期**: 2026-09-18  
-**分析范围**: 完整代码库 (110 个 Rust 文件, 58 个前端文件)  
+**分析日期**: 2026-09-18
+**分析范围**: 完整代码库 (110 个 Rust 文件, 58 个前端文件)
 **目标**: 识别具体的重构机会,按影响力和风险排序
 
 ---
@@ -40,7 +40,7 @@
 │       └── whisper-cpp-rs/      # Whisper.cpp FFI 封装
 ```
 
-**支持的平台**: 
+**支持的平台**:
 - **已实现**: Bilibili (最完整), Douyin, Huya, Kuaishou, TikTok
 - **桩代码**: Youtube, Xiaohongshu, Weibo (在 `PlatformType` 枚举中但未实现)
 
@@ -59,7 +59,7 @@ graph LR
     I --> J[RecorderEvent]
     J --> K[handle_events]
     K --> L[数据库记录 + Webhook + 自动任务]
-    
+
     M[clip_range 命令] --> N[TaskManager]
     N --> O[ffmpeg 切片]
     O --> P[可选: danmu2ass + 弹幕压制]
@@ -293,7 +293,7 @@ $ find . -name "*test*.rs" -o -name "tests/" | wc -l
 
 #### R5. FFmpeg 模块重复消除
 
-**位置**: 
+**位置**:
 - `src-tauri/src/ffmpeg/` (应用级, 2018 行)
 - `src-tauri/crates/recorder/src/ffmpeg/` (录制器级, ~150 行)
 
@@ -371,7 +371,7 @@ import { invoke } from '$lib/invoker';
 
 function createRecordersStore() {
   const { subscribe, set, update } = writable([]);
-  
+
   return {
     subscribe,
     load: async () => {
@@ -511,7 +511,7 @@ export const recorders = createRecordersStore();
 3. R4 - main.rs 拆分 (2 天)
    └─ 提高可维护性
 ```
-**总投入**: 9 天  
+**总投入**: 9 天
 **收益**: ⭐⭐⭐⭐ (测试覆盖 + 架构清晰度)
 
 ### 方案 B: 高影响路线
@@ -522,7 +522,7 @@ export const recorders = createRecordersStore();
 3. R2 - RecorderManager 枚举消除 (3 天)
    └─ 与 R1 结合收益最大
 ```
-**总投入**: 12 天  
+**总投入**: 12 天
 **收益**: ⭐⭐⭐⭐⭐ (消除最大重复源,简化未来开发)
 
 ### 方案 C: 快速胜利路线 (如果时间有限)
@@ -531,7 +531,7 @@ export const recorders = createRecordersStore();
 2. R6 - PlatformType 重复消除 (1 天)
 3. R5 - FFmpeg 模块合并 (1 天)
 ```
-**总投入**: 4 天  
+**总投入**: 4 天
 **收益**: ⭐⭐⭐ (可见的代码清理,无功能风险)
 
 ---

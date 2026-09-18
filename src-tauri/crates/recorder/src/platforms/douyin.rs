@@ -27,6 +27,11 @@ pub struct DouyinExtra {
     sec_user_id: String,
     live_stream: Arc<RwLock<Option<DouyinStream>>>,
     /// Room info of the latest poll, bridging `poll_room` to `poll_stream`.
+    ///
+    /// Per-poll state, not session state: every successful `poll_room`
+    /// overwrites it and `poll_stream` is its only consumer, so it is
+    /// deliberately kept out of `clear_stream` — clearing it there would wipe
+    /// the just-polled stream on the poll that first sees the live.
     pending: Arc<RwLock<Option<api::DouyinBasicRoomInfo>>>,
 }
 
@@ -164,8 +169,9 @@ impl PlatformApi for DouyinRecorder {
     }
 
     async fn clear_stream(&self) {
+        // `pending` carries the fresh poll into `poll_stream` and must survive
+        // the live-transition reset.
         *self.extra.live_stream.write().await = None;
-        *self.extra.pending.write().await = None;
     }
 
     fn danmu_config(&self) -> Option<DanmuConfig> {
@@ -192,5 +198,45 @@ impl PlatformApi for DouyinRecorder {
 impl RecorderTrait for DouyinRecorder {
     async fn run(&self) {
         self.run_recording_loop().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicU64;
+
+    #[tokio::test]
+    async fn clear_stream_keeps_the_fresh_polls_bridge() {
+        let (tx, _rx) = broadcast::channel(1);
+        let recorder = DouyinRecorder::new(
+            "room",
+            "sec-user-id",
+            &Account::default(),
+            std::env::temp_dir().join(format!("bsr-douyin-{}", uuid::Uuid::new_v4())),
+            tx,
+            Arc::new(AtomicU64::new(30)),
+            true,
+        )
+        .unwrap();
+        *recorder.extra.pending.write().await = Some(api::DouyinBasicRoomInfo {
+            room_id_str: "123".to_string(),
+            room_title: "title".to_string(),
+            cover: None,
+            status: 0,
+            hls_url: "https://example.com/index.m3u8".to_string(),
+            stream_data: "{}".to_string(),
+            user_name: "anchor".to_string(),
+            user_avatar: String::new(),
+            sec_user_id: "sec-user-id".to_string(),
+        });
+
+        // The live-transition reset runs between `poll_room` and
+        // `poll_stream`: it must clear the session stream but keep the fresh
+        // poll's bridge, or the first recording attempt finds no stream.
+        recorder.clear_stream().await;
+
+        assert!(recorder.extra.pending.read().await.is_some());
+        assert!(recorder.extra.live_stream.read().await.is_none());
     }
 }

@@ -24,6 +24,11 @@ pub type HuyaRecorder = Recorder<HuyaExtra>;
 pub struct HuyaExtra {
     live_stream: Arc<RwLock<Option<StreamInfo>>>,
     /// Stream info of the latest poll, bridging `poll_room` to `poll_stream`.
+    ///
+    /// Per-poll state, not session state: every successful `poll_room`
+    /// overwrites it and `poll_stream` is its only consumer, so it is
+    /// deliberately kept out of `clear_stream` — clearing it there would wipe
+    /// the just-polled stream on the poll that first sees the live.
     pending: Arc<RwLock<Option<StreamInfo>>>,
 }
 
@@ -91,8 +96,9 @@ impl PlatformApi for HuyaRecorder {
     }
 
     async fn clear_stream(&self) {
+        // `pending` carries the fresh poll into `poll_stream` and must survive
+        // the live-transition reset.
         *self.extra.live_stream.write().await = None;
-        *self.extra.pending.write().await = None;
     }
 }
 
@@ -100,5 +106,36 @@ impl PlatformApi for HuyaRecorder {
 impl RecorderTrait for HuyaRecorder {
     async fn run(&self) {
         self.run_recording_loop().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicU64;
+
+    #[tokio::test]
+    async fn clear_stream_keeps_the_fresh_polls_bridge() {
+        let (tx, _rx) = broadcast::channel(1);
+        let recorder = HuyaRecorder::new(
+            "room",
+            &Account::default(),
+            std::env::temp_dir().join(format!("bsr-huya-{}", uuid::Uuid::new_v4())),
+            tx,
+            Arc::new(AtomicU64::new(30)),
+            true,
+        )
+        .unwrap();
+        *recorder.extra.pending.write().await = Some(StreamInfo {
+            hls_url: "https://example.com/live.m3u8".to_string(),
+        });
+
+        // The live-transition reset runs between `poll_room` and
+        // `poll_stream`: it must clear the session stream but keep the fresh
+        // poll's bridge, or the first recording attempt finds no stream.
+        recorder.clear_stream().await;
+
+        assert!(recorder.extra.pending.read().await.is_some());
+        assert!(recorder.extra.live_stream.read().await.is_none());
     }
 }

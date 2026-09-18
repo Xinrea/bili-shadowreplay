@@ -107,9 +107,13 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
     /// Clear the cached stream (per-platform `extra` state).
     async fn clear_stream(&self);
 
-    /// Prepare the cover image in `work_dir`; an error aborts the attempt.
+    /// Prepare the cover image in `work_dir`.
     ///
-    /// Default: best-effort download of the current room cover.
+    /// Returning an error aborts the recording attempt, which only makes
+    /// sense when the cover is required; the default is deliberately
+    /// best-effort — download the current room cover and swallow failures —
+    /// so overrides that treat the cover as mandatory return their errors
+    /// themselves.
     async fn prepare_cover(&self, work_dir: &CachePath) -> Result<(), RecorderError> {
         let room_info = self.room_info().read().await.clone();
         let cover_path = work_dir.with_filename("cover.jpg");
@@ -458,9 +462,15 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                             }
                         }
 
-                        let _ = recorder.event_channel().send(RecorderEvent::RecordEnd {
-                            recorder: recorder.info().await,
-                        });
+                        // Close the session only when it actually started:
+                        // `live_id` is set right before `RecordStart` and
+                        // cleared again by `reset_recording`, so a failed
+                        // setup emits no `RecordEnd` without its `RecordStart`.
+                        if !recorder.live_id().read().await.is_empty() {
+                            let _ = recorder.event_channel().send(RecorderEvent::RecordEnd {
+                                recorder: recorder.info().await,
+                            });
+                        }
                     }
 
                     recorder.reset_recording().await;

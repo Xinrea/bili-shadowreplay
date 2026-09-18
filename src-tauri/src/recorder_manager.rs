@@ -673,17 +673,24 @@ impl RecorderManager {
             .insert(recorder_id.clone(), recorder.clone());
         // Run without holding the map's read lock: run() awaits internal locks.
         recorder.run().await;
+        // A concurrent remove_recorder/stop_all may have removed the recorder
+        // while run() was starting its tasks; stop it so the tasks don't
+        // outlive the removal.
+        if !self.recorders.read().await.contains_key(&recorder_id) {
+            recorder.stop().await;
+        }
         Ok(())
     }
 
     pub async fn stop_all(&self) {
-        // Stop without holding the map's read lock: stop() awaits task shutdown.
-        for recorder in self.recorders.read().await.values().cloned().collect::<Vec<_>>() {
+        // Deliberately hold the write lock across shutdown: it serializes
+        // against add_recorder so a recorder inserted mid-shutdown can't be
+        // dropped by clear() without being stopped.
+        let mut recorders = self.recorders.write().await;
+        for recorder in recorders.values().cloned().collect::<Vec<_>>() {
             recorder.stop().await;
         }
-
-        // remove all recorders
-        self.recorders.write().await.clear();
+        recorders.clear();
     }
 
     /// Remove a recorder from the manager

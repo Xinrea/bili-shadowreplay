@@ -12,7 +12,9 @@ async fn test_m3u8_parsing_from_real_bilibili_playlist() {
     let temp_path = std::env::temp_dir().join(format!("test-{}.m3u8", uuid::Uuid::new_v4()));
     tokio::fs::write(&temp_path, &m3u8_content).await.unwrap();
 
-    let playlist = HlsPlaylist::new(temp_path.clone()).await.expect("parse real m3u8");
+    let playlist = HlsPlaylist::new(temp_path.clone())
+        .await
+        .expect("parse real m3u8");
     assert!(
         !playlist.playlist.segments.is_empty(),
         "real Bilibili playlist should contain segments"
@@ -40,8 +42,7 @@ async fn test_m3u8_parsing_from_real_bilibili_playlist() {
 
 #[tokio::test]
 async fn test_playlist_empty() {
-    let temp_path =
-        std::env::temp_dir().join(format!("test-empty-{}.m3u8", uuid::Uuid::new_v4()));
+    let temp_path = std::env::temp_dir().join(format!("test-empty-{}.m3u8", uuid::Uuid::new_v4()));
 
     let playlist = HlsPlaylist::new(temp_path.clone()).await.unwrap();
     assert!(playlist.is_empty().await);

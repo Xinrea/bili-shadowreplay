@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# .agents/prepare — runs in every new managed checkout before the agent starts.
+# (Delta skips this for adopted checkouts, i.e. when the thread works directly
+# in the user's own project folder.)
+#
+# Delta imports only git-tracked files into a managed checkout, so submodule
+# content, target/, and .env never come over. This script reconstructs what
+# cargo builds need:
+#
+#   1. git submodule content (whisper.cpp — without it the whisper-cpp-rs
+#      cmake build script fails immediately)
+#   2. machine-local cargo environment via an untracked .cargo/config.toml:
+#      - RUSTY_V8_ARCHIVE pointing at the primary checkout's source-built
+#        librusty_v8.a (the v8 crate's build script downloads a prebuilt
+#        archive from GitHub releases, which is unreachable from some
+#        networks, and public mirrors lag behind new v8 versions)
+#      - SDKROOT pinned to the healthy SDK inside Xcode.app, working around
+#        a stale/broken Command Line Tools SDK that breaks all linking
+#   3. a quick `cargo fetch` so later builds don't stall on the registry
+#
+# Design rules:
+# - Best effort: non-critical steps warn and continue; the script exits
+#   non-zero only when the checkout is left unbuildable (a submodule is
+#   still missing after both the local and the network path).
+# - Machine-specific state goes into untracked files only; nothing here is
+#   meant to be committed per-machine.
+# - `[env]` entries do not override variables the user exported themselves,
+#   so a correct manual environment always wins over this file.
+
+set -u
+
+cd "$(dirname "$0")/.." || exit 1
+
+log()  { printf '[prepare] %s\n' "$*"; }
+warn() { printf '[prepare] WARN: %s\n' "$*" >&2; }
+
+# --- Locate the user's primary checkout via the `local` remote ---------------
+# Managed checkouts always have a `local` remote pointing at the primary
+# checkout's .git. Where that is unavailable (cloud runners, teammates'
+# machines), every use below degrades gracefully to the network path.
+LOCAL_URL=$(git remote get-url local 2>/dev/null || true)
+MAIN_ROOT="${LOCAL_URL%/.git}"
+if [ -z "$MAIN_ROOT" ] || [ ! -d "$MAIN_ROOT" ]; then
+  MAIN_ROOT=""
+  warn "no usable 'local' remote; machine-local optimizations disabled"
+fi
+
+# --- 1. Submodules -----------------------------------------------------------
+# Prefer cloning from the primary checkout's submodule (offline, instant,
+# and the pinned commit is guaranteed to be there); fall back to the network.
+SUBMODULES=$(git config -f .gitmodules --get-regexp '^submodule\..*\.path$' 2>/dev/null | awk '{print $2}')
+
+for SUB in $SUBMODULES; do
+  PINNED=$(git ls-tree HEAD "$SUB" | awk '{print $3}')
+  if [ "$(git -C "$SUB" rev-parse HEAD 2>/dev/null)" = "$PINNED" ]; then
+    continue # already initialized at the pinned commit
+  fi
+
+  if [ -n "$MAIN_ROOT" ] && \
+     [ "$(git -C "$MAIN_ROOT/$SUB" rev-parse HEAD 2>/dev/null)" = "$PINNED" ]; then
+    log "cloning $SUB from primary checkout"
+    git -c protocol.file.allow=always \
+        -c "submodule.$SUB.url=$MAIN_ROOT/$SUB" \
+        submodule update --init "$SUB"
+    # Restore the canonical URL so future `git submodule update` uses
+    # .gitmodules, not the machine-local path used above.
+    CANONICAL=$(git config -f .gitmodules "submodule.$SUB.url" 2>/dev/null || true)
+    [ -n "$CANONICAL" ] && git config "submodule.$SUB.url" "$CANONICAL"
+  fi
+
+  if [ "$(git -C "$SUB" rev-parse HEAD 2>/dev/null)" != "$PINNED" ]; then
+    log "cloning $SUB from network"
+    git submodule update --init "$SUB"
+  fi
+done
+
+MISSING=""
+for SUB in $SUBMODULES; do
+  PINNED=$(git ls-tree HEAD "$SUB" | awk '{print $3}')
+  [ "$(git -C "$SUB" rev-parse HEAD 2>/dev/null)" = "$PINNED" ] || MISSING="$MISSING $SUB"
+done
+if [ -n "$MISSING" ]; then
+  warn "submodule(s) still missing:$MISSING — cargo builds will fail."
+  warn "fix manually with: git submodule update --init"
+  exit 1
+fi
+
+# --- 2. Machine-local cargo environment --------------------------------------
+ENV_BODY=""
+
+# 2a. Reuse the primary checkout's source-built rusty_v8 archive.
+V8_ARCHIVE="$MAIN_ROOT/src-tauri/target/debug/gn_out/obj/librusty_v8.a"
+if [ -n "$MAIN_ROOT" ] && [ -f "$V8_ARCHIVE" ]; then
+  ENV_BODY="${ENV_BODY}RUSTY_V8_ARCHIVE = '${V8_ARCHIVE}'"$'\n'
+else
+  warn "no prebuilt rusty_v8 archive found; the first v8 build will try downloading from GitHub releases"
+fi
+
+# 2b. macOS: pin SDKROOT to the Xcode.app SDK (version-agnostic symlink),
+# bypassing a potentially broken Command Line Tools SDK.
+if [ "$(uname)" = "Darwin" ]; then
+  XCODE_SDK="$(xcode-select -p 2>/dev/null)/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+  if [ -d "$XCODE_SDK" ]; then
+    ENV_BODY="${ENV_BODY}SDKROOT = '${XCODE_SDK}'"$'\n'
+  fi
+fi
+
+if [ -n "$ENV_BODY" ]; then
+  if git ls-files --error-unmatch .cargo/config.toml >/dev/null 2>&1 || \
+     git ls-files --error-unmatch .cargo/config >/dev/null 2>&1; then
+    warn ".cargo/config(.toml) is git-tracked; not overwriting. Add these entries manually:"
+    printf '%s' "$ENV_BODY" | sed 's/^/[prepare]   /' >&2
+  else
+    mkdir -p .cargo
+    printf '[env]\n%s' "$ENV_BODY" > .cargo/config.toml
+    log "wrote .cargo/config.toml (untracked, machine-local):"
+    printf '%s' "$ENV_BODY" | sed 's/^/[prepare]   /'
+  fi
+fi
+
+# --- 3. Warm the registry cache (fast when the network is up) ----------------
+cargo fetch --manifest-path src-tauri/Cargo.toml >/dev/null 2>&1 \
+  || warn "cargo fetch failed; the first build may stall on downloads"
+
+log "done"

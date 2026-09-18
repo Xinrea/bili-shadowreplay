@@ -132,6 +132,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    #[ignore = "live Huya network smoke test; run manually with --ignored"]
     async fn test_get_user_info() {
         let client = Client::new();
         let account = Account {

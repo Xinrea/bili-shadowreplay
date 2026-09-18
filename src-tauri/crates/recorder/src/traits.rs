@@ -22,9 +22,9 @@ pub trait RecorderBasicTrait {
     fn client(&self) -> &reqwest::Client;
     fn event_channel(&self) -> &broadcast::Sender<RecorderEvent>;
     fn cache_dir(&self) -> PathBuf;
-    fn quit(&self) -> &atomic::AtomicBool;
-    fn enabled(&self) -> &atomic::AtomicBool;
-    fn is_recording(&self) -> &atomic::AtomicBool;
+    fn quit(&self) -> Arc<atomic::AtomicBool>;
+    fn enabled(&self) -> Arc<atomic::AtomicBool>;
+    fn is_recording(&self) -> Arc<atomic::AtomicBool>;
     fn room_info(&self) -> Arc<RwLock<RoomInfo>>;
     fn user_info(&self) -> Arc<RwLock<UserInfo>>;
     fn platform_live_id(&self) -> Arc<RwLock<String>>;
@@ -34,6 +34,12 @@ pub trait RecorderBasicTrait {
     fn danmu_storage(&self) -> Arc<RwLock<Option<DanmuStorage>>>;
     fn last_update(&self) -> &atomic::AtomicI64;
     fn last_sequence(&self) -> &atomic::AtomicU64;
+    fn update_interval(&self) -> Arc<atomic::AtomicU64>;
+    /// The live id of the previous recording attempt, kept for resuming the
+    /// same recording after a stream expiry.
+    fn pre_live_id(&self) -> Arc<RwLock<Option<String>>>;
+    /// Whether the next recording attempt should reuse `pre_live_id`.
+    fn should_continue(&self) -> &atomic::AtomicBool;
 }
 
 #[async_trait]

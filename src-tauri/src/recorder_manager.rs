@@ -603,63 +603,48 @@ impl RecorderManager {
         let event_tx = self.get_event_sender();
         let update_interval = self.config.read().await.update_interval.clone();
         let recorder_boxed: Box<dyn RecorderTrait + Send + Sync> = match platform {
-            PlatformType::BiliBili => Box::new(
-                BiliRecorder::new(
-                    room_id,
-                    account,
-                    cache_dir,
-                    event_tx,
-                    update_interval,
-                    enabled,
-                    self.db.clone(),
-                )
-                .await?,
-            ),
-            PlatformType::Douyin => Box::new(
-                DouyinRecorder::new(
-                    room_id,
-                    extra,
-                    account,
-                    cache_dir,
-                    event_tx,
-                    update_interval,
-                    enabled,
-                )
-                .await?,
-            ),
-            PlatformType::Huya => Box::new(
-                HuyaRecorder::new(
-                    room_id,
-                    account,
-                    cache_dir,
-                    event_tx,
-                    update_interval,
-                    enabled,
-                )
-                .await?,
-            ),
-            PlatformType::Kuaishou => Box::new(
-                KuaishouRecorder::new(
-                    room_id,
-                    account,
-                    cache_dir,
-                    event_tx,
-                    update_interval,
-                    enabled,
-                )
-                .await?,
-            ),
-            PlatformType::TikTok => Box::new(
-                TikTokRecorder::new(
-                    room_id,
-                    account,
-                    cache_dir,
-                    event_tx,
-                    update_interval,
-                    enabled,
-                )
-                .await?,
-            ),
+            PlatformType::BiliBili => Box::new(BiliRecorder::new(
+                room_id,
+                account,
+                cache_dir,
+                event_tx,
+                update_interval,
+                enabled,
+                self.db.clone(),
+            )?),
+            PlatformType::Douyin => Box::new(DouyinRecorder::new(
+                room_id,
+                extra,
+                account,
+                cache_dir,
+                event_tx,
+                update_interval,
+                enabled,
+            )?),
+            PlatformType::Huya => Box::new(HuyaRecorder::new(
+                room_id,
+                account,
+                cache_dir,
+                event_tx,
+                update_interval,
+                enabled,
+            )?),
+            PlatformType::Kuaishou => Box::new(KuaishouRecorder::new(
+                room_id,
+                account,
+                cache_dir,
+                event_tx,
+                update_interval,
+                enabled,
+            )?),
+            PlatformType::TikTok => Box::new(TikTokRecorder::new(
+                room_id,
+                account,
+                cache_dir,
+                event_tx,
+                update_interval,
+                enabled,
+            )?),
             _ => {
                 return Err(RecorderManagerError::InvalidPlatformType {
                     platform: platform.as_str().to_string(),

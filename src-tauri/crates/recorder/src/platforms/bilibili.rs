@@ -2,354 +2,192 @@ pub mod api;
 pub mod profile;
 pub mod response;
 pub mod stream_info;
-use crate::account::Account;
-use crate::core::hls_recorder::HlsRecorder;
-use crate::errors::RecorderError;
-use crate::events::RecorderEvent;
-use crate::platforms::bilibili::api::UserInfoCache;
-use crate::platforms::bilibili::api::{Protocol, Qn};
-use crate::platforms::PlatformType;
-use crate::traits::RecorderTrait;
-use crate::{Recorder, RoomInfo, UserInfo};
 
-use crate::core::Format;
-use crate::core::{Codec, HlsStream};
-use crate::danmu::DanmuStorage;
-use crate::platforms::bilibili::api::BiliStream;
-use chrono::Utc;
-use danmu_stream::danmu_stream::DanmuStream;
-use danmu_stream::provider::ProviderType;
-use danmu_stream::{DanmuMessageType, LiveEvent};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::{atomic, Arc};
-use std::time::Duration;
-use tokio::sync::{broadcast, Mutex, RwLock};
 
 use async_trait::async_trait;
+use chrono::Utc;
+use danmu_stream::provider::ProviderType;
+use tokio::sync::{broadcast, RwLock};
+
+use crate::account::Account;
+use crate::core::{Codec, Format, HlsStream};
+use crate::errors::RecorderError;
+use crate::platforms::bilibili::api::{BiliStream, Protocol, Qn, UserInfoCache};
+use crate::platforms::common::{
+    download_file, DanmuConfig, DanmuSpawn, PlatformApi, RoomPoll, StreamPull,
+};
+use crate::platforms::PlatformType;
+use crate::traits::RecorderTrait;
+use crate::{Recorder, UserInfo};
 
 /// A recorder for `BiliBili` live streams
 ///
 /// This recorder fetches, caches and serves TS entries, currently supporting only `StreamType::FMP4`.
 /// As high-quality streams are accessible only to logged-in users, the use of a `BiliClient`, which manages cookies, is required.
+pub type BiliRecorder = Recorder<BiliExtra>;
+
 #[derive(Clone)]
 pub struct BiliExtra {
-    cover: Arc<RwLock<Option<String>>>,
     live_stream: Arc<RwLock<Option<BiliStream>>>,
-    pre_live_id: Arc<RwLock<Option<String>>>,
-    should_continue: Arc<AtomicBool>,
     user_info_cache: Arc<dyn UserInfoCache>,
 }
 
-pub type BiliRecorder = Recorder<BiliExtra>;
-
 impl BiliRecorder {
-    pub async fn new(
+    pub fn new(
         room_id: &str,
         account: &Account,
         cache_dir: PathBuf,
-        event_channel: broadcast::Sender<RecorderEvent>,
-        update_interval: Arc<atomic::AtomicU64>,
+        event_channel: broadcast::Sender<crate::events::RecorderEvent>,
+        update_interval: Arc<AtomicU64>,
         enabled: bool,
         user_info_cache: Arc<dyn UserInfoCache>,
-    ) -> Result<Self, crate::errors::RecorderError> {
-        let client = reqwest::Client::new();
-        let extra = BiliExtra {
-            cover: Arc::new(RwLock::new(None)),
-            live_stream: Arc::new(RwLock::new(None)),
-            pre_live_id: Arc::new(RwLock::new(None)),
-            should_continue: Arc::new(AtomicBool::new(false)),
-            user_info_cache,
-        };
-
-        let recorder = Self {
-            platform: PlatformType::BiliBili,
-            room_id: room_id.to_string(),
-            account: account.clone(),
-            client,
-            event_channel,
+    ) -> Result<Self, RecorderError> {
+        let recorder = Self::with_extra(
+            PlatformType::BiliBili,
+            room_id,
+            account,
             cache_dir,
-            quit: Arc::new(atomic::AtomicBool::new(false)),
-            enabled: Arc::new(atomic::AtomicBool::new(enabled)),
+            event_channel,
             update_interval,
-            is_recording: Arc::new(atomic::AtomicBool::new(false)),
-            room_info: Arc::new(RwLock::new(RoomInfo::default())),
-            user_info: Arc::new(RwLock::new(UserInfo::default())),
-            platform_live_id: Arc::new(RwLock::new(String::new())),
-            live_id: Arc::new(RwLock::new(String::new())),
-            danmu_storage: Arc::new(RwLock::new(None)),
-            last_update: Arc::new(atomic::AtomicI64::new(Utc::now().timestamp())),
-            last_sequence: Arc::new(atomic::AtomicU64::new(0)),
-            danmu_task: Arc::new(Mutex::new(None)),
-            record_task: Arc::new(Mutex::new(None)),
-            extra,
-        };
+            enabled,
+            BiliExtra {
+                live_stream: Arc::new(RwLock::new(None)),
+                user_info_cache,
+            },
+        );
 
-        log::info!("[{}]Recorder for room {} created.", room_id, room_id);
+        log::info!("[{room_id}]Recorder for room {room_id} created.");
 
         Ok(recorder)
-    }
-
-    fn log_info(&self, message: &str) {
-        log::info!("[{}]{}", self.room_id, message);
     }
 
     fn log_error(&self, message: &str) {
         log::error!("[{}]{}", self.room_id, message);
     }
+}
 
-    // A recording attempt can end while the same live session is still running.
-    async fn reset_recording(&self) {
-        self.is_recording.store(false, Ordering::Relaxed);
+#[async_trait]
+impl PlatformApi for BiliRecorder {
+    async fn poll_room(&self) -> Result<RoomPoll, RecorderError> {
+        let room_info = api::get_room_info(&self.client, &self.account, &self.room_id).await?;
+        let live_status = room_info.live_status == 1;
+
+        // Only update user info once
+        let user = if self.user_info.read().await.user_id != room_info.user_id {
+            match api::get_user_info_cached(
+                &self.client,
+                &self.account,
+                &room_info.user_id,
+                self.extra.user_info_cache.as_ref(),
+            )
+            .await
+            {
+                Ok(user_info) => Some(UserInfo {
+                    user_id: room_info.user_id.to_string(),
+                    user_name: user_info.user_name,
+                    user_avatar: user_info.user_avatar,
+                }),
+                Err(e) => {
+                    self.log_error(&format!("Failed to get user info: {e}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        Ok(RoomPoll {
+            live: live_status,
+            room_title: room_info.room_title,
+            room_cover: room_info.room_cover_url,
+            user,
+            platform_live_id: live_status.then(|| room_info.live_start_time.to_string()),
+        })
+    }
+
+    async fn on_live_start(&self) {
+        // Cache the room cover, the recording attempt copies it per session.
+        let room_cover_path = Path::new(PlatformType::BiliBili.as_str())
+            .join(&self.room_id)
+            .join("cover.jpg");
+        let full_room_cover_path = self.cache_dir.join(&room_cover_path);
+        let room_cover_url = self.room_info.read().await.room_cover.clone();
+        let _ = download_file(&self.client, &room_cover_url, &full_room_cover_path).await;
+    }
+
+    async fn poll_stream(&self) -> bool {
+        let new_stream = api::get_stream_info(
+            &self.client,
+            &self.account,
+            &self.room_id,
+            Protocol::HttpHls,
+            Format::TS,
+            &[Codec::Avc, Codec::Hevc],
+            Qn::Q25000,
+        )
+        .await;
+
+        match new_stream {
+            Ok(stream) => {
+                let pre_live_stream = self.extra.live_stream.read().await.clone();
+                *self.extra.live_stream.write().await = Some(stream.clone());
+                self.last_update
+                    .store(Utc::now().timestamp(), atomic::Ordering::Relaxed);
+
+                log::info!(
+                    "[{}]Update to a new stream: {:#?} => {:#?}",
+                    self.room_id,
+                    pre_live_stream,
+                    stream
+                );
+
+                true
+            }
+            Err(e) => {
+                if let RecorderError::FormatNotFound { format } = e {
+                    log::error!("[{}]Format {} not found", self.room_id, format);
+                } else {
+                    log::error!("[{}]Fetch stream failed: {}", self.room_id, e);
+                }
+
+                // Keep recording with the cached stream until it expires.
+                true
+            }
+        }
+    }
+
+    async fn open_pull(&self, live_id: &str) -> Result<StreamPull, RecorderError> {
+        let Some(current_stream) = self.extra.live_stream.read().await.clone() else {
+            return Err(RecorderError::NoStreamAvailable);
+        };
+        let Some(first_url_info) = current_stream.url_info.first() else {
+            return Err(RecorderError::NoStreamAvailable);
+        };
+
+        let stream = Arc::new(HlsStream::new(
+            live_id.to_string(),
+            first_url_info.host.clone(),
+            current_stream.base_url.clone(),
+            first_url_info.extra.clone(),
+            current_stream.format,
+            current_stream.codec,
+            first_url_info.get_expire(),
+        ));
+
+        Ok(StreamPull::Hls {
+            stream,
+            cookies: None,
+        })
+    }
+
+    async fn clear_stream(&self) {
         *self.extra.live_stream.write().await = None;
-        self.last_update
-            .store(Utc::now().timestamp(), atomic::Ordering::Relaxed);
-        *self.danmu_storage.write().await = None;
-        *self.live_id.write().await = String::new();
     }
 
-    async fn reset_live(&self) {
-        self.reset_recording().await;
-        self.platform_live_id.write().await.clear();
-        *self.extra.pre_live_id.write().await = None;
-        self.extra.should_continue.store(false, Ordering::Relaxed);
-    }
-
-    async fn end_live(&self) {
-        // The event owns a snapshot, so the session can be cleared after sending it.
-        let _ = self.event_channel.send(RecorderEvent::LiveEnd {
-            platform: PlatformType::BiliBili,
-            room_id: self.room_id.to_string(),
-            recorder: self.info().await,
-        });
-        self.reset_live().await;
-    }
-
-    async fn check_status(&self) -> bool {
-        let pre_live_status = self.room_info.read().await.status;
-        match api::get_room_info(&self.client, &self.account, &self.room_id).await {
-            Ok(room_info) => {
-                *self.room_info.write().await = RoomInfo {
-                    platform: "bilibili".to_string(),
-                    room_id: self.room_id.to_string(),
-                    room_title: room_info.room_title,
-                    room_cover: room_info.room_cover_url.clone(),
-                    status: room_info.live_status == 1,
-                };
-                // Only update user info once
-                if self.user_info.read().await.user_id != room_info.user_id {
-                    let user_id = room_info.user_id;
-                    let user_info = api::get_user_info_cached(
-                        &self.client,
-                        &self.account,
-                        &user_id,
-                        self.extra.user_info_cache.as_ref(),
-                    )
-                    .await;
-                    match user_info {
-                        Ok(user_info) => {
-                            *self.user_info.write().await = UserInfo {
-                                user_id: user_id.to_string(),
-                                user_name: user_info.user_name,
-                                user_avatar: user_info.user_avatar,
-                            }
-                        }
-                        Err(e) => {
-                            self.log_error(&format!("Failed to get user info: {e}"));
-                        }
-                    }
-                }
-                let live_status = room_info.live_status == 1;
-
-                if live_status {
-                    if !pre_live_status {
-                        self.reset_live().await;
-                    }
-                    *self.platform_live_id.write().await = room_info.live_start_time.to_string();
-                }
-
-                // handle live notification
-                if pre_live_status != live_status {
-                    self.log_info(&format!(
-                        "Live status changed to {}, enabled: {}",
-                        live_status,
-                        self.enabled.load(atomic::Ordering::Relaxed)
-                    ));
-
-                    if live_status {
-                        // Get cover image
-                        let room_cover_path = Path::new(PlatformType::BiliBili.as_str())
-                            .join(&self.room_id)
-                            .join("cover.jpg");
-                        let full_room_cover_path = self.cache_dir.join(&room_cover_path);
-                        if (api::download_file(
-                            &self.client,
-                            &room_info.room_cover_url,
-                            &full_room_cover_path,
-                        )
-                        .await)
-                            .is_ok()
-                        {
-                            *self.extra.cover.write().await =
-                                Some(room_cover_path.to_string_lossy().into_owned());
-                        }
-                        let _ = self.event_channel.send(RecorderEvent::LiveStart {
-                            recorder: self.info().await,
-                        });
-                    } else {
-                        self.end_live().await;
-                    }
-                }
-
-                if !live_status {
-                    return false;
-                }
-
-                // no need to check stream if should not record
-                if !self.should_record().await {
-                    return true;
-                }
-
-                // current_record => update stream
-                // auto_start+is_new_stream => update stream and current_record=true
-                let new_stream = api::get_stream_info(
-                    &self.client,
-                    &self.account,
-                    &self.room_id,
-                    Protocol::HttpHls,
-                    Format::TS,
-                    &[Codec::Avc, Codec::Hevc],
-                    Qn::Q25000,
-                )
-                .await;
-
-                match new_stream {
-                    Ok(stream) => {
-                        let pre_live_stream = self.extra.live_stream.read().await.clone();
-                        *self.extra.live_stream.write().await = Some(stream.clone());
-                        self.last_update
-                            .store(Utc::now().timestamp(), atomic::Ordering::Relaxed);
-
-                        log::info!(
-                            "[{}]Update to a new stream: {:#?} => {:#?}",
-                            self.room_id,
-                            pre_live_stream,
-                            stream
-                        );
-
-                        true
-                    }
-                    Err(e) => {
-                        if let crate::errors::RecorderError::FormatNotFound { format } = e {
-                            log::error!("[{}]Format {} not found", self.room_id, format);
-
-                            true
-                        } else {
-                            log::error!("[{}]Fetch stream failed: {}", self.room_id, e);
-
-                            true
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                log::error!("[{}]Update room status failed: {}", self.room_id, e);
-                // may encounter internet issues, not sure whether the stream is closed or started, just remain
-                pre_live_status
-            }
-        }
-    }
-
-    async fn danmu(&self) -> Result<(), crate::errors::RecorderError> {
-        let cookies = self.account.cookies.clone();
-        let room_id = self.room_id.clone();
-        let danmu_stream = match DanmuStream::new(ProviderType::BiliBili, &cookies, &room_id).await
-        {
-            Ok(danmu_stream) => danmu_stream,
-            Err(e) => {
-                log::error!("[{}]Failed to create danmu stream: {}", self.room_id, e);
-                return Err(crate::errors::RecorderError::DanmuStreamError(e));
-            }
-        };
-
-        let mut start_fut = Box::pin(danmu_stream.start());
-
-        loop {
-            tokio::select! {
-                start_res = &mut start_fut => {
-                    match start_res {
-                        Ok(_) => {
-                            log::info!("[{}]Danmu stream finished", self.room_id);
-                            return Ok(());
-                        }
-                        Err(err) => {
-                            log::error!("[{}]Danmu stream start error: {}", self.room_id, err);
-                            return Err(crate::errors::RecorderError::DanmuStreamError(err));
-                        }
-                    }
-                }
-                recv_res = danmu_stream.recv() => {
-                    match recv_res {
-                        Ok(Some(msg)) => {
-                            match msg {
-                                DanmuMessageType::Event(event) => {
-                                    if let Some(received) = RecorderEvent::danmu_received_from_event(
-                                        self.room_id.clone(),
-                                        &event,
-                                    ) {
-                                        let _ = self.event_channel.send(received);
-                                    }
-                                    if let Some(storage) = self.danmu_storage.write().await.as_ref() {
-                                        if let Err(error) = storage.add_event(event).await {
-                                            log::error!("Failed to persist live event: {error}");
-                                        }
-                                    }
-                                }
-                                DanmuMessageType::DanmuMessage(danmu) => {
-                                    let event = LiveEvent::danmu(danmu, "bilibili");
-                                    if let Some(received) = RecorderEvent::danmu_received_from_event(
-                                        self.room_id.clone(),
-                                        &event,
-                                    ) {
-                                        let _ = self.event_channel.send(received);
-                                    }
-                                    if let Some(storage) = self.danmu_storage.write().await.as_ref() {
-                                        if let Err(error) = storage.add_event(event).await {
-                                            log::error!("Failed to persist danmu event: {error}");
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Ok(None) => {
-                            log::info!("[{}]Danmu stream closed", self.room_id);
-                            return Ok(());
-                        }
-                        Err(err) => {
-                            log::error!("[{}]Failed to receive danmu message: {}", self.room_id, err);
-                            return Err(crate::errors::RecorderError::DanmuStreamError(err));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Update entries for a new live
-    async fn update_entries(&self, live_id: &str) -> Result<(), crate::errors::RecorderError> {
-        let current_stream = self.extra.live_stream.read().await.clone();
-        let Some(current_stream) = current_stream else {
-            return Err(crate::errors::RecorderError::NoStreamAvailable);
-        };
-
-        let work_dir = self.work_dir(live_id).await;
-        log::info!("[{}]New record started: {}", self.room_id, live_id);
-
-        let _ = tokio::fs::create_dir_all(&work_dir.full_path()).await;
-
-        let danmu_path = work_dir.with_filename("events.jsonl");
-        *self.danmu_storage.write().await = DanmuStorage::new(&danmu_path.full_path()).await;
-
+    async fn prepare_cover(&self, work_dir: &crate::CachePath) -> Result<(), RecorderError> {
         let cover_path = work_dir.with_filename("cover.jpg");
         let room_cover_path = self
             .cache_dir
@@ -359,150 +197,32 @@ impl BiliRecorder {
 
         tokio::fs::copy(room_cover_path, &cover_path.full_path())
             .await
-            .map_err(crate::errors::RecorderError::IoError)?;
-
-        *self.live_id.write().await = live_id.to_string();
-
-        // send record start event
-        let _ = self.event_channel.send(RecorderEvent::RecordStart {
-            recorder: self.info().await,
-        });
-
-        self.is_recording.store(true, atomic::Ordering::Relaxed);
-
-        let Some(first_url_info) = current_stream.url_info.first() else {
-            return Err(crate::errors::RecorderError::NoStreamAvailable);
-        };
-        let expire = first_url_info.get_expire();
-
-        let stream = Arc::new(HlsStream::new(
-            live_id.to_string(),
-            first_url_info.host.clone(),
-            current_stream.base_url.clone(),
-            first_url_info.extra.clone(),
-            current_stream.format,
-            current_stream.codec,
-            expire,
-        ));
-
-        let hls_recorder = HlsRecorder::new(
-            self.room_id.to_string(),
-            stream,
-            self.client.clone(),
-            None,
-            self.event_channel.clone(),
-            work_dir.full_path(),
-            self.enabled.clone(),
-        )
-        .await;
-        let hls_recorder = match hls_recorder {
-            Ok(hls_recorder) => hls_recorder,
-            Err(e) => {
-                log::error!("[{}]Hls recorder creation error: {}", self.room_id, e);
-                return Err(e);
-            }
-        };
-        if let Err(e) = hls_recorder.start().await {
-            log::error!("[{}]Hls recorder quit with error: {}", self.room_id, e);
-            return Err(e);
-        }
+            .map_err(RecorderError::IoError)?;
 
         Ok(())
+    }
+
+    fn danmu_config(&self) -> Option<DanmuConfig> {
+        Some(DanmuConfig {
+            provider: ProviderType::BiliBili,
+            spawn: DanmuSpawn::LongLived,
+        })
     }
 }
 
 #[async_trait]
-impl crate::traits::RecorderTrait for BiliRecorder {
+impl RecorderTrait for BiliRecorder {
     async fn run(&self) {
-        let self_clone = self.clone();
-        let danmu_task = tokio::spawn(async move {
-            let _ = self_clone.danmu().await;
-        });
-        *self.danmu_task.lock().await = Some(danmu_task);
-
-        let self_clone = self.clone();
-        *self.record_task.lock().await = Some(tokio::spawn(async move {
-            log::info!("[{}]Start running recorder", self_clone.room_id);
-            while !self_clone.quit.load(atomic::Ordering::Relaxed) {
-                if self_clone.check_status().await {
-                    // Live status is ok, start recording.
-                    if self_clone.should_record().await {
-                        // if should continue with previous recording, using the same live id
-                        let previous_live_id = self_clone.extra.pre_live_id.read().await.clone();
-                        let live_id = match (
-                            self_clone.extra.should_continue.load(Ordering::Relaxed),
-                            previous_live_id,
-                        ) {
-                            (true, Some(previous_live_id)) => {
-                                self_clone
-                                    .extra
-                                    .should_continue
-                                    .store(false, Ordering::Relaxed);
-                                previous_live_id
-                            }
-                            _ => {
-                                let live_id = Utc::now().timestamp_millis().to_string();
-                                self_clone
-                                    .extra
-                                    .pre_live_id
-                                    .write()
-                                    .await
-                                    .replace(live_id.clone());
-                                live_id
-                            }
-                        };
-
-                        if let Err(e) = self_clone.update_entries(&live_id).await {
-                            match e {
-                                RecorderError::StreamExpired { expire } => {
-                                    self_clone
-                                        .extra
-                                        .should_continue
-                                        .store(true, Ordering::Relaxed);
-                                    log::warn!(
-                                        "[{}]Stream expired at {}",
-                                        self_clone.room_id,
-                                        expire
-                                    );
-                                }
-                                _ => {
-                                    log::error!(
-                                        "[{}]Update entries error: {}",
-                                        self_clone.room_id,
-                                        e
-                                    );
-                                }
-                            }
-                        }
-
-                        let _ = self_clone.event_channel.send(RecorderEvent::RecordEnd {
-                            recorder: self_clone.info().await,
-                        });
-                    }
-
-                    self_clone.reset_recording().await;
-                    // if should continue with previous recording, no need to sleep
-                    if self_clone.extra.should_continue.load(Ordering::Relaxed) {
-                        continue;
-                    }
-                    // go check status again after random 2-5 secs
-                    let secs = rand::random::<u64>() % 4 + 2;
-                    tokio::time::sleep(Duration::from_secs(secs)).await;
-                    continue;
-                }
-
-                tokio::time::sleep(Duration::from_secs(
-                    self_clone.update_interval.load(atomic::Ordering::Relaxed),
-                ))
-                .await;
-            }
-        }));
+        self.run_recording_loop().await;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::danmu::DanmuStorage;
+    use crate::events::RecorderEvent;
+    use std::sync::atomic::Ordering;
 
     struct UnusedUserInfoCache;
 
@@ -524,19 +244,15 @@ mod tests {
             &Account::default(),
             std::env::temp_dir().join(format!("bsr-lifecycle-{}", uuid::Uuid::new_v4())),
             tx,
-            Arc::new(atomic::AtomicU64::new(30)),
+            Arc::new(AtomicU64::new(30)),
             true,
             Arc::new(UnusedUserInfoCache),
         )
-        .await
         .unwrap();
         *recorder.platform_live_id.write().await = "session-1".into();
         *recorder.live_id.write().await = "segment-1".into();
-        *recorder.extra.pre_live_id.write().await = Some("segment-1".into());
-        recorder
-            .extra
-            .should_continue
-            .store(true, Ordering::Relaxed);
+        *recorder.pre_live_id.write().await = Some("segment-1".into());
+        recorder.should_continue.store(true, Ordering::Relaxed);
         recorder.is_recording.store(true, Ordering::Relaxed);
         *recorder.extra.live_stream.write().await = Some(BiliStream::new(
             Format::TS,
@@ -568,10 +284,10 @@ mod tests {
         assert!(recorder.extra.live_stream.read().await.is_none());
         assert!(recorder.danmu_storage.read().await.is_none());
         assert_eq!(
-            recorder.extra.pre_live_id.read().await.as_deref(),
+            recorder.pre_live_id.read().await.as_deref(),
             Some("segment-1")
         );
-        assert!(recorder.extra.should_continue.load(Ordering::Relaxed));
+        assert!(recorder.should_continue.load(Ordering::Relaxed));
         tokio::fs::remove_dir_all(&recorder.cache_dir)
             .await
             .unwrap();
@@ -584,7 +300,7 @@ mod tests {
 
         // A failed restart must not expose the previous segment as the current recording.
         assert!(matches!(
-            recorder.update_entries("failed-segment").await,
+            recorder.start_recording("failed-segment").await,
             Err(RecorderError::NoStreamAvailable)
         ));
         assert!(recorder.info().await.live_id.is_empty());
@@ -601,8 +317,8 @@ mod tests {
         assert!(ended.live_id.is_empty());
         assert!(!ended.recording);
         assert!(recorder.info().await.platform_live_id.is_empty());
-        assert!(recorder.extra.pre_live_id.read().await.is_none());
-        assert!(!recorder.extra.should_continue.load(Ordering::Relaxed));
+        assert!(recorder.pre_live_id.read().await.is_none());
+        assert!(!recorder.should_continue.load(Ordering::Relaxed));
     }
 
     #[test]

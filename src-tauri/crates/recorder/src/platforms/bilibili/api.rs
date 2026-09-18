@@ -808,21 +808,6 @@ pub fn parse_stream_info_response(
     })
 }
 
-/// Download file from url to path
-pub async fn download_file(client: &Client, url: &str, path: &Path) -> Result<(), RecorderError> {
-    if let Some(parent) = path.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent)?;
-        }
-    }
-    let response = client.get(url).send().await?;
-    let bytes = response.bytes().await?;
-    let mut file = tokio::fs::File::create(&path).await?;
-    let mut content = std::io::Cursor::new(bytes);
-    tokio::io::copy(&mut content, &mut file).await?;
-    Ok(())
-}
-
 // Method from js code
 pub async fn get_sign(client: &Client, mut parameters: Value) -> Result<String, RecorderError> {
     let table = vec![

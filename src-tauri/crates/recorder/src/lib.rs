@@ -12,6 +12,7 @@ use crate::danmu::DanmuStorage;
 use crate::events::RecorderEvent;
 use crate::{account::Account, platforms::PlatformType};
 
+use chrono::Utc;
 use std::{
     fmt::Display,
     path::PathBuf,
@@ -94,9 +95,55 @@ where
     last_update: Arc<atomic::AtomicI64>,
     /// The last sequence of the current recording
     last_sequence: Arc<atomic::AtomicU64>,
+    /// The live id of the previous recording attempt, kept so a stream expiry
+    /// can resume the same recording
+    pre_live_id: Arc<RwLock<Option<String>>>,
+    /// Whether the next recording attempt should reuse `pre_live_id`
+    should_continue: Arc<atomic::AtomicBool>,
 
     /// The extra information for the recorder
     extra: T,
+}
+
+impl<T: Send + Sync> Recorder<T> {
+    /// Create a recorder from the state shared by every platform, plus the
+    /// platform-specific `extra` state.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn with_extra(
+        platform: PlatformType,
+        room_id: &str,
+        account: &Account,
+        cache_dir: PathBuf,
+        event_channel: broadcast::Sender<RecorderEvent>,
+        update_interval: Arc<atomic::AtomicU64>,
+        enabled: bool,
+        extra: T,
+    ) -> Self {
+        Self {
+            platform,
+            room_id: room_id.to_string(),
+            account: account.clone(),
+            client: reqwest::Client::new(),
+            event_channel,
+            cache_dir,
+            quit: Arc::new(atomic::AtomicBool::new(false)),
+            enabled: Arc::new(atomic::AtomicBool::new(enabled)),
+            is_recording: Arc::new(atomic::AtomicBool::new(false)),
+            room_info: Arc::new(RwLock::new(RoomInfo::default())),
+            user_info: Arc::new(RwLock::new(UserInfo::default())),
+            platform_live_id: Arc::new(RwLock::new(String::new())),
+            live_id: Arc::new(RwLock::new(String::new())),
+            danmu_storage: Arc::new(RwLock::new(None)),
+            last_update: Arc::new(atomic::AtomicI64::new(Utc::now().timestamp())),
+            last_sequence: Arc::new(atomic::AtomicU64::new(0)),
+            danmu_task: Arc::new(Mutex::new(None)),
+            record_task: Arc::new(Mutex::new(None)),
+            pre_live_id: Arc::new(RwLock::new(None)),
+            should_continue: Arc::new(atomic::AtomicBool::new(false)),
+            update_interval,
+            extra,
+        }
+    }
 }
 
 impl<T: Send + Sync> traits::RecorderBasicTrait for Recorder<T> {
@@ -124,16 +171,16 @@ impl<T: Send + Sync> traits::RecorderBasicTrait for Recorder<T> {
         self.cache_dir.clone()
     }
 
-    fn quit(&self) -> &atomic::AtomicBool {
-        &self.quit
+    fn quit(&self) -> Arc<atomic::AtomicBool> {
+        self.quit.clone()
     }
 
-    fn enabled(&self) -> &atomic::AtomicBool {
-        &self.enabled
+    fn enabled(&self) -> Arc<atomic::AtomicBool> {
+        self.enabled.clone()
     }
 
-    fn is_recording(&self) -> &atomic::AtomicBool {
-        &self.is_recording
+    fn is_recording(&self) -> Arc<atomic::AtomicBool> {
+        self.is_recording.clone()
     }
 
     fn room_info(&self) -> Arc<RwLock<RoomInfo>> {
@@ -170,6 +217,18 @@ impl<T: Send + Sync> traits::RecorderBasicTrait for Recorder<T> {
 
     fn last_sequence(&self) -> &atomic::AtomicU64 {
         &self.last_sequence
+    }
+
+    fn update_interval(&self) -> Arc<atomic::AtomicU64> {
+        self.update_interval.clone()
+    }
+
+    fn pre_live_id(&self) -> Arc<RwLock<Option<String>>> {
+        self.pre_live_id.clone()
+    }
+
+    fn should_continue(&self) -> &atomic::AtomicBool {
+        &self.should_continue
     }
 }
 

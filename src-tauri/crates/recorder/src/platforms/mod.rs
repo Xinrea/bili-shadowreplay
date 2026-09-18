@@ -1,4 +1,5 @@
 pub mod bilibili;
+pub mod common;
 pub mod douyin;
 pub mod huya;
 pub mod kuaishou;

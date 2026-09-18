@@ -9,7 +9,6 @@ use super::errors::HuyaClientError;
 use reqwest::Client;
 use scraper::Html;
 use scraper::Selector;
-use std::path::Path;
 
 fn generate_user_agent_header() -> reqwest::header::HeaderMap {
     let user_agent = user_agent_generator::UserAgentGenerator::new().generate(true);
@@ -96,21 +95,6 @@ pub async fn get_room_info(
         super::extractor::LiveStreamExtractor::extract_infos(&raw_content)?;
 
     Ok((user_info, room_info, stream_info))
-}
-
-/// Download file from url to path
-pub async fn download_file(client: &Client, url: &str, path: &Path) -> Result<(), HuyaClientError> {
-    if let Some(parent) = path.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent)?;
-        }
-    }
-    let response = client.get(url).send().await?;
-    let bytes = response.bytes().await?;
-    let mut file = tokio::fs::File::create(&path).await?;
-    let mut content = std::io::Cursor::new(bytes);
-    tokio::io::copy(&mut content, &mut file).await?;
-    Ok(())
 }
 
 pub async fn get_index_content(client: &Client, url: &str) -> Result<String, HuyaClientError> {

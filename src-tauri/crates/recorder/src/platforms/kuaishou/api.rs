@@ -1213,29 +1213,6 @@ pub async fn get_qr_status(
     Ok(QrStatus { code: 0, cookies })
 }
 
-/// Download file from URL to local path
-pub async fn download_file(
-    client: &Client,
-    url: &str,
-    path: &std::path::Path,
-) -> Result<(), RecorderError> {
-    if url.is_empty() {
-        return Ok(());
-    }
-
-    if let Some(parent) = path.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent).map_err(RecorderError::IoError)?;
-        }
-    }
-
-    let response = client.get(url).send().await?;
-    let bytes = response.bytes().await?;
-    let mut file = tokio::fs::File::create(&path).await?;
-    tokio::io::AsyncWriteExt::write_all(&mut file, &bytes).await?;
-    Ok(())
-}
-
 // 实现 PlatformStreamInfo trait
 impl PlatformStreamInfo for StreamInfo {
     fn primary_variant(&self) -> Result<StreamVariant, RecorderError> {

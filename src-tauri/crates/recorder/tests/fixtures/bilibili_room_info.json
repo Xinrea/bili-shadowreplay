@@ -1,0 +1,17 @@
+{
+  "code": 0,
+  "message": "0",
+  "data": {
+    "uid": 123456,
+    "room_id": 167537,
+    "short_id": 0,
+    "title": "测试直播间",
+    "cover": "https://example.com/cover.jpg",
+    "live_status": 1,
+    "live_start_time": 1637500000,
+    "area_id": 6,
+    "area_name": "LOL",
+    "parent_area_id": 1,
+    "parent_area_name": "网游"
+  }
+}

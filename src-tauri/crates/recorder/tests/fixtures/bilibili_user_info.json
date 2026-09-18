@@ -1,0 +1,9 @@
+{
+  "code": 0,
+  "message": "0",
+  "data": {
+    "mid": 123456,
+    "name": "测试主播",
+    "face": "https://example.com/avatar.jpg"
+  }
+}

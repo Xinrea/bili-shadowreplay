@@ -1,0 +1,33 @@
+{
+  "code": 0,
+  "message": "0",
+  "data": {
+    "playurl_info": {
+      "playurl": {
+        "stream": [
+          {
+            "protocol_name": "http_stream",
+            "format": [
+              {
+                "format_name": "fmp4",
+                "codec": [
+                  {
+                    "codec_name": "avc",
+                    "current_qn": 10000,
+                    "base_url": "/live-bvc/test.m3u8",
+                    "url_info": [
+                      {
+                        "host": "https://example.com",
+                        "extra": "?token=test123"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

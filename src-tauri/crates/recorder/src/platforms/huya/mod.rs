@@ -199,7 +199,7 @@ impl HuyaRecorder {
 }
 
 #[async_trait]
-impl crate::traits::RecorderTrait<HuyaExtra> for HuyaRecorder {
+impl crate::traits::RecorderTrait for HuyaRecorder {
     async fn run(&self) {
         let self_clone = self.clone();
         *self.record_task.lock().await = Some(tokio::spawn(async move {

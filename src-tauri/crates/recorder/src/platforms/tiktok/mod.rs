@@ -230,7 +230,7 @@ impl TikTokRecorder {
 }
 
 #[async_trait]
-impl RecorderTrait<TikTokExtra> for TikTokRecorder {
+impl RecorderTrait for TikTokRecorder {
     async fn run(&self) {
         let self_clone = self.clone();
         *self.record_task.lock().await = Some(tokio::spawn(async move {

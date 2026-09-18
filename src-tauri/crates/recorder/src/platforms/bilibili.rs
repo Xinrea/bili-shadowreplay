@@ -412,7 +412,7 @@ impl BiliRecorder {
 }
 
 #[async_trait]
-impl crate::traits::RecorderTrait<BiliExtra> for BiliRecorder {
+impl crate::traits::RecorderTrait for BiliRecorder {
     async fn run(&self) {
         let self_clone = self.clone();
         let danmu_task = tokio::spawn(async move {

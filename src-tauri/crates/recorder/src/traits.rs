@@ -15,7 +15,7 @@ use tokio::{
 };
 
 #[allow(dead_code)]
-pub trait RecorderBasicTrait<T> {
+pub trait RecorderBasicTrait {
     fn platform(&self) -> PlatformType;
     fn room_id(&self) -> String;
     fn account(&self) -> &Account;
@@ -34,11 +34,10 @@ pub trait RecorderBasicTrait<T> {
     fn danmu_storage(&self) -> Arc<RwLock<Option<DanmuStorage>>>;
     fn last_update(&self) -> &atomic::AtomicI64;
     fn last_sequence(&self) -> &atomic::AtomicU64;
-    fn extra(&self) -> &T;
 }
 
 #[async_trait]
-pub trait RecorderTrait<T>: RecorderBasicTrait<T> {
+pub trait RecorderTrait: RecorderBasicTrait {
     async fn run(&self);
     async fn stop(&self) {
         self.quit().store(true, atomic::Ordering::Relaxed);

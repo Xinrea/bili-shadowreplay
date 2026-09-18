@@ -104,25 +104,38 @@ use wiremock::matchers::{method, path};
 #[tokio::test]
 async fn test_with_mock_server() {
     let mock_server = MockServer::start().await;
-    
+
     Mock::given(method("GET"))
         .and(path("/api/endpoint"))
         .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
         .mount(&mock_server)
         .await;
-    
+
     // Use mock_server.uri() in your test
 }
 ```
 
 ### Test Fixtures
 
-Fixtures are stored in `src-tauri/crates/recorder/tests/fixtures/`:
+Fixtures are stored in `src-tauri/crates/recorder/tests/fixtures/`.
+They are **real API/page responses** captured with the same request shapes as
+`recorder::platforms::*::api` (short-lived query tokens are redacted).
 
-- `bilibili_room_info.json` - Mock Bilibili room API response
-- `bilibili_user_info.json` - Mock Bilibili user API response
-- `bilibili_play_url.json` - Mock Bilibili playurl API response
-- `test_playlist.m3u8` - Sample HLS playlist
+Refresh them locally:
+
+```bash
+export TEST_BILIBILI_COOKIE='...'
+export TEST_DOUYIN_COOKIE='...'
+python3 scripts/fetch_test_fixtures.py
+```
+
+Included fixtures:
+
+- `bilibili_room_info.json` / `bilibili_play_url.json` / `bilibili_user_info.json`
+- `douyin_room_info.json` / `douyin_room_offline.json` (H5 reflow API)
+- `huya_room_page.html` (`m.huya.com` + `HNF_GLOBAL_INIT`)
+- `kuaishou_initial_state.json` / `kuaishou_room_*.json`
+- `test_playlist.m3u8` (real Bilibili fmp4 HLS snippet)
 
 Load fixtures in tests:
 
@@ -133,6 +146,9 @@ fn load_fixture(name: &str) -> String {
 }
 ```
 
+**macOS note:** if linking fails with `unknown architecture arm64e.x1-macos`,
+point Cargo at an older SDK, e.g.
+`export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk`.
 ## Continuous Integration
 
 Tests run automatically on GitHub Actions for:

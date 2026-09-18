@@ -1,9 +1,13 @@
 {
   "code": 0,
   "message": "0",
+  "ttl": 1,
   "data": {
-    "mid": 123456,
-    "name": "测试主播",
-    "face": "https://example.com/avatar.jpg"
+    "mid": 8739477,
+    "name": "老实憨厚的笑笑",
+    "sex": "保密",
+    "face": "https://i0.hdslb.com/bfs/face/59da329a536b148b0e8d19143b686d2da06dad93.jpg",
+    "sign": "笑笑西卡德云色官方账号 直播间地址：https://live.bilibili.com/7777",
+    "level": 6
   }
 }

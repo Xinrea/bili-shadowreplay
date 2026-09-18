@@ -1,0 +1,10 @@
+{
+  "result": 1,
+  "data": {
+    "liveStream": {
+      "living": false
+    },
+    "author": {},
+    "isLiving": false
+  }
+}

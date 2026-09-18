@@ -41,7 +41,7 @@ jobs:
       - name: Run recorder integration tests
         working-directory: src-tauri
         run: |
-          cargo test --package recorder --test '*'
+          cargo test --package recorder --tests
         env:
           RUST_BACKTRACE: 1
           PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig

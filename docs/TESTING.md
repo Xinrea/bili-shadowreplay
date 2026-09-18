@@ -89,7 +89,7 @@ cargo test --package recorder --test '*'
 | FFmpeg integration | ❌ None | Requires further work |
 | End-to-end flows | ❌ None | Future work |
 
-**Total**: ~88 tests passing, 1 expected failure (Huya live HTTP call)
+**Total**: ~91 library tests passing (live-network smoke tests are `#[ignore]`)
 
 ## Test Infrastructure
 
@@ -111,7 +111,7 @@ async fn test_with_mock_server() {
         .mount(&mock_server)
         .await;
 
-    // Use mock_server.uri() in your test
+    // Point adapter helpers like get_room_info_with_base(..., &mock_server.uri()) here
 }
 ```
 
@@ -163,20 +163,21 @@ See `.github/workflows/test.yml` for the CI configuration.
 2. Install system dependencies (OpenSSL, pkg-config)
 3. Setup Rust toolchain
 4. Cache dependencies
-5. Run workspace library tests
-6. Run recorder integration tests
+5. Run workspace library tests (`cargo test --workspace --lib --exclude whisper-cpp-rs`)
+6. Run recorder integration tests (`cargo test --package recorder --tests`)
 
 **Note**: Tests that require CUDA, Whisper models, or long FFmpeg encodes are excluded from CI.
+Live-network platform smoke tests are marked `#[ignore]` and must be run manually with
+`cargo test -- --ignored`.
 
-## Known Test Failures
+## Known Ignored Live Tests
 
-### Expected Failures
+These are optional smoke tests against real platforms (room availability / anti-bot vary):
 
-1. **`platforms::huya::api::tests::test_get_room_info`**
-   - **Status**: Expected to fail
-   - **Reason**: Makes live HTTP calls to Huya API (no mock yet)
-   - **Impact**: Does not block PR/CI
-   - **TODO**: Add proper HTTP mock
+1. **`platforms::huya::api::tests::test_get_room_info_live`** / **`test_get_user_info`**
+2. **`platforms::douyin::api::tests::test_get_room_owner_sec_uid_live`**
+
+CI uses fixture-backed or parse-only coverage instead.
 
 ## Writing New Tests
 

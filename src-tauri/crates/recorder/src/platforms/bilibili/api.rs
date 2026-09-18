@@ -448,9 +448,17 @@ pub async fn get_user_info(
     }
 
     let res: serde_json::Value = resp.json().await?;
+    parse_user_info_response(&res, user_id)
+}
+
+/// Parse a Bilibili `x/space/wbi/acc/info` JSON body into [`UserInfo`].
+pub fn parse_user_info_response(
+    res: &serde_json::Value,
+    user_id: &str,
+) -> Result<UserInfo, RecorderError> {
     let code = res["code"]
         .as_u64()
-        .ok_or(RecorderError::InvalidResponseJson { resp: res.clone() })?;
+        .ok_or_else(|| RecorderError::InvalidResponseJson { resp: res.clone() })?;
     if code != 0 {
         log::error!("Get user info failed {code}");
         return Err(RecorderError::InvalidResponseJson { resp: res.clone() });
@@ -534,6 +542,16 @@ pub async fn get_room_info(
     account: &Account,
     room_id: &str,
 ) -> Result<RoomInfo, RecorderError> {
+    get_room_info_with_base(client, account, room_id, "https://api.live.bilibili.com").await
+}
+
+/// Same as [`get_room_info`], but targets `api_base` (used by wiremock integration tests).
+pub async fn get_room_info_with_base(
+    client: &Client,
+    account: &Account,
+    room_id: &str,
+    api_base: &str,
+) -> Result<RoomInfo, RecorderError> {
     let mut headers = generate_user_agent_header();
     if let Ok(cookies) = account.cookies.parse() {
         headers.insert("cookie", cookies);
@@ -542,7 +560,7 @@ pub async fn get_room_info(
     }
     let response = client
         .get(format!(
-            "https://api.live.bilibili.com/room/v1/Room/get_info?room_id={room_id}"
+            "{api_base}/room/v1/Room/get_info?room_id={room_id}"
         ))
         .headers(headers)
         .send()
@@ -558,9 +576,14 @@ pub async fn get_room_info(
     }
 
     let res: serde_json::Value = response.json().await?;
+    parse_room_info_response(&res)
+}
+
+/// Parse a Bilibili `room/v1/Room/get_info` JSON body into [`RoomInfo`].
+pub fn parse_room_info_response(res: &serde_json::Value) -> Result<RoomInfo, RecorderError> {
     let code = res["code"]
         .as_u64()
-        .ok_or(RecorderError::InvalidResponseJson { resp: res.clone() })?;
+        .ok_or_else(|| RecorderError::InvalidResponseJson { resp: res.clone() })?;
     if code != 0 {
         return Err(RecorderError::InvalidResponseJson { resp: res.clone() });
     }
@@ -630,8 +653,33 @@ pub async fn get_stream_info(
     codec: &[Codec],
     qn: Qn,
 ) -> Result<BiliStream, RecorderError> {
+    get_stream_info_with_base(
+        client,
+        account,
+        room_id,
+        protocol,
+        format,
+        codec,
+        qn,
+        "https://api.live.bilibili.com",
+    )
+    .await
+}
+
+/// Same as [`get_stream_info`], but targets `api_base` (used by wiremock integration tests).
+#[allow(clippy::too_many_arguments)]
+pub async fn get_stream_info_with_base(
+    client: &Client,
+    account: &Account,
+    room_id: &str,
+    protocol: Protocol,
+    format: Format,
+    codec: &[Codec],
+    qn: Qn,
+    api_base: &str,
+) -> Result<BiliStream, RecorderError> {
     let url = format!(
-            "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?room_id={}&protocol={}&format={}&codec={}&qn={}&platform=h5",
+            "{api_base}/xlive/web-room/v2/index/getRoomPlayInfo?room_id={}&protocol={}&format={}&codec={}&qn={}&platform=h5",
             room_id,
             protocol.clone() as u8,
             format.clone() as u8,
@@ -646,7 +694,17 @@ pub async fn get_stream_info(
     }
     let response = client.get(url).headers(headers).send().await?;
     let res: serde_json::Value = response.json().await?;
+    log::debug!("Get stream info response: {res}");
+    parse_stream_info_response(&res, protocol, format, codec)
+}
 
+/// Parse a Bilibili `getRoomPlayInfo` JSON body into [`BiliStream`].
+pub fn parse_stream_info_response(
+    res: &serde_json::Value,
+    protocol: Protocol,
+    format: Format,
+    codec: &[Codec],
+) -> Result<BiliStream, RecorderError> {
     let code = res["code"].as_u64().unwrap_or(0);
     let message = res["message"].as_str().unwrap_or("");
     if code != 0 {
@@ -654,8 +712,6 @@ pub async fn get_stream_info(
             error: format!("Code {code} not found, message: {message}"),
         });
     }
-
-    log::debug!("Get stream info response: {res}");
 
     // Parse the new API response structure
     let playurl_info = &res["data"]["playurl_info"]["playurl"];

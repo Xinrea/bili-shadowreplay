@@ -1,7 +1,12 @@
-use recorder::platforms::PlatformType;
 use recorder::account::Account;
-use wiremock::{MockServer, Mock, ResponseTemplate};
+use recorder::core::{Codec, Format};
+use recorder::platforms::bilibili::api::{
+    get_room_info_with_base, get_stream_info_with_base, parse_user_info_response, Protocol, Qn,
+};
+use recorder::platforms::PlatformType;
+use reqwest::Client;
 use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn load_fixture(name: &str) -> String {
     let fixture_path = format!("{}/tests/fixtures/{}", env!("CARGO_MANIFEST_DIR"), name);
@@ -13,65 +18,88 @@ fn load_json(name: &str) -> serde_json::Value {
     serde_json::from_str(&load_fixture(name)).expect("fixture must be valid JSON")
 }
 
+fn test_account() -> Account {
+    Account {
+        platform: "bilibili".to_string(),
+        id: "1".to_string(),
+        name: "test".to_string(),
+        avatar: String::new(),
+        csrf: "csrf".to_string(),
+        // HeaderValue::from_str accepts a bare cookie header value.
+        cookies: "SESSDATA=test".to_string(),
+    }
+}
+
 #[tokio::test]
-async fn test_bilibili_room_info_fixture_shape() {
+async fn test_bilibili_room_info_via_adapter() {
     let mock_server = MockServer::start().await;
     let room_info_json = load_fixture("bilibili_room_info.json");
 
     Mock::given(method("GET"))
         .and(path("/room/v1/Room/get_info"))
         .respond_with(ResponseTemplate::new(200).set_body_string(room_info_json))
+        .expect(1)
         .mount(&mock_server)
         .await;
 
-    let response = load_json("bilibili_room_info.json");
-    assert_eq!(response["code"], 0);
-    assert!(response["data"]["room_id"].as_i64().unwrap() > 0);
-    assert!(response["data"]["uid"].as_i64().unwrap() > 0);
-    assert!(!response["data"]["title"].as_str().unwrap().is_empty());
-    assert!(response["data"]["live_status"].as_u64().is_some());
-    // Fields consumed by platforms::bilibili::api::get_room_info
-    assert!(response["data"]["user_cover"].as_str().is_some());
-    assert!(response["data"]["keyframe"].as_str().is_some());
-    assert!(response["data"]["live_time"].as_str().is_some());
+    let room = get_room_info_with_base(
+        &Client::new(),
+        &test_account(),
+        "545068",
+        &mock_server.uri(),
+    )
+    .await
+    .expect("adapter should parse fixture room info");
+
+    assert_eq!(room.room_id, "545068");
+    assert_eq!(room.user_id, "8739477");
+    assert!(!room.room_title.is_empty());
+    assert!(!room.room_cover_url.is_empty());
+    assert!(!room.room_keyframe_url.is_empty());
 }
 
 #[tokio::test]
-async fn test_bilibili_user_info_fixture_shape() {
+async fn test_bilibili_user_info_via_adapter_parse() {
+    // get_user_info also calls the WBI nav/sign endpoint, so full HTTP mocking is
+    // awkward; exercise the same typed parse path the adapter uses after fetch.
     let response = load_json("bilibili_user_info.json");
-    assert_eq!(response["code"], 0);
-    assert!(response["data"]["mid"].as_i64().unwrap() > 0);
-    assert!(!response["data"]["name"].as_str().unwrap().is_empty());
-    assert!(response["data"]["face"]
-        .as_str()
-        .unwrap()
-        .starts_with("http"));
+    let user = parse_user_info_response(&response, "8739477")
+        .expect("adapter should parse fixture user info");
+
+    assert_eq!(user.user_id, "8739477");
+    assert_eq!(user.user_name, "老实憨厚的笑笑");
+    assert!(user.user_avatar_url.starts_with("http"));
+    assert!(!user.user_sign.is_empty());
 }
 
 #[tokio::test]
-async fn test_bilibili_play_url_fixture_shape() {
+async fn test_bilibili_play_url_via_adapter() {
     let mock_server = MockServer::start().await;
     let play_url_json = load_fixture("bilibili_play_url.json");
 
     Mock::given(method("GET"))
         .and(path("/xlive/web-room/v2/index/getRoomPlayInfo"))
         .respond_with(ResponseTemplate::new(200).set_body_string(play_url_json))
+        .expect(1)
         .mount(&mock_server)
         .await;
 
-    let response = load_json("bilibili_play_url.json");
-    assert_eq!(response["code"], 0);
-    let streams = response["data"]["playurl_info"]["playurl"]["stream"]
-        .as_array()
-        .expect("stream array");
-    assert!(!streams.is_empty());
-    assert_eq!(streams[0]["protocol_name"], "http_hls");
-    let formats = streams[0]["format"].as_array().unwrap();
-    assert!(!formats.is_empty());
-    let codecs = formats[0]["codec"].as_array().unwrap();
-    assert!(!codecs.is_empty());
-    assert!(!codecs[0]["base_url"].as_str().unwrap().is_empty());
-    assert!(!codecs[0]["url_info"].as_array().unwrap().is_empty());
+    let stream = get_stream_info_with_base(
+        &Client::new(),
+        &test_account(),
+        "545068",
+        Protocol::HttpHls,
+        Format::FMP4,
+        &[Codec::Avc],
+        Qn::Q10000,
+        &mock_server.uri(),
+    )
+    .await
+    .expect("adapter should parse fixture play URL");
+
+    assert!(!stream.base_url.is_empty());
+    assert!(!stream.url_info.is_empty());
+    assert!(!stream.url_info[0].host.is_empty());
 }
 
 #[tokio::test]

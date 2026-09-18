@@ -267,4 +267,4 @@ Some tests create tokio runtimes - ensure you're using `#[tokio::test]` for asyn
 
 ## Contact
 
-For test infrastructure questions, see `docs/refactor-opportunities.md` or open an issue.
+For test infrastructure questions, open an issue.

@@ -3,19 +3,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use ffmpeg_utils::ffmpeg_command;
 use m3u8_rs::MediaPlaylist;
-use tokio::process::Command;
 use tokio::sync::broadcast;
 
 use crate::core::playlist::HlsPlaylist;
 use crate::errors::RecorderError;
 use crate::events::RecorderEvent;
-
-#[cfg(target_os = "windows")]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
-#[cfg(target_os = "windows")]
-#[allow(unused_imports)]
-use std::os::windows::process::CommandExt;
 
 pub struct FlvRecorder {
     url: String,
@@ -55,9 +49,7 @@ impl FlvRecorder {
             playlist.flush().await?;
         }
 
-        let mut cmd = Command::new("ffmpeg");
-        #[cfg(target_os = "windows")]
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        let mut cmd = ffmpeg_command();
 
         cmd.args([
             "-hide_banner",

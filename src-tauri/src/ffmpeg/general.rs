@@ -7,14 +7,7 @@ use async_ffmpeg_sidecar::{event::FfmpegEvent, log_parser::FfmpegLogParser};
 use tokio::io::{AsyncWriteExt, BufReader};
 
 use crate::{ffmpeg::hwaccel, progress::progress_reporter::ProgressReporterTrait};
-
-use super::ffmpeg_command;
-
-#[cfg(target_os = "windows")]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
-#[cfg(target_os = "windows")]
-#[allow(unused_imports)]
-use std::os::windows::process::CommandExt;
+use ffmpeg_utils::ffmpeg_command;
 
 /// Generate a random filename in hex
 pub async fn random_filename() -> String {
@@ -247,8 +240,6 @@ async fn concat_videos_with_demuxer(
     output_path: &Path,
 ) -> Result<(), String> {
     let mut ffmpeg_process = ffmpeg_command();
-    #[cfg(target_os = "windows")]
-    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
     let output_folder = ensure_output_folder(output_path)?;
     let filelist_filename = format!("filelist_{}.txt", random_filename().await);
@@ -320,8 +311,6 @@ async fn encode_filter_concat(
     filter_complex: String,
 ) -> Result<(), String> {
     let mut ffmpeg_process = ffmpeg_command();
-    #[cfg(target_os = "windows")]
-    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
     ensure_output_folder(output_path)?;
 
@@ -391,7 +380,7 @@ pub async fn concat_videos_with_transition(
 
     let mut durations = Vec::new();
     for video in videos {
-        let metadata = super::extract_video_metadata(video).await?;
+        let metadata = ffmpeg_utils::extract_video_metadata(video).await?;
         durations.push(metadata.duration);
     }
 
@@ -478,12 +467,9 @@ mod transition_filter_tests {
 
 #[cfg(test)]
 mod concat_videos_tests {
-    use super::{concat_videos, concat_videos_with_transition, random_filename};
-    use crate::ffmpeg::ffmpeg_path;
+    use super::{concat_videos, concat_videos_with_transition, ffmpeg_command, random_filename};
+    use ffmpeg_utils::ffprobe_command;
     use std::path::Path;
-
-    #[cfg(target_os = "windows")]
-    use super::CREATE_NO_WINDOW;
 
     /// Helper function to create a minimal valid MP4 file for testing
     async fn create_test_video(path: &Path, duration_secs: u32) -> Result<(), String> {
@@ -503,9 +489,7 @@ mod concat_videos_tests {
         }
 
         // Use FFmpeg to generate a test video with color and audio
-        let mut cmd = tokio::process::Command::new(ffmpeg_path());
-        #[cfg(target_os = "windows")]
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        let mut cmd = ffmpeg_command();
 
         cmd.args([
             "-f",
@@ -601,7 +585,7 @@ mod concat_videos_tests {
     }
 
     async fn probe_stream_duration(path: &Path, codec_type: &str) -> f64 {
-        let output = tokio::process::Command::new("ffprobe")
+        let output = ffprobe_command()
             .args([
                 "-v",
                 "error",
@@ -673,9 +657,7 @@ mod concat_videos_tests {
                 .map_err(|e| format!("Failed to create parent dir: {e}"))?;
         }
 
-        let mut cmd = tokio::process::Command::new(ffmpeg_path());
-        #[cfg(target_os = "windows")]
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        let mut cmd = ffmpeg_command();
 
         cmd.args([
             "-f",
@@ -720,7 +702,7 @@ mod concat_videos_tests {
     }
 
     fn audio_packet_durations(path: &Path) -> Vec<f64> {
-        let output = std::process::Command::new("ffprobe")
+        let output = std::process::Command::new(ffmpeg_utils::ffprobe_path())
             .args([
                 "-v",
                 "error",
@@ -743,9 +725,7 @@ mod concat_videos_tests {
 
     async fn decoded_audio_duration(path: &Path) -> f64 {
         let pcm_path = path.with_extension("pcm");
-        let mut cmd = tokio::process::Command::new(ffmpeg_path());
-        #[cfg(target_os = "windows")]
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        let mut cmd = ffmpeg_command();
         cmd.args([
             "-i",
             path.to_str().unwrap(),
@@ -867,7 +847,7 @@ mod concat_videos_tests {
             result
         );
 
-        let metadata = crate::ffmpeg::extract_video_metadata(&output_path)
+        let metadata = ffmpeg_utils::extract_video_metadata(&output_path)
             .await
             .expect("output metadata");
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;

@@ -1,6 +1,7 @@
 use crate::state::State;
 use crate::state_type;
 use base64::Engine;
+use ffmpeg_utils::{extract_video_metadata, ffmpeg_command, path_str, VideoMetadata};
 use recorder::platforms::PlatformType;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -13,18 +14,6 @@ use tauri::State as TauriState;
 pub struct VideoFrame {
     pub timestamp: f64,
     pub image_base64: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct VideoMetadata {
-    pub duration: f64,
-    pub width: u32,
-    pub height: u32,
-    pub video_codec: String,
-    pub audio_codec: String,
-    pub bitrate: u64,
-    pub fps: f64,
-    pub file_size: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -45,24 +34,6 @@ pub struct DanmuKeywordMatch {
     pub context_end: f64,
 }
 
-// Helper function to get ffmpeg path
-fn get_ffmpeg_path() -> PathBuf {
-    let mut path = Path::new("ffmpeg").to_path_buf();
-    if cfg!(windows) {
-        path.set_extension("exe");
-    }
-    path
-}
-
-// Helper function to get ffprobe path
-fn get_ffprobe_path() -> PathBuf {
-    let mut path = Path::new("ffprobe").to_path_buf();
-    if cfg!(windows) {
-        path.set_extension("exe");
-    }
-    path
-}
-
 fn resolve_video_path(output_dir: &Path, file: &str) -> PathBuf {
     let path = PathBuf::from(file);
     if path.is_absolute() {
@@ -70,12 +41,6 @@ fn resolve_video_path(output_dir: &Path, file: &str) -> PathBuf {
     } else {
         output_dir.join(path)
     }
-}
-
-/// Render a path as a UTF-8 string for an ffmpeg argument.
-fn path_str(path: &Path) -> Result<&str, String> {
-    path.to_str()
-        .ok_or_else(|| format!("Path is not valid UTF-8: {}", path.display()))
 }
 
 /// Extract frames from a video at specific timestamps or evenly distributed
@@ -135,15 +100,7 @@ pub async fn extract_video_frames(
 async fn extract_frame_at_timestamp(video_path: &Path, timestamp: f64) -> Result<String, String> {
     let output_path = std::env::temp_dir().join(format!("frame_{}.jpg", timestamp));
 
-    let ffmpeg_path = get_ffmpeg_path();
-    let mut cmd = tokio::process::Command::new(ffmpeg_path);
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    let mut cmd = ffmpeg_command();
 
     cmd.args([
         "-ss",
@@ -206,121 +163,7 @@ async fn get_video_metadata_internal(video_path: &Path) -> Result<VideoMetadata,
         return Err("Video file not found".to_string());
     }
 
-    let ffprobe_path = get_ffprobe_path();
-    let mut cmd = tokio::process::Command::new(ffprobe_path);
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-
-    cmd.args([
-        "-v",
-        "quiet",
-        "-print_format",
-        "json",
-        "-show_format",
-        "-show_streams",
-        path_str(video_path)?,
-    ]);
-
-    let output = cmd
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run ffprobe: {}", e))?;
-
-    if !output.status.success() {
-        return Err("FFprobe failed".to_string());
-    }
-
-    let json_str = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&json_str)
-        .map_err(|e| format!("Failed to parse ffprobe output: {}", e))?;
-
-    // Extract metadata
-    let format = json.get("format").ok_or("No format info")?;
-    let streams = json
-        .get("streams")
-        .and_then(|s| s.as_array())
-        .ok_or("No streams")?;
-
-    let duration = format
-        .get("duration")
-        .and_then(|d| d.as_str())
-        .and_then(|d| d.parse::<f64>().ok())
-        .unwrap_or(0.0);
-
-    let file_size = format
-        .get("size")
-        .and_then(|s| s.as_str())
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(0);
-
-    let bitrate = format
-        .get("bit_rate")
-        .and_then(|b| b.as_str())
-        .and_then(|b| b.parse::<u64>().ok())
-        .unwrap_or(0);
-
-    // Find video stream
-    let video_stream = streams
-        .iter()
-        .find(|s| s.get("codec_type").and_then(|t| t.as_str()) == Some("video"))
-        .ok_or("No video stream found")?;
-
-    let width = video_stream
-        .get("width")
-        .and_then(|w| w.as_u64())
-        .unwrap_or(0) as u32;
-    let height = video_stream
-        .get("height")
-        .and_then(|h| h.as_u64())
-        .unwrap_or(0) as u32;
-    let video_codec = video_stream
-        .get("codec_name")
-        .and_then(|c| c.as_str())
-        .unwrap_or("unknown")
-        .to_string();
-
-    // Calculate FPS
-    let fps = video_stream
-        .get("r_frame_rate")
-        .and_then(|r| r.as_str())
-        .and_then(|r| {
-            let parts: Vec<&str> = r.split('/').collect();
-            if parts.len() == 2 {
-                let num = parts[0].parse::<f64>().ok()?;
-                let den = parts[1].parse::<f64>().ok()?;
-                Some(num / den)
-            } else {
-                None
-            }
-        })
-        .unwrap_or(0.0);
-
-    // Find audio stream
-    let audio_stream = streams
-        .iter()
-        .find(|s| s.get("codec_type").and_then(|t| t.as_str()) == Some("audio"));
-
-    let audio_codec = audio_stream
-        .and_then(|s| s.get("codec_name"))
-        .and_then(|c| c.as_str())
-        .unwrap_or("none")
-        .to_string();
-
-    Ok(VideoMetadata {
-        duration,
-        width,
-        height,
-        video_codec,
-        audio_codec,
-        bitrate,
-        fps,
-        file_size,
-    })
+    extract_video_metadata(video_path).await
 }
 
 /// Analyze danmu to find highlight moments based on comment density
@@ -469,7 +312,6 @@ pub async fn merge_videos(
     );
     let output_path = output_dir.join(&output_filename);
 
-    let ffmpeg_path = get_ffmpeg_path();
     let transition_type = transition.as_deref().unwrap_or("none");
 
     // If no transition or only one video, use simple concat
@@ -494,14 +336,7 @@ pub async fn merge_videos(
             .map_err(|e| format!("Failed to write concat file: {}", e))?;
 
         // Run ffmpeg concat
-        let mut cmd = tokio::process::Command::new(ffmpeg_path);
-
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
+        let mut cmd = ffmpeg_command();
 
         cmd.args([
             "-f",
@@ -597,14 +432,7 @@ pub async fn merge_videos(
         }
 
         // Build ffmpeg command with multiple inputs
-        let mut cmd = tokio::process::Command::new(&ffmpeg_path);
-
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
+        let mut cmd = ffmpeg_command();
 
         // Add all input files
         for video_path in &video_paths {
@@ -706,15 +534,7 @@ pub async fn extract_video_audio(state: state_type!(), video_id: i64) -> Result<
     let output_path = output_dir.join(&output_filename);
 
     // Extract audio using ffmpeg
-    let ffmpeg_path = get_ffmpeg_path();
-    let mut cmd = tokio::process::Command::new(ffmpeg_path);
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    let mut cmd = ffmpeg_command();
 
     cmd.args([
         "-i",

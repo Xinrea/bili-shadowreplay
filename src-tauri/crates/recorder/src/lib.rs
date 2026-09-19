@@ -4,7 +4,6 @@ pub mod danmu;
 pub mod entry;
 pub mod errors;
 pub mod events;
-mod ffmpeg;
 pub mod platforms;
 pub mod traits;
 pub mod utils;

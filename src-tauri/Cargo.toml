@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/danmu_stream", "crates/recorder", "crates/whisper-cpp-rs"]
+members = ["crates/danmu_stream", "crates/ffmpeg_utils", "crates/recorder", "crates/whisper-cpp-rs"]
 resolver = "2"
 
 [workspace.lints.clippy]
@@ -25,6 +25,7 @@ workspace = true
 
 [dependencies]
 danmu_stream = { path = "crates/danmu_stream" }
+ffmpeg_utils = { path = "crates/ffmpeg_utils" }
 recorder = { path = "crates/recorder" }
 serde_json = "1.0"
 reqwest = { workspace = true}

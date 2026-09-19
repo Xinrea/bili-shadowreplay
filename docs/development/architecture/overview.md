@@ -134,7 +134,8 @@ src-tauri/
 │   │           ├── huya/
 │   │           ├── kuaishou/
 │   │           └── tiktok/
-│   └── danmu_stream/            # 弹幕流处理库
+│   ├── danmu_stream/            # 弹幕流处理库
+│   └── ffmpeg_utils/            # 应用与 recorder 共用的 ffmpeg/ffprobe 调用与元数据探测
 └── ...
 ```
 
@@ -159,6 +160,7 @@ src-tauri/
 
 - **recorder**: 核心录制功能，包含多平台实现
 - **danmu_stream**: 弹幕流处理，支持实时弹幕捕获和存储
+- **ffmpeg_utils**: 应用层与 recorder 共用的 ffmpeg/ffprobe 调用封装与 `VideoMetadata` 探测，避免两边各维护一套
 
 ## 数据流
 

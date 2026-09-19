@@ -13,8 +13,8 @@ use tokio::sync::{broadcast, Mutex, RwLock};
 use crate::core::playlist::{playlist_content_preview, HlsPlaylist};
 use crate::core::{Codec, Format};
 use crate::errors::RecorderError;
-use crate::ffmpeg::VideoMetadata;
 use crate::{core::HlsStream, events::RecorderEvent};
+use ffmpeg_utils::{extract_video_metadata, VideoMetadata};
 
 const UPDATE_TIMEOUT: Duration = Duration::from_secs(20);
 const UPDATE_INTERVAL: Duration = Duration::from_secs(1);
@@ -264,7 +264,7 @@ impl HlsRecorder {
             }
 
             // check if the stream is changed
-            let segment_metadata = crate::ffmpeg::extract_video_metadata(&segment_path)
+            let segment_metadata = extract_video_metadata(&segment_path)
                 .await
                 .map_err(RecorderError::FfmpegError)?;
 
@@ -315,7 +315,10 @@ impl HlsRecorder {
             }
 
             if let Some(last_metadata) = &last_metadata {
-                if last_metadata != &segment_metadata {
+                // Only a different resolution or codec makes the segments
+                // unplayable as one recording; their length naturally differs
+                // from segment to segment.
+                if !last_metadata.same_stream_shape(&segment_metadata) {
                     return Err(RecorderError::ResolutionChanged {
                         err: "Resolution changed".to_string(),
                     });

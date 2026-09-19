@@ -18,6 +18,8 @@ src-tauri/
 │   │   │   └── helpers_test.rs
 │   │   └── Cargo.toml
 │   ├── danmu_stream/      # Danmu provider tests
+│   ├── ffmpeg_utils/      # Shared ffmpeg/ffprobe plumbing; probes the
+│   │                      # fixtures in `src-tauri/tests/video/`
 │   └── whisper-cpp-rs/    # (Excluded from CI - requires CMake)
 ```
 

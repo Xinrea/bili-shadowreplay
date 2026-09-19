@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 danmu_stream = { path = "../danmu_stream" }
+ffmpeg_utils = { path = "../ffmpeg_utils" }
 async-trait = "0.1.89"
 rand = { workspace = true }
 chrono = "0.4.42"

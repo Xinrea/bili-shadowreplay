@@ -1308,8 +1308,7 @@ impl RecorderManager {
             log::info!("[{}]Extracting opus audio for third-party service", room_id);
 
             // Extract opus audio using FFmpeg
-            let ffmpeg_path = crate::ffmpeg::ffmpeg_path();
-            let mut cmd = tokio::process::Command::new(ffmpeg_path);
+            let mut cmd = ffmpeg_utils::ffmpeg_command();
             cmd.arg("-i")
                 .arg(clip_file_path.full_path())
                 .args([
@@ -1654,7 +1653,7 @@ impl RecorderManager {
             .len() as i64;
 
         let mut length = 0;
-        match crate::ffmpeg::extract_video_metadata(Path::new(&output_path)).await {
+        match ffmpeg_utils::extract_video_metadata(Path::new(&output_path)).await {
             Ok(video_metadata) => length = video_metadata.duration as i64,
             Err(e) => log::error!("Failed to get video metadata: {e}"),
         }

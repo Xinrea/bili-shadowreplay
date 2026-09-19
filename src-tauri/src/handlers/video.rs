@@ -1101,7 +1101,7 @@ pub async fn import_external_video(
     }
 
     reporter.update("正在提取视频元数据...").await;
-    let metadata = ffmpeg::extract_video_metadata(source_path).await?;
+    let metadata = ffmpeg_utils::extract_video_metadata(source_path).await?;
     let output_str = state.config.read().await.output.clone();
     let output_dir = Path::new(&output_str);
     if !output_dir.exists() {

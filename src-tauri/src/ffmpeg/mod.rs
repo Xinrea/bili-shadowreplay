@@ -14,24 +14,9 @@ use crate::subtitle_generator::{
 };
 use async_ffmpeg_sidecar::event::{FfmpegEvent, LogLevel};
 use async_ffmpeg_sidecar::log_parser::FfmpegLogParser;
+use ffmpeg_utils::{extract_video_metadata, ffmpeg_command, ffprobe_command, path_str};
 use serde::{Deserialize, Serialize};
 use tokio::io::BufReader;
-
-// 视频元数据结构
-#[derive(Debug, Clone, PartialEq)]
-pub struct VideoMetadata {
-    pub duration: f64,
-    pub width: u32,
-    pub height: u32,
-    pub video_codec: String,
-    pub audio_codec: String,
-}
-
-#[cfg(target_os = "windows")]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
-#[cfg(target_os = "windows")]
-#[allow(unused_imports)]
-use std::os::windows::process::CommandExt;
 
 /// 等待 ffmpeg 子进程结束，并把非零退出码视为失败。
 ///
@@ -49,12 +34,6 @@ async fn wait_ffmpeg_exit(child: &mut tokio::process::Child, context: &str) -> R
     }
 
     Ok(())
-}
-
-/// Render a path as a UTF-8 string for an ffmpeg argument.
-fn path_str(path: &Path) -> Result<&str, String> {
-    path.to_str()
-        .ok_or_else(|| format!("Path is not valid UTF-8: {}", path.display()))
 }
 
 /// File name of `path` as UTF-8, for display and ffmpeg filter strings.
@@ -119,8 +98,6 @@ pub async fn transcode(
     // ffmpeg -i fixed_\[30655190\]1742887114_0325084106_81.5.mp4 -c:v libx264 -c:a aac -b:v 6000k -b:a 64k -compression_level 0 -threads 0 output.mp3
     log::info!("Transcode: {} copy: {}", file.display(), copy_codecs);
     let mut ffmpeg_process = ffmpeg_command();
-    #[cfg(target_os = "windows")]
-    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
     ffmpeg_process.args(["-i", path_str(file)?]);
 
@@ -184,8 +161,6 @@ pub async fn trim_video(
     // ffmpeg -i fixed_\[30655190\]1742887114_0325084106_81.5.mp4 -ss 0 -t 10 output.mp4
     log::info!("Trim video task start: {}", file.display());
     let mut ffmpeg_process = ffmpeg_command();
-    #[cfg(target_os = "windows")]
-    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
     ffmpeg_process.args(["-ss", &start_time.to_string()]);
     ffmpeg_process.args(["-i", path_str(file)?]);
@@ -239,9 +214,6 @@ pub async fn extract_audio_sample(file: &Path) -> Result<PathBuf, String> {
     let mut extract_error = None;
 
     let mut ffmpeg_process = ffmpeg_command();
-    #[cfg(target_os = "windows")]
-    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
-    ffmpeg_process.kill_on_drop(true);
 
     let child = ffmpeg_process
         .args(["-i", path_str(file)?])
@@ -379,8 +351,6 @@ pub async fn extract_audio_chunks(file: &Path, format: &str) -> Result<PathBuf, 
     args.push(segment_pattern_str);
 
     let mut ffmpeg_process = ffmpeg_command();
-    #[cfg(target_os = "windows")]
-    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
     let child = ffmpeg_process.args(&args).stderr(Stdio::piped()).spawn();
 
@@ -429,9 +399,6 @@ pub async fn extract_full_audio(file: &Path) -> Result<PathBuf, String> {
     let output_path = file.with_extension("full.wav");
 
     let mut ffmpeg_process = ffmpeg_command();
-    #[cfg(target_os = "windows")]
-    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
-    ffmpeg_process.kill_on_drop(true);
 
     let child = ffmpeg_process
         .arg("-i")
@@ -490,8 +457,6 @@ pub async fn extract_audio_segment(
     output_path: &Path,
 ) -> Result<(), String> {
     let mut ffmpeg_process = ffmpeg_command();
-    #[cfg(target_os = "windows")]
-    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
     let child = ffmpeg_process
         .args(["-ss", &start_sec.to_string()])
@@ -541,9 +506,7 @@ pub async fn extract_audio_segment(
 /// Get the duration of an audio/video file in seconds
 async fn get_audio_duration(file: &Path) -> Result<u64, String> {
     // Use ffprobe with format option to get duration
-    let mut ffprobe_process = tokio::process::Command::new(ffprobe_path());
-    #[cfg(target_os = "windows")]
-    ffprobe_process.creation_flags(CREATE_NO_WINDOW);
+    let mut ffprobe_process = ffprobe_command();
 
     let child = ffprobe_process
         .args(["-v", "quiet"])
@@ -638,8 +601,6 @@ pub async fn encode_video_subtitle(
     log::info!("vf: {vf}");
 
     let mut ffmpeg_process = ffmpeg_command();
-    #[cfg(target_os = "windows")]
-    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
     let video_encoder = hwaccel::get_x264_encoder().await;
 
@@ -726,8 +687,6 @@ pub async fn encode_video_danmu(
     };
 
     let mut ffmpeg_process = ffmpeg_command();
-    #[cfg(target_os = "windows")]
-    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
     let video_encoder = hwaccel::get_x264_encoder().await;
 
@@ -790,8 +749,6 @@ pub async fn encode_video_danmu(
 
 pub async fn generic_ffmpeg_command(args: &[&str]) -> Result<String, String> {
     let mut ffmpeg_process = ffmpeg_command();
-    #[cfg(target_os = "windows")]
-    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
     let child = ffmpeg_process.args(args).stderr(Stdio::piped()).spawn();
     let mut child = child.map_err(|e| e.to_string())?;
@@ -1098,7 +1055,7 @@ pub async fn generate_video_subtitle(
 
 /// Trying to run ffmpeg for version
 pub async fn check_ffmpeg() -> Result<String, String> {
-    let mut child = tokio::process::Command::new(ffmpeg_path())
+    let mut child = ffmpeg_command()
         .arg("-version")
         .stdout(Stdio::piped())
         .spawn()
@@ -1130,30 +1087,6 @@ pub async fn check_ffmpeg() -> Result<String, String> {
     }
 }
 
-pub fn ffmpeg_command() -> tokio::process::Command {
-    let mut command = tokio::process::Command::new(ffmpeg_path());
-    command.kill_on_drop(true);
-    command
-}
-
-pub fn ffmpeg_path() -> PathBuf {
-    let mut path = Path::new("ffmpeg").to_path_buf();
-    if cfg!(windows) {
-        path.set_extension("exe");
-    }
-
-    path
-}
-
-fn ffprobe_path() -> PathBuf {
-    let mut path = Path::new("ffprobe").to_path_buf();
-    if cfg!(windows) {
-        path.set_extension("exe");
-    }
-
-    path
-}
-
 // 从视频文件切片
 pub async fn clip_from_video_file(
     reporter: Option<&impl ProgressReporterTrait>,
@@ -1171,8 +1104,6 @@ pub async fn clip_from_video_file(
     }
 
     let mut ffmpeg_process = ffmpeg_command();
-    #[cfg(target_os = "windows")]
-    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
     let video_encoder = hwaccel::get_x264_encoder().await;
 
@@ -1233,76 +1164,6 @@ pub async fn clip_from_video_file(
     }
 }
 
-/// Extract basic information from a video file.
-///
-/// # Arguments
-/// * `file_path` - The path to the video file.
-///
-/// # Returns
-/// A `Result` containing the video metadata or an error message.
-pub async fn extract_video_metadata(file_path: &Path) -> Result<VideoMetadata, String> {
-    let mut ffprobe_process = tokio::process::Command::new("ffprobe");
-    #[cfg(target_os = "windows")]
-    ffprobe_process.creation_flags(CREATE_NO_WINDOW);
-
-    let output = ffprobe_process
-        .args([
-            "-v",
-            "quiet",
-            "-print_format",
-            "json",
-            "-show_format",
-            "-show_streams",
-            &format!("{}", file_path.display()),
-        ])
-        .output()
-        .await
-        .map_err(|e| format!("执行ffprobe失败: {e}"))?;
-
-    if !output.status.success() {
-        return Err(format!(
-            "ffprobe执行失败: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-
-    let json_str = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value =
-        serde_json::from_str(&json_str).map_err(|e| format!("解析ffprobe输出失败: {e}"))?;
-
-    // 解析视频流信息
-    let streams = json["streams"].as_array().ok_or("未找到视频流信息")?;
-
-    if streams.is_empty() {
-        return Err("未找到视频流".to_string());
-    }
-
-    let mut metadata = VideoMetadata {
-        duration: 0.0,
-        width: 0,
-        height: 0,
-        video_codec: String::new(),
-        audio_codec: String::new(),
-    };
-
-    for stream in streams {
-        let codec_name = stream["codec_type"].as_str().unwrap_or("");
-        if codec_name == "video" {
-            metadata.video_codec = stream["codec_name"].as_str().unwrap_or("").to_owned();
-            metadata.width = stream["width"].as_u64().unwrap_or(0) as u32;
-            metadata.height = stream["height"].as_u64().unwrap_or(0) as u32;
-            metadata.duration = stream["duration"]
-                .as_str()
-                .unwrap_or("0.0")
-                .parse::<f64>()
-                .unwrap_or(0.0);
-        } else if codec_name == "audio" {
-            metadata.audio_codec = stream["codec_name"].as_str().unwrap_or("").to_owned();
-        }
-    }
-    Ok(metadata)
-}
-
 /// Generate thumbnail file from video, capturing a frame at the specified timestamp.
 ///
 /// # Arguments
@@ -1313,8 +1174,6 @@ pub async fn extract_video_metadata(file_path: &Path) -> Result<VideoMetadata, S
 /// The path to the generated thumbnail image.
 pub async fn generate_thumbnail(video_full_path: &Path, timestamp: f64) -> Result<PathBuf, String> {
     let mut ffmpeg_process = ffmpeg_command();
-    #[cfg(target_os = "windows")]
-    ffmpeg_process.creation_flags(CREATE_NO_WINDOW);
 
     let thumbnail_full_path = video_full_path.with_extension("jpg");
 
@@ -1419,9 +1278,7 @@ pub async fn try_stream_copy_conversion(
     reporter.update("正在转换视频格式... 0% (无损模式)").await;
 
     // 构建ffmpeg命令 - 流复制模式
-    let mut cmd = tokio::process::Command::new(ffmpeg_path());
-    #[cfg(target_os = "windows")]
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    let mut cmd = ffmpeg_command();
 
     cmd.args([
         "-i",
@@ -1452,9 +1309,7 @@ pub async fn try_high_quality_conversion(
     reporter.update("正在转换视频格式... 0% (高质量模式)").await;
 
     // 构建ffmpeg命令 - 高质量重编码
-    let mut cmd = tokio::process::Command::new(ffmpeg_path());
-    #[cfg(target_os = "windows")]
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    let mut cmd = ffmpeg_command();
 
     cmd.args([
         "-i",
@@ -1880,25 +1735,6 @@ mod tests {
             .contains("Unknown subtitle generator type"));
     }
 
-    // 测试路径构建函数
-    #[test]
-    fn test_ffmpeg_paths() {
-        let ffmpeg_path = ffmpeg_path();
-        let ffprobe_path = ffprobe_path();
-
-        #[cfg(windows)]
-        {
-            assert_eq!(ffmpeg_path.extension().unwrap(), "exe");
-            assert_eq!(ffprobe_path.extension().unwrap(), "exe");
-        }
-
-        #[cfg(not(windows))]
-        {
-            assert_eq!(ffmpeg_path.file_name().unwrap(), "ffmpeg");
-            assert_eq!(ffprobe_path.file_name().unwrap(), "ffprobe");
-        }
-    }
-
     // 测试文件名和路径处理
     #[test]
     fn test_filename_processing() {
@@ -1963,56 +1799,5 @@ mod tests {
         };
         assert!(!r.is_in(0.9));
         assert!(!r.is_in(5.1));
-    }
-
-    #[test]
-    fn test_video_metadata_equality() {
-        let m1 = VideoMetadata {
-            duration: 10.0,
-            width: 1920,
-            height: 1080,
-            video_codec: "h264".to_string(),
-            audio_codec: "aac".to_string(),
-        };
-        let m2 = m1.clone();
-        assert_eq!(m1, m2);
-    }
-
-    #[test]
-    fn test_video_metadata_different_resolution() {
-        let m1 = VideoMetadata {
-            duration: 10.0,
-            width: 1920,
-            height: 1080,
-            video_codec: "h264".to_string(),
-            audio_codec: "aac".to_string(),
-        };
-        let m2 = VideoMetadata {
-            duration: 10.0,
-            width: 1280,
-            height: 720,
-            video_codec: "h264".to_string(),
-            audio_codec: "aac".to_string(),
-        };
-        assert_ne!(m1, m2);
-    }
-
-    #[test]
-    fn test_video_metadata_different_codec() {
-        let m1 = VideoMetadata {
-            duration: 10.0,
-            width: 1920,
-            height: 1080,
-            video_codec: "h264".to_string(),
-            audio_codec: "aac".to_string(),
-        };
-        let m2 = VideoMetadata {
-            duration: 10.0,
-            width: 1920,
-            height: 1080,
-            video_codec: "hevc".to_string(),
-            audio_codec: "aac".to_string(),
-        };
-        assert_ne!(m1, m2);
     }
 }

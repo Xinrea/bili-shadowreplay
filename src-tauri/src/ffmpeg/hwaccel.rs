@@ -1,8 +1,7 @@
 use std::{collections::HashSet, path::PathBuf, process::Stdio, sync::OnceLock};
 
+use ffmpeg_utils::ffmpeg_command;
 use tokio::io::AsyncReadExt;
-
-use super::ffmpeg_path;
 
 const TARGET_ENCODERS: [&str; 7] = [
     "h264_nvenc",
@@ -147,19 +146,11 @@ pub fn apply_x264_encoder_args(
     }
 }
 
-#[cfg(target_os = "windows")]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
-
 /// 检测当前环境下 FFmpeg 支持的 H.264 硬件编码器。
 ///
 /// 返回值为可直接用于 `-c:v <value>` 的编码器名称列表。
 pub async fn list_supported_hwaccels() -> Result<Vec<String>, String> {
-    let mut command = tokio::process::Command::new(ffmpeg_path());
-
-    #[cfg(target_os = "windows")]
-    command.creation_flags(CREATE_NO_WINDOW);
+    let mut command = ffmpeg_command();
 
     let mut child = command
         .arg("-hide_banner")
@@ -244,10 +235,7 @@ pub async fn list_supported_hwaccels() -> Result<Vec<String>, String> {
 ///
 /// 通过尝试对测试流进行编码来验证编码器可用性
 async fn test_encoder_availability(encoder: &str) -> bool {
-    let mut command = tokio::process::Command::new(ffmpeg_path());
-
-    #[cfg(target_os = "windows")]
-    command.creation_flags(CREATE_NO_WINDOW);
+    let mut command = ffmpeg_command();
 
     // 使用合成输入源 (testsrc2) 测试编码器
     // -frames:v 3 只编码3帧，快速测试

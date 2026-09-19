@@ -746,6 +746,7 @@ dependencies = [
  "chrono",
  "clap",
  "danmu_stream",
+ "ffmpeg_utils",
  "fix-path-env",
  "futures",
  "futures-core",
@@ -2360,6 +2361,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e6853b52649d4ac5c0bd02320cddc5ba956bdb407c4b75a2c6b75bf51500f8c"
 dependencies = [
  "simd-adler32",
+]
+
+[[package]]
+name = "ffmpeg_utils"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -5573,6 +5583,7 @@ dependencies = [
  "deno_core",
  "env_logger",
  "fastrand",
+ "ffmpeg_utils",
  "log",
  "m3u8-rs",
  "md5",

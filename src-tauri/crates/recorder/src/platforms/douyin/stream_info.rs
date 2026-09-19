@@ -3,9 +3,10 @@ use serde_derive::Serialize;
 use serde_json::Value;
 
 use crate::core::stream_info::{
-    CdnNode, Codec, Format, PlatformStreamInfo, PlatformType, Quality, StreamVariant,
+    CdnNode, Codec, Format, PlatformStreamInfo, Quality, StreamVariant,
 };
 use crate::errors::RecorderError;
+use crate::platforms::PlatformType;
 
 /// A pull URL extracted from Douyin `stream_data`.
 #[derive(Debug, Clone, PartialEq, Eq)]

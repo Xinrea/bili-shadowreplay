@@ -1,8 +1,9 @@
 use super::response::LiveStreamResponse;
 use crate::core::stream_info::{
-    CdnNode, Codec, Format, PlatformStreamInfo, PlatformType, Quality, StreamVariant,
+    CdnNode, Codec, Format, PlatformStreamInfo, Quality, StreamVariant,
 };
 use crate::errors::RecorderError;
+use crate::platforms::PlatformType;
 use crate::{account::Account, utils::user_agent_generator};
 use regex::Regex;
 use reqwest::Client;

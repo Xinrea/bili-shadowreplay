@@ -4,11 +4,12 @@ use regex::Regex;
 use serde_json::{Map, Value};
 
 use crate::core::stream_info::{
-    CdnNode, Codec, Format, PlatformStreamInfo, PlatformType, Quality, StreamVariant,
+    CdnNode, Codec, Format, PlatformStreamInfo, Quality, StreamVariant,
 };
 use crate::errors::RecorderError;
 use crate::platforms::huya::url_builder::PlayerInfo;
 use crate::platforms::huya::url_builder::UrlBuilder;
+use crate::platforms::PlatformType;
 use crate::RoomInfo;
 use crate::UserInfo;
 

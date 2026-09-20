@@ -6,7 +6,7 @@ use crate::database::video::VideoRow;
 use crate::database::{Database, DatabaseError};
 use crate::ffmpeg::{clip_timeline_anchors, encode_video_danmu, transcode, Range};
 use crate::progress::progress_reporter::{EventEmitter, ProgressReporter, ProgressReporterTrait};
-use crate::subtitle_generator::item_to_srt;
+use crate::subtitle_generator::{item_to_srt, SubtitleGeneratorType};
 use crate::task::{Task, TaskManager, TaskPriority};
 use crate::webhook::events::{self, Payload};
 use crate::webhook::poster::WebhookPoster;
@@ -1052,20 +1052,38 @@ impl RecorderManager {
             filtered_danmus,
             self.config.read().await.danmu_ass_options.clone(),
         );
-        // dump ass_content into a temp file
-        let ass_file_path = clip_file.with_extension("ass");
-        if let Err(e) = write(&ass_file_path, ass_content).await {
+        // Keep the ASS input in a uniquely named RAII-managed file. A fixed
+        // `clip.ass` path could collide with another encode and was left behind
+        // when the task was cancelled between the write and the encode.
+        let ass_dir = clip_file.parent().unwrap_or_else(|| Path::new("."));
+        let ass_file = match tempfile::Builder::new()
+            .prefix(".bili-danmu-")
+            .suffix(".ass")
+            .tempfile_in(ass_dir)
+        {
+            Ok(file) => file.into_temp_path(),
+            Err(e) => {
+                log::error!(
+                    "Failed to create temp ass file in {}: {}",
+                    ass_dir.display(),
+                    e
+                );
+                return Ok(clip_file);
+            }
+        };
+        if let Err(e) = write(&ass_file, ass_content).await {
             log::error!(
                 "Failed to write temp ass file: {} {}",
-                ass_file_path.display(),
+                ass_file.display(),
                 e
             );
             return Ok(clip_file);
         }
 
-        let result = encode_video_danmu(reporter, &clip_file, &ass_file_path).await;
-        // clean ass file
-        let _ = remove_file(ass_file_path).await;
+        let result = encode_video_danmu(reporter, &clip_file, &ass_file).await;
+        // `TempPath` removes the ASS file on every return path, including
+        // cancellation/unwinding. The encoded clip is still an explicit output
+        // and is removed only after the encode attempt, as before.
         let _ = remove_file(clip_file).await;
 
         result.map_err(|e| RecorderManagerError::ClipError { err: e })
@@ -1300,10 +1318,11 @@ impl RecorderManager {
 
         // Read config to determine generator type
         let config = self.config.read().await;
-        let generator_type = config.subtitle_generator_type.as_str();
+        let generator_type = SubtitleGeneratorType::parse(&config.subtitle_generator_type)
+            .map_err(|error| RecorderManagerError::SubtitleGenerationFailed { error })?;
 
         // For third-party services (powerlive), extract opus audio from mp4
-        let media_file_path = if generator_type == "powerlive" {
+        let media_file_path = if generator_type.is_powerlive() {
             let opus_file_path = work_dir.with_filename("tmp.opus");
             log::info!("[{}]Extracting opus audio for third-party service", room_id);
 
@@ -1343,7 +1362,7 @@ impl RecorderManager {
         let result = crate::ffmpeg::generate_video_subtitle(
             None,
             Path::new(&media_file_path.full_path()),
-            &config.subtitle_generator_type,
+            generator_type,
             &resource_dir,
             &config.whisper_model,
             &config.whisper_prompt,

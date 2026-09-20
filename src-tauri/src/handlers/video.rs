@@ -4,7 +4,7 @@ use crate::ffmpeg;
 use crate::handlers::utils::get_disk_info_inner;
 use crate::progress::progress_reporter::{EventEmitter, ProgressReporter, ProgressReporterTrait};
 use crate::recorder_manager::ClipRangeParams;
-use crate::subtitle_generator::item_to_srt;
+use crate::subtitle_generator::{item_to_srt, SubtitleGeneratorType};
 use crate::task::{Task, TaskPriority};
 use crate::webhook::events;
 use base64::Engine;
@@ -865,7 +865,7 @@ async fn generate_video_subtitle_inner(
     state.db.add_task(&task).await?;
     log::info!("Create task: {task:?}");
     let config = state.config.read().await;
-    let generator_type = config.subtitle_generator_type.as_str();
+    let generator_type = SubtitleGeneratorType::parse(&config.subtitle_generator_type)?;
     let whisper_model = config.whisper_model.clone();
     let whisper_prompt = config.whisper_prompt.clone();
     let openai_api_key = config.openai_api_key.clone();

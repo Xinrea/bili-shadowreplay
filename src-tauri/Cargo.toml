@@ -58,6 +58,7 @@ url = "2.5.4"
 srtparse = "0.2.0"
 thiserror = "2"
 sanitize-filename = "0.6.0"
+tempfile = "3.20.0"
 socketioxide = "0.17.2"
 sentry = { version = "0.46.0", features = ["log", "logs"] }
 # Use Rig's core crate directly. The facade crate enables every provider and

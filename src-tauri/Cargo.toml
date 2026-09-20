@@ -165,7 +165,7 @@ uuid = { version = "1.4", features = ["v4"] }
 base64 = "0.22"
 md5 = "0.8"
 pct-str = "2.0"
-rand = "0.9"
+rand = "0.10"
 m3u8-rs = "6.0"
 async-ffmpeg-sidecar = "0.0.3"
 

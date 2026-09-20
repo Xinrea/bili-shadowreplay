@@ -11,7 +11,7 @@ use flate2::read::GzDecoder;
 use futures_util::{SinkExt, StreamExt, TryStreamExt};
 use log::{error, info, warn};
 use prost::Message;
-use rand::{distr::Alphanumeric, Rng};
+use rand::{distr::Alphanumeric, RngExt};
 use regex::Regex;
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::Value;

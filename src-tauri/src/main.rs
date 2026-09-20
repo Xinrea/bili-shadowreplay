@@ -757,7 +757,6 @@ fn setup_plugins(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::W
         }))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_os::init())
-        .plugin(tauri_plugin_single_instance::init(|_, _, _| {}))
         .plugin(
             tauri_plugin_sql::Builder::default()
                 .add_migrations("sqlite:data_v2.db", migrations)

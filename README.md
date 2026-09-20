@@ -29,6 +29,14 @@ BiliBili ShadowReplay 是一个缓存直播并进行实时编辑投稿的工具�
 
 贡献指南：[Contributing](.github/CONTRIBUTING.md)
 
+
+
+<a href="https://github.com/Xinrea/bili-shadowreplay/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=Xinrea/bili-shadowreplay" />
+</a>
+
+Made with [contrib.rocks](https://contrib.rocks).
+
 ## 赞助
 
 <!-- markdownlint-disable MD033 -->

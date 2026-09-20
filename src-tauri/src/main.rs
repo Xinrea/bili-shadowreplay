@@ -577,8 +577,8 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     let migrator = Migrator::new(MigrationList(migrations)).await?;
     migrator.run(&db_pool).await?;
 
-    let db = Arc::new(Database::new(CredentialCipher::load(&db_pool).await?));
-    db.set(db_pool).await;
+    let credentials = CredentialCipher::load(&db_pool).await?;
+    let db = Arc::new(Database::new(db_pool, credentials));
     db.migrate_account_credentials().await?;
     db.finish_pending_tasks().await?;
     db.finish_pending_record_summaries().await?;
@@ -697,12 +697,10 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
         }
         Err(error) => return Err(error.into()),
     };
-    let db = Arc::new(Database::new(credentials));
-    let db_clone = db.clone();
-    db_clone.set(sqlite_pool.clone()).await;
-    db_clone.migrate_account_credentials().await?;
-    db_clone.finish_pending_tasks().await?;
-    db_clone.finish_pending_record_summaries().await?;
+    let db = Arc::new(Database::new(sqlite_pool.clone(), credentials));
+    db.migrate_account_credentials().await?;
+    db.finish_pending_tasks().await?;
+    db.finish_pending_record_summaries().await?;
     let webhook_poster =
         webhook::poster::create_webhook_poster(&config.read().await.webhook_url, None)
             .map_err(|e| e.to_string())?;
@@ -726,13 +724,13 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
     // try to rebuild archive table
     let cache_path = config_clone.read().await.cache.clone();
     let output_path = config_clone.read().await.output.clone();
-    if let Err(e) = try_rebuild_archives(&db_clone, cache_path.clone().into()).await {
+    if let Err(e) = try_rebuild_archives(&db, cache_path.clone().into()).await {
         log::warn!("Rebuilding archive table failed: {e}");
     }
-    let _ = try_convert_live_covers(&db_clone, cache_path.clone().into()).await;
-    let _ = try_convert_clip_covers(&db_clone, output_path.clone().into()).await;
-    let _ = try_add_parent_id_to_records(&db_clone).await;
-    let _ = try_convert_entry_to_m3u8(&db_clone, cache_path.clone().into()).await;
+    let _ = try_convert_live_covers(&db, cache_path.clone().into()).await;
+    let _ = try_convert_clip_covers(&db, output_path.clone().into()).await;
+    let _ = try_add_parent_id_to_records(&db).await;
+    let _ = try_convert_entry_to_m3u8(&db, cache_path.clone().into()).await;
 
     Ok(Some(State {
         db,

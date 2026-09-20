@@ -9,7 +9,7 @@ use crate::database::task::TaskRow;
 use crate::progress::progress_reporter::{EventEmitter, ProgressReporter, ProgressReporterTrait};
 use crate::state::State;
 use crate::state_type;
-use crate::subtitle_generator::item_to_srt;
+use crate::subtitle_generator::{item_to_srt, SubtitleGeneratorType};
 use crate::task::{Task, TaskPriority};
 
 #[cfg(feature = "gui")]
@@ -237,10 +237,11 @@ async fn run_summary(
             .await
             .map_err(String::from)?;
         reporter.update("生成字幕中").await;
+        let generator_type = SubtitleGeneratorType::parse(&config.subtitle_generator_type)?;
         let generated = crate::ffmpeg::generate_video_subtitle(
             Some(&reporter),
             &audio_path,
-            &config.subtitle_generator_type,
+            generator_type,
             &state.resource_dir,
             &config.whisper_model,
             &config.whisper_prompt,

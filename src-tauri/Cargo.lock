@@ -789,6 +789,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-sql",
  "tauri-utils",
+ "tempfile",
  "thiserror 2.0.19",
  "tokio",
  "toml 0.9.2",

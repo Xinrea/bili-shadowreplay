@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::progress::progress_reporter::ProgressReporterTrait;
@@ -8,11 +9,13 @@ pub mod whisper_cpp;
 pub mod whisper_online;
 
 // subtitle_generator types
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SubtitleGeneratorType {
+    #[serde(rename = "whisper")]
     Whisper,
+    #[serde(rename = "whisper_online")]
     WhisperOnline,
+    #[serde(rename = "powerlive")]
     PowerLive,
 }
 
@@ -127,22 +130,30 @@ pub fn item_to_srt(item: &srtparse::Item) -> String {
 }
 
 impl SubtitleGeneratorType {
-    #[allow(dead_code)]
-    pub fn as_str(&self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
-            SubtitleGeneratorType::Whisper => "whisper",
-            SubtitleGeneratorType::WhisperOnline => "whisper_online",
-            SubtitleGeneratorType::PowerLive => "powerlive",
+            Self::Whisper => "whisper",
+            Self::WhisperOnline => "whisper_online",
+            Self::PowerLive => "powerlive",
         }
     }
-    #[allow(dead_code)]
+
+    /// Parse the stable value used at external configuration/API boundaries.
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
-            "whisper" => Some(SubtitleGeneratorType::Whisper),
-            "whisper_online" => Some(SubtitleGeneratorType::WhisperOnline),
-            "powerlive" => Some(SubtitleGeneratorType::PowerLive),
+            "whisper" => Some(Self::Whisper),
+            "whisper_online" => Some(Self::WhisperOnline),
+            "powerlive" => Some(Self::PowerLive),
             _ => None,
         }
+    }
+
+    pub fn parse(s: &str) -> Result<Self, String> {
+        Self::from_str(s).ok_or_else(|| format!("Unknown subtitle generator type: {s}"))
+    }
+
+    pub fn is_powerlive(self) -> bool {
+        matches!(self, Self::PowerLive)
     }
 }
 
@@ -186,6 +197,18 @@ mod tests {
         );
         assert_eq!(SubtitleGeneratorType::from_str("unknown"), None);
         assert_eq!(SubtitleGeneratorType::from_str(""), None);
+    }
+
+    #[test]
+    fn test_subtitle_generator_type_parse_rejects_unknown_values() {
+        assert_eq!(
+            SubtitleGeneratorType::parse("powerlive").unwrap(),
+            SubtitleGeneratorType::PowerLive
+        );
+        assert_eq!(
+            SubtitleGeneratorType::parse("unsupported").unwrap_err(),
+            "Unknown subtitle generator type: unsupported"
+        );
     }
 
     #[test]

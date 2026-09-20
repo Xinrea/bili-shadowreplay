@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use m3u8_rs::{Map, MediaPlaylist};
+use tempfile::{tempdir_in, Builder};
 use tokio::io::AsyncWriteExt;
 
 use crate::progress::progress_reporter::ProgressReporterTrait;
@@ -14,28 +15,22 @@ pub async fn clip_multiple_from_playlist(
     ranges: &[Range],
     transition: Option<&str>,
 ) -> Result<(), String> {
-    let mut to_remove = Vec::new();
+    let output_dir = output_path
+        .parent()
+        .ok_or_else(|| format!("Output path has no parent: {}", output_path.display()))?;
+    std::fs::create_dir_all(output_dir)
+        .map_err(|e| format!("Failed to create output directory: {e}"))?;
+    let temp_dir = tempdir_in(output_dir)
+        .map_err(|e| format!("Failed to create playlist clip directory: {e}"))?;
+    let mut clips = Vec::with_capacity(ranges.len());
+
     for (i, range) in ranges.iter().enumerate() {
-        let video_path = output_path.with_extension(format!("{}.mp4", i));
-        if let Err(e) =
-            clip_from_playlist(reporter, playlist_path, &video_path, Some(range.clone())).await
-        {
-            log::error!("Failed to generate playlist video: {e}");
-            // clean up to_remove
-            for path in to_remove {
-                let _ = tokio::fs::remove_file(path).await;
-            }
-            return Err(e);
-        }
-        to_remove.push(video_path.clone());
+        let video_path = temp_dir.path().join(format!("clip-{i}.mp4"));
+        clip_from_playlist(reporter, playlist_path, &video_path, Some(range.clone())).await?;
+        clips.push(video_path);
     }
-    super::general::concat_videos_with_transition(reporter, &to_remove, output_path, transition)
-        .await?;
-    // clean up to_remove
-    for path in to_remove {
-        let _ = tokio::fs::remove_file(path).await;
-    }
-    Ok(())
+
+    super::general::concat_videos_with_transition(reporter, &clips, output_path, transition).await
 }
 
 pub async fn clip_from_playlist(
@@ -126,20 +121,17 @@ pub async fn clip_from_playlist(
             .map_err(|e| format!("Failed to flush file: {}", e))?;
     }
 
-    // transcode copy to fix timestamp
+    // Remux into an RAII-managed sibling before replacing the assembled file.
+    // A fixed `.tmp.mp4` could collide with another job and leaked on errors.
     {
-        let tmp_output_path = output_path.with_extension("tmp.mp4");
+        let tmp_output_path = temporary_output_path(output_path)?;
         super::transcode(reporter, output_path, &tmp_output_path, true).await?;
-
-        // remove original file
-        let _ = tokio::fs::remove_file(output_path).await;
-        // rename tmp_output_path to output_path
-        let _ = tokio::fs::rename(tmp_output_path, output_path).await;
+        replace_output(output_path, tmp_output_path).await?;
     }
 
-    // trim for precised duration
+    // Trim for the precise requested duration.
     if let (Some(start_offset), Some(range)) = (start_offset, range.as_ref()) {
-        let tmp_output_path = output_path.with_extension("tmp.mp4");
+        let tmp_output_path = temporary_output_path(output_path)?;
         super::trim_video(
             reporter,
             output_path,
@@ -148,11 +140,7 @@ pub async fn clip_from_playlist(
             range.duration(),
         )
         .await?;
-
-        // remove original file
-        let _ = tokio::fs::remove_file(output_path).await;
-        // rename tmp_output_path to output_path
-        let _ = tokio::fs::rename(tmp_output_path, output_path).await;
+        replace_output(output_path, tmp_output_path).await?;
     }
 
     Ok(())
@@ -185,36 +173,74 @@ fn parse_map_uri(rest: &str) -> Option<String> {
     })
 }
 
+fn temporary_output_path(output_path: &Path) -> Result<tempfile::TempPath, String> {
+    let output_dir = output_path
+        .parent()
+        .ok_or_else(|| format!("Output path has no parent: {}", output_path.display()))?;
+    Builder::new()
+        .prefix(".bili-ffmpeg-")
+        .suffix(".mp4")
+        .tempfile_in(output_dir)
+        .map(|file| file.into_temp_path())
+        .map_err(|e| format!("Failed to create temporary output: {e}"))
+}
+
+async fn replace_output(
+    output_path: &Path,
+    temporary_path: tempfile::TempPath,
+) -> Result<(), String> {
+    match tokio::fs::remove_file(output_path).await {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "Failed to remove original output '{}': {error}",
+                output_path.display()
+            ));
+        }
+    }
+    tokio::fs::rename(&*temporary_path, output_path)
+        .await
+        .map_err(|e| {
+            format!(
+                "Failed to replace '{}' with temporary output: {e}",
+                output_path.display()
+            )
+        })?;
+    // The file now lives at `output_path`. Disable TempPath cleanup so Drop
+    // does not try to unlink a path that was renamed away.
+    let _ = temporary_path.keep();
+    Ok(())
+}
+
 pub async fn concat_playlists_to_video(
     reporter: Option<&impl ProgressReporterTrait>,
     playlists: &[&Path],
     danmu_ass_files: Vec<Option<PathBuf>>,
     output_path: &Path,
 ) -> Result<(), String> {
-    let mut to_remove = Vec::new();
+    let output_dir = output_path
+        .parent()
+        .ok_or_else(|| format!("Output path has no parent: {}", output_path.display()))?;
+    std::fs::create_dir_all(output_dir)
+        .map_err(|e| format!("Failed to create output directory: {e}"))?;
+    let temp_dir = tempdir_in(output_dir)
+        .map_err(|e| format!("Failed to create playlist concat directory: {e}"))?;
     let mut segments = Vec::new();
+
     for (i, playlist) in playlists.iter().enumerate() {
-        let mut video_path = output_path.with_extension(format!("{}.mp4", i));
+        let mut video_path = temp_dir.path().join(format!("playlist-{i}.mp4"));
         if let Err(e) = clip_from_playlist(reporter, playlist, &video_path, None).await {
             log::error!("Failed to generate playlist video: {e}");
             continue;
         }
-        to_remove.push(video_path.clone());
-        if let Some(danmu_ass_file) = &danmu_ass_files[i] {
+        if let Some(danmu_ass_file) = danmu_ass_files.get(i).and_then(Option::as_ref) {
             video_path = super::encode_video_danmu(reporter, &video_path, danmu_ass_file).await?;
-            to_remove.push(video_path.clone());
         }
         segments.push(video_path);
     }
 
-    super::general::concat_videos(reporter, &segments, output_path).await?;
-
-    // clean up segments
-    for segment in to_remove {
-        let _ = tokio::fs::remove_file(segment).await;
-    }
-
-    Ok(())
+    super::general::concat_videos(reporter, &segments, output_path).await
 }
 
 #[cfg(test)]

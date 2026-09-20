@@ -4,6 +4,7 @@ use crate::constants::API_PORT;
 use crate::danmu2ass::Danmu2AssOptions;
 use crate::state::State;
 use crate::state_type;
+use crate::subtitle_generator::SubtitleGeneratorType;
 
 #[cfg(feature = "gui")]
 use tauri::State as TauriState;
@@ -281,9 +282,16 @@ pub async fn update_subtitle_generator_type(
     state: state_type!(),
     subtitle_generator_type: String,
 ) -> Result<(), ()> {
-    log::info!("Updating subtitle generator type to {subtitle_generator_type}");
+    let generator_type =
+        SubtitleGeneratorType::parse(&subtitle_generator_type).map_err(|error| {
+            log::warn!("Rejecting unsupported subtitle generator type: {error}");
+        })?;
+    log::info!(
+        "Updating subtitle generator type to {}",
+        generator_type.as_str()
+    );
     let mut config = state.config.write().await;
-    config.subtitle_generator_type = subtitle_generator_type;
+    config.subtitle_generator_type = generator_type.as_str().to_string();
     config.save();
     Ok(())
 }

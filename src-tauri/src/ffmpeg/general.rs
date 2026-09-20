@@ -1,16 +1,20 @@
-use std::{
-    path::{Path, PathBuf},
-    process::Stdio,
+use std::path::{Path, PathBuf};
+
+use tempfile::Builder;
+use tokio::io::AsyncWriteExt;
+
+use crate::{
+    ffmpeg::{
+        hwaccel,
+        runner::{run_command, ProgressMode},
+    },
+    progress::progress_reporter::ProgressReporterTrait,
 };
-
-use async_ffmpeg_sidecar::{event::FfmpegEvent, log_parser::FfmpegLogParser};
-use tokio::io::{AsyncWriteExt, BufReader};
-
-use crate::{ffmpeg::hwaccel, progress::progress_reporter::ProgressReporterTrait};
 use ffmpeg_utils::ffmpeg_command;
 
 /// Generate a random filename in hex
-pub async fn random_filename() -> String {
+#[cfg(test)]
+async fn random_filename() -> String {
     format!("{:x}", rand::random::<u64>())
 }
 
@@ -41,45 +45,13 @@ fn escape_concat_path(path: &Path) -> String {
 
 pub async fn handle_ffmpeg_process(
     reporter: Option<&impl ProgressReporterTrait>,
-    ffmpeg_process: &mut tokio::process::Command,
+    ffmpeg_process: tokio::process::Command,
 ) -> Result<(), String> {
     log::info!("[FFmpeg] {:?}", ffmpeg_process);
-    let mut child = ffmpeg_process
-        .stderr(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or("ffmpeg stderr pipe unavailable")?;
-    let reader = BufReader::new(stderr);
-    let mut parser = FfmpegLogParser::new(reader);
-    while let Ok(event) = parser.parse_next_event().await {
-        match event {
-            FfmpegEvent::Log(_level, content) => {
-                // if contains "out_time_ms=66654667", by the way, it's actually in us
-                if content.starts_with("out_time_ms") {
-                    let time_str = content.strip_prefix("out_time_ms=").unwrap_or_default();
-                    if let Some(reporter) = reporter {
-                        reporter.update(time_str).await;
-                    }
-                }
-            }
-            FfmpegEvent::LogEOF => break,
-            FfmpegEvent::Error(e) => {
-                log::error!("[FFmpeg Error] {}", e);
-                return Err(e);
-            }
-            _ => {}
-        }
-    }
-    let status = child.wait().await.map_err(|e| e.to_string())?;
-    if !status.success() {
-        return Err(format!("FFmpeg exited with status: {}", status));
-    }
-
-    Ok(())
+    run_command(ffmpeg_process, ProgressMode::OutTimeMs, "FFmpeg", reporter)
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -242,23 +214,28 @@ async fn concat_videos_with_demuxer(
     let mut ffmpeg_process = ffmpeg_command();
 
     let output_folder = ensure_output_folder(output_path)?;
-    let filelist_filename = format!("filelist_{}.txt", random_filename().await);
+    let filelist = Builder::new()
+        .prefix(".bili-filelist-")
+        .suffix(".txt")
+        .tempfile_in(output_folder)
+        .map_err(|e| format!("Failed to create filelist: {e}"))?
+        .into_temp_path();
 
-    let mut filelist = tokio::fs::File::create(&output_folder.join(&filelist_filename))
+    let mut filelist_writer = tokio::fs::File::create(&filelist)
         .await
-        .map_err(|e| format!("Failed to create filelist: {e}"))?;
+        .map_err(|e| format!("Failed to open filelist: {e}"))?;
     for video in videos {
         let abs_path = tokio::fs::canonicalize(video).await.unwrap_or_else(|e| {
             log::warn!("Failed to canonicalize path {}: {e}", video.display());
             video.to_path_buf()
         });
         let escaped_path = escape_concat_path(&abs_path);
-        filelist
+        filelist_writer
             .write_all(format!("file '{}'\n", escaped_path).as_bytes())
             .await
             .map_err(|e| format!("Failed to write to filelist: {e}"))?;
     }
-    filelist
+    filelist_writer
         .flush()
         .await
         .map_err(|e| format!("Failed to flush filelist: {e}"))?;
@@ -266,19 +243,15 @@ async fn concat_videos_with_demuxer(
     let video_refs: Vec<&Path> = videos.iter().map(|p| p.as_path()).collect();
     let should_encode = !super::check_videos(&video_refs).await;
 
-    let filelist_path = output_folder.join(&filelist_filename);
     ffmpeg_process.args([
         "-f",
         "concat",
         "-safe",
         "0",
         "-i",
-        filelist_path.to_str().ok_or_else(|| {
-            format!(
-                "Invalid filelist path (non-UTF8): {}",
-                filelist_path.display()
-            )
-        })?,
+        filelist
+            .to_str()
+            .ok_or_else(|| format!("Invalid filelist path (non-UTF8): {}", filelist.display()))?,
     ]);
     if should_encode {
         let video_encoder = hwaccel::get_x264_encoder().await;
@@ -296,12 +269,9 @@ async fn concat_videos_with_demuxer(
     ffmpeg_process.args([output_path
         .to_str()
         .ok_or_else(|| format!("Invalid output path (non-UTF8): {}", output_path.display()))?]);
-    ffmpeg_process.args(["-progress", "pipe:2"]);
     ffmpeg_process.args(["-y"]);
 
-    let result = handle_ffmpeg_process(reporter, &mut ffmpeg_process).await;
-    let _ = tokio::fs::remove_file(output_folder.join(&filelist_filename)).await;
-    result
+    handle_ffmpeg_process(reporter, ffmpeg_process).await
 }
 
 async fn encode_filter_concat(
@@ -340,13 +310,12 @@ async fn encode_filter_concat(
     hwaccel::apply_x264_encoder_only(&mut ffmpeg_process, video_encoder);
     hwaccel::apply_x264_quality_args(&mut ffmpeg_process, video_encoder);
     ffmpeg_process.args(["-c:a", "aac"]);
-    ffmpeg_process.args(["-progress", "pipe:2"]);
     ffmpeg_process.args(["-y"]);
     ffmpeg_process.args([output_path
         .to_str()
         .ok_or_else(|| format!("Invalid output path (non-UTF8): {}", output_path.display()))?]);
 
-    handle_ffmpeg_process(reporter, &mut ffmpeg_process).await
+    handle_ffmpeg_process(reporter, ffmpeg_process).await
 }
 
 /// Concatenate videos with optional transition effects

@@ -32,12 +32,12 @@ impl AccountRow {
 // accounts
 impl Database {
     pub async fn migrate_account_credentials(&self) -> Result<(), DatabaseError> {
-        let pool = self.pool().await?;
+        let pool = &self.pool;
         if !CredentialCipher::ENCRYPTED {
             let encrypted: bool = sqlx::query_scalar(
                 "SELECT EXISTS(SELECT 1 FROM accounts WHERE credentials_encrypted = 1)",
             )
-            .fetch_one(&pool)
+            .fetch_one(pool)
             .await?;
             if encrypted {
                 return Err(DatabaseError::EncryptionRequired);
@@ -87,13 +87,13 @@ impl Database {
 
         // Keep the marker until both database and WAL cleanup succeed so an
         // interrupted cleanup is retried on the next startup.
-        sqlx::query("VACUUM").execute(&pool).await?;
+        sqlx::query("VACUUM").execute(pool).await?;
         let busy: i64 = sqlx::query_scalar("PRAGMA wal_checkpoint(TRUNCATE)")
-            .fetch_one(&pool)
+            .fetch_one(pool)
             .await?;
         if busy == 0 {
             sqlx::query("DELETE FROM account_credential_cleanup")
-                .execute(&pool)
+                .execute(pool)
                 .await?;
         }
         Ok(())
@@ -106,18 +106,16 @@ impl Database {
     }
 
     pub async fn add_account(&self, account: &AccountRow) -> Result<(), DatabaseError> {
-        let lock = self.pool().await?;
-        sqlx::query("INSERT INTO accounts (uid, platform, name, avatar, csrf, cookies, created_at, credentials_encrypted) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)").bind(&account.uid).bind(&account.platform).bind(&account.name).bind(&account.avatar).bind(self.credentials.encrypt(&account.csrf)?).bind(self.credentials.encrypt(&account.cookies)?).bind(&account.created_at).bind(CredentialCipher::ENCRYPTED).execute(&lock).await?;
+        sqlx::query("INSERT INTO accounts (uid, platform, name, avatar, csrf, cookies, created_at, credentials_encrypted) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)").bind(&account.uid).bind(&account.platform).bind(&account.name).bind(&account.avatar).bind(self.credentials.encrypt(&account.csrf)?).bind(self.credentials.encrypt(&account.cookies)?).bind(&account.created_at).bind(CredentialCipher::ENCRYPTED).execute(&self.pool).await?;
 
         Ok(())
     }
 
     pub async fn remove_account(&self, platform: &str, uid: &str) -> Result<(), DatabaseError> {
-        let lock = self.pool().await?;
         let sql = sqlx::query("DELETE FROM accounts WHERE uid = $1 and platform = $2")
             .bind(uid)
             .bind(platform)
-            .execute(&lock)
+            .execute(&self.pool)
             .await?;
         if sql.rows_affected() != 1 {
             return Err(DatabaseError::NotFound);
@@ -126,9 +124,8 @@ impl Database {
     }
 
     pub async fn get_accounts(&self) -> Result<Vec<AccountRow>, DatabaseError> {
-        let lock = self.pool().await?;
         sqlx::query_as::<_, AccountRow>("SELECT * FROM accounts")
-            .fetch_all(&lock)
+            .fetch_all(&self.pool)
             .await?
             .into_iter()
             .map(|account| self.decrypt_account(account))
@@ -140,13 +137,12 @@ impl Database {
         platform: &str,
         uid: &str,
     ) -> Result<AccountRow, DatabaseError> {
-        let lock = self.pool().await?;
         let account = sqlx::query_as::<_, AccountRow>(
             "SELECT * FROM accounts WHERE uid = $1 and platform = $2",
         )
         .bind(uid)
         .bind(platform)
-        .fetch_one(&lock)
+        .fetch_one(&self.pool)
         .await?;
         self.decrypt_account(account)
     }
@@ -155,11 +151,10 @@ impl Database {
         &self,
         platform: &str,
     ) -> Result<AccountRow, DatabaseError> {
-        let lock = self.pool().await?;
         let accounts =
             sqlx::query_as::<_, AccountRow>("SELECT * FROM accounts WHERE platform = $1")
                 .bind(platform)
-                .fetch_all(&lock)
+                .fetch_all(&self.pool)
                 .await?;
         if accounts.is_empty() {
             return Err(DatabaseError::NotFound);
@@ -205,8 +200,7 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        let db = Database::new(CredentialCipher::new(&[0; 32]).unwrap());
-        db.set(pool.clone()).await;
+        let db = Database::new(pool.clone(), CredentialCipher::new(&[0; 32]).unwrap());
 
         // Simulate the committed migration before VACUUM and WAL cleanup run.
         let mut transaction = pool.begin().await.unwrap();
@@ -259,8 +253,7 @@ mod tests {
         }
         sqlx::query("INSERT INTO accounts VALUES ('123', 'bilibili', 'test', '', 'test-csrf', 'test-cookies', '', 0)")
             .execute(&pool).await.unwrap();
-        let db = Database::new(CredentialCipher::new(&[0; 32]).unwrap());
-        db.set(pool.clone()).await;
+        let db = Database::new(pool.clone(), CredentialCipher::new(&[0; 32]).unwrap());
         db.migrate_account_credentials().await.unwrap();
         let stored: (String, String, i64) =
             sqlx::query_as("SELECT csrf, cookies, credentials_encrypted FROM accounts")

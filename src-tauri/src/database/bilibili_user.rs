@@ -16,14 +16,13 @@ impl Database {
         &self,
         user_id: &str,
     ) -> Result<Option<UserInfo>, DatabaseError> {
-        let lock = self.pool().await?;
         let row = sqlx::query_as::<_, BilibiliUserInfoRow>(
             "SELECT user_id, user_name, user_avatar
              FROM bilibili_user_profiles
              WHERE user_id = $1",
         )
         .bind(user_id)
-        .fetch_optional(&lock)
+        .fetch_optional(&self.pool)
         .await?;
 
         Ok(row.map(|row| UserInfo {
@@ -34,7 +33,6 @@ impl Database {
     }
 
     async fn save_bilibili_user_info(&self, user_info: &UserInfo) -> Result<(), DatabaseError> {
-        let lock = self.pool().await?;
         sqlx::query(
             "INSERT INTO bilibili_user_profiles
                 (user_id, user_name, user_avatar, updated_at)
@@ -47,7 +45,7 @@ impl Database {
         .bind(&user_info.user_id)
         .bind(&user_info.user_name)
         .bind(&user_info.user_avatar)
-        .execute(&lock)
+        .execute(&self.pool)
         .await?;
 
         Ok(())

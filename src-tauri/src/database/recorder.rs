@@ -21,7 +21,6 @@ impl Database {
         room_id: &str,
         extra: &str,
     ) -> Result<RecorderRow, DatabaseError> {
-        let lock = self.pool().await?;
         let recorder = RecorderRow {
             room_id: room_id.to_string(),
             created_at: Utc::now().to_rfc3339(),
@@ -37,21 +36,20 @@ impl Database {
         .bind(platform.as_str())
         .bind(recorder.auto_start)
         .bind(extra)
-        .execute(&lock)
+        .execute(&self.pool)
         .await?;
         Ok(recorder)
     }
 
     pub async fn remove_recorder(&self, room_id: &str) -> Result<RecorderRow, DatabaseError> {
-        let lock = self.pool().await?;
         let recorder =
             sqlx::query_as::<_, RecorderRow>("SELECT * FROM recorders WHERE room_id = $1")
                 .bind(room_id)
-                .fetch_one(&lock)
+                .fetch_one(&self.pool)
                 .await?;
         let sql = sqlx::query("DELETE FROM recorders WHERE room_id = $1")
             .bind(room_id)
-            .execute(&lock)
+            .execute(&self.pool)
             .await?;
         if sql.rows_affected() != 1 {
             return Err(DatabaseError::NotFound);
@@ -63,19 +61,17 @@ impl Database {
     }
 
     pub async fn get_recorders(&self) -> Result<Vec<RecorderRow>, DatabaseError> {
-        let lock = self.pool().await?;
         Ok(sqlx::query_as::<_, RecorderRow>(
             "SELECT room_id, created_at, platform, auto_start, extra FROM recorders",
         )
-        .fetch_all(&lock)
+        .fetch_all(&self.pool)
         .await?)
     }
 
     pub async fn remove_archive(&self, room_id: &str) -> Result<(), DatabaseError> {
-        let lock = self.pool().await?;
         let _ = sqlx::query("DELETE FROM records WHERE room_id = $1")
             .bind(room_id)
-            .execute(&lock)
+            .execute(&self.pool)
             .await?;
         Ok(())
     }
@@ -86,14 +82,13 @@ impl Database {
         room_id: &str,
         auto_start: bool,
     ) -> Result<(), DatabaseError> {
-        let lock = self.pool().await?;
         let _ = sqlx::query(
             "UPDATE recorders SET auto_start = $1 WHERE platform = $2 AND room_id = $3",
         )
         .bind(auto_start)
         .bind(platform.as_str().to_string())
         .bind(room_id)
-        .execute(&lock)
+        .execute(&self.pool)
         .await?;
         Ok(())
     }

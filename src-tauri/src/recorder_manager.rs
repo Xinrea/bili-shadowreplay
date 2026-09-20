@@ -1712,10 +1712,10 @@ mod live_end_tests {
         .execute(&pool)
         .await
         .unwrap();
-        let db =
-            Database::new(crate::database::credentials::CredentialCipher::new(&[0; 32]).unwrap());
-        db.set(pool).await;
-        db
+        Database::new(
+            pool,
+            crate::database::credentials::CredentialCipher::new(&[0; 32]).unwrap(),
+        )
     }
 
     fn ended_recorder(parent_id: &str, live_id: &str) -> RecorderInfo {

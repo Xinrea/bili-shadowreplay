@@ -1,7 +1,5 @@
-use sqlx::Pool;
-use sqlx::Sqlite;
+use sqlx::SqlitePool;
 use thiserror::Error;
-use tokio::sync::RwLock;
 
 pub mod account;
 pub mod bilibili_user;
@@ -18,7 +16,7 @@ pub mod task;
 pub mod video;
 
 pub struct Database {
-    db: RwLock<Option<Pool<Sqlite>>>,
+    pool: SqlitePool,
     credentials: credentials::CredentialCipher,
 }
 
@@ -32,8 +30,6 @@ pub enum DatabaseError {
     InvalidCookies,
     #[error("Number exceed i64 range")]
     NumberExceedI64Range,
-    #[error("Database has not been initialized")]
-    NotInitialized,
     #[error("Account credential storage error: {0}")]
     Credentials(#[from] std::io::Error),
     #[error("Database contains encrypted accounts; enable the credential-encryption feature")]
@@ -51,28 +47,7 @@ impl From<DatabaseError> for String {
 }
 
 impl Database {
-    pub fn new(credentials: credentials::CredentialCipher) -> Database {
-        Database {
-            db: RwLock::new(None),
-            credentials,
-        }
-    }
-
-    /// db *must* be set in tauri setup
-    pub async fn set(&self, p: Pool<Sqlite>) {
-        *self.db.write().await = Some(p);
-    }
-
-    /// Borrow the connection pool.
-    ///
-    /// Every query goes through this helper so a query issued before
-    /// [`Database::set`] returns a typed [`DatabaseError::NotInitialized`]
-    /// instead of panicking.
-    async fn pool(&self) -> Result<Pool<Sqlite>, DatabaseError> {
-        self.db
-            .read()
-            .await
-            .clone()
-            .ok_or(DatabaseError::NotInitialized)
+    pub fn new(pool: SqlitePool, credentials: credentials::CredentialCipher) -> Database {
+        Database { pool, credentials }
     }
 }

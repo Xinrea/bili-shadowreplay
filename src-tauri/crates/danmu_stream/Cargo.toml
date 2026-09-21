@@ -16,6 +16,7 @@ name = "douyin"
 path = "examples/douyin.rs"
 
 [dependencies]
+base64 = { workspace = true }
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = { version = "0.27", features = ["native-tls"] }
 futures-util = "0.3"

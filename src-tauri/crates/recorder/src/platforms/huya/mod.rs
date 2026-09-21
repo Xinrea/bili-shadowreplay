@@ -8,11 +8,12 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use danmu_stream::provider::ProviderType;
 use tokio::sync::{broadcast, RwLock};
 
 use crate::account::Account;
 use crate::errors::RecorderError;
-use crate::platforms::common::{PlatformApi, RoomPoll, StreamPull};
+use crate::platforms::common::{DanmuConfig, DanmuSpawn, PlatformApi, RoomPoll, StreamPull};
 use crate::platforms::huya::extractor::StreamInfo;
 use crate::platforms::PlatformType;
 use crate::traits::RecorderTrait;
@@ -99,6 +100,13 @@ impl PlatformApi for HuyaRecorder {
         // `pending` carries the fresh poll into `poll_stream` and must survive
         // the live-transition reset.
         *self.extra.live_stream.write().await = None;
+    }
+
+    fn danmu_config(&self) -> Option<DanmuConfig> {
+        Some(DanmuConfig {
+            provider: ProviderType::Huya,
+            spawn: DanmuSpawn::PerRecording,
+        })
     }
 }
 

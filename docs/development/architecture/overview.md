@@ -81,6 +81,8 @@ graph TB
     RecorderMgr --> DanmuStream
     DanmuStream --> Bilibili
     DanmuStream --> Douyin
+    DanmuStream --> Huya
+    DanmuStream --> Kuaishou
 ```
 
 ## 目录结构

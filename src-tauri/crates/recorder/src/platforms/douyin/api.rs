@@ -417,8 +417,6 @@ pub async fn get_room_owner_sec_uid(
     Ok(sec_uid)
 }
 
-/// Download file from url to path
-
 #[cfg(test)]
 mod tests {
     use super::*;

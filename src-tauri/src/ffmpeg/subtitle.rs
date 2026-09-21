@@ -10,6 +10,9 @@ use super::{
     runner::{run_command, ProgressMode, TempArtifact},
 };
 
+/// Keep rendered danmaku smooth even when the source recording is below 60 fps.
+const MIN_DANMU_FPS: &str = "60";
+
 fn file_name_str(path: &Path) -> Result<&str, String> {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -91,6 +94,7 @@ pub async fn encode_video_danmu<R: ProgressReporterTrait>(
     hwaccel::apply_x264_encoder_args(&mut command, video_encoder, Some(&vf));
     command.args(["-c:a", "copy"]);
     hwaccel::apply_x264_quality_args(&mut command, video_encoder);
+    command.args(["-r", MIN_DANMU_FPS]);
     command.args(["-y"]).arg(&output_path);
 
     run_command(

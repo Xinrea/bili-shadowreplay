@@ -637,7 +637,9 @@
               <div class="p-4">
                 <div class="flex items-center justify-between gap-6">
                   <div>
-                    <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                    <h3
+                      class="text-sm font-medium text-gray-900 dark:text-white"
+                    >
                       模型提供商
                     </h3>
                     <p class="text-sm text-gray-500 dark:text-gray-400">
@@ -658,7 +660,9 @@
               <div class="p-4">
                 <div class="flex items-center justify-between gap-6">
                   <div>
-                    <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                    <h3
+                      class="text-sm font-medium text-gray-900 dark:text-white"
+                    >
                       API Endpoint
                     </h3>
                     <p class="text-sm text-gray-500 dark:text-gray-400">
@@ -683,7 +687,9 @@
                 <div class="p-4">
                   <div class="flex items-center justify-between gap-6">
                     <div>
-                      <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                      <h3
+                        class="text-sm font-medium text-gray-900 dark:text-white"
+                      >
                         API Key
                       </h3>
                       <p class="text-sm text-gray-500 dark:text-gray-400">
@@ -704,7 +710,9 @@
               <div class="p-4">
                 <div class="flex items-center justify-between gap-6">
                   <div>
-                    <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                    <h3
+                      class="text-sm font-medium text-gray-900 dark:text-white"
+                    >
                       模型名称
                     </h3>
                     <p class="text-sm text-gray-500 dark:text-gray-400">
@@ -729,7 +737,7 @@
                         {/each}
                       </datalist>
                       <button
-                        class="flex shrink-0 items-center gap-1.5 rounded-lg bg-violet-600 px-3 py-2 text-sm text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        class="px-3 py-3 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
                         onclick={toggleModelList}
                         disabled={llmModelsLoading ||
                           !setting_model.llm.endpoint.trim() ||
@@ -738,9 +746,10 @@
                         title="获取模型列表"
                       >
                         <RefreshCw
-                          class="h-4 w-4 {llmModelsLoading ? 'animate-spin' : ''}"
+                          class="h-4 w-4 {llmModelsLoading
+                            ? 'animate-spin'
+                            : ''}"
                         />
-                        {llmModelsLoading ? "获取中…" : "获取模型列表"}
                       </button>
                     </div>
                     {#if showModelList}
@@ -753,9 +762,7 @@
                           <div
                             class="flex items-center justify-center gap-2 px-3 py-3 text-sm text-gray-500 dark:text-gray-400"
                           >
-                            <RefreshCw
-                              class="h-4 w-4 animate-spin"
-                            />
+                            <RefreshCw class="h-4 w-4 animate-spin" />
                             获取中...
                           </div>
                         {:else if llmModels.length === 0}
@@ -783,21 +790,25 @@
                     {/if}
                   </div>
                 </div>
-                <div class="mt-2 min-h-[1.25rem] text-right">
-                  {#if llmError}
+                {#if llmError}
+                  <div class="mt-2 min-h-[1.25rem] text-right">
                     <span class="text-xs text-red-600 dark:text-red-400">
                       {llmError}
                     </span>
-                  {:else if llmSaving}
+                  </div>
+                {:else if llmSaving}
+                  <div class="mt-2 min-h-[1.25rem] text-right">
                     <span class="text-xs text-gray-500 dark:text-gray-400">
                       保存中...
                     </span>
-                  {:else if llmSaveMessage}
+                  </div>
+                {:else if llmSaveMessage}
+                  <div class="mt-2 min-h-[1.25rem] text-right">
                     <span class="text-xs text-green-600 dark:text-green-400">
                       {llmSaveMessage}
                     </span>
-                  {/if}
-                </div>
+                  </div>
+                {/if}
               </div>
             </div>
           </div>

@@ -5,7 +5,14 @@
 <script lang="ts">
   import { invoke, TAURI_ENV, ENDPOINT, listen, log } from "../invoker";
   import type { AccountInfo } from "../db";
-  import type { Marker, RecorderList, RecorderInfo, Range } from "../interface";
+  import type {
+    DanmuEntry,
+    Marker,
+    RecorderList,
+    RecorderInfo,
+    Range,
+  } from "../interface";
+  import { formatScPrice, getScColors } from "../superchat";
 
   import { save } from "@tauri-apps/plugin-dialog";
   import {
@@ -15,12 +22,6 @@
     DANMU_FLUSH_INTERVAL_MS,
   } from "../live-preview-perf";
   const DANMU_STATISTIC_GAP = 5;
-
-  interface DanmuEntry {
-    ts: number;
-    content: string;
-    user_name?: string;
-  }
 
   interface Props {
     platform: string;
@@ -599,7 +600,7 @@ ${mediaPlaylistUrl}`;
           delete danmu_displayed[v.ts];
           return;
         }
-        danmu_handler(v.content);
+        renderFloatingEntry(v);
       });
     }, 1000);
 
@@ -685,7 +686,7 @@ ${mediaPlaylistUrl}`;
         }
         danmu_displayed[event.payload.ts] = true;
         danmuBatcher.push(danmu_record);
-        danmu_handler(danmu_record.content);
+        renderFloatingEntry(danmu_record);
       });
     }
 
@@ -724,29 +725,35 @@ ${mediaPlaylistUrl}`;
     // place overlay to the top of the video
     video.parentElement.appendChild(overlay);
 
-    // Store the positions of the last few danmakus to avoid overlap
-    const danmakuPositions = [];
+    // Store the positions of the last few floating items to avoid overlap
+    const danmakuPositions: number[] = [];
+    const scPositions: number[] = [];
 
-    function danmu_handler(content: string) {
-      const danmaku = document.createElement("p");
-      danmaku.style.position = "absolute";
-
-      // Calculate a random position for the danmaku
+    // Pick a random top position in the top 30% of the overlay, keeping at
+    // least `minGapPercent` vertical distance from recently used positions.
+    function pickTopPosition(positions: number[], minGapPercent: number) {
       let topPosition = 0;
       let attempts = 0;
       do {
         topPosition = Math.random() * 30;
         attempts++;
       } while (
-        danmakuPositions.some((pos) => Math.abs(pos - topPosition) < 5) &&
+        positions.some((pos) => Math.abs(pos - topPosition) < minGapPercent) &&
         attempts < 10
       );
 
-      // Record the position
-      danmakuPositions.push(topPosition);
-      if (danmakuPositions.length > 10) {
-        danmakuPositions.shift(); // Keep the last 10 positions
+      positions.push(topPosition);
+      if (positions.length > 10) {
+        positions.shift(); // Keep the last 10 positions
       }
+      return topPosition;
+    }
+
+    function danmu_handler(content: string) {
+      const danmaku = document.createElement("p");
+      danmaku.style.position = "absolute";
+
+      const topPosition = pickTopPosition(danmakuPositions, 5);
 
       danmaku.style.top = `${topPosition}%`;
       danmaku.style.right = "0";
@@ -768,6 +775,95 @@ ${mediaPlaylistUrl}`;
       danmaku.addEventListener("transitionend", () => {
         overlay.removeChild(danmaku);
       });
+    }
+
+    // Super chats float across the screen like danmaku, rendered as an
+    // SC card whose colors depend on the price (see lib/superchat.ts).
+    function sc_handler(record: DanmuEntry) {
+      const price = record.price ?? 0;
+      const colors = getScColors(price);
+
+      const card = document.createElement("div");
+      card.style.position = "absolute";
+      card.style.display = "flex";
+      card.style.flexDirection = "column";
+      card.style.maxWidth = "min(420px, 60%)";
+
+      const head = document.createElement("div");
+      head.style.display = "flex";
+      head.style.alignItems = "center";
+      head.style.justifyContent = "space-between";
+      head.style.gap = "8px";
+      head.style.padding = "3px 10px";
+      head.style.backgroundColor = colors.info;
+      head.style.border = `1px solid ${colors.content}`;
+      head.style.borderRadius = "8px 8px 0 0";
+      head.style.color = "#333";
+      head.style.fontSize = "0.9em";
+      const priceEl = document.createElement("span");
+      priceEl.style.fontWeight = "700";
+      priceEl.style.flexShrink = "0";
+      priceEl.style.color = colors.content;
+      priceEl.textContent = formatScPrice(price);
+      const nameEl = document.createElement("span");
+      nameEl.style.opacity = "0.78";
+      nameEl.style.minWidth = "0";
+      nameEl.style.overflow = "hidden";
+      nameEl.style.textOverflow = "ellipsis";
+      nameEl.style.whiteSpace = "nowrap";
+      nameEl.textContent = record.user_name ?? "";
+      head.appendChild(priceEl);
+      head.appendChild(nameEl);
+
+      const body = document.createElement("div");
+      body.style.padding = "3px 10px";
+      body.style.backgroundColor = colors.content;
+      body.style.borderLeft = `1px solid ${colors.content}`;
+      body.style.borderRight = `1px solid ${colors.content}`;
+      body.style.borderBottom = `1px solid ${colors.content}`;
+      body.style.borderRadius = "0 0 8px 8px";
+      body.style.color = "white";
+      // Wrap long messages within the card width so the full content stays
+      // readable while the card floats across the screen.
+      body.style.whiteSpace = "pre-wrap";
+      body.style.wordBreak = "break-word";
+      body.textContent = record.content;
+
+      card.appendChild(head);
+      card.appendChild(body);
+
+      const topPosition = pickTopPosition(scPositions, 12);
+      card.style.top = `${topPosition}%`;
+      card.style.right = "0";
+      card.style.transform = "translateX(100%)";
+      card.style.transition = "transform 10s linear";
+      card.style.pointerEvents = "none";
+      card.style.zIndex = "500";
+      card.style.boxShadow = "0 2px 8px rgba(0, 0, 0, 0.35)";
+      overlay.appendChild(card);
+      requestAnimationFrame(() => {
+        card.style.transform = `translateX(-${overlay.clientWidth + card.clientWidth}px)`;
+      });
+      card.addEventListener("transitionend", () => {
+        overlay.removeChild(card);
+      });
+    }
+
+    // Floating overlay renderers keyed by event type. New displayable event
+    // kinds register a renderer here; unknown types fall back to a plain
+    // danmaku row so their content still shows up.
+    const floatingRenderers: Record<string, (entry: DanmuEntry) => void> = {
+      danmu: (entry) => danmu_handler(entry.content),
+      super_chat: (entry) => sc_handler(entry),
+    };
+
+    function renderFloatingEntry(entry: DanmuEntry) {
+      const renderer = floatingRenderers[entry.type];
+      if (renderer) {
+        renderer(entry);
+      } else {
+        danmu_handler(entry.content);
+      }
     }
 
     shakaSpacer.appendChild(danmakuToggle);

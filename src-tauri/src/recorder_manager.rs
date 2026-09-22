@@ -366,14 +366,20 @@ impl RecorderManager {
                 RecorderEvent::DanmuReceived {
                     room,
                     ts,
+                    event_type,
                     content,
                     user_name,
+                    price,
+                    sc_duration,
                 } => {
                     self.emitter.emit(&RecorderEvent::DanmuReceived {
                         room,
                         ts,
+                        event_type,
                         content,
                         user_name,
+                        price,
+                        sc_duration,
                     });
                 }
             }

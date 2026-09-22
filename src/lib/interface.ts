@@ -293,8 +293,17 @@ export async function clipRange(eventId: string, params: ClipRangeParams) {
 
 export interface DanmuEntry {
   ts: number;
+  /**
+   * Event type, aligned with the recorded LiveEvent "type" field, e.g.
+   * "danmu" or "super_chat". Open set: more event types may be added.
+   */
+  type: string;
   content: string;
   user_name?: string;
+  /** Super chat price in CNY. Present for super chats. */
+  price?: number;
+  /** Super chat pinned duration in seconds. */
+  sc_duration?: number;
 }
 
 export interface RecorderList {

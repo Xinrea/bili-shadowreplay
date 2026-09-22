@@ -4,6 +4,7 @@
     ChevronRight,
     Download,
     ExternalLink,
+    Filter,
     Search,
     Trash2,
   } from "lucide-svelte";
@@ -13,7 +14,9 @@
   import ArchiveClipButton from "./ArchiveClipButton.svelte";
   import MarkerPanel from "./MarkerPanel.svelte";
   import { TAURI_ENV } from "../invoker";
+  import { clickOutside } from "../actions/clickOutside";
   import { virtualListWindow } from "../live-preview-perf";
+  import { formatScPrice, getScColors, isSuperChat } from "../superchat";
 
   type InspectorTab = "ranges" | "danmu" | "markers" | "clips";
   type DanmuPeak = {
@@ -87,6 +90,34 @@
   let danmuScrollTop = $state(0);
   let danmuViewportHeight = $state(480);
   let danmuListEl: HTMLElement | null = $state(null);
+  let scTooltip = $state<{ entry: DanmuEntry; x: number; y: number } | null>(
+    null,
+  );
+  const SC_TOOLTIP_WIDTH = 260;
+  const SC_TOOLTIP_ESTIMATED_HEIGHT = 110;
+
+  function showScTooltip(entry: DanmuEntry, element: HTMLElement) {
+    const rect = element.getBoundingClientRect();
+    // Anchor the tooltip's right edge to the entry so it stays inside the
+    // inspector panel, flipping above the entry when it would overflow down.
+    const x = Math.max(
+      8,
+      Math.min(
+        rect.right - SC_TOOLTIP_WIDTH,
+        window.innerWidth - SC_TOOLTIP_WIDTH - 8,
+      ),
+    );
+    const belowY = rect.bottom + 6;
+    const y =
+      belowY + SC_TOOLTIP_ESTIMATED_HEIGHT > window.innerHeight
+        ? Math.max(8, rect.top - SC_TOOLTIP_ESTIMATED_HEIGHT - 6)
+        : belowY;
+    scTooltip = { entry, x, y };
+  }
+
+  function hideScTooltip() {
+    scTooltip = null;
+  }
   let pendingPeakThreshold = $state(80);
   let keywordDraft = $state("");
   let peakThresholdTimer: ReturnType<typeof setTimeout> | null = null;
@@ -107,12 +138,34 @@
       0,
     ),
   );
+  let danmuTypeFilter = $state<"all" | "danmu" | "super_chat">("all");
+  let showDanmuTypeFilter = $state(false);
+  const DANMU_TYPE_FILTERS = [
+    { value: "all", label: "全部" },
+    { value: "danmu", label: "弹幕" },
+    { value: "super_chat", label: "醒目留言" },
+  ] as const;
+
+  function setDanmuTypeFilter(value: "all" | "danmu" | "super_chat") {
+    danmuTypeFilter = value;
+    showDanmuTypeFilter = false;
+  }
+
+  let typeFilteredDanmu = $derived(
+    danmuTypeFilter === "all"
+      ? danmuRecords
+      : danmuRecords.filter((entry) =>
+          danmuTypeFilter === "super_chat"
+            ? isSuperChat(entry)
+            : !isSuperChat(entry),
+        ),
+  );
   let filteredDanmu = $derived(
     danmuSearch.trim()
-      ? danmuRecords.filter((entry) =>
+      ? typeFilteredDanmu.filter((entry) =>
           entry.content.toLowerCase().includes(danmuSearch.trim().toLowerCase()),
         )
-      : danmuRecords,
+      : typeFilteredDanmu,
   );
   let keywordMatchedCount = $derived(
     danmuKeywords.length === 0
@@ -443,10 +496,40 @@
       </section>
     {:else if activeTab === "danmu"}
       <section class="danmu-panel">
-        <label class="search-box">
-          <Search size={13} />
-          <input bind:value={danmuSearch} placeholder="搜索弹幕内容" />
-        </label>
+        <div
+          class="danmu-toolbar"
+          use:clickOutside={() => (showDanmuTypeFilter = false)}
+        >
+          <label class="search-box">
+            <Search size={13} />
+            <input bind:value={danmuSearch} placeholder="搜索弹幕 / SC 内容" />
+          </label>
+          <div class="type-filter">
+            <button
+              type="button"
+              class="filter-button"
+              class:active={danmuTypeFilter !== "all"}
+              title="按类型筛选"
+              onclick={() => (showDanmuTypeFilter = !showDanmuTypeFilter)}
+            >
+              <Filter size={13} />
+            </button>
+            {#if showDanmuTypeFilter}
+              <div class="filter-dropdown">
+                {#each DANMU_TYPE_FILTERS as option (option.value)}
+                  <label class="filter-option">
+                    <input
+                      type="checkbox"
+                      checked={danmuTypeFilter === option.value}
+                      onchange={() => setDanmuTypeFilter(option.value)}
+                    />
+                    <span>{option.label}</span>
+                  </label>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        </div>
         <div class="result-count">
           共 {danmuRecords.length} 条 · 显示 {filteredDanmu.length} 条
         </div>
@@ -457,11 +540,12 @@
             const element = event.currentTarget as HTMLElement;
             danmuScrollTop = element.scrollTop;
             danmuViewportHeight = element.clientHeight;
+            hideScTooltip();
           }}
         >
           {#if filteredDanmu.length === 0}
             <div class="empty-state">
-              <strong>没有匹配的弹幕</strong>
+              <strong>没有匹配的内容</strong>
             </div>
           {:else}
             <div
@@ -476,14 +560,33 @@
                   <button
                     type="button"
                     class="danmu-entry"
+                    class:sc-entry={isSuperChat(danmu)}
                     onclick={() => onSeek?.(danmu.ts / 1000 - globalOffset)}
+                    onmouseenter={(event) => {
+                      if (isSuperChat(danmu)) {
+                        showScTooltip(
+                          danmu,
+                          event.currentTarget as HTMLElement,
+                        );
+                      }
+                    }}
+                    onmouseleave={hideScTooltip}
                   >
                     <time>{formatTime(danmu.ts / 1000 - globalOffset)}</time>
                     <span class="danmu-content">
+                      {#if isSuperChat(danmu)}
+                        <span
+                          class="sc-badge"
+                          style:background={getScColors(danmu.price ?? 0)
+                            .content}
+                        >
+                          SC {danmu.price}
+                        </span>
+                      {/if}
                       {#if danmu.user_name}
                         <b>{danmu.user_name}</b>
                       {/if}
-                      {danmu.content}
+                      <span class="danmu-text">{danmu.content}</span>
                     </span>
                   </button>
                 {/each}
@@ -491,6 +594,31 @@
             </div>
           {/if}
         </div>
+        {#if scTooltip}
+          {@const colors = getScColors(scTooltip.entry.price ?? 0)}
+          <div
+            class="sc-tooltip"
+            style:left="{scTooltip.x}px"
+            style:top="{scTooltip.y}px"
+          >
+            <div
+              class="sc-tooltip-head"
+              style:background-color={colors.info}
+              style:border-color={colors.content}
+            >
+              <span class="sc-tooltip-price" style:color={colors.content}>
+                {formatScPrice(scTooltip.entry.price ?? 0)}
+              </span>
+              <span class="sc-tooltip-user">{scTooltip.entry.user_name}</span>
+            </div>
+            <div
+              class="sc-tooltip-body"
+              style:background-color={colors.content}
+            >
+              {scTooltip.entry.content}
+            </div>
+          </div>
+        {/if}
       </section>
     {:else if activeTab === "markers"}
       <MarkerPanel
@@ -1051,6 +1179,78 @@
     color: #718095;
   }
 
+  .danmu-toolbar {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .danmu-toolbar .search-box {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .type-filter {
+    position: relative;
+    flex-shrink: 0;
+  }
+
+  .filter-button {
+    display: inline-flex;
+    width: 30px;
+    height: 30px;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #303947;
+    border-radius: 8px;
+    background: #202733;
+    color: #718095;
+    cursor: pointer;
+  }
+
+  .filter-button:hover,
+  .filter-button.active {
+    color: #6eb8ef;
+  }
+
+  .filter-button.active {
+    border-color: rgb(110 184 239 / 45%);
+  }
+
+  .filter-dropdown {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    z-index: 30;
+    min-width: 130px;
+    border: 1px solid #293442;
+    border-radius: 8px;
+    background: #202733;
+    padding: 4px;
+    box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+  }
+
+  .filter-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-radius: 5px;
+    padding: 5px 8px;
+    color: #c5cedb;
+    font-size: 11px;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .filter-option:hover {
+    background: rgb(255 255 255 / 4%);
+  }
+
+  .filter-option input {
+    margin: 0;
+    accent-color: #4a89dc;
+  }
+
   .search-box:focus-within {
     border-color: #0a84ff;
   }
@@ -1114,21 +1314,34 @@
     background: rgb(255 255 255 / 3.5%);
   }
 
-  .danmu-entry span {
+  .danmu-entry .danmu-content {
+    display: flex;
     min-width: 0;
     flex: 1;
+    align-items: center;
     overflow: hidden;
     color: #c5cedb;
     font-size: 11px;
     line-height: 1.2;
+  }
+
+  .danmu-content b {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    margin-right: 5px;
+    color: #6eb8ef;
+    font-weight: 500;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .danmu-content b {
-    margin-right: 5px;
-    color: #6eb8ef;
-    font-weight: 500;
+  .danmu-content .danmu-text {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .danmu-entry time {
@@ -1137,6 +1350,69 @@
     font-size: 9px;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
+  }
+
+  .sc-badge {
+    display: inline-block;
+    box-sizing: border-box;
+    flex: 0 0 auto;
+    margin-right: 6px;
+    border-radius: 3px;
+    padding: 0 5px;
+    color: #fff;
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 14px;
+  }
+
+  .sc-entry .danmu-content {
+    color: #eef4fd;
+  }
+
+  .sc-tooltip {
+    position: fixed;
+    z-index: 60;
+    width: 260px;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+    pointer-events: none;
+  }
+
+  .sc-tooltip-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    border: 1px solid;
+    border-bottom: 0;
+    border-radius: 8px 8px 0 0;
+    padding: 5px 10px;
+    font-size: 12px;
+  }
+
+  .sc-tooltip-price {
+    flex-shrink: 0;
+    font-weight: 700;
+  }
+
+  .sc-tooltip-user {
+    min-width: 0;
+    overflow: hidden;
+    color: #333;
+    font-weight: 600;
+    opacity: 0.78;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sc-tooltip-body {
+    padding: 6px 10px;
+    color: #fff;
+    font-size: 12px;
+    line-height: 1.5;
+    word-break: break-word;
+    white-space: pre-wrap;
   }
 
   .clip-card {

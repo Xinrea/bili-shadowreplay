@@ -815,8 +815,8 @@ ${mediaPlaylistUrl}`;
       nameEl.style.textOverflow = "ellipsis";
       nameEl.style.whiteSpace = "nowrap";
       nameEl.textContent = record.user_name ?? "";
-      head.appendChild(priceEl);
       head.appendChild(nameEl);
+      head.appendChild(priceEl);
 
       const body = document.createElement("div");
       body.style.padding = "3px 10px";

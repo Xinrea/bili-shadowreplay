@@ -725,26 +725,29 @@ ${mediaPlaylistUrl}`;
     // place overlay to the top of the video
     video.parentElement.appendChild(overlay);
 
-    // Store the positions of the last few floating items to avoid overlap
-    const danmakuPositions: number[] = [];
-    const scPositions: number[] = [];
+    // Store the positions of the last few floating items to avoid overlap.
+    // One shared array for danmaku and SC cards so the two kinds cannot pick
+    // the same spot; very tall SC cards may still brush nearby danmaku.
+    const floatingPositions: number[] = [];
 
     // Pick a random top position in the top 30% of the overlay, keeping at
     // least `minGapPercent` vertical distance from recently used positions.
-    function pickTopPosition(positions: number[], minGapPercent: number) {
+    function pickTopPosition(minGapPercent: number) {
       let topPosition = 0;
       let attempts = 0;
       do {
         topPosition = Math.random() * 30;
         attempts++;
       } while (
-        positions.some((pos) => Math.abs(pos - topPosition) < minGapPercent) &&
+        floatingPositions.some(
+          (pos) => Math.abs(pos - topPosition) < minGapPercent,
+        ) &&
         attempts < 10
       );
 
-      positions.push(topPosition);
-      if (positions.length > 10) {
-        positions.shift(); // Keep the last 10 positions
+      floatingPositions.push(topPosition);
+      if (floatingPositions.length > 10) {
+        floatingPositions.shift(); // Keep the last 10 positions
       }
       return topPosition;
     }
@@ -753,7 +756,7 @@ ${mediaPlaylistUrl}`;
       const danmaku = document.createElement("p");
       danmaku.style.position = "absolute";
 
-      const topPosition = pickTopPosition(danmakuPositions, 5);
+      const topPosition = pickTopPosition(5);
 
       danmaku.style.top = `${topPosition}%`;
       danmaku.style.right = "0";
@@ -832,7 +835,7 @@ ${mediaPlaylistUrl}`;
       card.appendChild(head);
       card.appendChild(body);
 
-      const topPosition = pickTopPosition(scPositions, 12);
+      const topPosition = pickTopPosition(12);
       card.style.top = `${topPosition}%`;
       card.style.right = "0";
       card.style.transform = "translateX(100%)";

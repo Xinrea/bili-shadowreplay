@@ -149,6 +149,16 @@
   function setDanmuTypeFilter(value: "all" | "danmu" | "super_chat") {
     danmuTypeFilter = value;
     showDanmuTypeFilter = false;
+    resetDanmuListScroll();
+  }
+
+  // Filtering/search shrinks the list; a stale scrollTop would leave the
+  // virtualized window past the last entry (blank list).
+  function resetDanmuListScroll() {
+    danmuScrollTop = 0;
+    if (danmuListEl) {
+      danmuListEl.scrollTop = 0;
+    }
   }
 
   let typeFilteredDanmu = $derived(
@@ -502,7 +512,11 @@
         >
           <label class="search-box">
             <Search size={13} />
-            <input bind:value={danmuSearch} placeholder="搜索弹幕 / SC 内容" />
+            <input
+              bind:value={danmuSearch}
+              oninput={resetDanmuListScroll}
+              placeholder="搜索弹幕 / SC 内容"
+            />
           </label>
           <div class="type-filter">
             <button
@@ -519,7 +533,8 @@
                 {#each DANMU_TYPE_FILTERS as option (option.value)}
                   <label class="filter-option">
                     <input
-                      type="checkbox"
+                      type="radio"
+                      name="danmu-type-filter"
                       checked={danmuTypeFilter === option.value}
                       onchange={() => setDanmuTypeFilter(option.value)}
                     />
@@ -580,7 +595,7 @@
                           style:background={getScColors(danmu.price ?? 0)
                             .content}
                         >
-                          SC {danmu.price}
+                          SC {formatScPrice(danmu.price ?? 0)}
                         </span>
                       {/if}
                       {#if danmu.user_name}

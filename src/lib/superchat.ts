@@ -1,7 +1,7 @@
 // SC styling follows https://github.com/FangDingli/blive-sc-gen.
-// Bilibili reports the SC price in CNY while the SC card displays it in
-// battery (电池), 1 CNY = 10 battery, and both the color tiers and the badge
-// thresholds operate on the battery value.
+// Bilibili reports the SC price in CNY and the UI displays it in CNY (¥).
+// Color tiers follow blive-sc-gen whose thresholds operate on battery
+// (电池), 1 CNY = 10 battery, so the price is converted internally.
 const SC_BATTERY_PER_CNY = 10;
 
 export interface ScColors {
@@ -36,7 +36,7 @@ export function getScColors(price: number): ScColors {
 }
 
 export function formatScPrice(price: number): string {
-  return `${scBattery(price)} 电池`;
+  return `¥${price}`;
 }
 
 export const SUPER_CHAT_EVENT_TYPE = "super_chat";

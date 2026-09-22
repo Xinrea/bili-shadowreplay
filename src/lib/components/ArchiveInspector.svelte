@@ -589,6 +589,10 @@
                   >
                     <time>{formatTime(danmu.ts / 1000 - globalOffset)}</time>
                     <span class="danmu-content">
+                      {#if danmu.user_name}
+                        <b>{danmu.user_name}</b>
+                      {/if}
+                      <span class="danmu-text">{danmu.content}</span>
                       {#if isSuperChat(danmu)}
                         <span
                           class="sc-badge"
@@ -598,10 +602,6 @@
                           SC {formatScPrice(danmu.price ?? 0)}
                         </span>
                       {/if}
-                      {#if danmu.user_name}
-                        <b>{danmu.user_name}</b>
-                      {/if}
-                      <span class="danmu-text">{danmu.content}</span>
                     </span>
                   </button>
                 {/each}
@@ -621,10 +621,10 @@
               style:background-color={colors.info}
               style:border-color={colors.content}
             >
+              <span class="sc-tooltip-user">{scTooltip.entry.user_name}</span>
               <span class="sc-tooltip-price" style:color={colors.content}>
                 {formatScPrice(scTooltip.entry.price ?? 0)}
               </span>
-              <span class="sc-tooltip-user">{scTooltip.entry.user_name}</span>
             </div>
             <div
               class="sc-tooltip-body"
@@ -1371,7 +1371,7 @@
     display: inline-block;
     box-sizing: border-box;
     flex: 0 0 auto;
-    margin-right: 6px;
+    margin-left: 6px;
     border-radius: 3px;
     padding: 0 5px;
     color: #fff;

@@ -23,6 +23,9 @@ export default defineConfig(async ({ mode }) => {
     optimizeDeps: {
       exclude: ["@ffmpeg/ffmpeg", "@ffmpeg/util"],
     },
+    resolve: {
+      conditions: ["browser", "module", "svelte"],
+    },
     plugins: [
       svelte(),
     ],

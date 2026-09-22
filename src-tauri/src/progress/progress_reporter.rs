@@ -95,16 +95,22 @@ impl EventEmitter {
                 RecorderEvent::DanmuReceived {
                     room,
                     ts,
+                    event_type,
                     content,
                     user_name,
+                    price,
+                    sc_duration,
                 } => {
                     self.app_handle
                         .emit(
                             &format!("danmu:{room}"),
                             DanmuEntry {
                                 ts: *ts,
+                                event_type: event_type.clone(),
                                 content: content.clone(),
                                 user_name: user_name.clone(),
+                                price: *price,
+                                sc_duration: *sc_duration,
                             },
                         )
                         .unwrap_or_else(|e| log::error!("Failed to emit danmu event: {e}"));

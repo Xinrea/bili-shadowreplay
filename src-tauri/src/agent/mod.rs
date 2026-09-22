@@ -457,10 +457,15 @@ impl BsrTool {
                 let records = rows
                     .into_iter()
                     .map(|row| {
-                        json!({
+                        let mut record = json!({
                             "ts": row.ts as f64 / 1000.0,
+                            "type": row.event_type,
                             "content": row.content,
-                        })
+                        });
+                        if let Some(price) = row.price {
+                            record["price"] = json!(price);
+                        }
+                        record
                     })
                     .collect::<Vec<_>>();
                 Ok(json!({ "danmu_record": records }))

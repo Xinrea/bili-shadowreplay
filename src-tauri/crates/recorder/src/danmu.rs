@@ -10,11 +10,29 @@ use tokio::{
     sync::RwLock,
 };
 
+/// Live event types surfaced by the preview (danmu list + floating overlay).
+/// New displayable event kinds are added here and picked up end to end.
+pub const PREVIEW_EVENT_TYPES: &[&str] = &["danmu", "super_chat"];
+
 #[derive(Clone, Serialize, Debug)]
 pub struct DanmuEntry {
     pub ts: i64,
+    /// Event type, aligned with the recorded `LiveEvent` "type" field
+    /// (e.g. "danmu", "super_chat"). Open set: more event types may follow.
+    #[serde(rename = "type")]
+    pub event_type: String,
     pub content: String,
     pub user_name: Option<String>,
+    /// Super chat price in CNY (battery). `None` for other event types.
+    pub price: Option<u32>,
+    /// Super chat pinned duration in seconds.
+    pub sc_duration: Option<u32>,
+}
+
+impl DanmuEntry {
+    pub fn is_danmu(&self) -> bool {
+        self.event_type == "danmu"
+    }
 }
 
 pub struct DanmuStorage {
@@ -105,24 +123,51 @@ impl DanmuStorage {
         .await
     }
 
-    // get entries with ts relative to live start time
+    /// Get entries with ts relative to live start time.
+    ///
+    /// All preview-relevant event types are returned; consumers that only want
+    /// danmaku (e.g. ASS export) filter on `event_type`.
     pub async fn get_entries(&self, live_start_ts: i64) -> Vec<DanmuEntry> {
         let mut danmus: Vec<DanmuEntry> = self
             .cache
             .read()
             .await
             .iter()
-            .filter(|event| event.event_type == "danmu")
+            .filter(|event| PREVIEW_EVENT_TYPES.contains(&event.event_type.as_str()))
             .filter_map(|event| {
+                let is_super_chat = event.event_type == "super_chat";
                 event.data.get("content").and_then(|content| {
-                    content.as_str().map(|content| DanmuEntry {
-                        ts: event.ts - live_start_ts,
-                        content: content.to_string(),
-                        user_name: event
-                            .data
-                            .get("user_name")
-                            .and_then(|name| name.as_str())
-                            .map(str::to_string),
+                    content.as_str().map(|content| {
+                        let price = if is_super_chat {
+                            event
+                                .data
+                                .get("price")
+                                .and_then(|price| price.as_u64())
+                                .map(|price| price as u32)
+                        } else {
+                            None
+                        };
+                        let sc_duration = if is_super_chat {
+                            event
+                                .data
+                                .get("duration")
+                                .and_then(|duration| duration.as_u64())
+                                .map(|duration| duration as u32)
+                        } else {
+                            None
+                        };
+                        DanmuEntry {
+                            ts: event.ts - live_start_ts,
+                            event_type: event.event_type.clone(),
+                            content: content.to_string(),
+                            user_name: event
+                                .data
+                                .get("user_name")
+                                .and_then(|name| name.as_str())
+                                .map(str::to_string),
+                            price,
+                            sc_duration,
+                        }
                     })
                 })
             })
@@ -130,5 +175,82 @@ impl DanmuStorage {
         // filter out danmus with ts < 0
         danmus.retain(|entry| entry.ts >= 0);
         danmus
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn write_lines(path: &PathBuf, lines: &[String]) {
+        use std::io::Write;
+        let mut file = std::fs::File::create(path).unwrap();
+        for line in lines {
+            writeln!(file, "{line}").unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn get_entries_keeps_super_chats_and_danmaku() {
+        let path = std::env::temp_dir().join(format!(
+            "danmu-storage-test-{}-{}.jsonl",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        write_lines(
+            &path,
+            &[
+                json!({
+                    "ts": 1_700_000_000_000i64,
+                    "platform": "bilibili",
+                    "room_id": "1",
+                    "type": "danmu",
+                    "data": { "content": "hello", "user_name": "alice" },
+                    "raw": null,
+                })
+                .to_string(),
+                json!({
+                    "ts": 1_700_000_005_000i64,
+                    "platform": "bilibili",
+                    "room_id": "1",
+                    "type": "super_chat",
+                    "data": {
+                        "content": "hi sc",
+                        "user_name": "bob",
+                        "price": 30,
+                        "duration": 60,
+                    },
+                    "raw": null,
+                })
+                .to_string(),
+                json!({
+                    "ts": 1_700_000_006_000i64,
+                    "platform": "bilibili",
+                    "room_id": "1",
+                    "type": "gift",
+                    "data": { "content": "not a danmu", "user_name": "carol" },
+                    "raw": null,
+                })
+                .to_string(),
+            ],
+        );
+
+        let storage = DanmuStorage::new(&path).await.unwrap();
+        let entries = storage.get_entries(1_700_000_000_000).await;
+
+        std::fs::remove_file(&path).ok();
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].event_type, "danmu");
+        assert_eq!(entries[0].content, "hello");
+        assert_eq!(entries[0].user_name.as_deref(), Some("alice"));
+        assert_eq!(entries[0].price, None);
+        assert_eq!(entries[0].sc_duration, None);
+        assert_eq!(entries[1].event_type, "super_chat");
+        assert_eq!(entries[1].content, "hi sc");
+        assert_eq!(entries[1].user_name.as_deref(), Some("bob"));
+        assert_eq!(entries[1].price, Some(30));
+        assert_eq!(entries[1].sc_duration, Some(60));
     }
 }

@@ -47,6 +47,12 @@ impl Default for Danmu2AssOptions {
 }
 
 pub fn danmu_to_ass(danmus: Vec<DanmuEntry>, options: Danmu2AssOptions) -> String {
+    // Super chats and other event types are shown by the preview UI but never
+    // burned into the video: the ASS subtitle track only renders regular
+    // scrolling danmaku.
+    let mut danmus = danmus;
+    danmus.retain(|danmu| danmu.is_danmu());
+
     let font_size = options.font_size; // Default font size
     let opacity = options.opacity; // 透明度参数
 
@@ -306,19 +312,50 @@ mod tests {
         let danmus = vec![
             DanmuEntry {
                 ts: 1000,
+                event_type: "danmu".to_string(),
                 content: "hello".to_string(),
                 user_name: None,
+                price: None,
+                sc_duration: None,
             },
             DanmuEntry {
                 ts: 5000,
+                event_type: "danmu".to_string(),
                 content: "world".to_string(),
                 user_name: None,
+                price: None,
+                sc_duration: None,
             },
         ];
         let result = danmu_to_ass(danmus, Danmu2AssOptions::default());
         assert!(result.contains("[Events]"));
         assert!(result.contains("hello"));
         assert!(result.contains("world"));
+    }
+
+    #[test]
+    fn test_danmu_to_ass_skips_super_chats() {
+        let danmus = vec![
+            DanmuEntry {
+                ts: 1000,
+                event_type: "danmu".to_string(),
+                content: "hello".to_string(),
+                user_name: None,
+                price: None,
+                sc_duration: None,
+            },
+            DanmuEntry {
+                ts: 5000,
+                event_type: "super_chat".to_string(),
+                content: "super chat".to_string(),
+                user_name: Some("alice".to_string()),
+                price: Some(30),
+                sc_duration: Some(60),
+            },
+        ];
+        let result = danmu_to_ass(danmus, Danmu2AssOptions::default());
+        assert!(result.contains("hello"));
+        assert!(!result.contains("super chat"));
     }
 
     #[test]

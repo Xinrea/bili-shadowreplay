@@ -50,15 +50,21 @@ pub async fn create_websocket_server(state: State) -> SocketIoLayer {
                             RecorderEvent::DanmuReceived {
                                 room,
                                 ts,
+                                event_type,
                                 content,
                                 user_name,
+                                price,
+                                sc_duration,
                             } => (
                                 "danmu",
                                 json!({
                                         "room": room,
                                         "ts": ts,
+                                        "type": event_type,
                                         "content": content,
-                                        "user_name": user_name
+                                        "user_name": user_name,
+                                        "price": price,
+                                        "sc_duration": sc_duration
                                 }),
                             ),
                             _ => continue,

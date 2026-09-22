@@ -571,6 +571,9 @@ fn prepare_danmus_for_export(
     range_start_s: i64,
     range_end_s: i64,
 ) -> Vec<DanmuEntry> {
+    // Super chats and other event types stay out of danmaku exports; only
+    // regular danmaku is exported.
+    danmus.retain(DanmuEntry::is_danmu);
     let start_ms = stream_start_ms + range_start_s * 1000;
     for d in &mut danmus {
         d.ts -= start_ms;
@@ -593,8 +596,11 @@ mod prepare_danmus_for_export_tests {
     fn entry(ts: i64, content: &str) -> DanmuEntry {
         DanmuEntry {
             ts,
+            event_type: "danmu".to_string(),
             content: content.to_string(),
             user_name: None,
+            price: None,
+            sc_duration: None,
         }
     }
 

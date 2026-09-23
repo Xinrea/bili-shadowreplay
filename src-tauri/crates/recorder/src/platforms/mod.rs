@@ -1,6 +1,7 @@
 pub mod bilibili;
 pub mod common;
 pub mod douyin;
+pub mod douyu;
 pub mod huya;
 pub mod kuaishou;
 pub mod tiktok;
@@ -11,6 +12,7 @@ use std::hash::{Hash, Hasher};
 pub enum PlatformType {
     BiliBili,
     Douyin,
+    Douyu,
     Huya,
     Youtube,
     Kuaishou,
@@ -23,9 +25,10 @@ impl PlatformType {
     /// All known platforms. Keep in sync with the enum variants; used by
     /// cache directory migration to tell BSR-owned folders apart from
     /// pre-existing user files.
-    pub const ALL: [PlatformType; 8] = [
+    pub const ALL: [PlatformType; 9] = [
         PlatformType::BiliBili,
         PlatformType::Douyin,
+        PlatformType::Douyu,
         PlatformType::Huya,
         PlatformType::Youtube,
         PlatformType::Kuaishou,
@@ -38,6 +41,7 @@ impl PlatformType {
         match self {
             PlatformType::BiliBili => "bilibili",
             PlatformType::Douyin => "douyin",
+            PlatformType::Douyu => "douyu",
             PlatformType::Huya => "huya",
             PlatformType::Youtube => "youtube",
             PlatformType::Kuaishou => "kuaishou",
@@ -54,6 +58,7 @@ impl std::str::FromStr for PlatformType {
         match s {
             "bilibili" => Ok(PlatformType::BiliBili),
             "douyin" => Ok(PlatformType::Douyin),
+            "douyu" => Ok(PlatformType::Douyu),
             "huya" => Ok(PlatformType::Huya),
             "youtube" => Ok(PlatformType::Youtube),
             "kuaishou" => Ok(PlatformType::Kuaishou),
@@ -81,6 +86,7 @@ mod tests {
     fn test_platform_type_as_str() {
         assert_eq!(PlatformType::BiliBili.as_str(), "bilibili");
         assert_eq!(PlatformType::Douyin.as_str(), "douyin");
+        assert_eq!(PlatformType::Douyu.as_str(), "douyu");
         assert_eq!(PlatformType::Huya.as_str(), "huya");
         assert_eq!(PlatformType::Youtube.as_str(), "youtube");
         assert_eq!(PlatformType::Kuaishou.as_str(), "kuaishou");
@@ -96,6 +102,7 @@ mod tests {
             Ok(PlatformType::BiliBili)
         );
         assert_eq!(PlatformType::from_str("douyin"), Ok(PlatformType::Douyin));
+        assert_eq!(PlatformType::from_str("douyu"), Ok(PlatformType::Douyu));
         assert_eq!(PlatformType::from_str("huya"), Ok(PlatformType::Huya));
         assert_eq!(PlatformType::from_str("youtube"), Ok(PlatformType::Youtube));
         assert_eq!(
@@ -119,6 +126,7 @@ mod tests {
         for name in [
             "bilibili",
             "douyin",
+            "douyu",
             "huya",
             "youtube",
             "kuaishou",
@@ -142,6 +150,7 @@ mod tests {
         let platforms = [
             PlatformType::BiliBili,
             PlatformType::Douyin,
+            PlatformType::Douyu,
             PlatformType::Huya,
             PlatformType::Youtube,
             PlatformType::Kuaishou,

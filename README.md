@@ -14,6 +14,7 @@ BiliBili ShadowReplay 是一个缓存直播并进行实时编辑投稿的工具�
 
 - B站
 - 抖音
+- 斗鱼
 - TikTok
 - 快手
 - 虎牙

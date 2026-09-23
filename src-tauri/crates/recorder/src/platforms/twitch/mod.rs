@@ -127,10 +127,6 @@ impl PlatformApi for TwitchRecorder {
         true
     }
 
-    fn skip_incompatible_hls_segments(&self) -> bool {
-        true
-    }
-
     async fn should_resume_same_recording(&self) -> bool {
         let recording_live_id = self.extra.recording_platform_live_id.read().await.clone();
         let platform_live_id = self.platform_live_id().read().await.clone();
@@ -164,8 +160,6 @@ mod tests {
         .unwrap();
         assert_eq!(recorder.room_id(), "ninja");
         assert!(recorder.resume_on_update_timeout());
-        assert!(recorder.skip_incompatible_hls_segments());
-
         *recorder.platform_live_id().write().await = "broadcast-1".into();
         *recorder.extra.recording_platform_live_id.write().await = "broadcast-1".into();
         *recorder.pre_live_id().write().await = Some("recording-1".into());

@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::{path::PathBuf, sync::Arc};
 
 use chrono::Utc;
-use m3u8_rs::{MediaPlaylist, MediaSegment, Playlist};
+use m3u8_rs::{DateRange, MediaPlaylist, MediaSegment, Playlist};
 use reqwest::header::HeaderMap;
 use std::time::Duration;
 use tokio::fs::{File, OpenOptions};
@@ -42,7 +42,7 @@ pub struct HlsRecorder {
     updated_at: Arc<AtomicI64>,
 
     pre_metadata: Arc<RwLock<Option<VideoMetadata>>>,
-    skip_incompatible_segments: bool,
+    ad_ranges: Arc<Mutex<Vec<AdTimeRange>>>,
 }
 
 struct DownloadedSegment {
@@ -51,9 +51,59 @@ struct DownloadedSegment {
     size: u64,
 }
 
-pub(crate) struct HlsRecorderOptions {
-    pub(crate) cookies: Option<String>,
-    pub(crate) skip_incompatible_segments: bool,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AdTimeRange {
+    start_ms: i64,
+    end_ms: i64,
+}
+
+fn is_twitch_ad_range(range: &DateRange) -> bool {
+    range.id.to_ascii_lowercase().starts_with("stitched-ad-")
+        || range
+            .class
+            .as_deref()
+            .is_some_and(|class| class.to_ascii_lowercase().contains("ad"))
+        || range.x_prefixed.as_ref().is_some_and(|attributes| {
+            attributes
+                .keys()
+                .any(|key| key.starts_with("X-TV-TWITCH-AD-"))
+        })
+}
+
+fn twitch_ad_time_range(range: &DateRange) -> Option<AdTimeRange> {
+    if !is_twitch_ad_range(range) {
+        return None;
+    }
+
+    let start_ms = range.start_date.timestamp_millis();
+    let end_ms = range
+        .end_date
+        .as_ref()
+        .map(|end_date| end_date.timestamp_millis())
+        .or_else(|| {
+            range
+                .duration
+                .filter(|duration| duration.is_finite() && *duration > 0.0)
+                .map(|duration| start_ms.saturating_add((duration * 1000.0).ceil() as i64))
+        })?;
+    (end_ms > start_ms).then_some(AdTimeRange { start_ms, end_ms })
+}
+
+fn is_twitch_ad_segment(segment: &MediaSegment, ad_ranges: &[AdTimeRange]) -> bool {
+    if segment.daterange.as_ref().is_some_and(is_twitch_ad_range) {
+        return true;
+    }
+
+    let Some(segment_time) = segment
+        .program_date_time
+        .as_ref()
+        .map(|date_time| date_time.timestamp_millis())
+    else {
+        return false;
+    };
+    ad_ranges
+        .iter()
+        .any(|range| segment_time >= range.start_ms && segment_time < range.end_ms)
 }
 
 fn local_segment_filename(source_uri: &str, sequence: u64) -> String {
@@ -84,34 +134,6 @@ impl HlsRecorder {
         work_dir: PathBuf,
         enabled: Arc<AtomicBool>,
     ) -> Result<Self, RecorderError> {
-        Self::new_with_options(
-            room_id,
-            stream,
-            client,
-            HlsRecorderOptions {
-                cookies,
-                skip_incompatible_segments: false,
-            },
-            event_channel,
-            work_dir,
-            enabled,
-        )
-        .await
-    }
-
-    pub(crate) async fn new_with_options(
-        room_id: String,
-        stream: Arc<HlsStream>,
-        client: reqwest::Client,
-        options: HlsRecorderOptions,
-        event_channel: broadcast::Sender<RecorderEvent>,
-        work_dir: PathBuf,
-        enabled: Arc<AtomicBool>,
-    ) -> Result<Self, RecorderError> {
-        let HlsRecorderOptions {
-            cookies,
-            skip_incompatible_segments,
-        } = options;
         // try to create work_dir
         if !work_dir.exists() {
             std::fs::create_dir_all(&work_dir)?;
@@ -202,7 +224,7 @@ impl HlsRecorder {
             sequence: Arc::new(AtomicU64::new(sequence)),
             updated_at: Arc::new(AtomicI64::new(chrono::Utc::now().timestamp_millis())),
             pre_metadata: Arc::new(RwLock::new(pre_metadata)),
-            skip_incompatible_segments,
+            ad_ranges: Arc::new(Mutex::new(Vec::new())),
             sequence_file: Arc::new(RwLock::new(sequence_file)),
         })
     }
@@ -312,6 +334,33 @@ impl HlsRecorder {
         Ok(())
     }
 
+    async fn ad_ranges_for_playlist(&self, playlist: &MediaPlaylist) -> Vec<AdTimeRange> {
+        let observed_ranges: Vec<AdTimeRange> = playlist
+            .segments
+            .iter()
+            .filter_map(|segment| segment.daterange.as_ref().and_then(twitch_ad_time_range))
+            .collect();
+        let first_segment_time = playlist
+            .segments
+            .iter()
+            .find_map(|segment| segment.program_date_time.as_ref())
+            .map(|date_time| date_time.timestamp_millis());
+        let mut ad_ranges = self.ad_ranges.lock().await;
+        for range in observed_ranges {
+            if !ad_ranges.contains(&range) {
+                ad_ranges.push(range);
+            }
+        }
+        if let Some(first_segment_time) = first_segment_time {
+            ad_ranges.retain(|range| range.end_ms > first_segment_time);
+        }
+        if ad_ranges.len() > 128 {
+            let excess = ad_ranges.len() - 128;
+            ad_ranges.drain(..excess);
+        }
+        ad_ranges.clone()
+    }
+
     async fn download_segment(
         &self,
         source_segment: &MediaSegment,
@@ -331,10 +380,29 @@ impl HlsRecorder {
         })
     }
 
+    async fn download_if_not_twitch_ad(
+        &self,
+        segment: &MediaSegment,
+        sequence: u64,
+        ad_ranges: &[AdTimeRange],
+    ) -> Result<Option<DownloadedSegment>, RecorderError> {
+        if is_twitch_ad_segment(segment, ad_ranges) {
+            log::info!("Skipping Twitch ad segment at sequence {sequence}");
+            let path = self
+                .work_dir
+                .join(local_segment_filename(&segment.uri, sequence));
+            self.skip_segment(&path, sequence).await?;
+            return Ok(None);
+        }
+
+        self.download_segment(segment, sequence).await.map(Some)
+    }
+
     async fn update_entries(&self) -> Result<(), RecorderError> {
         let media_playlist = self.query_media_playlist().await?;
         let playlist_sequence = media_playlist.media_sequence;
         let last_sequence = self.sequence.load(Ordering::Relaxed);
+        let ad_ranges = self.ad_ranges_for_playlist(&media_playlist).await;
         let mut last_metadata = self.pre_metadata.read().await.clone();
         let mut updated = false;
         let mut duration_delta = 0.0;
@@ -345,8 +413,12 @@ impl HlsRecorder {
                 continue;
             }
 
-            let downloaded = match self.download_segment(segment, segment_sequence).await {
-                Ok(downloaded) => downloaded,
+            let downloaded = match self
+                .download_if_not_twitch_ad(segment, segment_sequence, &ad_ranges)
+                .await
+            {
+                Ok(Some(downloaded)) => downloaded,
+                Ok(None) => continue,
                 Err(error) => {
                     log::error!(
                         "Failed to download HLS segment at sequence {segment_sequence}: {error}"
@@ -362,26 +434,12 @@ impl HlsRecorder {
             }
 
             // check if the stream is changed
-            let segment_metadata = match extract_video_metadata(&segment_path).await {
-                Ok(metadata) => metadata,
-                Err(error) if self.skip_incompatible_segments => {
-                    log::info!(
-                        "Skipping unreadable HLS segment at sequence {segment_sequence}: {error}"
-                    );
-                    self.skip_segment(&segment_path, segment_sequence).await?;
-                    continue;
-                }
-                Err(error) => return Err(RecorderError::FfmpegError(error)),
-            };
+            let segment_metadata = extract_video_metadata(&segment_path)
+                .await
+                .map_err(RecorderError::FfmpegError)?;
 
             // IMPORTANT: This handles bilibili ts stream segment, which might lack of SPS/PPS and need to be appended behind last segment
             if segment_metadata.seems_corrupted() {
-                if self.skip_incompatible_segments {
-                    log::info!("Skipping unreadable HLS segment at sequence {segment_sequence}");
-                    self.skip_segment(&segment_path, segment_sequence).await?;
-                    continue;
-                }
-
                 let mut playlist = self.playlist.lock().await;
                 if playlist.is_empty().await {
                     // ignore this segment
@@ -431,13 +489,6 @@ impl HlsRecorder {
                 // unplayable as one recording; their length naturally differs
                 // from segment to segment.
                 if !previous_metadata.same_stream_shape(&segment_metadata) {
-                    if self.skip_incompatible_segments {
-                        log::info!(
-                            "Skipping incompatible HLS segment at sequence {segment_sequence}"
-                        );
-                        self.skip_segment(&segment_path, segment_sequence).await?;
-                        continue;
-                    }
                     return Err(RecorderError::ResolutionChanged {
                         err: "Resolution changed".to_string(),
                     });
@@ -687,14 +738,11 @@ mod tests {
             Codec::Avc,
             0,
         ));
-        let recorder = HlsRecorder::new_with_options(
+        let recorder = HlsRecorder::new(
             "twitch-channel".to_string(),
             stream,
             reqwest::Client::new(),
-            HlsRecorderOptions {
-                cookies: None,
-                skip_incompatible_segments: false,
-            },
+            None,
             event_tx,
             work_dir.clone(),
             Arc::new(AtomicBool::new(true)),
@@ -738,7 +786,100 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn skipping_an_incompatible_segment_removes_it_and_advances_sequence() {
+    async fn twitch_stitched_ad_range_skips_ad_playlist_segments_but_records_program() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"mock ts segment".to_vec()))
+            .mount(&server)
+            .await;
+        let ad_first = format!("{}/ads/segment-480p-1.ts", server.uri());
+        let ad_second = format!("{}/ads/segment-480p-2.ts", server.uri());
+        let program = format!("{}/live/segment-1080p.ts", server.uri());
+        let (event_tx, _) = broadcast::channel(1);
+        let work_dir = std::env::temp_dir().join(format!(
+            "bili-shadowreplay-hls-ad-range-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let stream = Arc::new(HlsStream::new(
+            "twitch-live".to_string(),
+            server.uri(),
+            "/master.m3u8".to_string(),
+            String::new(),
+            Format::TS,
+            Codec::Avc,
+            0,
+        ));
+        let recorder = HlsRecorder::new(
+            "twitch-channel".to_string(),
+            stream,
+            reqwest::Client::new(),
+            None,
+            event_tx,
+            work_dir.clone(),
+            Arc::new(AtomicBool::new(true)),
+        )
+        .await
+        .unwrap();
+        let media_playlist = format!(
+            r#"#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXT-X-DATERANGE:ID="stitched-ad-test",CLASS="twitch-stitched-ad",START-DATE="2026-01-01T00:00:00Z",DURATION=4.0
+#EXT-X-PROGRAM-DATE-TIME:2026-01-01T00:00:00Z
+#EXTINF:2.0,480p ad
+{ad_first}
+#EXT-X-PROGRAM-DATE-TIME:2026-01-01T00:00:02Z
+#EXTINF:2.0,480p ad
+{ad_second}
+#EXT-X-PROGRAM-DATE-TIME:2026-01-01T00:00:04Z
+#EXTINF:2.0,1080p program
+{program}
+"#
+        );
+        let (_, playlist) = m3u8_rs::parse_playlist(media_playlist.as_bytes()).unwrap();
+        let Playlist::MediaPlaylist(playlist) = playlist else {
+            panic!("expected Twitch media playlist");
+        };
+        let ad_ranges = recorder.ad_ranges_for_playlist(&playlist).await;
+
+        for (sequence, segment) in playlist.segments.iter().enumerate() {
+            if let Some(downloaded) = recorder
+                .download_if_not_twitch_ad(segment, sequence as u64, &ad_ranges)
+                .await
+                .unwrap()
+            {
+                recorder
+                    .playlist
+                    .lock()
+                    .await
+                    .add_segment(downloaded.segment)
+                    .await
+                    .unwrap();
+                recorder.update_sequence(sequence as u64).await.unwrap();
+            }
+        }
+
+        let saved = tokio::fs::read_to_string(work_dir.join(PLAYLIST_FILE_NAME))
+            .await
+            .unwrap();
+        assert!(saved.contains("segment_2.ts"));
+        assert!(saved.contains("1080p program"));
+        assert!(!saved.contains("480p ad"));
+        assert!(!saved.contains("https://"));
+        assert!(!work_dir.join("segment_0.ts").exists());
+        assert!(!work_dir.join("segment_1.ts").exists());
+        assert!(work_dir.join("segment_2.ts").exists());
+        assert_eq!(
+            tokio::fs::read_to_string(work_dir.join(".sequence"))
+                .await
+                .unwrap(),
+            "2"
+        );
+
+        tokio::fs::remove_dir_all(work_dir).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn skipping_a_segment_removes_it_and_advances_sequence() {
         let (event_tx, _) = broadcast::channel(1);
         let work_dir = std::env::temp_dir().join(format!(
             "bili-shadowreplay-hls-skip-segment-{}",
@@ -753,14 +894,11 @@ mod tests {
             Codec::Avc,
             0,
         ));
-        let recorder = HlsRecorder::new_with_options(
+        let recorder = HlsRecorder::new(
             "twitch-channel".to_string(),
             stream,
             reqwest::Client::new(),
-            HlsRecorderOptions {
-                cookies: None,
-                skip_incompatible_segments: true,
-            },
+            None,
             event_tx,
             work_dir.clone(),
             Arc::new(AtomicBool::new(true)),

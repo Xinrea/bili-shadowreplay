@@ -17,7 +17,7 @@ use danmu_stream::provider::ProviderType;
 use danmu_stream::{DanmuMessageType, LiveEvent};
 
 use crate::core::flv_recorder::FlvRecorder;
-use crate::core::hls_recorder::{construct_stream_from_variant, HlsRecorder, HlsRecorderOptions};
+use crate::core::hls_recorder::{construct_stream_from_variant, HlsRecorder};
 use crate::core::{Codec, Format, HlsStream};
 use crate::danmu::DanmuStorage;
 use crate::errors::RecorderError;
@@ -167,12 +167,6 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
     /// Most platforms treat a stalled playlist as the end of this recording;
     /// platforms with transient ad/transcode gaps can opt into resuming it.
     fn resume_on_update_timeout(&self) -> bool {
-        false
-    }
-
-    /// Whether HLS segments with an unreadable or incompatible media shape
-    /// should be discarded rather than ending the recording.
-    fn skip_incompatible_hls_segments(&self) -> bool {
         false
     }
 
@@ -352,14 +346,11 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
 
         match pull {
             StreamPull::Hls { stream, cookies } => {
-                let hls_recorder = HlsRecorder::new_with_options(
+                let hls_recorder = HlsRecorder::new(
                     self.room_id(),
                     stream,
                     self.client().clone(),
-                    HlsRecorderOptions {
-                        cookies,
-                        skip_incompatible_segments: self.skip_incompatible_hls_segments(),
-                    },
+                    cookies,
                     self.event_channel().clone(),
                     work_dir.full_path(),
                     self.enabled().clone(),

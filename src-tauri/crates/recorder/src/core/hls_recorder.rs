@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::{path::PathBuf, sync::Arc};
 
 use chrono::Utc;
-use m3u8_rs::{MediaPlaylist, Playlist};
+use m3u8_rs::{MediaPlaylist, Playlist, VariantStream};
 use reqwest::header::HeaderMap;
 use std::time::Duration;
 use tokio::fs::{File, OpenOptions};
@@ -29,6 +29,11 @@ const DOWNLOAD_RETRY: u32 = 3;
 pub struct HlsRecorder {
     room_id: String,
     stream: Arc<HlsStream>,
+    /// Master playlists may gain higher-quality variants after a live starts.
+    /// Pin the selected media stream for this recording so its codec/resolution
+    /// and sequence space cannot change on each poll.
+    selected_stream: Arc<RwLock<Option<HlsStream>>>,
+    selected_variant_key: Arc<RwLock<Option<String>>>,
     client: reqwest::Client,
     event_channel: broadcast::Sender<RecorderEvent>,
     work_dir: PathBuf,
@@ -118,6 +123,8 @@ impl HlsRecorder {
         Ok(Self {
             room_id,
             stream,
+            selected_stream: Arc::new(RwLock::new(None)),
+            selected_variant_key: Arc::new(RwLock::new(None)),
             client,
             event_channel,
             work_dir,
@@ -194,45 +201,114 @@ impl HlsRecorder {
     }
 
     async fn query_media_playlist(&self) -> Result<MediaPlaylist, RecorderError> {
-        let playlist = self.query_playlist(&self.stream).await?;
-        match playlist {
-            Playlist::MediaPlaylist(playlist) => Ok(playlist),
-            Playlist::MasterPlaylist(playlist) => {
-                // Select the highest-bandwidth media variant. HLS masters are
-                // not required to put their preferred quality first (YouTube
-                // lists variants from lowest to highest).
-                let variant = playlist
-                    .variants
-                    .iter()
-                    .filter(|variant| !variant.is_i_frame)
-                    .max_by_key(|variant| variant.average_bandwidth.unwrap_or(variant.bandwidth));
-                match variant {
-                    Some(variant) => {
-                        let real_stream = construct_stream_from_variant(
-                            &self.stream.id,
-                            &variant.uri,
-                            self.stream.format.clone(),
-                            self.stream.codec.clone(),
-                        )
-                        .await?;
-                        let playlist = self.query_playlist(&real_stream).await?;
-                        match playlist {
-                            Playlist::MediaPlaylist(playlist) => Ok(playlist),
-                            Playlist::MasterPlaylist(_) => Err(RecorderError::M3u8ParseFailed {
-                                content: "No media playlist found".to_string(),
-                            }),
-                        }
-                    }
-                    None => Err(RecorderError::M3u8ParseFailed {
-                        content: "No variants found".to_string(),
-                    }),
+        let selected_stream = self.selected_stream.read().await.clone();
+        if let Some(selected_stream) = selected_stream {
+            match self.read_media_playlist(&selected_stream).await {
+                Ok(playlist) => return Ok(playlist),
+                Err(error) => {
+                    let selected_key = self.selected_variant_key.read().await.clone();
+                    let Some(selected_key) = selected_key else {
+                        return Err(error);
+                    };
+                    log::warn!(
+                        "Selected HLS variant is unavailable; refreshing its signed URL from the master playlist"
+                    );
+                    return self
+                        .refresh_selected_variant(&selected_key)
+                        .await
+                        .or(Err(error));
                 }
             }
+        }
+
+        match self.query_playlist(&self.stream).await? {
+            Playlist::MediaPlaylist(playlist) => {
+                *self.selected_stream.write().await = Some((*self.stream).clone());
+                Ok(playlist)
+            }
+            Playlist::MasterPlaylist(playlist) => {
+                // Select once, not once per poll: YouTube adds higher-quality
+                // variants after a live starts, and switching would mix
+                // resolutions or sequence numbers into one recording.
+                let variant = best_media_variant(&playlist.variants).ok_or_else(|| {
+                    RecorderError::M3u8ParseFailed {
+                        content: "No variants found".to_string(),
+                    }
+                })?;
+                let variant_url = resolve_variant_url(&self.stream.index(), &variant.uri)?;
+                let selected_stream = construct_stream_from_variant(
+                    &self.stream.id,
+                    &variant_url,
+                    self.stream.format.clone(),
+                    self.stream.codec.clone(),
+                )
+                .await?;
+                let selected_key = variant_identity(&variant_url);
+                let media_playlist = self.read_media_playlist(&selected_stream).await?;
+                *self.selected_variant_key.write().await = Some(selected_key);
+                *self.selected_stream.write().await = Some(selected_stream);
+                Ok(media_playlist)
+            }
+        }
+    }
+
+    async fn refresh_selected_variant(
+        &self,
+        selected_key: &str,
+    ) -> Result<MediaPlaylist, RecorderError> {
+        let master = self.query_playlist(&self.stream).await?;
+        let Playlist::MasterPlaylist(master) = master else {
+            return Err(RecorderError::M3u8ParseFailed {
+                content: "Pinned HLS variant is unavailable".to_string(),
+            });
+        };
+        let master_url = self.stream.index();
+        let pinned_variant = master.variants.iter().find(|variant| {
+            !variant.is_i_frame
+                && resolve_variant_url(&master_url, &variant.uri)
+                    .is_ok_and(|url| variant_identity(&url) == selected_key)
+        });
+        let variant = pinned_variant.or_else(|| best_media_variant(&master.variants));
+        let variant = variant.ok_or_else(|| RecorderError::M3u8ParseFailed {
+            content: "No variants found".to_string(),
+        })?;
+        if pinned_variant.is_none() {
+            log::warn!("Pinned HLS variant disappeared; selecting the best available variant");
+        }
+        let variant_url = resolve_variant_url(&master_url, &variant.uri)?;
+        let selected_stream = construct_stream_from_variant(
+            &self.stream.id,
+            &variant_url,
+            self.stream.format.clone(),
+            self.stream.codec.clone(),
+        )
+        .await?;
+        let media_playlist = self.read_media_playlist(&selected_stream).await?;
+        *self.selected_variant_key.write().await = Some(variant_identity(&variant_url));
+        *self.selected_stream.write().await = Some(selected_stream);
+        Ok(media_playlist)
+    }
+
+    async fn read_media_playlist(
+        &self,
+        stream: &HlsStream,
+    ) -> Result<MediaPlaylist, RecorderError> {
+        match self.query_playlist(stream).await? {
+            Playlist::MediaPlaylist(playlist) => Ok(playlist),
+            Playlist::MasterPlaylist(_) => Err(RecorderError::M3u8ParseFailed {
+                content: "No media playlist found".to_string(),
+            }),
         }
     }
 
     async fn update_entries(&self) -> Result<(), RecorderError> {
         let media_playlist = self.query_media_playlist().await?;
+        let selected_stream = self
+            .selected_stream
+            .read()
+            .await
+            .clone()
+            .unwrap_or_else(|| (*self.stream).clone());
         let playlist_sequence = media_playlist.media_sequence;
         let last_sequence = self.sequence.load(Ordering::Relaxed);
         let last_metadata = self.pre_metadata.read().await.clone();
@@ -241,7 +317,7 @@ impl HlsRecorder {
         let mut size_delta = 0;
         for (i, segment) in media_playlist.segments.iter().enumerate() {
             let segment_sequence = playlist_sequence + i as u64;
-            let segment_full_url = self.stream.ts_url(&segment.uri);
+            let segment_full_url = selected_stream.ts_url(&segment.uri);
             let filename = local_segment_filename(segment_sequence, &segment.uri);
             if segment_sequence <= last_sequence {
                 continue;
@@ -379,6 +455,46 @@ impl HlsRecorder {
         self.sequence.store(sequence, Ordering::Relaxed);
         Ok(())
     }
+}
+
+fn best_media_variant(variants: &[VariantStream]) -> Option<&VariantStream> {
+    variants
+        .iter()
+        .filter(|variant| !variant.is_i_frame)
+        .max_by_key(|variant| variant.average_bandwidth.unwrap_or(variant.bandwidth))
+}
+
+/// Use stable YouTube itags when available; otherwise use the resolved variant
+/// path so signatures and expiry tokens can refresh without changing quality.
+fn variant_identity(variant_url: &str) -> String {
+    let Ok(url) = url::Url::parse(variant_url) else {
+        return variant_url
+            .split('?')
+            .next()
+            .unwrap_or(variant_url)
+            .to_string();
+    };
+    let segments: Vec<_> = url.path_segments().into_iter().flatten().collect();
+    if let Some(itag) = segments
+        .windows(2)
+        .find(|pair| pair[0] == "itag")
+        .map(|pair| pair[1])
+    {
+        return format!("itag:{itag}");
+    }
+    url.path().to_string()
+}
+
+fn resolve_variant_url(master_url: &str, variant_uri: &str) -> Result<String, RecorderError> {
+    let master = url::Url::parse(master_url).map_err(|_| RecorderError::M3u8ParseFailed {
+        content: "Invalid master playlist URL".to_string(),
+    })?;
+    master
+        .join(variant_uri)
+        .map(|url| url.to_string())
+        .map_err(|_| RecorderError::M3u8ParseFailed {
+            content: "Invalid HLS variant URI".to_string(),
+        })
 }
 
 /// HLS source playlists may use absolute URLs with query signatures as segment
@@ -528,8 +644,11 @@ pub async fn construct_stream_from_variant(
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::atomic::AtomicUsize;
 
     use crate::core::{Codec, Format};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
     use super::*;
 
@@ -570,6 +689,198 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(stream.expire, 1_790_184_859);
+    }
+
+    #[tokio::test]
+    async fn pins_selected_variant_when_master_gains_higher_quality() {
+        let server = MockServer::start().await;
+        let first_master = r#"#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=100000,RESOLUTION=640x360
+low.m3u8
+"#;
+        let upgraded_master = r#"#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=100000,RESOLUTION=640x360
+low.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1280x720
+high.m3u8
+"#;
+        let master_requests = Arc::new(AtomicUsize::new(0));
+        let request_count = Arc::clone(&master_requests);
+        Mock::given(method("GET"))
+            .and(path("/live/master.m3u8"))
+            .respond_with(move |_request: &Request| {
+                let response = if request_count.fetch_add(1, Ordering::Relaxed) == 0 {
+                    first_master
+                } else {
+                    upgraded_master
+                };
+                ResponseTemplate::new(200).set_body_string(response)
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/live/low.m3u8"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXT-X-MEDIA-SEQUENCE:10
+#EXTINF:2.0,
+low-10.ts
+"#,
+            ))
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/live/high.m3u8"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXT-X-MEDIA-SEQUENCE:100
+#EXTINF:2.0,
+high-100.ts
+"#,
+            ))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let stream = construct_stream_from_variant(
+            "live",
+            &format!("{}/live/master.m3u8", server.uri()),
+            Format::TS,
+            Codec::Avc,
+        )
+        .await
+        .unwrap();
+        let (events, _receiver) = broadcast::channel(1);
+        let work_dir =
+            std::env::temp_dir().join(format!("bsr-hls-variant-pin-{}", uuid::Uuid::new_v4()));
+        let recorder = HlsRecorder::new(
+            "room".to_string(),
+            Arc::new(stream),
+            reqwest::Client::new(),
+            None,
+            events,
+            work_dir.clone(),
+            Arc::new(AtomicBool::new(true)),
+        )
+        .await
+        .unwrap();
+
+        let first = recorder.query_media_playlist().await.unwrap();
+        let second = recorder.query_media_playlist().await.unwrap();
+
+        assert_eq!(first.media_sequence, 10);
+        assert_eq!(second.media_sequence, 10);
+        assert_eq!(master_requests.load(Ordering::Relaxed), 1);
+        server.verify().await;
+        let _ = tokio::fs::remove_dir_all(work_dir).await;
+    }
+
+    #[tokio::test]
+    async fn reselects_variant_only_after_pinned_variant_disappears() {
+        let server = MockServer::start().await;
+        let initial_master = r#"#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=100000,RESOLUTION=640x360
+low.m3u8
+"#;
+        let updated_master = r#"#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1280x720
+high.m3u8
+"#;
+        let master_requests = Arc::new(AtomicUsize::new(0));
+        let request_count = Arc::clone(&master_requests);
+        Mock::given(method("GET"))
+            .and(path("/live/master.m3u8"))
+            .respond_with(move |_request: &Request| {
+                let response = if request_count.fetch_add(1, Ordering::Relaxed) == 0 {
+                    initial_master
+                } else {
+                    updated_master
+                };
+                ResponseTemplate::new(200).set_body_string(response)
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        let low_requests = Arc::new(AtomicUsize::new(0));
+        let request_count = Arc::clone(&low_requests);
+        Mock::given(method("GET"))
+            .and(path("/live/low.m3u8"))
+            .respond_with(move |_request: &Request| {
+                if request_count.fetch_add(1, Ordering::Relaxed) == 0 {
+                    ResponseTemplate::new(200).set_body_string(
+                        r#"#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXT-X-MEDIA-SEQUENCE:10
+#EXTINF:2.0,
+low-10.ts
+"#,
+                    )
+                } else {
+                    ResponseTemplate::new(404)
+                }
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/live/high.m3u8"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXT-X-MEDIA-SEQUENCE:100
+#EXTINF:2.0,
+high-100.ts
+"#,
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let stream = construct_stream_from_variant(
+            "live",
+            &format!("{}/live/master.m3u8", server.uri()),
+            Format::TS,
+            Codec::Avc,
+        )
+        .await
+        .unwrap();
+        let (events, _receiver) = broadcast::channel(1);
+        let work_dir =
+            std::env::temp_dir().join(format!("bsr-hls-variant-fallback-{}", uuid::Uuid::new_v4()));
+        let recorder = HlsRecorder::new(
+            "room".to_string(),
+            Arc::new(stream),
+            reqwest::Client::new(),
+            None,
+            events,
+            work_dir.clone(),
+            Arc::new(AtomicBool::new(true)),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            recorder
+                .query_media_playlist()
+                .await
+                .unwrap()
+                .media_sequence,
+            10
+        );
+        assert_eq!(
+            recorder
+                .query_media_playlist()
+                .await
+                .unwrap()
+                .media_sequence,
+            100
+        );
+        server.verify().await;
+        let _ = tokio::fs::remove_dir_all(work_dir).await;
     }
 
     #[test]

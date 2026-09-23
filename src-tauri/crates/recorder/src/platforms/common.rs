@@ -17,7 +17,7 @@ use danmu_stream::provider::ProviderType;
 use danmu_stream::{DanmuMessageType, LiveEvent};
 
 use crate::core::flv_recorder::FlvRecorder;
-use crate::core::hls_recorder::{construct_stream_from_variant, HlsRecorder};
+use crate::core::hls_recorder::{construct_stream_from_variant, HlsRecorder, HlsRecorderOptions};
 use crate::core::{Codec, Format, HlsStream};
 use crate::danmu::DanmuStorage;
 use crate::errors::RecorderError;
@@ -170,6 +170,18 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
         false
     }
 
+    /// Whether HLS segments with an unreadable or incompatible media shape
+    /// should be discarded rather than ending the recording.
+    fn skip_incompatible_hls_segments(&self) -> bool {
+        false
+    }
+
+    /// Whether a resumed recording still belongs to the same platform live.
+    /// Platforms without their own live-session ID can keep the default.
+    async fn should_resume_same_recording(&self) -> bool {
+        true
+    }
+
     // ----- shared lifecycle -------------------------------------------------
 
     /// One poll of the room status: store metadata, emit live start/end
@@ -280,15 +292,23 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
         self.reset_live().await;
     }
 
-    /// The live id for a recording attempt: resumed after a stream expiry,
-    /// otherwise a fresh timestamp.
+    /// Select the app recording id for this attempt. Reuse it only if a
+    /// platform confirms the same live session; a new platform live must get a
+    /// fresh work directory and media-sequence counter.
     async fn next_live_id(&self) -> String {
-        let previous = self.pre_live_id().read().await.clone();
-        if let Some(previous) = previous {
-            if self.should_continue().load(Ordering::Relaxed) {
-                self.should_continue().store(false, Ordering::Relaxed);
-                return previous;
+        if self.should_continue().swap(false, Ordering::Relaxed) {
+            let previous = self.pre_live_id().read().await.clone();
+            if let Some(previous) = previous {
+                if self.should_resume_same_recording().await {
+                    return previous;
+                }
             }
+            *self.pre_live_id().write().await = None;
+            log::info!(
+                "[{}][{}] Platform live changed; starting a new archive",
+                self.platform().as_str(),
+                self.room_id()
+            );
         }
 
         let live_id = Utc::now().timestamp_millis().to_string();
@@ -332,11 +352,14 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
 
         match pull {
             StreamPull::Hls { stream, cookies } => {
-                let hls_recorder = HlsRecorder::new(
+                let hls_recorder = HlsRecorder::new_with_options(
                     self.room_id(),
                     stream,
                     self.client().clone(),
-                    cookies,
+                    HlsRecorderOptions {
+                        cookies,
+                        skip_incompatible_segments: self.skip_incompatible_hls_segments(),
+                    },
                     self.event_channel().clone(),
                     work_dir.full_path(),
                     self.enabled().clone(),

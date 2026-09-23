@@ -42,12 +42,18 @@ pub struct HlsRecorder {
     updated_at: Arc<AtomicI64>,
 
     pre_metadata: Arc<RwLock<Option<VideoMetadata>>>,
+    skip_incompatible_segments: bool,
 }
 
 struct DownloadedSegment {
     segment: MediaSegment,
     path: PathBuf,
     size: u64,
+}
+
+pub(crate) struct HlsRecorderOptions {
+    pub(crate) cookies: Option<String>,
+    pub(crate) skip_incompatible_segments: bool,
 }
 
 fn local_segment_filename(source_uri: &str, sequence: u64) -> String {
@@ -78,6 +84,34 @@ impl HlsRecorder {
         work_dir: PathBuf,
         enabled: Arc<AtomicBool>,
     ) -> Result<Self, RecorderError> {
+        Self::new_with_options(
+            room_id,
+            stream,
+            client,
+            HlsRecorderOptions {
+                cookies,
+                skip_incompatible_segments: false,
+            },
+            event_channel,
+            work_dir,
+            enabled,
+        )
+        .await
+    }
+
+    pub(crate) async fn new_with_options(
+        room_id: String,
+        stream: Arc<HlsStream>,
+        client: reqwest::Client,
+        options: HlsRecorderOptions,
+        event_channel: broadcast::Sender<RecorderEvent>,
+        work_dir: PathBuf,
+        enabled: Arc<AtomicBool>,
+    ) -> Result<Self, RecorderError> {
+        let HlsRecorderOptions {
+            cookies,
+            skip_incompatible_segments,
+        } = options;
         // try to create work_dir
         if !work_dir.exists() {
             std::fs::create_dir_all(&work_dir)?;
@@ -139,6 +173,22 @@ impl HlsRecorder {
 
         let mut playlist = HlsPlaylist::new(playlist_path).await?;
         playlist.reopen().await?;
+        // A resumed archive must retain the media shape of its last playable
+        // segment; otherwise the first ad segment after a restart could become
+        // the new baseline and cause the actual stream to be skipped.
+        let last_segment_uri = playlist
+            .last_segment()
+            .await
+            .map(|segment| segment.uri.clone());
+        let pre_metadata = if let Some(last_segment_uri) = last_segment_uri {
+            let path = work_dir.join(last_segment_uri);
+            match extract_video_metadata(&path).await {
+                Ok(metadata) if !metadata.seems_corrupted() => Some(metadata),
+                _ => None,
+            }
+        } else {
+            None
+        };
 
         Ok(Self {
             room_id,
@@ -151,7 +201,8 @@ impl HlsRecorder {
             enabled,
             sequence: Arc::new(AtomicU64::new(sequence)),
             updated_at: Arc::new(AtomicI64::new(chrono::Utc::now().timestamp_millis())),
-            pre_metadata: Arc::new(RwLock::new(None)),
+            pre_metadata: Arc::new(RwLock::new(pre_metadata)),
+            skip_incompatible_segments,
             sequence_file: Arc::new(RwLock::new(sequence_file)),
         })
     }
@@ -249,17 +300,29 @@ impl HlsRecorder {
         }
     }
 
+    async fn skip_segment(&self, segment_path: &Path, sequence: u64) -> Result<(), RecorderError> {
+        match tokio::fs::remove_file(segment_path).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(RecorderError::IoError(error)),
+        }
+        self.update_sequence(sequence).await?;
+        self.updated_at
+            .store(Utc::now().timestamp_millis(), Ordering::Relaxed);
+        Ok(())
+    }
+
     async fn download_segment(
         &self,
         source_segment: &MediaSegment,
         sequence: u64,
     ) -> Result<DownloadedSegment, RecorderError> {
-        let source_url = self.stream.ts_url(&source_segment.uri);
-        let local_uri = local_segment_filename(&source_segment.uri, sequence);
+        let mut segment = source_segment.clone();
+        let source_url = self.stream.ts_url(&segment.uri);
+        let local_uri = local_segment_filename(&segment.uri, sequence);
         let path = self.work_dir.join(&local_uri);
         let size = download(&self.client, &source_url, &path, DOWNLOAD_RETRY).await?;
 
-        let mut segment = source_segment.clone();
         segment.uri = local_uri;
         Ok(DownloadedSegment {
             segment,
@@ -272,7 +335,7 @@ impl HlsRecorder {
         let media_playlist = self.query_media_playlist().await?;
         let playlist_sequence = media_playlist.media_sequence;
         let last_sequence = self.sequence.load(Ordering::Relaxed);
-        let last_metadata = self.pre_metadata.read().await.clone();
+        let mut last_metadata = self.pre_metadata.read().await.clone();
         let mut updated = false;
         let mut duration_delta = 0.0;
         let mut size_delta = 0;
@@ -299,12 +362,26 @@ impl HlsRecorder {
             }
 
             // check if the stream is changed
-            let segment_metadata = extract_video_metadata(&segment_path)
-                .await
-                .map_err(RecorderError::FfmpegError)?;
+            let segment_metadata = match extract_video_metadata(&segment_path).await {
+                Ok(metadata) => metadata,
+                Err(error) if self.skip_incompatible_segments => {
+                    log::info!(
+                        "Skipping unreadable HLS segment at sequence {segment_sequence}: {error}"
+                    );
+                    self.skip_segment(&segment_path, segment_sequence).await?;
+                    continue;
+                }
+                Err(error) => return Err(RecorderError::FfmpegError(error)),
+            };
 
             // IMPORTANT: This handles bilibili ts stream segment, which might lack of SPS/PPS and need to be appended behind last segment
             if segment_metadata.seems_corrupted() {
+                if self.skip_incompatible_segments {
+                    log::info!("Skipping unreadable HLS segment at sequence {segment_sequence}");
+                    self.skip_segment(&segment_path, segment_sequence).await?;
+                    continue;
+                }
+
                 let mut playlist = self.playlist.lock().await;
                 if playlist.is_empty().await {
                     // ignore this segment
@@ -349,20 +426,26 @@ impl HlsRecorder {
                 continue;
             }
 
-            if let Some(last_metadata) = &last_metadata {
+            if let Some(previous_metadata) = &last_metadata {
                 // Only a different resolution or codec makes the segments
                 // unplayable as one recording; their length naturally differs
                 // from segment to segment.
-                if !last_metadata.same_stream_shape(&segment_metadata) {
+                if !previous_metadata.same_stream_shape(&segment_metadata) {
+                    if self.skip_incompatible_segments {
+                        log::info!(
+                            "Skipping incompatible HLS segment at sequence {segment_sequence}"
+                        );
+                        self.skip_segment(&segment_path, segment_sequence).await?;
+                        continue;
+                    }
                     return Err(RecorderError::ResolutionChanged {
                         err: "Resolution changed".to_string(),
                     });
                 }
             } else {
-                self.pre_metadata
-                    .write()
-                    .await
-                    .replace(segment_metadata.clone());
+                let metadata = segment_metadata.clone();
+                *self.pre_metadata.write().await = Some(metadata.clone());
+                last_metadata = Some(metadata);
             }
 
             let mut new_segment = segment.clone();
@@ -604,11 +687,14 @@ mod tests {
             Codec::Avc,
             0,
         ));
-        let recorder = HlsRecorder::new(
+        let recorder = HlsRecorder::new_with_options(
             "twitch-channel".to_string(),
             stream,
             reqwest::Client::new(),
-            None,
+            HlsRecorderOptions {
+                cookies: None,
+                skip_incompatible_segments: false,
+            },
             event_tx,
             work_dir.clone(),
             Arc::new(AtomicBool::new(true)),
@@ -648,6 +734,54 @@ mod tests {
         assert!(!playlist.contains("https://"));
         assert!(!playlist.contains(&long_token));
 
+        tokio::fs::remove_dir_all(work_dir).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn skipping_an_incompatible_segment_removes_it_and_advances_sequence() {
+        let (event_tx, _) = broadcast::channel(1);
+        let work_dir = std::env::temp_dir().join(format!(
+            "bili-shadowreplay-hls-skip-segment-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let stream = Arc::new(HlsStream::new(
+            "twitch-live".to_string(),
+            "https://cdn.example.test".to_string(),
+            "/master.m3u8".to_string(),
+            String::new(),
+            Format::TS,
+            Codec::Avc,
+            0,
+        ));
+        let recorder = HlsRecorder::new_with_options(
+            "twitch-channel".to_string(),
+            stream,
+            reqwest::Client::new(),
+            HlsRecorderOptions {
+                cookies: None,
+                skip_incompatible_segments: true,
+            },
+            event_tx,
+            work_dir.clone(),
+            Arc::new(AtomicBool::new(true)),
+        )
+        .await
+        .unwrap();
+        let segment_path = work_dir.join("segment_101.ts");
+        tokio::fs::write(&segment_path, b"advertisement segment")
+            .await
+            .unwrap();
+
+        recorder.skip_segment(&segment_path, 101).await.unwrap();
+
+        assert!(!segment_path.exists());
+        assert_eq!(recorder.sequence.load(Ordering::Relaxed), 101);
+        assert_eq!(
+            tokio::fs::read_to_string(work_dir.join(".sequence"))
+                .await
+                .unwrap(),
+            "101"
+        );
         tokio::fs::remove_dir_all(work_dir).await.unwrap();
     }
 

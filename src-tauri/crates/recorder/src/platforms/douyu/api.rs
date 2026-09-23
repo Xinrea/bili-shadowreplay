@@ -403,7 +403,7 @@ pub async fn get_stream_url(
 
 #[derive(Debug)]
 struct DouyuStreamCandidate {
-    url: String,
+    url: Option<String>,
     cdns: Vec<String>,
 }
 
@@ -455,14 +455,22 @@ where
             }
         };
 
-        for alternate in candidate.cdns {
+        let DouyuStreamCandidate { url, cdns } = candidate;
+        for alternate in cdns {
             if !alternate.is_empty() && !tried_cdns.contains(&alternate) {
                 pending_cdns.push_back(alternate);
             }
         }
 
-        if probe_flv_url(client, account, room_id, &candidate.url).await {
-            return Ok(candidate.url);
+        let Some(url) = url else {
+            last_error = Some(DouyuApiError::InvalidResponse {
+                endpoint: "getH5PlayV1",
+                detail: format!("CDN {cdn} did not return an AVC FLV URL"),
+            });
+            continue;
+        };
+        if probe_flv_url(client, account, room_id, &url).await {
+            return Ok(url);
         }
         last_error = Some(DouyuApiError::InvalidResponse {
             endpoint: "getH5PlayV1",
@@ -564,10 +572,7 @@ where
                 endpoint,
                 detail: "getH5PlayV1 returned no play data".to_string(),
             })?;
-        let url = response::flv_url(&data).ok_or_else(|| DouyuApiError::InvalidResponse {
-            endpoint,
-            detail: "getH5PlayV1 returned no FLV URL".to_string(),
-        })?;
+        let url = response::flv_url(&data);
         let cdns = data
             .cdns
             .into_iter()
@@ -772,7 +777,7 @@ mod tests {
         .await
         .unwrap();
         let requests = server.received_requests().await.unwrap();
-        (candidate.url, requests)
+        (candidate.url.unwrap(), requests)
     }
 
     fn form_value(request: &Request, name: &str) -> String {
@@ -834,25 +839,30 @@ mod tests {
             .respond_with(move |request: &Request| {
                 let form = std::str::from_utf8(&request.body).unwrap();
                 let cdn = form_value_from_body(form, "cdn");
-                let data = if cdn == "ws-h5" {
-                    serde_json::json!({
+                let data = match cdn.as_str() {
+                    "ws-h5" => serde_json::json!({
                         "room_id": 123,
                         "rtmp_url": base_for_play.clone(),
                         "rtmp_live": "bad.flv",
                         "cdnsWithName": [{"cdn": "ws-alt"}]
-                    })
-                } else {
-                    serde_json::json!({
+                    }),
+                    "ws-alt" => serde_json::json!({
+                        "room_id": 123,
+                        "rtmp_url": "",
+                        "rtmp_live": "",
+                        "cdnsWithName": [{"cdn": "ws-alt2"}]
+                    }),
+                    _ => serde_json::json!({
                         "room_id": 123,
                         "rtmp_url": base_for_play.clone(),
                         "rtmp_live": "good.flv",
                         "cdnsWithName": [{"cdn": "ws-h5"}]
-                    })
+                    }),
                 };
                 ResponseTemplate::new(200)
                     .set_body_string(serde_json::json!({"error": 0, "data": data}).to_string())
             })
-            .expect(2)
+            .expect(3)
             .mount(&server)
             .await;
         Mock::given(method("GET"))
@@ -896,7 +906,7 @@ mod tests {
             })
             .map(|request| form_value(request, "cdn"))
             .collect();
-        assert_eq!(requested_cdns, vec!["ws-h5", "ws-alt"]);
+        assert_eq!(requested_cdns, vec!["ws-h5", "ws-alt", "ws-alt2"]);
         assert_eq!(url, format!("{base}/good.flv"));
     }
 

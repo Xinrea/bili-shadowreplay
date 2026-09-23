@@ -61,8 +61,8 @@ pub struct DouyuH5PlayData {
     pub rtmp_url: String,
     #[serde(default, deserialize_with = "deserialize_string")]
     pub rtmp_live: String,
-    /// Some responses include a direct HEVC URL. It is a last-resort fallback
-    /// only when the normal `rtmp_url/rtmp_live` stream is absent.
+    /// Some responses include a direct HEVC URL. It is parsed for compatibility
+    /// but not selected because FLV recordings are muxed to TS.
     #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub player_1: Option<String>,
     #[serde(default, rename = "cdnsWithName")]
@@ -204,40 +204,29 @@ pub fn is_auth_failure_text(text: &str) -> bool {
     .any(|needle| text.contains(needle))
 }
 
-/// Select an FLV URL from a successful H5 play response.
+/// Select the AVC-compatible FLV URL from a successful H5 play response.
 ///
-/// Douyu's normal response is `rtmp_url` plus `rtmp_live`. A direct
-/// `player_1` URL is accepted only when it is visibly an FLV URL, so an HEVC
-/// or otherwise incompatible alternate does not unexpectedly replace the
-/// normal stream.
+/// Prefer Douyu's normal `rtmp_url` plus `rtmp_live` path. `player_1` is not
+/// selected because it commonly points at HEVC, which the FLV-to-TS recorder
+/// cannot safely mux.
 pub fn flv_url(data: &DouyuH5PlayData) -> Option<String> {
-    if !data.rtmp_live.trim().is_empty() {
-        if data.rtmp_live.starts_with("http://") || data.rtmp_live.starts_with("https://") {
-            return Some(data.rtmp_live.trim().to_string());
-        }
-
-        if data.rtmp_url.trim().is_empty() {
-            return Some(data.rtmp_live.trim().to_string());
-        }
-
-        return Some(format!(
-            "{}/{}",
-            data.rtmp_url.trim_end_matches('/'),
-            data.rtmp_live.trim_start_matches('/')
-        ));
+    if data.rtmp_live.trim().is_empty() {
+        return None;
     }
 
-    // `player_1` is commonly the HEVC alternative. Keep it strictly as a
-    // fallback when Douyu omitted the normal rtmp stream URL.
-    data.player_1
-        .as_deref()
-        .filter(|url| is_flv_url(url))
-        .map(str::to_string)
-}
+    if data.rtmp_live.starts_with("http://") || data.rtmp_live.starts_with("https://") {
+        return Some(data.rtmp_live.trim().to_string());
+    }
 
-fn is_flv_url(url: &str) -> bool {
-    let path = url.split('?').next().unwrap_or(url).to_ascii_lowercase();
-    path.ends_with(".flv") || path.contains(".flv/")
+    if data.rtmp_url.trim().is_empty() {
+        return Some(data.rtmp_live.trim().to_string());
+    }
+
+    Some(format!(
+        "{}/{}",
+        data.rtmp_url.trim_end_matches('/'),
+        data.rtmp_live.trim_start_matches('/')
+    ))
 }
 
 fn deserialize_optional_room_info<'de, D>(
@@ -440,23 +429,20 @@ mod tests {
     }
 
     #[test]
-    fn direct_player_url_is_only_used_when_primary_stream_is_missing() {
+    fn hevc_player_url_is_not_used_without_the_primary_avc_stream() {
         let response = parse_play_response(
             r#"{
                 "error": 0,
                 "data": {
                     "rtmp_url": "",
                     "rtmp_live": "",
-                    "player_1": "https://cdn.example/fallback.flv?token=abc"
+                    "player_1": "https://cdn.example/hevc.flv?token=abc"
                 }
             }"#,
         )
         .unwrap();
 
-        assert_eq!(
-            flv_url(&response.data.unwrap()).as_deref(),
-            Some("https://cdn.example/fallback.flv?token=abc")
-        );
+        assert!(flv_url(&response.data.unwrap()).is_none());
     }
 
     #[test]

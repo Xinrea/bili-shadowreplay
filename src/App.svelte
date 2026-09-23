@@ -38,6 +38,11 @@
           platform = "douyin";
         }
 
+        if (url.startsWith("bsr://www.douyu.com/") || url.startsWith("bsr://live.douyu.com/")) {
+          room_id = url.split(/[?#]/)[0].replace(/\/+$/, "").split("/").pop() || "";
+          platform = "douyu";
+        }
+
         if (url.startsWith("bsr://live.kuaishou.com/")) {
           room_id = url.replace("bsr://live.kuaishou.com/", "").split("?")[0];
           room_id = room_id.replace(/^u\//, "");
@@ -58,6 +63,15 @@
             .replace(/^bsr:\/\/(?:(?:www|m)\.)?twitch\.tv\//, "")
             .split(/[?/]/)[0];
           platform = "twitch";
+        }
+
+        if (
+          url.startsWith("bsr://www.youtube.com/") ||
+          url.startsWith("bsr://youtube.com/") ||
+          url.startsWith("bsr://youtu.be/")
+        ) {
+          room_id = url.replace("bsr://", "https://");
+          platform = "youtube";
         }
 
         if (platform && room_id) {

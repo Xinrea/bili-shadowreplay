@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::{path::PathBuf, sync::Arc};
 
 use chrono::Utc;
-use m3u8_rs::{DateRange, MediaPlaylist, MediaSegment, Playlist};
+use m3u8_rs::{DateRange, MediaPlaylist, MediaSegment, Playlist, VariantStream};
 use reqwest::header::HeaderMap;
 use std::time::Duration;
 use tokio::fs::{File, OpenOptions};
@@ -20,6 +20,17 @@ const UPDATE_TIMEOUT: Duration = Duration::from_secs(20);
 const UPDATE_INTERVAL: Duration = Duration::from_secs(1);
 const PLAYLIST_FILE_NAME: &str = "playlist.m3u8";
 const DOWNLOAD_RETRY: u32 = 3;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HlsVariantSelection {
+    /// Preserve the first media variant selected for a recording.
+    #[default]
+    First,
+    /// Track the highest available bandwidth; variant changes end the current
+    /// recording segment so a higher-quality stream can start cleanly.
+    HighestBandwidth,
+}
+
 /// A recorder for HLS streams
 ///
 /// This recorder fetches, caches and serves TS entries, currently supporting `StreamType::FMP4, StreamType::TS`.
@@ -29,6 +40,12 @@ const DOWNLOAD_RETRY: u32 = 3;
 pub struct HlsRecorder {
     room_id: String,
     stream: Arc<HlsStream>,
+    /// The media playlist selected for the current recording segment. The
+    /// `First` policy keeps this pinned; `HighestBandwidth` refreshes it until
+    /// a quality change starts a new segment.
+    selected_stream: Arc<RwLock<Option<HlsStream>>>,
+    selected_variant_key: Arc<RwLock<Option<String>>>,
+    variant_selection: HlsVariantSelection,
     client: reqwest::Client,
     event_channel: broadcast::Sender<RecorderEvent>,
     work_dir: PathBuf,
@@ -106,8 +123,8 @@ fn is_twitch_ad_segment(segment: &MediaSegment, ad_ranges: &[AdTimeRange]) -> bo
         .any(|range| segment_time >= range.start_ms && segment_time < range.end_ms)
 }
 
-fn local_segment_filename(source_uri: &str, sequence: u64) -> String {
-    let path = source_uri.split(['?', '#']).next().unwrap_or(source_uri);
+fn local_segment_filename(sequence: u64, uri: &str) -> String {
+    let path = uri.split(['?', '#']).next().unwrap_or(uri);
     let basename = path.rsplit('/').next().unwrap_or(path);
     let extension = basename
         .rsplit_once('.')
@@ -121,7 +138,10 @@ fn local_segment_filename(source_uri: &str, sequence: u64) -> String {
         })
         .unwrap_or("ts");
 
-    format!("segment_{sequence}.{extension}")
+    // Segment URIs can repeat while their query strings change. Use the media
+    // sequence for every local name so later downloads never overwrite earlier
+    // playlist entries.
+    format!("segment-{sequence}.{extension}")
 }
 
 impl HlsRecorder {
@@ -133,6 +153,30 @@ impl HlsRecorder {
         event_channel: broadcast::Sender<RecorderEvent>,
         work_dir: PathBuf,
         enabled: Arc<AtomicBool>,
+    ) -> Result<Self, RecorderError> {
+        Self::new_with_variant_selection(
+            room_id,
+            stream,
+            client,
+            cookies,
+            event_channel,
+            work_dir,
+            enabled,
+            HlsVariantSelection::First,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn new_with_variant_selection(
+        room_id: String,
+        stream: Arc<HlsStream>,
+        client: reqwest::Client,
+        cookies: Option<String>,
+        event_channel: broadcast::Sender<RecorderEvent>,
+        work_dir: PathBuf,
+        enabled: Arc<AtomicBool>,
+        variant_selection: HlsVariantSelection,
     ) -> Result<Self, RecorderError> {
         // try to create work_dir
         if !work_dir.exists() {
@@ -215,6 +259,9 @@ impl HlsRecorder {
         Ok(Self {
             room_id,
             stream,
+            selected_stream: Arc::new(RwLock::new(None)),
+            selected_variant_key: Arc::new(RwLock::new(None)),
+            variant_selection,
             client,
             event_channel,
             work_dir,
@@ -292,33 +339,183 @@ impl HlsRecorder {
     }
 
     async fn query_media_playlist(&self) -> Result<MediaPlaylist, RecorderError> {
-        let playlist = self.query_playlist(&self.stream).await?;
-        match playlist {
-            Playlist::MediaPlaylist(playlist) => Ok(playlist),
-            Playlist::MasterPlaylist(playlist) => {
-                // just return the first variant
-                match playlist.variants.first() {
-                    Some(variant) => {
-                        let real_stream = construct_stream_from_variant(
-                            &self.stream.id,
-                            &variant.uri,
-                            self.stream.format.clone(),
-                            self.stream.codec.clone(),
-                        )
-                        .await?;
-                        let playlist = self.query_playlist(&real_stream).await?;
-                        match playlist {
-                            Playlist::MediaPlaylist(playlist) => Ok(playlist),
-                            Playlist::MasterPlaylist(_) => Err(RecorderError::M3u8ParseFailed {
-                                content: "No media playlist found".to_string(),
-                            }),
-                        }
-                    }
-                    None => Err(RecorderError::M3u8ParseFailed {
-                        content: "No variants found".to_string(),
-                    }),
+        let selected_stream = self.selected_stream.read().await.clone();
+        if self.variant_selection == HlsVariantSelection::HighestBandwidth {
+            if let Some(selected_stream) = selected_stream {
+                return self
+                    .query_highest_bandwidth_media_playlist(&selected_stream)
+                    .await;
+            }
+        } else if let Some(selected_stream) = selected_stream {
+            match self.read_media_playlist(&selected_stream).await {
+                Ok(playlist) => return Ok(playlist),
+                Err(error) => {
+                    let selected_key = self.selected_variant_key.read().await.clone();
+                    let Some(selected_key) = selected_key else {
+                        return Err(error);
+                    };
+                    log::warn!(
+                        "Selected HLS variant is unavailable; refreshing its signed URL from the master playlist"
+                    );
+                    return self
+                        .refresh_selected_variant(&selected_key)
+                        .await
+                        .or(Err(error));
                 }
             }
+        }
+
+        match self.query_playlist(&self.stream).await? {
+            Playlist::MediaPlaylist(playlist) => {
+                *self.selected_stream.write().await = Some((*self.stream).clone());
+                Ok(playlist)
+            }
+            Playlist::MasterPlaylist(playlist) => {
+                // YouTube may add higher-quality variants after a live starts.
+                // Its policy rechecks the master and ends this recording segment
+                // when the best available variant changes; other platforms keep
+                // their first media variant pinned.
+                let variant = select_media_variant(&playlist.variants, self.variant_selection)
+                    .ok_or_else(|| RecorderError::M3u8ParseFailed {
+                        content: "No variants found".to_string(),
+                    })?;
+                let variant_url = resolve_variant_url(&self.stream.index(), &variant.uri)?;
+                let selected_key = variant_identity(&variant_url);
+                if self.variant_selection == HlsVariantSelection::HighestBandwidth
+                    && self
+                        .selected_variant_key
+                        .read()
+                        .await
+                        .as_ref()
+                        .is_some_and(|previous| previous != &selected_key)
+                {
+                    return Err(RecorderError::ResolutionChanged {
+                        err: "Highest-bandwidth HLS variant changed; starting a new recording segment"
+                            .to_string(),
+                    });
+                }
+                let selected_stream = construct_stream_from_variant(
+                    &self.stream.id,
+                    &variant_url,
+                    self.stream.format.clone(),
+                    self.stream.codec.clone(),
+                )
+                .await?;
+                let media_playlist = self.read_media_playlist(&selected_stream).await?;
+                *self.selected_variant_key.write().await = Some(selected_key);
+                *self.selected_stream.write().await = Some(selected_stream);
+                Ok(media_playlist)
+            }
+        }
+    }
+
+    async fn query_highest_bandwidth_media_playlist(
+        &self,
+        selected_stream: &HlsStream,
+    ) -> Result<MediaPlaylist, RecorderError> {
+        if self.stream.is_expired() {
+            return Err(RecorderError::StreamExpired {
+                expire: self.stream.expire,
+            });
+        }
+
+        let master = match self.query_playlist(&self.stream).await {
+            Ok(Playlist::MasterPlaylist(master)) => master,
+            Ok(Playlist::MediaPlaylist(_)) => {
+                return self.read_media_playlist(selected_stream).await
+            }
+            Err(_error) => {
+                log::warn!("HLS master refresh failed; continuing with the pinned media variant");
+                return self.read_media_playlist(selected_stream).await;
+            }
+        };
+        let variant =
+            best_media_variant(&master.variants).ok_or_else(|| RecorderError::M3u8ParseFailed {
+                content: "No variants found".to_string(),
+            })?;
+        let master_url = self.stream.index();
+        let variant_url = resolve_variant_url(&master_url, &variant.uri)?;
+        let selected_key = variant_identity(&variant_url);
+        let previous_key = self.selected_variant_key.read().await.clone();
+        if previous_key
+            .as_ref()
+            .is_some_and(|previous| previous != &selected_key)
+        {
+            return Err(RecorderError::ResolutionChanged {
+                err: "Highest-bandwidth HLS variant changed; starting a new recording segment"
+                    .to_string(),
+            });
+        }
+
+        let updated_stream = construct_stream_from_variant(
+            &self.stream.id,
+            &variant_url,
+            self.stream.format.clone(),
+            self.stream.codec.clone(),
+        )
+        .await?;
+        match self.read_media_playlist(&updated_stream).await {
+            Ok(playlist) => {
+                *self.selected_variant_key.write().await = Some(selected_key);
+                *self.selected_stream.write().await = Some(updated_stream);
+                Ok(playlist)
+            }
+            Err(_error) => {
+                log::warn!(
+                    "Refreshed HLS variant is unavailable; continuing with the pinned media variant"
+                );
+                self.read_media_playlist(selected_stream).await
+            }
+        }
+    }
+
+    async fn refresh_selected_variant(
+        &self,
+        selected_key: &str,
+    ) -> Result<MediaPlaylist, RecorderError> {
+        let master = self.query_playlist(&self.stream).await?;
+        let Playlist::MasterPlaylist(master) = master else {
+            return Err(RecorderError::M3u8ParseFailed {
+                content: "Pinned HLS variant is unavailable".to_string(),
+            });
+        };
+        let master_url = self.stream.index();
+        let pinned_variant = master.variants.iter().find(|variant| {
+            !variant.is_i_frame
+                && resolve_variant_url(&master_url, &variant.uri)
+                    .is_ok_and(|url| variant_identity(&url) == selected_key)
+        });
+        let variant = pinned_variant
+            .or_else(|| select_media_variant(&master.variants, self.variant_selection));
+        let variant = variant.ok_or_else(|| RecorderError::M3u8ParseFailed {
+            content: "No variants found".to_string(),
+        })?;
+        if pinned_variant.is_none() {
+            log::warn!("Pinned HLS variant disappeared; selecting the best available variant");
+        }
+        let variant_url = resolve_variant_url(&master_url, &variant.uri)?;
+        let selected_stream = construct_stream_from_variant(
+            &self.stream.id,
+            &variant_url,
+            self.stream.format.clone(),
+            self.stream.codec.clone(),
+        )
+        .await?;
+        let media_playlist = self.read_media_playlist(&selected_stream).await?;
+        *self.selected_variant_key.write().await = Some(variant_identity(&variant_url));
+        *self.selected_stream.write().await = Some(selected_stream);
+        Ok(media_playlist)
+    }
+
+    async fn read_media_playlist(
+        &self,
+        stream: &HlsStream,
+    ) -> Result<MediaPlaylist, RecorderError> {
+        match self.query_playlist(stream).await? {
+            Playlist::MediaPlaylist(playlist) => Ok(playlist),
+            Playlist::MasterPlaylist(_) => Err(RecorderError::M3u8ParseFailed {
+                content: "No media playlist found".to_string(),
+            }),
         }
     }
 
@@ -363,12 +560,13 @@ impl HlsRecorder {
 
     async fn download_segment(
         &self,
+        source_stream: &HlsStream,
         source_segment: &MediaSegment,
         sequence: u64,
     ) -> Result<DownloadedSegment, RecorderError> {
         let mut segment = source_segment.clone();
-        let source_url = self.stream.ts_url(&segment.uri);
-        let local_uri = local_segment_filename(&segment.uri, sequence);
+        let source_url = source_stream.ts_url(&segment.uri);
+        let local_uri = local_segment_filename(sequence, &segment.uri);
         let path = self.work_dir.join(&local_uri);
         let size = download(&self.client, &source_url, &path, DOWNLOAD_RETRY).await?;
 
@@ -382,6 +580,7 @@ impl HlsRecorder {
 
     async fn download_if_not_twitch_ad(
         &self,
+        source_stream: &HlsStream,
         segment: &MediaSegment,
         sequence: u64,
         ad_ranges: &[AdTimeRange],
@@ -390,16 +589,24 @@ impl HlsRecorder {
             log::info!("Skipping Twitch ad segment at sequence {sequence}");
             let path = self
                 .work_dir
-                .join(local_segment_filename(&segment.uri, sequence));
+                .join(local_segment_filename(sequence, &segment.uri));
             self.skip_segment(&path, sequence).await?;
             return Ok(None);
         }
 
-        self.download_segment(segment, sequence).await.map(Some)
+        self.download_segment(source_stream, segment, sequence)
+            .await
+            .map(Some)
     }
 
     async fn update_entries(&self) -> Result<(), RecorderError> {
         let media_playlist = self.query_media_playlist().await?;
+        let selected_stream = self
+            .selected_stream
+            .read()
+            .await
+            .clone()
+            .unwrap_or_else(|| (*self.stream).clone());
         let playlist_sequence = media_playlist.media_sequence;
         let last_sequence = self.sequence.load(Ordering::Relaxed);
         let ad_ranges = self.ad_ranges_for_playlist(&media_playlist).await;
@@ -414,7 +621,7 @@ impl HlsRecorder {
             }
 
             let downloaded = match self
-                .download_if_not_twitch_ad(segment, segment_sequence, &ad_ranges)
+                .download_if_not_twitch_ad(&selected_stream, segment, segment_sequence, &ad_ranges)
                 .await
             {
                 Ok(Some(downloaded)) => downloaded,
@@ -545,6 +752,56 @@ impl HlsRecorder {
     }
 }
 
+fn select_media_variant(
+    variants: &[VariantStream],
+    selection: HlsVariantSelection,
+) -> Option<&VariantStream> {
+    match selection {
+        HlsVariantSelection::First => variants.iter().find(|variant| !variant.is_i_frame),
+        HlsVariantSelection::HighestBandwidth => best_media_variant(variants),
+    }
+}
+
+fn best_media_variant(variants: &[VariantStream]) -> Option<&VariantStream> {
+    variants
+        .iter()
+        .filter(|variant| !variant.is_i_frame)
+        .max_by_key(|variant| variant.average_bandwidth.unwrap_or(variant.bandwidth))
+}
+
+/// Use stable YouTube itags when available; otherwise use the resolved variant
+/// path so signatures and expiry tokens can refresh without changing quality.
+fn variant_identity(variant_url: &str) -> String {
+    let Ok(url) = url::Url::parse(variant_url) else {
+        return variant_url
+            .split('?')
+            .next()
+            .unwrap_or(variant_url)
+            .to_string();
+    };
+    let segments: Vec<_> = url.path_segments().into_iter().flatten().collect();
+    if let Some(itag) = segments
+        .windows(2)
+        .find(|pair| pair[0] == "itag")
+        .map(|pair| pair[1])
+    {
+        return format!("itag:{itag}");
+    }
+    url.path().to_string()
+}
+
+fn resolve_variant_url(master_url: &str, variant_uri: &str) -> Result<String, RecorderError> {
+    let master = url::Url::parse(master_url).map_err(|_| RecorderError::M3u8ParseFailed {
+        content: "Invalid master playlist URL".to_string(),
+    })?;
+    master
+        .join(variant_uri)
+        .map(|url| url.to_string())
+        .map_err(|_| RecorderError::M3u8ParseFailed {
+            content: "Invalid HLS variant URI".to_string(),
+        })
+}
+
 async fn persist_sequence(file: &mut File, sequence: u64) -> std::io::Result<()> {
     file.set_len(0).await?;
     file.seek(SeekFrom::Start(0)).await?;
@@ -644,12 +901,12 @@ pub async fn construct_stream_from_variant(
 
     // try to match expire from extra with regex
     let expire_regex =
-        regex::Regex::new(r"expires=(\d+)").expect("expires regex is a valid literal");
-    let expire = if let Some(captures) = expire_regex.captures(extra) {
-        captures[1].parse::<i64>().unwrap_or(0)
-    } else {
-        0
-    };
+        regex::Regex::new(r"(?:expires=|/expire/)(\d+)").expect("expires regex is a valid literal");
+    let expire = expire_regex
+        .captures(extra)
+        .or_else(|| expire_regex.captures(body))
+        .and_then(|captures| captures[1].parse::<i64>().ok())
+        .unwrap_or(0);
 
     let real_stream = HlsStream::new(
         id.to_string(),
@@ -667,10 +924,11 @@ pub async fn construct_stream_from_variant(
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::atomic::AtomicUsize;
 
     use crate::core::{Codec, Format};
-    use wiremock::matchers::method;
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
     use super::*;
 
@@ -758,13 +1016,13 @@ mod tests {
         };
 
         let downloaded = recorder
-            .download_segment(&source_playlist.segments[0], 42)
+            .download_segment(&recorder.stream, &source_playlist.segments[0], 42)
             .await
             .unwrap();
-        assert_eq!(downloaded.segment.uri, "segment_42.ts");
+        assert_eq!(downloaded.segment.uri, "segment-42.ts");
         assert_eq!(
             downloaded.path.file_name().unwrap().to_str().unwrap(),
-            "segment_42.ts"
+            "segment-42.ts"
         );
         assert_eq!(tokio::fs::read(&downloaded.path).await.unwrap(), body);
 
@@ -778,7 +1036,7 @@ mod tests {
         let playlist = tokio::fs::read_to_string(work_dir.join(PLAYLIST_FILE_NAME))
             .await
             .unwrap();
-        assert!(playlist.contains("segment_42.ts"));
+        assert!(playlist.contains("segment-42.ts"));
         assert!(!playlist.contains("https://"));
         assert!(!playlist.contains(&long_token));
 
@@ -843,7 +1101,7 @@ mod tests {
 
         for (sequence, segment) in playlist.segments.iter().enumerate() {
             if let Some(downloaded) = recorder
-                .download_if_not_twitch_ad(segment, sequence as u64, &ad_ranges)
+                .download_if_not_twitch_ad(&recorder.stream, segment, sequence as u64, &ad_ranges)
                 .await
                 .unwrap()
             {
@@ -861,13 +1119,13 @@ mod tests {
         let saved = tokio::fs::read_to_string(work_dir.join(PLAYLIST_FILE_NAME))
             .await
             .unwrap();
-        assert!(saved.contains("segment_2.ts"));
+        assert!(saved.contains("segment-2.ts"));
         assert!(saved.contains("1080p program"));
         assert!(!saved.contains("480p ad"));
         assert!(!saved.contains("https://"));
-        assert!(!work_dir.join("segment_0.ts").exists());
-        assert!(!work_dir.join("segment_1.ts").exists());
-        assert!(work_dir.join("segment_2.ts").exists());
+        assert!(!work_dir.join("segment-0.ts").exists());
+        assert!(!work_dir.join("segment-1.ts").exists());
+        assert!(work_dir.join("segment-2.ts").exists());
         assert_eq!(
             tokio::fs::read_to_string(work_dir.join(".sequence"))
                 .await
@@ -921,6 +1179,439 @@ mod tests {
             "101"
         );
         tokio::fs::remove_dir_all(work_dir).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn construct_stream_reads_youtube_expiry_from_path() {
+        let stream = construct_stream_from_variant(
+            "youtube_live",
+            "https://manifest.googlevideo.com/api/manifest/hls_variant/expire/1790184859/playlist.m3u8?token=abc",
+            Format::TS,
+            Codec::Avc,
+        )
+        .await
+        .unwrap();
+        assert_eq!(stream.expire, 1_790_184_859);
+    }
+
+    #[tokio::test]
+    async fn first_variant_policy_stays_on_the_initial_media_playlist() {
+        let server = MockServer::start().await;
+        let first_master = r#"#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=100000,RESOLUTION=640x360
+low.m3u8
+"#;
+        let upgraded_master = r#"#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=100000,RESOLUTION=640x360
+low.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1280x720
+high.m3u8
+"#;
+        let master_requests = Arc::new(AtomicUsize::new(0));
+        let request_count = Arc::clone(&master_requests);
+        Mock::given(method("GET"))
+            .and(path("/live/master.m3u8"))
+            .respond_with(move |_request: &Request| {
+                let response = if request_count.fetch_add(1, Ordering::Relaxed) == 0 {
+                    first_master
+                } else {
+                    upgraded_master
+                };
+                ResponseTemplate::new(200).set_body_string(response)
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/live/low.m3u8"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXT-X-MEDIA-SEQUENCE:10
+#EXTINF:2.0,
+low-10.ts
+"#,
+            ))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let stream = construct_stream_from_variant(
+            "live",
+            &format!("{}/live/master.m3u8", server.uri()),
+            Format::TS,
+            Codec::Avc,
+        )
+        .await
+        .unwrap();
+        let (events, _receiver) = broadcast::channel(1);
+        let work_dir =
+            std::env::temp_dir().join(format!("bsr-hls-first-variant-{}", uuid::Uuid::new_v4()));
+        let recorder = HlsRecorder::new(
+            "room".to_string(),
+            Arc::new(stream),
+            reqwest::Client::new(),
+            None,
+            events,
+            work_dir.clone(),
+            Arc::new(AtomicBool::new(true)),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            recorder
+                .query_media_playlist()
+                .await
+                .unwrap()
+                .media_sequence,
+            10
+        );
+        assert_eq!(
+            recorder
+                .query_media_playlist()
+                .await
+                .unwrap()
+                .media_sequence,
+            10
+        );
+        assert_eq!(master_requests.load(Ordering::Relaxed), 1);
+        server.verify().await;
+        let _ = tokio::fs::remove_dir_all(work_dir).await;
+    }
+
+    #[tokio::test]
+    async fn highest_bandwidth_change_starts_a_new_recording_segment() {
+        let server = MockServer::start().await;
+        let first_master = r#"#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=100000,RESOLUTION=640x360
+low.m3u8
+"#;
+        let upgraded_master = r#"#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=100000,RESOLUTION=640x360
+low.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1280x720
+high.m3u8
+"#;
+        let master_requests = Arc::new(AtomicUsize::new(0));
+        let request_count = Arc::clone(&master_requests);
+        Mock::given(method("GET"))
+            .and(path("/live/master.m3u8"))
+            .respond_with(move |_request: &Request| {
+                let response = if request_count.fetch_add(1, Ordering::Relaxed) == 0 {
+                    first_master
+                } else {
+                    upgraded_master
+                };
+                ResponseTemplate::new(200).set_body_string(response)
+            })
+            .expect(3)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/live/low.m3u8"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXT-X-MEDIA-SEQUENCE:10
+#EXTINF:2.0,
+low-10.ts
+"#,
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/live/high.m3u8"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXT-X-MEDIA-SEQUENCE:100
+#EXTINF:2.0,
+high-100.ts
+"#,
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let stream = construct_stream_from_variant(
+            "live",
+            &format!("{}/live/master.m3u8", server.uri()),
+            Format::TS,
+            Codec::Avc,
+        )
+        .await
+        .unwrap();
+        let (events, _receiver) = broadcast::channel(1);
+        let work_dir =
+            std::env::temp_dir().join(format!("bsr-hls-variant-pin-{}", uuid::Uuid::new_v4()));
+        let source_stream = Arc::new(stream);
+        let recorder = HlsRecorder::new_with_variant_selection(
+            "room".to_string(),
+            source_stream.clone(),
+            reqwest::Client::new(),
+            None,
+            events,
+            work_dir.clone(),
+            Arc::new(AtomicBool::new(true)),
+            HlsVariantSelection::HighestBandwidth,
+        )
+        .await
+        .unwrap();
+
+        let first = recorder.query_media_playlist().await.unwrap();
+        let second = recorder.query_media_playlist().await;
+
+        assert_eq!(first.media_sequence, 10);
+        assert!(matches!(
+            second,
+            Err(RecorderError::ResolutionChanged { .. })
+        ));
+
+        // A fresh recording segment re-reads the upgraded master and starts at
+        // the now-highest available variant.
+        let (next_events, _next_receiver) = broadcast::channel(1);
+        let next_recorder = HlsRecorder::new_with_variant_selection(
+            "room".to_string(),
+            source_stream,
+            reqwest::Client::new(),
+            None,
+            next_events,
+            work_dir.clone(),
+            Arc::new(AtomicBool::new(true)),
+            HlsVariantSelection::HighestBandwidth,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            next_recorder
+                .query_media_playlist()
+                .await
+                .unwrap()
+                .media_sequence,
+            100
+        );
+        assert_eq!(master_requests.load(Ordering::Relaxed), 3);
+        server.verify().await;
+        let _ = tokio::fs::remove_dir_all(work_dir).await;
+    }
+
+    #[tokio::test]
+    async fn highest_bandwidth_policy_uses_pinned_playlist_when_master_fails() {
+        let server = MockServer::start().await;
+        let master_body = r#"#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=100000,RESOLUTION=640x360
+low.m3u8
+"#;
+        let master_requests = Arc::new(AtomicUsize::new(0));
+        let request_count = Arc::clone(&master_requests);
+        Mock::given(method("GET"))
+            .and(path("/live/master.m3u8"))
+            .respond_with(move |_request: &Request| {
+                if request_count.fetch_add(1, Ordering::Relaxed) == 0 {
+                    ResponseTemplate::new(200).set_body_string(master_body)
+                } else {
+                    ResponseTemplate::new(500).set_body_string("temporary master failure")
+                }
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        let media_requests = Arc::new(AtomicUsize::new(0));
+        let request_count = Arc::clone(&media_requests);
+        Mock::given(method("GET"))
+            .and(path("/live/low.m3u8"))
+            .respond_with(move |_request: &Request| {
+                let sequence = if request_count.fetch_add(1, Ordering::Relaxed) == 0 {
+                    10
+                } else {
+                    11
+                };
+                ResponseTemplate::new(200).set_body_string(format!(
+                    r#"#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXT-X-MEDIA-SEQUENCE:{sequence}
+#EXTINF:2.0,
+low-{sequence}.ts
+"#
+                ))
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let stream = construct_stream_from_variant(
+            "live",
+            &format!("{}/live/master.m3u8", server.uri()),
+            Format::TS,
+            Codec::Avc,
+        )
+        .await
+        .unwrap();
+        let (events, _receiver) = broadcast::channel(1);
+        let work_dir =
+            std::env::temp_dir().join(format!("bsr-hls-master-failure-{}", uuid::Uuid::new_v4()));
+        let recorder = HlsRecorder::new_with_variant_selection(
+            "room".to_string(),
+            Arc::new(stream),
+            reqwest::Client::new(),
+            None,
+            events,
+            work_dir.clone(),
+            Arc::new(AtomicBool::new(true)),
+            HlsVariantSelection::HighestBandwidth,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            recorder
+                .query_media_playlist()
+                .await
+                .unwrap()
+                .media_sequence,
+            10
+        );
+        assert_eq!(
+            recorder
+                .query_media_playlist()
+                .await
+                .unwrap()
+                .media_sequence,
+            11
+        );
+        assert_eq!(master_requests.load(Ordering::Relaxed), 2);
+        assert_eq!(media_requests.load(Ordering::Relaxed), 2);
+        server.verify().await;
+        let _ = tokio::fs::remove_dir_all(work_dir).await;
+    }
+
+    #[tokio::test]
+    async fn reselects_variant_only_after_pinned_variant_disappears() {
+        let server = MockServer::start().await;
+        let initial_master = r#"#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=100000,RESOLUTION=640x360
+low.m3u8
+"#;
+        let updated_master = r#"#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1280x720
+high.m3u8
+"#;
+        let master_requests = Arc::new(AtomicUsize::new(0));
+        let request_count = Arc::clone(&master_requests);
+        Mock::given(method("GET"))
+            .and(path("/live/master.m3u8"))
+            .respond_with(move |_request: &Request| {
+                let response = if request_count.fetch_add(1, Ordering::Relaxed) == 0 {
+                    initial_master
+                } else {
+                    updated_master
+                };
+                ResponseTemplate::new(200).set_body_string(response)
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        let low_requests = Arc::new(AtomicUsize::new(0));
+        let request_count = Arc::clone(&low_requests);
+        Mock::given(method("GET"))
+            .and(path("/live/low.m3u8"))
+            .respond_with(move |_request: &Request| {
+                if request_count.fetch_add(1, Ordering::Relaxed) == 0 {
+                    ResponseTemplate::new(200).set_body_string(
+                        r#"#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXT-X-MEDIA-SEQUENCE:10
+#EXTINF:2.0,
+low-10.ts
+"#,
+                    )
+                } else {
+                    ResponseTemplate::new(404)
+                }
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/live/high.m3u8"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXT-X-MEDIA-SEQUENCE:100
+#EXTINF:2.0,
+high-100.ts
+"#,
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let stream = construct_stream_from_variant(
+            "live",
+            &format!("{}/live/master.m3u8", server.uri()),
+            Format::TS,
+            Codec::Avc,
+        )
+        .await
+        .unwrap();
+        let (events, _receiver) = broadcast::channel(1);
+        let work_dir =
+            std::env::temp_dir().join(format!("bsr-hls-variant-fallback-{}", uuid::Uuid::new_v4()));
+        let recorder = HlsRecorder::new(
+            "room".to_string(),
+            Arc::new(stream),
+            reqwest::Client::new(),
+            None,
+            events,
+            work_dir.clone(),
+            Arc::new(AtomicBool::new(true)),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            recorder
+                .query_media_playlist()
+                .await
+                .unwrap()
+                .media_sequence,
+            10
+        );
+        assert_eq!(
+            recorder
+                .query_media_playlist()
+                .await
+                .unwrap()
+                .media_sequence,
+            100
+        );
+        server.verify().await;
+        let _ = tokio::fs::remove_dir_all(work_dir).await;
+    }
+
+    #[test]
+    fn segment_uris_get_unique_local_names() {
+        assert_eq!(
+            local_segment_filename(
+                1528,
+                "https://rr5.googlevideo.com/videoplayback?itag=91&sig=secret"
+            ),
+            "segment-1528.ts"
+        );
+        assert_eq!(
+            local_segment_filename(1529, "https://cdn.test/chunk-1.m4s?token=secret"),
+            "segment-1529.m4s"
+        );
+        assert_eq!(
+            local_segment_filename(3, "nested/3.ts?expires=1"),
+            "segment-3.ts"
+        );
+        assert_ne!(
+            local_segment_filename(3, "chunk.ts?seq=1"),
+            local_segment_filename(4, "chunk.ts?seq=2")
+        );
     }
 
     #[tokio::test]

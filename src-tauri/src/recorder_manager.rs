@@ -18,10 +18,12 @@ use recorder::errors::RecorderError;
 use recorder::events::RecorderEvent;
 use recorder::platforms::bilibili::BiliRecorder;
 use recorder::platforms::douyin::DouyinRecorder;
+use recorder::platforms::douyu::DouyuRecorder;
 use recorder::platforms::huya::HuyaRecorder;
 use recorder::platforms::kuaishou::KuaishouRecorder;
 use recorder::platforms::tiktok::TikTokRecorder;
 use recorder::platforms::twitch::TwitchRecorder;
+use recorder::platforms::youtube::YoutubeRecorder;
 use recorder::platforms::PlatformType;
 use recorder::traits::RecorderTrait;
 use recorder::RoomInfo;
@@ -560,9 +562,11 @@ impl RecorderManager {
                     .get_account_by_platform(platform.clone().as_str())
                     .await;
                 if platform != PlatformType::Huya
+                    && platform != PlatformType::Douyu
                     && platform != PlatformType::Kuaishou
                     && platform != PlatformType::TikTok
                     && platform != PlatformType::Twitch
+                    && platform != PlatformType::Youtube
                     && account.is_err()
                 {
                     log::warn!("Failed to find an account for {platform:?} {room_id}");
@@ -598,12 +602,12 @@ impl RecorderManager {
         extra: &str,
         enabled: bool,
     ) -> Result<(), RecorderManagerError> {
-        let normalized_room_id = if platform == PlatformType::Twitch {
-            recorder::platforms::twitch::api::normalize_channel(room_id)
-                .map_err(RecorderManagerError::RecorderError)
-        } else {
-            Ok(room_id.to_string())
-        }?;
+        let normalized_room_id = match platform {
+            PlatformType::Twitch => recorder::platforms::twitch::api::normalize_channel(room_id)
+                .map_err(RecorderManagerError::RecorderError)?,
+            PlatformType::Youtube => recorder::platforms::youtube::normalize_room_id(room_id)?,
+            _ => room_id.to_string(),
+        };
         let room_id = normalized_room_id.as_str();
         let recorder_id = format!("{}:{}", platform.as_str(), room_id);
         if self.recorders.read().await.contains_key(&recorder_id) {
@@ -636,6 +640,14 @@ impl RecorderManager {
                 update_interval,
                 enabled,
             )?),
+            PlatformType::Douyu => Box::new(DouyuRecorder::new(
+                room_id,
+                account,
+                cache_dir,
+                event_tx,
+                update_interval,
+                enabled,
+            )?),
             PlatformType::Huya => Box::new(HuyaRecorder::new(
                 room_id,
                 account,
@@ -661,6 +673,14 @@ impl RecorderManager {
                 enabled,
             )?),
             PlatformType::Twitch => Box::new(TwitchRecorder::new(
+                room_id,
+                account,
+                cache_dir,
+                event_tx,
+                update_interval,
+                enabled,
+            )?),
+            PlatformType::Youtube => Box::new(YoutubeRecorder::new(
                 room_id,
                 account,
                 cache_dir,

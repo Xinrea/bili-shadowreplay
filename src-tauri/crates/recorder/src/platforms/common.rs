@@ -17,7 +17,7 @@ use danmu_stream::provider::ProviderType;
 use danmu_stream::{DanmuMessageType, LiveEvent};
 
 use crate::core::flv_recorder::FlvRecorder;
-use crate::core::hls_recorder::{construct_stream_from_variant, HlsRecorder};
+use crate::core::hls_recorder::{construct_stream_from_variant, HlsRecorder, HlsVariantSelection};
 use crate::core::{Codec, Format, HlsStream};
 use crate::danmu::DanmuStorage;
 use crate::errors::RecorderError;
@@ -58,6 +58,7 @@ pub enum StreamPull {
     Hls {
         stream: Arc<HlsStream>,
         cookies: Option<String>,
+        variant_selection: HlsVariantSelection,
     },
     Flv {
         url: String,
@@ -76,7 +77,23 @@ impl StreamPull {
         url: &str,
         cookies: Option<String>,
     ) -> Result<Self, RecorderError> {
-        Self::hls_with_expire(live_id, url, cookies, 0).await
+        Self::hls_with_selection_and_expire(live_id, url, cookies, HlsVariantSelection::First, 0)
+            .await
+    }
+
+    pub(crate) async fn hls_highest_bandwidth(
+        live_id: &str,
+        url: &str,
+        cookies: Option<String>,
+    ) -> Result<Self, RecorderError> {
+        Self::hls_with_selection_and_expire(
+            live_id,
+            url,
+            cookies,
+            HlsVariantSelection::HighestBandwidth,
+            0,
+        )
+        .await
     }
 
     /// Build an HLS pull with an explicit token expiry when a platform does
@@ -87,6 +104,23 @@ impl StreamPull {
         cookies: Option<String>,
         expire: i64,
     ) -> Result<Self, RecorderError> {
+        Self::hls_with_selection_and_expire(
+            live_id,
+            url,
+            cookies,
+            HlsVariantSelection::First,
+            expire,
+        )
+        .await
+    }
+
+    async fn hls_with_selection_and_expire(
+        live_id: &str,
+        url: &str,
+        cookies: Option<String>,
+        variant_selection: HlsVariantSelection,
+        expire: i64,
+    ) -> Result<Self, RecorderError> {
         let stream = construct_stream_from_variant(live_id, url, Format::TS, Codec::Avc)
             .await
             .map_err(|_| RecorderError::NoStreamAvailable)?
@@ -94,6 +128,7 @@ impl StreamPull {
         Ok(Self::Hls {
             stream: Arc::new(stream),
             cookies,
+            variant_selection,
         })
     }
 }
@@ -174,6 +209,12 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
     /// Platforms without their own live-session ID can keep the default.
     async fn should_resume_same_recording(&self) -> bool {
         true
+    }
+
+    /// Whether a resolution change should start a new recording segment
+    /// without the normal between-recordings delay.
+    fn retry_immediately_after_resolution_change(&self) -> bool {
+        false
     }
 
     // ----- shared lifecycle -------------------------------------------------
@@ -345,8 +386,12 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
         self.is_recording().store(true, Ordering::Relaxed);
 
         match pull {
-            StreamPull::Hls { stream, cookies } => {
-                let hls_recorder = HlsRecorder::new(
+            StreamPull::Hls {
+                stream,
+                cookies,
+                variant_selection,
+            } => {
+                let hls_recorder = HlsRecorder::new_with_variant_selection(
                     self.room_id(),
                     stream,
                     self.client().clone(),
@@ -354,6 +399,7 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                     self.event_channel().clone(),
                     work_dir.full_path(),
                     self.enabled().clone(),
+                    variant_selection,
                 )
                 .await?;
 
@@ -487,6 +533,7 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
             while !recorder.quit().load(Ordering::Relaxed) {
                 if recorder.check_live().await {
                     // Live status is ok, start recording
+                    let mut restart_immediately = false;
                     if recorder.should_record().await {
                         let live_id = recorder.next_live_id().await;
                         if let Err(error) = recorder.start_recording(&live_id).await {
@@ -508,6 +555,13 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                                     log::warn!(
                                         "[{platform}][{room_id}] HLS playlist stalled; resuming the same recording"
                                     );
+                                }
+                                RecorderError::ResolutionChanged { .. }
+                                    if recorder.retry_immediately_after_resolution_change() =>
+                                {
+                                    // Close this segment and begin another at
+                                    // the new resolution without idle polling.
+                                    restart_immediately = true;
                                 }
                                 _ => {
                                     log::error!(
@@ -531,7 +585,7 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                     recorder.reset_recording().await;
 
                     // An expired stream resumes immediately with a fresh one.
-                    if recorder.should_continue().load(Ordering::Relaxed) {
+                    if recorder.should_continue().load(Ordering::Relaxed) || restart_immediately {
                         continue;
                     }
                     // Check status again after a short random delay.

@@ -26,10 +26,12 @@
   import { AnnotationOutline } from "flowbite-svelte-icons";
   import BilibiliIcon from "../lib/components/BilibiliIcon.svelte";
   import DouyinIcon from "../lib/components/DouyinIcon.svelte";
+  import DouyuIcon from "../lib/components/DouyuIcon.svelte";
   import KuaishouIcon from "../lib/components/KuaishouIcon.svelte";
   import HuyaIcon from "../lib/components/HuyaIcon.svelte";
   import TikTokIcon from "../lib/components/TikTokIcon.svelte";
   import TwitchIcon from "../lib/components/TwitchIcon.svelte";
+  import YouTubeIcon from "../lib/components/YouTubeIcon.svelte";
 
   let videos: VideoItem[] = [];
   let filteredVideos: VideoItem[] = $state([]);
@@ -292,6 +294,8 @@
         return "B站";
       case "douyin":
         return "抖音";
+      case "douyu":
+        return "斗鱼";
       case "huya":
         return "虎牙";
       case "kuaishou":
@@ -319,6 +323,8 @@
         return `https://live.bilibili.com/${roomId}`;
       case "douyin":
         return `https://live.douyin.com/${roomId}`;
+      case "douyu":
+        return `https://www.douyu.com/${roomId}`;
       case "huya":
         return `https://www.huya.com/${roomId}`;
       case "kuaishou":
@@ -328,7 +334,20 @@
       case "twitch":
         return `https://www.twitch.tv/${roomId}`;
       case "youtube":
-        return `https://www.youtube.com/channel/${roomId}`;
+        if (roomId.startsWith("legacy-c-")) {
+          return `https://www.youtube.com/c/${roomId.slice(9)}/live`;
+        }
+        if (roomId.startsWith("legacy-user-")) {
+          return `https://www.youtube.com/user/${roomId.slice(12)}/live`;
+        }
+        if (/^[A-Za-z0-9_-]{11}$/.test(roomId)) {
+          return `https://www.youtube.com/watch?v=${roomId}`;
+        }
+        if (roomId.startsWith("UC")) {
+          return `https://www.youtube.com/channel/${roomId}/live`;
+        }
+        const handle = roomId.startsWith("@") ? roomId : `@${roomId}`;
+        return `https://www.youtube.com/${handle}/live`;
       default:
         return null;
     }
@@ -810,6 +829,23 @@
                             >{video.room_id}</span
                           >
                         {/if}
+                      {:else if video.platform === "douyu"}
+                        <DouyuIcon class="w-4 h-4 flex-shrink-0" />
+                        {#if getRoomUrl(video.platform, video.room_id)}
+                          <a
+                            href={getRoomUrl(video.platform, video.room_id)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="text-blue-500 hover:text-blue-700 text-sm"
+                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
+                          >
+                            {video.room_id}
+                          </a>
+                        {:else}
+                          <span class="text-sm text-gray-900 dark:text-white"
+                            >{video.room_id}</span
+                          >
+                        {/if}
                       {:else if video.platform === "kuaishou"}
                         <KuaishouIcon class="w-4 h-4 flex-shrink-0" />
                         {#if getRoomUrl(video.platform, video.room_id)}
@@ -863,6 +899,23 @@
                         {/if}
                       {:else if video.platform === "twitch"}
                         <TwitchIcon class="w-5 h-5 flex-shrink-0 text-purple-600" />
+                        {#if getRoomUrl(video.platform, video.room_id)}
+                          <a
+                            href={getRoomUrl(video.platform, video.room_id)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="text-blue-500 hover:text-blue-700 text-sm"
+                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
+                          >
+                            {video.room_id}
+                          </a>
+                        {:else}
+                          <span class="text-sm text-gray-900 dark:text-white"
+                            >{video.room_id}</span
+                          >
+                        {/if}
+                      {:else if video.platform === "youtube"}
+                        <YouTubeIcon class="w-4 h-4 flex-shrink-0" />
                         {#if getRoomUrl(video.platform, video.room_id)}
                           <a
                             href={getRoomUrl(video.platform, video.room_id)}

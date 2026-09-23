@@ -49,7 +49,7 @@ pub async fn init_database() -> Result<SqlitePool, sqlx::Error> {
 CREATE TABLE rooms (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    platform TEXT NOT NULL,  -- 'bilibili', 'douyin', 'huya', 'kuaishou', 'tiktok', 'twitch'
+    platform TEXT NOT NULL,  -- 'bilibili', 'douyin', 'douyu', 'huya', 'kuaishou', 'tiktok', 'twitch', 'youtube'
     url TEXT NOT NULL,
     status TEXT DEFAULT 'offline',  -- 'online', 'offline'
     auto_record INTEGER DEFAULT 0,  -- 0: 关闭, 1: 开启

@@ -13,6 +13,7 @@ use danmu_stream::provider::ProviderType;
 use tokio::sync::{broadcast, RwLock};
 
 use crate::account::Account;
+use crate::core::hls_recorder::HlsVariantSelection;
 use crate::core::{Codec, Format, HlsStream};
 use crate::errors::RecorderError;
 use crate::platforms::bilibili::api::{BiliStream, Protocol, Qn, UserInfoCache};
@@ -180,6 +181,7 @@ impl PlatformApi for BiliRecorder {
         Ok(StreamPull::Hls {
             stream,
             cookies: None,
+            variant_selection: HlsVariantSelection::First,
         })
     }
 

@@ -21,10 +21,12 @@
   } from "lucide-svelte";
   import BilibiliIcon from "../lib/components/BilibiliIcon.svelte";
   import DouyinIcon from "../lib/components/DouyinIcon.svelte";
+  import DouyuIcon from "../lib/components/DouyuIcon.svelte";
   import KuaishouIcon from "../lib/components/KuaishouIcon.svelte";
   import HuyaIcon from "../lib/components/HuyaIcon.svelte";
   import TikTokIcon from "../lib/components/TikTokIcon.svelte";
   import TwitchIcon from "../lib/components/TwitchIcon.svelte";
+  import YouTubeIcon from "../lib/components/YouTubeIcon.svelte";
   import { SvelteSet } from "svelte/reactivity";
   import GenerateWholeClipModal from "../lib/components/GenerateWholeClipModal.svelte";
   import ArchiveSummaryModal from "../lib/components/ArchiveSummaryModal.svelte";
@@ -379,6 +381,8 @@
         return "B站";
       case "douyin":
         return "抖音";
+      case "douyu":
+        return "斗鱼";
       case "huya":
         return "虎牙";
       case "kuaishou":
@@ -403,6 +407,8 @@
         return `https://live.bilibili.com/${roomId}`;
       case "douyin":
         return `https://live.douyin.com/${roomId}`;
+      case "douyu":
+        return `https://www.douyu.com/${roomId}`;
       case "huya":
         return `https://www.huya.com/${roomId}`;
       case "kuaishou":
@@ -412,7 +418,20 @@
       case "twitch":
         return `https://www.twitch.tv/${roomId}`;
       case "youtube":
-        return `https://www.youtube.com/channel/${roomId}`;
+        if (roomId.startsWith("legacy-c-")) {
+          return `https://www.youtube.com/c/${roomId.slice(9)}/live`;
+        }
+        if (roomId.startsWith("legacy-user-")) {
+          return `https://www.youtube.com/user/${roomId.slice(12)}/live`;
+        }
+        if (/^[A-Za-z0-9_-]{11}$/.test(roomId)) {
+          return `https://www.youtube.com/watch?v=${roomId}`;
+        }
+        if (roomId.startsWith("UC")) {
+          return `https://www.youtube.com/channel/${roomId}/live`;
+        }
+        const handle = roomId.startsWith("@") ? roomId : `@${roomId}`;
+        return `https://www.youtube.com/${handle}/live`;
       default:
         return null;
     }
@@ -875,6 +894,8 @@
                         <BilibiliIcon class="w-4 h-4" />
                       {:else if archive.platform === "douyin"}
                         <DouyinIcon class="w-4 h-4" />
+                      {:else if archive.platform === "douyu"}
+                        <DouyuIcon class="w-4 h-4" />
                       {:else if archive.platform === "kuaishou"}
                         <KuaishouIcon class="w-4 h-4" />
                       {:else if archive.platform === "huya"}
@@ -883,6 +904,8 @@
                         <TikTokIcon class="w-5 h-5" />
                       {:else if archive.platform === "twitch"}
                         <TwitchIcon class="w-5 h-5 text-purple-600" />
+                      {:else if archive.platform === "youtube"}
+                        <YouTubeIcon class="w-4 h-4" />
                       {:else}
                         <Globe class="w-4 h-4 text-gray-400" />
                       {/if}

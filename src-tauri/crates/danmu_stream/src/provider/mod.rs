@@ -1,17 +1,21 @@
 mod bilibili;
 mod douyin;
+mod douyu;
 mod huya;
 mod kuaishou;
 mod twitch;
+mod youtube;
 
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
 use self::bilibili::BiliDanmu;
 use self::douyin::DouyinDanmu;
+use self::douyu::DouyuDanmu;
 use self::huya::HuyaDanmu;
 use self::kuaishou::KuaishouDanmu;
 use self::twitch::TwitchDanmu;
+use self::youtube::YoutubeDanmu;
 
 use crate::{DanmuMessageType, DanmuStreamError};
 
@@ -19,9 +23,11 @@ use crate::{DanmuMessageType, DanmuStreamError};
 pub enum ProviderType {
     BiliBili,
     Douyin,
+    Douyu,
     Huya,
     Kuaishou,
     Twitch,
+    Youtube,
 }
 
 #[async_trait]
@@ -50,7 +56,7 @@ pub fn normalize_twitch_channel(room_id: &str) -> Result<String, String> {
 ///
 /// # Arguments
 ///
-/// * `provider_type` - The type of platform to fetch danmu from (BiliBili, Douyin, Huya, Kuaishou or Twitch)
+/// * `provider_type` - The type of platform to fetch danmu from (BiliBili, Douyin, Douyu, Huya, Kuaishou, Twitch or YouTube)
 /// * `identifier` - User validation information (e.g., cookies) required by the platform
 /// * `room_id` - The unique identifier of the room/channel to fetch danmu from. Notice that douyin room_id is more like a live_id, it changes every time the live starts.
 ///
@@ -86,6 +92,10 @@ pub async fn new(
             let douyin = DouyinDanmu::new(identifier, room_id).await?;
             Ok(Box::new(douyin))
         }
+        ProviderType::Douyu => {
+            let douyu = DouyuDanmu::new(identifier, room_id).await?;
+            Ok(Box::new(douyu))
+        }
         ProviderType::Kuaishou => {
             let kuaishou = KuaishouDanmu::new(identifier, room_id).await?;
             Ok(Box::new(kuaishou))
@@ -97,6 +107,10 @@ pub async fn new(
         ProviderType::Twitch => {
             let twitch = TwitchDanmu::new(identifier, room_id).await?;
             Ok(Box::new(twitch))
+        }
+        ProviderType::Youtube => {
+            let youtube = YoutubeDanmu::new(identifier, room_id).await?;
+            Ok(Box::new(youtube))
         }
     }
 }

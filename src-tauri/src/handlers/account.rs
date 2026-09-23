@@ -123,6 +123,9 @@ pub async fn add_account(
                 }
             }
         }
+        PlatformType::Douyu => {
+            return Err("斗鱼录制和弹幕不需要登录账号".to_string());
+        }
         PlatformType::Huya => {
             let user_id = get_item_from_cookies("yyuid", cookies)?;
 
@@ -147,10 +150,13 @@ pub async fn add_account(
                 }
             }
         }
-        PlatformType::Youtube => {
-            // unsupported
-            return Err("Unsupported platform".to_string());
-        }
+        PlatformType::Youtube => UserInfo {
+            // YouTube recording only needs the supplied browser cookies; it
+            // does not require a Google API user lookup to save the account.
+            user_id: format!("youtube:{}", uuid::Uuid::new_v4()),
+            user_name: "YouTube Cookie".to_string(),
+            user_avatar: String::new(),
+        },
         PlatformType::Kuaishou => {
             let tmp_account = AccountRow {
                 platform: platform.as_str().to_string(),

@@ -667,16 +667,18 @@ fn find_selected_channel_live_video<'a>(
 fn find_live_video_renderer<'a>(value: &'a Value, channel_id: &str) -> Option<&'a Value> {
     match value {
         Value::Object(object) => {
-            if let Some(renderer) = object.get("videoRenderer") {
-                let card_owner = video_owner_id(renderer).unwrap_or_default();
-                if card_owner == channel_id
-                    && renderer
-                        .get("videoId")
-                        .and_then(Value::as_str)
-                        .is_some_and(is_video_id)
-                    && is_live_video_renderer(renderer)
-                {
-                    return Some(renderer);
+            for renderer_key in ["videoRenderer", "gridVideoRenderer"] {
+                if let Some(renderer) = object.get(renderer_key) {
+                    let card_owner = video_owner_id(renderer).unwrap_or_default();
+                    if card_owner == channel_id
+                        && renderer
+                            .get("videoId")
+                            .and_then(Value::as_str)
+                            .is_some_and(is_video_id)
+                        && is_live_video_renderer(renderer)
+                    {
+                        return Some(renderer);
+                    }
                 }
             }
             object
@@ -727,9 +729,13 @@ fn is_live_video_renderer(renderer: &Value) -> bool {
 
 fn video_owner_id(renderer: &Value) -> Option<String> {
     renderer
-        .get("ownerText")
-        .and_then(first_browse_id)
+        .get("channelId")
+        .or_else(|| renderer.get("ownerChannelId"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| renderer.get("ownerText").and_then(first_browse_id))
         .or_else(|| renderer.get("shortBylineText").and_then(first_browse_id))
+        .or_else(|| renderer.get("longBylineText").and_then(first_browse_id))
 }
 
 fn first_browse_id(value: &Value) -> Option<String> {
@@ -886,6 +892,23 @@ mod tests {
         );
         assert!(normalize_room_id("https://evil-youtube.com/@creator").is_err());
         assert!(normalize_room_id("https://www.youtube.com/watch?v=bad").is_err());
+    }
+
+    #[test]
+    fn reads_channel_owner_from_renderer_id_and_byline_fields() {
+        assert_eq!(
+            video_owner_id(&serde_json::json!({"channelId": "UCfromId"})).as_deref(),
+            Some("UCfromId")
+        );
+        for field in ["ownerText", "shortBylineText", "longBylineText"] {
+            let renderer = serde_json::json!({
+                (field): {"runs": [{
+                    "text": "Creator",
+                    "navigationEndpoint": {"browseEndpoint": {"browseId": "UCfromByline"}}
+                }]}
+            });
+            assert_eq!(video_owner_id(&renderer).as_deref(), Some("UCfromByline"));
+        }
     }
 
     #[test]

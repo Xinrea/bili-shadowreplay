@@ -303,7 +303,7 @@ impl PlatformApi for YoutubeRecorder {
         };
         let cookies =
             (!self.account.cookies.trim().is_empty()).then(|| self.account.cookies.clone());
-        StreamPull::hls(live_id, &hls_url, cookies).await
+        StreamPull::hls_highest_bandwidth(live_id, &hls_url, cookies).await
     }
 
     async fn clear_stream(&self) {

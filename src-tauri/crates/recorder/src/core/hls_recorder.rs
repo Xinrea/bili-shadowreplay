@@ -20,6 +20,17 @@ const UPDATE_TIMEOUT: Duration = Duration::from_secs(20);
 const UPDATE_INTERVAL: Duration = Duration::from_secs(1);
 const PLAYLIST_FILE_NAME: &str = "playlist.m3u8";
 const DOWNLOAD_RETRY: u32 = 3;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HlsVariantSelection {
+    /// Preserve the first media variant selected for a recording.
+    #[default]
+    First,
+    /// Track the highest available bandwidth; variant changes end the current
+    /// recording segment so a higher-quality stream can start cleanly.
+    HighestBandwidth,
+}
+
 /// A recorder for HLS streams
 ///
 /// This recorder fetches, caches and serves TS entries, currently supporting `StreamType::FMP4, StreamType::TS`.
@@ -29,11 +40,12 @@ const DOWNLOAD_RETRY: u32 = 3;
 pub struct HlsRecorder {
     room_id: String,
     stream: Arc<HlsStream>,
-    /// Master playlists may gain higher-quality variants after a live starts.
-    /// Pin the selected media stream for this recording so its codec/resolution
-    /// and sequence space cannot change on each poll.
+    /// The media playlist selected for the current recording segment. The
+    /// `First` policy keeps this pinned; `HighestBandwidth` refreshes it until
+    /// a quality change starts a new segment.
     selected_stream: Arc<RwLock<Option<HlsStream>>>,
     selected_variant_key: Arc<RwLock<Option<String>>>,
+    variant_selection: HlsVariantSelection,
     client: reqwest::Client,
     event_channel: broadcast::Sender<RecorderEvent>,
     work_dir: PathBuf,
@@ -58,6 +70,30 @@ impl HlsRecorder {
         event_channel: broadcast::Sender<RecorderEvent>,
         work_dir: PathBuf,
         enabled: Arc<AtomicBool>,
+    ) -> Result<Self, RecorderError> {
+        Self::new_with_variant_selection(
+            room_id,
+            stream,
+            client,
+            cookies,
+            event_channel,
+            work_dir,
+            enabled,
+            HlsVariantSelection::First,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn new_with_variant_selection(
+        room_id: String,
+        stream: Arc<HlsStream>,
+        client: reqwest::Client,
+        cookies: Option<String>,
+        event_channel: broadcast::Sender<RecorderEvent>,
+        work_dir: PathBuf,
+        enabled: Arc<AtomicBool>,
+        variant_selection: HlsVariantSelection,
     ) -> Result<Self, RecorderError> {
         // try to create work_dir
         if !work_dir.exists() {
@@ -125,6 +161,7 @@ impl HlsRecorder {
             stream,
             selected_stream: Arc::new(RwLock::new(None)),
             selected_variant_key: Arc::new(RwLock::new(None)),
+            variant_selection,
             client,
             event_channel,
             work_dir,
@@ -201,7 +238,11 @@ impl HlsRecorder {
     }
 
     async fn query_media_playlist(&self) -> Result<MediaPlaylist, RecorderError> {
-        let selected_stream = self.selected_stream.read().await.clone();
+        let selected_stream = if self.variant_selection == HlsVariantSelection::First {
+            self.selected_stream.read().await.clone()
+        } else {
+            None
+        };
         if let Some(selected_stream) = selected_stream {
             match self.read_media_playlist(&selected_stream).await {
                 Ok(playlist) => return Ok(playlist),
@@ -227,15 +268,29 @@ impl HlsRecorder {
                 Ok(playlist)
             }
             Playlist::MasterPlaylist(playlist) => {
-                // Select once, not once per poll: YouTube adds higher-quality
-                // variants after a live starts, and switching would mix
-                // resolutions or sequence numbers into one recording.
-                let variant = best_media_variant(&playlist.variants).ok_or_else(|| {
-                    RecorderError::M3u8ParseFailed {
+                // YouTube may add higher-quality variants after a live starts.
+                // Its policy rechecks the master and ends this recording segment
+                // when the best available variant changes; other platforms keep
+                // their first media variant pinned.
+                let variant = select_media_variant(&playlist.variants, self.variant_selection)
+                    .ok_or_else(|| RecorderError::M3u8ParseFailed {
                         content: "No variants found".to_string(),
-                    }
-                })?;
+                    })?;
                 let variant_url = resolve_variant_url(&self.stream.index(), &variant.uri)?;
+                let selected_key = variant_identity(&variant_url);
+                if self.variant_selection == HlsVariantSelection::HighestBandwidth
+                    && self
+                        .selected_variant_key
+                        .read()
+                        .await
+                        .as_ref()
+                        .is_some_and(|previous| previous != &selected_key)
+                {
+                    return Err(RecorderError::ResolutionChanged {
+                        err: "Highest-bandwidth HLS variant changed; starting a new recording segment"
+                            .to_string(),
+                    });
+                }
                 let selected_stream = construct_stream_from_variant(
                     &self.stream.id,
                     &variant_url,
@@ -243,7 +298,6 @@ impl HlsRecorder {
                     self.stream.codec.clone(),
                 )
                 .await?;
-                let selected_key = variant_identity(&variant_url);
                 let media_playlist = self.read_media_playlist(&selected_stream).await?;
                 *self.selected_variant_key.write().await = Some(selected_key);
                 *self.selected_stream.write().await = Some(selected_stream);
@@ -268,7 +322,8 @@ impl HlsRecorder {
                 && resolve_variant_url(&master_url, &variant.uri)
                     .is_ok_and(|url| variant_identity(&url) == selected_key)
         });
-        let variant = pinned_variant.or_else(|| best_media_variant(&master.variants));
+        let variant = pinned_variant
+            .or_else(|| select_media_variant(&master.variants, self.variant_selection));
         let variant = variant.ok_or_else(|| RecorderError::M3u8ParseFailed {
             content: "No variants found".to_string(),
         })?;
@@ -457,11 +512,17 @@ impl HlsRecorder {
     }
 }
 
-fn best_media_variant(variants: &[VariantStream]) -> Option<&VariantStream> {
-    variants
-        .iter()
-        .filter(|variant| !variant.is_i_frame)
-        .max_by_key(|variant| variant.average_bandwidth.unwrap_or(variant.bandwidth))
+fn select_media_variant(
+    variants: &[VariantStream],
+    selection: HlsVariantSelection,
+) -> Option<&VariantStream> {
+    match selection {
+        HlsVariantSelection::First => variants.iter().find(|variant| !variant.is_i_frame),
+        HlsVariantSelection::HighestBandwidth => variants
+            .iter()
+            .filter(|variant| !variant.is_i_frame)
+            .max_by_key(|variant| variant.average_bandwidth.unwrap_or(variant.bandwidth)),
+    }
 }
 
 /// Use stable YouTube itags when available; otherwise use the resolved variant
@@ -692,7 +753,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pins_selected_variant_when_master_gains_higher_quality() {
+    async fn highest_bandwidth_change_starts_a_new_recording_segment() {
         let server = MockServer::start().await;
         let first_master = r#"#EXTM3U
 #EXT-X-STREAM-INF:BANDWIDTH=100000,RESOLUTION=640x360
@@ -716,7 +777,7 @@ high.m3u8
                 };
                 ResponseTemplate::new(200).set_body_string(response)
             })
-            .expect(1)
+            .expect(3)
             .mount(&server)
             .await;
         Mock::given(method("GET"))
@@ -729,7 +790,7 @@ high.m3u8
 low-10.ts
 "#,
             ))
-            .expect(2)
+            .expect(1)
             .mount(&server)
             .await;
         Mock::given(method("GET"))
@@ -742,7 +803,7 @@ low-10.ts
 high-100.ts
 "#,
             ))
-            .expect(0)
+            .expect(1)
             .mount(&server)
             .await;
 
@@ -757,24 +818,53 @@ high-100.ts
         let (events, _receiver) = broadcast::channel(1);
         let work_dir =
             std::env::temp_dir().join(format!("bsr-hls-variant-pin-{}", uuid::Uuid::new_v4()));
-        let recorder = HlsRecorder::new(
+        let source_stream = Arc::new(stream);
+        let recorder = HlsRecorder::new_with_variant_selection(
             "room".to_string(),
-            Arc::new(stream),
+            source_stream.clone(),
             reqwest::Client::new(),
             None,
             events,
             work_dir.clone(),
             Arc::new(AtomicBool::new(true)),
+            HlsVariantSelection::HighestBandwidth,
         )
         .await
         .unwrap();
 
         let first = recorder.query_media_playlist().await.unwrap();
-        let second = recorder.query_media_playlist().await.unwrap();
+        let second = recorder.query_media_playlist().await;
 
         assert_eq!(first.media_sequence, 10);
-        assert_eq!(second.media_sequence, 10);
-        assert_eq!(master_requests.load(Ordering::Relaxed), 1);
+        assert!(matches!(
+            second,
+            Err(RecorderError::ResolutionChanged { .. })
+        ));
+
+        // A fresh recording segment re-reads the upgraded master and starts at
+        // the now-highest available variant.
+        let (next_events, _next_receiver) = broadcast::channel(1);
+        let next_recorder = HlsRecorder::new_with_variant_selection(
+            "room".to_string(),
+            source_stream,
+            reqwest::Client::new(),
+            None,
+            next_events,
+            work_dir.clone(),
+            Arc::new(AtomicBool::new(true)),
+            HlsVariantSelection::HighestBandwidth,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            next_recorder
+                .query_media_playlist()
+                .await
+                .unwrap()
+                .media_sequence,
+            100
+        );
+        assert_eq!(master_requests.load(Ordering::Relaxed), 3);
         server.verify().await;
         let _ = tokio::fs::remove_dir_all(work_dir).await;
     }

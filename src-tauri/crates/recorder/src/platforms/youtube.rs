@@ -66,13 +66,11 @@ impl YoutubeRecorder {
         update_interval: Arc<AtomicU64>,
         enabled: bool,
     ) -> Result<Self, RecorderError> {
-        if room_id.trim().is_empty() {
-            return Err(RecorderError::InvalidValue);
-        }
+        let room_id = normalize_room_id(room_id)?;
 
         Ok(Self::with_extra(
             PlatformType::Youtube,
-            room_id,
+            &room_id,
             account,
             cache_dir,
             event_channel,
@@ -110,7 +108,15 @@ impl YoutubeRecorder {
         // still exposes the same live broadcast as HLS, which the existing
         // recorder can segment without introducing a separate media pipeline.
         if page.is_live && page.hls_url.is_none() {
-            page.hls_url = self.fetch_live_hls(&html, &page.video_id).await?;
+            let hls_url = self.fetch_live_hls(&html, &page.video_id).await?;
+            if hls_url.is_none() {
+                log::warn!(
+                    "[YouTube][{}] Live video {} has no usable HLS manifest; marking it unavailable",
+                    self.room_id,
+                    page.video_id
+                );
+            }
+            apply_player_hls(&mut page, hls_url);
         }
         Ok(page)
     }
@@ -187,11 +193,38 @@ impl YoutubeRecorder {
             .map_err(|error| RecorderError::ApiError {
                 error: format!("Invalid YouTube player response: {}", error.without_url()),
             })?;
-        Ok(player
+        let hls_url = player
             .get("streamingData")
             .and_then(|streaming| streaming.get("hlsManifestUrl"))
             .and_then(Value::as_str)
-            .map(str::to_string))
+            .map(str::to_string);
+        if hls_url.is_none() {
+            let status = player
+                .get("playabilityStatus")
+                .and_then(|status| status.get("status"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let reason = player
+                .get("playabilityStatus")
+                .and_then(|status| status.get("reason"))
+                .and_then(Value::as_str)
+                .unwrap_or(
+                    "HLS was not returned; the stream may require sign-in or expose SABR only",
+                );
+            let sabr_available = player
+                .get("streamingData")
+                .and_then(|streaming| streaming.get("serverAbrStreamingUrl"))
+                .is_some();
+            log::warn!(
+                "[YouTube][{}] Player cannot provide HLS for {} (status: {}, SABR: {}, reason: {})",
+                self.room_id,
+                video_id,
+                status,
+                sabr_available,
+                reason
+            );
+        }
+        Ok(hls_url)
     }
 
     async fn fetch_html(&self, url: &str) -> Result<(String, Url), RecorderError> {
@@ -296,66 +329,157 @@ impl RecorderTrait for YoutubeRecorder {
     }
 }
 
-/// Convert the configured identifier into a page that resolves the current
-/// live video.  Plain eleven-character values are treated as video ids;
-/// channel ids and handles use their `/live` page so the next broadcast is
-/// picked up automatically.
-fn youtube_room_url(identifier: &str) -> Result<String, RecorderError> {
+/// Normalize a user-supplied video or channel URL to a single safe room key.
+/// Room ids are used as filesystem and HTTP path segments throughout the
+/// application, so full URLs must never be persisted there.
+pub fn normalize_room_id(identifier: &str) -> Result<String, RecorderError> {
     let identifier = identifier.trim();
-    let identifier = identifier
-        .strip_prefix("bsr://")
-        .map(|value| format!("https://{value}"))
-        .unwrap_or_else(|| identifier.to_string());
-    if identifier.starts_with("http://") || identifier.starts_with("https://") {
-        let url = Url::parse(&identifier).map_err(|_| RecorderError::InvalidValue)?;
-        let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
-        let is_youtube_host =
-            host == "youtube.com" || host.ends_with(".youtube.com") || host == "youtu.be";
-        if !is_youtube_host {
-            return Err(RecorderError::InvalidValue);
-        }
-        if let Some(video_id) = url
-            .query_pairs()
-            .find(|(key, _)| key == "v")
-            .map(|(_, value)| value.into_owned())
-        {
-            return Ok(format!("https://www.youtube.com/watch?v={video_id}"));
-        }
-        let path = url.path().trim_matches('/');
-        if path.is_empty() {
-            return Err(RecorderError::InvalidValue);
-        }
-        if host == "youtu.be" {
-            return Ok(format!("https://www.youtube.com/watch?v={path}"));
-        }
-        let path = if !path.ends_with("/live")
-            && !path.starts_with("watch/")
-            && !path.starts_with("live/")
-            && !path.starts_with("shorts/")
-            && !path.starts_with("embed/")
-        {
-            format!("{path}/live")
-        } else {
-            path.to_string()
-        };
-        return Ok(format!("https://www.youtube.com/{path}"));
+    if identifier.is_empty() {
+        return Err(RecorderError::InvalidValue);
+    }
+    if is_video_id(identifier) || is_channel_id(identifier) || is_valid_handle(identifier) {
+        return Ok(identifier.to_string());
+    }
+    if let Some(slug) = identifier.strip_prefix("legacy-c-") {
+        return safe_legacy_room_id("c", slug);
+    }
+    if let Some(slug) = identifier.strip_prefix("legacy-user-") {
+        return safe_legacy_room_id("user", slug);
     }
 
+    let identifier = if let Some(value) = identifier.strip_prefix("bsr://") {
+        format!("https://{value}")
+    } else if [
+        "youtube.com/",
+        "www.youtube.com/",
+        "m.youtube.com/",
+        "youtu.be/",
+    ]
+    .iter()
+    .any(|prefix| identifier.starts_with(prefix))
+    {
+        format!("https://{identifier}")
+    } else {
+        identifier.to_string()
+    };
+
+    if !identifier.starts_with("http://") && !identifier.starts_with("https://") {
+        let handle = format!("@{identifier}");
+        return is_valid_handle(&handle)
+            .then_some(handle)
+            .ok_or(RecorderError::InvalidValue);
+    }
+
+    let url = Url::parse(&identifier).map_err(|_| RecorderError::InvalidValue)?;
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    let is_youtube_host =
+        host == "youtube.com" || host.ends_with(".youtube.com") || host == "youtu.be";
+    if !is_youtube_host {
+        return Err(RecorderError::InvalidValue);
+    }
+
+    if let Some(video_id) = url
+        .query_pairs()
+        .find(|(key, _)| key == "v")
+        .map(|(_, value)| value.into_owned())
+    {
+        return is_video_id(&video_id)
+            .then_some(video_id)
+            .ok_or(RecorderError::InvalidValue);
+    }
+
+    let segments: Vec<_> = url
+        .path_segments()
+        .into_iter()
+        .flatten()
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    if host == "youtu.be" {
+        let video_id = segments.first().ok_or(RecorderError::InvalidValue)?;
+        return is_video_id(video_id)
+            .then(|| (*video_id).to_string())
+            .ok_or(RecorderError::InvalidValue);
+    }
+
+    let first = segments
+        .first()
+        .copied()
+        .ok_or(RecorderError::InvalidValue)?;
+    match first {
+        "watch" => Err(RecorderError::InvalidValue),
+        "live" | "shorts" | "embed" | "v" => {
+            let video_id = segments.get(1).ok_or(RecorderError::InvalidValue)?;
+            is_video_id(video_id)
+                .then(|| (*video_id).to_string())
+                .ok_or(RecorderError::InvalidValue)
+        }
+        "channel" => segments
+            .get(1)
+            .filter(|channel_id| is_channel_id(channel_id))
+            .map(|channel_id| (*channel_id).to_string())
+            .ok_or(RecorderError::InvalidValue),
+        "c" | "user" => {
+            let slug = segments.get(1).ok_or(RecorderError::InvalidValue)?;
+            safe_legacy_room_id(first, slug)
+        }
+        handle if handle.starts_with('@') => is_valid_handle(handle)
+            .then(|| handle.to_string())
+            .ok_or(RecorderError::InvalidValue),
+        handle => {
+            let handle = format!("@{handle}");
+            is_valid_handle(&handle)
+                .then_some(handle)
+                .ok_or(RecorderError::InvalidValue)
+        }
+    }
+}
+
+fn safe_legacy_room_id(kind: &str, slug: &str) -> Result<String, RecorderError> {
+    let valid = !slug.is_empty()
+        && slug.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | '%')
+        });
+    valid
+        .then(|| format!("legacy-{kind}-{slug}"))
+        .ok_or(RecorderError::InvalidValue)
+}
+
+fn is_channel_id(value: &str) -> bool {
+    value.starts_with("UC")
+        && value.len() > 2
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+}
+
+fn is_valid_handle(value: &str) -> bool {
+    value.strip_prefix('@').is_some_and(|handle| {
+        !handle.is_empty()
+            && handle.chars().all(|character| {
+                character.is_alphanumeric() || matches!(character, '_' | '-' | '.' | '%')
+            })
+    })
+}
+
+/// Build the page URL from a canonical room key.
+fn youtube_room_url(identifier: &str) -> Result<String, RecorderError> {
+    let identifier = normalize_room_id(identifier)?;
     if is_video_id(&identifier) {
         return Ok(format!("https://www.youtube.com/watch?v={identifier}"));
     }
     if identifier.starts_with("UC") {
         return Ok(format!("https://www.youtube.com/channel/{identifier}/live"));
     }
-
-    let path = if identifier.starts_with('@') {
-        identifier.to_string()
-    } else if identifier.starts_with('/') {
-        identifier.trim_start_matches('/').to_string()
-    } else {
-        format!("@{identifier}")
-    };
-    Ok(format!("https://www.youtube.com/{path}/live"))
+    if let Some(slug) = identifier.strip_prefix("legacy-c-") {
+        return Ok(format!("https://www.youtube.com/c/{slug}/live"));
+    }
+    if let Some(slug) = identifier.strip_prefix("legacy-user-") {
+        return Ok(format!("https://www.youtube.com/user/{slug}/live"));
+    }
+    if identifier.starts_with('@') {
+        return Ok(format!("https://www.youtube.com/{identifier}/live"));
+    }
+    Err(RecorderError::InvalidValue)
 }
 
 fn is_video_id(value: &str) -> bool {
@@ -363,6 +487,13 @@ fn is_video_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+}
+
+fn apply_player_hls(page: &mut YoutubePage, hls_url: Option<String>) {
+    page.hls_url = hls_url;
+    if page.hls_url.is_none() {
+        page.is_live = false;
+    }
 }
 
 fn parse_page(html: &str, final_url: &Url) -> Result<YoutubePage, RecorderError> {
@@ -450,7 +581,9 @@ fn parse_channel_live_page(
     initial_data: &Value,
     final_url: &Url,
 ) -> Result<YoutubePage, RecorderError> {
-    let channel = find_object_with_key(initial_data, "channelMetadataRenderer");
+    let channel = initial_data
+        .get("metadata")
+        .and_then(|metadata| metadata.get("channelMetadataRenderer"));
     let channel_id = channel
         .and_then(|value| value.get("externalId"))
         .and_then(Value::as_str)
@@ -462,71 +595,31 @@ fn parse_channel_live_page(
         .unwrap_or_default()
         .to_string();
 
-    if let Some(card) = find_live_video_card(initial_data) {
-        let (video_id, title, cover, card_channel_id, card_channel_name) = match card {
-            LiveVideoCard::Renderer(renderer) => (
-                renderer
-                    .get("videoId")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                renderer
-                    .get("title")
-                    .and_then(text_value)
-                    .unwrap_or_else(|| "YouTube live".to_string()),
-                renderer
-                    .get("thumbnail")
-                    .and_then(thumbnails_url)
-                    .unwrap_or_default(),
-                renderer
-                    .get("ownerText")
-                    .and_then(first_browse_id)
-                    .unwrap_or_default(),
-                renderer
-                    .get("ownerText")
-                    .and_then(text_value)
-                    .unwrap_or_default(),
-            ),
-            LiveVideoCard::Lockup(lockup) => (
-                lockup
-                    .get("contentId")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                lockup
-                    .get("metadata")
-                    .and_then(|metadata| metadata.get("lockupMetadataViewModel"))
-                    .and_then(|metadata| metadata.get("title"))
-                    .and_then(text_value)
-                    .unwrap_or_else(|| "YouTube live".to_string()),
-                lockup
-                    .get("contentImage")
-                    .and_then(|image| image.get("thumbnailViewModel"))
-                    .and_then(lockup_thumbnail_url)
-                    .unwrap_or_default(),
-                String::new(),
-                String::new(),
-            ),
-        };
-        if video_id.is_empty() {
+    // The URL resolves a specific channel's `/live` tab. Only inspect that
+    // tab's primary content and require the card's owner id to match the page
+    // channel; recommendations elsewhere in ytInitialData are unrelated rooms.
+    if let Some(renderer) = find_selected_channel_live_video(initial_data, &channel_id) {
+        let video_id = renderer
+            .get("videoId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !is_video_id(video_id) {
             return Err(RecorderError::ApiError {
                 error: "YouTube live video id not found".to_string(),
             });
         }
         return Ok(YoutubePage {
-            video_id,
-            title,
-            cover,
-            channel_id: if card_channel_id.is_empty() {
-                channel_id
-            } else {
-                card_channel_id
-            },
-            channel_name: if card_channel_name.is_empty() {
-                channel_name
-            } else {
-                card_channel_name
-            },
+            video_id: video_id.to_string(),
+            title: renderer
+                .get("title")
+                .and_then(text_value)
+                .unwrap_or_else(|| "YouTube live".to_string()),
+            cover: renderer
+                .get("thumbnail")
+                .and_then(thumbnails_url)
+                .unwrap_or_default(),
+            channel_id,
+            channel_name,
             is_live: true,
             hls_url: None,
         });
@@ -552,37 +645,50 @@ fn parse_channel_live_page(
     })
 }
 
-enum LiveVideoCard<'a> {
-    Renderer(&'a Value),
-    Lockup(&'a Value),
+fn find_selected_channel_live_video<'a>(
+    initial_data: &'a Value,
+    channel_id: &str,
+) -> Option<&'a Value> {
+    if channel_id.is_empty() {
+        return None;
+    }
+    let tabs = initial_data
+        .get("contents")?
+        .get("twoColumnBrowseResultsRenderer")?
+        .get("tabs")?
+        .as_array()?;
+    let selected_tab = tabs
+        .iter()
+        .filter_map(|tab| tab.get("tabRenderer"))
+        .find(|tab| tab.get("selected").and_then(Value::as_bool) == Some(true))?;
+    find_live_video_renderer(selected_tab.get("content")?, channel_id)
 }
 
-fn find_live_video_card(value: &Value) -> Option<LiveVideoCard<'_>> {
+fn find_live_video_renderer<'a>(value: &'a Value, channel_id: &str) -> Option<&'a Value> {
     match value {
         Value::Object(object) => {
             if let Some(renderer) = object.get("videoRenderer") {
-                if renderer
-                    .get("videoId")
-                    .and_then(Value::as_str)
-                    .is_some_and(|id| !id.is_empty())
+                let card_owner = renderer
+                    .get("ownerText")
+                    .and_then(first_browse_id)
+                    .unwrap_or_default();
+                if card_owner == channel_id
+                    && renderer
+                        .get("videoId")
+                        .and_then(Value::as_str)
+                        .is_some_and(is_video_id)
                     && is_live_video_renderer(renderer)
                 {
-                    return Some(LiveVideoCard::Renderer(renderer));
+                    return Some(renderer);
                 }
             }
-            if let Some(lockup) = object.get("lockupViewModel") {
-                if lockup
-                    .get("contentId")
-                    .and_then(Value::as_str)
-                    .is_some_and(|id| !id.is_empty())
-                    && is_live_lockup(lockup)
-                {
-                    return Some(LiveVideoCard::Lockup(lockup));
-                }
-            }
-            object.values().find_map(find_live_video_card)
+            object
+                .values()
+                .find_map(|child| find_live_video_renderer(child, channel_id))
         }
-        Value::Array(values) => values.iter().find_map(find_live_video_card),
+        Value::Array(values) => values
+            .iter()
+            .find_map(|child| find_live_video_renderer(child, channel_id)),
         _ => None,
     }
 }
@@ -620,74 +726,6 @@ fn is_live_video_renderer(renderer: &Value) -> bool {
             })
         });
     has_live_badge || has_live_overlay
-}
-
-fn is_live_lockup(lockup: &Value) -> bool {
-    lockup
-        .get("contentImage")
-        .and_then(|image| image.get("thumbnailViewModel"))
-        .and_then(|thumbnail| thumbnail.get("overlays"))
-        .and_then(Value::as_array)
-        .is_some_and(|overlays| overlays.iter().any(contains_live_badge))
-}
-
-fn contains_live_badge(value: &Value) -> bool {
-    match value {
-        Value::Object(object) => {
-            if let Some(badge) = object.get("thumbnailBadgeViewModel") {
-                let text_is_live = badge
-                    .get("text")
-                    .and_then(text_value)
-                    .is_some_and(|text| is_live_label(&text));
-                let style_is_live = badge
-                    .get("badgeStyle")
-                    .and_then(Value::as_str)
-                    .is_some_and(|style| style.to_ascii_uppercase().contains("LIVE"));
-                if text_is_live || style_is_live {
-                    return true;
-                }
-            }
-            object.values().any(contains_live_badge)
-        }
-        Value::Array(values) => values.iter().any(contains_live_badge),
-        _ => false,
-    }
-}
-
-fn is_live_label(label: &str) -> bool {
-    let label = label.trim();
-    label.eq_ignore_ascii_case("live")
-        || label.eq_ignore_ascii_case("live now")
-        || label == "直播中"
-        || label == "正在直播"
-}
-
-fn lockup_thumbnail_url(thumbnail: &Value) -> Option<String> {
-    thumbnail
-        .get("image")
-        .and_then(|image| image.get("sources"))
-        .and_then(Value::as_array)
-        .and_then(|sources| sources.last())
-        .and_then(|source| source.get("url"))
-        .and_then(Value::as_str)
-        .map(str::to_string)
-}
-
-fn find_object_with_key<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
-    match value {
-        Value::Object(object) => {
-            if let Some(found) = object.get(key) {
-                return Some(found);
-            }
-            object
-                .values()
-                .find_map(|child| find_object_with_key(child, key))
-        }
-        Value::Array(values) => values
-            .iter()
-            .find_map(|child| find_object_with_key(child, key)),
-        _ => None,
-    }
 }
 
 fn first_browse_id(value: &Value) -> Option<String> {
@@ -808,7 +846,28 @@ mod tests {
     }
 
     #[test]
-    fn resolves_video_channel_and_handle_identifiers() {
+    fn canonicalizes_supported_youtube_url_forms_to_path_safe_room_ids() {
+        for url in [
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ&si=share",
+            "https://youtu.be/dQw4w9WgXcQ?si=share",
+            "https://www.youtube.com/embed/dQw4w9WgXcQ",
+            "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+            "https://www.youtube.com/live/dQw4w9WgXcQ",
+        ] {
+            assert_eq!(normalize_room_id(url).unwrap(), "dQw4w9WgXcQ");
+        }
+        assert_eq!(
+            normalize_room_id("https://www.youtube.com/channel/UCcreator/live").unwrap(),
+            "UCcreator"
+        );
+        assert_eq!(
+            normalize_room_id("https://www.youtube.com/@creator/live").unwrap(),
+            "@creator"
+        );
+        assert_eq!(
+            normalize_room_id("https://www.youtube.com/c/old.name/live").unwrap(),
+            "legacy-c-old.name"
+        );
         assert_eq!(
             youtube_room_url("dQw4w9WgXcQ").unwrap(),
             "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
@@ -821,7 +880,8 @@ mod tests {
             youtube_room_url("@creator").unwrap(),
             "https://www.youtube.com/@creator/live"
         );
-        assert!(youtube_room_url("https://evil-youtube.com/@creator").is_err());
+        assert!(normalize_room_id("https://evil-youtube.com/@creator").is_err());
+        assert!(normalize_room_id("https://www.youtube.com/watch?v=bad").is_err());
     }
 
     #[test]
@@ -850,16 +910,22 @@ mod tests {
     }
 
     #[test]
-    fn parses_live_video_from_channel_page_without_a_player_response() {
+    fn parses_only_live_video_owned_by_the_selected_channel() {
         let html = r#"
             <script>var ytInitialData = {
-              "contents": {"videoRenderer": {
-                "videoId": "video123456",
-                "title": {"simpleText": "Live title"},
-                "ownerText": {"runs": [{"text": "Creator", "navigationEndpoint": {"browseEndpoint": {"browseId": "UCcreator"}}}]},
-                "badges": [{"metadataBadgeRenderer": {"label": {"simpleText": "LIVE NOW"}}}],
-                "thumbnail": {"thumbnails": [{"url": "https://img.test/cover.jpg"}]}
-              }}
+              "metadata": {"channelMetadataRenderer": {"externalId": "UCcreator", "title": "Creator"}},
+              "contents": {"twoColumnBrowseResultsRenderer": {"tabs": [
+                {"tabRenderer": {"selected": false, "content": {"richGridRenderer": {"contents": []}}}},
+                {"tabRenderer": {"selected": true, "content": {"richGridRenderer": {"contents": [
+                  {"richItemRenderer": {"content": {"videoRenderer": {
+                    "videoId": "video123456",
+                    "title": {"simpleText": "Live title"},
+                    "ownerText": {"runs": [{"text": "Creator", "navigationEndpoint": {"browseEndpoint": {"browseId": "UCcreator"}}}]},
+                    "badges": [{"metadataBadgeRenderer": {"label": {"simpleText": "LIVE NOW"}}}],
+                    "thumbnail": {"thumbnails": [{"url": "https://img.test/cover.jpg"}]}
+                  }}}}
+                ]}}}}
+              ]}}
             };</script>
         "#;
         let page = parse_page(html, &url("https://www.youtube.com/@creator/live")).unwrap();
@@ -870,27 +936,51 @@ mod tests {
     }
 
     #[test]
-    fn parses_live_video_from_modern_lockup_cards() {
+    fn ignores_live_recommendations_from_other_channels() {
         let html = r#"
             <script>var ytInitialData = {
-              "contents": {"richItemRenderer": {"content": {"lockupViewModel": {
-                "contentId": "video123456",
-                "contentType": "LOCKUP_CONTENT_TYPE_VIDEO",
-                "metadata": {"lockupMetadataViewModel": {"title": {"content": "Live title"}}},
-                "contentImage": {"thumbnailViewModel": {
-                  "image": {"sources": [{"url": "https://img.test/cover.jpg"}]},
-                  "overlays": [{"thumbnailBottomOverlayViewModel": {"badges": [{
-                    "thumbnailBadgeViewModel": {"text": "LIVE", "badgeStyle": "THUMBNAIL_BADGE_STYLE_LIVE"}
-                  }]}}]
-                }}
-              }}}
-            }};</script>
+              "metadata": {"channelMetadataRenderer": {"externalId": "UCcreator", "title": "Creator"}},
+              "contents": {"twoColumnBrowseResultsRenderer": {"tabs": [
+                {"tabRenderer": {"selected": true, "content": {"richGridRenderer": {"contents": [
+                  {"richItemRenderer": {"content": {"videoRenderer": {
+                    "videoId": "otherLive12",
+                    "title": {"simpleText": "Someone else's live"},
+                    "ownerText": {"runs": [{"text": "Other", "navigationEndpoint": {"browseEndpoint": {"browseId": "UCother"}}}]},
+                    "badges": [{"metadataBadgeRenderer": {"label": {"simpleText": "LIVE NOW"}}}]
+                  }}}}
+                ]}}}}
+              ]}},
+              "recommendations": {"videoRenderer": {
+                "videoId": "recLive1234",
+                "title": {"simpleText": "Recommended live"},
+                "badges": [{"metadataBadgeRenderer": {"label": {"simpleText": "LIVE NOW"}}}]
+              }}
+            };</script>
         "#;
         let page = parse_page(html, &url("https://www.youtube.com/@creator/live")).unwrap();
+        assert!(!page.is_live);
+        assert!(page.video_id.is_empty());
+        assert_eq!(page.channel_id, "UCcreator");
+    }
+
+    #[test]
+    fn missing_hls_manifest_does_not_report_room_as_live() {
+        let mut page = YoutubePage {
+            video_id: "video123456".to_string(),
+            title: "Live title".to_string(),
+            cover: String::new(),
+            channel_id: "UCcreator".to_string(),
+            channel_name: "Creator".to_string(),
+            is_live: true,
+            hls_url: None,
+        };
+        apply_player_hls(&mut page, None);
+        assert!(!page.is_live);
+
+        page.is_live = true;
+        apply_player_hls(&mut page, Some("https://cdn.test/live.m3u8".to_string()));
         assert!(page.is_live);
-        assert_eq!(page.video_id, "video123456");
-        assert_eq!(page.title, "Live title");
-        assert_eq!(page.cover, "https://img.test/cover.jpg");
+        assert!(page.hls_url.is_some());
     }
 
     #[test]

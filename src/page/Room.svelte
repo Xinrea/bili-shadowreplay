@@ -398,6 +398,10 @@
       case "youtube":
         if (room.room_info.room_id.startsWith("http")) {
           open(room.room_info.room_id);
+        } else if (room.room_info.room_id.startsWith("legacy-c-")) {
+          open(`https://www.youtube.com/c/${room.room_info.room_id.slice(9)}/live`);
+        } else if (room.room_info.room_id.startsWith("legacy-user-")) {
+          open(`https://www.youtube.com/user/${room.room_info.room_id.slice(12)}/live`);
         } else if (/^[A-Za-z0-9_-]{11}$/.test(room.room_info.room_id)) {
           open(`https://www.youtube.com/watch?v=${room.room_info.room_id}`);
         } else if (room.room_info.room_id.startsWith("UC")) {
@@ -519,7 +523,8 @@
 
         if (
           url.startsWith("bsr://www.youtube.com/") ||
-          url.startsWith("bsr://youtube.com/")
+          url.startsWith("bsr://youtube.com/") ||
+          url.startsWith("bsr://youtu.be/")
         ) {
           platform = "youtube";
         }

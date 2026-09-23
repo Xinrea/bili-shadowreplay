@@ -29,6 +29,8 @@ const DEFAULT_CLIENT_VERSION: &str = "2.20250101.00.00";
 const DEFAULT_POLL_MS: u64 = 1_000;
 const MAX_POLL_MS: u64 = 60_000;
 const MAX_SEEN_IDS: usize = 2_000;
+const REBOOTSTRAP_AFTER_ERRORS: u32 = 3;
+const MAX_RETRY_DELAY_SECS: u64 = 30;
 
 const CONTINUATION_KEYS: [&str; 4] = [
     "timedContinuationData",
@@ -110,8 +112,10 @@ impl DanmuProvider for YoutubeDanmu {
         &self,
         tx: mpsc::UnboundedSender<DanmuMessageType>,
     ) -> Result<(), DanmuStreamError> {
-        let bootstrap = fetch_bootstrap(&self.client, &self.room_id).await?;
-        let mut continuation = bootstrap.continuation.clone();
+        let mut bootstrap = None;
+        let mut continuation = String::new();
+        let mut should_bootstrap = true;
+        let mut failures = 0u32;
         let mut seen = DedupCache::default();
 
         loop {
@@ -119,7 +123,53 @@ impl DanmuProvider for YoutubeDanmu {
                 return Ok(());
             }
 
-            let response = fetch_chat(&self.client, &bootstrap, &continuation).await?;
+            if should_bootstrap {
+                if failures > 0 && sleep_or_stop(&self.stop, retry_delay(failures)).await {
+                    return Ok(());
+                }
+                match fetch_bootstrap(&self.client, &self.room_id).await {
+                    Ok(next_bootstrap) => {
+                        continuation = next_bootstrap.continuation.clone();
+                        bootstrap = Some(next_bootstrap);
+                        failures = 0;
+                        should_bootstrap = false;
+                    }
+                    Err(error) => {
+                        failures = failures.saturating_add(1);
+                        log::warn!(
+                            "[YouTube][{}] Failed to refresh live-chat continuation: {}",
+                            self.room_id,
+                            error
+                        );
+                        continue;
+                    }
+                }
+            }
+
+            let current_bootstrap = bootstrap
+                .as_ref()
+                .expect("bootstrap is set before polling live chat");
+            let response = match fetch_chat(&self.client, current_bootstrap, &continuation).await {
+                Ok(response) => {
+                    failures = 0;
+                    response
+                }
+                Err(error) => {
+                    failures = failures.saturating_add(1);
+                    log::warn!(
+                        "[YouTube][{}] Live-chat poll failed (attempt {}): {}",
+                        self.room_id,
+                        failures,
+                        error
+                    );
+                    if should_rebootstrap(failures) {
+                        should_bootstrap = true;
+                    } else if sleep_or_stop(&self.stop, retry_delay(failures)).await {
+                        return Ok(());
+                    }
+                    continue;
+                }
+            };
 
             let mut renderers = Vec::new();
             collect_renderers(&response, &mut renderers);
@@ -144,17 +194,25 @@ impl DanmuProvider for YoutubeDanmu {
             }
 
             let Some(next) = find_continuation(&response) else {
-                // A completed replay and an ended live chat both omit a next
-                // continuation.  Ending the provider is preferable to a hot
-                // loop; the recorder will close the task with the recording.
-                return Ok(());
+                // Continuations can expire or disappear during a live. Refresh
+                // the watch-page bootstrap instead of silently ending chat.
+                log::warn!(
+                    "[YouTube][{}] Live-chat response had no continuation; refreshing bootstrap",
+                    self.room_id
+                );
+                failures = REBOOTSTRAP_AFTER_ERRORS;
+                should_bootstrap = true;
+                continue;
             };
             continuation = next.token;
 
-            let delay = Duration::from_millis(next.timeout_ms.clamp(250, MAX_POLL_MS));
-            tokio::select! {
-                _ = sleep(delay) => {},
-                _ = wait_for_stop(Arc::clone(&self.stop)) => return Ok(()),
+            if sleep_or_stop(
+                &self.stop,
+                Duration::from_millis(next.timeout_ms.clamp(250, MAX_POLL_MS)),
+            )
+            .await
+            {
+                return Ok(());
             }
         }
     }
@@ -169,6 +227,22 @@ async fn wait_for_stop(stop: Arc<AtomicBool>) {
     while !stop.load(Ordering::Acquire) {
         sleep(Duration::from_millis(100)).await;
     }
+}
+
+async fn sleep_or_stop(stop: &Arc<AtomicBool>, delay: Duration) -> bool {
+    tokio::select! {
+        _ = sleep(delay) => false,
+        _ = wait_for_stop(Arc::clone(stop)) => true,
+    }
+}
+
+fn retry_delay(failures: u32) -> Duration {
+    let exponent = failures.saturating_sub(1).min(5);
+    Duration::from_secs((1u64 << exponent).min(MAX_RETRY_DELAY_SECS))
+}
+
+fn should_rebootstrap(failures: u32) -> bool {
+    failures >= REBOOTSTRAP_AFTER_ERRORS
 }
 
 async fn fetch_bootstrap(
@@ -223,15 +297,16 @@ async fn fetch_chat(
     bootstrap: &Bootstrap,
     continuation: &str,
 ) -> Result<Value, DanmuStreamError> {
-    let context = json!({
-        "client": {
-            "clientName": "WEB",
-            "clientVersion": bootstrap.client_version,
-            "hl": "en",
-            "gl": "US",
-            "visitorData": bootstrap.visitor_data
-        }
+    let mut client_context = json!({
+        "clientName": "WEB",
+        "clientVersion": bootstrap.client_version,
+        "hl": "en",
+        "gl": "US"
     });
+    if let Some(visitor_data) = &bootstrap.visitor_data {
+        client_context["visitorData"] = Value::String(visitor_data.clone());
+    }
+    let context = json!({"client": client_context});
     let response = client
         .post(format!("{YOUTUBE_CHAT_URL}?key={}", bootstrap.api_key))
         .header("Content-Type", "application/json")
@@ -653,6 +728,21 @@ mod tests {
         )
         .is_none());
         assert!(normalize_renderer("unknown", &json!({}), "video").is_none());
+    }
+
+    #[test]
+    fn chat_poll_rebootstraps_after_repeated_errors() {
+        assert!(!should_rebootstrap(1));
+        assert!(!should_rebootstrap(2));
+        assert!(should_rebootstrap(3));
+        assert!(should_rebootstrap(4));
+    }
+
+    #[test]
+    fn chat_retry_backoff_is_bounded() {
+        assert_eq!(retry_delay(1), Duration::from_secs(1));
+        assert_eq!(retry_delay(2), Duration::from_secs(2));
+        assert_eq!(retry_delay(10), Duration::from_secs(MAX_RETRY_DELAY_SECS));
     }
 
     #[test]

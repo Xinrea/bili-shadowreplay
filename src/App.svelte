@@ -51,7 +51,8 @@
 
         if (
           url.startsWith("bsr://www.youtube.com/") ||
-          url.startsWith("bsr://youtube.com/")
+          url.startsWith("bsr://youtube.com/") ||
+          url.startsWith("bsr://youtu.be/")
         ) {
           room_id = url.replace("bsr://", "https://");
           platform = "youtube";

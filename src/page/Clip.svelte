@@ -324,6 +324,12 @@
       case "tiktok":
         return `https://www.tiktok.com/${roomId}/live`;
       case "youtube":
+        if (roomId.startsWith("legacy-c-")) {
+          return `https://www.youtube.com/c/${roomId.slice(9)}/live`;
+        }
+        if (roomId.startsWith("legacy-user-")) {
+          return `https://www.youtube.com/user/${roomId.slice(12)}/live`;
+        }
         if (/^[A-Za-z0-9_-]{11}$/.test(roomId)) {
           return `https://www.youtube.com/watch?v=${roomId}`;
         }

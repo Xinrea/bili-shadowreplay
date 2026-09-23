@@ -17,6 +17,7 @@ use recorder::account::Account;
 use recorder::danmu::DanmuEntry;
 use recorder::platforms::bilibili;
 use recorder::platforms::douyin;
+use recorder::platforms::youtube;
 use recorder::platforms::PlatformType;
 use recorder::RecorderInfo;
 
@@ -38,8 +39,13 @@ pub async fn add_recorder(
     room_id: String,
     mut extra: String,
 ) -> Result<RecorderRow, String> {
-    log::info!("Add recorder: {platform} {room_id}");
     let platform = PlatformType::from_str(&platform).map_err(|e| e.to_string())?;
+    let room_id = if platform == PlatformType::Youtube {
+        youtube::normalize_room_id(&room_id).map_err(|error| error.to_string())?
+    } else {
+        room_id
+    };
+    log::info!("Add recorder: {} {}", platform.as_str(), room_id);
     let account = match platform {
         PlatformType::BiliBili => {
             if let Ok(account) = state.db.get_account_by_platform("bilibili").await {

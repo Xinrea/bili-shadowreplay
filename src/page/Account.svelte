@@ -387,6 +387,18 @@
             >
               TikTok
             </button>
+            <button
+              class="flex-none px-3 py-2 text-sm font-medium whitespace-nowrap rounded-md transition-colors {selectedPlatform ===
+              'youtube'
+                ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white'
+                : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
+              onclick={() => {
+                selectedPlatform = "youtube";
+                activeTab = "manual";
+              }}
+            >
+              YouTube
+            </button>
           </div>
         </div>
 

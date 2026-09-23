@@ -598,6 +598,12 @@ impl RecorderManager {
         extra: &str,
         enabled: bool,
     ) -> Result<(), RecorderManagerError> {
+        let normalized_youtube_room_id = if platform == PlatformType::Youtube {
+            Some(recorder::platforms::youtube::normalize_room_id(room_id)?)
+        } else {
+            None
+        };
+        let room_id = normalized_youtube_room_id.as_deref().unwrap_or(room_id);
         let recorder_id = format!("{}:{}", platform.as_str(), room_id);
         if self.recorders.read().await.contains_key(&recorder_id) {
             return Err(RecorderManagerError::AlreadyExisted {

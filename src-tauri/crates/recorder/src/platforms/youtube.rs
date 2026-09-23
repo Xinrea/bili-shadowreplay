@@ -668,10 +668,7 @@ fn find_live_video_renderer<'a>(value: &'a Value, channel_id: &str) -> Option<&'
     match value {
         Value::Object(object) => {
             if let Some(renderer) = object.get("videoRenderer") {
-                let card_owner = renderer
-                    .get("ownerText")
-                    .and_then(first_browse_id)
-                    .unwrap_or_default();
+                let card_owner = video_owner_id(renderer).unwrap_or_default();
                 if card_owner == channel_id
                     && renderer
                         .get("videoId")
@@ -726,6 +723,13 @@ fn is_live_video_renderer(renderer: &Value) -> bool {
             })
         });
     has_live_badge || has_live_overlay
+}
+
+fn video_owner_id(renderer: &Value) -> Option<String> {
+    renderer
+        .get("ownerText")
+        .and_then(first_browse_id)
+        .or_else(|| renderer.get("shortBylineText").and_then(first_browse_id))
 }
 
 fn first_browse_id(value: &Value) -> Option<String> {
@@ -920,7 +924,8 @@ mod tests {
                   {"richItemRenderer": {"content": {"videoRenderer": {
                     "videoId": "video123456",
                     "title": {"simpleText": "Live title"},
-                    "ownerText": {"runs": [{"text": "Creator", "navigationEndpoint": {"browseEndpoint": {"browseId": "UCcreator"}}}]},
+                    "shortBylineText": {"runs": [{"text": "Creator", "navigationEndpoint": {"browseEndpoint": {"browseId": "UCcreator"}}}]},
+
                     "badges": [{"metadataBadgeRenderer": {"label": {"simpleText": "LIVE NOW"}}}],
                     "thumbnail": {"thumbnails": [{"url": "https://img.test/cover.jpg"}]}
                   }}}}
@@ -950,11 +955,19 @@ mod tests {
                   }}}}
                 ]}}}}
               ]}},
-              "recommendations": {"videoRenderer": {
-                "videoId": "recLive1234",
-                "title": {"simpleText": "Recommended live"},
-                "badges": [{"metadataBadgeRenderer": {"label": {"simpleText": "LIVE NOW"}}}]
-              }}
+              "recommendations": {
+                "videoRenderer": {
+                  "videoId": "recLive1234",
+                  "title": {"simpleText": "Recommended live"},
+                  "badges": [{"metadataBadgeRenderer": {"label": {"simpleText": "LIVE NOW"}}}]
+                },
+                "lockupViewModel": {
+                  "contentId": "lockLive1234",
+                  "contentImage": {"thumbnailViewModel": {"overlays": [{
+                    "thumbnailBottomOverlayViewModel": {"badges": [{"thumbnailBadgeViewModel": {"text": "LIVE"}}]}
+                  }]}}
+                }
+              }
             };</script>
         "#;
         let page = parse_page(html, &url("https://www.youtube.com/@creator/live")).unwrap();

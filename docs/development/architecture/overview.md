@@ -51,6 +51,7 @@ graph TB
         Recorder[Recorder Crate]
         Bilibili[Bilibili 平台]
         Douyin[Douyin 平台]
+        Douyu[Douyu 平台]
         Huya[Huya 平台]
         Kuaishou[Kuaishou 平台]
         TikTok[TikTok 平台]
@@ -74,6 +75,7 @@ graph TB
     RecorderMgr --> Recorder
     Recorder --> Bilibili
     Recorder --> Douyin
+    Recorder --> Douyu
     Recorder --> Huya
     Recorder --> Kuaishou
     Recorder --> TikTok
@@ -81,6 +83,7 @@ graph TB
     RecorderMgr --> DanmuStream
     DanmuStream --> Bilibili
     DanmuStream --> Douyin
+    DanmuStream --> Douyu
     DanmuStream --> Huya
     DanmuStream --> Kuaishou
 ```
@@ -133,6 +136,7 @@ src-tauri/
 │   │       └── platforms/       # 平台实现
 │   │           ├── bilibili/
 │   │           ├── douyin/
+│   │           ├── douyu/
 │   │           ├── huya/
 │   │           ├── kuaishou/
 │   │           └── tiktok/
@@ -217,6 +221,7 @@ sequenceDiagram
 
 - **Bilibili**: 完整支持，包括录制、弹幕、投稿
 - **Douyin (抖音)**: 支持录制和弹幕
+- **Douyu (斗鱼)**: 支持录制和弹幕
 - **Huya (虎牙)**: 支持录制
 - **Kuaishou (快手)**: 支持录制
 - **TikTok**: 支持录制

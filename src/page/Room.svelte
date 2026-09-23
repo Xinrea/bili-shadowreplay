@@ -19,6 +19,7 @@
   } from "lucide-svelte";
   import BilibiliIcon from "../lib/components/BilibiliIcon.svelte";
   import DouyinIcon from "../lib/components/DouyinIcon.svelte";
+  import DouyuIcon from "../lib/components/DouyuIcon.svelte";
   import KuaishouIcon from "../lib/components/KuaishouIcon.svelte";
   import HuyaIcon from "../lib/components/HuyaIcon.svelte";
   import TikTokIcon from "../lib/components/TikTokIcon.svelte";
@@ -53,6 +54,7 @@
     const avatarMap = {
       bilibili: "/imgs/bilibili_avatar.png",
       douyin: "/imgs/douyin.png",
+      douyu: "/imgs/douyu.svg",
       huya: "/imgs/huya_avatar.png",
       kuaishou: "/imgs/kuaishou.svg",
       tiktok: "/imgs/tiktok.png",
@@ -64,6 +66,7 @@
     const coverMap = {
       bilibili: "/imgs/bilibili.png",
       douyin: "/imgs/douyin.png",
+      douyu: "/imgs/douyu.svg",
       huya: "/imgs/huya.png",
       kuaishou: "/imgs/kuaishou.svg",
       tiktok: "/imgs/tiktok.png",
@@ -351,6 +354,8 @@
     } else if (room.room_info.platform === "douyin") {
       console.log(room.user_info);
       open("https://www.douyin.com/user/" + room.user_info.user_id);
+    } else if (room.room_info.platform === "douyu") {
+      openLiveUrl(room);
     } else if (room.room_info.platform === "kuaishou") {
       if (room.user_info.user_id) {
         open("https://www.kuaishou.com/profile/" + room.user_info.user_id);
@@ -376,6 +381,9 @@
         break;
       case "douyin":
         open("https://live.douyin.com/" + room.room_info.room_id);
+        break;
+      case "douyu":
+        open("https://www.douyu.com/" + room.room_info.room_id);
         break;
       case "huya":
         open("https://www.huya.com/" + room.room_info.room_id);
@@ -404,6 +412,13 @@
         // example: https://live.douyin.com/1234567890
         if (room_id.includes("https://") || room_id.includes("bsr://")) {
           room_id = room_id.split("/").pop();
+        }
+        break;
+      case "douyu":
+        // Douyu accepts numeric room IDs and vanity paths.
+        // Keep only the path segment so the backend can resolve a vanity path.
+        if (room_id.includes("://")) {
+          room_id = room_id.split(/[?#]/)[0].replace(/\/+$/, "").split("/").pop() || "";
         }
         break;
       case "huya":
@@ -474,6 +489,10 @@
 
         if (url.startsWith("bsr://live.douyin.com/")) {
           platform = "douyin";
+        }
+
+        if (url.startsWith("bsr://www.douyu.com/") || url.startsWith("bsr://live.douyu.com/")) {
+          platform = "douyu";
         }
 
         if (url.startsWith("bsr://live.kuaishou.com/")) {
@@ -627,6 +646,8 @@
                     <BilibiliIcon class="w-4 h-4" />
                   {:else if room.room_info.platform === "douyin"}
                     <DouyinIcon class="w-4 h-4" />
+                  {:else if room.room_info.platform === "douyu"}
+                    <DouyuIcon class="w-4 h-4" />
                   {:else if room.room_info.platform === "kuaishou"}
                     <KuaishouIcon class="w-4 h-4" />
                   {:else if room.room_info.platform === "huya"}
@@ -802,6 +823,15 @@
                 onclick={() => (selectedPlatform = "douyin")}
               >
                 抖音
+              </button>
+              <button
+                class="flex-none px-3 py-2 text-sm font-medium whitespace-nowrap rounded-md transition-colors {selectedPlatform ===
+                'douyu'
+                  ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white'
+                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
+                onclick={() => (selectedPlatform = "douyu")}
+              >
+                斗鱼
               </button>
               <button
                 class="flex-none px-3 py-2 text-sm font-medium whitespace-nowrap rounded-md transition-colors {selectedPlatform ===

@@ -123,6 +123,9 @@ pub async fn add_account(
                 }
             }
         }
+        PlatformType::Douyu => {
+            return Err("斗鱼录制和弹幕不需要登录账号".to_string());
+        }
         PlatformType::Huya => {
             let user_id = get_item_from_cookies("yyuid", cookies)?;
 

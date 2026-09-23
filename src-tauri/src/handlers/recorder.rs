@@ -63,6 +63,7 @@ pub async fn add_recorder(
                 Err("没有可用账号，请先添加账号".to_string())
             }
         }
+        PlatformType::Douyu => Ok(Account::default()),
         PlatformType::Huya => {
             if let Ok(account) = state.db.get_account_by_platform("huya").await {
                 Ok(account.to_account())

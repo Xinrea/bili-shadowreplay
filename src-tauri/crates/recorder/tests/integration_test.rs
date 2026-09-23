@@ -138,6 +138,7 @@ async fn test_kuaishou_initial_state_fixture_shape() {
 fn test_platform_type_string_conversion() {
     assert_eq!(PlatformType::BiliBili.as_str(), "bilibili");
     assert_eq!(PlatformType::Douyin.as_str(), "douyin");
+    assert_eq!(PlatformType::Douyu.as_str(), "douyu");
     assert_eq!(PlatformType::Kuaishou.as_str(), "kuaishou");
 
     assert_eq!(
@@ -147,6 +148,10 @@ fn test_platform_type_string_conversion() {
     assert_eq!(
         "douyin".parse::<PlatformType>().unwrap(),
         PlatformType::Douyin
+    );
+    assert_eq!(
+        "douyu".parse::<PlatformType>().unwrap(),
+        PlatformType::Douyu
     );
 }
 

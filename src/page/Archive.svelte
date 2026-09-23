@@ -21,6 +21,7 @@
   } from "lucide-svelte";
   import BilibiliIcon from "../lib/components/BilibiliIcon.svelte";
   import DouyinIcon from "../lib/components/DouyinIcon.svelte";
+  import DouyuIcon from "../lib/components/DouyuIcon.svelte";
   import KuaishouIcon from "../lib/components/KuaishouIcon.svelte";
   import HuyaIcon from "../lib/components/HuyaIcon.svelte";
   import TikTokIcon from "../lib/components/TikTokIcon.svelte";
@@ -378,6 +379,8 @@
         return "B站";
       case "douyin":
         return "抖音";
+      case "douyu":
+        return "斗鱼";
       case "huya":
         return "虎牙";
       case "kuaishou":
@@ -400,6 +403,8 @@
         return `https://live.bilibili.com/${roomId}`;
       case "douyin":
         return `https://live.douyin.com/${roomId}`;
+      case "douyu":
+        return `https://www.douyu.com/${roomId}`;
       case "huya":
         return `https://www.huya.com/${roomId}`;
       case "kuaishou":
@@ -870,6 +875,8 @@
                         <BilibiliIcon class="w-4 h-4" />
                       {:else if archive.platform === "douyin"}
                         <DouyinIcon class="w-4 h-4" />
+                      {:else if archive.platform === "douyu"}
+                        <DouyuIcon class="w-4 h-4" />
                       {:else if archive.platform === "kuaishou"}
                         <KuaishouIcon class="w-4 h-4" />
                       {:else if archive.platform === "huya"}

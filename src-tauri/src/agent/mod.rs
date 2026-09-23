@@ -549,7 +549,7 @@ impl Tool for BsrTool {
     }
 
     fn parameters(&self) -> Value {
-        let platform = || json!({ "type": "string", "enum": ["bilibili", "douyin"] });
+        let platform = || json!({ "type": "string", "enum": ["bilibili", "douyin", "douyu"] });
         let string = || json!({ "type": "string" });
         let integer = || json!({ "type": "integer" });
         let number = || json!({ "type": "number" });

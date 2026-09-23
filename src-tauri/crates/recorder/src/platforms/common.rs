@@ -76,9 +76,21 @@ impl StreamPull {
         url: &str,
         cookies: Option<String>,
     ) -> Result<Self, RecorderError> {
+        Self::hls_with_expire(live_id, url, cookies, 0).await
+    }
+
+    /// Build an HLS pull with an explicit token expiry when a platform does
+    /// not encode expiry in the playlist URL.
+    pub(crate) async fn hls_with_expire(
+        live_id: &str,
+        url: &str,
+        cookies: Option<String>,
+        expire: i64,
+    ) -> Result<Self, RecorderError> {
         let stream = construct_stream_from_variant(live_id, url, Format::TS, Codec::Avc)
             .await
-            .map_err(|_| RecorderError::NoStreamAvailable)?;
+            .map_err(|_| RecorderError::NoStreamAvailable)?
+            .with_expire(expire);
         Ok(Self::Hls {
             stream: Arc::new(stream),
             cookies,

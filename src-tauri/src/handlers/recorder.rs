@@ -17,6 +17,7 @@ use recorder::account::Account;
 use recorder::danmu::DanmuEntry;
 use recorder::platforms::bilibili;
 use recorder::platforms::douyin;
+use recorder::platforms::twitch;
 use recorder::platforms::PlatformType;
 use recorder::RecorderInfo;
 
@@ -40,6 +41,7 @@ pub async fn add_recorder(
 ) -> Result<RecorderRow, String> {
     log::info!("Add recorder: {platform} {room_id}");
     let platform = PlatformType::from_str(&platform).map_err(|e| e.to_string())?;
+    let mut room_id = room_id;
     let account = match platform {
         PlatformType::BiliBili => {
             if let Ok(account) = state.db.get_account_by_platform("bilibili").await {
@@ -83,6 +85,10 @@ pub async fn add_recorder(
             } else {
                 Ok(Account::default())
             }
+        }
+        PlatformType::Twitch => {
+            room_id = twitch::api::normalize_channel(&room_id).map_err(|e| e.to_string())?;
+            Ok(Account::default())
         }
         PlatformType::Xiaohongshu => {
             if let Ok(account) = state.db.get_account_by_platform("xiaohongshu").await {

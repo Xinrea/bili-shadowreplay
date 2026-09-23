@@ -54,6 +54,7 @@ graph TB
         Huya[Huya 平台]
         Kuaishou[Kuaishou 平台]
         TikTok[TikTok 平台]
+        Twitch[Twitch 平台]
     end
 
     subgraph "弹幕系统"
@@ -77,12 +78,14 @@ graph TB
     Recorder --> Huya
     Recorder --> Kuaishou
     Recorder --> TikTok
+    Recorder --> Twitch
 
     RecorderMgr --> DanmuStream
     DanmuStream --> Bilibili
     DanmuStream --> Douyin
     DanmuStream --> Huya
     DanmuStream --> Kuaishou
+    DanmuStream --> Twitch
 ```
 
 ## 目录结构
@@ -135,7 +138,8 @@ src-tauri/
 │   │           ├── douyin/
 │   │           ├── huya/
 │   │           ├── kuaishou/
-│   │           └── tiktok/
+│   │           ├── tiktok/
+│   │           └── twitch/
 │   ├── danmu_stream/            # 弹幕流处理库
 │   └── ffmpeg_utils/            # 应用与 recorder 共用的 ffmpeg/ffprobe 调用与元数据探测
 └── ...
@@ -220,6 +224,7 @@ sequenceDiagram
 - **Huya (虎牙)**: 支持录制
 - **Kuaishou (快手)**: 支持录制
 - **TikTok**: 支持录制
+- **Twitch**: 支持录制和弹幕
 
 每个平台的实现位于 `src-tauri/crates/recorder/src/platforms/<platform>/` 目录。
 

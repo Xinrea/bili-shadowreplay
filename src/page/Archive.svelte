@@ -24,6 +24,7 @@
   import KuaishouIcon from "../lib/components/KuaishouIcon.svelte";
   import HuyaIcon from "../lib/components/HuyaIcon.svelte";
   import TikTokIcon from "../lib/components/TikTokIcon.svelte";
+  import TwitchIcon from "../lib/components/TwitchIcon.svelte";
   import { SvelteSet } from "svelte/reactivity";
   import GenerateWholeClipModal from "../lib/components/GenerateWholeClipModal.svelte";
   import ArchiveSummaryModal from "../lib/components/ArchiveSummaryModal.svelte";
@@ -384,6 +385,8 @@
         return "快手";
       case "tiktok":
         return "TikTok";
+      case "twitch":
+        return "Twitch";
       case "youtube":
         return "YouTube";
       default:
@@ -406,6 +409,8 @@
         return `https://live.kuaishou.com/u/${roomId}`;
       case "tiktok":
         return `https://www.tiktok.com/${roomId}/live`;
+      case "twitch":
+        return `https://www.twitch.tv/${roomId}`;
       case "youtube":
         return `https://www.youtube.com/channel/${roomId}`;
       default:
@@ -876,6 +881,8 @@
                         <HuyaIcon class="w-4 h-4" />
                       {:else if archive.platform === "tiktok"}
                         <TikTokIcon class="w-5 h-5" />
+                      {:else if archive.platform === "twitch"}
+                        <TwitchIcon class="w-5 h-5 text-purple-600" />
                       {:else}
                         <Globe class="w-4 h-4 text-gray-400" />
                       {/if}

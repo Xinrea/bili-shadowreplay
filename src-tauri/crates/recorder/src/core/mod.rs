@@ -120,6 +120,14 @@ impl HlsStream {
         }
     }
 
+    /// Set the stream expiry when the platform exposes it outside the playlist URL.
+    pub(crate) fn with_expire(mut self, expire: i64) -> Self {
+        if expire > 0 {
+            self.expire = expire;
+        }
+        self
+    }
+
     pub fn is_expired(&self) -> bool {
         self.expire > 0 && (self.expire < chrono::Utc::now().timestamp() + SAFE_EXPIRE)
     }
@@ -202,6 +210,22 @@ mod tests {
         let s = make_stream("https://cdn.example.com", "/live/stream.m3u8", "", 0);
         let url = s.ts_url("seg001.ts");
         assert_eq!(url, "https://cdn.example.com/live/seg001.ts");
+    }
+
+    #[test]
+    fn test_with_expire_keeps_parsed_expiry_when_no_override_is_given() {
+        let stream =
+            make_stream("https://cdn.example.com", "/live/stream.m3u8", "", 123).with_expire(0);
+        assert_eq!(stream.expire, 123);
+    }
+
+    #[test]
+    fn test_with_expire_overrides_parsed_expiry() {
+        let expected = chrono::Utc::now().timestamp() + 1000;
+        let stream = make_stream("https://cdn.example.com", "/live/stream.m3u8", "", 123)
+            .with_expire(expected);
+        assert_eq!(stream.expire, expected);
+        assert!(!stream.is_expired());
     }
 
     #[test]

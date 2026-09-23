@@ -21,6 +21,7 @@ use recorder::platforms::douyin::DouyinRecorder;
 use recorder::platforms::huya::HuyaRecorder;
 use recorder::platforms::kuaishou::KuaishouRecorder;
 use recorder::platforms::tiktok::TikTokRecorder;
+use recorder::platforms::twitch::TwitchRecorder;
 use recorder::platforms::PlatformType;
 use recorder::traits::RecorderTrait;
 use recorder::RoomInfo;
@@ -561,6 +562,7 @@ impl RecorderManager {
                 if platform != PlatformType::Huya
                     && platform != PlatformType::Kuaishou
                     && platform != PlatformType::TikTok
+                    && platform != PlatformType::Twitch
                     && account.is_err()
                 {
                     log::warn!("Failed to find an account for {platform:?} {room_id}");
@@ -596,6 +598,13 @@ impl RecorderManager {
         extra: &str,
         enabled: bool,
     ) -> Result<(), RecorderManagerError> {
+        let normalized_room_id = if platform == PlatformType::Twitch {
+            recorder::platforms::twitch::api::normalize_channel(room_id)
+                .map_err(RecorderManagerError::RecorderError)
+        } else {
+            Ok(room_id.to_string())
+        }?;
+        let room_id = normalized_room_id.as_str();
         let recorder_id = format!("{}:{}", platform.as_str(), room_id);
         if self.recorders.read().await.contains_key(&recorder_id) {
             return Err(RecorderManagerError::AlreadyExisted {
@@ -644,6 +653,14 @@ impl RecorderManager {
                 enabled,
             )?),
             PlatformType::TikTok => Box::new(TikTokRecorder::new(
+                room_id,
+                account,
+                cache_dir,
+                event_tx,
+                update_interval,
+                enabled,
+            )?),
+            PlatformType::Twitch => Box::new(TwitchRecorder::new(
                 room_id,
                 account,
                 cache_dir,

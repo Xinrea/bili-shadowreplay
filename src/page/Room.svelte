@@ -22,6 +22,7 @@
   import KuaishouIcon from "../lib/components/KuaishouIcon.svelte";
   import HuyaIcon from "../lib/components/HuyaIcon.svelte";
   import TikTokIcon from "../lib/components/TikTokIcon.svelte";
+  import TwitchIcon from "../lib/components/TwitchIcon.svelte";
   import AutoRecordIcon from "../lib/components/AutoRecordIcon.svelte";
   import GenerateWholeClipModal from "../lib/components/GenerateWholeClipModal.svelte";
   import { onMount } from "svelte";
@@ -56,6 +57,7 @@
       huya: "/imgs/huya_avatar.png",
       kuaishou: "/imgs/kuaishou.svg",
       tiktok: "/imgs/tiktok.png",
+      twitch: "/imgs/twitch.svg",
     };
     return avatarMap[platform] || "/imgs/huya_avatar.png";
   }
@@ -67,6 +69,7 @@
       huya: "/imgs/huya.png",
       kuaishou: "/imgs/kuaishou.svg",
       tiktok: "/imgs/tiktok.png",
+      twitch: "/imgs/twitch.svg",
     };
     return coverMap[platform] || "/imgs/huya.png";
   }
@@ -366,6 +369,8 @@
       } else {
         openLiveUrl(room);
       }
+    } else if (room.room_info.platform === "twitch") {
+      openLiveUrl(room);
     }
   }
 
@@ -385,6 +390,9 @@
         break;
       case "tiktok":
         open(`https://www.tiktok.com/${room.room_info.room_id}/live`);
+        break;
+      case "twitch":
+        open(`https://www.twitch.tv/${room.room_info.room_id}`);
         break;
     }
   }
@@ -426,6 +434,15 @@
         if (room_id.includes("https://") || room_id.includes("bsr://")) {
           room_id = "@" + room_id.split("@").pop().split("/")[0];
         }
+        break;
+      case "twitch":
+        // Twitch accepts a channel login or https://www.twitch.tv/<login>.
+        if (room_id.includes("https://") || room_id.includes("bsr://")) {
+          room_id = room_id
+            .replace(/^(?:https?:|bsr:)\/\/(?:(?:www|m)\.)?twitch\.tv\//, "")
+            .split("/")[0];
+        }
+        room_id = room_id.replace(/^@/, "");
         break;
     }
 
@@ -482,6 +499,14 @@
 
         if (url.startsWith("bsr://live.tiktok.com/")) {
           platform = "tiktok";
+        }
+
+        if (
+          url.startsWith("bsr://www.twitch.tv/") ||
+          url.startsWith("bsr://m.twitch.tv/") ||
+          url.startsWith("bsr://twitch.tv/")
+        ) {
+          platform = "twitch";
         }
 
         if (url && platform) {
@@ -633,6 +658,8 @@
                     <HuyaIcon class="w-4 h-4" />
                   {:else if room.room_info.platform === "tiktok"}
                     <TikTokIcon class="w-5 h-5" />
+                  {:else if room.room_info.platform === "twitch"}
+                    <TwitchIcon class="w-5 h-5 text-purple-600" />
                   {:else}
                     <Globe class="w-4 h-4 text-gray-400" />
                   {/if}
@@ -829,6 +856,15 @@
                 onclick={() => (selectedPlatform = "tiktok")}
               >
                 TikTok
+              </button>
+              <button
+                class="flex-none px-3 py-2 text-sm font-medium whitespace-nowrap rounded-md transition-colors {selectedPlatform ===
+                'twitch'
+                  ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white'
+                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
+                onclick={() => (selectedPlatform = "twitch")}
+              >
+                Twitch
               </button>
             </div>
           </div>

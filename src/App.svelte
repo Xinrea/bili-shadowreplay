@@ -49,6 +49,17 @@
           platform = "tiktok";
         }
 
+        if (
+          url.startsWith("bsr://www.twitch.tv/") ||
+          url.startsWith("bsr://m.twitch.tv/") ||
+          url.startsWith("bsr://twitch.tv/")
+        ) {
+          room_id = url
+            .replace(/^bsr:\/\/(?:(?:www|m)\.)?twitch\.tv\//, "")
+            .split(/[?/]/)[0];
+          platform = "twitch";
+        }
+
         if (platform && room_id) {
           // switch to room page
           active = "直播间";

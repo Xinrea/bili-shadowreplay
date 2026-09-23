@@ -139,6 +139,7 @@ fn test_platform_type_string_conversion() {
     assert_eq!(PlatformType::BiliBili.as_str(), "bilibili");
     assert_eq!(PlatformType::Douyin.as_str(), "douyin");
     assert_eq!(PlatformType::Kuaishou.as_str(), "kuaishou");
+    assert_eq!(PlatformType::Twitch.as_str(), "twitch");
 
     assert_eq!(
         "bilibili".parse::<PlatformType>().unwrap(),
@@ -147,6 +148,10 @@ fn test_platform_type_string_conversion() {
     assert_eq!(
         "douyin".parse::<PlatformType>().unwrap(),
         PlatformType::Douyin
+    );
+    assert_eq!(
+        "twitch".parse::<PlatformType>().unwrap(),
+        PlatformType::Twitch
     );
 }
 

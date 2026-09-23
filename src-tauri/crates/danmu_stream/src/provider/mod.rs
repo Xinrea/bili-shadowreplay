@@ -38,6 +38,11 @@ pub trait DanmuProvider: Send + Sync {
     async fn stop(&self) -> Result<(), DanmuStreamError>;
 }
 
+/// Normalize a Twitch channel name or URL for use by the recorder and chat provider.
+pub fn normalize_twitch_channel(room_id: &str) -> Result<String, String> {
+    twitch::normalize_channel(room_id)
+}
+
 /// Creates a new danmu stream provider for the specified platform.
 ///
 /// This function initializes and starts a danmu stream provider based on the specified platform type.

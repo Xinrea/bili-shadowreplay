@@ -54,76 +54,20 @@ pub struct StreamInfo {
     pub expires: i64,
 }
 
-/// Convert a Twitch channel URL, @handle, or login name into the canonical
-/// login used by both the web API and IRC.
+/// Normalize a Twitch channel name or Twitch URL using the shared chat-provider
+/// implementation so recording and IRC subscribe to exactly the same channel.
 pub fn normalize_channel(input: &str) -> Result<String, RecorderError> {
-    let input = input.trim();
-    if input.is_empty() {
-        return Err(invalid_channel(input));
-    }
-
-    let channel = if input.contains("://")
-        || input.starts_with("www.twitch.tv/")
-        || input.starts_with("m.twitch.tv/")
-        || input.starts_with("twitch.tv/")
-    {
-        let url = if input.contains("://") {
-            Url::parse(input).map_err(|_| invalid_channel(input))?
-        } else {
-            Url::parse(&format!("https://{input}")).map_err(|_| invalid_channel(input))?
-        };
-        let host = url
-            .host_str()
-            .unwrap_or_default()
-            .trim_start_matches("www.");
-        if !matches!(host, "twitch.tv" | "m.twitch.tv") {
-            return Err(invalid_channel(input));
-        }
-        let path = url.path_segments().ok_or_else(|| invalid_channel(input))?;
-        let mut segments = path.filter(|segment| !segment.is_empty());
-        let channel = segments.next().unwrap_or_default().trim_start_matches('@');
-        let valid_path = match segments.next() {
-            None => true,
-            Some("live") => segments.next().is_none(),
-            Some(_) => false,
-        };
-        if !is_valid_login(channel) || !valid_path {
-            return Err(invalid_channel(input));
-        }
-        channel.to_string()
-    } else {
-        input
-            .split(['?', '#'])
-            .next()
-            .unwrap_or_default()
-            .to_string()
-    };
-
-    let channel = channel.trim_start_matches('@').trim().to_ascii_lowercase();
-    if !is_valid_login(&channel) {
-        return Err(invalid_channel(input));
-    }
-
-    Ok(channel)
+    danmu_stream::provider::normalize_twitch_channel(input)
+        .map_err(|error| RecorderError::ApiError { error })
 }
 
-fn is_valid_login(login: &str) -> bool {
-    !login.is_empty()
-        && login.len() <= 25
-        && login
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || character == '_')
-}
-
-fn invalid_channel(input: &str) -> RecorderError {
-    RecorderError::ApiError {
-        error: format!("Invalid Twitch channel: {input}"),
-    }
-}
-
-async fn graphql(client: &Client, request: Value) -> Result<Value, RecorderError> {
+async fn graphql_at(
+    client: &Client,
+    endpoint: &str,
+    request: Value,
+) -> Result<Value, RecorderError> {
     let response = client
-        .post(TWITCH_GQL_ENDPOINT)
+        .post(endpoint)
         .header("Client-ID", TWITCH_CLIENT_ID)
         .header("Content-Type", "application/json")
         .header("User-Agent", "BiliBili-ShadowReplay")
@@ -165,9 +109,18 @@ async fn graphql(client: &Client, request: Value) -> Result<Value, RecorderError
 }
 
 pub async fn get_room_info(client: &Client, channel: &str) -> Result<RoomInfo, RecorderError> {
+    get_room_info_at(client, channel, TWITCH_GQL_ENDPOINT).await
+}
+
+async fn get_room_info_at(
+    client: &Client,
+    channel: &str,
+    graphql_endpoint: &str,
+) -> Result<RoomInfo, RecorderError> {
     let channel = normalize_channel(channel)?;
-    let data = graphql(
+    let data = graphql_at(
         client,
+        graphql_endpoint,
         json!([{
             "operationName": "TwitchRoom",
             "query": ROOM_QUERY,
@@ -219,9 +172,19 @@ pub async fn get_room_info(client: &Client, channel: &str) -> Result<RoomInfo, R
 }
 
 pub async fn get_stream_url(client: &Client, channel: &str) -> Result<StreamInfo, RecorderError> {
+    get_stream_url_at(client, channel, TWITCH_GQL_ENDPOINT, TWITCH_USHER_ENDPOINT).await
+}
+
+async fn get_stream_url_at(
+    client: &Client,
+    channel: &str,
+    graphql_endpoint: &str,
+    usher_endpoint: &str,
+) -> Result<StreamInfo, RecorderError> {
     let channel = normalize_channel(channel)?;
-    let data = graphql(
+    let data = graphql_at(
         client,
+        graphql_endpoint,
         json!([{
             "operationName": "PlaybackAccessToken_Template",
             "query": PLAYBACK_TOKEN_QUERY,
@@ -257,7 +220,7 @@ pub async fn get_stream_url(client: &Client, channel: &str) -> Result<StreamInfo
         .and_then(Value::as_i64)
         .unwrap_or_default();
 
-    let mut url = Url::parse(&format!("{TWITCH_USHER_ENDPOINT}/{channel}.m3u8"))
+    let mut url = Url::parse(&format!("{usher_endpoint}/{channel}.m3u8"))
         .map_err(|_| RecorderError::InvalidResponse)?;
     url.query_pairs_mut()
         .append_pair("client_id", TWITCH_CLIENT_ID)
@@ -382,6 +345,141 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(selected, format!("{}/high.m3u8", server.uri()));
+    }
+
+    #[tokio::test]
+    async fn selects_highest_bandwidth_absolute_hls_variant() {
+        let server = MockServer::start().await;
+        let low_variant = "https://low.example/low.m3u8";
+        let high_variant = "https://high.example/high.m3u8";
+        Mock::given(method("GET"))
+            .and(path("/master-absolute.m3u8"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+                "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=160000\n{low_variant}\n#EXT-X-STREAM-INF:BANDWIDTH=6000000\n{high_variant}\n"
+            )))
+            .mount(&server)
+            .await;
+
+        let selected = select_best_variant(
+            &Client::new(),
+            &format!("{}/master-absolute.m3u8", server.uri()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(selected, high_variant);
+    }
+
+    #[tokio::test]
+    async fn graphql_room_query_parses_live_room_metadata() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/gql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "data": {
+                        "user": {
+                            "id": "123",
+                            "login": "ninja",
+                            "displayName": "Ninja",
+                            "profileImageURL": "https://example.test/avatar.jpg",
+                            "stream": {
+                                "id": "456",
+                                "title": "Live title",
+                                "previewImageURL": "https://example.test/cover.jpg"
+                            }
+                        }
+                    }
+                }
+            ])))
+            .mount(&server)
+            .await;
+
+        let room = get_room_info_at(&Client::new(), "ninja", &format!("{}/gql", server.uri()))
+            .await
+            .unwrap();
+        assert!(room.live);
+        assert_eq!(room.live_id.as_deref(), Some("456"));
+        assert_eq!(room.user_name, "Ninja");
+        assert_eq!(room.title, "Live title");
+        assert_eq!(room.cover, "https://example.test/cover.jpg");
+    }
+
+    #[tokio::test]
+    async fn graphql_room_query_handles_null_user() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/gql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "data": { "user": null } }
+            ])))
+            .mount(&server)
+            .await;
+
+        let result =
+            get_room_info_at(&Client::new(), "ninja", &format!("{}/gql", server.uri())).await;
+        assert!(matches!(result, Err(RecorderError::ApiError { .. })));
+    }
+
+    #[tokio::test]
+    async fn playback_token_expiry_is_parsed_as_unix_seconds() {
+        let server = MockServer::start().await;
+        let expires = 1_800_000_000_i64;
+        let token = serde_json::json!({ "expires": expires }).to_string();
+        Mock::given(method("POST"))
+            .and(path("/gql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "data": {
+                        "streamPlaybackAccessToken": {
+                            "value": token,
+                            "signature": "test-signature"
+                        }
+                    }
+                }
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/hls/ninja.m3u8"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6.0,\nsegment.ts\n#EXT-X-ENDLIST\n",
+            ))
+            .mount(&server)
+            .await;
+
+        let stream = get_stream_url_at(
+            &Client::new(),
+            "ninja",
+            &format!("{}/gql", server.uri()),
+            &format!("{}/hls", server.uri()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stream.expires, expires);
+        assert!(stream
+            .hls_url
+            .starts_with(&format!("{}/hls/ninja.m3u8?", server.uri())));
+    }
+
+    #[tokio::test]
+    async fn missing_playback_token_returns_no_stream() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/gql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "data": {} }
+            ])))
+            .mount(&server)
+            .await;
+
+        let result = get_stream_url_at(
+            &Client::new(),
+            "ninja",
+            &format!("{}/gql", server.uri()),
+            &format!("{}/hls", server.uri()),
+        )
+        .await;
+        assert!(matches!(result, Err(RecorderError::NoStreamAvailable)));
     }
 
     #[tokio::test]

@@ -37,7 +37,8 @@ pub struct TwitchDanmu {
 #[async_trait]
 impl DanmuProvider for TwitchDanmu {
     async fn new(_identifier: &str, room_id: &str) -> Result<Self, DanmuStreamError> {
-        let channel = normalize_channel(room_id)?;
+        let channel = normalize_channel(room_id)
+            .map_err(|err| DanmuStreamError::InvalidIdentifier { err })?;
         Ok(Self {
             channel,
             stop: Arc::new(RwLock::new(false)),
@@ -161,7 +162,7 @@ fn websocket_error(error: impl Into<String>) -> DanmuStreamError {
     DanmuStreamError::WebsocketError { err: error.into() }
 }
 
-fn normalize_channel(room_id: &str) -> Result<String, DanmuStreamError> {
+pub(super) fn normalize_channel(room_id: &str) -> Result<String, String> {
     let input = room_id.trim();
     let channel = if input.contains("://")
         || input.starts_with("www.twitch.tv/")
@@ -173,22 +174,16 @@ fn normalize_channel(room_id: &str) -> Result<String, DanmuStreamError> {
         } else {
             url::Url::parse(&format!("https://{input}"))
         }
-        .map_err(|error| DanmuStreamError::InvalidIdentifier {
-            err: format!("invalid Twitch channel: {error}"),
-        })?;
+        .map_err(|_| invalid_channel(room_id))?;
         let host = url
             .host_str()
             .unwrap_or_default()
             .trim_start_matches("www.");
         if !matches!(host, "twitch.tv" | "m.twitch.tv") {
-            return Err(DanmuStreamError::InvalidIdentifier {
-                err: format!("invalid Twitch channel: {room_id}"),
-            });
+            return Err(invalid_channel(room_id));
         }
         let Some(segments) = url.path_segments() else {
-            return Err(DanmuStreamError::InvalidIdentifier {
-                err: format!("invalid Twitch channel: {room_id}"),
-            });
+            return Err(invalid_channel(room_id));
         };
         let mut segments = segments.filter(|segment| !segment.is_empty());
         let channel = segments.next().unwrap_or_default().trim_start_matches('@');
@@ -198,19 +193,20 @@ fn normalize_channel(room_id: &str) -> Result<String, DanmuStreamError> {
             Some(_) => false,
         };
         if !valid_path {
-            return Err(DanmuStreamError::InvalidIdentifier {
-                err: format!("invalid Twitch channel: {room_id}"),
-            });
+            return Err(invalid_channel(room_id));
         }
         channel.to_string()
     } else {
-        input
+        let login = input
             .trim_start_matches('#')
             .trim_start_matches('@')
-            .split(['/', '?', '#'])
+            .split(['?', '#'])
             .next()
-            .unwrap_or_default()
-            .to_string()
+            .unwrap_or_default();
+        if login.contains('/') {
+            return Err(invalid_channel(room_id));
+        }
+        login.to_string()
     }
     .to_ascii_lowercase();
 
@@ -220,11 +216,13 @@ fn normalize_channel(room_id: &str) -> Result<String, DanmuStreamError> {
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || character == '_')
     {
-        return Err(DanmuStreamError::InvalidIdentifier {
-            err: format!("invalid Twitch channel: {room_id}"),
-        });
+        return Err(invalid_channel(room_id));
     }
     Ok(channel)
+}
+
+fn invalid_channel(room_id: &str) -> String {
+    format!("Invalid Twitch channel: {room_id}")
 }
 
 fn parse_privmsg(line: &str, channel: &str) -> Option<DanmuMessage> {
@@ -339,6 +337,7 @@ mod tests {
             "ninja"
         );
         assert!(normalize_channel("https://example.com/Ninja").is_err());
+        assert!(normalize_channel("ninja/live").is_err());
     }
 
     #[test]

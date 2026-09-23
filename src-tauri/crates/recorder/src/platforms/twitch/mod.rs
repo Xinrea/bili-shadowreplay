@@ -117,6 +117,10 @@ impl PlatformApi for TwitchRecorder {
             spawn: DanmuSpawn::LongLived,
         })
     }
+
+    fn resume_on_update_timeout(&self) -> bool {
+        true
+    }
 }
 
 #[async_trait]
@@ -144,5 +148,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(recorder.room_id(), "ninja");
+        assert!(recorder.resume_on_update_timeout());
     }
 }

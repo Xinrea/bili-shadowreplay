@@ -163,6 +163,13 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
         false
     }
 
+    /// Whether an HLS source timeout should retry the same recording session.
+    /// Most platforms treat a stalled playlist as the end of this recording;
+    /// platforms with transient ad/transcode gaps can opt into resuming it.
+    fn resume_on_update_timeout(&self) -> bool {
+        false
+    }
+
     // ----- shared lifecycle -------------------------------------------------
 
     /// One poll of the room status: store metadata, emit live start/end
@@ -469,12 +476,23 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                     if recorder.should_record().await {
                         let live_id = recorder.next_live_id().await;
                         if let Err(error) = recorder.start_recording(&live_id).await {
-                            match error {
+                            match &error {
                                 RecorderError::StreamExpired { expire } => {
                                     // Resume the same recording with a fresh stream.
                                     recorder.should_continue().store(true, Ordering::Relaxed);
                                     log::info!(
                                         "[{platform}][{room_id}] Stream expired at {expire}"
+                                    );
+                                }
+                                RecorderError::UpdateTimeout
+                                    if recorder.resume_on_update_timeout() =>
+                                {
+                                    // Some platforms briefly stop advancing their HLS
+                                    // playlists (e.g. during ad transitions). Refresh
+                                    // the source but keep the same archive/session.
+                                    recorder.should_continue().store(true, Ordering::Relaxed);
+                                    log::warn!(
+                                        "[{platform}][{room_id}] HLS playlist stalled; resuming the same recording"
                                     );
                                 }
                                 _ => {

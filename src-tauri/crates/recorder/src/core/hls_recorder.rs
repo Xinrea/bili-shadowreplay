@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::{path::PathBuf, sync::Arc};
 
 use chrono::Utc;
-use m3u8_rs::{MediaPlaylist, Playlist};
+use m3u8_rs::{MediaPlaylist, MediaSegment, Playlist};
 use reqwest::header::HeaderMap;
 use std::time::Duration;
 use tokio::fs::{File, OpenOptions};
@@ -42,6 +42,30 @@ pub struct HlsRecorder {
     updated_at: Arc<AtomicI64>,
 
     pre_metadata: Arc<RwLock<Option<VideoMetadata>>>,
+}
+
+struct DownloadedSegment {
+    segment: MediaSegment,
+    path: PathBuf,
+    size: u64,
+}
+
+fn local_segment_filename(source_uri: &str, sequence: u64) -> String {
+    let path = source_uri.split(['?', '#']).next().unwrap_or(source_uri);
+    let basename = path.rsplit('/').next().unwrap_or(path);
+    let extension = basename
+        .rsplit_once('.')
+        .map(|(_, extension)| extension)
+        .filter(|extension| {
+            !extension.is_empty()
+                && extension.len() <= 8
+                && extension
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric())
+        })
+        .unwrap_or("ts");
+
+    format!("segment_{sequence}.{extension}")
 }
 
 impl HlsRecorder {
@@ -113,7 +137,8 @@ impl HlsRecorder {
                 .map_err(RecorderError::IoError)?;
         }
 
-        let playlist = HlsPlaylist::new(playlist_path).await?;
+        let mut playlist = HlsPlaylist::new(playlist_path).await?;
+        playlist.reopen().await?;
 
         Ok(Self {
             room_id,
@@ -224,6 +249,25 @@ impl HlsRecorder {
         }
     }
 
+    async fn download_segment(
+        &self,
+        source_segment: &MediaSegment,
+        sequence: u64,
+    ) -> Result<DownloadedSegment, RecorderError> {
+        let source_url = self.stream.ts_url(&source_segment.uri);
+        let local_uri = local_segment_filename(&source_segment.uri, sequence);
+        let path = self.work_dir.join(&local_uri);
+        let size = download(&self.client, &source_url, &path, DOWNLOAD_RETRY).await?;
+
+        let mut segment = source_segment.clone();
+        segment.uri = local_uri;
+        Ok(DownloadedSegment {
+            segment,
+            path,
+            size,
+        })
+    }
+
     async fn update_entries(&self) -> Result<(), RecorderError> {
         let media_playlist = self.query_media_playlist().await?;
         let playlist_sequence = media_playlist.media_sequence;
@@ -234,31 +278,22 @@ impl HlsRecorder {
         let mut size_delta = 0;
         for (i, segment) in media_playlist.segments.iter().enumerate() {
             let segment_sequence = playlist_sequence + i as u64;
-            let segment_full_url = self.stream.ts_url(&segment.uri);
-            // to get filename, we need to remove the query parameters
-            // for example: 1.ts?expires=1760808243
-            // we need to remove the query parameters: 1.ts
-            let filename = segment.uri.split('?').next().unwrap_or(&segment.uri);
             if segment_sequence <= last_sequence {
                 continue;
             }
 
-            let segment_path = self.work_dir.join(filename);
-            let Ok(size) = download(
-                &self.client,
-                &segment_full_url,
-                &segment_path,
-                DOWNLOAD_RETRY,
-            )
-            .await
-            else {
-                log::error!("Download failed: {:#?}", segment);
-                return Err(RecorderError::IoError(std::io::Error::other(
-                    "Download failed",
-                )));
+            let downloaded = match self.download_segment(segment, segment_sequence).await {
+                Ok(downloaded) => downloaded,
+                Err(error) => {
+                    log::error!(
+                        "Failed to download HLS segment at sequence {segment_sequence}: {error}"
+                    );
+                    return Err(error);
+                }
             };
-
-            let mut segment = segment.clone();
+            let segment_path = downloaded.path;
+            let size = downloaded.size;
+            let mut segment = downloaded.segment;
             if segment.program_date_time.is_none() {
                 segment.program_date_time.replace(Utc::now().into());
             }
@@ -395,7 +430,7 @@ async fn download_inner(
     let response = client.get(url).send().await?;
     if !response.status().is_success() {
         let status = response.status();
-        log::warn!("Download segment failed: {url}: {status}");
+        log::warn!("Download segment failed: {status}");
         return Err(RecorderError::InvalidResponseStatus { status });
     }
     let bytes = response.bytes().await?;
@@ -500,6 +535,8 @@ mod tests {
     use std::fs;
 
     use crate::core::{Codec, Format};
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
 
@@ -527,6 +564,91 @@ mod tests {
         assert_eq!(stream.extra, "ratio=2000&wsSecret=7abc7dec8809146f31f92046eb044e3b&wsTime=68fa41ba&fm=RFdxOEJjSjNoNkRKdDZUWV8kMF8kMV8kMl8kMw%3D%3D&ctype=tars_mobile&fs=bgct&t=103");
         assert_eq!(stream.format, Format::TS);
         assert_eq!(stream.codec, Codec::Avc);
+    }
+
+    #[tokio::test]
+    async fn rewrites_long_absolute_segment_uris_to_local_playlist_names() {
+        let server = MockServer::start().await;
+        let body = b"mock Twitch media segment";
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body.to_vec()))
+            .mount(&server)
+            .await;
+
+        let long_token = "x".repeat(600);
+        let source_uri = format!(
+            "{}/v1/segment/{long_token}.ts?token={}",
+            server.uri(),
+            "y".repeat(300)
+        );
+        let source_filename = source_uri
+            .split('?')
+            .next()
+            .unwrap()
+            .rsplit('/')
+            .next()
+            .unwrap();
+        assert!(source_filename.len() > 255);
+
+        let (event_tx, _) = broadcast::channel(1);
+        let work_dir = std::env::temp_dir().join(format!(
+            "bili-shadowreplay-hls-long-uri-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let stream = Arc::new(HlsStream::new(
+            "twitch-live".to_string(),
+            server.uri(),
+            "/master.m3u8".to_string(),
+            String::new(),
+            Format::TS,
+            Codec::Avc,
+            0,
+        ));
+        let recorder = HlsRecorder::new(
+            "twitch-channel".to_string(),
+            stream,
+            reqwest::Client::new(),
+            None,
+            event_tx,
+            work_dir.clone(),
+            Arc::new(AtomicBool::new(true)),
+        )
+        .await
+        .unwrap();
+        let source_playlist_content =
+            format!("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6.0,\n{source_uri}\n");
+        let (_, source_playlist) = m3u8_rs::parse_playlist(source_playlist_content.as_bytes())
+            .expect("signed Twitch media playlist should parse");
+        let Playlist::MediaPlaylist(source_playlist) = source_playlist else {
+            panic!("expected Twitch media playlist");
+        };
+
+        let downloaded = recorder
+            .download_segment(&source_playlist.segments[0], 42)
+            .await
+            .unwrap();
+        assert_eq!(downloaded.segment.uri, "segment_42.ts");
+        assert_eq!(
+            downloaded.path.file_name().unwrap().to_str().unwrap(),
+            "segment_42.ts"
+        );
+        assert_eq!(tokio::fs::read(&downloaded.path).await.unwrap(), body);
+
+        recorder
+            .playlist
+            .lock()
+            .await
+            .add_segment(downloaded.segment)
+            .await
+            .unwrap();
+        let playlist = tokio::fs::read_to_string(work_dir.join(PLAYLIST_FILE_NAME))
+            .await
+            .unwrap();
+        assert!(playlist.contains("segment_42.ts"));
+        assert!(!playlist.contains("https://"));
+        assert!(!playlist.contains(&long_token));
+
+        tokio::fs::remove_dir_all(work_dir).await.unwrap();
     }
 
     #[tokio::test]

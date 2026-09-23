@@ -17,6 +17,7 @@ use recorder::account::Account;
 use recorder::danmu::DanmuEntry;
 use recorder::platforms::bilibili;
 use recorder::platforms::douyin;
+use recorder::platforms::douyu;
 use recorder::platforms::PlatformType;
 use recorder::RecorderInfo;
 
@@ -35,7 +36,7 @@ pub async fn get_recorder_list(state: state_type!()) -> Result<RecorderList, ()>
 pub async fn add_recorder(
     state: state_type!(),
     platform: String,
-    room_id: String,
+    mut room_id: String,
     mut extra: String,
 ) -> Result<RecorderRow, String> {
     log::info!("Add recorder: {platform} {room_id}");
@@ -62,6 +63,15 @@ pub async fn add_recorder(
                 log::error!("No available douyin account found");
                 Err("没有可用账号，请先添加账号".to_string())
             }
+        }
+        PlatformType::Douyu => {
+            let client = reqwest::Client::new();
+            let numeric_room_id =
+                douyu::api::resolve_room_id(&client, &Account::default(), &room_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            room_id = numeric_room_id.to_string();
+            Ok(Account::default())
         }
         PlatformType::Huya => {
             if let Ok(account) = state.db.get_account_by_platform("huya").await {

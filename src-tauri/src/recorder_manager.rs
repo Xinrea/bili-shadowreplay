@@ -18,6 +18,7 @@ use recorder::errors::RecorderError;
 use recorder::events::RecorderEvent;
 use recorder::platforms::bilibili::BiliRecorder;
 use recorder::platforms::douyin::DouyinRecorder;
+use recorder::platforms::douyu::DouyuRecorder;
 use recorder::platforms::huya::HuyaRecorder;
 use recorder::platforms::kuaishou::KuaishouRecorder;
 use recorder::platforms::tiktok::TikTokRecorder;
@@ -559,6 +560,7 @@ impl RecorderManager {
                     .get_account_by_platform(platform.clone().as_str())
                     .await;
                 if platform != PlatformType::Huya
+                    && platform != PlatformType::Douyu
                     && platform != PlatformType::Kuaishou
                     && platform != PlatformType::TikTok
                     && account.is_err()
@@ -621,6 +623,14 @@ impl RecorderManager {
             PlatformType::Douyin => Box::new(DouyinRecorder::new(
                 room_id,
                 extra,
+                account,
+                cache_dir,
+                event_tx,
+                update_interval,
+                enabled,
+            )?),
+            PlatformType::Douyu => Box::new(DouyuRecorder::new(
+                room_id,
                 account,
                 cache_dir,
                 event_tx,

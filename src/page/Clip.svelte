@@ -26,6 +26,7 @@
   import { AnnotationOutline } from "flowbite-svelte-icons";
   import BilibiliIcon from "../lib/components/BilibiliIcon.svelte";
   import DouyinIcon from "../lib/components/DouyinIcon.svelte";
+  import DouyuIcon from "../lib/components/DouyuIcon.svelte";
   import KuaishouIcon from "../lib/components/KuaishouIcon.svelte";
   import HuyaIcon from "../lib/components/HuyaIcon.svelte";
   import TikTokIcon from "../lib/components/TikTokIcon.svelte";
@@ -291,6 +292,8 @@
         return "B站";
       case "douyin":
         return "抖音";
+      case "douyu":
+        return "斗鱼";
       case "huya":
         return "虎牙";
       case "kuaishou":
@@ -316,6 +319,8 @@
         return `https://live.bilibili.com/${roomId}`;
       case "douyin":
         return `https://live.douyin.com/${roomId}`;
+      case "douyu":
+        return `https://www.douyu.com/${roomId}`;
       case "huya":
         return `https://www.huya.com/${roomId}`;
       case "kuaishou":
@@ -790,6 +795,23 @@
                         {/if}
                       {:else if video.platform === "douyin"}
                         <DouyinIcon class="w-4 h-4 flex-shrink-0" />
+                        {#if getRoomUrl(video.platform, video.room_id)}
+                          <a
+                            href={getRoomUrl(video.platform, video.room_id)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="text-blue-500 hover:text-blue-700 text-sm"
+                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
+                          >
+                            {video.room_id}
+                          </a>
+                        {:else}
+                          <span class="text-sm text-gray-900 dark:text-white"
+                            >{video.room_id}</span
+                          >
+                        {/if}
+                      {:else if video.platform === "douyu"}
+                        <DouyuIcon class="w-4 h-4 flex-shrink-0" />
                         {#if getRoomUrl(video.platform, video.room_id)}
                           <a
                             href={getRoomUrl(video.platform, video.room_id)}

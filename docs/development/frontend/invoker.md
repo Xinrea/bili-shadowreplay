@@ -223,7 +223,7 @@ onDestroy(() => {
 export interface Room {
   id: string;
   name: string;
-  platform: 'bilibili' | 'douyin' | 'douyu' | 'huya' | 'kuaishou' | 'tiktok';
+  platform: 'bilibili' | 'douyin' | 'douyu' | 'huya' | 'kuaishou' | 'tiktok' | 'youtube';
   url: string;
   status: 'online' | 'offline';
   config: RoomConfig;

@@ -133,6 +133,7 @@
       huya: "虎牙",
       kuaishou: "快手",
       tiktok: "TikTok",
+      youtube: "YouTube",
     };
     return platformMap[platform] || platform;
   }
@@ -144,6 +145,7 @@
       huya: "/imgs/huya_avatar.png",
       kuaishou: "/imgs/kuaishou.svg",
       tiktok: "/imgs/tiktok.png",
+      youtube: "/imgs/youtube.svg",
     };
     return avatarMap[platform] || "/imgs/bilibili_avatar.png";
   }
@@ -384,6 +386,18 @@
               }}
             >
               TikTok
+            </button>
+            <button
+              class="flex-none px-3 py-2 text-sm font-medium whitespace-nowrap rounded-md transition-colors {selectedPlatform ===
+              'youtube'
+                ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white'
+                : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
+              onclick={() => {
+                selectedPlatform = "youtube";
+                activeTab = "manual";
+              }}
+            >
+              YouTube
             </button>
           </div>
         </div>

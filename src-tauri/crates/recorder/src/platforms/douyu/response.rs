@@ -375,8 +375,8 @@ mod tests {
         assert!(room_is_live(&room));
         assert_eq!(room.room_id, "123");
         assert_eq!(platform_live_id(&room, 123), "2025-01-02_03_04_05");
-        assert_eq!(map_room_status("2", 42), false);
-        assert_eq!(map_room_status("", 42), true);
+        assert!(!map_room_status("2", 42));
+        assert!(map_room_status("", 42));
     }
 
     #[test]

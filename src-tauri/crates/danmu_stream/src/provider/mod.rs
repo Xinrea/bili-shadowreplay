@@ -3,6 +3,7 @@ mod douyin;
 mod douyu;
 mod huya;
 mod kuaishou;
+mod youtube;
 
 use async_trait::async_trait;
 use tokio::sync::mpsc;
@@ -12,6 +13,7 @@ use self::douyin::DouyinDanmu;
 use self::douyu::DouyuDanmu;
 use self::huya::HuyaDanmu;
 use self::kuaishou::KuaishouDanmu;
+use self::youtube::YoutubeDanmu;
 
 use crate::{DanmuMessageType, DanmuStreamError};
 
@@ -22,6 +24,7 @@ pub enum ProviderType {
     Douyu,
     Huya,
     Kuaishou,
+    Youtube,
 }
 
 #[async_trait]
@@ -45,7 +48,7 @@ pub trait DanmuProvider: Send + Sync {
 ///
 /// # Arguments
 ///
-/// * `provider_type` - The type of platform to fetch danmu from (BiliBili, Douyin, Douyu, Huya or Kuaishou)
+/// * `provider_type` - The type of platform to fetch danmu from (BiliBili, Douyin, Douyu, Huya, Kuaishou or YouTube)
 /// * `identifier` - User validation information (e.g., cookies) required by the platform
 /// * `room_id` - The unique identifier of the room/channel to fetch danmu from. Notice that douyin room_id is more like a live_id, it changes every time the live starts.
 ///
@@ -92,6 +95,10 @@ pub async fn new(
         ProviderType::Huya => {
             let huya = HuyaDanmu::new(identifier, room_id).await?;
             Ok(Box::new(huya))
+        }
+        ProviderType::Youtube => {
+            let youtube = YoutubeDanmu::new(identifier, room_id).await?;
+            Ok(Box::new(youtube))
         }
     }
 }

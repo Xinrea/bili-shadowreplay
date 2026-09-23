@@ -25,6 +25,7 @@
   import KuaishouIcon from "../lib/components/KuaishouIcon.svelte";
   import HuyaIcon from "../lib/components/HuyaIcon.svelte";
   import TikTokIcon from "../lib/components/TikTokIcon.svelte";
+  import YouTubeIcon from "../lib/components/YouTubeIcon.svelte";
   import { SvelteSet } from "svelte/reactivity";
   import GenerateWholeClipModal from "../lib/components/GenerateWholeClipModal.svelte";
   import ArchiveSummaryModal from "../lib/components/ArchiveSummaryModal.svelte";
@@ -412,7 +413,20 @@
       case "tiktok":
         return `https://www.tiktok.com/${roomId}/live`;
       case "youtube":
-        return `https://www.youtube.com/channel/${roomId}`;
+        if (roomId.startsWith("legacy-c-")) {
+          return `https://www.youtube.com/c/${roomId.slice(9)}/live`;
+        }
+        if (roomId.startsWith("legacy-user-")) {
+          return `https://www.youtube.com/user/${roomId.slice(12)}/live`;
+        }
+        if (/^[A-Za-z0-9_-]{11}$/.test(roomId)) {
+          return `https://www.youtube.com/watch?v=${roomId}`;
+        }
+        if (roomId.startsWith("UC")) {
+          return `https://www.youtube.com/channel/${roomId}/live`;
+        }
+        const handle = roomId.startsWith("@") ? roomId : `@${roomId}`;
+        return `https://www.youtube.com/${handle}/live`;
       default:
         return null;
     }
@@ -883,6 +897,8 @@
                         <HuyaIcon class="w-4 h-4" />
                       {:else if archive.platform === "tiktok"}
                         <TikTokIcon class="w-5 h-5" />
+                      {:else if archive.platform === "youtube"}
+                        <YouTubeIcon class="w-4 h-4" />
                       {:else}
                         <Globe class="w-4 h-4 text-gray-400" />
                       {/if}

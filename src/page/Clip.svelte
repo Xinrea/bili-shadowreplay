@@ -30,6 +30,7 @@
   import KuaishouIcon from "../lib/components/KuaishouIcon.svelte";
   import HuyaIcon from "../lib/components/HuyaIcon.svelte";
   import TikTokIcon from "../lib/components/TikTokIcon.svelte";
+  import YouTubeIcon from "../lib/components/YouTubeIcon.svelte";
 
   let videos: VideoItem[] = [];
   let filteredVideos: VideoItem[] = $state([]);
@@ -328,7 +329,20 @@
       case "tiktok":
         return `https://www.tiktok.com/${roomId}/live`;
       case "youtube":
-        return `https://www.youtube.com/channel/${roomId}`;
+        if (roomId.startsWith("legacy-c-")) {
+          return `https://www.youtube.com/c/${roomId.slice(9)}/live`;
+        }
+        if (roomId.startsWith("legacy-user-")) {
+          return `https://www.youtube.com/user/${roomId.slice(12)}/live`;
+        }
+        if (/^[A-Za-z0-9_-]{11}$/.test(roomId)) {
+          return `https://www.youtube.com/watch?v=${roomId}`;
+        }
+        if (roomId.startsWith("UC")) {
+          return `https://www.youtube.com/channel/${roomId}/live`;
+        }
+        const handle = roomId.startsWith("@") ? roomId : `@${roomId}`;
+        return `https://www.youtube.com/${handle}/live`;
       default:
         return null;
     }
@@ -863,6 +877,23 @@
                         {/if}
                       {:else if video.platform === "tiktok"}
                         <TikTokIcon class="w-5 h-5 flex-shrink-0" />
+                        {#if getRoomUrl(video.platform, video.room_id)}
+                          <a
+                            href={getRoomUrl(video.platform, video.room_id)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="text-blue-500 hover:text-blue-700 text-sm"
+                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
+                          >
+                            {video.room_id}
+                          </a>
+                        {:else}
+                          <span class="text-sm text-gray-900 dark:text-white"
+                            >{video.room_id}</span
+                          >
+                        {/if}
+                      {:else if video.platform === "youtube"}
+                        <YouTubeIcon class="w-4 h-4 flex-shrink-0" />
                         {#if getRoomUrl(video.platform, video.room_id)}
                           <a
                             href={getRoomUrl(video.platform, video.room_id)}

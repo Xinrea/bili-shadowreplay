@@ -59,6 +59,9 @@ impl FlvRecorder {
             &self.url,
             "-c",
             "copy",
+            // Huya's FLV carries a webvtt-like subtitle track that the HLS
+            // muxer rejects with `-c copy`; drop subtitle streams entirely.
+            "-sn",
             "-f",
             "hls",
             "-hls_time",

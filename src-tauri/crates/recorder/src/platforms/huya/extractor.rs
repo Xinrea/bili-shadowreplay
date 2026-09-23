@@ -152,7 +152,7 @@ impl LiveStreamExtractor {
             return Vec::new();
         };
 
-        let mut urls = Vec::new();
+        let mut candidates: Vec<(String, i64)> = Vec::new();
         for stream in live_stream_info {
             let Some(flv_url) = Self::str_value_at(stream, &["sFlvUrl"]) else {
                 continue;
@@ -168,21 +168,31 @@ impl LiveStreamExtractor {
             };
 
             let candidate = match UrlBuilder::build_anticode(flv_anti_code, stream_name) {
-                Ok(anticode) => PullUrl::Flv(format!(
+                Ok(anticode) => format!(
                     "{}/{stream_name}.{flv_url_suffix}?{anticode}",
                     Self::normalize_stream_url(flv_url)
-                )),
+                ),
                 Err(e) => {
                     log::warn!("Skipping Huya stream with unusable anticode: {e}");
                     continue;
                 }
             };
-            if !urls.contains(&candidate) {
-                urls.push(candidate);
+            if candidates.iter().any(|(url, _)| *url == candidate) {
+                continue;
             }
+            // The page rates each line per platform; probe the recommended
+            // lines first. Entries without a rate keep their page order behind
+            // rated ones.
+            let priority =
+                Self::i64_value_at(stream, &["iMobilePriorityRate"]).unwrap_or(i64::MIN);
+            candidates.push((candidate, priority));
         }
 
-        urls
+        candidates.sort_by(|a, b| b.1.cmp(&a.1));
+        candidates
+            .into_iter()
+            .map(|(url, _)| PullUrl::Flv(url))
+            .collect()
     }
 
     /// Build a pull URL from `roomProfile.liveLineUrl` (always HLS).
@@ -221,7 +231,8 @@ impl LiveStreamExtractor {
         };
 
         match UrlBuilder::build_anticode(query, stream_name) {
-            Ok(anticode) => format!("{base}.m3u8?{anticode}"),
+            // `base` already ends with `.m3u8`; only replace the query.
+            Ok(anticode) => format!("{base}?{anticode}"),
             Err(e) => {
                 log::warn!("Keeping liveLineUrl with its server signature: {e}");
                 url.to_string()
@@ -514,6 +525,53 @@ mod tests {
                     .to_string()
             )]
         );
+    }
+
+    /// A real `liveLineUrl` carries the `fm` template, so its signature gets
+    /// recomputed; the path must not grow a duplicated `.m3u8` suffix.
+    #[test]
+    fn test_extract_resigns_live_line_url_without_duplicated_suffix() {
+        let hls_url = "//hs.hls.huya.com/huyalive/123-123-456-789-10057-A-0-1.m3u8?ratio=2000&wsSecret=7abc7dec8809146f31f92046eb044e3b&wsTime=68fa41ba&fm=RFdxOEJjSjNoNkRKdDZUWV8kMF8kMV8kMl8kMw%3D%3D&ctype=tars_mobile&fs=bgct&t=103";
+        let live_line_url = general_purpose::STANDARD.encode(hls_url);
+        let js_content = format!(
+            r#"
+            window.HNF_GLOBAL_INIT = {{
+                "roomProfile": {{
+                    "liveLineUrl": "{live_line_url}"
+                }},
+                "roomInfo": {{
+                    "eLiveStatus": 2,
+                    "tProfileInfo": {{
+                        "lUid": 123,
+                        "sNick": "fallback-user",
+                        "sAvatar180": "https://example.com/avatar.jpg",
+                        "lProfileRoom": 456
+                    }},
+                    "tLiveInfo": {{
+                        "lUid": 123,
+                        "sNick": "fallback-user",
+                        "sAvatar180": "https://example.com/avatar.jpg",
+                        "sScreenshot": "https://example.com/cover.jpg",
+                        "sIntroduction": "fallback-title",
+                        "lProfileRoom": 456
+                    }}
+                }}
+            }}
+        "#
+        );
+
+        let (_, _, stream_info) =
+            LiveStreamExtractor::extract_infos(&js_content).expect("fallback must extract");
+
+        let PullUrl::Hls(url) = &stream_info.candidates[0] else {
+            panic!("liveLineUrl fallback must be an HLS candidate");
+        };
+        assert!(url.starts_with(
+            "https://hs.hls.huya.com/huyalive/123-123-456-789-10057-A-0-1.m3u8?"
+        ));
+        assert!(!url.contains(".m3u8.m3u8"), "duplicated suffix: {url}");
+        assert!(!url.contains("wsSecret=7abc7dec8809146f31f92046eb044e3b"));
+        assert!(url.contains("u="), "recomputed signature missing: {url}");
     }
 
     #[test]
@@ -1737,9 +1795,31 @@ mod tests {
         assert_eq!(user_info.user_avatar, "https://huyaimg.msstatic.com/avatar/1003/23/3be5ff7cff0f6d08fee796ac537ef0_180_135.jpg?1525686175");
         assert_eq!(room_info.room_id, "857824");
         assert!(!stream_info.candidates.is_empty());
+        // The fixture ships three FLV CDN lines (AL/TX/HS); all must be FLV
+        // candidates, not the HLS fallback, and none may reuse the page's own
+        // server signature.
         assert!(stream_info
             .candidates
             .iter()
-            .all(|candidate| candidate.url().starts_with("https://")));
+            .all(|candidate| matches!(candidate, PullUrl::Flv(_))));
+        let hosts: Vec<&str> = stream_info
+            .candidates
+            .iter()
+            .map(|candidate| {
+                let url = candidate.url();
+                let without_scheme = url.split("//").nth(1).unwrap_or(url);
+                without_scheme.split('/').next().unwrap_or_default()
+            })
+            .collect();
+        assert_eq!(
+            hosts,
+            vec!["hs.flv.huya.com", "tx.flv.huya.com", "al.flv.huya.com"]
+        );
+        assert!(stream_info
+            .candidates
+            .iter()
+            .all(|candidate| !candidate
+                .url()
+                .contains("wsSecret=7abc7dec8809146f31f92046eb044e3b")));
     }
 }

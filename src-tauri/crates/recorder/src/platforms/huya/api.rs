@@ -8,6 +8,7 @@ use super::errors::HuyaClientError;
 
 use m3u8_rs::Playlist;
 use reqwest::Client;
+use std::time::Duration;
 use scraper::Html;
 use scraper::Selector;
 
@@ -98,9 +99,18 @@ pub async fn get_room_info(
     Ok((user_info, room_info, stream_info))
 }
 
+/// Per-request bound for the pre-recording probe requests: a hung CDN node
+/// must not stall opening a recording.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
 pub async fn get_index_content(client: &Client, url: &str) -> Result<String, HuyaClientError> {
     let headers = generate_user_agent_header();
-    let response = client.get(url).headers(headers).send().await?;
+    let response = client
+        .get(url)
+        .headers(headers)
+        .timeout(PROBE_TIMEOUT)
+        .send()
+        .await?;
 
     if response.status().is_success() {
         Ok(response.text().await?)
@@ -141,7 +151,13 @@ pub async fn pick_pull_url(
 /// Verify an FLV URL serves actual FLV data (`FLV` magic bytes).
 async fn probe_flv_stream(client: &Client, url: &str) -> bool {
     let headers = generate_user_agent_header();
-    let Ok(mut response) = client.get(url).headers(headers).send().await else {
+    let Ok(mut response) = client
+        .get(url)
+        .headers(headers)
+        .timeout(PROBE_TIMEOUT)
+        .send()
+        .await
+    else {
         return false;
     };
     if !response.status().is_success() {

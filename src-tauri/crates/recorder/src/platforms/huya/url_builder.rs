@@ -1,183 +1,93 @@
-use std::collections::HashMap;
-use url::Url;
+//! Huya CDN anticode generation.
+//!
+//! Huya stream URLs must carry a signed query whose `wsSecret` is an MD5
+//! computed from the `fm` template shipped inside the anticode itself. The
+//! precomputed `wsSecret` served with the room page is bound to the page
+//! request's identity and is rejected by some CDN nodes with HTTP 403, so it
+//! must always be recomputed locally, following the algorithm used by the
+//! Huya web player (as implemented in streamlink's huya plugin):
+//!
+//! `wsSecret = md5("{fm_salt}_{u}_{stream_name}_{md5("{seqid}|{ctype}|{t}")}_{wsTime}")`
 
-/// 播放器配置信息
-#[derive(Debug, Clone)]
-pub struct PlayerInfo {
-    /// 解码后的基础URL
-    pub url: String,
-    /// 流名称
-    pub s_stream_name: Option<String>,
-    /// 主播UID
-    pub presenter_uid: Option<String>,
-    /// HLS防码参数
-    pub s_hls_anti_code: Option<String>,
-}
+use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use base64::{engine::general_purpose, Engine as _};
+use md5::compute as md5_hex;
+use url::form_urlencoded;
+
+/// Fixed playback parameters observed in the Huya web player.
+const T: u32 = 100;
+const VER: u32 = 1;
+const SV: &str = "2401090219";
+const CODEC: u32 = 264;
+const RATIO: u32 = 0;
+
+/// Anonymous viewer identity range used by the web player.
+const UID_RANGE: std::ops::Range<u32> = 12340000..12349999;
 
 /// URL构建器
 pub struct UrlBuilder;
 
 impl UrlBuilder {
-    fn generate_uid() -> u64 {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+    /// Recompute the signed anticode query for `stream_name`.
+    ///
+    /// `anti_code` is the raw `sHlsAntiCode` string (or the query part of a
+    /// decoded `liveLineUrl`); the `fm`, `wsTime`, `ctype` and `fs` values are
+    /// taken from it. Returns `Err` when the signature inputs are missing, in
+    /// which case the caller should keep the server-provided query as-is.
+    pub fn build_anticode(anti_code: &str, stream_name: &str) -> Result<String, String> {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
-            .as_millis();
-        let random = fastrand::u32(0..1000000);
-        timestamp as u64 * 1000 + random as u64
+            .as_millis() as u64;
+        let uid = fastrand::u32(UID_RANGE);
+        Self::build_anticode_with(anti_code, stream_name, now_ms, uid)
     }
 
-    fn generate_s_guid() -> String {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        let random = fastrand::u32(0..1000000);
-        format!("{}_{}", timestamp, random)
-    }
+    /// [`Self::build_anticode`] with injectable randomness, for tests.
+    fn build_anticode_with(
+        anti_code: &str,
+        stream_name: &str,
+        now_ms: u64,
+        uid: u32,
+    ) -> Result<String, String> {
+        let params: HashMap<String, String> = form_urlencoded::parse(anti_code.as_bytes())
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect();
 
-    /// 构建播放器URL
-    ///
-    /// # Arguments
-    /// * `info` - 播放器配置信息
-    ///
-    /// # Returns
-    /// * `Result<String, String>` - 完整的播放URL或错误信息
-    pub fn build_player_url(info: &PlayerInfo) -> Result<String, String> {
-        if info.url.is_empty() {
-            return Err("URL is required".to_string());
-        }
+        let fm = params.get("fm").ok_or("anticode is missing `fm`")?;
+        let ws_time = params.get("wsTime").ok_or("anticode is missing `wsTime`")?;
+        let ctype = params.get("ctype").map(String::as_str).unwrap_or("huya_live");
+        let fs = params.get("fs").map(String::as_str).unwrap_or("bgct");
 
-        let mut base_url = info.url.clone();
+        // `fm` is a base64 template like "<salt>_$0_$1_$2_$3"; only the salt
+        // is part of the signature.
+        let fm_decoded = urlencoding::decode(fm)
+            .map_err(|e| format!("invalid `fm` encoding: {e}"))?
+            .to_string();
+        let fm_decoded = general_purpose::STANDARD
+            .decode(fm_decoded.as_bytes())
+            .map_err(|e| format!("invalid `fm` base64: {e}"))?;
+        let fm_decoded =
+            String::from_utf8(fm_decoded).map_err(|e| format!("invalid `fm` utf8: {e}"))?;
+        let fm_salt = fm_decoded.split('_').next().unwrap_or_default();
 
-        // 确保URL以?开头，如果没有则添加
-        if !base_url.contains('?') {
-            base_url.push('?');
-        } else if !base_url.ends_with('&') && !base_url.ends_with('?') {
-            base_url.push('&');
-        }
+        // The web player rotates the uid left by 8 bits before signing.
+        let converted_uid = uid.rotate_left(8);
+        let seq_id = uid as u64 + now_ms;
 
-        // 添加HLS防码参数
-        if let Some(anti_code) = &info.s_hls_anti_code {
-            base_url.push_str(anti_code);
-        }
-
-        // 添加用户身份参数
-        base_url.push_str(&format!("&uid={}", Self::generate_uid()));
-        base_url.push_str(&format!("&sGuid={}", Self::generate_s_guid()));
-        base_url.push_str(&format!("&appid={}", 66));
-
-        // 添加流信息参数
-        if let Some(s_stream_name) = &info.s_stream_name {
-            base_url.push_str(&format!(
-                "&sStreamName={}",
-                urlencoding::encode(s_stream_name)
-            ));
-        }
-
-        if let Some(presenter_uid) = &info.presenter_uid {
-            base_url.push_str(&format!(
-                "&presenterUid={}",
-                urlencoding::encode(presenter_uid)
-            ));
-        }
-
-        // 添加播放配置参数
-        base_url.push_str(&format!("&playTimeout={}", 5000));
-        base_url.push_str(&format!(
-            "&h5Root={}",
-            "https://hd.huya.com/cdn_libs/mobile/"
-        ));
-
-        // 添加动态参数
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        base_url.push_str(&format!("&t={}", timestamp));
-
-        // 生成序列ID
-        let seq_id = Self::generate_seq_id();
-        base_url.push_str(&format!("&seqId={}", seq_id));
-
-        // 添加其他必要参数
-        base_url.push_str("&ver=1");
-        base_url.push_str(&format!("&sv={}", Self::get_version()));
-
-        Ok(base_url)
-    }
-
-    /// 解析虎牙直播URL参数
-    ///
-    /// # Arguments
-    /// * `url` - 完整的播放URL
-    ///
-    /// # Returns
-    /// * `Result<(String, HashMap<String, String>), String>` - 基础URL和参数映射
-    pub fn parse_player_url(url: &str) -> Result<(String, HashMap<String, String>), String> {
-        let url_obj = Url::parse(url).map_err(|e| format!("Failed to parse URL: {}", e))?;
-        let mut params = HashMap::new();
-
-        for (key, value) in url_obj.query_pairs() {
-            params.insert(key.to_string(), value.to_string());
-        }
-
-        let base_url = format!(
-            "{}://{}{}",
-            url_obj.scheme(),
-            url_obj.host_str().unwrap_or(""),
-            url_obj.path()
+        let hash = format!("{:x}", md5_hex(format!("{seq_id}|{ctype}|{T}")));
+        let ws_secret = format!(
+            "{:x}",
+            md5_hex(format!(
+                "{fm_salt}_{converted_uid}_{stream_name}_{hash}_{ws_time}"
+            ))
         );
-        Ok((base_url, params))
-    }
 
-    /// 验证播放URL是否有效
-    ///
-    /// # Arguments
-    /// * `url` - 播放URL
-    ///
-    /// # Returns
-    /// * `bool` - 是否有效
-    pub fn validate_player_url(url: &str) -> bool {
-        match Url::parse(url) {
-            Ok(url_obj) => {
-                let params: HashMap<String, String> = url_obj
-                    .query_pairs()
-                    .map(|(k, v)| (k.to_string(), v.to_string()))
-                    .collect();
-
-                // 检查必需参数
-                let required_params = ["uid", "sGuid", "appid", "seqId", "t"];
-                required_params
-                    .iter()
-                    .all(|param| params.contains_key(*param))
-            }
-            Err(_) => false,
-        }
-    }
-
-    /// 生成序列ID
-    /// 模拟播放器内部的getAnticodeSeqid()方法
-    ///
-    /// # Returns
-    /// * `String` - 序列ID
-    fn generate_seq_id() -> String {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        let random = fastrand::u32(0..1000000);
-        format!("{}_{}", timestamp, random)
-    }
-
-    /// 获取版本号
-    /// 模拟播放器内部的版本获取逻辑
-    ///
-    /// # Returns
-    /// * `String` - 版本号
-    fn get_version() -> String {
-        let now = chrono::Utc::now();
-        now.format("%Y%m%d%H%M").to_string()
+        Ok(format!(
+            "wsSecret={ws_secret}&wsTime={ws_time}&ctype={ctype}&fs={fs}&seqid={seq_id}&u={converted_uid}&sdk_sid={now_ms}&ratio={RATIO}&t={T}&ver={VER}&sv={SV}&codec={CODEC}"
+        ))
     }
 }
 
@@ -185,31 +95,45 @@ impl UrlBuilder {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_build_player_url() {
-        let info = PlayerInfo {
-            url: "https://tx.hls.huya.com/src/431653844-431653844-1853939143172685824-863431144-10057-A-0-1-imgplus.m3u8?ratio=2000&wsSecret=725304fc2867cbe6254f12b264055136&wsTime=68fb9aa9&fm=RFdxOEJjSjNoNkRKdDZUWV8kMF8kMV8kMl8kMw%3D%3D&ctype=tars_mobile&fs=bgct&t=103".to_string(),
-            s_stream_name: Some("431653844-431653844-1853939143172685824-863431144-10057-A-0-1-imgplus".to_string()),
-            presenter_uid: Some("431653844".to_string()),
-            s_hls_anti_code: Some("wsSecret=820369d885b161baa5a7a82170881d78&wsTime=68fb97be&fm=RFdxOEJjSjNoNkRKdDZUWV8kMF8kMV8kMl8kMw%3D%3D&ctype=tars_mobile&fs=bgct&t=103".to_string()),
-        };
+    /// Anticode shape from a real m.huya.com room page, with the uid and
+    /// timestamp pinned so the expected output can be asserted exactly.
+    const ANTI_CODE: &str = "wsSecret=7abc7dec8809146f31f92046eb044e3b&wsTime=68fa41ba&fm=RFdxOEJjSjNoNkRKdDZUWV8kMF8kMV8kMl8kMw%3D%3D&ctype=tars_mobile&fs=bgct&t=103";
+    const STREAM_NAME: &str = "156976698-156976698-674209784144068608-314076852-10057-A-0-1";
 
-        let result = UrlBuilder::build_player_url(&info);
-        assert!(result.is_ok());
-        let url = result.unwrap();
-        println!("url: {}", url);
-        assert!(url.contains("appid=66"));
-        assert!(url.contains("seqId="));
-        assert!(url.contains("t="));
+    #[test]
+    fn test_build_anticode_recomputes_the_signature() {
+        let anticode =
+            UrlBuilder::build_anticode_with(ANTI_CODE, STREAM_NAME, 1790087654321, 12345678)
+                .unwrap();
+
+        // Verified against the streamlink huya algorithm.
+        assert_eq!(
+            anticode,
+            "wsSecret=1617a1457574a61272203d8c6beb9a5c&wsTime=68fa41ba&ctype=tars_mobile&fs=bgct&seqid=1790099999999&u=3160493568&sdk_sid=1790087654321&ratio=0&t=100&ver=1&sv=2401090219&codec=264"
+        );
     }
 
     #[test]
-    fn test_validate_player_url() {
-        let valid_url =
-            "https://example.com/stream.m3u8?uid=123&sGuid=abc&appid=66&seqId=123_456&t=1234567890";
-        assert!(UrlBuilder::validate_player_url(valid_url));
+    fn test_build_anticode_defaults_missing_params() {
+        let anticode = UrlBuilder::build_anticode_with(
+            "wsTime=68fa41ba&fm=RFdxOEJjSjNoNkRKdDZUWV8kMF8kMV8kMl8kMw%3D%3D",
+            STREAM_NAME,
+            1790087654321,
+            12345678,
+        )
+        .unwrap();
 
-        let invalid_url = "https://example.com/stream.m3u8?uid=123&sGuid=abc";
-        assert!(!UrlBuilder::validate_player_url(invalid_url));
+        assert!(anticode.contains("ctype=huya_live"));
+        assert!(anticode.contains("fs=bgct"));
+    }
+
+    #[test]
+    fn test_build_anticode_requires_signature_inputs() {
+        assert!(UrlBuilder::build_anticode("wsTime=68fa41ba", STREAM_NAME).is_err());
+        assert!(UrlBuilder::build_anticode(
+            "fm=RFdxOEJjSjNoNkRKdDZUWV8kMF8kMV8kMl8kMw%3D%3D",
+            STREAM_NAME
+        )
+        .is_err());
     }
 }

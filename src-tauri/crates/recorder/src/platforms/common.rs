@@ -61,6 +61,11 @@ pub enum StreamPull {
     },
     Flv {
         url: String,
+        /// The viewer identity used while probing this URL, so ffmpeg speaks
+        /// the same HTTP as the probe that validated it.
+        user_agent: Option<String>,
+        /// Extra HTTP headers for the pull request (e.g. `Referer`).
+        http_headers: Vec<(String, String)>,
     },
 }
 
@@ -321,9 +326,15 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
 
                 hls_recorder.start().await
             }
-            StreamPull::Flv { url } => {
+            StreamPull::Flv {
+                url,
+                user_agent,
+                http_headers,
+            } => {
                 let flv_recorder = FlvRecorder::new(
                     url,
+                    user_agent,
+                    http_headers,
                     work_dir.full_path(),
                     self.enabled().clone(),
                     self.event_channel().clone(),

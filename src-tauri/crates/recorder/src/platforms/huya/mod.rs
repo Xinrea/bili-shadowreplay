@@ -14,7 +14,7 @@ use tokio::sync::{broadcast, RwLock};
 use crate::account::Account;
 use crate::errors::RecorderError;
 use crate::platforms::common::{DanmuConfig, DanmuSpawn, PlatformApi, RoomPoll, StreamPull};
-use crate::platforms::huya::extractor::StreamInfo;
+use crate::platforms::huya::extractor::{PullUrl, StreamInfo};
 use crate::platforms::PlatformType;
 use crate::traits::RecorderTrait;
 use crate::Recorder;
@@ -93,7 +93,24 @@ impl PlatformApi for HuyaRecorder {
             return Err(RecorderError::NoStreamAvailable);
         };
 
-        StreamPull::hls(live_id, &stream.hls_url, Some(self.account.cookies.clone())).await
+        // Probe and record with the same HTTP identity, so a validated URL
+        // cannot start failing only because ffmpeg presents differently.
+        let (user_agent, http_headers) = api::pull_http_identity();
+        let pull_url = api::pick_pull_url(&self.client, &stream, &user_agent)
+            .await
+            .map_err(|error| RecorderError::ApiError {
+                error: error.to_string(),
+            })?;
+        match pull_url {
+            PullUrl::Flv(url) => Ok(StreamPull::Flv {
+                url,
+                user_agent: Some(user_agent),
+                http_headers,
+            }),
+            PullUrl::Hls(url) => {
+                StreamPull::hls(live_id, &url, Some(self.account.cookies.clone())).await
+            }
+        }
     }
 
     async fn clear_stream(&self) {
@@ -135,7 +152,7 @@ mod tests {
         )
         .unwrap();
         *recorder.extra.pending.write().await = Some(StreamInfo {
-            hls_url: "https://example.com/live.m3u8".to_string(),
+            candidates: vec![PullUrl::Hls("https://example.com/live.m3u8".to_string())],
         });
 
         // The live-transition reset runs between `poll_room` and

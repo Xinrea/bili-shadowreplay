@@ -1,46 +1,58 @@
 use base64::{engine::general_purpose, Engine as _};
-use rand::seq::IndexedRandom;
 use regex::Regex;
 use serde_json::{Map, Value};
 
-use crate::core::stream_info::{
-    CdnNode, Codec, Format, PlatformStreamInfo, Quality, StreamVariant,
-};
-use crate::errors::RecorderError;
-use crate::platforms::huya::url_builder::PlayerInfo;
 use crate::platforms::huya::url_builder::UrlBuilder;
 use crate::platforms::PlatformType;
 use crate::RoomInfo;
 use crate::UserInfo;
 
+/// How a recording attempt can pull the live stream.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PullUrl {
+    /// FLV byte stream; the recorder pipes it through ffmpeg into HLS
+    /// segments. Preferred over HLS: Huya's HLS dispatch currently serves
+    /// master playlists whose variant URLs are unusable for non-browser
+    /// clients, while the FLV URLs stream fine.
+    Flv(String),
+    /// HLS playlist URL (the decoded `liveLineUrl` fallback).
+    Hls(String),
+}
+
+impl PullUrl {
+    pub fn url(&self) -> &str {
+        match self {
+            PullUrl::Flv(url) | PullUrl::Hls(url) => url,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct StreamInfo {
-    pub hls_url: String,
+    /// Pull URLs in preference order: FLV first, then the `liveLineUrl`
+    /// fallback.
+    pub candidates: Vec<PullUrl>,
 }
 
 impl StreamInfo {
     // https://hs.hls.huya.com/huyalive/156976698-156976698-674209784144068608-314076852-10057-A-0-1.m3u8?ratio=200
     // 156976698-156976698-674209784144068608-314076852-10057-A-0-1
     pub fn id(&self) -> String {
-        let path = self.hls_url.split('?').next().unwrap_or(&self.hls_url);
+        let Some(url) = self.candidates.first().map(PullUrl::url) else {
+            return String::new();
+        };
+        let path = url.split('?').next().unwrap_or(url);
         let filename = path.rsplit('/').next().unwrap_or(path);
-        // 去掉 .m3u8 后缀
+        // 去掉 .m3u8 / .flv 后缀
         filename
             .strip_suffix(".m3u8")
+            .or_else(|| filename.strip_suffix(".flv"))
             .unwrap_or(filename)
             .to_string()
     }
 }
 
 pub struct LiveStreamExtractor;
-
-#[derive(Clone, Copy)]
-struct UsableStreamInfo<'a> {
-    hls_url: &'a str,
-    hls_anti_code: &'a str,
-    presenter_uid: i64,
-    stream_name: &'a str,
-}
 
 impl LiveStreamExtractor {
     /// 从 JavaScript 代码中提取指定的变量
@@ -101,29 +113,31 @@ impl LiveStreamExtractor {
         };
 
         if !room_info.status {
-            let stream_info = StreamInfo {
-                hls_url: String::new(),
-            };
-            return Ok((user_info, room_info, stream_info));
+            return Ok((user_info, room_info, StreamInfo::default()));
         }
 
-        if let Some(stream_info) = Self::stream_info_from_v_stream_info(&global_init)? {
-            return Ok((user_info, room_info, stream_info));
+        // One FLV pull URL per CDN node; the decoded `liveLineUrl` (HLS) is
+        // the last resort when the page ships no FLV entries.
+        let mut candidates = Self::pull_urls_from_v_stream_info(&global_init);
+        if candidates.is_empty() {
+            if let Some(url) = Self::pull_url_from_live_line_url(&global_init)? {
+                candidates.push(url);
+            }
         }
 
-        if let Some(stream_info) = Self::stream_info_from_live_line_url(&global_init)? {
-            return Ok((user_info, room_info, stream_info));
+        if candidates.is_empty() {
+            return Err(Self::extractor_error(
+                "No usable Huya stream found in roomInfo.tLiveInfo.tLiveStreamInfo.vStreamInfo.value or roomProfile.liveLineUrl",
+            ));
         }
 
-        Err(Self::extractor_error(
-            "No usable Huya HLS stream found in roomInfo.tLiveInfo.tLiveStreamInfo.vStreamInfo.value or roomProfile.liveLineUrl",
-        ))
+        Ok((user_info, room_info, StreamInfo { candidates }))
     }
 
-    fn stream_info_from_v_stream_info(
-        global_init: &Value,
-    ) -> Result<Option<StreamInfo>, super::errors::HuyaClientError> {
-        let live_stream_info = Self::value_at(
+    /// Build a signed FLV pull URL for every CDN node in
+    /// `roomInfo.tLiveInfo.tLiveStreamInfo.vStreamInfo.value`.
+    fn pull_urls_from_v_stream_info(global_init: &Value) -> Vec<PullUrl> {
+        let Some(live_stream_info) = Self::value_at(
             global_init,
             &[
                 "roomInfo",
@@ -133,49 +147,58 @@ impl LiveStreamExtractor {
                 "value",
             ],
         )
-        .and_then(|v| v.as_array());
-
-        let Some(live_stream_info) = live_stream_info else {
-            return Ok(None);
+        .and_then(|v| v.as_array())
+        else {
+            return Vec::new();
         };
 
-        let usable_streams = live_stream_info
-            .iter()
-            .filter_map(|stream| {
-                Some(UsableStreamInfo {
-                    hls_url: Self::str_value_at(stream, &["sHlsUrl"])?,
-                    hls_anti_code: Self::str_value_at(stream, &["sHlsAntiCode"])?,
-                    presenter_uid: Self::i64_value_at(stream, &["lPresenterUid"])?,
-                    stream_name: Self::str_value_at(stream, &["sStreamName"])?,
-                })
-            })
-            .collect::<Vec<_>>();
+        let mut candidates: Vec<(String, i64)> = Vec::new();
+        for stream in live_stream_info {
+            let Some(flv_url) = Self::str_value_at(stream, &["sFlvUrl"]) else {
+                continue;
+            };
+            let Some(flv_url_suffix) = Self::str_value_at(stream, &["sFlvUrlSuffix"]) else {
+                continue;
+            };
+            let Some(flv_anti_code) = Self::str_value_at(stream, &["sFlvAntiCode"]) else {
+                continue;
+            };
+            let Some(stream_name) = Self::str_value_at(stream, &["sStreamName"]) else {
+                continue;
+            };
 
-        let Some(stream_info) = usable_streams.choose(&mut rand::rng()).copied() else {
-            return Ok(None);
-        };
+            let candidate = match UrlBuilder::build_anticode(flv_anti_code, stream_name) {
+                Ok(anticode) => format!(
+                    "{}/{stream_name}.{flv_url_suffix}?{anticode}",
+                    Self::normalize_stream_url(flv_url)
+                ),
+                Err(e) => {
+                    log::warn!("Skipping Huya stream with unusable anticode: {e}");
+                    continue;
+                }
+            };
+            if candidates.iter().any(|(url, _)| *url == candidate) {
+                continue;
+            }
+            // The page rates each line per platform; probe the recommended
+            // lines first. Entries without a rate keep their page order behind
+            // rated ones.
+            let priority =
+                Self::i64_value_at(stream, &["iMobilePriorityRate"]).unwrap_or(i64::MIN);
+            candidates.push((candidate, priority));
+        }
 
-        let hls_url = Self::normalize_hls_url(stream_info.hls_url);
-        let hls_anti_code = stream_info.hls_anti_code.to_string();
-        let presenter_uid = stream_info.presenter_uid.to_string();
-        let stream_name = stream_info.stream_name.to_string();
-
-        let url = format!("{hls_url}/{stream_name}.m3u8?{hls_anti_code}");
-
-        let player_info = PlayerInfo {
-            url,
-            s_stream_name: Some(stream_name),
-            presenter_uid: Some(presenter_uid),
-            s_hls_anti_code: Some(hls_anti_code),
-        };
-        let result = UrlBuilder::build_player_url(&player_info)
-            .map_err(|e| Self::extractor_error(format!("Failed to build Huya player URL: {e}")))?;
-        Ok(Some(StreamInfo { hls_url: result }))
+        candidates.sort_by(|a, b| b.1.cmp(&a.1));
+        candidates
+            .into_iter()
+            .map(|(url, _)| PullUrl::Flv(url))
+            .collect()
     }
 
-    fn stream_info_from_live_line_url(
+    /// Build a pull URL from `roomProfile.liveLineUrl` (always HLS).
+    fn pull_url_from_live_line_url(
         global_init: &Value,
-    ) -> Result<Option<StreamInfo>, super::errors::HuyaClientError> {
+    ) -> Result<Option<PullUrl>, super::errors::HuyaClientError> {
         let Some(live_line_url) = Self::str_value_at(global_init, &["roomProfile", "liveLineUrl"])
         else {
             return Ok(None);
@@ -191,12 +214,33 @@ impl LiveStreamExtractor {
         let decoded = String::from_utf8(decoded)
             .map_err(|e| Self::extractor_error(format!("Invalid UTF-8 in liveLineUrl: {e}")))?;
 
-        Ok(Some(StreamInfo {
-            hls_url: Self::normalize_hls_url(&decoded),
-        }))
+        Ok(Some(PullUrl::Hls(Self::sign_live_line_url(
+            &Self::normalize_stream_url(&decoded),
+        ))))
     }
 
-    fn normalize_hls_url(url: &str) -> String {
+    /// Recompute the anticode of a server-provided m3u8 URL when it carries a
+    /// `fm` template; otherwise keep the URL as-is.
+    fn sign_live_line_url(url: &str) -> String {
+        let Some((base, query)) = url.split_once('?') else {
+            return url.to_string();
+        };
+        let Some(stream_name) = base.rsplit('/').next().and_then(|f| f.strip_suffix(".m3u8"))
+        else {
+            return url.to_string();
+        };
+
+        match UrlBuilder::build_anticode(query, stream_name) {
+            // `base` already ends with `.m3u8`; only replace the query.
+            Ok(anticode) => format!("{base}?{anticode}"),
+            Err(e) => {
+                log::warn!("Keeping liveLineUrl with its server signature: {e}");
+                url.to_string()
+            }
+        }
+    }
+
+    fn normalize_stream_url(url: &str) -> String {
         if url.starts_with("//") {
             format!("https:{url}")
         } else if let Some(rest) = url.strip_prefix("http://") {
@@ -396,40 +440,6 @@ impl LiveStreamExtractor {
     }
 }
 
-// 实现 PlatformStreamInfo trait
-impl PlatformStreamInfo for StreamInfo {
-    fn primary_variant(&self) -> Result<StreamVariant, RecorderError> {
-        Ok(StreamVariant {
-            url: self.hls_url.clone(),
-            format: Format::HLS,
-            codec: Codec::AVC,
-            quality: Quality::Origin,
-            bitrate: None,
-        })
-    }
-
-    fn all_variants(&self) -> Vec<StreamVariant> {
-        match self.primary_variant() {
-            Ok(variant) => vec![variant],
-            Err(e) => {
-                log::warn!("Failed to build primary stream variant: {e}");
-                Vec::new()
-            }
-        }
-    }
-
-    fn expires_at(&self) -> Option<i64> {
-        None // Huya 流不过期
-    }
-
-    fn cdn_nodes(&self) -> Vec<CdnNode> {
-        Vec::new() // Huya 单 CDN
-    }
-
-    fn platform(&self) -> PlatformType {
-        PlatformType::Huya
-    }
-}
 #[cfg(test)]
 mod tests {
     use base64::{engine::general_purpose, Engine as _};
@@ -438,11 +448,20 @@ mod tests {
 
     #[test]
     fn test_id() {
-        let stream_info = StreamInfo { hls_url: "https://hs.hls.huya.com/huyalive/156976698-156976698-674209784144068608-314076852-10057-A-0-1.m3u8?ratio=200".to_string() };
-        assert_eq!(
-            stream_info.id(),
-            "156976698-156976698-674209784144068608-314076852-10057-A-0-1"
-        );
+        let stream_name = "156976698-156976698-674209784144068608-314076852-10057-A-0-1";
+        let flv = StreamInfo {
+            candidates: vec![PullUrl::Flv(format!(
+                "https://hs.flv.huya.com/huyalive/{stream_name}.flv?ratio=200"
+            ))],
+        };
+        let hls = StreamInfo {
+            candidates: vec![PullUrl::Hls(format!(
+                "https://hs.hls.huya.com/huyalive/{stream_name}.m3u8?ratio=200"
+            ))],
+        };
+        assert_eq!(flv.id(), stream_name);
+        assert_eq!(hls.id(), stream_name);
+        assert_eq!(StreamInfo::default().id(), "");
     }
 
     #[test]
@@ -500,25 +519,75 @@ mod tests {
         assert_eq!(user_info.user_id, "123");
         assert_eq!(room_info.room_id, "456");
         assert_eq!(
-            stream_info.hls_url,
-            "https://hs.hls.huya.com/huyalive/123-123-456-789-10057-A-0-1.m3u8?ratio=2000"
+            stream_info.candidates,
+            vec![PullUrl::Hls(
+                "https://hs.hls.huya.com/huyalive/123-123-456-789-10057-A-0-1.m3u8?ratio=2000"
+                    .to_string()
+            )]
         );
     }
 
+    /// A real `liveLineUrl` carries the `fm` template, so its signature gets
+    /// recomputed; the path must not grow a duplicated `.m3u8` suffix.
     #[test]
-    fn test_normalize_hls_url_only_rewrites_scheme() {
+    fn test_extract_resigns_live_line_url_without_duplicated_suffix() {
+        let hls_url = "//hs.hls.huya.com/huyalive/123-123-456-789-10057-A-0-1.m3u8?ratio=2000&wsSecret=7abc7dec8809146f31f92046eb044e3b&wsTime=68fa41ba&fm=RFdxOEJjSjNoNkRKdDZUWV8kMF8kMV8kMl8kMw%3D%3D&ctype=tars_mobile&fs=bgct&t=103";
+        let live_line_url = general_purpose::STANDARD.encode(hls_url);
+        let js_content = format!(
+            r#"
+            window.HNF_GLOBAL_INIT = {{
+                "roomProfile": {{
+                    "liveLineUrl": "{live_line_url}"
+                }},
+                "roomInfo": {{
+                    "eLiveStatus": 2,
+                    "tProfileInfo": {{
+                        "lUid": 123,
+                        "sNick": "fallback-user",
+                        "sAvatar180": "https://example.com/avatar.jpg",
+                        "lProfileRoom": 456
+                    }},
+                    "tLiveInfo": {{
+                        "lUid": 123,
+                        "sNick": "fallback-user",
+                        "sAvatar180": "https://example.com/avatar.jpg",
+                        "sScreenshot": "https://example.com/cover.jpg",
+                        "sIntroduction": "fallback-title",
+                        "lProfileRoom": 456
+                    }}
+                }}
+            }}
+        "#
+        );
+
+        let (_, _, stream_info) =
+            LiveStreamExtractor::extract_infos(&js_content).expect("fallback must extract");
+
+        let PullUrl::Hls(url) = &stream_info.candidates[0] else {
+            panic!("liveLineUrl fallback must be an HLS candidate");
+        };
+        assert!(url.starts_with(
+            "https://hs.hls.huya.com/huyalive/123-123-456-789-10057-A-0-1.m3u8?"
+        ));
+        assert!(!url.contains(".m3u8.m3u8"), "duplicated suffix: {url}");
+        assert!(!url.contains("wsSecret=7abc7dec8809146f31f92046eb044e3b"));
+        assert!(url.contains("u="), "recomputed signature missing: {url}");
+    }
+
+    #[test]
+    fn test_normalize_stream_url_only_rewrites_scheme() {
         assert_eq!(
-            LiveStreamExtractor::normalize_hls_url("//example.com/live.m3u8?next=http://callback"),
+            LiveStreamExtractor::normalize_stream_url("//example.com/live.m3u8?next=http://callback"),
             "https://example.com/live.m3u8?next=http://callback"
         );
         assert_eq!(
-            LiveStreamExtractor::normalize_hls_url(
+            LiveStreamExtractor::normalize_stream_url(
                 "http://example.com/live.m3u8?next=http://callback"
             ),
             "https://example.com/live.m3u8?next=http://callback"
         );
         assert_eq!(
-            LiveStreamExtractor::normalize_hls_url(
+            LiveStreamExtractor::normalize_stream_url(
                 "https://example.com/live.m3u8?next=http://callback"
             ),
             "https://example.com/live.m3u8?next=http://callback"
@@ -1725,6 +1794,32 @@ mod tests {
         assert_eq!(user_info.user_name, "三导-赵迪克【熬鹰小队主鹰】");
         assert_eq!(user_info.user_avatar, "https://huyaimg.msstatic.com/avatar/1003/23/3be5ff7cff0f6d08fee796ac537ef0_180_135.jpg?1525686175");
         assert_eq!(room_info.room_id, "857824");
-        assert!(stream_info.hls_url.starts_with("https://"));
+        assert!(!stream_info.candidates.is_empty());
+        // The fixture ships three FLV CDN lines (AL/TX/HS); all must be FLV
+        // candidates, not the HLS fallback, and none may reuse the page's own
+        // server signature.
+        assert!(stream_info
+            .candidates
+            .iter()
+            .all(|candidate| matches!(candidate, PullUrl::Flv(_))));
+        let hosts: Vec<&str> = stream_info
+            .candidates
+            .iter()
+            .map(|candidate| {
+                let url = candidate.url();
+                let without_scheme = url.split("//").nth(1).unwrap_or(url);
+                without_scheme.split('/').next().unwrap_or_default()
+            })
+            .collect();
+        assert_eq!(
+            hosts,
+            vec!["hs.flv.huya.com", "tx.flv.huya.com", "al.flv.huya.com"]
+        );
+        assert!(stream_info
+            .candidates
+            .iter()
+            .all(|candidate| !candidate
+                .url()
+                .contains("wsSecret=7abc7dec8809146f31f92046eb044e3b")));
     }
 }

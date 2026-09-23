@@ -13,6 +13,8 @@ use crate::events::RecorderEvent;
 
 pub struct FlvRecorder {
     url: String,
+    user_agent: Option<String>,
+    http_headers: Vec<(String, String)>,
     work_dir: PathBuf,
     enabled: Arc<AtomicBool>,
     event_channel: broadcast::Sender<RecorderEvent>,
@@ -22,6 +24,8 @@ pub struct FlvRecorder {
 impl FlvRecorder {
     pub fn new(
         url: String,
+        user_agent: Option<String>,
+        http_headers: Vec<(String, String)>,
         work_dir: PathBuf,
         enabled: Arc<AtomicBool>,
         event_channel: broadcast::Sender<RecorderEvent>,
@@ -29,6 +33,8 @@ impl FlvRecorder {
     ) -> Self {
         Self {
             url,
+            user_agent,
+            http_headers,
             work_dir,
             enabled,
             event_channel,
@@ -51,6 +57,20 @@ impl FlvRecorder {
 
         let mut cmd = ffmpeg_command();
 
+        // HTTP options must precede the input: keep the pull request
+        // identical to the probe that validated the URL.
+        if let Some(user_agent) = &self.user_agent {
+            cmd.args(["-user_agent", user_agent]);
+        }
+        if !self.http_headers.is_empty() {
+            let headers: String = self
+                .http_headers
+                .iter()
+                .map(|(name, value)| format!("{name}: {value}\r\n"))
+                .collect();
+            cmd.args(["-headers", &headers]);
+        }
+
         cmd.args([
             "-hide_banner",
             "-loglevel",
@@ -59,6 +79,9 @@ impl FlvRecorder {
             &self.url,
             "-c",
             "copy",
+            // Huya's FLV carries a webvtt-like subtitle track that the HLS
+            // muxer rejects with `-c copy`; drop subtitle streams entirely.
+            "-sn",
             "-f",
             "hls",
             "-hls_time",

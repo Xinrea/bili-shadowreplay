@@ -116,7 +116,12 @@ impl PlatformApi for TikTokRecorder {
             return Err(RecorderError::NoStreamAvailable);
         };
 
-        Ok(StreamPull::Flv { url: rtmp_url })
+        // RTMP is not HTTP: no user agent or headers to align with a probe.
+        Ok(StreamPull::Flv {
+            url: rtmp_url,
+            user_agent: None,
+            http_headers: Vec::new(),
+        })
     }
 
     async fn clear_stream(&self) {

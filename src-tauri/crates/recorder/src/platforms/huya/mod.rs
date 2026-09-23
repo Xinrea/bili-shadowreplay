@@ -93,13 +93,20 @@ impl PlatformApi for HuyaRecorder {
             return Err(RecorderError::NoStreamAvailable);
         };
 
-        let pull_url = api::pick_pull_url(&self.client, &stream)
+        // Probe and record with the same HTTP identity, so a validated URL
+        // cannot start failing only because ffmpeg presents differently.
+        let (user_agent, http_headers) = api::pull_http_identity();
+        let pull_url = api::pick_pull_url(&self.client, &stream, &user_agent)
             .await
             .map_err(|error| RecorderError::ApiError {
                 error: error.to_string(),
             })?;
         match pull_url {
-            PullUrl::Flv(url) => Ok(StreamPull::Flv { url }),
+            PullUrl::Flv(url) => Ok(StreamPull::Flv {
+                url,
+                user_agent: Some(user_agent),
+                http_headers,
+            }),
             PullUrl::Hls(url) => {
                 StreamPull::hls(live_id, &url, Some(self.account.cookies.clone())).await
             }

@@ -198,8 +198,15 @@ impl HlsRecorder {
         match playlist {
             Playlist::MediaPlaylist(playlist) => Ok(playlist),
             Playlist::MasterPlaylist(playlist) => {
-                // just return the first variant
-                match playlist.variants.first() {
+                // Select the highest-bandwidth media variant. HLS masters are
+                // not required to put their preferred quality first (YouTube
+                // lists variants from lowest to highest).
+                let variant = playlist
+                    .variants
+                    .iter()
+                    .filter(|variant| !variant.is_i_frame)
+                    .max_by_key(|variant| variant.average_bandwidth.unwrap_or(variant.bandwidth));
+                match variant {
                     Some(variant) => {
                         let real_stream = construct_stream_from_variant(
                             &self.stream.id,
@@ -235,15 +242,12 @@ impl HlsRecorder {
         for (i, segment) in media_playlist.segments.iter().enumerate() {
             let segment_sequence = playlist_sequence + i as u64;
             let segment_full_url = self.stream.ts_url(&segment.uri);
-            // to get filename, we need to remove the query parameters
-            // for example: 1.ts?expires=1760808243
-            // we need to remove the query parameters: 1.ts
-            let filename = segment.uri.split('?').next().unwrap_or(&segment.uri);
+            let filename = local_segment_filename(segment_sequence, &segment.uri);
             if segment_sequence <= last_sequence {
                 continue;
             }
 
-            let segment_path = self.work_dir.join(filename);
+            let segment_path = self.work_dir.join(&filename);
             let Ok(size) = download(
                 &self.client,
                 &segment_full_url,
@@ -259,6 +263,7 @@ impl HlsRecorder {
             };
 
             let mut segment = segment.clone();
+            segment.uri = filename;
             if segment.program_date_time.is_none() {
                 segment.program_date_time.replace(Utc::now().into());
             }
@@ -376,6 +381,31 @@ impl HlsRecorder {
     }
 }
 
+/// HLS source playlists may use absolute URLs with query signatures as segment
+/// URIs (YouTube does this). Store those chunks under stable local names and
+/// rewrite the recorded playlist to reference them. Keep relative segment paths
+/// unchanged for the platforms that already use local-friendly names.
+fn local_segment_filename(sequence: u64, uri: &str) -> String {
+    if uri.starts_with("http://") || uri.starts_with("https://") {
+        let path = uri.split('?').next().unwrap_or(uri);
+        let extension = path
+            .rsplit('/')
+            .next()
+            .and_then(|name| Path::new(name).extension())
+            .and_then(|extension| extension.to_str())
+            .filter(|extension| {
+                !extension.is_empty()
+                    && extension
+                        .chars()
+                        .all(|character| character.is_ascii_alphanumeric())
+            })
+            .unwrap_or("ts");
+        format!("segment-{sequence}.{extension}")
+    } else {
+        uri.split('?').next().unwrap_or(uri).to_string()
+    }
+}
+
 async fn persist_sequence(file: &mut File, sequence: u64) -> std::io::Result<()> {
     file.set_len(0).await?;
     file.seek(SeekFrom::Start(0)).await?;
@@ -475,12 +505,12 @@ pub async fn construct_stream_from_variant(
 
     // try to match expire from extra with regex
     let expire_regex =
-        regex::Regex::new(r"expires=(\d+)").expect("expires regex is a valid literal");
-    let expire = if let Some(captures) = expire_regex.captures(extra) {
-        captures[1].parse::<i64>().unwrap_or(0)
-    } else {
-        0
-    };
+        regex::Regex::new(r"(?:expires=|/expire/)(\d+)").expect("expires regex is a valid literal");
+    let expire = expire_regex
+        .captures(extra)
+        .or_else(|| expire_regex.captures(body))
+        .and_then(|captures| captures[1].parse::<i64>().ok())
+        .unwrap_or(0);
 
     let real_stream = HlsStream::new(
         id.to_string(),
@@ -527,6 +557,38 @@ mod tests {
         assert_eq!(stream.extra, "ratio=2000&wsSecret=7abc7dec8809146f31f92046eb044e3b&wsTime=68fa41ba&fm=RFdxOEJjSjNoNkRKdDZUWV8kMF8kMV8kMl8kMw%3D%3D&ctype=tars_mobile&fs=bgct&t=103");
         assert_eq!(stream.format, Format::TS);
         assert_eq!(stream.codec, Codec::Avc);
+    }
+
+    #[tokio::test]
+    async fn construct_stream_reads_youtube_expiry_from_path() {
+        let stream = construct_stream_from_variant(
+            "youtube_live",
+            "https://manifest.googlevideo.com/api/manifest/hls_variant/expire/1790184859/playlist.m3u8?token=abc",
+            Format::TS,
+            Codec::Avc,
+        )
+        .await
+        .unwrap();
+        assert_eq!(stream.expire, 1_790_184_859);
+    }
+
+    #[test]
+    fn absolute_segment_urls_get_unique_local_names() {
+        assert_eq!(
+            local_segment_filename(
+                1528,
+                "https://rr5.googlevideo.com/videoplayback?itag=91&sig=secret"
+            ),
+            "segment-1528.ts"
+        );
+        assert_eq!(
+            local_segment_filename(1529, "https://cdn.test/chunk-1.m4s?token=secret"),
+            "segment-1529.m4s"
+        );
+        assert_eq!(
+            local_segment_filename(3, "nested/3.ts?expires=1"),
+            "nested/3.ts"
+        );
     }
 
     #[tokio::test]

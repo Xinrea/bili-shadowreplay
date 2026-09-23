@@ -4,6 +4,7 @@ pub mod douyin;
 pub mod huya;
 pub mod kuaishou;
 pub mod tiktok;
+pub mod youtube;
 use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -49,6 +49,14 @@
           platform = "tiktok";
         }
 
+        if (
+          url.startsWith("bsr://www.youtube.com/") ||
+          url.startsWith("bsr://youtube.com/")
+        ) {
+          room_id = url.replace("bsr://", "https://");
+          platform = "youtube";
+        }
+
         if (platform && room_id) {
           // switch to room page
           active = "直播间";

@@ -224,7 +224,7 @@ async fn test_integration_scenario() {
 The following areas need test coverage in future work:
 
 1. **Platform adapter full integration**
-   - Complete mock-based tests for all 5 platforms
+   - Complete mock-based tests for all 6 platforms
    - Status transition logic (not live → live → recording → ended)
    - Reconnection and error recovery
 

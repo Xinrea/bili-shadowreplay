@@ -22,6 +22,7 @@
   import KuaishouIcon from "../lib/components/KuaishouIcon.svelte";
   import HuyaIcon from "../lib/components/HuyaIcon.svelte";
   import TikTokIcon from "../lib/components/TikTokIcon.svelte";
+  import YouTubeIcon from "../lib/components/YouTubeIcon.svelte";
   import AutoRecordIcon from "../lib/components/AutoRecordIcon.svelte";
   import GenerateWholeClipModal from "../lib/components/GenerateWholeClipModal.svelte";
   import { onMount } from "svelte";
@@ -56,6 +57,7 @@
       huya: "/imgs/huya_avatar.png",
       kuaishou: "/imgs/kuaishou.svg",
       tiktok: "/imgs/tiktok.png",
+      youtube: "/imgs/youtube.svg",
     };
     return avatarMap[platform] || "/imgs/huya_avatar.png";
   }
@@ -67,6 +69,7 @@
       huya: "/imgs/huya.png",
       kuaishou: "/imgs/kuaishou.svg",
       tiktok: "/imgs/tiktok.png",
+      youtube: "/imgs/youtube.svg",
     };
     return coverMap[platform] || "/imgs/huya.png";
   }
@@ -366,6 +369,12 @@
       } else {
         openLiveUrl(room);
       }
+    } else if (room.room_info.platform === "youtube") {
+      if (room.user_info.user_id) {
+        open(`https://www.youtube.com/channel/${room.user_info.user_id}`);
+      } else {
+        openLiveUrl(room);
+      }
     }
   }
 
@@ -386,11 +395,28 @@
       case "tiktok":
         open(`https://www.tiktok.com/${room.room_info.room_id}/live`);
         break;
+      case "youtube":
+        if (room.room_info.room_id.startsWith("http")) {
+          open(room.room_info.room_id);
+        } else if (/^[A-Za-z0-9_-]{11}$/.test(room.room_info.room_id)) {
+          open(`https://www.youtube.com/watch?v=${room.room_info.room_id}`);
+        } else if (room.room_info.room_id.startsWith("UC")) {
+          open(`https://www.youtube.com/channel/${room.room_info.room_id}/live`);
+        } else {
+          const handle = room.room_info.room_id.startsWith("@")
+            ? room.room_info.room_id
+            : `@${room.room_info.room_id}`;
+          open(`https://www.youtube.com/${handle}/live`);
+        }
+        break;
     }
   }
 
   function addNewRecorder(room_id: string, platform: string) {
-    room_id = room_id.trim().split("?")[0];
+    room_id = room_id.trim();
+    if (platform !== "youtube") {
+      room_id = room_id.split("?")[0];
+    }
     switch (platform) {
       case "bilibili":
         // room_id might be a link, extract the room_id from the link
@@ -425,6 +451,13 @@
         // example: https://www.tiktok.com/@1234567890/live -> @1234567890
         if (room_id.includes("https://") || room_id.includes("bsr://")) {
           room_id = "@" + room_id.split("@").pop().split("/")[0];
+        }
+        break;
+      case "youtube":
+        // Keep the URL intact. The recorder resolves a channel to its current
+        // live video on each poll, while a watch URL pins one broadcast.
+        if (room_id.startsWith("bsr://")) {
+          room_id = room_id.replace("bsr://", "https://");
         }
         break;
     }
@@ -482,6 +515,13 @@
 
         if (url.startsWith("bsr://live.tiktok.com/")) {
           platform = "tiktok";
+        }
+
+        if (
+          url.startsWith("bsr://www.youtube.com/") ||
+          url.startsWith("bsr://youtube.com/")
+        ) {
+          platform = "youtube";
         }
 
         if (url && platform) {
@@ -633,6 +673,8 @@
                     <HuyaIcon class="w-4 h-4" />
                   {:else if room.room_info.platform === "tiktok"}
                     <TikTokIcon class="w-5 h-5" />
+                  {:else if room.room_info.platform === "youtube"}
+                    <YouTubeIcon class="w-4 h-4" />
                   {:else}
                     <Globe class="w-4 h-4 text-gray-400" />
                   {/if}
@@ -829,6 +871,15 @@
                 onclick={() => (selectedPlatform = "tiktok")}
               >
                 TikTok
+              </button>
+              <button
+                class="flex-none px-3 py-2 text-sm font-medium whitespace-nowrap rounded-md transition-colors {selectedPlatform ===
+                'youtube'
+                  ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white'
+                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
+                onclick={() => (selectedPlatform = "youtube")}
+              >
+                YouTube
               </button>
             </div>
           </div>

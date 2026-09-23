@@ -133,6 +133,7 @@
       huya: "虎牙",
       kuaishou: "快手",
       tiktok: "TikTok",
+      youtube: "YouTube",
     };
     return platformMap[platform] || platform;
   }
@@ -144,6 +145,7 @@
       huya: "/imgs/huya_avatar.png",
       kuaishou: "/imgs/kuaishou.svg",
       tiktok: "/imgs/tiktok.png",
+      youtube: "/imgs/youtube.svg",
     };
     return avatarMap[platform] || "/imgs/bilibili_avatar.png";
   }

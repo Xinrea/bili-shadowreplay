@@ -84,6 +84,13 @@ pub async fn add_recorder(
                 Ok(Account::default())
             }
         }
+        PlatformType::Youtube => {
+            if let Ok(account) = state.db.get_account_by_platform("youtube").await {
+                Ok(account.to_account())
+            } else {
+                Ok(Account::default())
+            }
+        }
         PlatformType::Xiaohongshu => {
             if let Ok(account) = state.db.get_account_by_platform("xiaohongshu").await {
                 Ok(account.to_account())
@@ -98,7 +105,6 @@ pub async fn add_recorder(
                 Ok(Account::default())
             }
         }
-        _ => Err("不支持的平台".to_string()),
     };
 
     match account {

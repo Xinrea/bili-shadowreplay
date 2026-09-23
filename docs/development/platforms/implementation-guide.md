@@ -11,6 +11,7 @@ BiliBili ShadowReplay 支持多个直播平台，每个平台的实现位于 `sr
 - **Huya** (虎牙)
 - **Kuaishou** (快手)
 - **TikTok** (国际版抖音)
+- **YouTube** (直播录制与直播聊天)
 
 ## 平台接口
 

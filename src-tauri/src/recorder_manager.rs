@@ -21,6 +21,7 @@ use recorder::platforms::douyin::DouyinRecorder;
 use recorder::platforms::huya::HuyaRecorder;
 use recorder::platforms::kuaishou::KuaishouRecorder;
 use recorder::platforms::tiktok::TikTokRecorder;
+use recorder::platforms::youtube::YoutubeRecorder;
 use recorder::platforms::PlatformType;
 use recorder::traits::RecorderTrait;
 use recorder::RoomInfo;
@@ -561,6 +562,7 @@ impl RecorderManager {
                 if platform != PlatformType::Huya
                     && platform != PlatformType::Kuaishou
                     && platform != PlatformType::TikTok
+                    && platform != PlatformType::Youtube
                     && account.is_err()
                 {
                     log::warn!("Failed to find an account for {platform:?} {room_id}");
@@ -644,6 +646,14 @@ impl RecorderManager {
                 enabled,
             )?),
             PlatformType::TikTok => Box::new(TikTokRecorder::new(
+                room_id,
+                account,
+                cache_dir,
+                event_tx,
+                update_interval,
+                enabled,
+            )?),
+            PlatformType::Youtube => Box::new(YoutubeRecorder::new(
                 room_id,
                 account,
                 cache_dir,

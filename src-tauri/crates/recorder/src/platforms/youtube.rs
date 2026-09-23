@@ -320,6 +320,10 @@ impl PlatformApi for YoutubeRecorder {
     async fn danmu_room_id(&self) -> String {
         self.platform_live_id.read().await.clone()
     }
+
+    fn retry_immediately_after_resolution_change(&self) -> bool {
+        true
+    }
 }
 
 #[async_trait]

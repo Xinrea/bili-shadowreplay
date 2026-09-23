@@ -170,6 +170,12 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
         false
     }
 
+    /// Whether a resolution change should start a new recording segment
+    /// without the normal between-recordings delay.
+    fn retry_immediately_after_resolution_change(&self) -> bool {
+        false
+    }
+
     // ----- shared lifecycle -------------------------------------------------
 
     /// One poll of the room status: store metadata, emit live start/end
@@ -478,6 +484,7 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
             while !recorder.quit().load(Ordering::Relaxed) {
                 if recorder.check_live().await {
                     // Live status is ok, start recording
+                    let mut restart_immediately = false;
                     if recorder.should_record().await {
                         let live_id = recorder.next_live_id().await;
                         if let Err(error) = recorder.start_recording(&live_id).await {
@@ -488,6 +495,13 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                                     log::info!(
                                         "[{platform}][{room_id}] Stream expired at {expire}"
                                     );
+                                }
+                                RecorderError::ResolutionChanged { .. }
+                                    if recorder.retry_immediately_after_resolution_change() =>
+                                {
+                                    // Close this segment and begin another at
+                                    // the new resolution without idle polling.
+                                    restart_immediately = true;
                                 }
                                 _ => {
                                     log::error!(
@@ -511,7 +525,7 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                     recorder.reset_recording().await;
 
                     // An expired stream resumes immediately with a fresh one.
-                    if recorder.should_continue().load(Ordering::Relaxed) {
+                    if recorder.should_continue().load(Ordering::Relaxed) || restart_immediately {
                         continue;
                     }
                     // Check status again after a short random delay.

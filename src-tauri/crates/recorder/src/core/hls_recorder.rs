@@ -238,12 +238,14 @@ impl HlsRecorder {
     }
 
     async fn query_media_playlist(&self) -> Result<MediaPlaylist, RecorderError> {
-        let selected_stream = if self.variant_selection == HlsVariantSelection::First {
-            self.selected_stream.read().await.clone()
-        } else {
-            None
-        };
-        if let Some(selected_stream) = selected_stream {
+        let selected_stream = self.selected_stream.read().await.clone();
+        if self.variant_selection == HlsVariantSelection::HighestBandwidth {
+            if let Some(selected_stream) = selected_stream {
+                return self
+                    .query_highest_bandwidth_media_playlist(&selected_stream)
+                    .await;
+            }
+        } else if let Some(selected_stream) = selected_stream {
             match self.read_media_playlist(&selected_stream).await {
                 Ok(playlist) => return Ok(playlist),
                 Err(error) => {
@@ -302,6 +304,66 @@ impl HlsRecorder {
                 *self.selected_variant_key.write().await = Some(selected_key);
                 *self.selected_stream.write().await = Some(selected_stream);
                 Ok(media_playlist)
+            }
+        }
+    }
+
+    async fn query_highest_bandwidth_media_playlist(
+        &self,
+        selected_stream: &HlsStream,
+    ) -> Result<MediaPlaylist, RecorderError> {
+        if self.stream.is_expired() {
+            return Err(RecorderError::StreamExpired {
+                expire: self.stream.expire,
+            });
+        }
+
+        let master = match self.query_playlist(&self.stream).await {
+            Ok(Playlist::MasterPlaylist(master)) => master,
+            Ok(Playlist::MediaPlaylist(_)) => {
+                return self.read_media_playlist(selected_stream).await
+            }
+            Err(_error) => {
+                log::warn!("HLS master refresh failed; continuing with the pinned media variant");
+                return self.read_media_playlist(selected_stream).await;
+            }
+        };
+        let variant =
+            best_media_variant(&master.variants).ok_or_else(|| RecorderError::M3u8ParseFailed {
+                content: "No variants found".to_string(),
+            })?;
+        let master_url = self.stream.index();
+        let variant_url = resolve_variant_url(&master_url, &variant.uri)?;
+        let selected_key = variant_identity(&variant_url);
+        let previous_key = self.selected_variant_key.read().await.clone();
+        if previous_key
+            .as_ref()
+            .is_some_and(|previous| previous != &selected_key)
+        {
+            return Err(RecorderError::ResolutionChanged {
+                err: "Highest-bandwidth HLS variant changed; starting a new recording segment"
+                    .to_string(),
+            });
+        }
+
+        let updated_stream = construct_stream_from_variant(
+            &self.stream.id,
+            &variant_url,
+            self.stream.format.clone(),
+            self.stream.codec.clone(),
+        )
+        .await?;
+        match self.read_media_playlist(&updated_stream).await {
+            Ok(playlist) => {
+                *self.selected_variant_key.write().await = Some(selected_key);
+                *self.selected_stream.write().await = Some(updated_stream);
+                Ok(playlist)
+            }
+            Err(_error) => {
+                log::warn!(
+                    "Refreshed HLS variant is unavailable; continuing with the pinned media variant"
+                );
+                self.read_media_playlist(selected_stream).await
             }
         }
     }
@@ -518,11 +580,15 @@ fn select_media_variant(
 ) -> Option<&VariantStream> {
     match selection {
         HlsVariantSelection::First => variants.iter().find(|variant| !variant.is_i_frame),
-        HlsVariantSelection::HighestBandwidth => variants
-            .iter()
-            .filter(|variant| !variant.is_i_frame)
-            .max_by_key(|variant| variant.average_bandwidth.unwrap_or(variant.bandwidth)),
+        HlsVariantSelection::HighestBandwidth => best_media_variant(variants),
     }
+}
+
+fn best_media_variant(variants: &[VariantStream]) -> Option<&VariantStream> {
+    variants
+        .iter()
+        .filter(|variant| !variant.is_i_frame)
+        .max_by_key(|variant| variant.average_bandwidth.unwrap_or(variant.bandwidth))
 }
 
 /// Use stable YouTube itags when available; otherwise use the resolved variant
@@ -753,6 +819,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn first_variant_policy_stays_on_the_initial_media_playlist() {
+        let server = MockServer::start().await;
+        let first_master = r#"#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=100000,RESOLUTION=640x360
+low.m3u8
+"#;
+        let upgraded_master = r#"#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=100000,RESOLUTION=640x360
+low.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1280x720
+high.m3u8
+"#;
+        let master_requests = Arc::new(AtomicUsize::new(0));
+        let request_count = Arc::clone(&master_requests);
+        Mock::given(method("GET"))
+            .and(path("/live/master.m3u8"))
+            .respond_with(move |_request: &Request| {
+                let response = if request_count.fetch_add(1, Ordering::Relaxed) == 0 {
+                    first_master
+                } else {
+                    upgraded_master
+                };
+                ResponseTemplate::new(200).set_body_string(response)
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/live/low.m3u8"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXT-X-MEDIA-SEQUENCE:10
+#EXTINF:2.0,
+low-10.ts
+"#,
+            ))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let stream = construct_stream_from_variant(
+            "live",
+            &format!("{}/live/master.m3u8", server.uri()),
+            Format::TS,
+            Codec::Avc,
+        )
+        .await
+        .unwrap();
+        let (events, _receiver) = broadcast::channel(1);
+        let work_dir =
+            std::env::temp_dir().join(format!("bsr-hls-first-variant-{}", uuid::Uuid::new_v4()));
+        let recorder = HlsRecorder::new(
+            "room".to_string(),
+            Arc::new(stream),
+            reqwest::Client::new(),
+            None,
+            events,
+            work_dir.clone(),
+            Arc::new(AtomicBool::new(true)),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            recorder
+                .query_media_playlist()
+                .await
+                .unwrap()
+                .media_sequence,
+            10
+        );
+        assert_eq!(
+            recorder
+                .query_media_playlist()
+                .await
+                .unwrap()
+                .media_sequence,
+            10
+        );
+        assert_eq!(master_requests.load(Ordering::Relaxed), 1);
+        server.verify().await;
+        let _ = tokio::fs::remove_dir_all(work_dir).await;
+    }
+
+    #[tokio::test]
     async fn highest_bandwidth_change_starts_a_new_recording_segment() {
         let server = MockServer::start().await;
         let first_master = r#"#EXTM3U
@@ -865,6 +1017,96 @@ high-100.ts
             100
         );
         assert_eq!(master_requests.load(Ordering::Relaxed), 3);
+        server.verify().await;
+        let _ = tokio::fs::remove_dir_all(work_dir).await;
+    }
+
+    #[tokio::test]
+    async fn highest_bandwidth_policy_uses_pinned_playlist_when_master_fails() {
+        let server = MockServer::start().await;
+        let master_body = r#"#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=100000,RESOLUTION=640x360
+low.m3u8
+"#;
+        let master_requests = Arc::new(AtomicUsize::new(0));
+        let request_count = Arc::clone(&master_requests);
+        Mock::given(method("GET"))
+            .and(path("/live/master.m3u8"))
+            .respond_with(move |_request: &Request| {
+                if request_count.fetch_add(1, Ordering::Relaxed) == 0 {
+                    ResponseTemplate::new(200).set_body_string(master_body)
+                } else {
+                    ResponseTemplate::new(500).set_body_string("temporary master failure")
+                }
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        let media_requests = Arc::new(AtomicUsize::new(0));
+        let request_count = Arc::clone(&media_requests);
+        Mock::given(method("GET"))
+            .and(path("/live/low.m3u8"))
+            .respond_with(move |_request: &Request| {
+                let sequence = if request_count.fetch_add(1, Ordering::Relaxed) == 0 {
+                    10
+                } else {
+                    11
+                };
+                ResponseTemplate::new(200).set_body_string(format!(
+                    r#"#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXT-X-MEDIA-SEQUENCE:{sequence}
+#EXTINF:2.0,
+low-{sequence}.ts
+"#
+                ))
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let stream = construct_stream_from_variant(
+            "live",
+            &format!("{}/live/master.m3u8", server.uri()),
+            Format::TS,
+            Codec::Avc,
+        )
+        .await
+        .unwrap();
+        let (events, _receiver) = broadcast::channel(1);
+        let work_dir =
+            std::env::temp_dir().join(format!("bsr-hls-master-failure-{}", uuid::Uuid::new_v4()));
+        let recorder = HlsRecorder::new_with_variant_selection(
+            "room".to_string(),
+            Arc::new(stream),
+            reqwest::Client::new(),
+            None,
+            events,
+            work_dir.clone(),
+            Arc::new(AtomicBool::new(true)),
+            HlsVariantSelection::HighestBandwidth,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            recorder
+                .query_media_playlist()
+                .await
+                .unwrap()
+                .media_sequence,
+            10
+        );
+        assert_eq!(
+            recorder
+                .query_media_playlist()
+                .await
+                .unwrap()
+                .media_sequence,
+            11
+        );
+        assert_eq!(master_requests.load(Ordering::Relaxed), 2);
+        assert_eq!(media_requests.load(Ordering::Relaxed), 2);
         server.verify().await;
         let _ = tokio::fs::remove_dir_all(work_dir).await;
     }

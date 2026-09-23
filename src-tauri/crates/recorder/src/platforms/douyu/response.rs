@@ -1,6 +1,8 @@
 use serde::de::{self, DeserializeOwned};
 use serde::{Deserialize, Deserializer};
 
+pub(super) const MAX_ENCRYPTION_ITERATIONS: u32 = 16;
+
 /// The response returned by Douyu's public RoomApi endpoint.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DouyuRoomInfoResponse {
@@ -59,11 +61,18 @@ pub struct DouyuH5PlayData {
     pub rtmp_url: String,
     #[serde(default, deserialize_with = "deserialize_string")]
     pub rtmp_live: String,
-    /// Some responses include a direct HEVC URL. It is only used when it is
-    /// explicitly an FLV URL; the ordinary `rtmp_url/rtmp_live` stream remains
-    /// the preferred compatible choice.
+    /// Some responses include a direct HEVC URL. It is a last-resort fallback
+    /// only when the normal `rtmp_url/rtmp_live` stream is absent.
     #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub player_1: Option<String>,
+    #[serde(default, rename = "cdnsWithName")]
+    pub cdns: Vec<DouyuCdn>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DouyuCdn {
+    #[serde(default, deserialize_with = "deserialize_string")]
+    pub cdn: String,
 }
 
 /// The response returned by `getEncryption`.
@@ -202,27 +211,28 @@ pub fn is_auth_failure_text(text: &str) -> bool {
 /// or otherwise incompatible alternate does not unexpectedly replace the
 /// normal stream.
 pub fn flv_url(data: &DouyuH5PlayData) -> Option<String> {
-    if let Some(player_url) = data.player_1.as_deref().filter(|url| is_flv_url(url)) {
-        return Some(player_url.to_string());
+    if !data.rtmp_live.trim().is_empty() {
+        if data.rtmp_live.starts_with("http://") || data.rtmp_live.starts_with("https://") {
+            return Some(data.rtmp_live.trim().to_string());
+        }
+
+        if data.rtmp_url.trim().is_empty() {
+            return Some(data.rtmp_live.trim().to_string());
+        }
+
+        return Some(format!(
+            "{}/{}",
+            data.rtmp_url.trim_end_matches('/'),
+            data.rtmp_live.trim_start_matches('/')
+        ));
     }
 
-    if data.rtmp_live.trim().is_empty() {
-        return None;
-    }
-
-    if data.rtmp_live.starts_with("http://") || data.rtmp_live.starts_with("https://") {
-        return Some(data.rtmp_live.trim().to_string());
-    }
-
-    if data.rtmp_url.trim().is_empty() {
-        return Some(data.rtmp_live.trim().to_string());
-    }
-
-    Some(format!(
-        "{}/{}",
-        data.rtmp_url.trim_end_matches('/'),
-        data.rtmp_live.trim_start_matches('/')
-    ))
+    // `player_1` is commonly the HEVC alternative. Keep it strictly as a
+    // fallback when Douyu omitted the normal rtmp stream URL.
+    data.player_1
+        .as_deref()
+        .filter(|url| is_flv_url(url))
+        .map(str::to_string)
 }
 
 fn is_flv_url(url: &str) -> bool {
@@ -321,7 +331,13 @@ where
     D: Deserializer<'de>,
 {
     deserialize_u64(deserializer).and_then(|value| {
-        u32::try_from(value).map_err(|_| de::Error::custom("integer exceeds u32"))
+        let value = u32::try_from(value).map_err(|_| de::Error::custom("integer exceeds u32"))?;
+        if value > MAX_ENCRYPTION_ITERATIONS {
+            return Err(de::Error::custom(format!(
+                "enc_time exceeds maximum {MAX_ENCRYPTION_ITERATIONS}"
+            )));
+        }
+        Ok(value)
     })
 }
 
@@ -409,7 +425,8 @@ mod tests {
                 "data": {
                     "room_id": "123",
                     "rtmp_url": "https://cdn.example/live/",
-                    "rtmp_live": "stream.flv?token=abc"
+                    "rtmp_live": "stream.flv?token=abc",
+                    "player_1": "https://cdn.example/hevc.flv?token=abc"
                 }
             }"#,
         )
@@ -423,10 +440,36 @@ mod tests {
     }
 
     #[test]
+    fn direct_player_url_is_only_used_when_primary_stream_is_missing() {
+        let response = parse_play_response(
+            r#"{
+                "error": 0,
+                "data": {
+                    "rtmp_url": "",
+                    "rtmp_live": "",
+                    "player_1": "https://cdn.example/fallback.flv?token=abc"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            flv_url(&response.data.unwrap()).as_deref(),
+            Some("https://cdn.example/fallback.flv?token=abc")
+        );
+    }
+
+    #[test]
     fn empty_play_data_is_not_a_stream() {
         let response = parse_play_response(r#"{"error":-5,"msg":"closeRoom","data":""}"#).unwrap();
         assert!(response.data.is_none());
         assert!(is_offline_error(response.error, &response.msg));
+    }
+
+    #[test]
+    fn encryption_iteration_count_is_bounded() {
+        let body = r#"{"error":0,"data":{"rand_str":"r","enc_time":17,"key":"k","is_special":false,"enc_data":"e"}}"#;
+        assert!(parse_encryption_response(body).is_err());
     }
 
     #[test]

@@ -398,7 +398,15 @@
   }
 
   function addNewRecorder(room_id: string, platform: string) {
-    room_id = room_id.trim().split("?")[0];
+    const room_input = room_id.trim();
+    const douyu_room_id =
+      platform === "douyu"
+        ? new URLSearchParams(room_input.split("?")[1]?.split("#")[0] || "").get("rid")
+        : null;
+    room_id = room_input.split(/[?#]/)[0];
+    if (douyu_room_id && /^\d+$/.test(douyu_room_id)) {
+      room_id = douyu_room_id;
+    }
     switch (platform) {
       case "bilibili":
         // room_id might be a link, extract the room_id from the link

@@ -6,7 +6,7 @@ hero:
   name: "BiliBili ShadowReplay"
   tagline: "直播录制/实时回放/剪辑/投稿工具"
   image:
-    src: /images/icon.png
+    src: /images/icon.svg
     alt: BiliBili ShadowReplay
   actions:
     - theme: brand

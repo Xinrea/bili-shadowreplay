@@ -360,9 +360,8 @@ mod tests {
             .join(name)
     }
 
-    /// The unit tests also run in environments without ffmpeg installed (CI
-    /// installs no ffmpeg packages), so the fixture based tests skip there
-    /// instead of failing.
+    /// Soft-skip when ffmpeg is missing locally. The Tests workflow installs
+    /// ffmpeg so `init.m4s` / `segment.m4s` probe coverage runs in CI.
     async fn ffprobe_available() -> bool {
         ffprobe_command()
             .arg("-version")

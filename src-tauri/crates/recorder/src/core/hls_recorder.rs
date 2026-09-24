@@ -237,8 +237,11 @@ fn raw_twitch_ad_ranges(content: &[u8]) -> Vec<AdTimeRange> {
         .collect()
 }
 
-fn local_segment_filename(sequence: u64, uri: &str) -> String {
-    format!("segment-{sequence}.{}", media_extension(uri))
+fn local_segment_filename(sequence: u64, uri: &str, fallback_extension: &str) -> String {
+    format!(
+        "segment-{sequence}.{}",
+        media_extension(uri, fallback_extension)
+    )
 }
 
 fn local_init_filename(uri: &str) -> String {
@@ -247,10 +250,22 @@ fn local_init_filename(uri: &str) -> String {
 
     let mut hasher = DefaultHasher::new();
     uri.hash(&mut hasher);
-    format!("init-{:x}.{}", hasher.finish(), media_extension(uri))
+    // Twitch weaver init URIs often have no file extension; prefer the fMP4
+    // fragment extension so HLS preview serves `video/iso.segment` instead of
+    // falling back to MPEG-TS.
+    format!(
+        "init-{:x}.{}",
+        hasher.finish(),
+        media_extension(uri, "m4s")
+    )
 }
 
-fn media_extension(uri: &str) -> &str {
+/// Pick a local filename extension from a segment/init URI.
+///
+/// Twitch weaver paths are commonly extensionless (`/v1/segment/<token>`). When
+/// the source uses `#EXT-X-MAP`, callers pass `"m4s"` so the HTTP HLS callback
+/// does not advertise `video/mp2t` for fMP4 bytes.
+fn media_extension<'a>(uri: &'a str, fallback: &'a str) -> &'a str {
     let path = uri.split(['?', '#']).next().unwrap_or(uri);
     let basename = path.rsplit('/').next().unwrap_or(path);
     basename
@@ -263,7 +278,7 @@ fn media_extension(uri: &str) -> &str {
                     .chars()
                     .all(|character| character.is_ascii_alphanumeric())
         })
-        .unwrap_or("ts")
+        .unwrap_or(fallback)
 }
 
 /// Recover the last written `#EXT-X-MAP` from an on-disk playlist so a resumed
@@ -764,7 +779,8 @@ impl HlsRecorder {
         }
 
         let source_url = source_stream.ts_url(&segment.uri);
-        let local_uri = local_segment_filename(sequence, &segment.uri);
+        let local_uri =
+            local_segment_filename(sequence, &segment.uri, self.segment_fallback_extension().await);
         let path = self.work_dir.join(&local_uri);
         let size = download(&self.client, &source_url, &path, DOWNLOAD_RETRY).await?;
 
@@ -941,9 +957,11 @@ impl HlsRecorder {
             if let Some(range) = ad_range_for_segment(segment, ad_ranges) {
                 self.persist_skipped_ad_range(&range).await?;
             }
-            let path = self
-                .work_dir
-                .join(local_segment_filename(sequence, &segment.uri));
+            let path = self.work_dir.join(local_segment_filename(
+                sequence,
+                &segment.uri,
+                self.segment_fallback_extension().await,
+            ));
             self.skip_segment(&path, sequence).await?;
             return Ok(None);
         }
@@ -951,6 +969,20 @@ impl HlsRecorder {
         self.download_segment(source_stream, segment, sequence)
             .await
             .map(Some)
+    }
+
+    /// Local filename extension when the source URI has none.
+    ///
+    /// MPEG-TS playlists stay on `.ts`. Once an `#EXT-X-MAP` has been seen,
+    /// fragments are fMP4 — Twitch weaver URIs are often extensionless, and
+    /// falling back to `.ts` would make the HTTP HLS callback advertise
+    /// `video/mp2t` for ISO BMFF bytes.
+    async fn segment_fallback_extension(&self) -> &'static str {
+        if self.fmp4_init.read().await.is_some() {
+            "m4s"
+        } else {
+            "ts"
+        }
     }
 
     async fn update_entries(&self) -> Result<(), RecorderError> {
@@ -2195,21 +2227,45 @@ high-100.ts
         assert_eq!(
             local_segment_filename(
                 1528,
-                "https://rr5.googlevideo.com/videoplayback?itag=91&sig=secret"
+                "https://rr5.googlevideo.com/videoplayback?itag=91&sig=secret",
+                "ts"
             ),
             "segment-1528.ts"
         );
         assert_eq!(
-            local_segment_filename(1529, "https://cdn.test/chunk-1.m4s?token=secret"),
+            local_segment_filename(1529, "https://cdn.test/chunk-1.m4s?token=secret", "ts"),
             "segment-1529.m4s"
         );
         assert_eq!(
-            local_segment_filename(3, "nested/3.ts?expires=1"),
+            local_segment_filename(3, "nested/3.ts?expires=1", "ts"),
             "segment-3.ts"
         );
         assert_ne!(
-            local_segment_filename(3, "chunk.ts?seq=1"),
-            local_segment_filename(4, "chunk.ts?seq=2")
+            local_segment_filename(3, "chunk.ts?seq=1", "ts"),
+            local_segment_filename(4, "chunk.ts?seq=2", "ts")
+        );
+    }
+
+    #[test]
+    fn weaver_extensionless_uris_use_fmp4_fallback() {
+        // Twitch CloudFront weaver paths are commonly `/v1/segment/<token>`
+        // with no `.mp4` / `.m4s` suffix. When MAP is present the recorder must
+        // not invent `.ts` (that would serve `video/mp2t` in the HLS callback).
+        let weaver_seg = "https://aa.cloudfront.hls.ttvnw.net/v1/segment/CvICeYA1Fg1UXbdoIhjzy?dna=1";
+        let weaver_init = "https://aa.cloudfront.hls.ttvnw.net/v1/segment/InitTokenNoExt?dna=1";
+        assert_eq!(
+            local_segment_filename(42, weaver_seg, "m4s"),
+            "segment-42.m4s"
+        );
+        assert_eq!(media_extension(weaver_seg, "m4s"), "m4s");
+        assert_eq!(media_extension(weaver_seg, "ts"), "ts");
+        assert!(local_init_filename(weaver_init).ends_with(".m4s"));
+        assert_eq!(
+            media_extension(
+                "https://cdn.test/v1/segment/token.mp4?dna=1",
+                "m4s"
+            ),
+            "mp4"
         );
     }
 
@@ -2306,6 +2362,64 @@ high-100.ts
         tokio::fs::remove_dir_all(work_dir).await.unwrap();
     }
 
+    /// Weaver-style URIs have no `.mp4`/`.m4s` suffix. Local names must still
+    /// land on an fMP4 extension so header-mode HLS preview gets the right
+    /// content type (`video/iso.segment` / `video/mp4`), not `video/mp2t`.
+    #[tokio::test]
+    async fn weaver_extensionless_fmp4_uris_get_m4s_local_names() {
+        let server = MockServer::start().await;
+        let init_body = b"weaver-init".to_vec();
+        let media_body = b"weaver-media".to_vec();
+        let init_path = "/v1/segment/InitTokenNoExtension";
+        let seg_path = "/v1/segment/CvICeYA1Fg1UXbdoIhjzyEPGc3Rsf1Ry";
+        Mock::given(method("GET"))
+            .and(path(init_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(init_body.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(seg_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(media_body.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let (recorder, work_dir) = twitch_recorder(&server, "weaver-fmp4").await;
+        let playlist = format!(
+            r#"#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXT-X-MAP:URI="{0}{1}?dna=init"
+#EXTINF:2.0,
+{0}{2}?dna=seg
+"#,
+            server.uri(),
+            init_path,
+            seg_path
+        );
+        let (_, parsed) = m3u8_rs::parse_media_playlist(playlist.as_bytes()).unwrap();
+
+        let downloaded = recorder
+            .download_segment(&recorder.stream, &parsed.segments[0], 9)
+            .await
+            .unwrap();
+
+        let local_map = downloaded.segment.map.as_ref().unwrap().uri.clone();
+        assert!(
+            local_map.ends_with(".m4s"),
+            "extensionless init must fall back to .m4s, got {local_map}"
+        );
+        assert_eq!(downloaded.segment.uri, "segment-9.m4s");
+        assert_eq!(
+            tokio::fs::read(work_dir.join(&local_map)).await.unwrap(),
+            init_body
+        );
+        assert_eq!(tokio::fs::read(&downloaded.path).await.unwrap(), media_body);
+
+        server.verify().await;
+        tokio::fs::remove_dir_all(work_dir).await.unwrap();
+    }
+
     #[test]
     fn fmp4_archive_duration_prefers_extinf_over_probe_timestamps() {
         let segment = MediaSegment {
@@ -2343,6 +2457,10 @@ high-100.ts
             local_init_filename("https://cdn.test/init-b.mp4")
         );
         assert!(local_init_filename("https://cdn.test/init.mp4").ends_with(".mp4"));
+        assert!(
+            local_init_filename("https://cdn.test/v1/segment/InitToken").ends_with(".m4s"),
+            "extensionless weaver init must not fall back to .ts"
+        );
     }
 
     #[tokio::test]

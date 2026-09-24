@@ -1536,18 +1536,14 @@ mod tests {
     }
 
     /// Twitch hangs `#EXT-X-MAP` on the first stitched-ad segment. Skipping that
-    /// ad must still cache the init so the following program fragment can be
-    /// probed.
+    /// ad must still cache the init so later program fragments inherit it.
+    ///
+    /// This test intentionally avoids calling ffprobe: CI runners may not ship
+    /// ffmpeg, and the regression is about map discovery while skipping ads.
     #[tokio::test]
     async fn skipping_ad_that_carries_fmp4_map_still_caches_init_for_program() {
-        let init_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/video/init.m4s");
-        let media_path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/video/segment.m4s");
-        if !init_path.exists() || !media_path.exists() {
-            return;
-        }
-        let init_body = tokio::fs::read(&init_path).await.unwrap();
-        let media_body = tokio::fs::read(&media_path).await.unwrap();
+        let init_body = b"fmp4-init-section".to_vec();
+        let media_body = b"fmp4-program-fragment".to_vec();
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -1603,6 +1599,7 @@ mod tests {
             .await
             .unwrap();
         let ad_ranges = recorder.ad_ranges_for_playlist(&playlist).await;
+        let mut retained = 0;
         for (i, segment) in playlist.segments.iter().enumerate() {
             let sequence = i as u64;
             let Some(downloaded) = recorder
@@ -1612,13 +1609,12 @@ mod tests {
             else {
                 continue;
             };
-            let metadata = recorder
-                .probe_segment_metadata(&downloaded.path)
-                .await
-                .expect("program fMP4 media must probe with the cached ad-carried init");
-            assert!(!metadata.seems_corrupted());
-            assert_eq!((metadata.width, metadata.height), (1920, 1080));
-            assert!(downloaded.segment.map.is_some());
+            assert_eq!(downloaded.segment.uri, "segment-2.mp4");
+            assert!(
+                downloaded.segment.map.is_some(),
+                "first retained program segment must re-emit the init carried by the skipped ad"
+            );
+            assert_eq!(tokio::fs::read(&downloaded.path).await.unwrap(), media_body);
             recorder
                 .playlist
                 .lock()
@@ -1627,16 +1623,29 @@ mod tests {
                 .await
                 .unwrap();
             recorder.update_sequence(sequence).await.unwrap();
+            retained += 1;
         }
+        assert_eq!(retained, 1);
+
+        let local_map = recorder
+            .fmp4_init
+            .read()
+            .await
+            .as_ref()
+            .map(|init| init.local_uri.clone())
+            .expect("init announced on the ad segment must be cached");
+        assert_eq!(
+            tokio::fs::read(work_dir.join(&local_map)).await.unwrap(),
+            init_body
+        );
 
         let saved = tokio::fs::read_to_string(work_dir.join(PLAYLIST_FILE_NAME))
             .await
             .unwrap();
-        assert!(saved.contains("#EXT-X-MAP:URI=\"init-"));
+        assert!(saved.contains(&format!("#EXT-X-MAP:URI=\"{local_map}\"")));
         assert!(saved.contains("segment-2.mp4"));
         assert!(!work_dir.join("segment-0.ts").exists());
         assert!(!work_dir.join("segment-1.ts").exists());
-        assert!(recorder.fmp4_init.read().await.is_some());
 
         server.verify().await;
         tokio::fs::remove_dir_all(work_dir).await.unwrap();

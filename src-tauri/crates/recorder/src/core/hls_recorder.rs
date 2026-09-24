@@ -1,9 +1,10 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::{path::PathBuf, sync::Arc};
 
 use chrono::Utc;
-use m3u8_rs::{DateRange, MediaPlaylist, MediaSegment, Playlist, VariantStream};
+use m3u8_rs::{DateRange, MediaPlaylist, MediaSegment, Playlist, QuotedOrUnquoted, VariantStream};
 use reqwest::header::HeaderMap;
 use std::time::Duration;
 use tokio::fs::{File, OpenOptions};
@@ -20,6 +21,8 @@ const UPDATE_TIMEOUT: Duration = Duration::from_secs(20);
 const UPDATE_INTERVAL: Duration = Duration::from_secs(1);
 const PLAYLIST_FILE_NAME: &str = "playlist.m3u8";
 const DOWNLOAD_RETRY: u32 = 3;
+/// Upper bound on the ad windows remembered across playlist reloads.
+const MAX_AD_RANGES: usize = 128;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum HlsVariantSelection {
@@ -79,7 +82,7 @@ fn is_twitch_ad_range(range: &DateRange) -> bool {
         || range
             .class
             .as_deref()
-            .is_some_and(|class| class.to_ascii_lowercase().contains("ad"))
+            .is_some_and(|class| class.eq_ignore_ascii_case("twitch-stitched-ad"))
         || range.x_prefixed.as_ref().is_some_and(|attributes| {
             attributes
                 .keys()
@@ -98,8 +101,11 @@ fn twitch_ad_time_range(range: &DateRange) -> Option<AdTimeRange> {
         .as_ref()
         .map(|end_date| end_date.timestamp_millis())
         .or_else(|| {
+            // A stitched ad that is still playing has no `DURATION` yet; Twitch
+            // announces its length as `PLANNED-DURATION` instead.
             range
                 .duration
+                .or(range.planned_duration)
                 .filter(|duration| duration.is_finite() && *duration > 0.0)
                 .map(|duration| start_ms.saturating_add((duration * 1000.0).ceil() as i64))
         })?;
@@ -121,6 +127,67 @@ fn is_twitch_ad_segment(segment: &MediaSegment, ad_ranges: &[AdTimeRange]) -> bo
     ad_ranges
         .iter()
         .any(|range| segment_time >= range.start_ms && segment_time < range.end_ms)
+}
+
+/// Split an HLS attribute list into its `key=value` attributes.
+///
+/// Quoted values may contain commas, so only a comma outside a quoted string
+/// separates two attributes.
+fn date_range_attributes(list: &str) -> HashMap<String, QuotedOrUnquoted> {
+    let mut attributes = HashMap::new();
+    let mut remainder = list;
+    while !remainder.is_empty() {
+        let mut quoted = false;
+        let mut separator = remainder.len();
+        for (index, character) in remainder.char_indices() {
+            match character {
+                '"' => quoted = !quoted,
+                ',' if !quoted => {
+                    separator = index;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let attribute = &remainder[..separator];
+        // Step over the separator; an empty tail ends the loop.
+        remainder = remainder[separator..].strip_prefix(',').unwrap_or("");
+
+        let Some((key, value)) = attribute.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            continue;
+        }
+        let value = value.trim();
+        let parsed = if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
+            QuotedOrUnquoted::Quoted(value[1..value.len() - 1].to_string())
+        } else {
+            QuotedOrUnquoted::Unquoted(value.to_string())
+        };
+        attributes.insert(key.to_string(), parsed);
+    }
+    attributes
+}
+
+/// Collect the Twitch ad windows from every `#EXT-X-DATERANGE` in a playlist.
+///
+/// `m3u8-rs` attaches a range to the segment that follows it and overwrites it
+/// when several ranges appear in a row. Twitch writes `playlist-session`,
+/// `stitched-ad` and `stream-source` together at the head of each weaver reload,
+/// so the ad window is gone by the time the playlist has been parsed. Reading the
+/// raw text keeps all of them.
+fn raw_twitch_ad_ranges(content: &[u8]) -> Vec<AdTimeRange> {
+    String::from_utf8_lossy(content)
+        .lines()
+        .filter_map(|line| line.strip_prefix("#EXT-X-DATERANGE:"))
+        .filter_map(|attributes| {
+            DateRange::from_hashmap(date_range_attributes(attributes))
+                .ok()
+                .and_then(|range| twitch_ad_time_range(&range))
+        })
+        .collect()
 }
 
 fn local_segment_filename(sequence: u64, uri: &str) -> String {
@@ -331,11 +398,29 @@ impl HlsRecorder {
             .send()
             .await?;
         let bytes = response.bytes().await?;
+        self.observe_ad_ranges(&bytes).await;
         let (_, playlist) =
             m3u8_rs::parse_playlist(&bytes).map_err(|_| RecorderError::M3u8ParseFailed {
                 content: playlist_content_preview(&bytes),
             })?;
         Ok(playlist)
+    }
+
+    /// Remember the Twitch ad windows announced by a freshly fetched playlist.
+    ///
+    /// Ranges are accumulated because a reload only carries the ones that are
+    /// still current, while ad segments keep arriving afterwards.
+    async fn observe_ad_ranges(&self, content: &[u8]) {
+        let observed = raw_twitch_ad_ranges(content);
+        if observed.is_empty() {
+            return;
+        }
+        let mut ad_ranges = self.ad_ranges.lock().await;
+        for range in observed {
+            if !ad_ranges.contains(&range) {
+                ad_ranges.push(range);
+            }
+        }
     }
 
     async fn query_media_playlist(&self) -> Result<MediaPlaylist, RecorderError> {
@@ -531,28 +616,20 @@ impl HlsRecorder {
         Ok(())
     }
 
+    /// Drop the accumulated ad windows that can no longer match a segment of
+    /// this playlist and return the rest.
     async fn ad_ranges_for_playlist(&self, playlist: &MediaPlaylist) -> Vec<AdTimeRange> {
-        let observed_ranges: Vec<AdTimeRange> = playlist
-            .segments
-            .iter()
-            .filter_map(|segment| segment.daterange.as_ref().and_then(twitch_ad_time_range))
-            .collect();
         let first_segment_time = playlist
             .segments
             .iter()
             .find_map(|segment| segment.program_date_time.as_ref())
             .map(|date_time| date_time.timestamp_millis());
         let mut ad_ranges = self.ad_ranges.lock().await;
-        for range in observed_ranges {
-            if !ad_ranges.contains(&range) {
-                ad_ranges.push(range);
-            }
-        }
         if let Some(first_segment_time) = first_segment_time {
             ad_ranges.retain(|range| range.end_ms > first_segment_time);
         }
-        if ad_ranges.len() > 128 {
-            let excess = ad_ranges.len() - 128;
+        if ad_ranges.len() > MAX_AD_RANGES {
+            let excess = ad_ranges.len() - MAX_AD_RANGES;
             ad_ranges.drain(..excess);
         }
         ad_ranges.clone()
@@ -1043,19 +1120,11 @@ mod tests {
         tokio::fs::remove_dir_all(work_dir).await.unwrap();
     }
 
-    #[tokio::test]
-    async fn twitch_stitched_ad_range_skips_ad_playlist_segments_but_records_program() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"mock ts segment".to_vec()))
-            .mount(&server)
-            .await;
-        let ad_first = format!("{}/ads/segment-480p-1.ts", server.uri());
-        let ad_second = format!("{}/ads/segment-480p-2.ts", server.uri());
-        let program = format!("{}/live/segment-1080p.ts", server.uri());
+    /// Build a recorder whose index URL serves the mounted playlist.
+    async fn twitch_recorder(server: &MockServer, label: &str) -> (HlsRecorder, PathBuf) {
         let (event_tx, _) = broadcast::channel(1);
         let work_dir = std::env::temp_dir().join(format!(
-            "bili-shadowreplay-hls-ad-range-{}",
+            "bili-shadowreplay-hls-{label}-{}",
             uuid::Uuid::new_v4()
         ));
         let stream = Arc::new(HlsStream::new(
@@ -1078,8 +1147,82 @@ mod tests {
         )
         .await
         .unwrap();
-        let media_playlist = format!(
-            r#"#EXTM3U
+        (recorder, work_dir)
+    }
+
+    /// Serve `playlist` at the index URL and answer the program segment with a
+    /// stub body. The ad segments must never be requested, which `server.verify()`
+    /// asserts afterwards.
+    async fn mount_twitch_playlist(server: &MockServer, playlist: String) {
+        Mock::given(method("GET"))
+            .and(path("/master.m3u8"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(playlist))
+            .expect(1)
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/live/segment-1080p.ts"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"mock ts segment".to_vec()))
+            .mount(server)
+            .await;
+        for ad_path in ["/ads/segment-480p-1.ts", "/ads/segment-480p-2.ts"] {
+            Mock::given(method("GET"))
+                .and(path(ad_path))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(b"ad".to_vec()))
+                .expect(0)
+                .mount(server)
+                .await;
+        }
+    }
+
+    /// Fetch the playlist once and record every segment the ad filter keeps.
+    async fn record_playlist_once(recorder: &HlsRecorder) -> String {
+        let playlist = recorder.query_media_playlist().await.unwrap();
+        let ad_ranges = recorder.ad_ranges_for_playlist(&playlist).await;
+        for (i, segment) in playlist.segments.iter().enumerate() {
+            let sequence = i as u64;
+            let Some(downloaded) = recorder
+                .download_if_not_twitch_ad(&recorder.stream, segment, sequence, &ad_ranges)
+                .await
+                .unwrap()
+            else {
+                continue;
+            };
+            recorder
+                .playlist
+                .lock()
+                .await
+                .add_segment(downloaded.segment)
+                .await
+                .unwrap();
+            recorder.update_sequence(sequence).await.unwrap();
+        }
+        tokio::fs::read_to_string(recorder.work_dir.join(PLAYLIST_FILE_NAME))
+            .await
+            .unwrap()
+    }
+
+    /// Assert that only the 1080p program survived the ad filter.
+    fn assert_only_program_recorded(saved: &str, work_dir: &Path) {
+        assert!(saved.contains("segment-2.ts"));
+        assert!(saved.contains("1080p program"));
+        assert!(!saved.contains("480p ad"));
+        assert!(!saved.contains("https://"));
+        assert!(!work_dir.join("segment-0.ts").exists());
+        assert!(!work_dir.join("segment-1.ts").exists());
+        assert!(work_dir.join("segment-2.ts").exists());
+    }
+
+    #[tokio::test]
+    async fn twitch_stitched_ad_range_skips_ad_playlist_segments_but_records_program() {
+        let server = MockServer::start().await;
+        let ad_first = format!("{}/ads/segment-480p-1.ts", server.uri());
+        let ad_second = format!("{}/ads/segment-480p-2.ts", server.uri());
+        let program = format!("{}/live/segment-1080p.ts", server.uri());
+        mount_twitch_playlist(
+            &server,
+            format!(
+                r#"#EXTM3U
 #EXT-X-TARGETDURATION:2
 #EXT-X-DATERANGE:ID="stitched-ad-test",CLASS="twitch-stitched-ad",START-DATE="2026-01-01T00:00:00Z",DURATION=4.0
 #EXT-X-PROGRAM-DATE-TIME:2026-01-01T00:00:00Z
@@ -1092,40 +1235,14 @@ mod tests {
 #EXTINF:2.0,1080p program
 {program}
 "#
-        );
-        let (_, playlist) = m3u8_rs::parse_playlist(media_playlist.as_bytes()).unwrap();
-        let Playlist::MediaPlaylist(playlist) = playlist else {
-            panic!("expected Twitch media playlist");
-        };
-        let ad_ranges = recorder.ad_ranges_for_playlist(&playlist).await;
+            ),
+        )
+        .await;
+        let (recorder, work_dir) = twitch_recorder(&server, "ad-range").await;
 
-        for (sequence, segment) in playlist.segments.iter().enumerate() {
-            if let Some(downloaded) = recorder
-                .download_if_not_twitch_ad(&recorder.stream, segment, sequence as u64, &ad_ranges)
-                .await
-                .unwrap()
-            {
-                recorder
-                    .playlist
-                    .lock()
-                    .await
-                    .add_segment(downloaded.segment)
-                    .await
-                    .unwrap();
-                recorder.update_sequence(sequence as u64).await.unwrap();
-            }
-        }
+        let saved = record_playlist_once(&recorder).await;
 
-        let saved = tokio::fs::read_to_string(work_dir.join(PLAYLIST_FILE_NAME))
-            .await
-            .unwrap();
-        assert!(saved.contains("segment-2.ts"));
-        assert!(saved.contains("1080p program"));
-        assert!(!saved.contains("480p ad"));
-        assert!(!saved.contains("https://"));
-        assert!(!work_dir.join("segment-0.ts").exists());
-        assert!(!work_dir.join("segment-1.ts").exists());
-        assert!(work_dir.join("segment-2.ts").exists());
+        assert_only_program_recorded(&saved, &work_dir);
         assert_eq!(
             tokio::fs::read_to_string(work_dir.join(".sequence"))
                 .await
@@ -1133,7 +1250,88 @@ mod tests {
             "2"
         );
 
+        server.verify().await;
         tokio::fs::remove_dir_all(work_dir).await.unwrap();
+    }
+
+    /// Twitch writes the session, ad and source ranges together at the head of
+    /// every weaver reload. `m3u8-rs` keeps only the last range before a URI, so
+    /// the ad window has to be recovered from the raw playlist text.
+    #[tokio::test]
+    async fn twitch_head_dateranges_survive_parser_overwrite_and_skip_ads() {
+        let server = MockServer::start().await;
+        let ad_first = format!("{}/ads/segment-480p-1.ts", server.uri());
+        let ad_second = format!("{}/ads/segment-480p-2.ts", server.uri());
+        let program = format!("{}/live/segment-1080p.ts", server.uri());
+        let body = format!(
+            r#"#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXT-X-DATERANGE:ID="playlist-session-1",CLASS="twitch-playlist-session",START-DATE="2026-01-01T00:00:00Z",DURATION=6.0
+#EXT-X-DATERANGE:ID="stitched-ad-1",CLASS="twitch-stitched-ad",START-DATE="2026-01-01T00:00:00Z",PLANNED-DURATION=4.0,X-TV-TWITCH-AD-URL="https://ads.example/creative"
+#EXT-X-DATERANGE:ID="source-1",CLASS="twitch-stream-source",START-DATE="2026-01-01T00:00:04Z",DURATION=2.0
+#EXT-X-PROGRAM-DATE-TIME:2026-01-01T00:00:00Z
+#EXTINF:2.0,480p ad
+{ad_first}
+#EXT-X-PROGRAM-DATE-TIME:2026-01-01T00:00:02Z
+#EXTINF:2.0,480p ad
+{ad_second}
+#EXT-X-PROGRAM-DATE-TIME:2026-01-01T00:00:04Z
+#EXTINF:2.0,1080p program
+{program}
+"#
+        );
+
+        // The two later ranges overwrite the ad range on the first segment, so a
+        // parsed playlist no longer shows which segments are ads.
+        let (_, parsed) = m3u8_rs::parse_playlist(body.as_bytes()).unwrap();
+        let Playlist::MediaPlaylist(parsed) = parsed else {
+            panic!("expected Twitch media playlist");
+        };
+        assert_eq!(parsed.segments.len(), 3);
+        assert!(!parsed
+            .segments
+            .iter()
+            .any(|segment| segment.daterange.as_ref().is_some_and(is_twitch_ad_range)));
+
+        // The raw scan keeps the ad window and reads its length from
+        // `PLANNED-DURATION`, because a still-playing ad has no `DURATION` yet.
+        let ranges = raw_twitch_ad_ranges(body.as_bytes());
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].end_ms - ranges[0].start_ms, 4_000);
+
+        mount_twitch_playlist(&server, body).await;
+        let (recorder, work_dir) = twitch_recorder(&server, "head-daterange").await;
+
+        let saved = record_playlist_once(&recorder).await;
+
+        assert_only_program_recorded(&saved, &work_dir);
+        assert_eq!(
+            tokio::fs::read_to_string(work_dir.join(".sequence"))
+                .await
+                .unwrap(),
+            "2"
+        );
+
+        server.verify().await;
+        tokio::fs::remove_dir_all(work_dir).await.unwrap();
+    }
+
+    #[test]
+    fn date_range_attributes_keep_commas_inside_quoted_values() {
+        let attributes = date_range_attributes(
+            r#"ID="stitched-ad-1",X-TV-TWITCH-AD-URL="https://ads.example/a,b",DURATION=2.5"#,
+        );
+        assert_eq!(attributes.len(), 3);
+        assert_eq!(
+            attributes.get("X-TV-TWITCH-AD-URL"),
+            Some(&QuotedOrUnquoted::Quoted(
+                "https://ads.example/a,b".to_string()
+            ))
+        );
+        assert_eq!(
+            attributes.get("DURATION"),
+            Some(&QuotedOrUnquoted::Unquoted("2.5".to_string()))
+        );
     }
 
     #[tokio::test]

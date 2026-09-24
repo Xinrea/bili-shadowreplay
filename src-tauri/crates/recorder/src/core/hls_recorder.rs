@@ -757,7 +757,7 @@ impl HlsRecorder {
     ) -> Result<DownloadedSegment, RecorderError> {
         let mut segment = source_segment.clone();
         let (local_map, init_size) = self
-            .ensure_fmp4_init(source_stream, segment.map.as_ref())
+            .map_for_recorded_segment(source_stream, segment.map.as_ref())
             .await?;
         if let Some(local_map) = local_map {
             segment.map = Some(local_map);
@@ -775,6 +775,71 @@ impl HlsRecorder {
             size,
             init_size,
         })
+    }
+
+    /// Cache every `#EXT-X-MAP` announced in the current playlist.
+    ///
+    /// Twitch often hangs the map on the first ad segment of a stitched window.
+    /// Those ads are skipped, so map discovery cannot live only inside
+    /// [`Self::download_segment`]. Scan the whole playlist each reload — including
+    /// already-recorded sequences — so a discontinuity that changes the init URI
+    /// is noticed even when the map tag sits on a segment we will not keep.
+    async fn observe_fmp4_maps(
+        &self,
+        source_stream: &HlsStream,
+        playlist: &MediaPlaylist,
+    ) -> Result<(), RecorderError> {
+        for segment in &playlist.segments {
+            let _ = self
+                .ensure_fmp4_init(source_stream, segment.map.as_ref())
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Resolve the local `#EXT-X-MAP` to write on a retained media segment.
+    ///
+    /// When ads that carried the source map were skipped, the first program
+    /// segment has no `map` field. Re-emit the cached init so the on-disk
+    /// playlist stays playable and exportable.
+    async fn map_for_recorded_segment(
+        &self,
+        source_stream: &HlsStream,
+        source_map: Option<&Map>,
+    ) -> Result<(Option<Map>, u64), RecorderError> {
+        let (from_source, init_size) = self.ensure_fmp4_init(source_stream, source_map).await?;
+        if from_source.is_some() {
+            return Ok((from_source, init_size));
+        }
+
+        let local_uri = {
+            let init = self.fmp4_init.read().await;
+            init.as_ref().map(|init| init.local_uri.clone())
+        };
+        let Some(local_uri) = local_uri else {
+            return Ok((None, 0));
+        };
+        let last_playlist_map = {
+            let playlist = self.playlist.lock().await;
+            playlist
+                .playlist
+                .segments
+                .iter()
+                .rev()
+                .find_map(|segment| segment.map.as_ref().map(|map| map.uri.clone()))
+        };
+        if last_playlist_map.as_deref() == Some(local_uri.as_str()) {
+            return Ok((None, 0));
+        }
+
+        Ok((
+            Some(Map {
+                uri: local_uri,
+                byte_range: None,
+                other_attributes: Default::default(),
+            }),
+            0,
+        ))
     }
 
     /// Download the `#EXT-X-MAP` initialization section when the playlist
@@ -867,6 +932,11 @@ impl HlsRecorder {
         ad_ranges: &[AdTimeRange],
     ) -> Result<Option<DownloadedSegment>, RecorderError> {
         if is_twitch_ad_segment(segment, ad_ranges) {
+            // Keep the init even when the media is discarded: Twitch attaches
+            // `#EXT-X-MAP` to the first ad segment of a stitched window.
+            let _ = self
+                .ensure_fmp4_init(source_stream, segment.map.as_ref())
+                .await?;
             log::info!("Skipping Twitch ad segment at sequence {sequence}");
             if let Some(range) = ad_range_for_segment(segment, ad_ranges) {
                 self.persist_skipped_ad_range(&range).await?;
@@ -891,6 +961,8 @@ impl HlsRecorder {
             .await
             .clone()
             .unwrap_or_else(|| (*self.stream).clone());
+        self.observe_fmp4_maps(&selected_stream, &media_playlist)
+            .await?;
         let playlist_sequence = media_playlist.media_sequence;
         let last_sequence = self.sequence.load(Ordering::Relaxed);
         let ad_ranges = self.ad_ranges_for_playlist(&media_playlist).await;
@@ -1458,6 +1530,113 @@ mod tests {
                 .unwrap(),
             "2"
         );
+
+        server.verify().await;
+        tokio::fs::remove_dir_all(work_dir).await.unwrap();
+    }
+
+    /// Twitch hangs `#EXT-X-MAP` on the first stitched-ad segment. Skipping that
+    /// ad must still cache the init so the following program fragment can be
+    /// probed.
+    #[tokio::test]
+    async fn skipping_ad_that_carries_fmp4_map_still_caches_init_for_program() {
+        let init_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/video/init.m4s");
+        let media_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/video/segment.m4s");
+        if !init_path.exists() || !media_path.exists() {
+            return;
+        }
+        let init_body = tokio::fs::read(&init_path).await.unwrap();
+        let media_body = tokio::fs::read(&media_path).await.unwrap();
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/live/init.mp4"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(init_body.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/live/program.mp4"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(media_body.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        for ad_path in ["/ads/segment-480p-1.ts", "/ads/segment-480p-2.ts"] {
+            Mock::given(method("GET"))
+                .and(path(ad_path))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(b"ad".to_vec()))
+                .expect(0)
+                .mount(&server)
+                .await;
+        }
+        Mock::given(method("GET"))
+            .and(path("/master.m3u8"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+                r#"#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXT-X-MAP:URI="{0}/live/init.mp4"
+#EXT-X-DATERANGE:ID="stitched-ad-test",CLASS="twitch-stitched-ad",START-DATE="2026-01-01T00:00:00Z",DURATION=4.0
+#EXT-X-PROGRAM-DATE-TIME:2026-01-01T00:00:00Z
+#EXTINF:2.0,480p ad
+{0}/ads/segment-480p-1.ts
+#EXT-X-PROGRAM-DATE-TIME:2026-01-01T00:00:02Z
+#EXTINF:2.0,480p ad
+{0}/ads/segment-480p-2.ts
+#EXT-X-PROGRAM-DATE-TIME:2026-01-01T00:00:04Z
+#EXTINF:2.0,1080p program
+{0}/live/program.mp4
+"#,
+                server.uri()
+            )))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let (recorder, work_dir) = twitch_recorder(&server, "ad-fmp4-map").await;
+        let playlist = recorder.query_media_playlist().await.unwrap();
+        assert!(playlist.segments[0].map.is_some());
+        assert!(playlist.segments[2].map.is_none());
+
+        recorder
+            .observe_fmp4_maps(&recorder.stream, &playlist)
+            .await
+            .unwrap();
+        let ad_ranges = recorder.ad_ranges_for_playlist(&playlist).await;
+        for (i, segment) in playlist.segments.iter().enumerate() {
+            let sequence = i as u64;
+            let Some(downloaded) = recorder
+                .download_if_not_twitch_ad(&recorder.stream, segment, sequence, &ad_ranges)
+                .await
+                .unwrap()
+            else {
+                continue;
+            };
+            let metadata = recorder
+                .probe_segment_metadata(&downloaded.path)
+                .await
+                .expect("program fMP4 media must probe with the cached ad-carried init");
+            assert!(!metadata.seems_corrupted());
+            assert_eq!((metadata.width, metadata.height), (1920, 1080));
+            assert!(downloaded.segment.map.is_some());
+            recorder
+                .playlist
+                .lock()
+                .await
+                .add_segment(downloaded.segment)
+                .await
+                .unwrap();
+            recorder.update_sequence(sequence).await.unwrap();
+        }
+
+        let saved = tokio::fs::read_to_string(work_dir.join(PLAYLIST_FILE_NAME))
+            .await
+            .unwrap();
+        assert!(saved.contains("#EXT-X-MAP:URI=\"init-"));
+        assert!(saved.contains("segment-2.mp4"));
+        assert!(!work_dir.join("segment-0.ts").exists());
+        assert!(!work_dir.join("segment-1.ts").exists());
+        assert!(recorder.fmp4_init.read().await.is_some());
 
         server.verify().await;
         tokio::fs::remove_dir_all(work_dir).await.unwrap();
@@ -2081,9 +2260,17 @@ high-100.ts
                 .map(|init| init.local_uri.as_str()),
             Some(local_map.as_str())
         );
+        recorder
+            .playlist
+            .lock()
+            .await
+            .add_segment(downloaded.segment)
+            .await
+            .unwrap();
 
         // A second segment without a MAP tag must reuse the cached init and not
-        // re-request it.
+        // re-request it. Once the playlist already carries that map, later
+        // retained segments should not re-emit `#EXT-X-MAP`.
         Mock::given(method("GET"))
             .and(path("/live/seg-2.mp4"))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(b"second".to_vec()))

@@ -19,7 +19,8 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libssl-dev pkg-config
+          # ffmpeg/ffprobe: needed for ffmpeg_utils fixture tests (fMP4 init+media probe)
+          sudo apt-get install -y libssl-dev pkg-config ffmpeg
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable

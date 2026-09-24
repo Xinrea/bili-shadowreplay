@@ -64,23 +64,6 @@ pub async fn clip_from_playlist(
         return Err("No segments found".to_string());
     }
 
-    let first_segment = playlist
-        .segments
-        .first()
-        .ok_or_else(|| "Playlist contains no segments".to_string())?;
-    let mut header_url = first_segment
-        .unknown_tags
-        .iter()
-        .find(|t| t.tag == "X-MAP")
-        .and_then(|tag| tag.rest.as_deref())
-        .and_then(parse_map_uri);
-    if header_url.is_none() {
-        // map: Some(Map { uri: "h1758725308.m4s"
-        if let Some(Map { uri, .. }) = &first_segment.map {
-            header_url = Some(uri.clone());
-        }
-    }
-
     // write all segments to clip_file
     {
         let playlist_folder = playlist_path.parent().unwrap_or_else(|| Path::new("."));
@@ -96,25 +79,37 @@ pub async fn clip_from_playlist(
         let mut file = tokio::fs::File::create(&output_path)
             .await
             .map_err(|e| format!("Failed to create output file: {}", e))?;
-        if let Some(header_url) = header_url {
-            let header_data = tokio::fs::read(playlist_folder.join(header_url))
-                .await
-                .map_err(|e| format!("Failed to read header file: {}", e))?;
-            file.write_all(&header_data)
-                .await
-                .map_err(|e| format!("Failed to write header file: {}", e))?;
+
+        // `#EXT-X-MAP` applies forward until the next map. A range clip may start
+        // after the map tag, so discover the init that covers the first selected
+        // segment by scanning from the playlist head.
+        let mut active_map = map_uri_before_segment(&playlist, &segments[0].uri);
+        if let Some(header_url) = active_map.as_ref() {
+            write_playlist_file(&mut file, playlist_folder, header_url).await?;
         }
+
         for s in segments {
+            if let Some(Map { uri, .. }) = &s.map {
+                if active_map.as_deref() != Some(uri.as_str()) {
+                    write_playlist_file(&mut file, playlist_folder, uri).await?;
+                    active_map = Some(uri.clone());
+                }
+            } else if let Some(uri) = s
+                .unknown_tags
+                .iter()
+                .find(|t| t.tag == "X-MAP")
+                .and_then(|tag| tag.rest.as_deref())
+                .and_then(parse_map_uri)
+            {
+                if active_map.as_deref() != Some(uri.as_str()) {
+                    write_playlist_file(&mut file, playlist_folder, &uri).await?;
+                    active_map = Some(uri);
+                }
+            }
+
             // read segment
             let uri = s.uri.split('?').next().unwrap_or(&s.uri);
-            let segment_file_path = playlist_folder.join(uri);
-            let segment_data = tokio::fs::read(&segment_file_path)
-                .await
-                .map_err(|e| format!("Failed to read segment file: {}", e))?;
-            // append segment data to clip_file
-            file.write_all(&segment_data)
-                .await
-                .map_err(|e| format!("Failed to write segment file: {}", e))?;
+            write_playlist_file(&mut file, playlist_folder, uri).await?;
         }
         file.flush()
             .await
@@ -171,6 +166,46 @@ fn parse_map_uri(rest: &str) -> Option<String> {
         let uri = unescaped.trim_matches('"');
         (!uri.is_empty()).then(|| uri.to_string())
     })
+}
+
+fn segment_map_uri(segment: &m3u8_rs::MediaSegment) -> Option<String> {
+    segment.map.as_ref().map(|map| map.uri.clone()).or_else(|| {
+        segment
+            .unknown_tags
+            .iter()
+            .find(|tag| tag.tag == "X-MAP")
+            .and_then(|tag| tag.rest.as_deref())
+            .and_then(parse_map_uri)
+    })
+}
+
+/// Find the `#EXT-X-MAP` that applies to `segment_uri` by walking the playlist
+/// from the start, the same way HLS players inherit init sections.
+fn map_uri_before_segment(playlist: &MediaPlaylist, segment_uri: &str) -> Option<String> {
+    let mut active = None;
+    for segment in &playlist.segments {
+        if let Some(uri) = segment_map_uri(segment) {
+            active = Some(uri);
+        }
+        if segment.uri == segment_uri {
+            return active;
+        }
+    }
+    active
+}
+
+async fn write_playlist_file(
+    file: &mut tokio::fs::File,
+    playlist_folder: &Path,
+    relative_uri: &str,
+) -> Result<(), String> {
+    let path = playlist_folder.join(relative_uri);
+    let data = tokio::fs::read(&path)
+        .await
+        .map_err(|e| format!("Failed to read '{}': {e}", path.display()))?;
+    file.write_all(&data)
+        .await
+        .map_err(|e| format!("Failed to write '{}': {e}", path.display()))
 }
 
 fn temporary_output_path(output_path: &Path) -> Result<tempfile::TempPath, String> {
@@ -290,5 +325,29 @@ mod tests {
             Some("header.m4s".to_string())
         );
         assert_eq!(parse_map_uri("malformed"), None);
+    }
+
+    #[test]
+    fn map_uri_before_segment_inherits_the_latest_map() {
+        let playlist = r#"#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXT-X-MAP:URI="init-a.mp4"
+#EXTINF:2.0,
+seg-1.mp4
+#EXTINF:2.0,
+seg-2.mp4
+#EXT-X-MAP:URI="init-b.mp4"
+#EXTINF:2.0,
+seg-3.mp4
+"#;
+        let (_, parsed) = m3u8_rs::parse_media_playlist(playlist.as_bytes()).unwrap();
+        assert_eq!(
+            map_uri_before_segment(&parsed, "seg-2.mp4").as_deref(),
+            Some("init-a.mp4")
+        );
+        assert_eq!(
+            map_uri_before_segment(&parsed, "seg-3.mp4").as_deref(),
+            Some("init-b.mp4")
+        );
     }
 }

@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::{path::PathBuf, sync::Arc};
 
 use chrono::Utc;
-use m3u8_rs::{DateRange, MediaPlaylist, MediaSegment, Playlist, QuotedOrUnquoted, VariantStream};
+use m3u8_rs::{DateRange, Map, MediaPlaylist, MediaSegment, Playlist, QuotedOrUnquoted, VariantStream};
 use reqwest::header::HeaderMap;
 use std::time::Duration;
 use tokio::fs::{File, OpenOptions};
@@ -16,7 +16,9 @@ use crate::core::{Codec, Format};
 use crate::errors::RecorderError;
 use crate::timeline::{append_skipped_ad_range, load_skipped_ad_ranges, AdTimeRange};
 use crate::{core::HlsStream, events::RecorderEvent};
-use ffmpeg_utils::{extract_video_metadata, VideoMetadata};
+use ffmpeg_utils::{
+    extract_video_metadata, extract_video_metadata_with_init, VideoMetadata,
+};
 
 const UPDATE_TIMEOUT: Duration = Duration::from_secs(20);
 const UPDATE_INTERVAL: Duration = Duration::from_secs(1);
@@ -63,14 +65,28 @@ pub struct HlsRecorder {
     updated_at: Arc<AtomicI64>,
 
     pre_metadata: Arc<RwLock<Option<VideoMetadata>>>,
+    /// Current fMP4 `#EXT-X-MAP` initialization segment, when the source uses
+    /// fragmented MP4 instead of MPEG-TS. Twitch (and some Bilibili HEVC
+    /// streams) require this before media segments can be probed or played.
+    fmp4_init: Arc<RwLock<Option<Fmp4Init>>>,
     ad_ranges: Arc<Mutex<Vec<AdTimeRange>>>,
     skipped_ad_ranges: Arc<Mutex<Vec<AdTimeRange>>>,
+}
+
+/// Local copy of an HLS fMP4 initialization section.
+struct Fmp4Init {
+    /// Absolute source URL, used to reuse the same init across playlist reloads.
+    source_url: String,
+    path: PathBuf,
+    local_uri: String,
 }
 
 struct DownloadedSegment {
     segment: MediaSegment,
     path: PathBuf,
     size: u64,
+    /// Bytes newly fetched for an `#EXT-X-MAP` that changed on this segment.
+    init_size: u64,
 }
 
 fn is_twitch_ad_range(range: &DateRange) -> bool {
@@ -221,10 +237,38 @@ fn raw_twitch_ad_ranges(content: &[u8]) -> Vec<AdTimeRange> {
         .collect()
 }
 
-fn local_segment_filename(sequence: u64, uri: &str) -> String {
+fn local_segment_filename(sequence: u64, uri: &str, fallback_extension: &str) -> String {
+    format!(
+        "segment-{sequence}.{}",
+        media_extension(uri, fallback_extension)
+    )
+}
+
+fn local_init_filename(uri: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    uri.hash(&mut hasher);
+    // Twitch weaver init URIs often have no file extension; prefer the fMP4
+    // fragment extension so HLS preview serves `video/iso.segment` instead of
+    // falling back to MPEG-TS.
+    format!(
+        "init-{:x}.{}",
+        hasher.finish(),
+        media_extension(uri, "m4s")
+    )
+}
+
+/// Pick a local filename extension from a segment/init URI.
+///
+/// Twitch weaver paths are commonly extensionless (`/v1/segment/<token>`). When
+/// the source uses `#EXT-X-MAP`, callers pass `"m4s"` so the HTTP HLS callback
+/// does not advertise `video/mp2t` for fMP4 bytes.
+fn media_extension<'a>(uri: &'a str, fallback: &'a str) -> &'a str {
     let path = uri.split(['?', '#']).next().unwrap_or(uri);
     let basename = path.rsplit('/').next().unwrap_or(path);
-    let extension = basename
+    basename
         .rsplit_once('.')
         .map(|(_, extension)| extension)
         .filter(|extension| {
@@ -234,12 +278,26 @@ fn local_segment_filename(sequence: u64, uri: &str) -> String {
                     .chars()
                     .all(|character| character.is_ascii_alphanumeric())
         })
-        .unwrap_or("ts");
+        .unwrap_or(fallback)
+}
 
-    // Segment URIs can repeat while their query strings change. Use the media
-    // sequence for every local name so later downloads never overwrite earlier
-    // playlist entries.
-    format!("segment-{sequence}.{extension}")
+/// Recover the last written `#EXT-X-MAP` from an on-disk playlist so a resumed
+/// recorder can keep probing fMP4 media segments.
+fn restore_fmp4_init(work_dir: &Path, playlist: &HlsPlaylist) -> Option<Fmp4Init> {
+    let local_uri = playlist
+        .playlist
+        .segments
+        .iter()
+        .rev()
+        .find_map(|segment| segment.map.as_ref().map(|map| map.uri.clone()))?;
+    let path = work_dir.join(&local_uri);
+    path.exists().then(|| Fmp4Init {
+        // Unknown after resume; the next playlist MAP triggers a fresh download
+        // keyed by its absolute source URL.
+        source_url: String::new(),
+        path,
+        local_uri,
+    })
 }
 
 impl HlsRecorder {
@@ -345,6 +403,10 @@ impl HlsRecorder {
 
         let mut playlist = HlsPlaylist::new(playlist_path).await?;
         playlist.reopen().await?;
+        // fMP4 media segments are not self-describing. When resuming the same
+        // archive, reuse the last `#EXT-X-MAP` so later segments can still be
+        // probed before the source re-announces the init URI.
+        let fmp4_init = restore_fmp4_init(&work_dir, &playlist);
         // A resumed archive must retain the media shape of its last playable
         // segment; otherwise the first ad segment after a restart could become
         // the new baseline and cause the actual stream to be skipped.
@@ -354,7 +416,12 @@ impl HlsRecorder {
             .map(|segment| segment.uri.clone());
         let pre_metadata = if let Some(last_segment_uri) = last_segment_uri {
             let path = work_dir.join(last_segment_uri);
-            match extract_video_metadata(&path).await {
+            let metadata = if let Some(init) = fmp4_init.as_ref() {
+                extract_video_metadata_with_init(&init.path, &path).await
+            } else {
+                extract_video_metadata(&path).await
+            };
+            match metadata {
                 Ok(metadata) if !metadata.seems_corrupted() => Some(metadata),
                 _ => None,
             }
@@ -377,6 +444,7 @@ impl HlsRecorder {
             sequence: Arc::new(AtomicU64::new(sequence)),
             updated_at: Arc::new(AtomicI64::new(chrono::Utc::now().timestamp_millis())),
             pre_metadata: Arc::new(RwLock::new(pre_metadata)),
+            fmp4_init: Arc::new(RwLock::new(fmp4_init)),
             ad_ranges: Arc::new(Mutex::new(Vec::new())),
             skipped_ad_ranges: Arc::new(Mutex::new(skipped_ad_ranges)),
             sequence_file: Arc::new(RwLock::new(sequence_file)),
@@ -703,8 +771,16 @@ impl HlsRecorder {
         sequence: u64,
     ) -> Result<DownloadedSegment, RecorderError> {
         let mut segment = source_segment.clone();
+        let (local_map, init_size) = self
+            .map_for_recorded_segment(source_stream, segment.map.as_ref())
+            .await?;
+        if let Some(local_map) = local_map {
+            segment.map = Some(local_map);
+        }
+
         let source_url = source_stream.ts_url(&segment.uri);
-        let local_uri = local_segment_filename(sequence, &segment.uri);
+        let local_uri =
+            local_segment_filename(sequence, &segment.uri, self.segment_fallback_extension().await);
         let path = self.work_dir.join(&local_uri);
         let size = download(&self.client, &source_url, &path, DOWNLOAD_RETRY).await?;
 
@@ -713,7 +789,155 @@ impl HlsRecorder {
             segment,
             path,
             size,
+            init_size,
         })
+    }
+
+    /// Cache every `#EXT-X-MAP` announced in the current playlist.
+    ///
+    /// Twitch often hangs the map on the first ad segment of a stitched window.
+    /// Those ads are skipped, so map discovery cannot live only inside
+    /// [`Self::download_segment`]. Scan the whole playlist each reload — including
+    /// already-recorded sequences — so a discontinuity that changes the init URI
+    /// is noticed even when the map tag sits on a segment we will not keep.
+    async fn observe_fmp4_maps(
+        &self,
+        source_stream: &HlsStream,
+        playlist: &MediaPlaylist,
+    ) -> Result<(), RecorderError> {
+        for segment in &playlist.segments {
+            let _ = self
+                .ensure_fmp4_init(source_stream, segment.map.as_ref())
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Resolve the local `#EXT-X-MAP` to write on a retained media segment.
+    ///
+    /// When ads that carried the source map were skipped, the first program
+    /// segment has no `map` field. Re-emit the cached init so the on-disk
+    /// playlist stays playable and exportable.
+    async fn map_for_recorded_segment(
+        &self,
+        source_stream: &HlsStream,
+        source_map: Option<&Map>,
+    ) -> Result<(Option<Map>, u64), RecorderError> {
+        let (from_source, init_size) = self.ensure_fmp4_init(source_stream, source_map).await?;
+        if from_source.is_some() {
+            return Ok((from_source, init_size));
+        }
+
+        let local_uri = {
+            let init = self.fmp4_init.read().await;
+            init.as_ref().map(|init| init.local_uri.clone())
+        };
+        let Some(local_uri) = local_uri else {
+            return Ok((None, 0));
+        };
+        let last_playlist_map = {
+            let playlist = self.playlist.lock().await;
+            playlist
+                .playlist
+                .segments
+                .iter()
+                .rev()
+                .find_map(|segment| segment.map.as_ref().map(|map| map.uri.clone()))
+        };
+        if last_playlist_map.as_deref() == Some(local_uri.as_str()) {
+            return Ok((None, 0));
+        }
+
+        Ok((
+            Some(Map {
+                uri: local_uri,
+                byte_range: None,
+                other_attributes: Default::default(),
+            }),
+            0,
+        ))
+    }
+
+    /// Download the `#EXT-X-MAP` initialization section when the playlist
+    /// announces a new one, and keep using the previous local copy otherwise.
+    ///
+    /// `m3u8-rs` only attaches the map to the first media segment after the
+    /// tag, so later segments inherit the cached init for probing.
+    async fn ensure_fmp4_init(
+        &self,
+        source_stream: &HlsStream,
+        source_map: Option<&Map>,
+    ) -> Result<(Option<Map>, u64), RecorderError> {
+        let Some(source_map) = source_map else {
+            return Ok((None, 0));
+        };
+
+        let source_url = source_stream.ts_url(&source_map.uri);
+        {
+            let cached = self.fmp4_init.read().await;
+            if let Some(cached) = cached.as_ref() {
+                if cached.source_url == source_url {
+                    return Ok((
+                        Some(Map {
+                            uri: cached.local_uri.clone(),
+                            byte_range: None,
+                            other_attributes: Default::default(),
+                        }),
+                        0,
+                    ));
+                }
+            }
+        }
+
+        let local_uri = local_init_filename(&source_map.uri);
+        let path = self.work_dir.join(&local_uri);
+        let init_size = download(&self.client, &source_url, &path, DOWNLOAD_RETRY).await?;
+        log::info!(
+            "[{}] Cached fMP4 init segment as {local_uri} ({} bytes)",
+            self.room_id,
+            init_size
+        );
+
+        *self.fmp4_init.write().await = Some(Fmp4Init {
+            source_url,
+            path,
+            local_uri: local_uri.clone(),
+        });
+
+        Ok((
+            Some(Map {
+                uri: local_uri,
+                byte_range: None,
+                other_attributes: Default::default(),
+            }),
+            init_size,
+        ))
+    }
+
+    /// Probe a downloaded segment, prepending the current fMP4 init when needed.
+    async fn probe_segment_metadata(
+        &self,
+        segment_path: &Path,
+    ) -> Result<VideoMetadata, RecorderError> {
+        let init = self.fmp4_init.read().await;
+        let metadata = if let Some(init) = init.as_ref() {
+            extract_video_metadata_with_init(&init.path, segment_path).await
+        } else {
+            extract_video_metadata(segment_path).await
+        };
+        metadata.map_err(RecorderError::FfmpegError)
+    }
+
+    /// Length used for archive accounting.
+    ///
+    /// fMP4 fragments often report absolute decode timestamps to ffprobe, so
+    /// the container duration is unusable; prefer the playlist `#EXTINF`.
+    fn segment_duration_secs(segment: &MediaSegment, metadata: &VideoMetadata, using_fmp4: bool) -> f64 {
+        if using_fmp4 || metadata.duration <= 0.0 {
+            segment.duration as f64
+        } else {
+            metadata.duration
+        }
     }
 
     async fn download_if_not_twitch_ad(
@@ -724,13 +948,20 @@ impl HlsRecorder {
         ad_ranges: &[AdTimeRange],
     ) -> Result<Option<DownloadedSegment>, RecorderError> {
         if is_twitch_ad_segment(segment, ad_ranges) {
+            // Keep the init even when the media is discarded: Twitch attaches
+            // `#EXT-X-MAP` to the first ad segment of a stitched window.
+            let _ = self
+                .ensure_fmp4_init(source_stream, segment.map.as_ref())
+                .await?;
             log::info!("Skipping Twitch ad segment at sequence {sequence}");
             if let Some(range) = ad_range_for_segment(segment, ad_ranges) {
                 self.persist_skipped_ad_range(&range).await?;
             }
-            let path = self
-                .work_dir
-                .join(local_segment_filename(sequence, &segment.uri));
+            let path = self.work_dir.join(local_segment_filename(
+                sequence,
+                &segment.uri,
+                self.segment_fallback_extension().await,
+            ));
             self.skip_segment(&path, sequence).await?;
             return Ok(None);
         }
@@ -738,6 +969,20 @@ impl HlsRecorder {
         self.download_segment(source_stream, segment, sequence)
             .await
             .map(Some)
+    }
+
+    /// Local filename extension when the source URI has none.
+    ///
+    /// MPEG-TS playlists stay on `.ts`. Once an `#EXT-X-MAP` has been seen,
+    /// fragments are fMP4 — Twitch weaver URIs are often extensionless, and
+    /// falling back to `.ts` would make the HTTP HLS callback advertise
+    /// `video/mp2t` for ISO BMFF bytes.
+    async fn segment_fallback_extension(&self) -> &'static str {
+        if self.fmp4_init.read().await.is_some() {
+            "m4s"
+        } else {
+            "ts"
+        }
     }
 
     async fn update_entries(&self) -> Result<(), RecorderError> {
@@ -748,6 +993,8 @@ impl HlsRecorder {
             .await
             .clone()
             .unwrap_or_else(|| (*self.stream).clone());
+        self.observe_fmp4_maps(&selected_stream, &media_playlist)
+            .await?;
         let playlist_sequence = media_playlist.media_sequence;
         let last_sequence = self.sequence.load(Ordering::Relaxed);
         let ad_ranges = self.ad_ranges_for_playlist(&media_playlist).await;
@@ -775,16 +1022,18 @@ impl HlsRecorder {
                 }
             };
             let segment_path = downloaded.path;
-            let size = downloaded.size;
+            let size = downloaded.size + downloaded.init_size;
             let mut segment = downloaded.segment;
             if segment.program_date_time.is_none() {
                 segment.program_date_time.replace(Utc::now().into());
             }
 
+            let using_fmp4 = self.fmp4_init.read().await.is_some();
+
             // check if the stream is changed
-            let segment_metadata = extract_video_metadata(&segment_path)
-                .await
-                .map_err(RecorderError::FfmpegError)?;
+            let segment_metadata = self.probe_segment_metadata(&segment_path).await?;
+            let duration_secs =
+                Self::segment_duration_secs(&segment, &segment_metadata, using_fmp4);
 
             // IMPORTANT: This handles bilibili ts stream segment, which might lack of SPS/PPS and need to be appended behind last segment
             if segment_metadata.seems_corrupted() {
@@ -823,7 +1072,7 @@ impl HlsRecorder {
                 let _ = tokio::fs::remove_file(&segment_path).await;
                 playlist.append_last_segment(segment.clone()).await?;
 
-                duration_delta += segment_metadata.duration;
+                duration_delta += duration_secs;
                 size_delta += size;
                 self.update_sequence(segment_sequence).await?;
                 self.updated_at
@@ -848,11 +1097,11 @@ impl HlsRecorder {
             }
 
             let mut new_segment = segment.clone();
-            new_segment.duration = segment_metadata.duration as f32;
+            new_segment.duration = duration_secs as f32;
 
             self.playlist.lock().await.add_segment(new_segment).await?;
 
-            duration_delta += segment_metadata.duration;
+            duration_delta += duration_secs;
             size_delta += size;
             self.update_sequence(segment_sequence).await?;
             self.updated_at
@@ -1313,6 +1562,122 @@ mod tests {
                 .unwrap(),
             "2"
         );
+
+        server.verify().await;
+        tokio::fs::remove_dir_all(work_dir).await.unwrap();
+    }
+
+    /// Twitch hangs `#EXT-X-MAP` on the first stitched-ad segment. Skipping that
+    /// ad must still cache the init so later program fragments inherit it.
+    ///
+    /// This test intentionally avoids calling ffprobe: CI runners may not ship
+    /// ffmpeg, and the regression is about map discovery while skipping ads.
+    #[tokio::test]
+    async fn skipping_ad_that_carries_fmp4_map_still_caches_init_for_program() {
+        let init_body = b"fmp4-init-section".to_vec();
+        let media_body = b"fmp4-program-fragment".to_vec();
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/live/init.mp4"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(init_body.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/live/program.mp4"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(media_body.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        for ad_path in ["/ads/segment-480p-1.ts", "/ads/segment-480p-2.ts"] {
+            Mock::given(method("GET"))
+                .and(path(ad_path))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(b"ad".to_vec()))
+                .expect(0)
+                .mount(&server)
+                .await;
+        }
+        Mock::given(method("GET"))
+            .and(path("/master.m3u8"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+                r#"#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXT-X-MAP:URI="{0}/live/init.mp4"
+#EXT-X-DATERANGE:ID="stitched-ad-test",CLASS="twitch-stitched-ad",START-DATE="2026-01-01T00:00:00Z",DURATION=4.0
+#EXT-X-PROGRAM-DATE-TIME:2026-01-01T00:00:00Z
+#EXTINF:2.0,480p ad
+{0}/ads/segment-480p-1.ts
+#EXT-X-PROGRAM-DATE-TIME:2026-01-01T00:00:02Z
+#EXTINF:2.0,480p ad
+{0}/ads/segment-480p-2.ts
+#EXT-X-PROGRAM-DATE-TIME:2026-01-01T00:00:04Z
+#EXTINF:2.0,1080p program
+{0}/live/program.mp4
+"#,
+                server.uri()
+            )))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let (recorder, work_dir) = twitch_recorder(&server, "ad-fmp4-map").await;
+        let playlist = recorder.query_media_playlist().await.unwrap();
+        assert!(playlist.segments[0].map.is_some());
+        assert!(playlist.segments[2].map.is_none());
+
+        recorder
+            .observe_fmp4_maps(&recorder.stream, &playlist)
+            .await
+            .unwrap();
+        let ad_ranges = recorder.ad_ranges_for_playlist(&playlist).await;
+        let mut retained = 0;
+        for (i, segment) in playlist.segments.iter().enumerate() {
+            let sequence = i as u64;
+            let Some(downloaded) = recorder
+                .download_if_not_twitch_ad(&recorder.stream, segment, sequence, &ad_ranges)
+                .await
+                .unwrap()
+            else {
+                continue;
+            };
+            assert_eq!(downloaded.segment.uri, "segment-2.mp4");
+            assert!(
+                downloaded.segment.map.is_some(),
+                "first retained program segment must re-emit the init carried by the skipped ad"
+            );
+            assert_eq!(tokio::fs::read(&downloaded.path).await.unwrap(), media_body);
+            recorder
+                .playlist
+                .lock()
+                .await
+                .add_segment(downloaded.segment)
+                .await
+                .unwrap();
+            recorder.update_sequence(sequence).await.unwrap();
+            retained += 1;
+        }
+        assert_eq!(retained, 1);
+
+        let local_map = recorder
+            .fmp4_init
+            .read()
+            .await
+            .as_ref()
+            .map(|init| init.local_uri.clone())
+            .expect("init announced on the ad segment must be cached");
+        assert_eq!(
+            tokio::fs::read(work_dir.join(&local_map)).await.unwrap(),
+            init_body
+        );
+
+        let saved = tokio::fs::read_to_string(work_dir.join(PLAYLIST_FILE_NAME))
+            .await
+            .unwrap();
+        assert!(saved.contains(&format!("#EXT-X-MAP:URI=\"{local_map}\"")));
+        assert!(saved.contains("segment-2.mp4"));
+        assert!(!work_dir.join("segment-0.ts").exists());
+        assert!(!work_dir.join("segment-1.ts").exists());
 
         server.verify().await;
         tokio::fs::remove_dir_all(work_dir).await.unwrap();
@@ -1862,21 +2227,239 @@ high-100.ts
         assert_eq!(
             local_segment_filename(
                 1528,
-                "https://rr5.googlevideo.com/videoplayback?itag=91&sig=secret"
+                "https://rr5.googlevideo.com/videoplayback?itag=91&sig=secret",
+                "ts"
             ),
             "segment-1528.ts"
         );
         assert_eq!(
-            local_segment_filename(1529, "https://cdn.test/chunk-1.m4s?token=secret"),
+            local_segment_filename(1529, "https://cdn.test/chunk-1.m4s?token=secret", "ts"),
             "segment-1529.m4s"
         );
         assert_eq!(
-            local_segment_filename(3, "nested/3.ts?expires=1"),
+            local_segment_filename(3, "nested/3.ts?expires=1", "ts"),
             "segment-3.ts"
         );
         assert_ne!(
-            local_segment_filename(3, "chunk.ts?seq=1"),
-            local_segment_filename(4, "chunk.ts?seq=2")
+            local_segment_filename(3, "chunk.ts?seq=1", "ts"),
+            local_segment_filename(4, "chunk.ts?seq=2", "ts")
+        );
+    }
+
+    #[test]
+    fn weaver_extensionless_uris_use_fmp4_fallback() {
+        // Twitch CloudFront weaver paths are commonly `/v1/segment/<token>`
+        // with no `.mp4` / `.m4s` suffix. When MAP is present the recorder must
+        // not invent `.ts` (that would serve `video/mp2t` in the HLS callback).
+        let weaver_seg = "https://aa.cloudfront.hls.ttvnw.net/v1/segment/CvICeYA1Fg1UXbdoIhjzy?dna=1";
+        let weaver_init = "https://aa.cloudfront.hls.ttvnw.net/v1/segment/InitTokenNoExt?dna=1";
+        assert_eq!(
+            local_segment_filename(42, weaver_seg, "m4s"),
+            "segment-42.m4s"
+        );
+        assert_eq!(media_extension(weaver_seg, "m4s"), "m4s");
+        assert_eq!(media_extension(weaver_seg, "ts"), "ts");
+        assert!(local_init_filename(weaver_init).ends_with(".m4s"));
+        assert_eq!(
+            media_extension(
+                "https://cdn.test/v1/segment/token.mp4?dna=1",
+                "m4s"
+            ),
+            "mp4"
+        );
+    }
+
+    #[tokio::test]
+    async fn fmp4_map_is_downloaded_and_rewritten_to_a_local_uri() {
+        let server = MockServer::start().await;
+        let init_body = b"fmp4-init-section".to_vec();
+        let media_body = b"fmp4-media-fragment".to_vec();
+        Mock::given(method("GET"))
+            .and(path("/live/init.mp4"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(init_body.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/live/seg.mp4"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(media_body.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let (recorder, work_dir) = twitch_recorder(&server, "fmp4-map").await;
+        let playlist = format!(
+            r#"#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXT-X-MAP:URI="{}/live/init.mp4"
+#EXTINF:2.0,
+{}/live/seg.mp4
+"#,
+            server.uri(),
+            server.uri()
+        );
+        let (_, parsed) = m3u8_rs::parse_media_playlist(playlist.as_bytes()).unwrap();
+        assert!(parsed.segments[0].map.is_some());
+
+        let downloaded = recorder
+            .download_segment(&recorder.stream, &parsed.segments[0], 7)
+            .await
+            .unwrap();
+
+        let local_map = downloaded.segment.map.as_ref().unwrap().uri.clone();
+        assert!(local_map.starts_with("init-"));
+        assert!(local_map.ends_with(".mp4"));
+        assert_eq!(downloaded.segment.uri, "segment-7.mp4");
+        assert_eq!(downloaded.init_size, init_body.len() as u64);
+        assert_eq!(
+            tokio::fs::read(work_dir.join(&local_map)).await.unwrap(),
+            init_body
+        );
+        assert_eq!(tokio::fs::read(&downloaded.path).await.unwrap(), media_body);
+        assert_eq!(
+            recorder
+                .fmp4_init
+                .read()
+                .await
+                .as_ref()
+                .map(|init| init.local_uri.as_str()),
+            Some(local_map.as_str())
+        );
+        recorder
+            .playlist
+            .lock()
+            .await
+            .add_segment(downloaded.segment)
+            .await
+            .unwrap();
+
+        // A second segment without a MAP tag must reuse the cached init and not
+        // re-request it. Once the playlist already carries that map, later
+        // retained segments should not re-emit `#EXT-X-MAP`.
+        Mock::given(method("GET"))
+            .and(path("/live/seg-2.mp4"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"second".to_vec()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let second = format!(
+            r#"#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXTINF:2.0,
+{}/live/seg-2.mp4
+"#,
+            server.uri()
+        );
+        let (_, parsed_second) = m3u8_rs::parse_media_playlist(second.as_bytes()).unwrap();
+        let downloaded_second = recorder
+            .download_segment(&recorder.stream, &parsed_second.segments[0], 8)
+            .await
+            .unwrap();
+        assert!(downloaded_second.segment.map.is_none());
+        assert_eq!(downloaded_second.init_size, 0);
+
+        server.verify().await;
+        tokio::fs::remove_dir_all(work_dir).await.unwrap();
+    }
+
+    /// Weaver-style URIs have no `.mp4`/`.m4s` suffix. Local names must still
+    /// land on an fMP4 extension so header-mode HLS preview gets the right
+    /// content type (`video/iso.segment` / `video/mp4`), not `video/mp2t`.
+    #[tokio::test]
+    async fn weaver_extensionless_fmp4_uris_get_m4s_local_names() {
+        let server = MockServer::start().await;
+        let init_body = b"weaver-init".to_vec();
+        let media_body = b"weaver-media".to_vec();
+        let init_path = "/v1/segment/InitTokenNoExtension";
+        let seg_path = "/v1/segment/CvICeYA1Fg1UXbdoIhjzyEPGc3Rsf1Ry";
+        Mock::given(method("GET"))
+            .and(path(init_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(init_body.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(seg_path))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(media_body.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let (recorder, work_dir) = twitch_recorder(&server, "weaver-fmp4").await;
+        let playlist = format!(
+            r#"#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXT-X-MAP:URI="{0}{1}?dna=init"
+#EXTINF:2.0,
+{0}{2}?dna=seg
+"#,
+            server.uri(),
+            init_path,
+            seg_path
+        );
+        let (_, parsed) = m3u8_rs::parse_media_playlist(playlist.as_bytes()).unwrap();
+
+        let downloaded = recorder
+            .download_segment(&recorder.stream, &parsed.segments[0], 9)
+            .await
+            .unwrap();
+
+        let local_map = downloaded.segment.map.as_ref().unwrap().uri.clone();
+        assert!(
+            local_map.ends_with(".m4s"),
+            "extensionless init must fall back to .m4s, got {local_map}"
+        );
+        assert_eq!(downloaded.segment.uri, "segment-9.m4s");
+        assert_eq!(
+            tokio::fs::read(work_dir.join(&local_map)).await.unwrap(),
+            init_body
+        );
+        assert_eq!(tokio::fs::read(&downloaded.path).await.unwrap(), media_body);
+
+        server.verify().await;
+        tokio::fs::remove_dir_all(work_dir).await.unwrap();
+    }
+
+    #[test]
+    fn fmp4_archive_duration_prefers_extinf_over_probe_timestamps() {
+        let segment = MediaSegment {
+            duration: 2.0,
+            ..Default::default()
+        };
+        let metadata = VideoMetadata {
+            duration: 66.0,
+            width: 1920,
+            height: 1080,
+            video_codec: "h264".into(),
+            audio_codec: "aac".into(),
+            bitrate: 0,
+            fps: 60.0,
+            file_size: 0,
+        };
+        assert_eq!(
+            HlsRecorder::segment_duration_secs(&segment, &metadata, true),
+            2.0
+        );
+        assert_eq!(
+            HlsRecorder::segment_duration_secs(&segment, &metadata, false),
+            66.0
+        );
+    }
+
+    #[test]
+    fn local_init_names_are_stable_per_uri() {
+        assert_eq!(
+            local_init_filename("https://cdn.test/init.mp4?dna=1"),
+            local_init_filename("https://cdn.test/init.mp4?dna=1")
+        );
+        assert_ne!(
+            local_init_filename("https://cdn.test/init-a.mp4"),
+            local_init_filename("https://cdn.test/init-b.mp4")
+        );
+        assert!(local_init_filename("https://cdn.test/init.mp4").ends_with(".mp4"));
+        assert!(
+            local_init_filename("https://cdn.test/v1/segment/InitToken").ends_with(".m4s"),
+            "extensionless weaver init must not fall back to .ts"
         );
     }
 

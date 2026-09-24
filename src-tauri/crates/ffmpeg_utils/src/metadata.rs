@@ -63,6 +63,36 @@ impl VideoMetadata {
 /// the container does not report stay at `0`/empty so that callers can inspect
 /// [`VideoMetadata::seems_corrupted`] instead of matching on error strings.
 pub async fn extract_video_metadata(file_path: &Path) -> Result<VideoMetadata, String> {
+    probe_file(file_path).await
+}
+
+/// Probe an fMP4 media segment together with its `#EXT-X-MAP` initialization
+/// section.
+///
+/// HLS fMP4 media segments are not self-describing: ffprobe rejects them unless
+/// the init segment is prepended, the same way players assemble the bitstream.
+pub async fn extract_video_metadata_with_init(
+    init_path: &Path,
+    media_path: &Path,
+) -> Result<VideoMetadata, String> {
+    let init = tokio::fs::read(init_path)
+        .await
+        .map_err(|e| format!("读取fMP4 init失败: {e}"))?;
+    let media = tokio::fs::read(media_path)
+        .await
+        .map_err(|e| format!("读取fMP4 media失败: {e}"))?;
+
+    let probe_path = media_path.with_extension("probe.tmp");
+    tokio::fs::write(&probe_path, [init, media].concat())
+        .await
+        .map_err(|e| format!("写入fMP4 probe临时文件失败: {e}"))?;
+
+    let result = probe_file(&probe_path).await;
+    let _ = tokio::fs::remove_file(&probe_path).await;
+    result
+}
+
+async fn probe_file(file_path: &Path) -> Result<VideoMetadata, String> {
     let output = ffprobe_command()
         .args([
             "-v",
@@ -330,9 +360,8 @@ mod tests {
             .join(name)
     }
 
-    /// The unit tests also run in environments without ffmpeg installed (CI
-    /// installs no ffmpeg packages), so the fixture based tests skip there
-    /// instead of failing.
+    /// Soft-skip when ffmpeg is missing locally. The Tests workflow installs
+    /// ffmpeg so `init.m4s` / `segment.m4s` probe coverage runs in CI.
     async fn ffprobe_available() -> bool {
         ffprobe_command()
             .arg("-version")
@@ -386,5 +415,22 @@ mod tests {
 
         // ffprobe reads no stream list from it at all.
         assert!(extract_video_metadata(&file).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn probes_an_fmp4_media_segment_when_its_init_is_prepended() {
+        let init = fixture("init.m4s");
+        let media = fixture("segment.m4s");
+        if !init.exists() || !media.exists() || !ffprobe_available().await {
+            return;
+        }
+
+        let metadata = extract_video_metadata_with_init(&init, &media)
+            .await
+            .unwrap();
+
+        assert_eq!((metadata.width, metadata.height), (1920, 1080));
+        assert_eq!(metadata.video_codec, "h264");
+        assert!(!metadata.seems_corrupted());
     }
 }

@@ -6,6 +6,7 @@
   import QRCode from "qrcode";
   import type { AccountItem, AccountInfo } from "../lib/db";
   import { Ellipsis, Plus } from "lucide-svelte";
+  import PlatformIconTabs from "../lib/components/PlatformIconTabs.svelte";
 
   let account_info: AccountInfo = $state({
     accounts: [],
@@ -315,92 +316,24 @@
       </div>
 
       <div class="p-6 space-y-6">
-        <!-- Platform Selection -->
-        <div class="space-y-2">
-          <label
-            for="platform"
-            class="block text-sm font-medium text-gray-700 dark:text-gray-300"
-          >
-            平台
-          </label>
-          <div
-            class="flex items-center gap-2 p-0.5 bg-[#f5f5f7] dark:bg-[#1c1c1e] rounded-lg overflow-x-auto custom-scrollbar-light"
-          >
-            <button
-              class="flex-none px-3 py-2 text-sm font-medium whitespace-nowrap rounded-md transition-colors {selectedPlatform ===
-              'bilibili'
-                ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white'
-                : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-              onclick={() => {
-                selectedPlatform = "bilibili";
-                activeTab = "qr";
-                requestAnimationFrame(handle_qr);
-              }}
-            >
-              哔哩哔哩
-            </button>
-            <button
-              class="flex-none px-3 py-2 text-sm font-medium whitespace-nowrap rounded-md transition-colors {selectedPlatform ===
-              'douyin'
-                ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white'
-                : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-              onclick={() => {
-                selectedPlatform = "douyin";
-                activeTab = "manual";
-              }}
-            >
-              抖音
-            </button>
-            <button
-              class="flex-none px-3 py-2 text-sm font-medium whitespace-nowrap rounded-md transition-colors {selectedPlatform ===
-              'huya'
-                ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white'
-                : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-              onclick={() => {
-                selectedPlatform = "huya";
-                activeTab = "manual";
-              }}
-            >
-              虎牙
-            </button>
-            <button
-              class="flex-none px-3 py-2 text-sm font-medium whitespace-nowrap rounded-md transition-colors {selectedPlatform ===
-              'kuaishou'
-                ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white'
-                : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-              onclick={() => {
-                selectedPlatform = "kuaishou";
-                activeTab = "manual";
-              }}
-            >
-              快手
-            </button>
-            <button
-              class="flex-none px-3 py-2 text-sm font-medium whitespace-nowrap rounded-md transition-colors {selectedPlatform ===
-              'tiktok'
-                ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white'
-                : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-              onclick={() => {
-                selectedPlatform = "tiktok";
-                activeTab = "manual";
-              }}
-            >
-              TikTok
-            </button>
-            <button
-              class="flex-none px-3 py-2 text-sm font-medium whitespace-nowrap rounded-md transition-colors {selectedPlatform ===
-              'youtube'
-                ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white'
-                : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-              onclick={() => {
-                selectedPlatform = "youtube";
-                activeTab = "manual";
-              }}
-            >
-              YouTube
-            </button>
-          </div>
-        </div>
+        <PlatformIconTabs
+          bind:value={selectedPlatform}
+          platforms={[
+            { id: "bilibili", label: "哔哩哔哩" },
+            { id: "douyin", label: "抖音" },
+            { id: "huya", label: "虎牙" },
+            { id: "kuaishou", label: "快手" },
+            { id: "tiktok", label: "TikTok" },
+          ]}
+          onchange={(id) => {
+            if (id === "bilibili") {
+              activeTab = "qr";
+              requestAnimationFrame(handle_qr);
+            } else {
+              activeTab = "manual";
+            }
+          }}
+        />
 
         <!-- Login Methods (Only show for Bilibili) -->
         {#if selectedPlatform === "bilibili"}

@@ -25,6 +25,7 @@
   import TikTokIcon from "../lib/components/TikTokIcon.svelte";
   import TwitchIcon from "../lib/components/TwitchIcon.svelte";
   import YouTubeIcon from "../lib/components/YouTubeIcon.svelte";
+  import PlatformIconTabs from "../lib/components/PlatformIconTabs.svelte";
   import AutoRecordIcon from "../lib/components/AutoRecordIcon.svelte";
   import GenerateWholeClipModal from "../lib/components/GenerateWholeClipModal.svelte";
   import { onMount } from "svelte";
@@ -875,90 +876,18 @@
 
       <div class="p-6 space-y-6">
         <div class="space-y-4">
-          <div class="space-y-2">
-            <label
-              for="platform"
-              class="block text-sm font-medium text-gray-700 dark:text-gray-300"
-            >
-              平台
-            </label>
-            <div
-              class="flex items-center gap-2 p-0.5 bg-[#f5f5f7] dark:bg-[#1c1c1e] rounded-lg overflow-x-auto custom-scrollbar-light"
-            >
-              <button
-                class="flex-none px-3 py-2 text-sm font-medium whitespace-nowrap rounded-md transition-colors {selectedPlatform ===
-                'bilibili'
-                  ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white'
-                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-                onclick={() => (selectedPlatform = "bilibili")}
-              >
-                哔哩哔哩
-              </button>
-              <button
-                class="flex-none px-3 py-2 text-sm font-medium whitespace-nowrap rounded-md transition-colors {selectedPlatform ===
-                'douyin'
-                  ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white'
-                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-                onclick={() => (selectedPlatform = "douyin")}
-              >
-                抖音
-              </button>
-              <button
-                class="flex-none px-3 py-2 text-sm font-medium whitespace-nowrap rounded-md transition-colors {selectedPlatform ===
-                'douyu'
-                  ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white'
-                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-                onclick={() => (selectedPlatform = "douyu")}
-              >
-                斗鱼
-              </button>
-              <button
-                class="flex-none px-3 py-2 text-sm font-medium whitespace-nowrap rounded-md transition-colors {selectedPlatform ===
-                'huya'
-                  ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white'
-                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-                onclick={() => (selectedPlatform = "huya")}
-              >
-                虎牙
-              </button>
-              <button
-                class="flex-none px-3 py-2 text-sm font-medium whitespace-nowrap rounded-md transition-colors {selectedPlatform ===
-                'kuaishou'
-                  ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white'
-                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-                onclick={() => (selectedPlatform = "kuaishou")}
-              >
-                快手
-              </button>
-              <button
-                class="flex-none px-3 py-2 text-sm font-medium whitespace-nowrap rounded-md transition-colors {selectedPlatform ===
-                'tiktok'
-                  ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white'
-                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-                onclick={() => (selectedPlatform = "tiktok")}
-              >
-                TikTok
-              </button>
-              <button
-                class="flex-none px-3 py-2 text-sm font-medium whitespace-nowrap rounded-md transition-colors {selectedPlatform ===
-                'twitch'
-                  ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white'
-                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-                onclick={() => (selectedPlatform = "twitch")}
-              >
-                Twitch
-              </button>
-              <button
-                class="flex-none px-3 py-2 text-sm font-medium whitespace-nowrap rounded-md transition-colors {selectedPlatform ===
-                'youtube'
-                  ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white'
-                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-                onclick={() => (selectedPlatform = "youtube")}
-              >
-                YouTube
-              </button>
-            </div>
-          </div>
+          <PlatformIconTabs
+            bind:value={selectedPlatform}
+            platforms={[
+              { id: "bilibili", label: "哔哩哔哩" },
+              { id: "douyin", label: "抖音" },
+              { id: "huya", label: "虎牙" },
+              { id: "kuaishou", label: "快手" },
+              { id: "tiktok", label: "TikTok" },
+              { id: "twitch", label: "Twitch" },
+              { id: "youtube", label: "YouTube" },
+            ]}
+          />
 
           <div class="space-y-2">
             <label

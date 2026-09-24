@@ -15,4 +15,4 @@ mod command;
 mod metadata;
 
 pub use command::{ffmpeg_command, ffmpeg_path, ffprobe_command, ffprobe_path, path_str};
-pub use metadata::{extract_video_metadata, VideoMetadata};
+pub use metadata::{extract_video_metadata, extract_video_metadata_with_init, VideoMetadata};

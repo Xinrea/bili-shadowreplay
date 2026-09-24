@@ -5,6 +5,7 @@ import { withMermaid } from "vitepress-plugin-mermaid";
 export default withMermaid({
   title: "BiliBili ShadowReplay",
   description: "直播录制/实时回放/剪辑/投稿工具",
+  head: [["link", { rel: "icon", type: "image/svg+xml", href: "/images/icon.svg" }]],
   themeConfig: {
     // https://vitepress.dev/reference/default-theme-config
     nav: [

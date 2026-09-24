@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">BiliBili ShadowReplay</title>
+  <desc id="desc">A white film reel and editing scissors on a rounded charcoal square.</desc>
+  <defs>
+    <clipPath id="film">
+      <path d="M62 349 408 195Q441 184 453 160L464 196Q472 229 437 248L80 410Z"/>
+    </clipPath>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="#191B1D"/>
+  <!-- The film tail passes behind the reel and both scissor blades. -->
+  <path d="M62 349 408 195Q441 184 453 160L464 196Q472 229 437 248L80 410Z" fill="#63676A"/>
+  <g clip-path="url(#film)" stroke="#929699" stroke-width="18">
+    <path d="m73 323 36 86m6-105 36 86m6-105 36 86m6-105 36 86m6-105 36 86m6-105 36 86m6-105 36 86m6-105 36 86m6-105 36 86m6-105 36 86"/>
+  </g>
+  <!-- Four broad apertures remain legible when the reel is reduced. -->
+  <circle cx="298" cy="174" r="116" fill="#17191B"/>
+  <circle cx="298" cy="174" r="106" fill="#F7F8F8"/>
+  <g fill="#292C2E">
+    <path id="aperture" d="M288 143V121C288 100 273 93 256 104C236 116 224 136 224 151C224 164 235 169 251 167L277 163C284 162 288 155 288 143Z"/>
+    <use href="#aperture" transform="rotate(90 298 174)"/>
+    <use href="#aperture" transform="rotate(180 298 174)"/>
+    <use href="#aperture" transform="rotate(270 298 174)"/>
+  </g>
+  <circle cx="298" cy="174" r="23" fill="#17191B"/>
+  <!-- Dark outlines separate the cutting edges from the film. -->
+  <g fill="#F7F8F8" stroke="#17191B" stroke-width="16" stroke-linejoin="round">
+    <path d="M48 134H103L342 280C374 263 404 271 426 298C453 330 463 365 441 388C418 413 385 404 362 375L297 295L89 207Z"/>
+    <path d="m231 332 39-19 29 7 16 62C324 417 301 448 268 451C230 455 201 434 194 404C187 374 204 345 231 332Z"/>
+    <path d="m193 272 53-32C278 222 305 235 311 263L314 290 245 321Z"/>
+  </g>
+  <g fill="#17191B">
+    <path d="M365 310C380 296 395 303 409 319C426 339 434 357 423 370C412 383 396 376 383 360L362 334C356 326 358 316 365 310Z"/>
+    <path d="M250 354C261 346 275 350 279 364L289 395C295 414 284 427 268 427C247 428 229 414 227 398C225 381 235 364 250 354Z"/>
+    <circle cx="266" cy="275" r="15"/>
+  </g>
+</svg>

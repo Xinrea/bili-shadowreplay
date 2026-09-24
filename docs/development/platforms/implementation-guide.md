@@ -12,6 +12,7 @@ BiliBili ShadowReplay 支持多个直播平台，每个平台的实现位于 `sr
 - **Huya** (虎牙)
 - **Kuaishou** (快手)
 - **TikTok** (国际版抖音)
+- **Twitch**
 - **YouTube** (直播录制与直播聊天)
 
 ## 平台接口
@@ -393,6 +394,12 @@ impl Platform {
 - 需要处理地区限制
 - 使用 HLS 流
 - 弹幕通过 WebSocket 推送
+
+### Twitch
+
+- 通过 Twitch Web GraphQL 获取公开播放令牌，再从 usher HLS 端点选择最高码率变体
+- 不需要账号 Cookie；直播元数据和封面来自公开 GraphQL 查询
+- 弹幕通过匿名 `irc-ws.chat.twitch.tv` WebSocket 接收 IRC `PRIVMSG`，并在断线后自动重连
 
 ## 测试
 

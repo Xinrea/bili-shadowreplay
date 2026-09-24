@@ -85,6 +85,17 @@ impl HlsPlaylist {
         Ok(())
     }
 
+    /// Reopen a previously closed playlist when a live recording resumes in
+    /// the same archive directory after a temporary source timeout.
+    pub(crate) async fn reopen(&mut self) -> Result<(), RecorderError> {
+        if self.playlist.end_list {
+            self.playlist.end_list = false;
+            self.playlist.playlist_type = Some(MediaPlaylistType::Event);
+            self.flush().await?;
+        }
+        Ok(())
+    }
+
     pub async fn is_empty(&self) -> bool {
         self.playlist.segments.is_empty()
     }
@@ -129,6 +140,36 @@ mod tests {
         let playlist = HlsPlaylist::new(path).await.unwrap();
 
         assert!(playlist.playlist.segments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reopen_removes_vod_end_marker_for_resumed_recording() {
+        let path = std::env::temp_dir().join(format!(
+            "bili-shadowreplay-resume-{}.m3u8",
+            uuid::Uuid::new_v4()
+        ));
+        let mut playlist = HlsPlaylist::new(path.clone()).await.unwrap();
+        playlist
+            .add_segment(MediaSegment {
+                uri: "segment_1.ts".to_string(),
+                duration: 6.0,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        playlist.close().await.unwrap();
+        assert!(playlist.playlist.end_list);
+
+        playlist.reopen().await.unwrap();
+
+        assert!(!playlist.playlist.end_list);
+        assert_eq!(
+            playlist.playlist.playlist_type,
+            Some(MediaPlaylistType::Event)
+        );
+        let contents = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(!contents.contains("#EXT-X-ENDLIST"));
+        let _ = tokio::fs::remove_file(path).await;
     }
 
     #[test]

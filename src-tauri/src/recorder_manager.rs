@@ -22,8 +22,10 @@ use recorder::platforms::douyu::DouyuRecorder;
 use recorder::platforms::huya::HuyaRecorder;
 use recorder::platforms::kuaishou::KuaishouRecorder;
 use recorder::platforms::tiktok::TikTokRecorder;
+use recorder::platforms::twitch::TwitchRecorder;
 use recorder::platforms::youtube::YoutubeRecorder;
 use recorder::platforms::PlatformType;
+use recorder::timeline::{align_danmus_to_recording, load_skipped_ad_ranges};
 use recorder::traits::RecorderTrait;
 use recorder::RoomInfo;
 use recorder::UserInfo;
@@ -564,6 +566,7 @@ impl RecorderManager {
                     && platform != PlatformType::Douyu
                     && platform != PlatformType::Kuaishou
                     && platform != PlatformType::TikTok
+                    && platform != PlatformType::Twitch
                     && platform != PlatformType::Youtube
                     && account.is_err()
                 {
@@ -600,12 +603,13 @@ impl RecorderManager {
         extra: &str,
         enabled: bool,
     ) -> Result<(), RecorderManagerError> {
-        let normalized_youtube_room_id = if platform == PlatformType::Youtube {
-            Some(recorder::platforms::youtube::normalize_room_id(room_id)?)
-        } else {
-            None
+        let normalized_room_id = match platform {
+            PlatformType::Twitch => recorder::platforms::twitch::api::normalize_channel(room_id)
+                .map_err(RecorderManagerError::RecorderError)?,
+            PlatformType::Youtube => recorder::platforms::youtube::normalize_room_id(room_id)?,
+            _ => room_id.to_string(),
         };
-        let room_id = normalized_youtube_room_id.as_deref().unwrap_or(room_id);
+        let room_id = normalized_room_id.as_str();
         let recorder_id = format!("{}:{}", platform.as_str(), room_id);
         if self.recorders.read().await.contains_key(&recorder_id) {
             return Err(RecorderManagerError::AlreadyExisted {
@@ -662,6 +666,14 @@ impl RecorderManager {
                 enabled,
             )?),
             PlatformType::TikTok => Box::new(TikTokRecorder::new(
+                room_id,
+                account,
+                cache_dir,
+                event_tx,
+                update_interval,
+                enabled,
+            )?),
+            PlatformType::Twitch => Box::new(TwitchRecorder::new(
                 room_id,
                 account,
                 cache_dir,
@@ -928,7 +940,42 @@ impl RecorderManager {
             log::error!("Failed to load danmu storage: {danmus_path:?}");
             return Ok(Vec::new());
         };
-        Ok(storage.get_entries(0).await)
+        let danmus = storage.get_entries(0).await;
+        if platform != PlatformType::Twitch {
+            return Ok(danmus);
+        }
+
+        let Some(work_dir) = danmus_path.parent() else {
+            return Ok(danmus);
+        };
+        let skipped_ad_ranges = match load_skipped_ad_ranges(work_dir).await {
+            Ok(ranges) => ranges,
+            Err(error) => {
+                log::warn!("Failed to load skipped ad ranges for {live_id}: {error}");
+                return Ok(danmus);
+            }
+        };
+        if skipped_ad_ranges.is_empty() {
+            return Ok(danmus);
+        }
+        let timeline_start_ms = match self
+            .first_segment_timestamp(platform, room_id, live_id)
+            .await
+        {
+            Ok(timestamp) => timestamp,
+            Err(error) => {
+                log::warn!("Failed to load archive timeline origin for {live_id}: {error}");
+                match live_id.parse::<i64>() {
+                    Ok(timestamp) => timestamp,
+                    Err(_) => return Ok(danmus),
+                }
+            }
+        };
+        Ok(align_danmus_to_recording(
+            danmus,
+            timeline_start_ms,
+            &skipped_ad_ranges,
+        ))
     }
 
     /// Get related playlists by parent id

@@ -77,7 +77,8 @@ impl StreamPull {
         url: &str,
         cookies: Option<String>,
     ) -> Result<Self, RecorderError> {
-        Self::hls_with_selection(live_id, url, cookies, HlsVariantSelection::First).await
+        Self::hls_with_selection_and_expire(live_id, url, cookies, HlsVariantSelection::First, 0)
+            .await
     }
 
     pub(crate) async fn hls_highest_bandwidth(
@@ -85,18 +86,45 @@ impl StreamPull {
         url: &str,
         cookies: Option<String>,
     ) -> Result<Self, RecorderError> {
-        Self::hls_with_selection(live_id, url, cookies, HlsVariantSelection::HighestBandwidth).await
+        Self::hls_with_selection_and_expire(
+            live_id,
+            url,
+            cookies,
+            HlsVariantSelection::HighestBandwidth,
+            0,
+        )
+        .await
     }
 
-    async fn hls_with_selection(
+    /// Build an HLS pull with an explicit token expiry when a platform does
+    /// not encode expiry in the playlist URL.
+    pub(crate) async fn hls_with_expire(
+        live_id: &str,
+        url: &str,
+        cookies: Option<String>,
+        expire: i64,
+    ) -> Result<Self, RecorderError> {
+        Self::hls_with_selection_and_expire(
+            live_id,
+            url,
+            cookies,
+            HlsVariantSelection::First,
+            expire,
+        )
+        .await
+    }
+
+    async fn hls_with_selection_and_expire(
         live_id: &str,
         url: &str,
         cookies: Option<String>,
         variant_selection: HlsVariantSelection,
+        expire: i64,
     ) -> Result<Self, RecorderError> {
         let stream = construct_stream_from_variant(live_id, url, Format::TS, Codec::Avc)
             .await
-            .map_err(|_| RecorderError::NoStreamAvailable)?;
+            .map_err(|_| RecorderError::NoStreamAvailable)?
+            .with_expire(expire);
         Ok(Self::Hls {
             stream: Arc::new(stream),
             cookies,
@@ -168,6 +196,19 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
     /// the previous status. Default: never.
     fn is_throttled(&self, _error: &RecorderError) -> bool {
         false
+    }
+
+    /// Whether an HLS source timeout should retry the same recording session.
+    /// Most platforms treat a stalled playlist as the end of this recording;
+    /// platforms with transient ad/transcode gaps can opt into resuming it.
+    fn resume_on_update_timeout(&self) -> bool {
+        false
+    }
+
+    /// Whether a resumed recording still belongs to the same platform live.
+    /// Platforms without their own live-session ID can keep the default.
+    async fn should_resume_same_recording(&self) -> bool {
+        true
     }
 
     /// Whether a resolution change should start a new recording segment
@@ -286,15 +327,23 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
         self.reset_live().await;
     }
 
-    /// The live id for a recording attempt: resumed after a stream expiry,
-    /// otherwise a fresh timestamp.
+    /// Select the app recording id for this attempt. Reuse it only if a
+    /// platform confirms the same live session; a new platform live must get a
+    /// fresh work directory and media-sequence counter.
     async fn next_live_id(&self) -> String {
-        let previous = self.pre_live_id().read().await.clone();
-        if let Some(previous) = previous {
-            if self.should_continue().load(Ordering::Relaxed) {
-                self.should_continue().store(false, Ordering::Relaxed);
-                return previous;
+        if self.should_continue().swap(false, Ordering::Relaxed) {
+            let previous = self.pre_live_id().read().await.clone();
+            if let Some(previous) = previous {
+                if self.should_resume_same_recording().await {
+                    return previous;
+                }
             }
+            *self.pre_live_id().write().await = None;
+            log::info!(
+                "[{}][{}] Platform live changed; starting a new archive",
+                self.platform().as_str(),
+                self.room_id()
+            );
         }
 
         let live_id = Utc::now().timestamp_millis().to_string();
@@ -488,12 +537,23 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                     if recorder.should_record().await {
                         let live_id = recorder.next_live_id().await;
                         if let Err(error) = recorder.start_recording(&live_id).await {
-                            match error {
+                            match &error {
                                 RecorderError::StreamExpired { expire } => {
                                     // Resume the same recording with a fresh stream.
                                     recorder.should_continue().store(true, Ordering::Relaxed);
                                     log::info!(
                                         "[{platform}][{room_id}] Stream expired at {expire}"
+                                    );
+                                }
+                                RecorderError::UpdateTimeout
+                                    if recorder.resume_on_update_timeout() =>
+                                {
+                                    // Some platforms briefly stop advancing their HLS
+                                    // playlists (e.g. during ad transitions). Refresh
+                                    // the source but keep the same archive/session.
+                                    recorder.should_continue().store(true, Ordering::Relaxed);
+                                    log::warn!(
+                                        "[{platform}][{room_id}] HLS playlist stalled; resuming the same recording"
                                     );
                                 }
                                 RecorderError::ResolutionChanged { .. }

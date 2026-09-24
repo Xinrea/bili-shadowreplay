@@ -55,6 +55,17 @@
         }
 
         if (
+          url.startsWith("bsr://www.twitch.tv/") ||
+          url.startsWith("bsr://m.twitch.tv/") ||
+          url.startsWith("bsr://twitch.tv/")
+        ) {
+          room_id = url
+            .replace(/^bsr:\/\/(?:(?:www|m)\.)?twitch\.tv\//, "")
+            .split(/[?/]/)[0];
+          platform = "twitch";
+        }
+
+        if (
           url.startsWith("bsr://www.youtube.com/") ||
           url.startsWith("bsr://youtube.com/") ||
           url.startsWith("bsr://youtu.be/")

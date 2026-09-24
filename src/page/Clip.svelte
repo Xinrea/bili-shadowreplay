@@ -30,6 +30,7 @@
   import KuaishouIcon from "../lib/components/KuaishouIcon.svelte";
   import HuyaIcon from "../lib/components/HuyaIcon.svelte";
   import TikTokIcon from "../lib/components/TikTokIcon.svelte";
+  import TwitchIcon from "../lib/components/TwitchIcon.svelte";
   import YouTubeIcon from "../lib/components/YouTubeIcon.svelte";
 
   let videos: VideoItem[] = [];
@@ -301,6 +302,8 @@
         return "快手";
       case "tiktok":
         return "TikTok";
+      case "twitch":
+        return "Twitch";
       case "youtube":
         return "YouTube";
       case "imported":
@@ -328,6 +331,8 @@
         return `https://live.kuaishou.com/u/${roomId}`;
       case "tiktok":
         return `https://www.tiktok.com/${roomId}/live`;
+      case "twitch":
+        return `https://www.twitch.tv/${roomId}`;
       case "youtube":
         if (roomId.startsWith("legacy-c-")) {
           return `https://www.youtube.com/c/${roomId.slice(9)}/live`;
@@ -877,6 +882,23 @@
                         {/if}
                       {:else if video.platform === "tiktok"}
                         <TikTokIcon class="w-5 h-5 flex-shrink-0" />
+                        {#if getRoomUrl(video.platform, video.room_id)}
+                          <a
+                            href={getRoomUrl(video.platform, video.room_id)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="text-blue-500 hover:text-blue-700 text-sm"
+                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
+                          >
+                            {video.room_id}
+                          </a>
+                        {:else}
+                          <span class="text-sm text-gray-900 dark:text-white"
+                            >{video.room_id}</span
+                          >
+                        {/if}
+                      {:else if video.platform === "twitch"}
+                        <TwitchIcon class="w-5 h-5 flex-shrink-0 text-purple-600" />
                         {#if getRoomUrl(video.platform, video.room_id)}
                           <a
                             href={getRoomUrl(video.platform, video.room_id)}

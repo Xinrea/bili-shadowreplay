@@ -18,6 +18,7 @@ use recorder::danmu::DanmuEntry;
 use recorder::platforms::bilibili;
 use recorder::platforms::douyin;
 use recorder::platforms::douyu;
+use recorder::platforms::twitch;
 use recorder::platforms::youtube;
 use recorder::platforms::PlatformType;
 use recorder::RecorderInfo;
@@ -43,6 +44,9 @@ pub async fn add_recorder(
     let platform = PlatformType::from_str(&platform).map_err(|e| e.to_string())?;
     if platform == PlatformType::Youtube {
         room_id = youtube::normalize_room_id(&room_id).map_err(|error| error.to_string())?;
+    }
+    if platform == PlatformType::Twitch {
+        room_id = twitch::api::normalize_channel(&room_id).map_err(|error| error.to_string())?;
     }
     log::info!("Add recorder: {} {}", platform.as_str(), room_id);
     let account = match platform {
@@ -98,6 +102,7 @@ pub async fn add_recorder(
                 Ok(Account::default())
             }
         }
+        PlatformType::Twitch => Ok(Account::default()),
         PlatformType::Youtube => {
             if let Ok(account) = state.db.get_account_by_platform("youtube").await {
                 Ok(account.to_account())
@@ -610,6 +615,7 @@ fn prepare_danmus_for_export(
 mod prepare_danmus_for_export_tests {
     use super::*;
     use crate::danmu2ass::{danmu_to_ass, Danmu2AssOptions};
+    use recorder::timeline::{align_danmus_to_recording, AdTimeRange};
 
     const STREAM_START_MS: i64 = 1_700_000_000_000;
 
@@ -669,6 +675,33 @@ mod prepare_danmus_for_export_tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].content, "ok");
         assert_eq!(result[0].ts, 1_000);
+    }
+
+    #[test]
+    fn ad_removal_keeps_exported_danmu_on_the_compacted_timeline() {
+        let aligned = align_danmus_to_recording(
+            vec![
+                entry(STREAM_START_MS + 2_000, "before ad"),
+                entry(STREAM_START_MS + 6_000, "during ad"),
+                entry(STREAM_START_MS + 8_000, "after ad"),
+            ],
+            STREAM_START_MS,
+            &[AdTimeRange {
+                id: "stitched-ad-1".to_string(),
+                start_ms: STREAM_START_MS + 4_000,
+                end_ms: STREAM_START_MS + 8_000,
+            }],
+        );
+
+        let exported = prepare_danmus_for_export(aligned, STREAM_START_MS, 0, 0);
+
+        assert_eq!(
+            exported
+                .iter()
+                .map(|entry| (entry.ts, entry.content.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(2_000, "before ad"), (4_000, "after ad")]
+        );
     }
 
     #[test]

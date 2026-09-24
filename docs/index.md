@@ -34,7 +34,7 @@ features:
     details: 直播间弹幕压制到切片，并支持直播弹幕发送和导出
   - icon: 🌐
     title: 多直播平台支持
-    details: 支持 B 站、抖音、斗鱼、虎牙、快手和 TikTok 直播
+    details: 支持 B 站、抖音、斗鱼、虎牙、快手、TikTok、Twitch 和 YouTube 直播
   - icon: 🔍
     title: 云端部署
     details: 支持 Docker 部署，提供 Web 控制界面

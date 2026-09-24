@@ -5,6 +5,7 @@ pub mod douyu;
 pub mod huya;
 pub mod kuaishou;
 pub mod tiktok;
+pub mod twitch;
 pub mod youtube;
 use std::hash::{Hash, Hasher};
 
@@ -18,6 +19,7 @@ pub enum PlatformType {
     Kuaishou,
     Xiaohongshu,
     TikTok,
+    Twitch,
     Weibo,
 }
 
@@ -25,7 +27,7 @@ impl PlatformType {
     /// All known platforms. Keep in sync with the enum variants; used by
     /// cache directory migration to tell BSR-owned folders apart from
     /// pre-existing user files.
-    pub const ALL: [PlatformType; 9] = [
+    pub const ALL: [PlatformType; 10] = [
         PlatformType::BiliBili,
         PlatformType::Douyin,
         PlatformType::Douyu,
@@ -34,6 +36,7 @@ impl PlatformType {
         PlatformType::Kuaishou,
         PlatformType::Xiaohongshu,
         PlatformType::TikTok,
+        PlatformType::Twitch,
         PlatformType::Weibo,
     ];
 
@@ -47,6 +50,7 @@ impl PlatformType {
             PlatformType::Kuaishou => "kuaishou",
             PlatformType::Xiaohongshu => "xiaohongshu",
             PlatformType::TikTok => "tiktok",
+            PlatformType::Twitch => "twitch",
             PlatformType::Weibo => "weibo",
         }
     }
@@ -64,6 +68,7 @@ impl std::str::FromStr for PlatformType {
             "kuaishou" => Ok(PlatformType::Kuaishou),
             "xiaohongshu" => Ok(PlatformType::Xiaohongshu),
             "tiktok" => Ok(PlatformType::TikTok),
+            "twitch" => Ok(PlatformType::Twitch),
             "weibo" => Ok(PlatformType::Weibo),
             _ => Err(format!("Invalid platform type: {s}")),
         }
@@ -92,6 +97,7 @@ mod tests {
         assert_eq!(PlatformType::Kuaishou.as_str(), "kuaishou");
         assert_eq!(PlatformType::Xiaohongshu.as_str(), "xiaohongshu");
         assert_eq!(PlatformType::TikTok.as_str(), "tiktok");
+        assert_eq!(PlatformType::Twitch.as_str(), "twitch");
         assert_eq!(PlatformType::Weibo.as_str(), "weibo");
     }
 
@@ -114,6 +120,7 @@ mod tests {
             Ok(PlatformType::Xiaohongshu)
         );
         assert_eq!(PlatformType::from_str("tiktok"), Ok(PlatformType::TikTok));
+        assert_eq!(PlatformType::from_str("twitch"), Ok(PlatformType::Twitch));
         assert_eq!(PlatformType::from_str("weibo"), Ok(PlatformType::Weibo));
     }
 
@@ -132,6 +139,7 @@ mod tests {
             "kuaishou",
             "xiaohongshu",
             "tiktok",
+            "twitch",
             "weibo",
         ] {
             assert!(names.contains(name), "ALL is missing {name}");
@@ -156,6 +164,7 @@ mod tests {
             PlatformType::Kuaishou,
             PlatformType::Xiaohongshu,
             PlatformType::TikTok,
+            PlatformType::Twitch,
             PlatformType::Weibo,
         ];
         for p in platforms {

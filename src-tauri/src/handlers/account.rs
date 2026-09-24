@@ -181,6 +181,9 @@ pub async fn add_account(
         PlatformType::Xiaohongshu => {
             return Err("Unsupported platform".to_string());
         }
+        PlatformType::Twitch => {
+            return Err("Twitch 不需要账号 Cookie".to_string());
+        }
         PlatformType::TikTok => {
             let tmp_account = AccountRow {
                 platform: platform.as_str().to_string(),

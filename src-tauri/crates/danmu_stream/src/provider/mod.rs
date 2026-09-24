@@ -3,6 +3,7 @@ mod douyin;
 mod douyu;
 mod huya;
 mod kuaishou;
+mod twitch;
 mod youtube;
 
 use async_trait::async_trait;
@@ -13,6 +14,7 @@ use self::douyin::DouyinDanmu;
 use self::douyu::DouyuDanmu;
 use self::huya::HuyaDanmu;
 use self::kuaishou::KuaishouDanmu;
+use self::twitch::TwitchDanmu;
 use self::youtube::YoutubeDanmu;
 
 use crate::{DanmuMessageType, DanmuStreamError};
@@ -24,6 +26,7 @@ pub enum ProviderType {
     Douyu,
     Huya,
     Kuaishou,
+    Twitch,
     Youtube,
 }
 
@@ -41,6 +44,11 @@ pub trait DanmuProvider: Send + Sync {
     async fn stop(&self) -> Result<(), DanmuStreamError>;
 }
 
+/// Normalize a Twitch channel name or URL for use by the recorder and chat provider.
+pub fn normalize_twitch_channel(room_id: &str) -> Result<String, String> {
+    twitch::normalize_channel(room_id)
+}
+
 /// Creates a new danmu stream provider for the specified platform.
 ///
 /// This function initializes and starts a danmu stream provider based on the specified platform type.
@@ -48,7 +56,7 @@ pub trait DanmuProvider: Send + Sync {
 ///
 /// # Arguments
 ///
-/// * `provider_type` - The type of platform to fetch danmu from (BiliBili, Douyin, Douyu, Huya, Kuaishou or YouTube)
+/// * `provider_type` - The type of platform to fetch danmu from (BiliBili, Douyin, Douyu, Huya, Kuaishou, Twitch or YouTube)
 /// * `identifier` - User validation information (e.g., cookies) required by the platform
 /// * `room_id` - The unique identifier of the room/channel to fetch danmu from. Notice that douyin room_id is more like a live_id, it changes every time the live starts.
 ///
@@ -95,6 +103,10 @@ pub async fn new(
         ProviderType::Huya => {
             let huya = HuyaDanmu::new(identifier, room_id).await?;
             Ok(Box::new(huya))
+        }
+        ProviderType::Twitch => {
+            let twitch = TwitchDanmu::new(identifier, room_id).await?;
+            Ok(Box::new(twitch))
         }
         ProviderType::Youtube => {
             let youtube = YoutubeDanmu::new(identifier, room_id).await?;

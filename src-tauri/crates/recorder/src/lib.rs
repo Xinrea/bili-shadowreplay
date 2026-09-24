@@ -6,6 +6,7 @@ pub mod errors;
 pub mod events;
 pub mod platforms;
 pub mod traits;
+pub mod timeline;
 pub mod utils;
 use crate::danmu::DanmuStorage;
 use crate::events::RecorderEvent;

@@ -14,6 +14,7 @@ use tokio::sync::{broadcast, Mutex, RwLock};
 use crate::core::playlist::{playlist_content_preview, HlsPlaylist};
 use crate::core::{Codec, Format};
 use crate::errors::RecorderError;
+use crate::timeline::{append_skipped_ad_range, load_skipped_ad_ranges, AdTimeRange};
 use crate::{core::HlsStream, events::RecorderEvent};
 use ffmpeg_utils::{extract_video_metadata, VideoMetadata};
 
@@ -63,18 +64,13 @@ pub struct HlsRecorder {
 
     pre_metadata: Arc<RwLock<Option<VideoMetadata>>>,
     ad_ranges: Arc<Mutex<Vec<AdTimeRange>>>,
+    skipped_ad_ranges: Arc<Mutex<Vec<AdTimeRange>>>,
 }
 
 struct DownloadedSegment {
     segment: MediaSegment,
     path: PathBuf,
     size: u64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct AdTimeRange {
-    start_ms: i64,
-    end_ms: i64,
 }
 
 fn is_twitch_ad_range(range: &DateRange) -> bool {
@@ -109,7 +105,11 @@ fn twitch_ad_time_range(range: &DateRange) -> Option<AdTimeRange> {
                 .filter(|duration| duration.is_finite() && *duration > 0.0)
                 .map(|duration| start_ms.saturating_add((duration * 1000.0).ceil() as i64))
         })?;
-    (end_ms > start_ms).then_some(AdTimeRange { start_ms, end_ms })
+    (end_ms > start_ms).then(|| AdTimeRange {
+        id: range.id.clone(),
+        start_ms,
+        end_ms,
+    })
 }
 
 fn is_twitch_ad_segment(segment: &MediaSegment, ad_ranges: &[AdTimeRange]) -> bool {
@@ -127,6 +127,37 @@ fn is_twitch_ad_segment(segment: &MediaSegment, ad_ranges: &[AdTimeRange]) -> bo
     ad_ranges
         .iter()
         .any(|range| segment_time >= range.start_ms && segment_time < range.end_ms)
+}
+
+fn ad_range_for_segment(segment: &MediaSegment, ad_ranges: &[AdTimeRange]) -> Option<AdTimeRange> {
+    let segment_time = segment
+        .program_date_time
+        .as_ref()
+        .map(|date_time| date_time.timestamp_millis());
+    segment_time
+        .and_then(|segment_time| {
+            ad_ranges
+                .iter()
+                .find(|range| segment_time >= range.start_ms && segment_time < range.end_ms)
+                .cloned()
+        })
+        .or_else(|| segment.daterange.as_ref().and_then(twitch_ad_time_range))
+}
+
+fn upsert_ad_range(ranges: &mut Vec<AdTimeRange>, range: &AdTimeRange) -> bool {
+    if let Some(existing) = ranges
+        .iter_mut()
+        .find(|existing| existing.id == range.id && existing.start_ms == range.start_ms)
+    {
+        if existing == range {
+            return false;
+        }
+        *existing = range.clone();
+        true
+    } else {
+        ranges.push(range.clone());
+        true
+    }
 }
 
 /// Split an HLS attribute list into its `key=value` attributes.
@@ -304,6 +335,14 @@ impl HlsRecorder {
                 .map_err(RecorderError::IoError)?;
         }
 
+        let skipped_ad_ranges = match load_skipped_ad_ranges(&work_dir).await {
+            Ok(ranges) => ranges,
+            Err(error) => {
+                log::warn!("Failed to load skipped Twitch ad ranges: {error}");
+                Vec::new()
+            }
+        };
+
         let mut playlist = HlsPlaylist::new(playlist_path).await?;
         playlist.reopen().await?;
         // A resumed archive must retain the media shape of its last playable
@@ -339,6 +378,7 @@ impl HlsRecorder {
             updated_at: Arc::new(AtomicI64::new(chrono::Utc::now().timestamp_millis())),
             pre_metadata: Arc::new(RwLock::new(pre_metadata)),
             ad_ranges: Arc::new(Mutex::new(Vec::new())),
+            skipped_ad_ranges: Arc::new(Mutex::new(skipped_ad_ranges)),
             sequence_file: Arc::new(RwLock::new(sequence_file)),
         })
     }
@@ -398,7 +438,7 @@ impl HlsRecorder {
             .send()
             .await?;
         let bytes = response.bytes().await?;
-        self.observe_ad_ranges(&bytes).await;
+        self.observe_ad_ranges(&bytes).await?;
         let (_, playlist) =
             m3u8_rs::parse_playlist(&bytes).map_err(|_| RecorderError::M3u8ParseFailed {
                 content: playlist_content_preview(&bytes),
@@ -410,17 +450,38 @@ impl HlsRecorder {
     ///
     /// Ranges are accumulated because a reload only carries the ones that are
     /// still current, while ad segments keep arriving afterwards.
-    async fn observe_ad_ranges(&self, content: &[u8]) {
-        let observed = raw_twitch_ad_ranges(content);
-        if observed.is_empty() {
-            return;
-        }
-        let mut ad_ranges = self.ad_ranges.lock().await;
-        for range in observed {
-            if !ad_ranges.contains(&range) {
-                ad_ranges.push(range);
+    async fn observe_ad_ranges(&self, content: &[u8]) -> Result<(), RecorderError> {
+        for range in raw_twitch_ad_ranges(content) {
+            {
+                let mut ad_ranges = self.ad_ranges.lock().await;
+                upsert_ad_range(&mut ad_ranges, &range);
+            }
+
+            // An ad range can be announced first with PLANNED-DURATION and later
+            // updated with its final END-DATE. Keep the persisted time map in
+            // sync, but only for ads that have actually caused a segment skip.
+            let mut skipped_ranges = self.skipped_ad_ranges.lock().await;
+            if skipped_ranges.iter().any(|skipped| {
+                skipped.id == range.id && skipped.start_ms == range.start_ms && skipped != &range
+            }) {
+                append_skipped_ad_range(&self.work_dir, &range).await?;
+                upsert_ad_range(&mut skipped_ranges, &range);
             }
         }
+        Ok(())
+    }
+
+    async fn persist_skipped_ad_range(&self, range: &AdTimeRange) -> Result<(), RecorderError> {
+        let mut skipped_ranges = self.skipped_ad_ranges.lock().await;
+        let changed = skipped_ranges
+            .iter()
+            .find(|skipped| skipped.id == range.id && skipped.start_ms == range.start_ms)
+            .is_none_or(|skipped| skipped != range);
+        if changed {
+            append_skipped_ad_range(&self.work_dir, range).await?;
+            upsert_ad_range(&mut skipped_ranges, range);
+        }
+        Ok(())
     }
 
     async fn query_media_playlist(&self) -> Result<MediaPlaylist, RecorderError> {
@@ -664,6 +725,9 @@ impl HlsRecorder {
     ) -> Result<Option<DownloadedSegment>, RecorderError> {
         if is_twitch_ad_segment(segment, ad_ranges) {
             log::info!("Skipping Twitch ad segment at sequence {sequence}");
+            if let Some(range) = ad_range_for_segment(segment, ad_ranges) {
+                self.persist_skipped_ad_range(&range).await?;
+            }
             let path = self
                 .work_dir
                 .join(local_segment_filename(sequence, &segment.uri));
@@ -1310,6 +1374,10 @@ mod tests {
                 .await
                 .unwrap(),
             "2"
+        );
+        assert_eq!(
+            load_skipped_ad_ranges(&work_dir).await.unwrap(),
+            vec![ranges[0].clone()]
         );
 
         server.verify().await;

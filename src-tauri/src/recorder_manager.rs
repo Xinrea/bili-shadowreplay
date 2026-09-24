@@ -25,6 +25,7 @@ use recorder::platforms::tiktok::TikTokRecorder;
 use recorder::platforms::twitch::TwitchRecorder;
 use recorder::platforms::youtube::YoutubeRecorder;
 use recorder::platforms::PlatformType;
+use recorder::timeline::{align_danmus_to_recording, load_skipped_ad_ranges};
 use recorder::traits::RecorderTrait;
 use recorder::RoomInfo;
 use recorder::UserInfo;
@@ -939,7 +940,42 @@ impl RecorderManager {
             log::error!("Failed to load danmu storage: {danmus_path:?}");
             return Ok(Vec::new());
         };
-        Ok(storage.get_entries(0).await)
+        let danmus = storage.get_entries(0).await;
+        if platform != PlatformType::Twitch {
+            return Ok(danmus);
+        }
+
+        let Some(work_dir) = danmus_path.parent() else {
+            return Ok(danmus);
+        };
+        let skipped_ad_ranges = match load_skipped_ad_ranges(work_dir).await {
+            Ok(ranges) => ranges,
+            Err(error) => {
+                log::warn!("Failed to load skipped ad ranges for {live_id}: {error}");
+                return Ok(danmus);
+            }
+        };
+        if skipped_ad_ranges.is_empty() {
+            return Ok(danmus);
+        }
+        let timeline_start_ms = match self
+            .first_segment_timestamp(platform, room_id, live_id)
+            .await
+        {
+            Ok(timestamp) => timestamp,
+            Err(error) => {
+                log::warn!("Failed to load archive timeline origin for {live_id}: {error}");
+                match live_id.parse::<i64>() {
+                    Ok(timestamp) => timestamp,
+                    Err(_) => return Ok(danmus),
+                }
+            }
+        };
+        Ok(align_danmus_to_recording(
+            danmus,
+            timeline_start_ms,
+            &skipped_ad_ranges,
+        ))
     }
 
     /// Get related playlists by parent id

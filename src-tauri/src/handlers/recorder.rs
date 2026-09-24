@@ -615,6 +615,7 @@ fn prepare_danmus_for_export(
 mod prepare_danmus_for_export_tests {
     use super::*;
     use crate::danmu2ass::{danmu_to_ass, Danmu2AssOptions};
+    use recorder::timeline::{align_danmus_to_recording, AdTimeRange};
 
     const STREAM_START_MS: i64 = 1_700_000_000_000;
 
@@ -674,6 +675,33 @@ mod prepare_danmus_for_export_tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].content, "ok");
         assert_eq!(result[0].ts, 1_000);
+    }
+
+    #[test]
+    fn ad_removal_keeps_exported_danmu_on_the_compacted_timeline() {
+        let aligned = align_danmus_to_recording(
+            vec![
+                entry(STREAM_START_MS + 2_000, "before ad"),
+                entry(STREAM_START_MS + 6_000, "during ad"),
+                entry(STREAM_START_MS + 8_000, "after ad"),
+            ],
+            STREAM_START_MS,
+            &[AdTimeRange {
+                id: "stitched-ad-1".to_string(),
+                start_ms: STREAM_START_MS + 4_000,
+                end_ms: STREAM_START_MS + 8_000,
+            }],
+        );
+
+        let exported = prepare_danmus_for_export(aligned, STREAM_START_MS, 0, 0);
+
+        assert_eq!(
+            exported
+                .iter()
+                .map(|entry| (entry.ts, entry.content.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(2_000, "before ad"), (4_000, "after ad")]
+        );
     }
 
     #[test]

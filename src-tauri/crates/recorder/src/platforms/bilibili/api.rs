@@ -16,7 +16,6 @@ use chrono::TimeZone;
 use pct_str::PctString;
 use pct_str::URIReserved;
 use rand::seq::IndexedRandom;
-use rand::seq::SliceRandom;
 use regex::Regex;
 use reqwest::{header, redirect, Client, Url};
 use serde::Deserialize;
@@ -101,6 +100,10 @@ pub struct UrlInfo {
 }
 
 impl UrlInfo {
+    fn playlist_url(&self, base_url: &str) -> String {
+        format!("{}{}{}", self.host, base_url, self.extra)
+    }
+
     pub fn get_expire(&self) -> i64 {
         // try to match expire from extra with regex
         let expire_regex =
@@ -695,7 +698,114 @@ pub async fn get_stream_info_with_base(
     let response = client.get(url).headers(headers).send().await?;
     let res: serde_json::Value = response.json().await?;
     log::debug!("Get stream info response: {res}");
-    parse_stream_info_response(&res, protocol, format, codec)
+    let mut stream = parse_stream_info_response(&res, protocol, format, codec)?;
+    stream.url_info = rank_url_info_by_head(client, &stream.base_url, stream.url_info).await;
+    Ok(stream)
+}
+
+/// Bound for one CDN HEAD. A hung node must not stall opening the recording.
+const CDN_HEAD_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// A HEAD that connects is usable. `405`/`501` mean this CDN rejects HEAD
+/// while GET can still succeed, so those responses still count.
+fn head_status_is_usable(status: reqwest::StatusCode) -> bool {
+    status.is_success() || matches!(status.as_u16(), 405 | 501)
+}
+
+async fn probe_playlist_head(client: &Client, host: &str, url: &str) -> Option<Duration> {
+    let started = Instant::now();
+    let response = match client
+        .head(url)
+        .headers(generate_user_agent_header())
+        .timeout(CDN_HEAD_TIMEOUT)
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            log::debug!("Bilibili CDN HEAD failed for {host}: {error}");
+            return None;
+        }
+    };
+    let elapsed = started.elapsed();
+    if head_status_is_usable(response.status()) {
+        Some(elapsed)
+    } else {
+        log::debug!("Bilibili CDN HEAD rejected {host}: {}", response.status());
+        None
+    }
+}
+
+/// Order same-quality hosts by HEAD latency. Usable hosts come first, lowest
+/// latency first. When none respond, the API order is kept.
+async fn rank_url_info_by_head(
+    client: &Client,
+    base_url: &str,
+    url_info: Vec<UrlInfo>,
+) -> Vec<UrlInfo> {
+    if url_info.len() <= 1 {
+        return url_info;
+    }
+
+    let mut probes = tokio::task::JoinSet::new();
+    for (index, info) in url_info.iter().enumerate() {
+        let client = client.clone();
+        let url = info.playlist_url(base_url);
+        let host = info.host.clone();
+        probes.spawn(async move {
+            let latency = probe_playlist_head(&client, &host, &url).await;
+            (index, latency)
+        });
+    }
+
+    let mut results = Vec::with_capacity(url_info.len());
+    while let Some(joined) = probes.join_next().await {
+        match joined {
+            Ok(result) => results.push(result),
+            Err(error) => log::warn!("Bilibili CDN HEAD probe task failed: {error}"),
+        }
+    }
+    for index in 0..url_info.len() {
+        if !results.iter().any(|(probed, _)| *probed == index) {
+            results.push((index, None));
+        }
+    }
+
+    let available = results
+        .iter()
+        .filter(|(_, latency)| latency.is_some())
+        .count();
+    if available == 0 {
+        log::warn!(
+            "Bilibili CDN HEAD found no usable host among {}; keeping API order",
+            url_info.len()
+        );
+        return url_info;
+    }
+
+    results.sort_by(|left, right| match (left.1, right.1) {
+        (Some(left_latency), Some(right_latency)) => {
+            left_latency.cmp(&right_latency).then(left.0.cmp(&right.0))
+        }
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => left.0.cmp(&right.0),
+    });
+
+    if let Some((index, Some(latency))) = results.first() {
+        log::info!(
+            "Bilibili CDN selected {} in {:.0} ms ({} of {} hosts responded)",
+            url_info[*index].host,
+            latency.as_secs_f64() * 1000.0,
+            available,
+            url_info.len()
+        );
+    }
+
+    results
+        .into_iter()
+        .filter_map(|(index, _)| url_info.get(index).cloned())
+        .collect()
 }
 
 /// Parse a Bilibili `getRoomPlayInfo` JSON body into [`BiliStream`].
@@ -774,15 +884,13 @@ pub fn parse_stream_info_response(
 
     let url_info = codec_info["url_info"].as_array().unwrap_or(&empty_vec);
 
-    let mut url_info = url_info
+    let url_info = url_info
         .iter()
         .map(|u| UrlInfo {
             host: u["host"].as_str().unwrap_or("").to_string(),
             extra: u["extra"].as_str().unwrap_or("").to_string(),
         })
         .collect::<Vec<UrlInfo>>();
-
-    url_info.shuffle(&mut rand::rng());
 
     let drm = codec_info["drm"].as_bool().unwrap_or(false);
     let base_url = codec_info["base_url"].as_str().unwrap_or("").to_string();
@@ -1253,5 +1361,93 @@ pub async fn get_video_typelist(
     } else {
         log::error!("Get video typelist failed with code {}", resp.code);
         Err(RecorderError::InvalidResponse)
+    }
+}
+
+#[cfg(test)]
+mod cdn_head_tests {
+    use super::*;
+    use wiremock::matchers::{method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn info(host: &str, node: &str) -> UrlInfo {
+        UrlInfo {
+            host: host.to_string(),
+            extra: format!("node={node}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn ranks_usable_hosts_by_head_latency() {
+        let server = MockServer::start().await;
+        let host = server.uri();
+
+        Mock::given(method("HEAD"))
+            .and(path("/live/index.m3u8"))
+            .and(query_param("node", "fast"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        Mock::given(method("HEAD"))
+            .and(path("/live/index.m3u8"))
+            .and(query_param("node", "slow"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_millis(200)))
+            .mount(&server)
+            .await;
+        Mock::given(method("HEAD"))
+            .and(path("/live/index.m3u8"))
+            .and(query_param("node", "dead"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("HEAD"))
+            .and(path("/live/index.m3u8"))
+            .and(query_param("node", "headless"))
+            .respond_with(ResponseTemplate::new(405).set_delay(Duration::from_millis(40)))
+            .mount(&server)
+            .await;
+
+        let ranked = rank_url_info_by_head(
+            &Client::new(),
+            "/live/index.m3u8?",
+            vec![
+                info(&host, "dead"),
+                info(&host, "slow"),
+                info(&host, "headless"),
+                info(&host, "fast"),
+            ],
+        )
+        .await;
+
+        let nodes: Vec<&str> = ranked
+            .iter()
+            .map(|info| info.extra.trim_start_matches("node="))
+            .collect();
+        assert_eq!(nodes, ["fast", "headless", "slow", "dead"]);
+    }
+
+    #[tokio::test]
+    async fn keeps_api_order_when_every_head_fails() {
+        let server = MockServer::start().await;
+        let host = server.uri();
+
+        Mock::given(method("HEAD"))
+            .and(path("/live/index.m3u8"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let ranked = rank_url_info_by_head(
+            &Client::new(),
+            "/live/index.m3u8?",
+            vec![info(&host, "a"), info(&host, "b")],
+        )
+        .await;
+
+        let nodes: Vec<&str> = ranked
+            .iter()
+            .map(|info| info.extra.trim_start_matches("node="))
+            .collect();
+        assert_eq!(nodes, ["a", "b"]);
     }
 }

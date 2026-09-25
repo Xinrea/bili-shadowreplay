@@ -665,7 +665,10 @@ ${mediaPlaylistUrl}`;
       const danmuBatcher = createDanmuBatcher<DanmuEntry>((batch) => {
         danmu_records = danmu_records.concat(batch);
       }, DANMU_FLUSH_INTERVAL_MS);
-      await listen(`danmu:${room_id}`, (event: { payload: DanmuEntry }) => {
+      await listen("danmu", (event: { payload: DanmuEntry & { room: string } }) => {
+        if (event.payload.room !== room_id) {
+          return;
+        }
         if (global_offset == 0) {
           return;
         }

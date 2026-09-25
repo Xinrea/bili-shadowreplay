@@ -219,8 +219,7 @@ function createSocket() {
   socket.on("danmu", (data) => {
     // 触发对应的事件监听器
     console.log("danmu:", data);
-    const room_id = data.room;
-    const listeners = eventListeners.get(`danmu:${room_id}`);
+    const listeners = eventListeners.get("danmu");
     if (listeners) {
       listeners.forEach((callback) => {
         try {

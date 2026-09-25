@@ -16,7 +16,6 @@ use chrono::TimeZone;
 use pct_str::PctString;
 use pct_str::URIReserved;
 use rand::seq::IndexedRandom;
-use rand::seq::SliceRandom;
 use regex::Regex;
 use reqwest::{header, redirect, Client, Url};
 use serde::Deserialize;
@@ -101,6 +100,10 @@ pub struct UrlInfo {
 }
 
 impl UrlInfo {
+    fn playlist_url(&self, base_url: &str) -> String {
+        format!("{}{}{}", self.host, base_url, self.extra)
+    }
+
     pub fn get_expire(&self) -> i64 {
         // try to match expire from extra with regex
         let expire_regex =
@@ -653,7 +656,7 @@ pub async fn get_stream_info(
     codec: &[Codec],
     qn: Qn,
 ) -> Result<BiliStream, RecorderError> {
-    get_stream_info_with_base(
+    let mut stream = get_stream_info_with_base(
         client,
         account,
         room_id,
@@ -663,7 +666,11 @@ pub async fn get_stream_info(
         qn,
         "https://api.live.bilibili.com",
     )
-    .await
+    .await?;
+    // The wiremock adapter test calls `get_stream_info_with_base` directly so
+    // it can parse a fixture without probing production CDN hosts.
+    stream.url_info = rank_url_info_by_head(client, &stream.base_url, stream.url_info).await;
+    Ok(stream)
 }
 
 /// Same as [`get_stream_info`], but targets `api_base` (used by wiremock integration tests).
@@ -696,6 +703,156 @@ pub async fn get_stream_info_with_base(
     let res: serde_json::Value = response.json().await?;
     log::debug!("Get stream info response: {res}");
     parse_stream_info_response(&res, protocol, format, codec)
+}
+
+/// Bound for one CDN HEAD. A hung node must not stall opening the recording.
+const CDN_HEAD_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// After a HEAD-only response, wait this long for a playlist (`2xx`) before
+/// giving up on the slower probes.
+const CDN_HEAD_PLAYLIST_GRACE: Duration = Duration::from_millis(500);
+
+#[derive(Clone, Copy)]
+enum HeadProbe {
+    /// HEAD returned the playlist. This is the same request shape as the
+    /// recorder's later GET, so it outranks a mere connection.
+    Playlist(Duration),
+    /// `405`/`501`: this CDN rejects HEAD, but GET may still succeed.
+    HeadOnly(Duration),
+}
+
+async fn probe_playlist_head(client: &Client, host: &str, url: &str) -> Option<HeadProbe> {
+    let started = Instant::now();
+    let response = match client
+        .head(url)
+        .headers(generate_user_agent_header())
+        .timeout(CDN_HEAD_TIMEOUT)
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            log::debug!("Bilibili CDN HEAD failed for {host}: {error}");
+            return None;
+        }
+    };
+    let elapsed = started.elapsed();
+    if response.status().is_success() {
+        Some(HeadProbe::Playlist(elapsed))
+    } else if matches!(response.status().as_u16(), 405 | 501) {
+        Some(HeadProbe::HeadOnly(elapsed))
+    } else {
+        log::debug!("Bilibili CDN HEAD rejected {host}: {}", response.status());
+        None
+    }
+}
+
+fn prefer_faster(
+    current: Option<(usize, Duration)>,
+    candidate: (usize, Duration),
+) -> Option<(usize, Duration)> {
+    match current {
+        Some((index, latency)) if latency <= candidate.1 => Some((index, latency)),
+        _ => Some(candidate),
+    }
+}
+
+/// Put the best same-quality host first. A playlist response (`2xx`) wins over
+/// a HEAD rejection (`405`/`501`). The first playlist response is the lowest
+/// latency, so the remaining probes are cancelled. Other hosts keep API order
+/// as fallback. When every probe fails, the API order is unchanged.
+async fn rank_url_info_by_head(
+    client: &Client,
+    base_url: &str,
+    url_info: Vec<UrlInfo>,
+) -> Vec<UrlInfo> {
+    if url_info.len() <= 1 {
+        return url_info;
+    }
+
+    let mut probes = tokio::task::JoinSet::new();
+    for (index, info) in url_info.iter().enumerate() {
+        let client = client.clone();
+        let url = info.playlist_url(base_url);
+        let host = info.host.clone();
+        probes.spawn(async move {
+            let probe = probe_playlist_head(&client, &host, &url).await;
+            (index, probe)
+        });
+    }
+
+    let mut best_playlist: Option<(usize, Duration)> = None;
+    let mut best_head_only: Option<(usize, Duration)> = None;
+    let mut head_only_since: Option<Instant> = None;
+
+    loop {
+        if best_playlist.is_some() {
+            probes.abort_all();
+            break;
+        }
+        let grace_left =
+            head_only_since.and_then(|since| CDN_HEAD_PLAYLIST_GRACE.checked_sub(since.elapsed()));
+        if head_only_since.is_some() && grace_left.is_none() {
+            probes.abort_all();
+            break;
+        }
+
+        let joined = if let Some(left) = grace_left {
+            tokio::select! {
+                joined = probes.join_next() => joined,
+                _ = tokio::time::sleep(left) => {
+                    probes.abort_all();
+                    break;
+                }
+            }
+        } else {
+            probes.join_next().await
+        };
+
+        let Some(joined) = joined else {
+            break;
+        };
+        let Ok((index, probe)) = joined else {
+            continue;
+        };
+        match probe {
+            Some(HeadProbe::Playlist(latency)) => {
+                best_playlist = prefer_faster(best_playlist, (index, latency));
+            }
+            Some(HeadProbe::HeadOnly(latency)) => {
+                best_head_only = prefer_faster(best_head_only, (index, latency));
+                if head_only_since.is_none() {
+                    head_only_since = Some(Instant::now());
+                }
+            }
+            None => {}
+        }
+    }
+
+    let Some((winner, latency, via)) = best_playlist
+        .map(|(index, latency)| (index, latency, "playlist"))
+        .or_else(|| best_head_only.map(|(index, latency)| (index, latency, "HEAD-only")))
+    else {
+        log::warn!(
+            "Bilibili CDN HEAD found no usable host among {}; keeping API order",
+            url_info.len()
+        );
+        return url_info;
+    };
+    log::info!(
+        "Bilibili CDN selected {} in {:.0} ms via {via}",
+        url_info[winner].host,
+        latency.as_secs_f64() * 1000.0
+    );
+
+    let mut ranked = Vec::with_capacity(url_info.len());
+    ranked.push(url_info[winner].clone());
+    for (index, info) in url_info.into_iter().enumerate() {
+        if index != winner {
+            ranked.push(info);
+        }
+    }
+    ranked
 }
 
 /// Parse a Bilibili `getRoomPlayInfo` JSON body into [`BiliStream`].
@@ -774,15 +931,13 @@ pub fn parse_stream_info_response(
 
     let url_info = codec_info["url_info"].as_array().unwrap_or(&empty_vec);
 
-    let mut url_info = url_info
+    let url_info = url_info
         .iter()
         .map(|u| UrlInfo {
             host: u["host"].as_str().unwrap_or("").to_string(),
             extra: u["extra"].as_str().unwrap_or("").to_string(),
         })
         .collect::<Vec<UrlInfo>>();
-
-    url_info.shuffle(&mut rand::rng());
 
     let drm = codec_info["drm"].as_bool().unwrap_or(false);
     let base_url = codec_info["base_url"].as_str().unwrap_or("").to_string();
@@ -1253,5 +1408,147 @@ pub async fn get_video_typelist(
     } else {
         log::error!("Get video typelist failed with code {}", resp.code);
         Err(RecorderError::InvalidResponse)
+    }
+}
+
+#[cfg(test)]
+mod cdn_head_tests {
+    use super::*;
+    use wiremock::matchers::{method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn info(host: &str, node: &str) -> UrlInfo {
+        UrlInfo {
+            host: host.to_string(),
+            extra: format!("node={node}"),
+        }
+    }
+
+    fn nodes(ranked: &[UrlInfo]) -> Vec<&str> {
+        ranked
+            .iter()
+            .map(|info| info.extra.trim_start_matches("node="))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn picks_fastest_playlist_without_waiting_for_hung_hosts() {
+        let fast = MockServer::start().await;
+        let hung = MockServer::start().await;
+
+        Mock::given(method("HEAD"))
+            .and(path("/live/index.m3u8"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&fast)
+            .await;
+        Mock::given(method("HEAD"))
+            .and(path("/live/index.m3u8"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(5)))
+            .mount(&hung)
+            .await;
+
+        let started = Instant::now();
+        let ranked = rank_url_info_by_head(
+            &Client::new(),
+            "/live/index.m3u8?",
+            vec![info(&hung.uri(), "hung"), info(&fast.uri(), "fast")],
+        )
+        .await;
+
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "ranking waited {elapsed:?} for a host that delays 5s"
+        );
+        assert_eq!(nodes(&ranked), ["fast", "hung"]);
+    }
+
+    #[tokio::test]
+    async fn prefers_playlist_over_a_faster_head_rejection() {
+        let server = MockServer::start().await;
+        let host = server.uri();
+
+        Mock::given(method("HEAD"))
+            .and(path("/live/index.m3u8"))
+            .and(query_param("node", "headless"))
+            .respond_with(ResponseTemplate::new(405))
+            .mount(&server)
+            .await;
+        Mock::given(method("HEAD"))
+            .and(path("/live/index.m3u8"))
+            .and(query_param("node", "playlist"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_millis(80)))
+            .mount(&server)
+            .await;
+
+        let ranked = rank_url_info_by_head(
+            &Client::new(),
+            "/live/index.m3u8?",
+            vec![info(&host, "headless"), info(&host, "playlist")],
+        )
+        .await;
+
+        assert_eq!(nodes(&ranked), ["playlist", "headless"]);
+    }
+
+    #[tokio::test]
+    async fn uses_head_rejection_when_no_playlist_responds() {
+        let server = MockServer::start().await;
+        let host = server.uri();
+
+        Mock::given(method("HEAD"))
+            .and(path("/live/index.m3u8"))
+            .and(query_param("node", "dead"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("HEAD"))
+            .and(path("/live/index.m3u8"))
+            .and(query_param("node", "headless"))
+            .respond_with(ResponseTemplate::new(405))
+            .mount(&server)
+            .await;
+
+        let ranked = rank_url_info_by_head(
+            &Client::new(),
+            "/live/index.m3u8?",
+            vec![info(&host, "dead"), info(&host, "headless")],
+        )
+        .await;
+
+        assert_eq!(nodes(&ranked), ["headless", "dead"]);
+    }
+
+    #[tokio::test]
+    async fn keeps_api_order_when_every_head_fails() {
+        let server = MockServer::start().await;
+        let host = server.uri();
+
+        Mock::given(method("HEAD"))
+            .and(path("/live/index.m3u8"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let ranked = rank_url_info_by_head(
+            &Client::new(),
+            "/live/index.m3u8?",
+            vec![info(&host, "a"), info(&host, "b")],
+        )
+        .await;
+
+        assert_eq!(nodes(&ranked), ["a", "b"]);
+    }
+
+    #[tokio::test]
+    async fn skips_probe_when_only_one_host() {
+        let ranked = rank_url_info_by_head(
+            &Client::new(),
+            "/live/index.m3u8?",
+            vec![info("http://127.0.0.1:1", "only")],
+        )
+        .await;
+
+        assert_eq!(nodes(&ranked), ["only"]);
     }
 }

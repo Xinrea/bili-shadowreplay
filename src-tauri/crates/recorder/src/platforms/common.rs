@@ -62,11 +62,12 @@ pub enum StreamPull {
     },
     Flv {
         url: String,
-        /// The viewer identity used while probing this URL, so ffmpeg speaks
-        /// the same HTTP as the probe that validated it.
+        /// The viewer identity used when pulling this signed URL.
         user_agent: Option<String>,
         /// Extra HTTP headers for the pull request (e.g. `Referer`).
         http_headers: Vec<(String, String)>,
+        /// Optional idle network read limit for HTTP-FLV inputs.
+        read_timeout: Option<Duration>,
     },
 }
 
@@ -409,8 +410,9 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                 url,
                 user_agent,
                 http_headers,
+                read_timeout,
             } => {
-                let flv_recorder = FlvRecorder::new(
+                let mut flv_recorder = FlvRecorder::new(
                     url,
                     user_agent,
                     http_headers,
@@ -419,6 +421,9 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                     self.event_channel().clone(),
                     live_id.to_string(),
                 );
+                if let Some(timeout) = read_timeout {
+                    flv_recorder = flv_recorder.with_read_timeout(timeout);
+                }
 
                 flv_recorder.start().await
             }

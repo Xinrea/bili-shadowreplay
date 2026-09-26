@@ -2,7 +2,7 @@ pub mod api;
 pub mod response;
 
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -13,7 +13,7 @@ use crate::account::Account;
 use crate::errors::RecorderError;
 use crate::platforms::common::{DanmuConfig, DanmuSpawn, PlatformApi, RoomPoll, StreamPull};
 use crate::platforms::PlatformType;
-use crate::traits::RecorderTrait;
+use crate::traits::{RecorderBasicTrait, RecorderTrait};
 use crate::{Recorder, UserInfo};
 
 pub type DouyuRecorder = Recorder<DouyuExtra>;
@@ -21,6 +21,8 @@ pub type DouyuRecorder = Recorder<DouyuExtra>;
 #[derive(Clone)]
 pub struct DouyuExtra {
     stream_url: Arc<RwLock<Option<String>>>,
+    selected_cdn: Arc<RwLock<Option<String>>>,
+    avoid_cdn: Arc<RwLock<Option<String>>>,
     encryption_key: api::EncryptionCache,
     resolved_room_id: Arc<RwLock<Option<u64>>>,
 }
@@ -57,6 +59,8 @@ impl DouyuRecorder {
             enabled,
             DouyuExtra {
                 stream_url: Arc::new(RwLock::new(None)),
+                selected_cdn: Arc::new(RwLock::new(None)),
+                avoid_cdn: Arc::new(RwLock::new(None)),
                 encryption_key: Arc::new(RwLock::new(None)),
                 resolved_room_id: Arc::new(RwLock::new(None)),
             },
@@ -114,19 +118,26 @@ impl PlatformApi for DouyuRecorder {
             }
         };
 
-        match api::get_stream_url(
+        // Each signed URL is handed to FFmpeg only once. If that attempt
+        // stopped while the room is still live, pick a different advertised
+        // CDN on the next poll rather than probing the consumed URL again.
+        let avoid_cdn = self.extra.avoid_cdn.write().await.take();
+        match api::get_stream_url_avoiding(
             &self.client,
             &self.account,
             room_id,
             &self.extra.encryption_key,
+            avoid_cdn.as_deref(),
         )
         .await
         {
-            Ok(url) => {
-                *self.extra.stream_url.write().await = Some(url);
+            Ok(selected) => {
+                *self.extra.selected_cdn.write().await = Some(selected.cdn);
+                *self.extra.stream_url.write().await = Some(selected.url);
                 true
             }
             Err(error) => {
+                *self.extra.selected_cdn.write().await = None;
                 *self.extra.stream_url.write().await = None;
                 match &error {
                     api::DouyuApiError::Offline { detail } => {
@@ -162,12 +173,22 @@ impl PlatformApi for DouyuRecorder {
             url,
             user_agent: Some(user_agent),
             http_headers,
+            read_timeout: Some(std::time::Duration::from_secs(15)),
         })
     }
 
     async fn clear_stream(&self) {
-        // Keep the encryption key across recording attempts while it is valid;
-        // only the temporary FLV URL belongs to one stream session.
+        // A recording attempt ended while the room was still live: avoid its
+        // CDN on the next attempt. Do not rotate for an idle room, failed
+        // setup, or a user-initiated stop.
+        let should_rotate = self.enabled().load(Ordering::Relaxed)
+            && self.room_info().read().await.status
+            && !self.live_id().read().await.is_empty();
+        let selected = self.extra.selected_cdn.write().await.take();
+        if should_rotate {
+            *self.extra.avoid_cdn.write().await = selected;
+        }
+        // Keep the encryption key across attempts while it remains valid.
         *self.extra.stream_url.write().await = None;
     }
 
@@ -190,5 +211,35 @@ impl PlatformApi for DouyuRecorder {
 impl RecorderTrait for DouyuRecorder {
     async fn run(&self) {
         self.run_recording_loop().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn ended_live_attempt_rotates_cdn_but_user_stop_does_not() {
+        let (events, _) = broadcast::channel(4);
+        let recorder = DouyuRecorder::new(
+            "123",
+            &Account::default(),
+            std::env::temp_dir(),
+            events,
+            Arc::new(AtomicU64::new(10)),
+            true,
+        )
+        .unwrap();
+        recorder.room_info().write().await.status = true;
+        *recorder.live_id().write().await = "archive".into();
+        *recorder.extra.selected_cdn.write().await = Some(api::DEFAULT_CDN.to_string());
+        recorder.clear_stream().await;
+        assert_eq!(recorder.extra.avoid_cdn.read().await.as_deref(), Some(""));
+
+        *recorder.extra.avoid_cdn.write().await = None;
+        *recorder.extra.selected_cdn.write().await = Some("hw-h5".into());
+        recorder.disable().await;
+        recorder.clear_stream().await;
+        assert!(recorder.extra.avoid_cdn.read().await.is_none());
     }
 }

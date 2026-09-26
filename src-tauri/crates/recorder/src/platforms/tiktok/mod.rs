@@ -121,6 +121,7 @@ impl PlatformApi for TikTokRecorder {
             url: rtmp_url,
             user_agent: None,
             http_headers: Vec::new(),
+            read_timeout: None,
         })
     }
 

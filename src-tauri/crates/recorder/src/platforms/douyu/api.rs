@@ -386,6 +386,22 @@ pub async fn get_stream_url(
     room_id: u64,
     cache: &EncryptionCache,
 ) -> Result<String, DouyuApiError> {
+    Ok(
+        get_stream_url_avoiding(client, account, room_id, cache, None)
+            .await?
+            .url,
+    )
+}
+
+/// Select an alternate CDN after a previous recording attempt failed. The
+/// signed URL itself is never pre-fetched or logged.
+pub(crate) async fn get_stream_url_avoiding(
+    client: &Client,
+    account: &Account,
+    room_id: u64,
+    cache: &EncryptionCache,
+    excluded_cdn: Option<&str>,
+) -> Result<DouyuSelectedStream, DouyuApiError> {
     get_stream_url_at(
         client,
         account,
@@ -396,9 +412,18 @@ pub async fn get_stream_url(
             play: PLAY_API_BASE,
         },
         unix_timestamp,
-        STREAM_SELECTION_TIMEOUT,
+        DouyuSelectionOptions {
+            budget: STREAM_SELECTION_TIMEOUT,
+            excluded_cdn,
+        },
     )
     .await
+}
+
+#[derive(Debug)]
+pub(crate) struct DouyuSelectedStream {
+    pub url: String,
+    pub cdn: String,
 }
 
 #[derive(Debug)]
@@ -420,6 +445,12 @@ struct DouyuPlaySelection<'a> {
     rate: u64,
 }
 
+#[derive(Clone, Copy)]
+struct DouyuSelectionOptions<'a> {
+    budget: Duration,
+    excluded_cdn: Option<&'a str>,
+}
+
 /// Request Douyu's automatic CDN selection and prefer a supported live quality
 /// over the highest-bitrate source. Never probe the signed FLV URL: a GET can
 /// consume its live session, leaving only a few seconds for FFmpeg's next GET.
@@ -430,17 +461,18 @@ async fn get_stream_url_at<F>(
     cache: &EncryptionCache,
     endpoints: DouyuPlayEndpoints<'_>,
     timestamp: F,
-    budget: Duration,
-) -> Result<String, DouyuApiError>
+    options: DouyuSelectionOptions<'_>,
+) -> Result<DouyuSelectedStream, DouyuApiError>
 where
     F: FnMut() -> u64 + Send,
 {
-    let deadline = Instant::now() + budget;
+    let deadline = Instant::now() + options.budget;
     let mut pending_cdns = VecDeque::from([DEFAULT_CDN.to_string()]);
     let mut tried_cdns = HashSet::new();
     let mut last_error = None;
     let mut timestamp = timestamp;
     let mut selected_rate = DEFAULT_RATE;
+    let mut source_fallback = None;
 
     while let Some(cdn) = pending_cdns.pop_front() {
         if !tried_cdns.insert(cdn.clone()) || cdn.starts_with("scdn") {
@@ -463,86 +495,110 @@ where
             ),
         )
         .await
-        .map_err(|_| stream_selection_timeout())?
         {
-            Ok(candidate) => candidate,
-            Err(error) if tried_cdns.len() == 1 => return Err(error),
-            Err(error) => {
+            Ok(Ok(candidate)) => candidate,
+            Ok(Err(error)) if tried_cdns.len() == 1 => return Err(error),
+            Ok(Err(error)) => {
                 last_error = Some(error);
                 continue;
             }
+            Err(_) => return source_fallback.ok_or_else(stream_selection_timeout),
         };
 
-        let candidate = if cdn == DEFAULT_CDN
-            && selected_rate == DEFAULT_RATE
-            && candidate
-                .preferred_rate
-                .is_some_and(|rate| rate != DEFAULT_RATE)
-        {
-            let rate = candidate.preferred_rate.expect("checked above");
-            selected_rate = rate;
-            // The initial source request advertises the available qualities.
-            // Re-signing for its chosen rate is how the website and Streamlink
-            // request an ordinary CDN FLV stream.
-            match timeout_at(
-                deadline,
-                get_stream_candidate_at(
-                    client,
-                    account,
-                    room_id,
-                    cache,
-                    DouyuPlaySelection { cdn: &cdn, rate },
-                    endpoints,
-                    &mut timestamp,
-                ),
-            )
-            .await
-            .map_err(|_| stream_selection_timeout())?
-            {
-                Ok(mut preferred) => {
-                    // Some rate-specific responses omit the CDN list that the
-                    // initial request advertised. Keep those fallback routes.
-                    preferred.cdns.extend(candidate.cdns);
-                    preferred
-                }
-                Err(error) => {
-                    log::warn!("[Douyu][{room_id}] Preferred rate {rate} failed: {error}");
-                    selected_rate = DEFAULT_RATE;
-                    candidate
-                }
-            }
-        } else {
-            candidate
-        };
-
-        let DouyuStreamCandidate { url, cdns, .. } = candidate;
-        for alternate in cdns {
-            if !alternate.is_empty() && !tried_cdns.contains(&alternate) {
-                pending_cdns.push_back(alternate);
+        // A rate-specific response may omit the advertised CDN list. Keep
+        // routes from the initial request even if the preferred rate fails.
+        for alternate in &candidate.cdns {
+            if !alternate.is_empty() && !tried_cdns.contains(alternate) {
+                pending_cdns.push_back(alternate.clone());
             }
         }
 
-        let Some(url) = url.filter(|url| {
-            url::Url::parse(url).is_ok_and(|parsed| {
-                matches!(parsed.scheme(), "http" | "https") && parsed.path().ends_with(".flv")
-            })
-        }) else {
-            last_error = Some(DouyuApiError::InvalidResponse {
-                endpoint: "getH5PlayV1",
-                detail: format!("CDN {cdn} did not return an AVC FLV URL"),
-            });
+        if cdn == DEFAULT_CDN && selected_rate == DEFAULT_RATE {
+            if options.excluded_cdn != Some(cdn.as_str()) {
+                source_fallback = valid_flv_url(&candidate).map(|url| DouyuSelectedStream {
+                    url,
+                    cdn: cdn.clone(),
+                });
+            }
+            if let Some(rate) = candidate
+                .preferred_rate
+                .filter(|rate| *rate != DEFAULT_RATE)
+            {
+                selected_rate = rate;
+                // Use a new signature for the advertised quality, but retain
+                // the source URL in case that quality/CDN is unavailable.
+                match timeout_at(
+                    deadline,
+                    get_stream_candidate_at(
+                        client,
+                        account,
+                        room_id,
+                        cache,
+                        DouyuPlaySelection { cdn: &cdn, rate },
+                        endpoints,
+                        &mut timestamp,
+                    ),
+                )
+                .await
+                {
+                    Ok(Ok(preferred)) => {
+                        for alternate in &preferred.cdns {
+                            if !alternate.is_empty() && !tried_cdns.contains(alternate) {
+                                pending_cdns.push_back(alternate.clone());
+                            }
+                        }
+                        if options.excluded_cdn != Some(cdn.as_str()) {
+                            if let Some(url) = valid_flv_url(&preferred) {
+                                log::info!(
+                                    "[Douyu][{room_id}] Selected FLV rate {rate}, CDN {cdn:?}"
+                                );
+                                return Ok(DouyuSelectedStream { url, cdn });
+                            }
+                        }
+                        last_error = Some(DouyuApiError::InvalidResponse {
+                            endpoint: "getH5PlayV1",
+                            detail: format!(
+                                "CDN {cdn} did not return an AVC FLV URL at rate {rate}"
+                            ),
+                        });
+                        continue;
+                    }
+                    Ok(Err(error)) => {
+                        log::warn!("[Douyu][{room_id}] Preferred rate {rate} failed: {error}");
+                        selected_rate = DEFAULT_RATE;
+                        last_error = Some(error);
+                    }
+                    Err(_) => return source_fallback.ok_or_else(stream_selection_timeout),
+                }
+            }
+        }
+
+        if options.excluded_cdn == Some(cdn.as_str()) {
             continue;
-        };
-        log::info!("[Douyu][{room_id}] Selected FLV rate {selected_rate}, CDN {cdn:?}");
-        return Ok(url);
+        }
+        if let Some(url) = valid_flv_url(&candidate) {
+            log::info!("[Douyu][{room_id}] Selected FLV rate {selected_rate}, CDN {cdn:?}");
+            return Ok(DouyuSelectedStream { url, cdn });
+        }
+        last_error = Some(DouyuApiError::InvalidResponse {
+            endpoint: "getH5PlayV1",
+            detail: format!("CDN {cdn} did not return an AVC FLV URL"),
+        });
     }
 
-    Err(
+    source_fallback.ok_or_else(|| {
         last_error.unwrap_or_else(|| DouyuApiError::InvalidResponse {
             endpoint: "getH5PlayV1",
             detail: "Douyu did not advertise any usable FLV CDN".to_string(),
-        }),
-    )
+        })
+    })
+}
+
+fn valid_flv_url(candidate: &DouyuStreamCandidate) -> Option<String> {
+    let url = candidate.url.as_ref()?;
+    let parsed = url::Url::parse(url).ok()?;
+    (matches!(parsed.scheme(), "http" | "https") && parsed.path().ends_with(".flv"))
+        .then(|| url.clone())
 }
 
 fn stream_selection_timeout() -> DouyuApiError {
@@ -755,6 +811,13 @@ mod tests {
     use wiremock::matchers::{method, path as url_path};
     use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
+    fn selection_options(budget: Duration) -> DouyuSelectionOptions<'static> {
+        DouyuSelectionOptions {
+            budget,
+            excluded_cdn: None,
+        }
+    }
+
     fn test_key() -> DouyuEncryptionData {
         DouyuEncryptionData {
             rand_str: "rand".to_string(),
@@ -869,7 +932,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_url_tries_advertised_cdn_when_default_has_no_url() {
+    async fn stream_url_tries_advertised_cdn_when_default_is_not_flv() {
         let server = MockServer::start().await;
         let base = server.uri();
         Mock::given(method("GET"))
@@ -889,7 +952,7 @@ mod tests {
                     "" => serde_json::json!({
                         "room_id": 123,
                         "rtmp_url": base_for_play.clone(),
-                        "rtmp_live": "",
+                        "rtmp_live": "playlist.m3u8",
                         "cdnsWithName": [{"cdn": "ws-alt"}]
                     }),
                     "ws-alt" => serde_json::json!({
@@ -926,7 +989,7 @@ mod tests {
                 play: &play_api_base,
             },
             move || clock_for_request.fetch_add(1, Ordering::SeqCst),
-            Duration::from_secs(30),
+            selection_options(Duration::from_secs(30)),
         )
         .await
         .unwrap();
@@ -940,7 +1003,7 @@ mod tests {
             .map(|request| form_value(request, "cdn"))
             .collect();
         assert_eq!(requested_cdns, vec!["", "ws-alt", "ws-alt2"]);
-        assert_eq!(url, format!("{base}/good.flv"));
+        assert_eq!(url.url, format!("{base}/good.flv"));
     }
 
     #[tokio::test]
@@ -1010,11 +1073,11 @@ mod tests {
                 play: &format!("{base}/play"),
             },
             unix_timestamp,
-            Duration::from_secs(30),
+            selection_options(Duration::from_secs(30)),
         )
         .await
         .unwrap();
-        assert_eq!(url, format!("{base}/live.flv"));
+        assert_eq!(url.url, format!("{base}/live.flv"));
         let requests = server.received_requests().await.unwrap();
         let play_requests: Vec<_> = requests
             .iter()
@@ -1080,11 +1143,11 @@ mod tests {
                 play: &format!("{base}/play"),
             },
             unix_timestamp,
-            Duration::from_secs(30),
+            selection_options(Duration::from_secs(30)),
         )
         .await
         .unwrap();
-        assert_eq!(url, format!("{base}/live.flv"));
+        assert_eq!(url.url, format!("{base}/live.flv"));
         let requests = server.received_requests().await.unwrap();
         let routes: Vec<_> = requests
             .iter()
@@ -1099,6 +1162,149 @@ mod tests {
                 ("hw-h5".into(), "4".into())
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn skips_a_failed_automatic_cdn_without_probing_its_signed_url() {
+        let server = MockServer::start().await;
+        let base = server.uri();
+        Mock::given(method("GET"))
+            .and(url_path("/encrypt"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(encryption_body()))
+            .mount(&server)
+            .await;
+        let base_for_play = base.clone();
+        Mock::given(method("POST"))
+            .and(url_path("/play/123"))
+            .respond_with(move |request: &Request| {
+                let live = if form_value(request, "cdn").is_empty() {
+                    "dead.flv"
+                } else {
+                    "working.flv"
+                };
+                ResponseTemplate::new(200).set_body_string(
+                    serde_json::json!({"error": 0, "data": {
+                        "rtmp_url": base_for_play.clone(), "rtmp_live": live,
+                        "cdnsWithName": [{"cdn": "hw-h5"}]
+                    }})
+                    .to_string(),
+                )
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        let mut options = selection_options(Duration::from_secs(30));
+        options.excluded_cdn = Some(DEFAULT_CDN);
+        let chosen = get_stream_url_at(
+            &Client::new(),
+            &Account::default(),
+            123,
+            &Arc::new(RwLock::new(None)),
+            DouyuPlayEndpoints {
+                encryption: &format!("{base}/encrypt"),
+                play: &format!("{base}/play"),
+            },
+            unix_timestamp,
+            options,
+        )
+        .await
+        .unwrap();
+        assert_eq!(chosen.cdn, "hw-h5");
+        assert_eq!(chosen.url, format!("{base}/working.flv"));
+        assert_eq!(server.received_requests().await.unwrap().len(), 3); // GET key + 2 POST plays; no FLV GET
+    }
+
+    #[tokio::test]
+    async fn falls_back_to_source_after_all_preferred_cdns_lack_flv() {
+        let server = MockServer::start().await;
+        let base = server.uri();
+        Mock::given(method("GET"))
+            .and(url_path("/encrypt"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(encryption_body()))
+            .mount(&server)
+            .await;
+        let base_for_play = base.clone();
+        Mock::given(method("POST"))
+            .and(url_path("/play/123"))
+            .respond_with(move |request: &Request| {
+                let source = form_value(request, "rate") == "0";
+                ResponseTemplate::new(200).set_body_string(
+                    serde_json::json!({"error": 0, "data": {
+                        "rtmp_url": base_for_play.clone(),
+                        "rtmp_live": if source { "source.flv" } else { "not-flv.m3u8" },
+                        "multirates": if source { serde_json::json!([{"rate": 4, "bit": 4000}]) } else { serde_json::json!([]) },
+                        "cdnsWithName": [{"cdn": "hw-h5"}]
+                    }})
+                    .to_string(),
+                )
+            })
+            .expect(3)
+            .mount(&server)
+            .await;
+        let chosen = get_stream_url_at(
+            &Client::new(),
+            &Account::default(),
+            123,
+            &Arc::new(RwLock::new(None)),
+            DouyuPlayEndpoints {
+                encryption: &format!("{base}/encrypt"),
+                play: &format!("{base}/play"),
+            },
+            unix_timestamp,
+            selection_options(Duration::from_secs(30)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(chosen.url, format!("{base}/source.flv"));
+        assert_eq!(chosen.cdn, DEFAULT_CDN);
+    }
+
+    #[tokio::test]
+    async fn preferred_rate_timeout_keeps_the_already_signed_source() {
+        let server = MockServer::start().await;
+        let base = server.uri();
+        Mock::given(method("GET"))
+            .and(url_path("/encrypt"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(encryption_body()))
+            .mount(&server)
+            .await;
+        let base_for_play = base.clone();
+        Mock::given(method("POST"))
+            .and(url_path("/play/123"))
+            .respond_with(move |request: &Request| {
+                let source = form_value(request, "rate") == "0";
+                let response = ResponseTemplate::new(200).set_body_string(
+                    serde_json::json!({"error": 0, "data": {
+                        "rtmp_url": base_for_play.clone(),
+                        "rtmp_live": if source { "source.flv" } else { "preferred.flv" },
+                        "multirates": [{"rate": 4, "bit": 4000}]
+                    }})
+                    .to_string(),
+                );
+                if source {
+                    response
+                } else {
+                    response.set_delay(Duration::from_secs(2))
+                }
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        let chosen = get_stream_url_at(
+            &Client::new(),
+            &Account::default(),
+            123,
+            &Arc::new(RwLock::new(None)),
+            DouyuPlayEndpoints {
+                encryption: &format!("{base}/encrypt"),
+                play: &format!("{base}/play"),
+            },
+            unix_timestamp,
+            selection_options(Duration::from_millis(500)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(chosen.url, format!("{base}/source.flv"));
     }
 
     #[tokio::test]
@@ -1126,7 +1332,7 @@ mod tests {
                 play: &play_api_base,
             },
             unix_timestamp,
-            Duration::from_millis(30),
+            selection_options(Duration::from_millis(30)),
         )
         .await
         .unwrap_err();

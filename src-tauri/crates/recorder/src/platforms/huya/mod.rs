@@ -106,6 +106,7 @@ impl PlatformApi for HuyaRecorder {
                 url,
                 user_agent: Some(user_agent),
                 http_headers,
+                read_timeout: None,
             }),
             PullUrl::Hls(url) => {
                 StreamPull::hls(live_id, &url, Some(self.account.cookies.clone())).await

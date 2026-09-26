@@ -67,7 +67,7 @@ pub struct DouyuH5PlayData {
     pub player_1: Option<String>,
     #[serde(default, rename = "cdnsWithName")]
     pub cdns: Vec<DouyuCdn>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_multirates")]
     pub multirates: Vec<DouyuRate>,
 }
 
@@ -79,9 +79,9 @@ pub struct DouyuCdn {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct DouyuRate {
-    #[serde(default, deserialize_with = "deserialize_u64")]
+    #[serde(default, deserialize_with = "deserialize_quality_u64")]
     pub rate: u64,
-    #[serde(default, deserialize_with = "deserialize_u64")]
+    #[serde(default, deserialize_with = "deserialize_quality_u64")]
     pub bit: u64,
 }
 
@@ -239,6 +239,21 @@ pub fn flv_url(data: &DouyuH5PlayData) -> Option<String> {
     ))
 }
 
+fn deserialize_multirates<'de, D>(deserializer: D) -> Result<Vec<DouyuRate>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let Some(entries) = value.as_array() else {
+        return Ok(Vec::new());
+    };
+
+    Ok(entries
+        .iter()
+        .filter_map(|entry| serde_json::from_value(entry.clone()).ok())
+        .collect())
+}
+
 fn deserialize_optional_room_info<'de, D>(
     deserializer: D,
 ) -> Result<Option<DouyuRoomInfo>, D::Error>
@@ -304,6 +319,34 @@ where
         serde_json::Value::Number(value) => Ok(value.to_string()),
         serde_json::Value::Bool(value) => Ok(value.to_string()),
         value => Err(de::Error::custom(format!("expected scalar, got {value}"))),
+    }
+}
+
+fn deserialize_quality_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Null => Ok(0),
+        serde_json::Value::Number(value) => {
+            if let Some(integer) = value.as_u64() {
+                return Ok(integer);
+            }
+            value
+                .as_f64()
+                .filter(|number| number.is_finite() && *number >= 0.0 && number.fract() == 0.0)
+                .filter(|number| *number < 18_446_744_073_709_551_616.0)
+                .map(|number| number as u64)
+                .ok_or_else(|| de::Error::custom("expected a nonnegative integer quality value"))
+        }
+        serde_json::Value::String(value) => value
+            .trim()
+            .parse()
+            .map_err(|_| de::Error::custom("expected an unsigned integer quality string")),
+        value => Err(de::Error::custom(format!(
+            "expected integer quality value, got {value}"
+        ))),
     }
 }
 
@@ -447,6 +490,56 @@ mod tests {
         let rate = &response.data.unwrap().multirates[0];
         assert_eq!(rate.rate, 30);
         assert_eq!(rate.bit, 2000);
+    }
+
+    #[test]
+    fn null_multirates_keeps_the_play_response_and_flv_url() {
+        let response = parse_play_response(
+            r#"{"error":0,"data":{"rtmp_url":"https://cdn.example/live","rtmp_live":"stream.flv","multirates":null}}"#,
+        )
+        .unwrap();
+        let data = response.data.unwrap();
+
+        assert!(data.multirates.is_empty());
+        assert_eq!(
+            flv_url(&data).as_deref(),
+            Some("https://cdn.example/live/stream.flv")
+        );
+    }
+
+    #[test]
+    fn malformed_multirates_entries_are_skipped_without_losing_valid_rates() {
+        let response = parse_play_response(
+            r#"{
+                "error": 0,
+                "data": {
+                    "rtmp_url": "https://cdn.example/live",
+                    "rtmp_live": "stream.flv",
+                    "multirates": [
+                        {"rate": 1, "bit": 1000},
+                        {"rate": 4.0, "bit": 4000.0},
+                        {"rate": "4Mbps", "bit": "4000"},
+                        {"rate": 5, "bit": "broken"},
+                        "malformed",
+                        null
+                    ]
+                }
+            }"#,
+        )
+        .unwrap();
+        let data = response.data.unwrap();
+
+        assert_eq!(data.multirates.len(), 2);
+        let selected = data
+            .multirates
+            .iter()
+            .max_by_key(|quality| quality.bit)
+            .unwrap();
+        assert_eq!((selected.rate, selected.bit), (4, 4000));
+        assert_eq!(
+            flv_url(&data).as_deref(),
+            Some("https://cdn.example/live/stream.flv")
+        );
     }
 
     #[test]

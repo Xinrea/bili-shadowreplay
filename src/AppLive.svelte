@@ -500,11 +500,23 @@
   }
 
   function onFullscreenKeydown(event: KeyboardEvent) {
-    if (TAURI_ENV && is_fullscreen && event.key === "Escape") {
+    if (!is_fullscreen || event.key !== "Escape" || event.repeat) return;
+    const target = event.target;
+    if (
+      target instanceof Element &&
+      target.closest("input, textarea, select, [contenteditable]")
+    ) return;
+
+    // Handle Escape before Player's document shortcut can clear the selected range.
+    event.preventDefault();
+    event.stopPropagation();
+    if (TAURI_ENV) {
       void getCurrentWindow()
         .setFullscreen(false)
         .then(syncNativeFullscreen)
         .catch((error) => log.error("退出直播预览全屏失败", String(error)));
+    } else {
+      void toggleFullscreen();
     }
   }
 
@@ -592,7 +604,7 @@
 </script>
 
 <svelte:document onfullscreenchange={syncFullscreen} />
-<svelte:window onkeydown={onFullscreenKeydown} />
+<svelte:window onkeydowncapture={onFullscreenKeydown} />
 
 <main>
   <div class="preview-workspace">
@@ -600,6 +612,7 @@
       <div
         class="video-stage"
         class:native-fullscreen={TAURI_ENV && is_fullscreen}
+        class:inspector-collapsed={rpanel_collapsed}
         bind:this={video_stage}
       >
         <Player
@@ -782,8 +795,8 @@
   .fullscreen-button {
     position: absolute;
     top: 12px;
-    right: 12px;
-    z-index: 1;
+    right: min(352px, calc(100% - 48px));
+    z-index: 600;
     display: inline-flex;
     width: 36px;
     height: 36px;
@@ -794,6 +807,15 @@
     background: rgb(0 0 0 / 55%);
     color: white;
     cursor: pointer;
+  }
+
+  .video-stage.inspector-collapsed .fullscreen-button {
+    right: 54px;
+  }
+
+  .video-stage:fullscreen .fullscreen-button,
+  .video-stage.native-fullscreen .fullscreen-button {
+    right: 12px;
   }
 
   .fullscreen-button:hover {

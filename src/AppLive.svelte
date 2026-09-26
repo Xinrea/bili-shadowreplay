@@ -795,7 +795,7 @@
   .fullscreen-button {
     position: absolute;
     top: 12px;
-    right: min(352px, calc(100% - 48px));
+    right: 12px;
     z-index: 600;
     display: inline-flex;
     width: 36px;
@@ -811,6 +811,12 @@
 
   .video-stage.inspector-collapsed .fullscreen-button {
     right: 54px;
+  }
+
+  @media (max-width: 1099px) {
+    .video-stage:not(.inspector-collapsed) .fullscreen-button {
+      right: min(352px, calc(100% - 48px));
+    }
   }
 
   .video-stage:fullscreen .fullscreen-button,

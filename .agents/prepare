@@ -5,7 +5,7 @@
 #
 # Delta imports only git-tracked files into a managed checkout, so submodule
 # content, target/, and .env never come over. This script reconstructs what
-# cargo builds need:
+# builds and commits need:
 #
 #   1. git submodule content (whisper.cpp — without it the whisper-cpp-rs
 #      cmake build script fails immediately)
@@ -17,6 +17,8 @@
 #      - SDKROOT pinned to the healthy SDK inside Xcode.app, working around
 #        a stale/broken Command Line Tools SDK that breaks all linking
 #   3. a quick `cargo fetch` so later builds don't stall on the registry
+#   4. frontend dependencies from yarn.lock
+#   5. the repository's pre-commit hook
 #
 # Design rules:
 # - Best effort: non-critical steps warn and continue; the script exits
@@ -121,5 +123,38 @@ fi
 # --- 3. Warm the registry cache (fast when the network is up) ----------------
 cargo fetch --manifest-path src-tauri/Cargo.toml >/dev/null 2>&1 \
   || warn "cargo fetch failed; the first build may stall on downloads"
+
+# --- 4. Frontend dependencies ------------------------------------------------
+if command -v yarn >/dev/null 2>&1; then
+  log "installing frontend dependencies"
+  yarn install --frozen-lockfile \
+    || warn "yarn install failed; run yarn install --frozen-lockfile manually"
+else
+  warn "yarn is unavailable; install Yarn and run yarn install --frozen-lockfile"
+fi
+
+# --- 5. Pre-commit hook ------------------------------------------------------
+# Prefer an existing CLI; otherwise install it as a user tool. Keep the
+# executable path explicit because a newly installed tool may not be on PATH
+# until the next shell starts.
+PRE_COMMIT=$(command -v pre-commit 2>/dev/null || true)
+if [ -z "$PRE_COMMIT" ] && command -v uv >/dev/null 2>&1; then
+  log "installing pre-commit with uv"
+  if uv tool install pre-commit; then
+    PRE_COMMIT="$(uv tool dir --bin)/pre-commit"
+  fi
+fi
+if [ -z "$PRE_COMMIT" ] && command -v pipx >/dev/null 2>&1; then
+  log "installing pre-commit with pipx"
+  if pipx install pre-commit; then
+    PRE_COMMIT="$(pipx environment --value PIPX_BIN_DIR)/pre-commit"
+  fi
+fi
+if [ -n "$PRE_COMMIT" ] && [ -x "$PRE_COMMIT" ]; then
+  "$PRE_COMMIT" install \
+    || warn "pre-commit install failed; run pre-commit install manually"
+else
+  warn "pre-commit is unavailable; install it and run pre-commit install"
+fi
 
 log "done"

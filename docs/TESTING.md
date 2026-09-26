@@ -65,6 +65,19 @@ cargo test --package recorder -- --nocapture
 cargo test --package recorder test_platform_type_string_conversion
 ```
 
+To smoke-test Douyu against a **currently live** numeric room using the
+production `DouyuRecorder` loop for five minutes (requires `ffmpeg` on `PATH`):
+
+```bash
+cd src-tauri
+DOUYU_TEST_ROOM_ID=1667826 cargo test -p recorder live_room_records_continuously_for_five_minutes --lib -- --ignored --nocapture
+```
+
+The test is ignored in normal runs because the room and CDN must be reachable.
+It requires one archive and roughly one minute of new HLS segments each minute,
+and removes the temporary recording when the test finishes. Replace `1667826`
+if it is offline.
+
 ### Running All Tests (including integration)
 
 ```bash

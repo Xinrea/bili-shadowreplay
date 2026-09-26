@@ -15,6 +15,7 @@ pub struct FlvRecorder {
     url: String,
     user_agent: Option<String>,
     http_headers: Vec<(String, String)>,
+    read_timeout: Option<Duration>,
     work_dir: PathBuf,
     enabled: Arc<AtomicBool>,
     event_channel: broadcast::Sender<RecorderEvent>,
@@ -35,10 +36,34 @@ impl FlvRecorder {
             url,
             user_agent,
             http_headers,
+            read_timeout: None,
             work_dir,
             enabled,
             event_channel,
             live_id,
+        }
+    }
+
+    pub fn with_read_timeout(mut self, timeout: Duration) -> Self {
+        self.read_timeout = Some(timeout);
+        self
+    }
+
+    fn configure_input(&self, cmd: &mut tokio::process::Command) {
+        if let Some(timeout) = self.read_timeout {
+            let micros = timeout.as_micros().min(i64::MAX as u128).to_string();
+            cmd.args(["-rw_timeout", &micros]);
+        }
+        if let Some(user_agent) = &self.user_agent {
+            cmd.args(["-user_agent", user_agent]);
+        }
+        if !self.http_headers.is_empty() {
+            let headers: String = self
+                .http_headers
+                .iter()
+                .map(|(name, value)| format!("{name}: {value}\r\n"))
+                .collect();
+            cmd.args(["-headers", &headers]);
         }
     }
 
@@ -57,19 +82,9 @@ impl FlvRecorder {
 
         let mut cmd = ffmpeg_command();
 
-        // HTTP options must precede the input: keep the pull request
-        // identical to the probe that validated the URL.
-        if let Some(user_agent) = &self.user_agent {
-            cmd.args(["-user_agent", user_agent]);
-        }
-        if !self.http_headers.is_empty() {
-            let headers: String = self
-                .http_headers
-                .iter()
-                .map(|(name, value)| format!("{name}: {value}\r\n"))
-                .collect();
-            cmd.args(["-headers", &headers]);
-        }
+        // FFmpeg's network options must precede the input. Douyu opts into
+        // an idle read limit so a dead CDN cannot stall the recorder forever.
+        self.configure_input(&mut cmd);
 
         cmd.args([
             "-hide_banner",
@@ -176,5 +191,46 @@ impl FlvRecorder {
             return None;
         }
         Some((duration_delta, size_delta))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn douyu_read_timeout_precedes_the_ffmpeg_input() {
+        let (events, _) = broadcast::channel(1);
+        let recorder = FlvRecorder::new(
+            "https://cdn.example/live.flv".into(),
+            Some("viewer".into()),
+            vec![("Referer".into(), "https://www.douyu.com/".into())],
+            PathBuf::new(),
+            Arc::new(AtomicBool::new(true)),
+            events,
+            "test".into(),
+        )
+        .with_read_timeout(Duration::from_secs(15));
+        let mut command = ffmpeg_command();
+        recorder.configure_input(&mut command);
+        command.args(["-i", "https://cdn.example/live.flv"]);
+        let args: Vec<_> = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "-rw_timeout",
+                "15000000",
+                "-user_agent",
+                "viewer",
+                "-headers",
+                "Referer: https://www.douyu.com/\r\n",
+                "-i",
+                "https://cdn.example/live.flv"
+            ]
+        );
     }
 }

@@ -7,7 +7,7 @@ use reqwest::header::{HeaderMap, HeaderValue, COOKIE, REFERER, USER_AGENT};
 use reqwest::{Client, RequestBuilder, StatusCode};
 use thiserror::Error;
 use tokio::sync::RwLock;
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout_at, Instant};
 
 use crate::account::Account;
 use crate::errors::RecorderError;
@@ -19,12 +19,15 @@ pub const ENCRYPTION_API: &str = "https://www.douyu.com/wgapi/livenc/liveweb/web
 pub const PLAY_API_BASE: &str = "https://www.douyu.com/lapi/live/getH5PlayV1";
 pub const DOUYU_REFERER: &str = "https://www.douyu.com/";
 pub const DEFAULT_DID: &str = "10000000000000000000000000001501";
-pub const DEFAULT_CDN: &str = "ws-h5";
-pub const DEFAULT_RATE: &str = "0";
+pub const DEFAULT_CDN: &str = "";
+pub const DEFAULT_RATE: u64 = 0;
 pub const DEFAULT_USER_AGENT: &str =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:154.0) Gecko/20100101 Firefox/154.0";
 const KEY_FALLBACK_TTL_SECS: u64 = 24 * 60 * 60;
-const FLV_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+const STREAM_SELECTION_TIMEOUT: Duration = Duration::from_secs(30);
+// The highest source quality can exceed 20 Mbps. The tested 4 Mbps tier
+// records reliably without forcing users to opt into the P2P web player.
+const PREFERRED_MAX_BITRATE_KBPS: u64 = 4000;
 
 /// A key cached for this recorder. Douyu occasionally returns a short-lived
 /// `expire_at`; when it does not, the conservative fallback is one day.
@@ -121,9 +124,8 @@ impl DouyuApiError {
 }
 
 /// Build the identity used both by Douyu API requests and the ffmpeg FLV pull.
-pub fn pull_http_identity(account: &Account, room_id: u64) -> (String, Vec<(String, String)>) {
-    let referer = room_referer(room_id);
-    let mut headers = vec![("Referer".to_string(), referer)];
+pub fn pull_http_identity(account: &Account, _room_id: u64) -> (String, Vec<(String, String)>) {
+    let mut headers = vec![("Referer".to_string(), DOUYU_REFERER.to_string())];
     if !account.cookies.trim().is_empty() {
         headers.push(("Cookie".to_string(), account.cookies.clone()));
     }
@@ -361,6 +363,7 @@ fn build_play_form(
     room_id: u64,
     timestamp: u64,
     cdn: &str,
+    rate: u64,
 ) -> Vec<(String, String)> {
     vec![
         ("enc_data".to_string(), data.enc_data.clone()),
@@ -368,14 +371,10 @@ fn build_play_form(
         ("did".to_string(), DEFAULT_DID.to_string()),
         ("auth".to_string(), md5_signature(data, room_id, timestamp)),
         ("cdn".to_string(), cdn.to_string()),
-        ("rate".to_string(), DEFAULT_RATE.to_string()),
-        ("ver".to_string(), "Douyu_new".to_string()),
-        ("iar".to_string(), "0".to_string()),
-        ("ive".to_string(), "0".to_string()),
-        ("rid".to_string(), room_id.to_string()),
+        ("rate".to_string(), rate.to_string()),
         ("hevc".to_string(), "0".to_string()),
         ("fa".to_string(), "0".to_string()),
-        ("sov".to_string(), "0".to_string()),
+        ("ive".to_string(), "0".to_string()),
     ]
 }
 
@@ -397,6 +396,7 @@ pub async fn get_stream_url(
             play: PLAY_API_BASE,
         },
         unix_timestamp,
+        STREAM_SELECTION_TIMEOUT,
     )
     .await
 }
@@ -405,6 +405,7 @@ pub async fn get_stream_url(
 struct DouyuStreamCandidate {
     url: Option<String>,
     cdns: Vec<String>,
+    preferred_rate: Option<u64>,
 }
 
 #[derive(Clone, Copy)]
@@ -413,8 +414,15 @@ struct DouyuPlayEndpoints<'a> {
     play: &'a str,
 }
 
-/// Resolve and verify a playable FLV. If the default H5 CDN does not serve an
-/// FLV header, try the alternatives advertised in `cdnsWithName`.
+#[derive(Clone, Copy)]
+struct DouyuPlaySelection<'a> {
+    cdn: &'a str,
+    rate: u64,
+}
+
+/// Request Douyu's automatic CDN selection and prefer a supported live quality
+/// over the highest-bitrate source. Never probe the signed FLV URL: a GET can
+/// consume its live session, leaving only a few seconds for FFmpeg's next GET.
 async fn get_stream_url_at<F>(
     client: &Client,
     account: &Account,
@@ -422,30 +430,40 @@ async fn get_stream_url_at<F>(
     cache: &EncryptionCache,
     endpoints: DouyuPlayEndpoints<'_>,
     timestamp: F,
+    budget: Duration,
 ) -> Result<String, DouyuApiError>
 where
     F: FnMut() -> u64 + Send,
 {
+    let deadline = Instant::now() + budget;
     let mut pending_cdns = VecDeque::from([DEFAULT_CDN.to_string()]);
     let mut tried_cdns = HashSet::new();
     let mut last_error = None;
     let mut timestamp = timestamp;
+    let mut selected_rate = DEFAULT_RATE;
 
     while let Some(cdn) = pending_cdns.pop_front() {
         if !tried_cdns.insert(cdn.clone()) || cdn.starts_with("scdn") {
             continue;
         }
 
-        let candidate = match get_stream_candidate_at(
-            client,
-            account,
-            room_id,
-            cache,
-            &cdn,
-            endpoints,
-            &mut timestamp,
+        let candidate = match timeout_at(
+            deadline,
+            get_stream_candidate_at(
+                client,
+                account,
+                room_id,
+                cache,
+                DouyuPlaySelection {
+                    cdn: &cdn,
+                    rate: selected_rate,
+                },
+                endpoints,
+                &mut timestamp,
+            ),
         )
         .await
+        .map_err(|_| stream_selection_timeout())?
         {
             Ok(candidate) => candidate,
             Err(error) if tried_cdns.len() == 1 => return Err(error),
@@ -455,27 +473,68 @@ where
             }
         };
 
-        let DouyuStreamCandidate { url, cdns } = candidate;
+        let candidate = if cdn == DEFAULT_CDN
+            && selected_rate == DEFAULT_RATE
+            && candidate
+                .preferred_rate
+                .is_some_and(|rate| rate != DEFAULT_RATE)
+        {
+            let rate = candidate.preferred_rate.expect("checked above");
+            selected_rate = rate;
+            // The initial source request advertises the available qualities.
+            // Re-signing for its chosen rate is how the website and Streamlink
+            // request an ordinary CDN FLV stream.
+            match timeout_at(
+                deadline,
+                get_stream_candidate_at(
+                    client,
+                    account,
+                    room_id,
+                    cache,
+                    DouyuPlaySelection { cdn: &cdn, rate },
+                    endpoints,
+                    &mut timestamp,
+                ),
+            )
+            .await
+            .map_err(|_| stream_selection_timeout())?
+            {
+                Ok(mut preferred) => {
+                    // Some rate-specific responses omit the CDN list that the
+                    // initial request advertised. Keep those fallback routes.
+                    preferred.cdns.extend(candidate.cdns);
+                    preferred
+                }
+                Err(error) => {
+                    log::warn!("[Douyu][{room_id}] Preferred rate {rate} failed: {error}");
+                    selected_rate = DEFAULT_RATE;
+                    candidate
+                }
+            }
+        } else {
+            candidate
+        };
+
+        let DouyuStreamCandidate { url, cdns, .. } = candidate;
         for alternate in cdns {
             if !alternate.is_empty() && !tried_cdns.contains(&alternate) {
                 pending_cdns.push_back(alternate);
             }
         }
 
-        let Some(url) = url else {
+        let Some(url) = url.filter(|url| {
+            url::Url::parse(url).is_ok_and(|parsed| {
+                matches!(parsed.scheme(), "http" | "https") && parsed.path().ends_with(".flv")
+            })
+        }) else {
             last_error = Some(DouyuApiError::InvalidResponse {
                 endpoint: "getH5PlayV1",
                 detail: format!("CDN {cdn} did not return an AVC FLV URL"),
             });
             continue;
         };
-        if probe_flv_url(client, account, room_id, &url).await {
-            return Ok(url);
-        }
-        last_error = Some(DouyuApiError::InvalidResponse {
-            endpoint: "getH5PlayV1",
-            detail: format!("CDN {cdn} did not serve an FLV stream"),
-        });
+        log::info!("[Douyu][{room_id}] Selected FLV rate {selected_rate}, CDN {cdn:?}");
+        return Ok(url);
     }
 
     Err(
@@ -486,12 +545,19 @@ where
     )
 }
 
+fn stream_selection_timeout() -> DouyuApiError {
+    DouyuApiError::InvalidResponse {
+        endpoint: "getH5PlayV1",
+        detail: "timed out selecting a playable FLV CDN".to_string(),
+    }
+}
+
 async fn get_stream_candidate_at<F>(
     client: &Client,
     account: &Account,
     room_id: u64,
     cache: &EncryptionCache,
-    cdn: &str,
+    selection: DouyuPlaySelection<'_>,
     endpoints: DouyuPlayEndpoints<'_>,
     mut timestamp: F,
 ) -> Result<DouyuStreamCandidate, DouyuApiError>
@@ -512,7 +578,13 @@ where
             sleep(std::time::Duration::from_millis(50)).await;
             request_timestamp = timestamp();
         }
-        let form = build_play_form(&key.data, room_id, request_timestamp, cdn);
+        let form = build_play_form(
+            &key.data,
+            room_id,
+            request_timestamp,
+            selection.cdn,
+            selection.rate,
+        );
         let request = client
             .post(format!(
                 "{}/{room_id}",
@@ -572,43 +644,26 @@ where
                 endpoint,
                 detail: "getH5PlayV1 returned no play data".to_string(),
             })?;
+        let preferred_rate = data
+            .multirates
+            .iter()
+            .filter(|quality| quality.bit > 0 && quality.bit <= PREFERRED_MAX_BITRATE_KBPS)
+            .max_by_key(|quality| quality.bit)
+            .map(|quality| quality.rate);
         let url = response::flv_url(&data);
         let cdns = data
             .cdns
             .into_iter()
             .map(|candidate| candidate.cdn)
             .collect();
-        return Ok(DouyuStreamCandidate { url, cdns });
+        return Ok(DouyuStreamCandidate {
+            url,
+            cdns,
+            preferred_rate,
+        });
     }
 
     unreachable!("the two-attempt authentication loop always returns")
-}
-
-async fn probe_flv_url(client: &Client, account: &Account, room_id: u64, url: &str) -> bool {
-    let Ok(headers) = request_headers(account, room_id, "streamProbe") else {
-        return false;
-    };
-    let Ok(mut response) = client
-        .get(url)
-        .headers(headers)
-        .timeout(FLV_PROBE_TIMEOUT)
-        .send()
-        .await
-    else {
-        return false;
-    };
-    if !response.status().is_success() {
-        return false;
-    }
-
-    let mut prefix = Vec::new();
-    while prefix.len() < 3 {
-        match response.chunk().await {
-            Ok(Some(chunk)) => prefix.extend_from_slice(&chunk),
-            _ => return false,
-        }
-    }
-    prefix.starts_with(b"FLV")
 }
 
 fn request_headers(
@@ -621,7 +676,7 @@ fn request_headers(
 
 fn request_headers_with_user_agent(
     account: &Account,
-    room_id: u64,
+    _room_id: u64,
     endpoint: &'static str,
     user_agent: &str,
 ) -> Result<HeaderMap, DouyuApiError> {
@@ -633,15 +688,7 @@ fn request_headers_with_user_agent(
             name: "User-Agent",
         })?,
     );
-    headers.insert(
-        REFERER,
-        HeaderValue::from_str(&room_referer(room_id)).map_err(|_| {
-            DouyuApiError::InvalidHeader {
-                endpoint,
-                name: "Referer",
-            }
-        })?,
-    );
+    headers.insert(REFERER, HeaderValue::from_static(DOUYU_REFERER));
     if !account.cookies.trim().is_empty() {
         headers.insert(
             COOKIE,
@@ -652,10 +699,6 @@ fn request_headers_with_user_agent(
         );
     }
     Ok(headers)
-}
-
-fn room_referer(room_id: u64) -> String {
-    format!("{DOUYU_REFERER}{room_id}")
 }
 
 async fn send_text(
@@ -767,7 +810,10 @@ mod tests {
             &Account::default(),
             123,
             &cache,
-            DEFAULT_CDN,
+            DouyuPlaySelection {
+                cdn: DEFAULT_CDN,
+                rate: DEFAULT_RATE,
+            },
             DouyuPlayEndpoints {
                 encryption: &encryption_endpoint,
                 play: &play_api_base,
@@ -823,7 +869,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_url_tries_advertised_cdn_when_the_default_is_not_flv() {
+    async fn stream_url_tries_advertised_cdn_when_default_has_no_url() {
         let server = MockServer::start().await;
         let base = server.uri();
         Mock::given(method("GET"))
@@ -840,10 +886,10 @@ mod tests {
                 let form = std::str::from_utf8(&request.body).unwrap();
                 let cdn = form_value_from_body(form, "cdn");
                 let data = match cdn.as_str() {
-                    "ws-h5" => serde_json::json!({
+                    "" => serde_json::json!({
                         "room_id": 123,
                         "rtmp_url": base_for_play.clone(),
-                        "rtmp_live": "bad.flv",
+                        "rtmp_live": "",
                         "cdnsWithName": [{"cdn": "ws-alt"}]
                     }),
                     "ws-alt" => serde_json::json!({
@@ -856,7 +902,7 @@ mod tests {
                         "room_id": 123,
                         "rtmp_url": base_for_play.clone(),
                         "rtmp_live": "good.flv",
-                        "cdnsWithName": [{"cdn": "ws-h5"}]
+                        "cdnsWithName": [{"cdn": ""}]
                     }),
                 };
                 ResponseTemplate::new(200)
@@ -865,20 +911,6 @@ mod tests {
             .expect(3)
             .mount(&server)
             .await;
-        Mock::given(method("GET"))
-            .and(url_path("/bad.flv"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("not an flv"))
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(url_path("/good.flv"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_bytes(b"FLV\x01\x05\x00\x00\x00\x09\x00\x00\x00\x00".to_vec()),
-            )
-            .mount(&server)
-            .await;
-
         let cache = Arc::new(RwLock::new(None));
         let clock = Arc::new(AtomicU64::new(100));
         let clock_for_request = clock.clone();
@@ -894,6 +926,7 @@ mod tests {
                 play: &play_api_base,
             },
             move || clock_for_request.fetch_add(1, Ordering::SeqCst),
+            Duration::from_secs(30),
         )
         .await
         .unwrap();
@@ -906,8 +939,200 @@ mod tests {
             })
             .map(|request| form_value(request, "cdn"))
             .collect();
-        assert_eq!(requested_cdns, vec!["ws-h5", "ws-alt", "ws-alt2"]);
+        assert_eq!(requested_cdns, vec!["", "ws-alt", "ws-alt2"]);
         assert_eq!(url, format!("{base}/good.flv"));
+    }
+
+    #[tokio::test]
+    async fn selects_advertised_quality_without_consuming_the_signed_url() {
+        let server = MockServer::start().await;
+        let base = server.uri();
+        Mock::given(method("GET"))
+            .and(url_path("/encrypt"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(encryption_body()))
+            .mount(&server)
+            .await;
+        let base_for_play = base.clone();
+        Mock::given(method("POST"))
+            .and(url_path("/play/123"))
+            .respond_with(move |request: &Request| {
+                let rate =
+                    form_value_from_body(std::str::from_utf8(&request.body).unwrap(), "rate");
+                let (live, multirates) = if rate == "4" {
+                    ("live.flv", serde_json::json!([]))
+                } else {
+                    (
+                        "source.flv",
+                        serde_json::json!([
+                            {"rate": 0, "bit": 24217},
+                            {"rate": 4, "bit": 4000},
+                            {"rate": 3, "bit": 2000}
+                        ]),
+                    )
+                };
+                ResponseTemplate::new(200).set_body_string(
+                    serde_json::json!({
+                        "error": 0,
+                        "data": {
+                            "rtmp_url": base_for_play.clone(),
+                            "rtmp_live": live,
+                            "multirates": multirates,
+                            "cdnsWithName": [{"cdn": "scdnctshh"}, {"cdn": "hw-h5"}]
+                        }
+                    })
+                    .to_string(),
+                )
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(url_path("/source.flv"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"FLV\x01".to_vec()))
+            .expect(0)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(url_path("/live.flv"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"FLV\x01".to_vec()))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let cache = Arc::new(RwLock::new(None));
+        let url = get_stream_url_at(
+            &Client::new(),
+            &Account::default(),
+            123,
+            &cache,
+            DouyuPlayEndpoints {
+                encryption: &format!("{base}/encrypt"),
+                play: &format!("{base}/play"),
+            },
+            unix_timestamp,
+            Duration::from_secs(30),
+        )
+        .await
+        .unwrap();
+        assert_eq!(url, format!("{base}/live.flv"));
+        let requests = server.received_requests().await.unwrap();
+        let play_requests: Vec<_> = requests
+            .iter()
+            .filter(|request| request.url.path() == "/play/123")
+            .collect();
+        assert_eq!(
+            play_requests
+                .iter()
+                .map(|request| form_value(request, "cdn"))
+                .collect::<Vec<_>>(),
+            ["", ""]
+        );
+        assert_eq!(
+            play_requests
+                .iter()
+                .map(|request| form_value(request, "rate"))
+                .collect::<Vec<_>>(),
+            ["0", "4"]
+        );
+    }
+
+    #[tokio::test]
+    async fn preserves_advertised_cdn_when_selected_rate_omits_it() {
+        let server = MockServer::start().await;
+        let base = server.uri();
+        Mock::given(method("GET"))
+            .and(url_path("/encrypt"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(encryption_body()))
+            .mount(&server)
+            .await;
+        let base_for_play = base.clone();
+        Mock::given(method("POST"))
+            .and(url_path("/play/123"))
+            .respond_with(move |request: &Request| {
+                let cdn = form_value(request, "cdn");
+                let rate = form_value(request, "rate");
+                let data = if rate == "0" {
+                    serde_json::json!({
+                        "rtmp_url": base_for_play.clone(),
+                        "rtmp_live": "source.flv",
+                        "multirates": [{"rate": 4, "bit": 4000}],
+                        "cdnsWithName": [{"cdn": "hw-h5"}]
+                    })
+                } else if cdn.is_empty() {
+                    serde_json::json!({"rtmp_url": "", "rtmp_live": ""})
+                } else {
+                    serde_json::json!({"rtmp_url": base_for_play.clone(), "rtmp_live": "live.flv"})
+                };
+                ResponseTemplate::new(200)
+                    .set_body_string(serde_json::json!({"error": 0, "data": data}).to_string())
+            })
+            .expect(3)
+            .mount(&server)
+            .await;
+        let cache = Arc::new(RwLock::new(None));
+        let url = get_stream_url_at(
+            &Client::new(),
+            &Account::default(),
+            123,
+            &cache,
+            DouyuPlayEndpoints {
+                encryption: &format!("{base}/encrypt"),
+                play: &format!("{base}/play"),
+            },
+            unix_timestamp,
+            Duration::from_secs(30),
+        )
+        .await
+        .unwrap();
+        assert_eq!(url, format!("{base}/live.flv"));
+        let requests = server.received_requests().await.unwrap();
+        let routes: Vec<_> = requests
+            .iter()
+            .filter(|request| request.url.path() == "/play/123")
+            .map(|request| (form_value(request, "cdn"), form_value(request, "rate")))
+            .collect();
+        assert_eq!(
+            routes,
+            [
+                ("".into(), "0".into()),
+                ("".into(), "4".into()),
+                ("hw-h5".into(), "4".into())
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_selection_budget_covers_api_requests() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(url_path("/encrypt"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(100))
+                    .set_body_string(encryption_body()),
+            )
+            .mount(&server)
+            .await;
+        let encryption_endpoint = format!("{}/encrypt", server.uri());
+        let play_api_base = format!("{}/play", server.uri());
+        let cache = Arc::new(RwLock::new(None));
+        let error = get_stream_url_at(
+            &Client::new(),
+            &Account::default(),
+            123,
+            &cache,
+            DouyuPlayEndpoints {
+                encryption: &encryption_endpoint,
+                play: &play_api_base,
+            },
+            unix_timestamp,
+            Duration::from_millis(30),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(error, DouyuApiError::InvalidResponse { detail, .. } if detail.contains("timed out selecting"))
+        );
     }
 
     #[tokio::test]
@@ -945,17 +1170,116 @@ mod tests {
 
     #[test]
     fn play_form_contains_signed_request_fields() {
-        let form = build_play_form(&test_key(), 123, 456, DEFAULT_CDN);
+        let form = build_play_form(&test_key(), 123, 456, DEFAULT_CDN, DEFAULT_RATE);
         let fields: std::collections::HashMap<_, _> = form.into_iter().collect();
 
-        assert_eq!(fields.get("rid").map(String::as_str), Some("123"));
         assert_eq!(fields.get("tt").map(String::as_str), Some("456"));
-        assert_eq!(fields.get("ver").map(String::as_str), Some("Douyu_new"));
+        assert_eq!(fields.get("cdn").map(String::as_str), Some(""));
+        assert_eq!(fields.get("rate").map(String::as_str), Some("0"));
         assert_eq!(fields.get("hevc").map(String::as_str), Some("0"));
         assert_eq!(fields.get("enc_data").map(String::as_str), Some("encoded"));
+        assert_eq!(fields.len(), 9);
         assert_eq!(
             fields.get("auth").map(String::as_str),
             Some("77467e273c90028657264b6061592b5b")
+        );
+    }
+
+    /// Run the actual Douyu recording loop for five wall-clock minutes. Short
+    /// CDN disconnects may resume the same archive with a fresh signed URL.
+    #[tokio::test]
+    #[ignore = "requires five minutes, a live Douyu room, ffmpeg and network access"]
+    async fn live_room_records_continuously_for_five_minutes() {
+        use crate::traits::RecorderTrait;
+        use std::sync::atomic::AtomicU64;
+
+        let _ = env_logger::builder()
+            .filter_module("recorder::platforms", log::LevelFilter::Info)
+            .is_test(true)
+            .try_init();
+        let room_id = std::env::var("DOUYU_TEST_ROOM_ID")
+            .expect("set DOUYU_TEST_ROOM_ID to a currently live numeric room")
+            .parse::<u64>()
+            .expect("DOUYU_TEST_ROOM_ID must be numeric");
+        let account = Account::default();
+        let room = get_room_info(&Client::new(), &account, room_id)
+            .await
+            .unwrap();
+        assert!(response::room_is_live(&room), "room {room_id} is offline");
+        let test_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
+        std::fs::create_dir_all(&test_root).unwrap();
+        let work_dir = tempfile::tempdir_in(test_root).unwrap();
+        let (events, _) = tokio::sync::broadcast::channel(32);
+        let recorder = crate::platforms::douyu::DouyuRecorder::new(
+            &room_id.to_string(),
+            &account,
+            work_dir.path().to_path_buf(),
+            events,
+            Arc::new(AtomicU64::new(10)),
+            true,
+        )
+        .unwrap();
+        recorder.run().await;
+        let started = Instant::now();
+        let room_path = work_dir.path().join("douyu").join(room_id.to_string());
+        let mut previous_segments = 0;
+        let mut previous_duration = 0.0;
+        let mut healthy_minutes = 0;
+        let test_minutes = std::env::var("DOUYU_TEST_MINUTES")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|minutes| (1..=30).contains(minutes))
+            .unwrap_or(5);
+
+        for minute in 1..=test_minutes {
+            sleep(Duration::from_secs(60)).await;
+            let mut segment_count = 0;
+            let mut bytes = 0;
+            let mut duration = 0.0;
+            let mut archives = 0;
+            if let Ok(entries) = std::fs::read_dir(&room_path) {
+                for entry in entries.flatten() {
+                    let archive = entry.path();
+                    let Ok(playlist) = std::fs::read(archive.join("playlist.m3u8")) else {
+                        continue;
+                    };
+                    let Ok((_, parsed)) = m3u8_rs::parse_media_playlist(&playlist) else {
+                        continue;
+                    };
+                    archives += 1;
+                    segment_count += parsed.segments.len();
+                    for segment in parsed.segments {
+                        duration += segment.duration;
+                        bytes += std::fs::metadata(archive.join(segment.uri))
+                            .map(|metadata| metadata.len())
+                            .unwrap_or_default();
+                    }
+                }
+            }
+            let new_duration = duration - previous_duration;
+            if archives == 1
+                && segment_count > previous_segments
+                && bytes > 0
+                && (45.0..=75.0).contains(&new_duration)
+            {
+                healthy_minutes += 1;
+            }
+            println!(
+                "minute {minute}: {archives} archives, {segment_count} segments, {duration:.1}s media (+{:.1}s), {bytes} bytes",
+                new_duration
+            );
+            previous_segments = segment_count;
+            previous_duration = duration;
+        }
+
+        assert!(started.elapsed() >= Duration::from_secs(60 * test_minutes));
+        recorder.disable().await;
+        recorder.stop().await;
+        assert!(
+            healthy_minutes == test_minutes
+                && (54.0 * test_minutes as f32..=66.0 * test_minutes as f32)
+                    .contains(&previous_duration),
+            "only {healthy_minutes}/{test_minutes} minutes maintained one archive and 45–75 seconds of new media; total {previous_duration:.1}s"
         );
     }
 
@@ -1022,10 +1346,7 @@ mod tests {
         };
         let (user_agent, headers) = pull_http_identity(&account, 123);
         assert_eq!(user_agent, DEFAULT_USER_AGENT);
-        assert!(headers.contains(&(
-            "Referer".to_string(),
-            "https://www.douyu.com/123".to_string()
-        )));
+        assert!(headers.contains(&("Referer".to_string(), DOUYU_REFERER.to_string())));
         assert!(headers.contains(&("Cookie".to_string(), "sid=abc".to_string())));
     }
 }

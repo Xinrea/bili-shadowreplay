@@ -67,12 +67,22 @@ pub struct DouyuH5PlayData {
     pub player_1: Option<String>,
     #[serde(default, rename = "cdnsWithName")]
     pub cdns: Vec<DouyuCdn>,
+    #[serde(default)]
+    pub multirates: Vec<DouyuRate>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct DouyuCdn {
     #[serde(default, deserialize_with = "deserialize_string")]
     pub cdn: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DouyuRate {
+    #[serde(default, deserialize_with = "deserialize_u64")]
+    pub rate: u64,
+    #[serde(default, deserialize_with = "deserialize_u64")]
+    pub bit: u64,
 }
 
 /// The response returned by `getEncryption`.
@@ -426,6 +436,17 @@ mod tests {
             flv_url(&data).as_deref(),
             Some("https://cdn.example/live/stream.flv?token=abc")
         );
+    }
+
+    #[test]
+    fn play_quality_rates_are_not_bounded_by_encryption_iterations() {
+        let response = parse_play_response(
+            r#"{"error":0,"data":{"rtmp_url":"https://cdn.example/live","rtmp_live":"stream.flv","multirates":[{"rate":"30","bit":"2000"}]}}"#,
+        )
+        .unwrap();
+        let rate = &response.data.unwrap().multirates[0];
+        assert_eq!(rate.rate, 30);
+        assert_eq!(rate.bit, 2000);
     }
 
     #[test]

@@ -26,7 +26,7 @@ use crate::{Recorder, UserInfo};
 
 /// A recorder for `BiliBili` live streams
 ///
-/// This recorder fetches, caches and serves TS entries, currently supporting only `StreamType::FMP4`.
+/// This recorder prefers TS HLS streams, falling back to fMP4 when TS is unavailable.
 /// As high-quality streams are accessible only to logged-in users, the use of a `BiliClient`, which manages cookies, is required.
 pub type BiliRecorder = Recorder<BiliExtra>;
 
@@ -120,7 +120,7 @@ impl PlatformApi for BiliRecorder {
     }
 
     async fn poll_stream(&self) -> bool {
-        let new_stream = api::get_stream_info(
+        let ts_stream = api::get_stream_info(
             &self.client,
             &self.account,
             &self.room_id,
@@ -130,6 +130,26 @@ impl PlatformApi for BiliRecorder {
             Qn::Q25000,
         )
         .await;
+        let new_stream = match ts_stream {
+            Ok(stream) => Ok(stream),
+            Err(error) => {
+                log::warn!(
+                    "[{}]Fetch TS stream failed: {}; trying fMP4",
+                    self.room_id,
+                    error
+                );
+                api::get_stream_info(
+                    &self.client,
+                    &self.account,
+                    &self.room_id,
+                    Protocol::HttpHls,
+                    Format::FMP4,
+                    &[Codec::Avc, Codec::Hevc],
+                    Qn::Q25000,
+                )
+                .await
+            }
+        };
 
         match new_stream {
             Ok(stream) => {

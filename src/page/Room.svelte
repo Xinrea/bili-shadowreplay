@@ -718,25 +718,27 @@
             <div class="flex items-start justify-between">
               <div>
                 <div class="flex items-center space-x-2">
-                  {#if room.room_info.platform === "bilibili"}
-                    <BilibiliIcon class="w-4 h-4" />
-                  {:else if room.room_info.platform === "douyin"}
-                    <DouyinIcon class="w-4 h-4" />
-                  {:else if room.room_info.platform === "douyu"}
-                    <DouyuIcon class="w-4 h-4" />
-                  {:else if room.room_info.platform === "kuaishou"}
-                    <KuaishouIcon class="w-4 h-4" />
-                  {:else if room.room_info.platform === "huya"}
-                    <HuyaIcon class="w-4 h-4" />
-                  {:else if room.room_info.platform === "tiktok"}
-                    <TikTokIcon class="w-5 h-5" />
-                  {:else if room.room_info.platform === "twitch"}
-                    <TwitchIcon class="w-5 h-5 text-purple-600" />
-                  {:else if room.room_info.platform === "youtube"}
-                    <YouTubeIcon class="w-4 h-4" />
-                  {:else}
-                    <Globe class="w-4 h-4 text-gray-400" />
-                  {/if}
+                  <span class="shrink-0">
+                    {#if room.room_info.platform === "bilibili"}
+                      <BilibiliIcon class="w-4 h-4" />
+                    {:else if room.room_info.platform === "douyin"}
+                      <DouyinIcon class="w-4 h-4" />
+                    {:else if room.room_info.platform === "douyu"}
+                      <DouyuIcon class="w-4 h-4" />
+                    {:else if room.room_info.platform === "kuaishou"}
+                      <KuaishouIcon class="w-4 h-4" />
+                    {:else if room.room_info.platform === "huya"}
+                      <HuyaIcon class="w-4 h-4" />
+                    {:else if room.room_info.platform === "tiktok"}
+                      <TikTokIcon class="w-5 h-5" />
+                    {:else if room.room_info.platform === "twitch"}
+                      <TwitchIcon class="w-5 h-5 text-purple-600" />
+                    {:else if room.room_info.platform === "youtube"}
+                      <YouTubeIcon class="w-4 h-4" />
+                    {:else}
+                      <Globe class="w-4 h-4 text-gray-400" />
+                    {/if}
+                  </span>
                   <h3 class="font-medium text-gray-900 dark:text-white">
                     {room.room_info.room_title}
                   </h3>

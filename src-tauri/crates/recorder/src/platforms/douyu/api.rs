@@ -525,6 +525,12 @@ where
                 .filter(|rate| *rate != DEFAULT_RATE)
             {
                 selected_rate = rate;
+                if options.excluded_cdn == Some(cdn.as_str()) {
+                    // The initial request only discovered qualities and CDN
+                    // routes. Do not spend the remaining budget signing the
+                    // CDN that just failed; try its advertised alternatives.
+                    continue;
+                }
                 // Use a new signature for the advertised quality, but retain
                 // the source URL in case that quality/CDN is unavailable.
                 match timeout_at(
@@ -1185,6 +1191,7 @@ mod tests {
                 ResponseTemplate::new(200).set_body_string(
                     serde_json::json!({"error": 0, "data": {
                         "rtmp_url": base_for_play.clone(), "rtmp_live": live,
+                        "multirates": [{"rate": 4, "bit": 4000}],
                         "cdnsWithName": [{"cdn": "hw-h5"}]
                     }})
                     .to_string(),
@@ -1211,7 +1218,17 @@ mod tests {
         .unwrap();
         assert_eq!(chosen.cdn, "hw-h5");
         assert_eq!(chosen.url, format!("{base}/working.flv"));
-        assert_eq!(server.received_requests().await.unwrap().len(), 3); // GET key + 2 POST plays; no FLV GET
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 3); // GET key + 2 POST plays; no FLV GET
+        let plays: Vec<_> = requests
+            .iter()
+            .filter(|request| request.url.path() == "/play/123")
+            .map(|request| (form_value(request, "cdn"), form_value(request, "rate")))
+            .collect();
+        assert_eq!(
+            plays,
+            [("".into(), "0".into()), ("hw-h5".into(), "4".into())]
+        );
     }
 
     #[tokio::test]

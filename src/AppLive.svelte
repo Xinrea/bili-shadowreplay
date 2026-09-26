@@ -5,10 +5,12 @@
     set_title,
     log,
     get_static_url,
+    TAURI_ENV,
   } from "./lib/invoker";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import Player from "./lib/components/Player.svelte";
   import type { AccountItem, RecordItem } from "./lib/db";
-  import { PanelRightOpen } from "lucide-svelte";
+  import { Maximize, Minimize, PanelRightOpen } from "lucide-svelte";
   import {
     type VideoItem,
     type Marker,
@@ -379,6 +381,20 @@
         set_title(`[${room_id}]${archive.title}`);
       }
     );
+    if (TAURI_ENV) {
+      const window = getCurrentWindow();
+      let disposed = false;
+      let unlisten: (() => void) | undefined;
+      void window.onResized(() => void syncNativeFullscreen()).then((stop) => {
+        if (disposed) stop();
+        else unlisten = stop;
+      });
+      void syncNativeFullscreen();
+      return () => {
+        disposed = true;
+        unlisten?.();
+      };
+    }
   });
 
   function addRangeAtCurrentTime() {
@@ -450,6 +466,48 @@
 
   let player: PlayerHandle = $state();
   let rpanel_collapsed = $state(false);
+  let video_stage: HTMLDivElement;
+  let is_fullscreen = $state(false);
+
+  async function syncNativeFullscreen() {
+    try {
+      is_fullscreen = await getCurrentWindow().isFullscreen();
+    } catch (error) {
+      log.error("读取直播预览全屏状态失败", String(error));
+    }
+  }
+
+  function syncFullscreen() {
+    if (!TAURI_ENV) {
+      is_fullscreen = document.fullscreenElement === video_stage;
+    }
+  }
+
+  async function toggleFullscreen() {
+    try {
+      if (TAURI_ENV) {
+        const window = getCurrentWindow();
+        await window.setFullscreen(!(await window.isFullscreen()));
+        await syncNativeFullscreen();
+      } else if (document.fullscreenElement === video_stage) {
+        await document.exitFullscreen();
+      } else {
+        await video_stage.requestFullscreen();
+      }
+    } catch (error) {
+      log.error("切换直播预览全屏失败", String(error));
+    }
+  }
+
+  function onFullscreenKeydown(event: KeyboardEvent) {
+    if (TAURI_ENV && is_fullscreen && event.key === "Escape") {
+      void getCurrentWindow()
+        .setFullscreen(false)
+        .then(syncNativeFullscreen)
+        .catch((error) => log.error("退出直播预览全屏失败", String(error)));
+    }
+  }
+
   let markers: Marker[] = $state([]);
   // load markers from local storage
   markers = JSON.parse(
@@ -533,10 +591,17 @@
   });
 </script>
 
+<svelte:document onfullscreenchange={syncFullscreen} />
+<svelte:window onkeydown={onFullscreenKeydown} />
+
 <main>
   <div class="preview-workspace">
     <div class="preview-main">
-      <div class="video-stage">
+      <div
+        class="video-stage"
+        class:native-fullscreen={TAURI_ENV && is_fullscreen}
+        bind:this={video_stage}
+      >
         <Player
           bind:ranges
           bind:global_offset
@@ -569,6 +634,19 @@
             ].sort((a, b) => a.offset - b.offset);
           }}
         />
+        <button
+          type="button"
+          class="fullscreen-button"
+          title={is_fullscreen ? "退出全屏" : "全屏播放"}
+          aria-label={is_fullscreen ? "退出全屏" : "全屏播放"}
+          onclick={toggleFullscreen}
+        >
+          {#if is_fullscreen}
+            <Minimize size={19} />
+          {:else}
+            <Maximize size={19} />
+          {/if}
+        </button>
       </div>
       <ArchiveTimeline
         bind:ranges
@@ -686,6 +764,45 @@
     flex: 1;
     overflow: hidden;
     background: #05070a;
+  }
+
+  .video-stage:fullscreen {
+    width: 100vw;
+    height: 100vh;
+  }
+
+  .video-stage.native-fullscreen {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    width: 100vw;
+    height: 100vh;
+  }
+
+  .fullscreen-button {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    z-index: 1;
+    display: inline-flex;
+    width: 36px;
+    height: 36px;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgb(255 255 255 / 25%);
+    border-radius: 8px;
+    background: rgb(0 0 0 / 55%);
+    color: white;
+    cursor: pointer;
+  }
+
+  .fullscreen-button:hover {
+    background: rgb(0 0 0 / 75%);
+  }
+
+  .fullscreen-button:focus-visible {
+    outline: 2px solid #0a84ff;
+    outline-offset: 2px;
   }
 
   .inspector-shell {

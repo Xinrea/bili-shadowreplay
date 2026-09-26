@@ -26,6 +26,8 @@
     "core:window:allow-maximize",
     "core:window:allow-unmaximize",
     "core:window:allow-set-title",
+    "core:window:allow-is-fullscreen",
+    "core:window:allow-set-fullscreen",
     "sql:allow-execute",
     "shell:allow-open",
     "dialog:allow-open",

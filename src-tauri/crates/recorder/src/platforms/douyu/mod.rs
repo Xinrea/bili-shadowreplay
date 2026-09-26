@@ -185,9 +185,9 @@ impl PlatformApi for DouyuRecorder {
             && self.room_info().read().await.status
             && !self.live_id().read().await.is_empty();
         let selected = self.extra.selected_cdn.write().await.take();
-        if should_rotate {
-            *self.extra.avoid_cdn.write().await = selected;
-        }
+        // `reset_live` also calls this method. Clear any old exclusion when
+        // the room goes offline so the next live starts with automatic CDN.
+        *self.extra.avoid_cdn.write().await = if should_rotate { selected } else { None };
         // Keep the encryption key across attempts while it remains valid.
         *self.extra.stream_url.write().await = None;
     }
@@ -219,7 +219,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn ended_live_attempt_rotates_cdn_but_user_stop_does_not() {
+    async fn cdn_rotation_is_cleared_when_a_live_ends_or_the_user_stops() {
         let (events, _) = broadcast::channel(4);
         let recorder = DouyuRecorder::new(
             "123",
@@ -236,8 +236,21 @@ mod tests {
         recorder.clear_stream().await;
         assert_eq!(recorder.extra.avoid_cdn.read().await.as_deref(), Some(""));
 
-        *recorder.extra.avoid_cdn.write().await = None;
+        // `reset_live` runs after `live_id` has been cleared. A new live
+        // must not inherit the previous room session's excluded CDN.
+        recorder.live_id().write().await.clear();
+        recorder.room_info().write().await.status = false;
+        recorder.clear_stream().await;
+        assert!(recorder.extra.avoid_cdn.read().await.is_none());
+
+        recorder.room_info().write().await.status = true;
+        *recorder.live_id().write().await = "new-archive".into();
         *recorder.extra.selected_cdn.write().await = Some("hw-h5".into());
+        recorder.clear_stream().await;
+        assert_eq!(
+            recorder.extra.avoid_cdn.read().await.as_deref(),
+            Some("hw-h5")
+        );
         recorder.disable().await;
         recorder.clear_stream().await;
         assert!(recorder.extra.avoid_cdn.read().await.is_none());

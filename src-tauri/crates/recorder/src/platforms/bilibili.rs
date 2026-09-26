@@ -26,13 +26,15 @@ use crate::{Recorder, UserInfo};
 
 /// A recorder for `BiliBili` live streams
 ///
-/// This recorder fetches, caches and serves TS entries, currently supporting only `StreamType::FMP4`.
+/// This recorder prefers TS HLS streams, falling back to fMP4 when TS is unavailable.
 /// As high-quality streams are accessible only to logged-in users, the use of a `BiliClient`, which manages cookies, is required.
 pub type BiliRecorder = Recorder<BiliExtra>;
 
 #[derive(Clone)]
 pub struct BiliExtra {
     live_stream: Arc<RwLock<Option<BiliStream>>>,
+    // Retained across reset_recording so an expired stream can resume safely.
+    previous_pull_format: Arc<RwLock<Option<Format>>>,
     user_info_cache: Arc<dyn UserInfoCache>,
 }
 
@@ -56,6 +58,7 @@ impl BiliRecorder {
             enabled,
             BiliExtra {
                 live_stream: Arc::new(RwLock::new(None)),
+                previous_pull_format: Arc::new(RwLock::new(None)),
                 user_info_cache,
             },
         );
@@ -67,6 +70,26 @@ impl BiliRecorder {
 
     fn log_error(&self, message: &str) {
         log::error!("[{}]{}", self.room_id, message);
+    }
+
+    async fn split_archive_if_format_changed(&self, next_format: &Format) {
+        if !self.should_continue.load(atomic::Ordering::Relaxed) {
+            return;
+        }
+        let previous_format = self.extra.previous_pull_format.read().await;
+        if let Some(previous_format) = previous_format.as_ref() {
+            if previous_format != next_format {
+                log::info!(
+                    "[{}]Stream format changed from {} to {}; starting a new archive",
+                    self.room_id,
+                    previous_format,
+                    next_format
+                );
+                // next_live_id must allocate a new directory and playlist instead
+                // of appending a different container to the expired stream's archive.
+                self.should_continue.store(false, atomic::Ordering::Relaxed);
+            }
+        }
     }
 }
 
@@ -120,7 +143,7 @@ impl PlatformApi for BiliRecorder {
     }
 
     async fn poll_stream(&self) -> bool {
-        let new_stream = api::get_stream_info(
+        let ts_stream = api::get_stream_info(
             &self.client,
             &self.account,
             &self.room_id,
@@ -130,9 +153,30 @@ impl PlatformApi for BiliRecorder {
             Qn::Q25000,
         )
         .await;
+        let new_stream = match ts_stream {
+            Ok(stream) => Ok(stream),
+            Err(error) => {
+                log::warn!(
+                    "[{}]Fetch TS stream failed: {}; trying fMP4",
+                    self.room_id,
+                    error
+                );
+                api::get_stream_info(
+                    &self.client,
+                    &self.account,
+                    &self.room_id,
+                    Protocol::HttpHls,
+                    Format::FMP4,
+                    &[Codec::Avc, Codec::Hevc],
+                    Qn::Q25000,
+                )
+                .await
+            }
+        };
 
         match new_stream {
             Ok(stream) => {
+                self.split_archive_if_format_changed(&stream.format).await;
                 let pre_live_stream = self.extra.live_stream.read().await.clone();
                 *self.extra.live_stream.write().await = Some(stream.clone());
                 self.last_update
@@ -168,16 +212,18 @@ impl PlatformApi for BiliRecorder {
             return Err(RecorderError::NoStreamAvailable);
         };
 
+        let format = current_stream.format.clone();
         let stream = Arc::new(HlsStream::new(
             live_id.to_string(),
             first_url_info.host.clone(),
             current_stream.base_url.clone(),
             first_url_info.extra.clone(),
-            current_stream.format,
+            format.clone(),
             current_stream.codec,
             first_url_info.get_expire(),
         ));
 
+        *self.extra.previous_pull_format.write().await = Some(format);
         Ok(StreamPull::Hls {
             stream,
             cookies: None,
@@ -265,6 +311,67 @@ mod tests {
             None,
         ));
         (recorder, rx)
+    }
+
+    async fn expired_pull_fixture(format: Format) -> BiliRecorder {
+        let (recorder, _) = recording_fixture().await;
+        *recorder.extra.live_stream.write().await = Some(BiliStream::new(
+            format.clone(),
+            Codec::Avc,
+            "/live.m3u8",
+            vec![api::UrlInfo {
+                host: "https://example.test".into(),
+                extra: "?expires=1700000000".into(),
+            }],
+            false,
+            None,
+        ));
+        recorder.open_pull("segment-1").await.unwrap();
+        recorder.reset_recording().await;
+        assert_eq!(
+            *recorder.extra.previous_pull_format.read().await,
+            Some(format)
+        );
+        recorder
+    }
+
+    #[tokio::test]
+    async fn expired_fmp4_switching_to_ts_starts_a_new_archive() {
+        let recorder = expired_pull_fixture(Format::FMP4).await;
+
+        recorder.split_archive_if_format_changed(&Format::TS).await;
+
+        assert!(!recorder.should_continue.load(Ordering::Relaxed));
+        let new_id = recorder.next_live_id().await;
+        assert_ne!(new_id, "segment-1");
+        assert_eq!(
+            recorder.pre_live_id.read().await.as_deref(),
+            Some(new_id.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_ts_switching_to_fmp4_starts_a_new_archive() {
+        let recorder = expired_pull_fixture(Format::TS).await;
+
+        recorder
+            .split_archive_if_format_changed(&Format::FMP4)
+            .await;
+
+        assert!(!recorder.should_continue.load(Ordering::Relaxed));
+        assert_ne!(recorder.next_live_id().await, "segment-1");
+    }
+
+    #[tokio::test]
+    async fn expired_fmp4_staying_fmp4_resumes_the_same_archive() {
+        let recorder = expired_pull_fixture(Format::FMP4).await;
+
+        recorder
+            .split_archive_if_format_changed(&Format::FMP4)
+            .await;
+
+        assert!(recorder.should_continue.load(Ordering::Relaxed));
+        assert_eq!(recorder.next_live_id().await, "segment-1");
     }
 
     #[tokio::test]

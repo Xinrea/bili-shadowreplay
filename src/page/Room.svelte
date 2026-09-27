@@ -883,6 +883,7 @@
             platforms={[
               { id: "bilibili", label: "哔哩哔哩" },
               { id: "douyin", label: "抖音" },
+              { id: "douyu", label: "斗鱼" },
               { id: "huya", label: "虎牙" },
               { id: "kuaishou", label: "快手" },
               { id: "tiktok", label: "TikTok" },

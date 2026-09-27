@@ -2,6 +2,7 @@
   import type { Component } from "svelte";
   import BilibiliIcon from "./BilibiliIcon.svelte";
   import DouyinIcon from "./DouyinIcon.svelte";
+  import DouyuIcon from "./DouyuIcon.svelte";
   import HuyaIcon from "./HuyaIcon.svelte";
   import KuaishouIcon from "./KuaishouIcon.svelte";
   import TikTokIcon from "./TikTokIcon.svelte";
@@ -24,6 +25,7 @@
   const icons: Record<string, Component<{ class?: string }>> = {
     bilibili: BilibiliIcon,
     douyin: DouyinIcon,
+    douyu: DouyuIcon,
     huya: HuyaIcon,
     kuaishou: KuaishouIcon,
     tiktok: TikTokIcon,

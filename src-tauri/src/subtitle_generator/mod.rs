@@ -157,6 +157,8 @@ impl SubtitleGeneratorType {
     }
 }
 
+// async_trait generates #[must_use] on methods returning an already must-use Future.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait SubtitleGenerator {
     async fn generate_subtitle(

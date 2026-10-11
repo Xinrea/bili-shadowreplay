@@ -22,6 +22,8 @@ pub struct ProgressReporter {
     db: Arc<Database>,
 }
 
+// async_trait generates #[must_use] on methods returning an already must-use Future.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait ProgressReporterTrait: Send + Sync + Clone {
     async fn update(&self, content: &str);

@@ -403,6 +403,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn live_end_keeps_archive_ids_but_reports_stopped_recording() {
+        let (recorder, mut rx) = recording_fixture().await;
+        recorder.end_live().await;
+        let RecorderEvent::LiveEnd { recorder: ended, .. } = rx.try_recv().unwrap() else {
+            panic!("expected a live end event")
+        };
+        assert_eq!(ended.platform_live_id, "session-1");
+        assert_eq!(ended.live_id, "segment-1");
+        assert!(!ended.recording);
+        let current = recorder.info().await;
+        assert!(!current.recording);
+        assert!(current.live_id.is_empty());
+        assert!(current.platform_live_id.is_empty());
+    }
+
+    #[tokio::test]
     async fn live_end_after_recording_error_keeps_session_snapshot_and_clears_resume() {
         let (recorder, mut rx) = recording_fixture().await;
         recorder.reset_recording().await;

@@ -1,5 +1,6 @@
 use super::Database;
 use super::DatabaseError;
+use crate::events::DataChange;
 
 // CREATE TABLE videos (id INTEGER PRIMARY KEY, room_id TEXT, cover TEXT, file TEXT, length INTEGER, size INTEGER, status INTEGER, bvid TEXT, title TEXT, desc TEXT, tags TEXT, area INTEGER, created_at TEXT);
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, sqlx::FromRow)]
@@ -51,6 +52,7 @@ impl Database {
             .bind(video_row.id)
             .execute(&self.pool)
             .await?;
+        self.notify_change(DataChange::Videos);
         Ok(())
     }
 
@@ -59,6 +61,7 @@ impl Database {
             .bind(id)
             .execute(&self.pool)
             .await?;
+        self.notify_change(DataChange::Videos);
         Ok(())
     }
 
@@ -84,6 +87,7 @@ impl Database {
             id: sql.last_insert_rowid(),
             ..video.clone()
         };
+        self.notify_change(DataChange::Videos);
         Ok(video)
     }
 
@@ -93,6 +97,7 @@ impl Database {
             .bind(id)
             .execute(&self.pool)
             .await?;
+        self.notify_change(DataChange::Videos);
         Ok(())
     }
 

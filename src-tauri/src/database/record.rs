@@ -2,6 +2,7 @@ use recorder::platforms::PlatformType;
 
 use super::Database;
 use super::DatabaseError;
+use crate::events::DataChange;
 use chrono::Utc;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, sqlx::FromRow)]
@@ -89,7 +90,9 @@ impl Database {
                 if e.to_string().contains("UNIQUE constraint failed") {
                     return self.get_record(room_id, live_id).await;
                 }
+                return Err(e.into());
             }
+        self.notify_change(DataChange::Records);
         Ok(record)
     }
 
@@ -110,6 +113,7 @@ impl Database {
             .bind(live_id)
             .execute(&self.pool)
             .await?;
+        self.notify_change(DataChange::Records);
         Ok(to_delete)
     }
 
@@ -139,6 +143,7 @@ impl Database {
             .bind(live_id)
             .execute(&self.pool)
             .await?;
+        self.notify_change(DataChange::Records);
         Ok(())
     }
 
@@ -152,6 +157,7 @@ impl Database {
             .bind(live_id)
             .execute(&self.pool)
             .await?;
+        self.notify_change(DataChange::Records);
         Ok(())
     }
 

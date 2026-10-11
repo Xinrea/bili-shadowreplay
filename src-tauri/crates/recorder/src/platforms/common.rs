@@ -317,15 +317,17 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
         self.should_continue().store(false, Ordering::Relaxed);
     }
 
-    /// Emit `LiveEnd` and clear the session state. The event owns a snapshot,
-    /// so the session can be cleared after sending it.
+    /// Clear the session before publishing `LiveEnd`, preserving its IDs in
+    /// the event snapshot for archive lookup and automatic clip generation.
     async fn end_live(&self) {
+        let mut ended = self.info().await;
+        self.reset_live().await;
+        ended.recording = false;
         let _ = self.event_channel().send(RecorderEvent::LiveEnd {
             platform: self.platform(),
             room_id: self.room_id(),
-            recorder: self.info().await,
+            recorder: ended,
         });
-        self.reset_live().await;
     }
 
     /// Select the app recording id for this attempt. Reuse it only if a
@@ -378,13 +380,12 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
         }
 
         *self.live_id().write().await = live_id.to_string();
+        self.is_recording().store(true, Ordering::Relaxed);
 
         // Send record start event
         let _ = self.event_channel().send(RecorderEvent::RecordStart {
             recorder: self.info().await,
         });
-
-        self.is_recording().store(true, Ordering::Relaxed);
 
         match pull {
             StreamPull::Hls {
@@ -539,6 +540,7 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                 if recorder.check_live().await {
                     // Live status is ok, start recording
                     let mut restart_immediately = false;
+                    let mut ended_recording = None;
                     if recorder.should_record().await {
                         let live_id = recorder.next_live_id().await;
                         if let Err(error) = recorder.start_recording(&live_id).await {
@@ -581,13 +583,19 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                         // cleared again by `reset_recording`, so a failed
                         // setup emits no `RecordEnd` without its `RecordStart`.
                         if !recorder.live_id().read().await.is_empty() {
-                            let _ = recorder.event_channel().send(RecorderEvent::RecordEnd {
-                                recorder: recorder.info().await,
-                            });
+                            ended_recording = Some(recorder.info().await);
                         }
                     }
 
                     recorder.reset_recording().await;
+                    if let Some(mut ended) = ended_recording {
+                        // Keep the ended archive's ID in the event, but publish
+                        // only after the queryable recorder state is reset.
+                        ended.recording = false;
+                        let _ = recorder.event_channel().send(RecorderEvent::RecordEnd {
+                            recorder: ended,
+                        });
+                    }
 
                     // An expired stream resumes immediately with a fresh one.
                     if recorder.should_continue().load(Ordering::Relaxed) || restart_immediately {

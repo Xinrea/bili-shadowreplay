@@ -142,6 +142,24 @@ export async function getClips(recordingId: string) {
 实时回放页使用 `clip_range` 生成切片时会保存当前 `eventId`，监听 `progress-update:<eventId>` 和 `progress-finished:<eventId>` 更新按钮状态。页面卸载不会取消后端切片任务；切片任务进入 `TaskManager` 后会继续在后台运行。若页面关闭/刷新时仍有切片任务运行，前端会通过 `beforeunload` 触发浏览器原生离开确认，并在页面内提示用户可前往任务页面管理后台任务；浏览器不允许自定义原生离开确认文案。只有用户显式触发取消时，才会调用 `cancel` 命令将任务状态写为 `cancelled`，并中止关联的 FFmpeg 处理。切片完成、失败或取消请求返回后，前端会清理进度监听器并恢复生成按钮状态。
 
 
+## 应用事件系统
+
+后端统一通过 `src-tauri/src/events` 的 `EventBus` 发布应用事件。任务进度、任务完成、弹幕和数据变更使用同一个 `AppEvent` 模型；事件名和 JSON 载荷由 `model.rs` 定义，Tauri 和 Socket.IO 传输层只负责转发，不再各自匹配业务事件。
+
+应用启动时创建一个 `EventBus`，注入 `State`、`Database` 和 `RecorderManager`。数据库写入成功后发布 `DataChanged`；`ProgressReporter` 发布任务进度和完成事件；录制库保留自己的生命周期事件，由 `RecorderManager` 将需要展示的通知转换成应用事件。弹幕使用事件模块内部的独立缓冲，防止高频弹幕挤掉任务完成和数据变更通知。订阅者落后时会收到 `state-resync`，触发数据校准。
+
+前端 `src/lib/events.ts` 统一管理订阅、错误隔离、Socket.IO 重连和事件分发；`invoker.ts` 继续导出 `listen` 作为兼容入口。两端使用相同的客户端事件名：
+
+| 事件名 | 载荷 / 用途 |
+| --- | --- |
+| `progress-update:<taskId>` | `{ id, content }`，任务进度 |
+| `progress-finished:<taskId>` | `{ id, success, message }`，任务完成 |
+| `danmu` | `{ room, ts, type, content, user_name, price, sc_duration }`，弹幕和醒目留言 |
+| `videos-changed` / `tasks-changed` / `recorders-changed` / `records-changed` | `null`，重新查询对应数据 |
+| `state-resync` | `null`，重连或事件丢失后的校准 |
+
+Web 端用 Socket.IO 的通用事件入口分发通知，新事件不需要再增加一套前端转发分支；对旧服务端的无任务 ID 后缀进度事件保留归一化兼容。`listen` 能根据已知事件名推断载荷类型，返回的清理函数应在组件卸载时调用。页面的数据查询合并、串行刷新及 30 秒兜底校准由 `state-refresh.ts` 管理。
+
 ### 后端错误返回
 
 Rust 命令应该返回 `Result<T, String>`：

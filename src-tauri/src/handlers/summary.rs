@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::database::summary::{RecordSummaryRow, RecordSummaryStatusRow};
 use crate::database::task::TaskRow;
-use crate::progress::progress_reporter::{EventEmitter, ProgressReporter, ProgressReporterTrait};
+use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
 use crate::state::State;
 use crate::state_type;
 use crate::subtitle_generator::{item_to_srt, SubtitleGeneratorType};
@@ -390,11 +390,7 @@ pub async fn generate_archive_summary(
         .start_record_summary(&platform, &room_id, &live_id, &task.id, force)
         .await?;
 
-    #[cfg(feature = "gui")]
-    let emitter = EventEmitter::new(state.app_handle.clone());
-    #[cfg(feature = "headless")]
-    let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
-    let reporter = ProgressReporter::new(state.db.clone(), &emitter, &task.id).await?;
+    let reporter = ProgressReporter::new(state.db.clone(), &state.events, &task.id).await?;
 
     #[cfg(feature = "gui")]
     let state_clone = (*state).clone();

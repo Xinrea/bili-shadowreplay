@@ -16,6 +16,10 @@ async fn database() -> Database {
         CREATE TABLE tasks (
             id TEXT PRIMARY KEY, type TEXT, status TEXT, message TEXT,
             metadata TEXT, created_at TEXT
+        );
+        CREATE TABLE records (
+            platform TEXT, parent_id TEXT, live_id TEXT PRIMARY KEY, room_id TEXT,
+            title TEXT, length REAL, size INTEGER, created_at TEXT, cover TEXT
         );",
     )
     .execute(&pool)
@@ -117,14 +121,21 @@ async fn tasks_notify_on_creation_progress_completion_and_deletion() {
             .is_err()
     );
     for status in ["processing", "success"] {
-        db.update_task(&task.id, status, status, None)
-            .await
-            .unwrap();
+        for _ in 0..if status == "processing" { 100 } else { 1 } {
+            db.update_task(&task.id, status, status, None)
+                .await
+                .unwrap();
+        }
         assert_eq!(
             changes.recv().await.unwrap().client_event().name,
             "tasks-changed"
         );
         assert_eq!(db.get_task(&task.id).await.unwrap().status, status);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), changes.recv())
+                .await
+                .is_err()
+        );
     }
     db.delete_task(&task.id).await.unwrap();
     assert_eq!(
@@ -132,4 +143,42 @@ async fn tasks_notify_on_creation_progress_completion_and_deletion() {
         "tasks-changed"
     );
     assert!(db.get_tasks().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn recording_statistics_notify_after_committing_and_coalesce_bursts() {
+    let db = database().await;
+    let mut changes = db.events.subscribe();
+    db.add_record(
+        ::recorder::platforms::PlatformType::BiliBili,
+        "parent",
+        "live",
+        "1",
+        "title",
+        None,
+    )
+    .await
+    .unwrap();
+    changes.recv().await.unwrap();
+    for _ in 0..100 {
+        db.update_record_delta("live", 0.5, 10).await.unwrap();
+    }
+    assert_eq!(
+        changes.recv().await.unwrap().client_event().name,
+        "records-changed"
+    );
+    let record = db.get_record("1", "live").await.unwrap();
+    assert_eq!(record.length, 50.0);
+    assert_eq!(record.size, 1_000);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), changes.recv())
+            .await
+            .is_err()
+    );
+    assert!(db.update_record_delta("live", 1.0, u64::MAX).await.is_err());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(1_100), changes.recv())
+            .await
+            .is_err()
+    );
 }

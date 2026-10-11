@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { createStateRefresh, watchStateChanges } from "../lib/state-refresh";
   import { invoke, get_static_url } from "../lib/invoker";
   import type { RecordItem, RecordSummaryStatus } from "../lib/db";
   import { onMount } from "svelte";
@@ -71,24 +72,31 @@
   let allArchives = [];
   let allRooms: RecorderInfo[] = [];
 
-  onMount(async () => {
+  const stateRefresh = createStateRefresh(fetchArchives);
+
+  onMount(() => {
     // 从本地存储恢复分页大小设置
     const savedPageSize = localStorage.getItem("archive-page-size");
     if (savedPageSize && pageSizeOptions.includes(parseInt(savedPageSize))) {
       pageSize = parseInt(savedPageSize);
     }
 
-    await loadArchives();
+    return watchStateChanges(stateRefresh, ["records-changed", "recorders-changed"]);
   });
 
   /**
    * 初始化加载所有录播数据
    */
   async function loadArchives() {
+    await stateRefresh.run();
+  }
+
+  async function fetchArchives() {
     if (isLoading) return;
 
     isLoading = true;
-    loading = true;
+    // Keep the existing list visible during background event reconciliation.
+    loading = allArchives.length === 0;
     loadError = "";
 
     try {

@@ -7,6 +7,8 @@ import type { DanmuEntry } from "./interface";
 type Listener = (payload: unknown) => void;
 export type RoomTopic = { platform: string; room: string };
 type RoomRegistration = { topic: RoomTopic; count: number; ready: Promise<void> };
+const MAX_ROOM_TOPICS = 32;
+const ROOM_ACK_TIMEOUT_MS = 5_000;
 
 function roomEventName({ platform, room }: RoomTopic) {
   const hex = [...new TextEncoder().encode(room)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -26,6 +28,7 @@ export function createEventClient({ tauri, endpoint }: { tauri: boolean; endpoin
   const listeners = new Map<string, Set<Listener>>();
   const rooms = new Map<string, RoomRegistration>();
   let roomUpdates = Promise.resolve();
+  let offlineRoomUpdate: { promise: Promise<void>; resolve: () => void; reject: (error: unknown) => void } | null = null;
 
   function deliver<T>(event: string, callback: (event: AppEvent<T>) => void, message: AppEvent<T>) {
     try {
@@ -54,8 +57,20 @@ export function createEventClient({ tauri, endpoint }: { tauri: boolean; endpoin
     }
     // Offline changes are represented by the current set, never a queued series
     // of stale subscribe/unsubscribe packets replayed on reconnection.
-    if (force || socket.connected) socket.emit("event-rooms", topics);
-    return Promise.resolve();
+    if (force || socket.connected) {
+      return socket.timeout(ROOM_ACK_TIMEOUT_MS).emitWithAck("event-rooms", topics).then((response) => {
+        if (response?.ok !== true) throw new Error(response?.error || "Room subscription was rejected");
+      });
+    }
+    // Pending listeners become ready only after reconnect confirms the current
+    // set. No stale packets are queued in Socket.IO's offline send buffer.
+    if (!offlineRoomUpdate) {
+      let resolve!: () => void;
+      let reject!: (error: unknown) => void;
+      const promise = new Promise<void>((done, fail) => { resolve = done; reject = fail; });
+      offlineRoomUpdate = { promise, resolve, reject };
+    }
+    return offlineRoomUpdate.promise;
   }
 
   function reportRoomError(error: unknown) {
@@ -66,7 +81,12 @@ export function createEventClient({ tauri, endpoint }: { tauri: boolean; endpoin
   if (tauri) void syncRooms().catch(reportRoomError);
 
   socket?.on("connect", () => {
-    void syncRooms(true);
+    const pending = offlineRoomUpdate;
+    offlineRoomUpdate = null;
+    void syncRooms(true).then(() => pending?.resolve(), (error) => {
+      pending?.reject(error);
+      reportRoomError(error);
+    });
     // A snapshot repairs server events missed before connecting or reconnecting.
     dispatch("state-resync", null);
   });
@@ -82,9 +102,10 @@ export function createEventClient({ tauri, endpoint }: { tauri: boolean; endpoin
     dispatch(event, payload);
   });
 
-  function listen<E extends string>(event: E, callback: (event: AppEvent<EventPayload<E>>) => void, room?: RoomTopic): Promise<() => void>;
-  function listen<T>(event: string, callback: (event: AppEvent<T>) => void, room?: RoomTopic): Promise<() => void>;
-  async function listen<T>(event: string, callback: (event: AppEvent<T>) => void, room?: RoomTopic) {
+  function listen<E extends string>(event: E, callback: (event: AppEvent<EventPayload<E>>) => void, room?: RoomTopic, signal?: AbortSignal): Promise<() => void>;
+  function listen<T>(event: string, callback: (event: AppEvent<T>) => void, room?: RoomTopic, signal?: AbortSignal): Promise<() => void>;
+  async function listen<T>(event: string, callback: (event: AppEvent<T>) => void, room?: RoomTopic, signal?: AbortSignal) {
+    if (signal?.aborted) throw new Error("Event subscription was aborted");
     if (event === "danmu" && !room) throw new Error("Danmu subscriptions require a platform and room");
     if (room && event !== "danmu") throw new Error("Only danmu events use room subscriptions");
     const name = room ? roomEventName(room) : event;
@@ -114,6 +135,10 @@ export function createEventClient({ tauri, endpoint }: { tauri: boolean; endpoin
     if (room) {
       registration = rooms.get(name);
       if (!registration) {
+        if (rooms.size >= MAX_ROOM_TOPICS) {
+          unlisten();
+          throw new Error(`At most ${MAX_ROOM_TOPICS} room topics may be subscribed`);
+        }
         registration = { topic: { ...room }, count: 0, ready: Promise.resolve() };
         rooms.set(name, registration);
       }
@@ -121,9 +146,11 @@ export function createEventClient({ tauri, endpoint }: { tauri: boolean; endpoin
       if (registration.count === 1) registration.ready = syncRooms();
     }
     let stopped = false;
+    let onAbort: (() => void) | undefined;
     const stop = () => {
       if (stopped) return;
       stopped = true;
+      if (onAbort) signal?.removeEventListener("abort", onAbort);
       unlisten();
       if (registration && --registration.count === 0) {
         rooms.delete(name);
@@ -131,7 +158,16 @@ export function createEventClient({ tauri, endpoint }: { tauri: boolean; endpoin
       }
     };
     try {
-      await registration?.ready;
+      if (signal) {
+        const aborted = new Promise<void>((_, reject) => {
+          onAbort = () => { stop(); reject(new Error("Event subscription was aborted")); };
+          signal.addEventListener("abort", onAbort, { once: true });
+          if (signal.aborted) onAbort();
+        });
+        await Promise.race([registration?.ready ?? Promise.resolve(), aborted]);
+      } else {
+        await registration?.ready;
+      }
       return stop;
     } catch (error) {
       stop();

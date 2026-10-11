@@ -11,6 +11,7 @@ pub use channel::{recorder_event_channel, RecorderEventReceiver, RecorderEventSe
 
 #[derive(Debug, Clone)]
 pub enum RecorderEvent {
+    RoomMetadataUpdated,
     LiveStart {
         recorder: RecorderInfo,
     },

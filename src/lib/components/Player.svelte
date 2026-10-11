@@ -27,8 +27,10 @@
   let initialized = false;
   let stopDanmu: (() => void) | undefined;
   let cancelDanmuBatch: (() => void) | undefined;
+  const danmuSubscription = new AbortController();
   onDestroy(() => {
     destroyed = true;
+    danmuSubscription.abort();
     document.removeEventListener("shaka-ui-loaded", init);
     stopDanmu?.();
     cancelDanmuBatch?.();
@@ -703,7 +705,12 @@ ${mediaPlaylistUrl}`;
         danmu_displayed[event.payload.ts] = true;
         danmuBatcher.push(danmu_record);
         renderFloatingEntry(danmu_record);
-      }, { platform, room: room_id });
+      }, { platform, room: room_id }, danmuSubscription.signal).catch((error) => {
+        danmuBatcher.cancel();
+        if (!destroyed) throw error;
+        return undefined;
+      });
+      if (!unlisten) return;
       if (destroyed) {
         unlisten();
         danmuBatcher.cancel();

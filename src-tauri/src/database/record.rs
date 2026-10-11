@@ -130,6 +130,7 @@ impl Database {
             .bind(live_id)
             .execute(&self.pool)
             .await?;
+        self.notify_coalesced_change(DataChange::Records);
         Ok(())
     }
 

@@ -12,7 +12,15 @@ pub struct RoomForwarder {
     tasks: HashMap<RoomTopic, JoinHandle<()>>,
 }
 
+pub const MAX_ROOM_TOPICS: usize = 32;
+
 pub(super) fn validate_topics(topics: &[RoomTopic]) -> Result<(), String> {
+    // Bound the input before deduplication, validation or allocating room tasks.
+    if topics.len() > MAX_ROOM_TOPICS {
+        return Err(format!(
+            "At most {MAX_ROOM_TOPICS} room topics may be subscribed"
+        ));
+    }
     for topic in topics {
         topic.validate()?;
     }
@@ -72,6 +80,28 @@ mod tests {
     use super::*;
     use recorder::events::RecorderEvent;
     use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn topic_limit_rejects_atomically_without_allocating_buffers() {
+        let bus = EventBus::new();
+        let mut forwarder = RoomForwarder::default();
+        let topics: Vec<_> = (0..MAX_ROOM_TOPICS)
+            .map(|i| RoomTopic::new("bilibili", &i.to_string()))
+            .collect();
+        forwarder
+            .set_rooms(&bus, topics.clone(), |_| Ok(()))
+            .unwrap();
+        assert_eq!(forwarder.tasks.len(), MAX_ROOM_TOPICS);
+        let mut oversized = topics.clone();
+        oversized.push(RoomTopic::new("twitch", "extra"));
+        assert!(forwarder.set_rooms(&bus, oversized, |_| Ok(())).is_err());
+        assert_eq!(forwarder.tasks.len(), MAX_ROOM_TOPICS);
+        assert_eq!(bus.rooms.lock().unwrap().len(), MAX_ROOM_TOPICS);
+        assert!(validate_topics(&vec![topics[0].clone(); MAX_ROOM_TOPICS + 1]).is_err());
+        forwarder.clear();
+        tokio::task::yield_now().await;
+        assert!(bus.rooms.lock().unwrap().is_empty());
+    }
 
     #[tokio::test]
     async fn room_selection_replacement_and_disconnect_release_buffers() {

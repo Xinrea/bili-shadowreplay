@@ -5,7 +5,7 @@ pub use rooms::RoomForwarder;
 
 use recorder::events::RecorderEvent;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
 };
 use tokio::sync::broadcast;
@@ -20,6 +20,7 @@ type RoomRegistry = Arc<Mutex<HashMap<RoomTopic, broadcast::WeakSender<AppEvent>
 pub struct EventBus {
     control: broadcast::Sender<AppEvent>,
     rooms: RoomRegistry,
+    pending_changes: Arc<Mutex<HashSet<DataChange>>>,
     #[cfg(feature = "gui")]
     windows: Arc<Mutex<HashMap<String, RoomForwarder>>>,
 }
@@ -41,6 +42,7 @@ impl EventBus {
         Self {
             control,
             rooms: Arc::new(Mutex::new(HashMap::new())),
+            pending_changes: Arc::new(Mutex::new(HashSet::new())),
             #[cfg(feature = "gui")]
             windows: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -62,6 +64,21 @@ impl EventBus {
         if let Some(event) = AppEvent::from_recorder(event) {
             self.publish(event);
         }
+    }
+
+    /// Aggregate frequent statistics/progress mutations across all producers.
+    /// A fixed one-second window delivers the latest committed snapshot even
+    /// during continuous updates; lifecycle changes still publish immediately.
+    pub fn publish_coalesced_change(&self, change: DataChange) {
+        if !self.pending_changes.lock().unwrap().insert(change) {
+            return;
+        }
+        let bus = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            bus.pending_changes.lock().unwrap().remove(&change);
+            bus.publish(AppEvent::DataChanged(change));
+        });
     }
 
     pub fn publish_preview(&self, topic: &RoomTopic, event: &RecorderEvent) {
@@ -306,6 +323,37 @@ mod tests {
         assert_eq!(bus.rooms.lock().unwrap().len(), 1);
         drop(second);
         assert!(bus.rooms.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn frequent_changes_are_coalesced_without_delaying_completion() {
+        let bus = EventBus::new();
+        let mut subscription = bus.subscribe();
+        for _ in 0..1_000 {
+            bus.publish_coalesced_change(DataChange::Records);
+            bus.publish_coalesced_change(DataChange::Tasks);
+        }
+        assert_eq!(bus.pending_changes.lock().unwrap().len(), 2);
+        bus.publish(AppEvent::ProgressFinished {
+            id: "task".into(),
+            success: true,
+            message: "done".into(),
+        });
+        assert_eq!(
+            subscription.recv().await.unwrap().client_event().name,
+            "progress-finished:task"
+        );
+        let first = subscription.recv().await.unwrap().client_event().name;
+        let second = subscription.recv().await.unwrap().client_event().name;
+        assert_ne!(first, second);
+        assert!(["records-changed", "tasks-changed"].contains(&first.as_str()));
+        assert!(["records-changed", "tasks-changed"].contains(&second.as_str()));
+        assert!(subscription.control.try_recv().is_err());
+        bus.publish_coalesced_change(DataChange::Records);
+        assert_eq!(
+            subscription.recv().await.unwrap().client_event().name,
+            "records-changed"
+        );
     }
 
     #[tokio::test]

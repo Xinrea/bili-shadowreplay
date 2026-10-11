@@ -225,10 +225,13 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
     async fn check_live(&self) -> bool {
         let platform = self.platform().as_str();
         let room_id = self.room_id();
-        let pre_live_status = self.room_info().read().await.status;
+        let previous_room = self.room_info().read().await.clone();
+        let pre_live_status = previous_room.status;
 
         match self.poll_room().await {
             Ok(poll) => {
+                let metadata_changed = previous_room.room_title != poll.room_title
+                    || previous_room.room_cover != poll.room_cover;
                 *self.room_info().write().await = RoomInfo {
                     platform: platform.to_string(),
                     room_id: room_id.clone(),
@@ -238,6 +241,12 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                 };
                 if let Some(user) = poll.user {
                     *self.user_info().write().await = user;
+                }
+                if metadata_changed && pre_live_status == poll.live {
+                    let _ = self
+                        .event_channel()
+                        .send(RecorderEvent::RoomMetadataUpdated)
+                        .await;
                 }
 
                 if poll.live && !pre_live_status {
@@ -660,4 +669,79 @@ pub(crate) async fn download_file(
     let mut file = tokio::fs::File::create(path).await?;
     tokio::io::AsyncWriteExt::write_all(&mut file, &bytes).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        account::Account, events::recorder_event_channel, platforms::PlatformType, Recorder,
+    };
+    use std::{path::PathBuf, sync::atomic::AtomicU64};
+    use tokio::sync::RwLock;
+
+    #[derive(Clone)]
+    struct Metadata(Arc<RwLock<(String, String)>>);
+
+    #[async_trait]
+    impl RecorderTrait for Recorder<Metadata> {
+        async fn run(&self) {}
+    }
+
+    #[async_trait]
+    impl PlatformApi for Recorder<Metadata> {
+        async fn poll_room(&self) -> Result<RoomPoll, RecorderError> {
+            let (title, cover) = self.extra.0.read().await.clone();
+            Ok(RoomPoll {
+                live: true,
+                room_title: title,
+                room_cover: cover,
+                user: None,
+                platform_live_id: None,
+            })
+        }
+        async fn poll_stream(&self) -> bool {
+            false
+        }
+        async fn open_pull(&self, _: &str) -> Result<StreamPull, RecorderError> {
+            Err(RecorderError::NoStreamAvailable)
+        }
+        async fn clear_stream(&self) {}
+    }
+
+    #[tokio::test]
+    async fn metadata_changes_notify_after_state_is_queryable_without_live_transition() {
+        let (tx, mut rx) = recorder_event_channel(4);
+        let metadata = Metadata(Arc::new(RwLock::new(("title".into(), "cover".into()))));
+        let recorder = Recorder::with_extra(
+            PlatformType::Twitch,
+            "room",
+            &Account::default(),
+            PathBuf::new(),
+            tx,
+            Arc::new(AtomicU64::new(10)),
+            false,
+            metadata.clone(),
+        );
+        recorder.room_info.write().await.status = true;
+        recorder.check_live().await;
+        assert!(matches!(
+            rx.recv().await,
+            Some(RecorderEvent::RoomMetadataUpdated)
+        ));
+        recorder.check_live().await;
+        assert!(tokio::time::timeout(Duration::from_millis(20), rx.recv())
+            .await
+            .is_err());
+        *metadata.0.write().await = ("new title".into(), "new cover".into());
+        recorder.check_live().await;
+        assert!(matches!(
+            rx.recv().await,
+            Some(RecorderEvent::RoomMetadataUpdated)
+        ));
+        let info = recorder.info().await;
+        assert!(info.room_info.status);
+        assert_eq!(info.room_info.room_title, "new title");
+        assert_eq!(info.room_info.room_cover, "new cover");
+    }
 }

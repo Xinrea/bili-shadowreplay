@@ -204,7 +204,7 @@ test("unmount discards timers and trailing refreshes while a request finishes", 
   assert.equal(f.timeouts.size, 0);
 });
 
-async function invokerFixture({ tauri = false, invokeRoom = async () => null, nativeReady } = {}) {
+async function invokerFixture({ tauri = false, invokeRoom = async () => null, nativeReady, ackRoom = async () => ({ ok: true }) } = {}) {
   const socketHandlers = new Map();
   const tauriListeners = new Map();
   const nativeOptions = new Map();
@@ -215,6 +215,13 @@ async function invokerFixture({ tauri = false, invokeRoom = async () => null, na
     on: (name, cb) => socketHandlers.set(name, cb),
     onAny: (cb) => socketHandlers.set("*", cb),
     emit: (name, payload) => sent.push({ name, payload: JSON.parse(JSON.stringify(payload)) }),
+    timeout: (ms) => {
+      assert.equal(ms, 5_000);
+      return { emitWithAck: async (name, payload) => {
+        sent.push({ name, payload: JSON.parse(JSON.stringify(payload)) });
+        return ackRoom(payload);
+      } };
+    },
     disconnect() {},
   };
   const context = vm.createContext({
@@ -370,13 +377,123 @@ test("reconnection sends only current room subscriptions, including changes whil
   const sent = f.sent.length;
   stop();
   const current = { ...room, room: "2" };
-  await f.api.listen("danmu", () => {}, current);
+  let ready = false;
+  const pending = f.api.listen("danmu", () => {}, current).then((stop) => { ready = true; return stop; });
+  await settle();
+  assert.equal(ready, false);
   assert.equal(f.sent.length, sent);
   f.socket.connected = true;
   f.socketHandlers.get("connect")();
+  await pending;
   assert.deepEqual(f.sent.at(-1), { name: "event-rooms", payload: [current] });
   f.socketHandlers.get("connect")();
   assert.deepEqual(f.sent.at(-1).payload, [current]);
+});
+
+test("Web preview listeners wait for acknowledgement and share pending readiness", async () => {
+  const ack = deferred();
+  const f = await invokerFixture({ ackRoom: () => ack.promise });
+  const room = { platform: "bilibili", room: "1" };
+  let ready = 0;
+  const first = f.api.listen("danmu", () => {}, room).then((stop) => { ready++; return stop; });
+  const second = f.api.listen("danmu", () => {}, room).then((stop) => { ready++; return stop; });
+  await settle();
+  assert.equal(ready, 0);
+  assert.equal(f.sent.length, 1);
+  ack.resolve({ ok: true });
+  const stops = await Promise.all([first, second]);
+  assert.equal(ready, 2);
+  stops.forEach((stop) => stop());
+});
+
+test("Web server rejection removes only the rejected listener and reconciles the set", async () => {
+  const f = await invokerFixture({ ackRoom: async (rooms) => rooms.some((room) => room.room === "invalid")
+    ? { ok: false, error: "Invalid room topic" } : { ok: true } });
+  const valid = { platform: "bilibili", room: "1" };
+  let calls = 0;
+  const stop = await f.api.listen("danmu", () => { calls++; }, valid);
+  const invalid = { ...valid, room: "invalid" };
+  await assert.rejects(f.api.listen("danmu", () => { calls++; }, invalid), /Invalid room topic/);
+  assert.deepEqual(f.sent.at(-1).payload, [valid]);
+  f.socketHandlers.get("*")(topicName(invalid), {});
+  assert.equal(calls, 0);
+  f.socketHandlers.get("*")(topicName(valid), {});
+  assert.equal(calls, 1);
+  stop();
+});
+
+test("Web ack timeout fails setup and permits a later retry", async () => {
+  let fail = true;
+  const f = await invokerFixture({ ackRoom: async () => {
+    if (fail) { fail = false; throw new Error("operation has timed out"); }
+    return { ok: true };
+  } });
+  const room = { platform: "bilibili", room: "1" };
+  let calls = 0;
+  await assert.rejects(f.api.listen("danmu", () => { calls++; }, room), /timed out/);
+  f.socketHandlers.get("*")(topicName(room), {});
+  assert.equal(calls, 0);
+  const stop = await f.api.listen("danmu", () => { calls++; }, room);
+  f.socketHandlers.get("*")(topicName(room), {});
+  assert.equal(calls, 1);
+  stop();
+});
+
+test("closing a preview while offline cancels setup and reconnect sends no stale topic", async () => {
+  const f = await invokerFixture();
+  f.socket.connected = false;
+  const controller = new AbortController();
+  const room = { platform: "bilibili", room: "1" };
+  let calls = 0;
+  const pending = f.api.listen("danmu", () => { calls++; }, room, controller.signal);
+  controller.abort();
+  await assert.rejects(pending, /aborted/);
+  f.socketHandlers.get("*")(topicName(room), {});
+  assert.equal(calls, 0);
+  assert.equal(f.sent.length, 0);
+  f.socket.connected = true;
+  f.socketHandlers.get("connect")();
+  await settle();
+  assert.deepEqual(f.sent.at(-1).payload, []);
+});
+
+test("cancelling pending ACK removes the topic even if the ACK arrives later", async () => {
+  const held = deferred();
+  const f = await invokerFixture({ ackRoom: (rooms) => rooms.length ? held.promise : Promise.resolve({ ok: true }) });
+  const controller = new AbortController();
+  const room = { platform: "bilibili", room: "1" };
+  let calls = 0;
+  const pending = f.api.listen("danmu", () => { calls++; }, room, controller.signal);
+  controller.abort();
+  await assert.rejects(pending, /aborted/);
+  assert.deepEqual(f.sent.at(-1).payload, []);
+  held.resolve({ ok: true });
+  await settle();
+  f.socketHandlers.get("*")(topicName(room), {});
+  assert.equal(calls, 0);
+});
+
+test("preview topic limit also applies offline without rejecting shared listeners", async () => {
+  const f = await invokerFixture();
+  const stops = [];
+  for (let i = 0; i < 32; i++) {
+    stops.push(await f.api.listen("danmu", () => {}, { platform: "bilibili", room: String(i) }));
+  }
+  f.socket.connected = false;
+  const sent = f.sent.length;
+  const extra = { platform: "bilibili", room: "extra" };
+  let calls = 0;
+  await assert.rejects(f.api.listen("danmu", () => { calls++; }, extra), /At most 32/);
+  assert.equal(f.sent.length, sent);
+  f.socketHandlers.get("*")(topicName(extra), {});
+  assert.equal(calls, 0);
+  const shared = await f.api.listen("danmu", () => {}, { platform: "bilibili", room: "0" });
+  shared();
+  stops.forEach((stop) => stop());
+  f.socket.connected = true;
+  f.socketHandlers.get("connect")();
+  await settle();
+  assert.deepEqual(f.sent.at(-1).payload, []);
 });
 
 test("desktop room events target the current window and commands preserve subscribe/unsubscribe order", async () => {

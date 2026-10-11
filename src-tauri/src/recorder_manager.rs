@@ -218,6 +218,9 @@ impl RecorderManager {
         while let Some(event) = rx.recv().await {
             self.events.publish_recorder(&event);
             match event {
+                RecorderEvent::RoomMetadataUpdated => {
+                    self.db.notify_coalesced_change(DataChange::Recorders);
+                }
                 RecorderEvent::LiveStart { recorder } => {
                     self.db.notify_change(DataChange::Recorders);
                     let event = events::new_webhook_event(

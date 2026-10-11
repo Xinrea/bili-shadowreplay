@@ -92,7 +92,11 @@ impl Database {
                 .await?;
         }
 
-        self.notify_change(DataChange::Tasks);
+        if status == "processing" {
+            self.notify_coalesced_change(DataChange::Tasks);
+        } else {
+            self.notify_change(DataChange::Tasks);
+        }
         Ok(())
     }
 

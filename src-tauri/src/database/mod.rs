@@ -56,6 +56,10 @@ impl Database {
         self.events.publish(AppEvent::DataChanged(change));
     }
 
+    pub fn notify_coalesced_change(&self, change: DataChange) {
+        self.events.publish_coalesced_change(change);
+    }
+
     pub fn new(
         pool: SqlitePool,
         credentials: credentials::CredentialCipher,

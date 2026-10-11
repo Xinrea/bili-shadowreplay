@@ -1,20 +1,31 @@
 import { listen as tauriListen } from "@tauri-apps/api/event";
+import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { io } from "socket.io-client";
 import type { DanmuEntry } from "./interface";
 
 type Listener = (payload: unknown) => void;
+export type RoomTopic = { platform: string; room: string };
+type RoomRegistration = { topic: RoomTopic; count: number; ready: Promise<void> };
+
+function roomEventName({ platform, room }: RoomTopic) {
+  const hex = [...new TextEncoder().encode(room)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `danmu:${platform}:${hex}`;
+}
 export type AppEvent<T> = { payload: T };
 export type StateChangeEvent =
   | "videos-changed" | "tasks-changed" | "recorders-changed" | "records-changed" | "state-resync";
 export type EventPayload<E extends string> =
   E extends `progress-update:${string}` ? { id: string; content: string } :
   E extends `progress-finished:${string}` ? { id: string; success: boolean; message: string } :
-  E extends "danmu" ? DanmuEntry & { room: string } :
+  E extends "danmu" ? DanmuEntry & RoomTopic :
   E extends StateChangeEvent ? null : unknown;
 
 /** All event types share one transport, dispatch path and subscription lifecycle. */
 export function createEventClient({ tauri, endpoint }: { tauri: boolean; endpoint: string }) {
   const listeners = new Map<string, Set<Listener>>();
+  const rooms = new Map<string, RoomRegistration>();
+  let roomUpdates = Promise.resolve();
 
   function deliver<T>(event: string, callback: (event: AppEvent<T>) => void, message: AppEvent<T>) {
     try {
@@ -34,7 +45,28 @@ export function createEventClient({ tauri, endpoint }: { tauri: boolean; endpoin
     reconnection: true,
   });
 
+  function syncRooms(force = false): Promise<void> {
+    const topics = [...rooms.values()].map(({ topic }) => topic);
+    if (tauri) {
+      // Serialize desktop commands so a late subscribe cannot undo an unlisten.
+      roomUpdates = roomUpdates.catch(() => {}).then(() => tauriInvoke<void>("set_event_rooms", { rooms: topics }));
+      return roomUpdates;
+    }
+    // Offline changes are represented by the current set, never a queued series
+    // of stale subscribe/unsubscribe packets replayed on reconnection.
+    if (force || socket.connected) socket.emit("event-rooms", topics);
+    return Promise.resolve();
+  }
+
+  function reportRoomError(error: unknown) {
+    console.error("[Events] Room subscription error:", error);
+  }
+
+  // Reloading a desktop webview replaces its old preview subscriptions.
+  if (tauri) void syncRooms().catch(reportRoomError);
+
   socket?.on("connect", () => {
+    void syncRooms(true);
     // A snapshot repairs server events missed before connecting or reconnecting.
     dispatch("state-resync", null);
   });
@@ -50,23 +82,61 @@ export function createEventClient({ tauri, endpoint }: { tauri: boolean; endpoin
     dispatch(event, payload);
   });
 
-  function listen<E extends string>(event: E, callback: (event: AppEvent<EventPayload<E>>) => void): Promise<() => void>;
-  function listen<T>(event: string, callback: (event: AppEvent<T>) => void): Promise<() => void>;
-  async function listen<T>(event: string, callback: (event: AppEvent<T>) => void) {
-    if (tauri) return tauriListen<T>(event, (message) => deliver(event, callback, message));
+  function listen<E extends string>(event: E, callback: (event: AppEvent<EventPayload<E>>) => void, room?: RoomTopic): Promise<() => void>;
+  function listen<T>(event: string, callback: (event: AppEvent<T>) => void, room?: RoomTopic): Promise<() => void>;
+  async function listen<T>(event: string, callback: (event: AppEvent<T>) => void, room?: RoomTopic) {
+    if (event === "danmu" && !room) throw new Error("Danmu subscriptions require a platform and room");
+    if (room && event !== "danmu") throw new Error("Only danmu events use room subscriptions");
+    const name = room ? roomEventName(room) : event;
+    let unlisten: () => void;
+    if (tauri) {
+      // Listen locally before asking the producer to start forwarding.
+      unlisten = await tauriListen<T>(name, (message) => deliver(event, callback, message), room ? {
+        target: { kind: "WebviewWindow", label: getCurrentWebviewWindow().label },
+      } : undefined);
+    } else {
 
-    // Each registration gets its own identity, even for the same callback.
-    const listener: Listener = (payload) => deliver(event, callback, { payload: payload as T });
-    let callbacks = listeners.get(event);
-    if (!callbacks) {
-      callbacks = new Set();
-      listeners.set(event, callbacks);
+      // Each registration gets its own identity, even for the same callback.
+      const listener: Listener = (payload) => deliver(event, callback, { payload: payload as T });
+      let callbacks = listeners.get(name);
+      if (!callbacks) {
+        callbacks = new Set();
+        listeners.set(name, callbacks);
+      }
+      callbacks.add(listener);
+      unlisten = () => {
+        callbacks.delete(listener);
+        if (callbacks.size === 0) listeners.delete(name);
+      };
     }
-    callbacks.add(listener);
-    return () => {
-      callbacks.delete(listener);
-      if (callbacks.size === 0) listeners.delete(event);
+
+    let registration: RoomRegistration | undefined;
+    if (room) {
+      registration = rooms.get(name);
+      if (!registration) {
+        registration = { topic: { ...room }, count: 0, ready: Promise.resolve() };
+        rooms.set(name, registration);
+      }
+      registration.count++;
+      if (registration.count === 1) registration.ready = syncRooms();
+    }
+    let stopped = false;
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      unlisten();
+      if (registration && --registration.count === 0) {
+        rooms.delete(name);
+        void syncRooms().catch(reportRoomError);
+      }
     };
+    try {
+      await registration?.ready;
+      return stop;
+    } catch (error) {
+      stop();
+      throw error;
+    }
   }
 
   return { listen };

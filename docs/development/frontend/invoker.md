@@ -146,7 +146,13 @@ export async function getClips(recordingId: string) {
 
 后端统一通过 `src-tauri/src/events` 的 `EventBus` 发布应用事件。任务进度、任务完成、弹幕和数据变更使用同一个 `AppEvent` 模型；事件名和 JSON 载荷由 `model.rs` 定义，Tauri 和 Socket.IO 传输层只负责转发，不再各自匹配业务事件。
 
-应用启动时创建一个 `EventBus`，注入 `State`、`Database` 和 `RecorderManager`。数据库写入成功后发布 `DataChanged`；`ProgressReporter` 发布任务进度和完成事件；录制库保留自己的生命周期事件，由 `RecorderManager` 将需要展示的通知转换成应用事件。弹幕使用事件模块内部的独立缓冲，防止高频弹幕挤掉任务完成和数据变更通知。订阅者落后时会收到 `state-resync`，触发数据校准。
+应用启动时创建一个 `EventBus`，注入 `State`、`Database` 和 `RecorderManager`。数据库写入成功后发布 `DataChanged`；`ProgressReporter` 发布任务进度和完成事件。弹幕在录制器产生事件时，通过预览回调直接进入事件系统，不经过处理数据库操作的录制管理队列；原始弹幕的保存流程独立于预览订阅。
+
+录制管理队列使用容量为 512 的有界 MPSC 通道。开始、结束等生命周期事件在队列满时等待，不覆盖旧事件；接收器在启动监听任务前创建，避免启动订阅空窗。周期性录制统计按归档 ID 合并增量，时长和字节数累加，待处理项按先到先处理轮转；处理 `RecordEnd` / `LiveEnd` 前先写入该归档剩余的统计增量。视频分片下载不因统计队列积压而等待，统计增量也不会直接丢弃。
+
+应用事件内部使用两类缓冲：全局 control 容量为 1024，传递任务通知与数据失效事件；stream 按 `(platform, room)` 隔离，每个正在观看的房间容量为 256。无人观看时不创建房间缓冲或转发预览，最后一个订阅释放后回收缓冲。control 订阅者落后时收到 `state-resync`；某个房间的 stream 落后时只跳过过期预览并记录该房间丢失数量，不触发列表查询，也不挤掉其他房间的预览。
+
+这些容量是有界缓冲预算，不代表“支持多少直播间”或固定时间窗口。单房间预览能吸收的暂停时间约为 `256 / 单房间事件速率`，例如 100 条/秒时约为 2.56 秒；需要结合实际峰值和消费者处理速度调整，没有经过生产负载容量测定。房间缓冲的空间随实际被观看的房间数量增加，而不是随全部录制房间的弹幕总量增加。
 
 前端 `src/lib/events.ts` 统一管理订阅、错误隔离、Socket.IO 重连和事件分发；`invoker.ts` 继续导出 `listen` 作为兼容入口。两端使用相同的客户端事件名：
 
@@ -154,11 +160,40 @@ export async function getClips(recordingId: string) {
 | --- | --- |
 | `progress-update:<taskId>` | `{ id, content }`，任务进度 |
 | `progress-finished:<taskId>` | `{ id, success, message }`，任务完成 |
-| `danmu` | `{ room, ts, type, content, user_name, price, sc_duration }`，弹幕和醒目留言 |
+| `danmu:<platform>:<room 的 UTF-8 十六进制>` | `{ platform, room, ts, type, content, user_name, price, sc_duration }`，房间弹幕和醒目留言；编码支持 `@`、冒号及 Unicode 房间名 |
 | `videos-changed` / `tasks-changed` / `recorders-changed` / `records-changed` | `null`，重新查询对应数据 |
-| `state-resync` | `null`，重连或事件丢失后的校准 |
+| `state-resync` | `null`，重连或 control 事件丢失后的校准 |
 
 Web 端用 Socket.IO 的通用事件入口分发通知，新事件不需要再增加一套前端转发分支；对旧服务端的无任务 ID 后缀进度事件保留归一化兼容。`listen` 能根据已知事件名推断载荷类型，返回的清理函数应在组件卸载时调用。页面的数据查询合并、串行刷新及 30 秒兜底校准由 `state-refresh.ts` 管理。
+
+弹幕仍使用同一 `listen` 接口，但必须指定平台和房间；调用者不需要拼接底层事件名：
+
+```typescript
+const unlisten = await listen("danmu", ({ payload }) => {
+  renderDanmu(payload);
+}, { platform: "youtube", room: "@EliraPendora" });
+// 组件卸载时调用 unlisten()，同时取消弹幕批处理定时器。
+```
+
+前端对同一房间的订阅计数：首次订阅添加房间，最后一次清理移除房间。Web 通过 `event-rooms` 将当前房间集合同步给服务端，断线期间不排队旧的订阅请求，重连时重发最新集合；每个 Socket 单独维护转发任务，断开时释放。桌面端通过 `set_event_rooms` 同步当前窗口的房间集合，只向该窗口发送预览，窗口销毁时释放；本地监听先于服务端订阅，命令串行执行，防止迟到的订阅覆盖清理结果。
+
+Socket.IO 的底层发送队列也是有界的。预览发送遇到临时队列满时丢弃该条预览并累计日志，保持订阅继续工作；control 发送遇到队列满时暂停该客户端的预览转发，等待后重试同一事件。预览不占用全部发送能力而导致任务完成通知退出转发循环。该策略保证临时拥堵时的处理优先级，不是断线后的事件持久化或重放；断线仍由重新订阅和快照校准恢复。
+
+```mermaid
+flowchart LR
+  Producer[录制器] -->|预览回调| Rooms[按平台与房间隔离的 stream]
+  Producer -->|开始 / 结束：有界等待| Queue[录制管理队列]
+  Producer -->|统计增量合并| Deltas[按归档累加的待处理统计]
+  Deltas --> Manager[RecorderManager]
+  Queue --> Manager
+  Manager --> DB[数据库]
+  DB -->|写入成功后| Control[control]
+  Progress[任务进度] --> Control
+  Rooms -->|只转发订阅房间| Client[Socket / 指定窗口]
+  Control --> Client
+  Client -->|数据事件| Snapshot[合并后查询快照]
+  Client -->|弹幕事件| Preview[渲染预览]
+```
 
 ### 后端错误返回
 

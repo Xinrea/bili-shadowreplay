@@ -1,6 +1,40 @@
 use recorder::{danmu::DanmuEntry, events::RecorderEvent};
 use serde_json::{json, Value};
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct RoomTopic {
+    pub platform: String,
+    pub room: String,
+}
+
+impl RoomTopic {
+    pub fn new(platform: &str, room: &str) -> Self {
+        Self {
+            platform: platform.into(),
+            room: room.into(),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        self.platform.parse::<recorder::platforms::PlatformType>()?;
+        if self.room.is_empty() || self.room.len() > 512 {
+            return Err("Invalid event room".into());
+        }
+        Ok(())
+    }
+
+    pub fn event_name(&self) -> String {
+        // Tauri event names cannot contain '@' or arbitrary Unicode. Hex also
+        // keeps delimiters in a room ID from colliding with another topic.
+        use std::fmt::Write;
+        let mut name = format!("danmu:{}:", self.platform);
+        for byte in self.room.as_bytes() {
+            write!(name, "{byte:02x}").unwrap();
+        }
+        name
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataChange {
     Videos,
@@ -36,7 +70,7 @@ pub enum AppEvent {
         message: String,
     },
     Danmu {
-        room: String,
+        topic: RoomTopic,
         entry: DanmuEntry,
     },
     DataChanged(DataChange),
@@ -63,10 +97,11 @@ impl AppEvent {
                 format!("progress-finished:{id}"),
                 json!({ "id": id, "success": success, "message": message }),
             ),
-            Self::Danmu { room, entry } => {
+            Self::Danmu { topic, entry } => {
                 let mut payload = json!(entry);
-                payload["room"] = json!(room);
-                ("danmu".into(), payload)
+                payload["room"] = json!(topic.room);
+                payload["platform"] = json!(topic.platform);
+                (topic.event_name(), payload)
             }
             Self::DataChanged(change) => (change.event_name().into(), Value::Null),
         };
@@ -90,8 +125,14 @@ impl AppEvent {
                 success: *success,
                 message: message.clone(),
             }),
+            _ => None,
+        }
+    }
+
+    pub fn from_preview(topic: &RoomTopic, event: &RecorderEvent) -> Option<Self> {
+        match event {
             RecorderEvent::DanmuReceived {
-                room,
+                room: _,
                 ts,
                 event_type,
                 content,
@@ -99,7 +140,7 @@ impl AppEvent {
                 price,
                 sc_duration,
             } => Some(Self::Danmu {
-                room: room.clone(),
+                topic: topic.clone(),
                 entry: DanmuEntry {
                     ts: *ts,
                     event_type: event_type.clone(),
@@ -154,12 +195,15 @@ mod tests {
             price: Some(300),
             sc_duration: Some(60),
         };
-        let client = AppEvent::from_recorder(&event).unwrap().client_event();
-        assert_eq!(client.name, "danmu");
+        let topic = RoomTopic::new("youtube", "@EliraPendora");
+        let client = AppEvent::from_preview(&topic, &event)
+            .unwrap()
+            .client_event();
+        assert_eq!(client.name, "danmu:youtube:40456c69726150656e646f7261");
         assert_eq!(
             client.payload,
             json!({
-                "room": "@EliraPendora", "ts": 123, "type": "super_chat", "content": "hello",
+                "platform": "youtube", "room": "@EliraPendora", "ts": 123, "type": "super_chat", "content": "hello",
                 "user_name": "alice", "price": 300, "sc_duration": 60,
             })
         );

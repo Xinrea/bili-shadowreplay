@@ -1,5 +1,7 @@
 pub mod account;
 pub mod config;
+#[cfg(feature = "gui")]
+pub mod events;
 pub mod macros;
 pub mod message;
 pub mod migrate;

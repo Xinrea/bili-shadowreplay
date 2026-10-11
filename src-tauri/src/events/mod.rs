@@ -1,37 +1,61 @@
 mod model;
-pub use model::{AppEvent, DataChange};
+mod rooms;
+pub use model::{AppEvent, DataChange, RoomTopic};
+pub use rooms::RoomForwarder;
 
 use recorder::events::RecorderEvent;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 use tokio::sync::broadcast;
 
-/// One publishing/subscription API for all application notifications. Streaming
-/// danmu has its own bounded buffer so it cannot evict task or state events.
+// Bounded best-effort buffers, not a duration or a durable event log. A room's
+// preview budget is independent of the number of other recorded rooms.
+const CONTROL_CAPACITY: usize = 1024;
+const ROOM_STREAM_CAPACITY: usize = 256;
+type RoomRegistry = Arc<Mutex<HashMap<RoomTopic, broadcast::WeakSender<AppEvent>>>>;
+
 #[derive(Clone)]
 pub struct EventBus {
     control: broadcast::Sender<AppEvent>,
-    stream: broadcast::Sender<AppEvent>,
+    rooms: RoomRegistry,
+    #[cfg(feature = "gui")]
+    windows: Arc<Mutex<HashMap<String, RoomForwarder>>>,
 }
 
 pub struct EventSubscription {
     control: broadcast::Receiver<AppEvent>,
-    stream: broadcast::Receiver<AppEvent>,
+}
+
+pub struct RoomSubscription {
+    receiver: broadcast::Receiver<AppEvent>,
+    sender: Option<broadcast::Sender<AppEvent>>,
+    rooms: RoomRegistry,
+    topic: RoomTopic,
 }
 
 impl EventBus {
     pub fn new() -> Self {
-        let (control, _) = broadcast::channel(1024);
-        let (stream, _) = broadcast::channel(256);
-        Self { control, stream }
+        let (control, _) = broadcast::channel(CONTROL_CAPACITY);
+        Self {
+            control,
+            rooms: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(feature = "gui")]
+            windows: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     pub fn publish(&self, event: AppEvent) {
-        let sender = if matches!(event, AppEvent::Danmu { .. }) {
-            &self.stream
+        if let AppEvent::Danmu { topic, .. } = &event {
+            let rooms = self.rooms.lock().unwrap();
+            if let Some(sender) = rooms.get(topic).and_then(broadcast::WeakSender::upgrade) {
+                let _ = sender.send(event);
+            }
         } else {
-            &self.control
-        };
-        // No connected subscribers must never make a business operation fail.
-        let _ = sender.send(event);
+            // No subscribers must never make a business operation fail.
+            let _ = self.control.send(event);
+        }
     }
 
     pub fn publish_recorder(&self, event: &RecorderEvent) {
@@ -40,10 +64,37 @@ impl EventBus {
         }
     }
 
+    pub fn publish_preview(&self, topic: &RoomTopic, event: &RecorderEvent) {
+        // Do not allocate a preview payload for rooms nobody is watching.
+        if !self.rooms.lock().unwrap().contains_key(topic) {
+            return;
+        }
+        if let Some(event) = AppEvent::from_preview(topic, event) {
+            self.publish(event);
+        }
+    }
+
     pub fn subscribe(&self) -> EventSubscription {
         EventSubscription {
             control: self.control.subscribe(),
-            stream: self.stream.subscribe(),
+        }
+    }
+
+    pub fn subscribe_room(&self, topic: RoomTopic) -> RoomSubscription {
+        let mut rooms = self.rooms.lock().unwrap();
+        let sender = rooms
+            .get(&topic)
+            .and_then(broadcast::WeakSender::upgrade)
+            .unwrap_or_else(|| {
+                let (sender, _) = broadcast::channel(ROOM_STREAM_CAPACITY);
+                rooms.insert(topic.clone(), sender.downgrade());
+                sender
+            });
+        RoomSubscription {
+            receiver: sender.subscribe(),
+            sender: Some(sender),
+            topic,
+            rooms: self.rooms.clone(),
         }
     }
 
@@ -60,18 +111,47 @@ impl EventBus {
             }
         });
     }
+
+    #[cfg(feature = "gui")]
+    pub fn set_window_rooms(
+        &self,
+        window: &tauri::WebviewWindow,
+        topics: Vec<RoomTopic>,
+    ) -> Result<(), String> {
+        use tauri::Emitter;
+        rooms::validate_topics(&topics)?;
+        let mut windows = self.windows.lock().unwrap();
+        if topics.is_empty() {
+            windows.remove(window.label());
+        } else {
+            let window = window.clone();
+            windows
+                .entry(window.label().to_owned())
+                .or_default()
+                .set_rooms(self, topics, move |event| {
+                    window
+                        .emit_to(
+                            tauri::EventTarget::webview_window(window.label()),
+                            &event.name,
+                            &event.payload,
+                        )
+                        .map_err(|error| error.to_string())
+                })?;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "gui")]
+    pub fn remove_window(&self, label: &str) {
+        self.windows.lock().unwrap().remove(label);
+    }
 }
 
 impl EventSubscription {
     pub async fn recv(&mut self) -> Result<AppEvent, broadcast::error::RecvError> {
-        let result = tokio::select! {
-            biased;
-            result = self.control.recv() => result,
-            result = self.stream.recv() => result,
-        };
-        match result {
+        match self.control.recv().await {
             Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                log::warn!("Application event subscriber lagged, skipped {skipped} events");
+                log::warn!("Control subscriber lagged, skipped {skipped} events; resync required");
                 Ok(AppEvent::DataChanged(DataChange::Resync))
             }
             result => result,
@@ -79,10 +159,53 @@ impl EventSubscription {
     }
 }
 
+impl RoomSubscription {
+    pub async fn recv(&mut self) -> Result<AppEvent, broadcast::error::RecvError> {
+        loop {
+            match self.receiver.recv().await {
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    log::warn!(
+                        "Preview subscriber lagged for {}:{}, skipped {skipped} events",
+                        self.topic.platform,
+                        self.topic.room
+                    );
+                    // Preview loss never invalidates a database snapshot.
+                }
+                result => return result,
+            }
+        }
+    }
+}
+
+impl Drop for RoomSubscription {
+    fn drop(&mut self) {
+        // Keep lookup/last-owner removal atomic with concurrent subscriptions.
+        let mut rooms = self.rooms.lock().unwrap();
+        if self.sender.as_ref().unwrap().strong_count() == 1 {
+            rooms.remove(&self.topic);
+        }
+        drop(self.sender.take());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use recorder::danmu::DanmuEntry;
+
+    fn preview(topic: &RoomTopic, ts: i64) -> AppEvent {
+        AppEvent::Danmu {
+            topic: topic.clone(),
+            entry: DanmuEntry {
+                ts,
+                event_type: "danmu".into(),
+                content: "test".into(),
+                user_name: None,
+                price: None,
+                sc_duration: None,
+            },
+        }
+    }
 
     #[tokio::test]
     async fn subscribers_receive_the_same_task_and_state_notifications() {
@@ -113,21 +236,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn danmu_overflow_cannot_evict_task_completion_or_state_changes() {
+    async fn hot_rooms_cannot_evict_other_rooms_or_control_events() {
         let bus = EventBus::new();
-        let mut subscription = bus.subscribe();
-        for i in 0..300 {
-            bus.publish(AppEvent::Danmu {
-                room: "1".into(),
-                entry: DanmuEntry {
-                    ts: i,
-                    event_type: "danmu".into(),
-                    content: "test".into(),
-                    user_name: None,
-                    price: None,
-                    sc_duration: None,
-                },
-            });
+        let mut control = bus.subscribe();
+        let hot = RoomTopic::new("bilibili", "1");
+        let quiet = RoomTopic::new("twitch", "1");
+        let mut hot_sub = bus.subscribe_room(hot.clone());
+        let mut quiet_sub = bus.subscribe_room(quiet.clone());
+        bus.publish(preview(&quiet, 42));
+        for i in 0..10_000 {
+            bus.publish(preview(&hot, i));
         }
         bus.publish(AppEvent::DataChanged(DataChange::Videos));
         bus.publish(AppEvent::ProgressFinished {
@@ -136,25 +254,62 @@ mod tests {
             message: "done".into(),
         });
         assert_eq!(
-            subscription.recv().await.unwrap().client_event().name,
+            control.recv().await.unwrap().client_event().name,
             "videos-changed"
         );
         assert_eq!(
-            subscription.recv().await.unwrap().client_event().name,
+            control.recv().await.unwrap().client_event().name,
             "progress-finished:task"
         );
+        let quiet_event = quiet_sub.recv().await.unwrap().client_event();
+        assert_eq!(quiet_event.payload["ts"], 42);
+        assert_eq!(quiet_event.payload["platform"], "twitch");
+        let hot_event = hot_sub.recv().await.unwrap();
+        assert!(matches!(hot_event, AppEvent::Danmu { .. }));
         assert_eq!(
-            subscription.recv().await.unwrap().client_event().name,
-            "state-resync"
+            hot_event.client_event().payload["ts"],
+            10_000 - ROOM_STREAM_CAPACITY
         );
-        assert_eq!(
-            subscription.recv().await.unwrap().client_event().name,
-            "danmu"
-        );
+        assert!(matches!(
+            control.control.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
     }
 
     #[tokio::test]
-    async fn shutdown_closes_subscriptions() {
+    async fn control_overflow_still_requests_snapshot_reconciliation() {
+        let bus = EventBus::new();
+        let mut control = bus.subscribe();
+        for _ in 0..CONTROL_CAPACITY + 1 {
+            bus.publish(AppEvent::DataChanged(DataChange::Videos));
+        }
+        assert!(matches!(
+            control.recv().await.unwrap(),
+            AppEvent::DataChanged(DataChange::Resync)
+        ));
+        assert!(matches!(
+            control.recv().await.unwrap(),
+            AppEvent::DataChanged(DataChange::Videos)
+        ));
+    }
+
+    #[test]
+    fn room_buffers_exist_only_while_watched() {
+        let bus = EventBus::new();
+        let topic = RoomTopic::new("youtube", "@test");
+        bus.publish(preview(&topic, 1));
+        assert!(bus.rooms.lock().unwrap().is_empty());
+        let first = bus.subscribe_room(topic.clone());
+        let second = bus.subscribe_room(topic);
+        assert_eq!(bus.rooms.lock().unwrap().len(), 1);
+        drop(first);
+        assert_eq!(bus.rooms.lock().unwrap().len(), 1);
+        drop(second);
+        assert!(bus.rooms.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn shutdown_closes_control_subscriptions() {
         let bus = EventBus::new();
         let mut subscription = bus.subscribe();
         drop(bus);

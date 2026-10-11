@@ -5,8 +5,8 @@ pub mod entry;
 pub mod errors;
 pub mod events;
 pub mod platforms;
-pub mod traits;
 pub mod timeline;
+pub mod traits;
 pub mod utils;
 use crate::danmu::DanmuStorage;
 use crate::events::RecorderEvent;
@@ -19,7 +19,7 @@ use std::{
     sync::{atomic, Arc},
 };
 use tokio::{
-    sync::{broadcast, Mutex, RwLock},
+    sync::{Mutex, RwLock},
     task::JoinHandle,
 };
 
@@ -65,7 +65,8 @@ where
     /// The client for the recorder
     client: reqwest::Client,
     /// The event channel for the recorder
-    event_channel: broadcast::Sender<RecorderEvent>,
+    event_channel: crate::events::RecorderEventSender,
+    preview_sink: Arc<std::sync::RwLock<Option<events::PreviewEventSink>>>,
     /// The cache directory for the recorder
     cache_dir: PathBuf,
     /// Whether the recorder is quitting
@@ -114,7 +115,7 @@ impl<T: Send + Sync> Recorder<T> {
         room_id: &str,
         account: &Account,
         cache_dir: PathBuf,
-        event_channel: broadcast::Sender<RecorderEvent>,
+        event_channel: impl Into<crate::events::RecorderEventSender>,
         update_interval: Arc<atomic::AtomicU64>,
         enabled: bool,
         extra: T,
@@ -124,7 +125,8 @@ impl<T: Send + Sync> Recorder<T> {
             room_id: room_id.to_string(),
             account: account.clone(),
             client: reqwest::Client::new(),
-            event_channel,
+            event_channel: event_channel.into(),
+            preview_sink: Arc::new(std::sync::RwLock::new(None)),
             cache_dir,
             quit: Arc::new(atomic::AtomicBool::new(false)),
             enabled: Arc::new(atomic::AtomicBool::new(enabled)),
@@ -163,8 +165,22 @@ impl<T: Send + Sync> traits::RecorderBasicTrait for Recorder<T> {
         &self.client
     }
 
-    fn event_channel(&self) -> &broadcast::Sender<RecorderEvent> {
+    fn event_channel(&self) -> &crate::events::RecorderEventSender {
         &self.event_channel
+    }
+
+    fn set_preview_sink(&self, sink: events::PreviewEventSink) {
+        *self.preview_sink.write().unwrap() = Some(sink);
+    }
+
+    fn emit_preview_event(&self, event: RecorderEvent) {
+        let sink = self.preview_sink.read().unwrap().clone();
+        if let Some(sink) = sink {
+            sink(event);
+        } else {
+            // Preserve the library API for standalone consumers.
+            self.event_channel.send_preview(event);
+        }
     }
 
     fn cache_dir(&self) -> PathBuf {
@@ -296,6 +312,49 @@ impl Display for CachePath {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::traits::RecorderBasicTrait;
+
+    #[tokio::test]
+    async fn preview_sink_is_shared_by_recorder_clones_and_bypasses_lifecycle_queue() {
+        let (sender, mut receiver) = events::recorder_event_channel(1);
+        let recorder = Recorder::with_extra(
+            PlatformType::BiliBili,
+            "1",
+            &Account::default(),
+            PathBuf::from("/tmp"),
+            sender,
+            Arc::new(atomic::AtomicU64::new(30)),
+            true,
+            (),
+        );
+        let cloned = recorder.clone();
+        let count = Arc::new(atomic::AtomicUsize::new(0));
+        let observed = count.clone();
+        recorder.set_preview_sink(Arc::new(move |event| {
+            assert!(matches!(event, RecorderEvent::DanmuReceived { .. }));
+            observed.fetch_add(1, atomic::Ordering::Relaxed);
+        }));
+        for _ in 0..10_000 {
+            cloned.emit_preview_event(RecorderEvent::danmu_received("1".into(), 1, "hello", None));
+        }
+        assert_eq!(count.load(atomic::Ordering::Relaxed), 10_000);
+        cloned
+            .event_channel()
+            .send(RecorderEvent::ProgressFinished {
+                id: "task".into(),
+                success: true,
+                message: "done".into(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            receiver.recv().await,
+            Some(RecorderEvent::ProgressFinished { .. })
+        ));
+        drop(cloned);
+        drop(recorder);
+        assert!(receiver.recv().await.is_none());
+    }
 
     #[test]
     fn test_cache_path_relative_without_filename() {

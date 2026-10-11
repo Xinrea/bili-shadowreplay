@@ -1,3 +1,5 @@
+#[cfg(test)]
+use tokio::sync::broadcast;
 pub mod api;
 pub mod profile;
 pub mod response;
@@ -10,7 +12,7 @@ use std::sync::{atomic, Arc};
 use async_trait::async_trait;
 use chrono::Utc;
 use danmu_stream::provider::ProviderType;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::RwLock;
 
 use crate::account::Account;
 use crate::core::hls_recorder::HlsVariantSelection;
@@ -43,7 +45,7 @@ impl BiliRecorder {
         room_id: &str,
         account: &Account,
         cache_dir: PathBuf,
-        event_channel: broadcast::Sender<crate::events::RecorderEvent>,
+        event_channel: impl Into<crate::events::RecorderEventSender>,
         update_interval: Arc<AtomicU64>,
         enabled: bool,
         user_info_cache: Arc<dyn UserInfoCache>,
@@ -406,7 +408,10 @@ mod tests {
     async fn live_end_keeps_archive_ids_but_reports_stopped_recording() {
         let (recorder, mut rx) = recording_fixture().await;
         recorder.end_live().await;
-        let RecorderEvent::LiveEnd { recorder: ended, .. } = rx.try_recv().unwrap() else {
+        let RecorderEvent::LiveEnd {
+            recorder: ended, ..
+        } = rx.try_recv().unwrap()
+        else {
             panic!("expected a live end event")
         };
         assert_eq!(ended.platform_live_id, "session-1");

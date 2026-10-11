@@ -17,6 +17,7 @@ use recorder::account::Account;
 use recorder::danmu::{DanmuEntry, DanmuStorage};
 use recorder::errors::RecorderError;
 use recorder::events::RecorderEvent;
+use recorder::events::{recorder_event_channel, RecorderEventReceiver, RecorderEventSender};
 use recorder::platforms::bilibili::BiliRecorder;
 use recorder::platforms::douyin::DouyinRecorder;
 use recorder::platforms::douyu::DouyuRecorder;
@@ -42,7 +43,6 @@ use tauri_plugin_notification::NotificationExt;
 use thiserror::Error;
 use tokio::fs::{remove_file, write, File};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::broadcast;
 use tokio::sync::RwLock;
 
 #[cfg(not(feature = "headless"))]
@@ -100,7 +100,7 @@ pub struct RecorderManager {
     resource_dir: PathBuf,
     recorders: Arc<RwLock<HashMap<String, Arc<dyn RecorderTrait + Send + Sync>>>>,
     to_remove: Arc<RwLock<HashSet<String>>>,
-    event_tx: broadcast::Sender<RecorderEvent>,
+    event_tx: RecorderEventSender,
     is_migrating: Arc<AtomicBool>,
     webhook_poster: WebhookPoster,
 }
@@ -180,7 +180,7 @@ impl RecorderManager {
         resource_dir: PathBuf,
         webhook_poster: WebhookPoster,
     ) -> RecorderManager {
-        let (event_tx, _) = broadcast::channel(100);
+        let (event_tx, event_rx) = recorder_event_channel(512);
         let manager = RecorderManager {
             #[cfg(not(feature = "headless"))]
             app_handle,
@@ -199,7 +199,7 @@ impl RecorderManager {
         // Start event listener
         let manager_clone = manager.clone();
         tokio::spawn(async move {
-            manager_clone.handle_events().await;
+            manager_clone.handle_events(event_rx).await;
         });
 
         let manager_clone = manager.clone();
@@ -210,21 +210,12 @@ impl RecorderManager {
         manager
     }
 
-    pub fn get_event_sender(&self) -> broadcast::Sender<RecorderEvent> {
+    pub fn get_event_sender(&self) -> RecorderEventSender {
         self.event_tx.clone()
     }
 
-    async fn handle_events(&self) {
-        let mut rx = self.event_tx.subscribe();
-        loop {
-            let event = match rx.recv().await {
-                Ok(event) => event,
-                Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    log::warn!("Recorder event listener lagged; skipped {skipped} events");
-                    continue;
-                }
-                Err(broadcast::error::RecvError::Closed) => break,
-            };
+    async fn handle_events(&self, mut rx: RecorderEventReceiver) {
+        while let Some(event) = rx.recv().await {
             self.events.publish_recorder(&event);
             match event {
                 RecorderEvent::LiveStart { recorder } => {
@@ -670,6 +661,11 @@ impl RecorderManager {
                 })
             }
         };
+        let events = self.events.clone();
+        let topic = crate::events::RoomTopic::new(platform.as_str(), room_id);
+        recorder_boxed.set_preview_sink(Arc::new(move |event| {
+            events.publish_preview(&topic, &event);
+        }));
         let recorder: Arc<dyn RecorderTrait + Send + Sync> = Arc::from(recorder_boxed);
         self.recorders
             .write()

@@ -204,30 +204,44 @@ test("unmount discards timers and trailing refreshes while a request finishes", 
   assert.equal(f.timeouts.size, 0);
 });
 
-async function invokerFixture({ tauri = false } = {}) {
+async function invokerFixture({ tauri = false, invokeRoom = async () => null, nativeReady } = {}) {
   const socketHandlers = new Map();
   const tauriListeners = new Map();
+  const nativeOptions = new Map();
+  const roomCommands = [];
+  const sent = [];
+  const socket = {
+    connected: true,
+    on: (name, cb) => socketHandlers.set(name, cb),
+    onAny: (cb) => socketHandlers.set("*", cb),
+    emit: (name, payload) => sent.push({ name, payload: JSON.parse(JSON.stringify(payload)) }),
+    disconnect() {},
+  };
   const context = vm.createContext({
-    console: { log() {}, info() {}, error() {} },
+    console: { log() {}, info() {}, error() {} }, TextEncoder,
     window: tauri ? { __TAURI_INTERNALS__: {} } : {},
     localStorage: { getItem: () => "" },
     fetch: async () => ({ ok: true, json: async () => ({ code: 0, data: null }) }),
   });
   const dependencies = {
-    "@tauri-apps/api/core": { invoke: async () => null },
-    "@tauri-apps/api/webviewWindow": { getCurrentWebviewWindow: () => ({}) },
+    "@tauri-apps/api/core": { invoke: async (name, args) => {
+      if (name === "set_event_rooms") {
+        roomCommands.push(JSON.parse(JSON.stringify(args.rooms)));
+        return invokeRoom(args.rooms);
+      }
+      return null;
+    } },
+    "@tauri-apps/api/webviewWindow": { getCurrentWebviewWindow: () => ({ label: "preview" }) },
     "@tauri-apps/plugin-http": { fetch: async () => ({}) },
-    "@tauri-apps/api/event": { listen: async (name, cb) => {
+    "@tauri-apps/api/event": { listen: async (name, cb, options) => {
       tauriListeners.set(name, cb);
+      nativeOptions.set(name, options);
+      if (nativeReady) await nativeReady.promise;
       return () => tauriListeners.delete(name);
     } },
     "@tauri-apps/plugin-shell": { open: async () => {} },
     "@tauri-apps/plugin-deep-link": { onOpenUrl: async () => {} },
-    "socket.io-client": { io: () => ({
-      on: (name, cb) => socketHandlers.set(name, cb),
-      onAny: (cb) => socketHandlers.set("*", cb),
-      disconnect() {},
-    }) },
+    "socket.io-client": { io: () => socket },
   };
   const source = await readFile(new URL("../../src/lib/invoker.ts", import.meta.url), "utf8");
   const { outputText } = ts.transpileModule(source, { compilerOptions: {
@@ -247,7 +261,7 @@ async function invokerFixture({ tauri = false } = {}) {
     }, { context });
   });
   await module.evaluate();
-  return { api: module.namespace, socketHandlers, tauriListeners };
+  return { api: module.namespace, socketHandlers, tauriListeners, nativeOptions, sent, socket, roomCommands };
 }
 
 test("Web events reach the same listen API and each connect triggers reconciliation", async () => {
@@ -301,17 +315,119 @@ test("one dispatch path handles scoped progress, legacy progress and new event t
 test("failing listeners and independent duplicate registrations do not disrupt dispatch", async () => {
   const f = await invokerFixture();
   let calls = 0;
-  await f.api.listen("danmu", () => { throw new Error("broken listener"); });
+  await f.api.listen("custom-event", () => { throw new Error("broken listener"); });
   const callback = () => { calls++; };
-  const first = await f.api.listen("danmu", callback);
-  const second = await f.api.listen("danmu", callback);
-  f.socketHandlers.get("*")("danmu", {});
+  const first = await f.api.listen("custom-event", callback);
+  const second = await f.api.listen("custom-event", callback);
+  f.socketHandlers.get("*")("custom-event", {});
   assert.equal(calls, 2);
   first();
   first();
-  f.socketHandlers.get("*")("danmu", {});
+  f.socketHandlers.get("*")("custom-event", {});
   assert.equal(calls, 3);
   second();
-  f.socketHandlers.get("*")("danmu", {});
+  f.socketHandlers.get("*")("custom-event", {});
   assert.equal(calls, 3);
+});
+
+const topicName = ({ platform, room }) => `danmu:${platform}:${Buffer.from(room).toString("hex")}`;
+
+test("room subscriptions are shared locally and route by platform as well as room", async () => {
+  const f = await invokerFixture();
+  const room = { platform: "youtube", room: "@same:中文" };
+  const other = { ...room, platform: "twitch" };
+  let firstCalls = 0;
+  let secondCalls = 0;
+  let otherCalls = 0;
+  const first = await f.api.listen("danmu", () => { firstCalls++; }, room);
+  const second = await f.api.listen("danmu", () => { secondCalls++; }, room);
+  assert.deepEqual(f.sent, [{ name: "event-rooms", payload: [room] }]);
+  const stopOther = await f.api.listen("danmu", () => { otherCalls++; }, other);
+  assert.deepEqual(f.sent.at(-1).payload, [room, other]);
+  f.socketHandlers.get("*")(topicName(room), { ...room, content: "hello" });
+  assert.equal(firstCalls, 1);
+  assert.equal(secondCalls, 1);
+  assert.equal(otherCalls, 0);
+  const sends = f.sent.length;
+  first();
+  first();
+  assert.equal(f.sent.length, sends);
+  f.socketHandlers.get("*")(topicName(room), {});
+  assert.equal(firstCalls, 1);
+  assert.equal(secondCalls, 2);
+  second();
+  assert.deepEqual(f.sent.at(-1).payload, [other]);
+  stopOther();
+  assert.deepEqual(f.sent.at(-1).payload, []);
+  await assert.rejects(f.api.listen("danmu", () => {}), /require a platform and room/);
+});
+
+test("reconnection sends only current room subscriptions, including changes while offline", async () => {
+  const f = await invokerFixture();
+  const room = { platform: "bilibili", room: "1" };
+  const stop = await f.api.listen("danmu", () => {}, room);
+  f.socket.connected = false;
+  const sent = f.sent.length;
+  stop();
+  const current = { ...room, room: "2" };
+  await f.api.listen("danmu", () => {}, current);
+  assert.equal(f.sent.length, sent);
+  f.socket.connected = true;
+  f.socketHandlers.get("connect")();
+  assert.deepEqual(f.sent.at(-1), { name: "event-rooms", payload: [current] });
+  f.socketHandlers.get("connect")();
+  assert.deepEqual(f.sent.at(-1).payload, [current]);
+});
+
+test("desktop room events target the current window and commands preserve subscribe/unsubscribe order", async () => {
+  const held = deferred();
+  const f = await invokerFixture({ tauri: true, invokeRoom: async (rooms) => {
+    if (rooms.length && rooms[0].room === "1") await held.promise;
+  } });
+  const room = { platform: "bilibili", room: "1" };
+  const pending = f.api.listen("danmu", () => {}, room);
+  await settle();
+  assert.equal(f.tauriListeners.size, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(f.nativeOptions.get(topicName(room)))), {
+    target: { kind: "WebviewWindow", label: "preview" },
+  });
+  const other = { ...room, room: "2" };
+  const otherPending = f.api.listen("danmu", () => {}, other);
+  held.resolve();
+  const [stop, stopOther] = await Promise.all([pending, otherPending]);
+  stop();
+  stopOther();
+  await settle();
+  assert.deepEqual(f.roomCommands, [[], [room], [room, other], [other], []]);
+  assert.equal(f.tauriListeners.size, 0);
+});
+
+test("desktop subscription failure removes the listener and permits later subscriptions", async () => {
+  let fail = true;
+  const f = await invokerFixture({ tauri: true, invokeRoom: async (rooms) => {
+    if (rooms.length && fail) { fail = false; throw new Error("window unavailable"); }
+  } });
+  const room = { platform: "youtube", room: "@test" };
+  await assert.rejects(f.api.listen("danmu", () => {}, room), /window unavailable/);
+  await settle();
+  assert.equal(f.tauriListeners.size, 0);
+  const stop = await f.api.listen("danmu", () => {}, room);
+  stop();
+  await settle();
+  assert.deepEqual(f.roomCommands.at(-1), []);
+});
+
+test("native listener setup finishes before desktop preview forwarding begins", async () => {
+  const nativeReady = deferred();
+  const f = await invokerFixture({ tauri: true, nativeReady });
+  const room = { platform: "bilibili", room: "1" };
+  const pending = f.api.listen("danmu", () => {}, room);
+  await settle();
+  assert.deepEqual(f.roomCommands, [[]]);
+  nativeReady.resolve();
+  const stop = await pending;
+  assert.deepEqual(f.roomCommands, [[], [room]]);
+  stop();
+  await settle();
+  assert.deepEqual(f.roomCommands.at(-1), []);
 });

@@ -259,9 +259,12 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
 
                     if poll.live {
                         self.on_live_start().await;
-                        let _ = self.event_channel().send(RecorderEvent::LiveStart {
-                            recorder: self.info().await,
-                        });
+                        let _ = self
+                            .event_channel()
+                            .send(RecorderEvent::LiveStart {
+                                recorder: self.info().await,
+                            })
+                            .await;
                     } else {
                         self.end_live().await;
                     }
@@ -323,11 +326,14 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
         let mut ended = self.info().await;
         self.reset_live().await;
         ended.recording = false;
-        let _ = self.event_channel().send(RecorderEvent::LiveEnd {
-            platform: self.platform(),
-            room_id: self.room_id(),
-            recorder: ended,
-        });
+        let _ = self
+            .event_channel()
+            .send(RecorderEvent::LiveEnd {
+                platform: self.platform(),
+                room_id: self.room_id(),
+                recorder: ended,
+            })
+            .await;
     }
 
     /// Select the app recording id for this attempt. Reuse it only if a
@@ -383,9 +389,12 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
         self.is_recording().store(true, Ordering::Relaxed);
 
         // Send record start event
-        let _ = self.event_channel().send(RecorderEvent::RecordStart {
-            recorder: self.info().await,
-        });
+        let _ = self
+            .event_channel()
+            .send(RecorderEvent::RecordStart {
+                recorder: self.info().await,
+            })
+            .await;
 
         match pull {
             StreamPull::Hls {
@@ -487,7 +496,7 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                                 if let Some(received) =
                                     RecorderEvent::danmu_received_from_event(room_id.clone(), &event)
                                 {
-                                    let _ = self.event_channel().send(received);
+                                    self.emit_preview_event(received);
                                 }
                                 if let Some(storage) = self.danmu_storage().write().await.as_ref() {
                                     if let Err(error) = storage.add_event(event).await {
@@ -500,7 +509,7 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                                 if let Some(received) =
                                     RecorderEvent::danmu_received_from_event(room_id.clone(), &event)
                                 {
-                                    let _ = self.event_channel().send(received);
+                                    self.emit_preview_event(received);
                                 }
                                 if let Some(storage) = self.danmu_storage().write().await.as_ref() {
                                     if let Err(error) = storage.add_event(event).await {
@@ -592,9 +601,10 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                         // Keep the ended archive's ID in the event, but publish
                         // only after the queryable recorder state is reset.
                         ended.recording = false;
-                        let _ = recorder.event_channel().send(RecorderEvent::RecordEnd {
-                            recorder: ended,
-                        });
+                        let _ = recorder
+                            .event_channel()
+                            .send(RecorderEvent::RecordEnd { recorder: ended })
+                            .await;
                     }
 
                     // An expired stream resumes immediately with a fresh one.

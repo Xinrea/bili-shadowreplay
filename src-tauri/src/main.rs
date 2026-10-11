@@ -799,6 +799,9 @@ fn remove_legacy_macos_launch_agent() {
 #[cfg(feature = "gui")]
 fn setup_event_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder.on_window_event(|window, event| {
+        if let WindowEvent::Destroyed = event {
+            window.state::<State>().events.remove_window(window.label());
+        }
         if let WindowEvent::CloseRequested { api, .. } = event {
             // main window is not closable
             if window.label() == "main" {
@@ -814,6 +817,7 @@ fn setup_event_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<t
 #[cfg(feature = "gui")]
 fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder.invoke_handler(tauri::generate_handler![
+        crate::handlers::events::set_event_rooms,
         crate::handlers::account::get_accounts,
         crate::handlers::account::add_account,
         crate::handlers::account::remove_account,

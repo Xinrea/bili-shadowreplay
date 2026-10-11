@@ -9,6 +9,7 @@ export type RoomTopic = { platform: string; room: string };
 type RoomRegistration = { topic: RoomTopic; count: number; ready: Promise<void> };
 const MAX_ROOM_TOPICS = 32;
 const ROOM_ACK_TIMEOUT_MS = 5_000;
+type RoomSync = { promise: Promise<void>; resolve: () => void; reject: (error: unknown) => void };
 
 function roomEventName({ platform, room }: RoomTopic) {
   const hex = [...new TextEncoder().encode(room)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -28,7 +29,9 @@ export function createEventClient({ tauri, endpoint }: { tauri: boolean; endpoin
   const listeners = new Map<string, Set<Listener>>();
   const rooms = new Map<string, RoomRegistration>();
   let roomUpdates = Promise.resolve();
-  let offlineRoomUpdate: { promise: Promise<void>; resolve: () => void; reject: (error: unknown) => void } | null = null;
+  let webRoomSync: RoomSync | null = null;
+  let webRoomRevision = 0;
+  let webRoomFlight: { revision: number } | null = null;
 
   function deliver<T>(event: string, callback: (event: AppEvent<T>) => void, message: AppEvent<T>) {
     try {
@@ -48,29 +51,52 @@ export function createEventClient({ tauri, endpoint }: { tauri: boolean; endpoin
     reconnection: true,
   });
 
-  function syncRooms(force = false): Promise<void> {
+  function flushWebRooms() {
+    if (!socket.connected || webRoomFlight) return;
+    const flight = { revision: webRoomRevision };
+    webRoomFlight = flight;
+    // Read the current set when sending, not when an update was queued.
     const topics = [...rooms.values()].map(({ topic }) => topic);
+    void socket.timeout(ROOM_ACK_TIMEOUT_MS).emitWithAck("event-rooms", topics).then((response) => {
+      if (response?.ok !== true) throw new Error(response?.error || "Room subscription was rejected");
+    }).then(() => finish(), (error) => finish({ error }));
+
+    function finish(failure?: { error: unknown }) {
+      // Disconnect/reconnect invalidates the flight, including its late ACK.
+      if (webRoomFlight !== flight) return;
+      webRoomFlight = null;
+      if (!socket.connected) return;
+      if (flight.revision !== webRoomRevision) {
+        flushWebRooms();
+        return;
+      }
+      const pending = webRoomSync;
+      webRoomSync = null;
+      if (!failure) pending?.resolve();
+      else pending?.reject(failure.error);
+    }
+  }
+
+  function syncRooms(): Promise<void> {
     if (tauri) {
+      const topics = [...rooms.values()].map(({ topic }) => topic);
       // Serialize desktop commands so a late subscribe cannot undo an unlisten.
       roomUpdates = roomUpdates.catch(() => {}).then(() => tauriInvoke<void>("set_event_rooms", { rooms: topics }));
       return roomUpdates;
     }
-    // Offline changes are represented by the current set, never a queued series
-    // of stale subscribe/unsubscribe packets replayed on reconnection.
-    if (force || socket.connected) {
-      return socket.timeout(ROOM_ACK_TIMEOUT_MS).emitWithAck("event-rooms", topics).then((response) => {
-        if (response?.ok !== true) throw new Error(response?.error || "Room subscription was rejected");
-      });
-    }
-    // Pending listeners become ready only after reconnect confirms the current
-    // set. No stale packets are queued in Socket.IO's offline send buffer.
-    if (!offlineRoomUpdate) {
+    // Readiness belongs to convergence of the current set, not to an individual
+    // packet. One flight per connection serializes changes; a new connection
+    // immediately starts a fresh flight without waiting for obsolete ACKs.
+    webRoomRevision++;
+    if (!webRoomSync) {
       let resolve!: () => void;
       let reject!: (error: unknown) => void;
       const promise = new Promise<void>((done, fail) => { resolve = done; reject = fail; });
-      offlineRoomUpdate = { promise, resolve, reject };
+      webRoomSync = { promise, resolve, reject };
     }
-    return offlineRoomUpdate.promise;
+    const ready = webRoomSync.promise;
+    flushWebRooms();
+    return ready;
   }
 
   function reportRoomError(error: unknown) {
@@ -81,14 +107,13 @@ export function createEventClient({ tauri, endpoint }: { tauri: boolean; endpoin
   if (tauri) void syncRooms().catch(reportRoomError);
 
   socket?.on("connect", () => {
-    const pending = offlineRoomUpdate;
-    offlineRoomUpdate = null;
-    void syncRooms(true).then(() => pending?.resolve(), (error) => {
-      pending?.reject(error);
-      reportRoomError(error);
-    });
+    webRoomFlight = null;
+    void syncRooms().catch(reportRoomError);
     // A snapshot repairs server events missed before connecting or reconnecting.
     dispatch("state-resync", null);
+  });
+  socket?.on("disconnect", () => {
+    webRoomFlight = null;
   });
   socket?.on("connect_error", (error) => {
     console.error("[Events] Connection error:", error);
@@ -152,7 +177,7 @@ export function createEventClient({ tauri, endpoint }: { tauri: boolean; endpoin
       stopped = true;
       if (onAbort) signal?.removeEventListener("abort", onAbort);
       unlisten();
-      if (registration && --registration.count === 0) {
+      if (registration && --registration.count === 0 && rooms.get(name) === registration) {
         rooms.delete(name);
         void syncRooms().catch(reportRoomError);
       }

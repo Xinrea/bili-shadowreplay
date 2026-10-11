@@ -230,7 +230,7 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
 
         match self.poll_room().await {
             Ok(poll) => {
-                let metadata_changed = previous_room.room_title != poll.room_title
+                let mut metadata_changed = previous_room.room_title != poll.room_title
                     || previous_room.room_cover != poll.room_cover;
                 *self.room_info().write().await = RoomInfo {
                     platform: platform.to_string(),
@@ -240,7 +240,12 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                     status: poll.live,
                 };
                 if let Some(user) = poll.user {
-                    *self.user_info().write().await = user;
+                    let user_info = self.user_info();
+                    let mut current = user_info.write().await;
+                    metadata_changed |= current.user_id != user.user_id
+                        || current.user_name != user.user_name
+                        || current.user_avatar != user.user_avatar;
+                    *current = user;
                 }
                 if metadata_changed && pre_live_status == poll.live {
                     let _ = self
@@ -681,7 +686,7 @@ mod tests {
     use tokio::sync::RwLock;
 
     #[derive(Clone)]
-    struct Metadata(Arc<RwLock<(String, String)>>);
+    struct Metadata(Arc<RwLock<(String, String, Option<UserInfo>)>>);
 
     #[async_trait]
     impl RecorderTrait for Recorder<Metadata> {
@@ -691,12 +696,12 @@ mod tests {
     #[async_trait]
     impl PlatformApi for Recorder<Metadata> {
         async fn poll_room(&self) -> Result<RoomPoll, RecorderError> {
-            let (title, cover) = self.extra.0.read().await.clone();
+            let (title, cover, user) = self.extra.0.read().await.clone();
             Ok(RoomPoll {
                 live: true,
                 room_title: title,
                 room_cover: cover,
-                user: None,
+                user,
                 platform_live_id: None,
             })
         }
@@ -712,7 +717,11 @@ mod tests {
     #[tokio::test]
     async fn metadata_changes_notify_after_state_is_queryable_without_live_transition() {
         let (tx, mut rx) = recorder_event_channel(4);
-        let metadata = Metadata(Arc::new(RwLock::new(("title".into(), "cover".into()))));
+        let metadata = Metadata(Arc::new(RwLock::new((
+            "title".into(),
+            "cover".into(),
+            None,
+        ))));
         let recorder = Recorder::with_extra(
             PlatformType::Twitch,
             "room",
@@ -733,7 +742,7 @@ mod tests {
         assert!(tokio::time::timeout(Duration::from_millis(20), rx.recv())
             .await
             .is_err());
-        *metadata.0.write().await = ("new title".into(), "new cover".into());
+        *metadata.0.write().await = ("new title".into(), "new cover".into(), None);
         recorder.check_live().await;
         assert!(matches!(
             rx.recv().await,
@@ -743,5 +752,28 @@ mod tests {
         assert!(info.room_info.status);
         assert_eq!(info.room_info.room_title, "new title");
         assert_eq!(info.room_info.room_cover, "new cover");
+        metadata.0.write().await.2 = Some(UserInfo {
+            user_id: "user".into(),
+            user_name: "new name".into(),
+            user_avatar: "new avatar".into(),
+        });
+        recorder.check_live().await;
+        assert!(matches!(
+            rx.recv().await,
+            Some(RecorderEvent::RoomMetadataUpdated)
+        ));
+        let info = recorder.info().await;
+        assert_eq!(info.user_info.user_name, "new name");
+        assert_eq!(info.user_info.user_avatar, "new avatar");
+        recorder.check_live().await;
+        assert!(tokio::time::timeout(Duration::from_millis(20), rx.recv())
+            .await
+            .is_err());
+        metadata.0.write().await.2 = None;
+        recorder.check_live().await;
+        assert!(tokio::time::timeout(Duration::from_millis(20), rx.recv())
+            .await
+            .is_err());
+        assert_eq!(recorder.info().await.user_info.user_name, "new name");
     }
 }

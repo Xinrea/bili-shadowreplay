@@ -14,6 +14,7 @@
     Range,
   } from "../interface";
   import { formatScPrice, getScColors } from "../superchat";
+  import { keepEventSubscription } from "../event-subscription";
 
   import { save } from "@tauri-apps/plugin-dialog";
   import {
@@ -682,7 +683,7 @@ ${mediaPlaylistUrl}`;
       }, DANMU_FLUSH_INTERVAL_MS);
       cancelDanmuBatch = () => danmuBatcher.cancel();
       if (destroyed) return;
-      const unlisten = await listen("danmu", (event) => {
+      stopDanmu = keepEventSubscription((signal) => listen("danmu", (event) => {
         if (destroyed) return;
         if (global_offset == 0) {
           return;
@@ -705,18 +706,10 @@ ${mediaPlaylistUrl}`;
         danmu_displayed[event.payload.ts] = true;
         danmuBatcher.push(danmu_record);
         renderFloatingEntry(danmu_record);
-      }, { platform, room: room_id }, danmuSubscription.signal).catch((error) => {
+      }, { platform, room: room_id }, signal), danmuSubscription.signal, (error) => {
         danmuBatcher.cancel();
-        if (!destroyed) throw error;
-        return undefined;
+        log.error("弹幕订阅失败，将重试:", error);
       });
-      if (!unlisten) return;
-      if (destroyed) {
-        unlisten();
-        danmuBatcher.cancel();
-        return;
-      }
-      stopDanmu = unlisten;
     }
 
     // create a danmaku toggle button

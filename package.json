@@ -10,7 +10,7 @@
     "icons": "node scripts/generate-icons.mjs",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "test:agent": "node --experimental-vm-modules --test scripts/tests/agent-attachments.test.mjs",
-    "test:state-refresh": "node --experimental-vm-modules --test scripts/tests/state-refresh.test.mjs",
+    "test:state-refresh": "node --experimental-vm-modules --test scripts/tests/state-refresh.test.mjs scripts/tests/event-subscription.test.mjs",
     "test:live-preview": "node --experimental-vm-modules --test scripts/tests/live-preview-perf.test.mjs",
     "tauri": "tauri",
     "docs:dev": "vitepress dev docs",

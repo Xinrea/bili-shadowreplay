@@ -6,9 +6,9 @@ import ts from "typescript";
 
 const settle = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
 const deferred = () => {
-  let resolve;
-  const promise = new Promise((done) => { resolve = done; });
-  return { promise, resolve };
+  let resolve, reject;
+  const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 };
 
 async function fixture({ delayedSubscriptions = false } = {}) {
@@ -365,6 +365,7 @@ test("room subscriptions are shared locally and route by platform as well as roo
   second();
   assert.deepEqual(f.sent.at(-1).payload, [other]);
   stopOther();
+  await settle();
   assert.deepEqual(f.sent.at(-1).payload, []);
   await assert.rejects(f.api.listen("danmu", () => {}), /require a platform and room/);
 });
@@ -466,11 +467,95 @@ test("cancelling pending ACK removes the topic even if the ACK arrives later", a
   const pending = f.api.listen("danmu", () => { calls++; }, room, controller.signal);
   controller.abort();
   await assert.rejects(pending, /aborted/);
-  assert.deepEqual(f.sent.at(-1).payload, []);
   held.resolve({ ok: true });
   await settle();
+  assert.deepEqual(f.sent.at(-1).payload, []);
   f.socketHandlers.get("*")(topicName(room), {});
   assert.equal(calls, 0);
+});
+
+for (const oldFailure of ["before reconnect", "before new ACK", "after new ACK"]) {
+  test(`reconnect preserves pending shared listeners when obsolete ACK fails ${oldFailure}`, async () => {
+    const oldAck = deferred();
+    const newAck = deferred();
+    let attempts = 0;
+    const f = await invokerFixture({ ackRoom: (rooms) => {
+      if (!rooms.length) return Promise.resolve({ ok: true });
+      return ++attempts === 1 ? oldAck.promise : newAck.promise;
+    } });
+    const room = { platform: "bilibili", room: "1" };
+    let calls = 0, ready = 0;
+    const first = f.api.listen("danmu", () => { calls++; }, room).then((stop) => { ready++; return stop; });
+    const second = f.api.listen("danmu", () => { calls++; }, room).then((stop) => { ready++; return stop; });
+    f.socket.connected = false;
+    f.socketHandlers.get("disconnect")();
+    if (oldFailure === "before reconnect") {
+      oldAck.reject(new Error("socket has been disconnected"));
+      await settle();
+      assert.equal(ready, 0);
+    }
+    f.socket.connected = true;
+    f.socketHandlers.get("connect")();
+    assert.deepEqual(f.sent.map(({ payload }) => payload), [[room], [room]]);
+    if (oldFailure === "before new ACK") {
+      oldAck.reject(new Error("obsolete ACK timeout"));
+      await settle();
+      assert.equal(ready, 0);
+    }
+    newAck.resolve({ ok: true });
+    const [stop, stopOther] = await Promise.all([first, second]);
+    if (oldFailure === "after new ACK") oldAck.reject(new Error("obsolete ACK timeout"));
+    await settle();
+    assert.equal(f.sent.length, 2);
+    f.socketHandlers.get("*")(topicName(room), {});
+    assert.equal(calls, 2);
+    stop();
+    assert.equal(f.sent.length, 2);
+    stopOther();
+    await settle();
+    assert.deepEqual(f.sent.at(-1).payload, []);
+  });
+}
+
+test("serial room updates use the latest set and omit cancelled queued topics", async () => {
+  const ack = deferred();
+  let attempts = 0;
+  const f = await invokerFixture({ ackRoom: () => ++attempts === 1 ? ack.promise : Promise.resolve({ ok: true }) });
+  const room = { platform: "bilibili", room: "1" };
+  const other = { ...room, room: "2" };
+  const first = f.api.listen("danmu", () => {}, room);
+  const controller = new AbortController();
+  const second = f.api.listen("danmu", () => {}, other, controller.signal);
+  assert.equal(f.sent.length, 1);
+  controller.abort();
+  await assert.rejects(second, /aborted/);
+  ack.resolve({ ok: true });
+  const stop = await first;
+  assert.deepEqual(f.sent.map(({ payload }) => payload), [[room], [room]]);
+  stop();
+});
+
+test("multiple reconnects ignore obsolete success and error ACKs", async () => {
+  const acks = [deferred(), deferred(), deferred()];
+  let attempts = 0;
+  const f = await invokerFixture({ ackRoom: (rooms) => rooms.length ? acks[attempts++].promise : Promise.resolve({ ok: true }) });
+  const room = { platform: "bilibili", room: "1" };
+  let ready = false;
+  const pending = f.api.listen("danmu", () => {}, room).then((stop) => { ready = true; return stop; });
+  for (let i = 0; i < 2; i++) {
+    f.socket.connected = false;
+    f.socketHandlers.get("disconnect")();
+    f.socket.connected = true;
+    f.socketHandlers.get("connect")();
+  }
+  acks[0].resolve({ ok: true });
+  acks[1].reject(new Error("obsolete failure"));
+  await settle();
+  assert.equal(ready, false);
+  acks[2].resolve({ ok: true });
+  const stop = await pending;
+  assert.equal(f.sent.length, 3);
+  stop();
 });
 
 test("preview topic limit also applies offline without rejecting shared listeners", async () => {

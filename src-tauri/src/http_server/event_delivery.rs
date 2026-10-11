@@ -24,11 +24,14 @@ impl EventDelivery {
         &self,
         mut emit: impl FnMut() -> Result<(), SendError>,
     ) -> Result<(), SendError> {
-        self.control_pending.store(true, Ordering::Release);
-        let _guard = ControlGuard(self.control_pending.clone());
+        let mut guard = None;
         loop {
             match emit() {
                 Err(SendError::Socket(SocketError::InternalChannelFull)) => {
+                    if guard.is_none() {
+                        self.control_pending.store(true, Ordering::Release);
+                        guard = Some(ControlGuard(self.control_pending.clone()));
+                    }
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 }
                 result => return result,
@@ -61,6 +64,37 @@ impl EventDelivery {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn successful_control_does_not_pause_preview() {
+        let delivery = EventDelivery::default();
+        delivery
+            .control(|| {
+                assert!(!delivery.control_pending.load(Ordering::Acquire));
+                delivery.preview(|| Ok(())).unwrap();
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(delivery.preview_dropped.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn cancelled_control_releases_preview_pause() {
+        let delivery = EventDelivery::default();
+        {
+            let control =
+                delivery.control(|| Err(SendError::Socket(SocketError::InternalChannelFull)));
+            tokio::pin!(control);
+            tokio::select! {
+                _ = &mut control => panic!("Control must wait for capacity"),
+                _ = tokio::task::yield_now() => {}
+            }
+            assert!(delivery.control_pending.load(Ordering::Acquire));
+        }
+        assert!(!delivery.control_pending.load(Ordering::Acquire));
+        delivery.preview(|| Ok(())).unwrap();
+    }
 
     #[tokio::test]
     async fn full_socket_retries_control_and_pauses_preview_until_delivery() {

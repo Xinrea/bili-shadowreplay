@@ -205,6 +205,8 @@ test("unmount discards timers and trailing refreshes while a request finishes", 
 });
 
 async function invokerFixture({ tauri = false, invokeRoom = async () => null, nativeReady, ackRoom = async () => ({ ok: true }) } = {}) {
+  const retryTimers = new Map();
+  let timerId = 0;
   const socketHandlers = new Map();
   const tauriListeners = new Map();
   const nativeOptions = new Map();
@@ -226,6 +228,8 @@ async function invokerFixture({ tauri = false, invokeRoom = async () => null, na
   };
   const context = vm.createContext({
     console: { log() {}, info() {}, error() {} }, TextEncoder,
+    setTimeout: (callback, ms) => { retryTimers.set(++timerId, { callback, ms }); return timerId; },
+    clearTimeout: (id) => retryTimers.delete(id),
     window: tauri ? { __TAURI_INTERNALS__: {} } : {},
     localStorage: { getItem: () => "" },
     fetch: async () => ({ ok: true, json: async () => ({ code: 0, data: null }) }),
@@ -268,7 +272,15 @@ async function invokerFixture({ tauri = false, invokeRoom = async () => null, na
     }, { context });
   });
   await module.evaluate();
-  return { api: module.namespace, socketHandlers, tauriListeners, nativeOptions, sent, socket, roomCommands };
+  return { api: module.namespace, socketHandlers, tauriListeners, nativeOptions, sent, socket, roomCommands, retryTimers,
+    async retryRooms() {
+      assert.equal(retryTimers.size, 1);
+      const [[id, { callback }]] = retryTimers;
+      retryTimers.delete(id);
+      callback();
+      await settle();
+    },
+  };
 }
 
 test("Web events reach the same listen API and each connect triggers reconciliation", async () => {
@@ -556,6 +568,139 @@ test("multiple reconnects ignore obsolete success and error ACKs", async () => {
   const stop = await pending;
   assert.equal(f.sent.length, 3);
   stop();
+});
+
+for (const failure of ["timeout", "rejection"]) {
+  test(`established shared listeners recover after reconnect ACK ${failure}`, async () => {
+    let attempts = 0, serverRooms = [];
+    const f = await invokerFixture({ ackRoom: async (rooms) => {
+      if (++attempts === 2) {
+        if (failure === "timeout") throw new Error("ACK timed out");
+        return { ok: false, error: "Temporary subscription failure" };
+      }
+      serverRooms = JSON.parse(JSON.stringify(rooms));
+      return { ok: true };
+    } });
+    const room = { platform: "bilibili", room: "1" };
+    let calls = 0;
+    const first = await f.api.listen("danmu", () => { calls++; }, room);
+    const second = await f.api.listen("danmu", () => { calls++; }, room);
+    f.socket.connected = false;
+    f.socketHandlers.get("disconnect")();
+    serverRooms = [];
+    f.socket.connected = true;
+    f.socketHandlers.get("connect")();
+    await settle();
+    assert.deepEqual(serverRooms, []);
+    assert.equal(f.retryTimers.size, 1, "A failed reconnect must schedule room recovery");
+    assert.equal([...f.retryTimers.values()][0].ms, 1_000);
+    await f.retryRooms();
+    assert.deepEqual(serverRooms, [room]);
+    assert.deepEqual(f.sent.map(({ payload }) => payload), [[room], [room], [room]]);
+    assert.equal(f.retryTimers.size, 0);
+    f.socketHandlers.get("*")(topicName(serverRooms[0]), {});
+    assert.equal(calls, 2);
+    first(); second();
+    await settle();
+    assert.deepEqual(serverRooms, []);
+  });
+}
+
+test("room recovery backs off to 30 seconds and disconnect cancels the retry", async () => {
+  let fail = false;
+  const f = await invokerFixture({ ackRoom: async () => {
+    if (fail) throw new Error("ACK timeout");
+    return { ok: true };
+  } });
+  const room = { platform: "bilibili", room: "1" };
+  const stop = await f.api.listen("danmu", () => {}, room);
+  fail = true;
+  f.socketHandlers.get("connect")();
+  await settle();
+  for (const delay of [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000]) {
+    assert.equal([...f.retryTimers.values()][0].ms, delay);
+    await f.retryRooms();
+  }
+  f.socket.connected = false;
+  f.socketHandlers.get("disconnect")();
+  assert.equal(f.retryTimers.size, 0);
+  const sent = f.sent.length;
+  fail = false;
+  f.socket.connected = true;
+  f.socketHandlers.get("connect")();
+  await settle();
+  assert.equal(f.sent.length, sent + 1);
+  assert.equal(f.retryTimers.size, 0);
+  // A new failure after recovery starts at the initial delay again.
+  fail = true;
+  f.socketHandlers.get("connect")();
+  await settle();
+  assert.equal([...f.retryTimers.values()][0].ms, 1_000);
+  stop();
+  await settle();
+  assert.equal(f.retryTimers.size, 0);
+});
+
+test("unmounting the last established listener cancels reconnect recovery", async () => {
+  let attempts = 0;
+  const f = await invokerFixture({ ackRoom: async (rooms) =>
+    ++attempts > 1 && rooms.length ? { ok: false, error: "Unavailable" } : { ok: true } });
+  const room = { platform: "bilibili", room: "1" };
+  const first = await f.api.listen("danmu", () => {}, room);
+  const second = await f.api.listen("danmu", () => {}, room);
+  f.socketHandlers.get("connect")();
+  await settle();
+  first();
+  assert.equal(f.retryTimers.size, 1);
+  second();
+  await settle();
+  assert.equal(f.retryTimers.size, 0);
+  assert.deepEqual(f.sent.at(-1).payload, []);
+});
+
+test("subscription changes cancel scheduled recovery and synchronize the latest set", async () => {
+  let fail = false;
+  const f = await invokerFixture({ ackRoom: async () => fail
+    ? { ok: false, error: "Unavailable" } : { ok: true } });
+  const room = { platform: "bilibili", room: "1" };
+  const stop = await f.api.listen("danmu", () => {}, room);
+  fail = true;
+  f.socketHandlers.get("connect")();
+  await settle();
+  assert.equal(f.retryTimers.size, 1);
+  fail = false;
+  const other = { ...room, room: "2" };
+  const stopOther = await f.api.listen("danmu", () => {}, other);
+  assert.equal(f.retryTimers.size, 0);
+  assert.deepEqual(f.sent.at(-1).payload, [room, other]);
+  stop(); stopOther();
+  await settle();
+  assert.deepEqual(f.sent.at(-1).payload, []);
+});
+
+test("a late recovery failure after unmount only reconciles the empty set", async () => {
+  const recovery = deferred();
+  let attempts = 0;
+  const f = await invokerFixture({ ackRoom: async (rooms) => {
+    if (!rooms.length) return { ok: true };
+    if (++attempts === 2) throw new Error("Reconnect ACK timeout");
+    if (attempts === 3) return recovery.promise;
+    return { ok: true };
+  } });
+  const room = { platform: "bilibili", room: "1" };
+  let calls = 0;
+  const stop = await f.api.listen("danmu", () => { calls++; }, room);
+  f.socketHandlers.get("connect")();
+  await settle();
+  await f.retryRooms();
+  stop();
+  assert.equal(f.sent.length, 3);
+  recovery.reject(new Error("Late ACK timeout"));
+  await settle();
+  assert.deepEqual(f.sent.at(-1).payload, []);
+  assert.equal(f.retryTimers.size, 0);
+  f.socketHandlers.get("*")(topicName(room), {});
+  assert.equal(calls, 0);
 });
 
 test("preview topic limit also applies offline without rejecting shared listeners", async () => {

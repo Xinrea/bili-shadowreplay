@@ -9,6 +9,8 @@ export type RoomTopic = { platform: string; room: string };
 type RoomRegistration = { topic: RoomTopic; count: number; ready: Promise<void> };
 const MAX_ROOM_TOPICS = 32;
 const ROOM_ACK_TIMEOUT_MS = 5_000;
+const ROOM_RETRY_INITIAL_MS = 1_000;
+const ROOM_RETRY_MAX_MS = 30_000;
 type RoomSync = { promise: Promise<void>; resolve: () => void; reject: (error: unknown) => void };
 
 function roomEventName({ platform, room }: RoomTopic) {
@@ -32,6 +34,24 @@ export function createEventClient({ tauri, endpoint }: { tauri: boolean; endpoin
   let webRoomSync: RoomSync | null = null;
   let webRoomRevision = 0;
   let webRoomFlight: { revision: number } | null = null;
+  let webRoomRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  let webRoomRetryDelay = ROOM_RETRY_INITIAL_MS;
+
+  function cancelWebRoomRetry(resetDelay = true) {
+    if (webRoomRetryTimer !== undefined) clearTimeout(webRoomRetryTimer);
+    webRoomRetryTimer = undefined;
+    if (resetDelay) webRoomRetryDelay = ROOM_RETRY_INITIAL_MS;
+  }
+
+  function scheduleWebRoomRetry() {
+    if (!socket.connected || rooms.size === 0 || webRoomRetryTimer !== undefined) return;
+    const delay = webRoomRetryDelay;
+    webRoomRetryDelay = Math.min(delay * 2, ROOM_RETRY_MAX_MS);
+    webRoomRetryTimer = setTimeout(() => {
+      webRoomRetryTimer = undefined;
+      void syncRooms(false).catch(reportRoomError);
+    }, delay);
+  }
 
   function deliver<T>(event: string, callback: (event: AppEvent<T>) => void, message: AppEvent<T>) {
     try {
@@ -72,18 +92,26 @@ export function createEventClient({ tauri, endpoint }: { tauri: boolean; endpoin
       }
       const pending = webRoomSync;
       webRoomSync = null;
-      if (!failure) pending?.resolve();
-      else pending?.reject(failure.error);
+      if (!failure) {
+        cancelWebRoomRetry();
+        pending?.resolve();
+      } else {
+        // Established listeners no longer await setup. Keep their current set
+        // alive and recover it even if reconnect acknowledgement fails.
+        scheduleWebRoomRetry();
+        pending?.reject(failure.error);
+      }
     }
   }
 
-  function syncRooms(): Promise<void> {
+  function syncRooms(resetRetryDelay = true): Promise<void> {
     if (tauri) {
       const topics = [...rooms.values()].map(({ topic }) => topic);
       // Serialize desktop commands so a late subscribe cannot undo an unlisten.
       roomUpdates = roomUpdates.catch(() => {}).then(() => tauriInvoke<void>("set_event_rooms", { rooms: topics }));
       return roomUpdates;
     }
+    cancelWebRoomRetry(resetRetryDelay);
     // Readiness belongs to convergence of the current set, not to an individual
     // packet. One flight per connection serializes changes; a new connection
     // immediately starts a fresh flight without waiting for obsolete ACKs.
@@ -114,6 +142,7 @@ export function createEventClient({ tauri, endpoint }: { tauri: boolean; endpoin
   });
   socket?.on("disconnect", () => {
     webRoomFlight = null;
+    cancelWebRoomRetry();
   });
   socket?.on("connect_error", (error) => {
     console.error("[Events] Connection error:", error);

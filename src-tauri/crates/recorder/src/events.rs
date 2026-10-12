@@ -2,8 +2,16 @@ use crate::danmu::PREVIEW_EVENT_TYPES;
 use crate::platforms::PlatformType;
 use crate::RecorderInfo;
 
+/// Preview consumers must be fast and non-blocking. Persistence is handled
+/// separately by the recorder, regardless of whether anybody watches a room.
+pub type PreviewEventSink = std::sync::Arc<dyn Fn(RecorderEvent) + Send + Sync>;
+
+mod channel;
+pub use channel::{recorder_event_channel, RecorderEventReceiver, RecorderEventSender};
+
 #[derive(Debug, Clone)]
 pub enum RecorderEvent {
+    RoomMetadataUpdated,
     LiveStart {
         recorder: RecorderInfo,
     },

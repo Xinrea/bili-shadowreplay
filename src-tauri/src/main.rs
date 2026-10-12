@@ -7,6 +7,7 @@ mod config;
 mod constants;
 mod danmu2ass;
 mod database;
+mod events;
 mod ffmpeg;
 mod handlers;
 #[cfg(feature = "headless")]
@@ -27,6 +28,7 @@ use chrono::Utc;
 use config::Config;
 use database::credentials::CredentialCipher;
 use database::Database;
+use events::EventBus;
 use migration::migration_methods::try_add_parent_id_to_records;
 use migration::migration_methods::try_convert_clip_covers;
 use migration::migration_methods::try_convert_entry_to_m3u8;
@@ -537,8 +539,6 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     use std::path::PathBuf;
 
     use crate::task::TaskManager;
-    use progress::progress_manager::ProgressManager;
-    use progress::progress_reporter::EventEmitter;
 
     setup_logging(Path::new("./")).await?;
     log::info!("Setting up server state...");
@@ -578,13 +578,12 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     migrator.run(&db_pool).await?;
 
     let credentials = CredentialCipher::load(&db_pool).await?;
-    let db = Arc::new(Database::new(db_pool, credentials));
+    let events = EventBus::new();
+    let db = Arc::new(Database::new(db_pool, credentials, events.clone()));
     db.migrate_account_credentials().await?;
     db.finish_pending_tasks().await?;
     db.finish_pending_record_summaries().await?;
 
-    let progress_manager = Arc::new(ProgressManager::new());
-    let emitter = EventEmitter::new(progress_manager.get_event_sender());
     let webhook_poster =
         webhook::poster::create_webhook_poster(&config.read().await.webhook_url, None)
             .map_err(|e| e.to_string())?;
@@ -592,7 +591,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     task_manager.start();
     let task_manager = Arc::new(task_manager);
     let recorder_manager = Arc::new(RecorderManager::new(
-        emitter,
+        events.clone(),
         db.clone(),
         config.clone(),
         task_manager.clone(),
@@ -612,7 +611,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
         webhook_poster,
         recorder_manager,
         task_manager,
-        progress_manager,
+        events,
         resource_dir,
         readonly: args.readonly,
     })
@@ -621,7 +620,6 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
 #[cfg(feature = "gui")]
 async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std::error::Error>> {
     use platform_dirs::AppDirs;
-    use progress::progress_reporter::EventEmitter;
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
     use crate::{static_server::start_static_server, task::TaskManager};
@@ -652,7 +650,8 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
     let config = Arc::new(RwLock::new(config));
     let config_clone = config.clone();
     let dbs = app.state::<tauri_plugin_sql::DbInstances>().inner();
-    let emitter = EventEmitter::new(app.handle().clone());
+    let events = EventBus::new();
+    events.forward_to_app(app.handle().clone());
     let binding = dbs.0.read().await;
     let dbpool = binding
         .get("sqlite:data_v2.db")
@@ -697,7 +696,11 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
         }
         Err(error) => return Err(error.into()),
     };
-    let db = Arc::new(Database::new(sqlite_pool.clone(), credentials));
+    let db = Arc::new(Database::new(
+        sqlite_pool.clone(),
+        credentials,
+        events.clone(),
+    ));
     db.migrate_account_credentials().await?;
     db.finish_pending_tasks().await?;
     db.finish_pending_record_summaries().await?;
@@ -711,7 +714,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
 
     let recorder_manager = Arc::new(RecorderManager::new(
         app.app_handle().clone(),
-        emitter,
+        events.clone(),
         db.clone(),
         config.clone(),
         task_manager.clone(),
@@ -733,6 +736,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
     let _ = try_convert_entry_to_m3u8(&db, cache_path.clone().into()).await;
 
     Ok(Some(State {
+        events,
         db,
         config,
         recorder_manager,
@@ -795,6 +799,9 @@ fn remove_legacy_macos_launch_agent() {
 #[cfg(feature = "gui")]
 fn setup_event_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder.on_window_event(|window, event| {
+        if let WindowEvent::Destroyed = event {
+            window.state::<State>().events.remove_window(window.label());
+        }
         if let WindowEvent::CloseRequested { api, .. } = event {
             // main window is not closable
             if window.label() == "main" {
@@ -810,6 +817,7 @@ fn setup_event_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<t
 #[cfg(feature = "gui")]
 fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder.invoke_handler(tauri::generate_handler![
+        crate::handlers::events::set_event_rooms,
         crate::handlers::account::get_accounts,
         crate::handlers::account::add_account,
         crate::handlers::account::remove_account,

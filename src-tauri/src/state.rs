@@ -10,8 +10,7 @@ use crate::static_server::StaticServer;
 use crate::task::TaskManager;
 use crate::webhook::poster::WebhookPoster;
 
-#[cfg(feature = "headless")]
-use crate::progress::progress_manager::ProgressManager;
+use crate::events::EventBus;
 
 #[derive(Clone)]
 pub struct State {
@@ -25,8 +24,7 @@ pub struct State {
     pub static_server: Arc<StaticServer>,
     #[cfg(not(feature = "headless"))]
     pub app_handle: tauri::AppHandle,
-    #[cfg(feature = "headless")]
-    pub progress_manager: Arc<ProgressManager>,
+    pub events: EventBus,
     #[cfg(feature = "headless")]
     pub readonly: bool,
 }

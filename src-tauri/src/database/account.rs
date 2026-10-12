@@ -200,7 +200,11 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        let db = Database::new(pool.clone(), CredentialCipher::new(&[0; 32]).unwrap());
+        let db = Database::new(
+            pool.clone(),
+            CredentialCipher::new(&[0; 32]).unwrap(),
+            crate::events::EventBus::new(),
+        );
 
         // Simulate the committed migration before VACUUM and WAL cleanup run.
         let mut transaction = pool.begin().await.unwrap();
@@ -253,7 +257,11 @@ mod tests {
         }
         sqlx::query("INSERT INTO accounts VALUES ('123', 'bilibili', 'test', '', 'test-csrf', 'test-cookies', '', 0)")
             .execute(&pool).await.unwrap();
-        let db = Database::new(pool.clone(), CredentialCipher::new(&[0; 32]).unwrap());
+        let db = Database::new(
+            pool.clone(),
+            CredentialCipher::new(&[0; 32]).unwrap(),
+            crate::events::EventBus::new(),
+        );
         db.migrate_account_credentials().await.unwrap();
         let stored: (String, String, i64) =
             sqlx::query_as("SELECT csrf, cookies, credentials_encrypted FROM accounts")

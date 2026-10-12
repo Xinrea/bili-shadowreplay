@@ -1,3 +1,4 @@
+use crate::events::{AppEvent, DataChange, EventBus};
 use sqlx::SqlitePool;
 use thiserror::Error;
 
@@ -18,6 +19,7 @@ pub mod video;
 pub struct Database {
     pool: SqlitePool,
     credentials: credentials::CredentialCipher,
+    events: EventBus,
 }
 
 #[derive(Error, Debug)]
@@ -46,8 +48,27 @@ impl From<DatabaseError> for String {
     }
 }
 
+#[cfg(test)]
+mod event_tests;
+
 impl Database {
-    pub fn new(pool: SqlitePool, credentials: credentials::CredentialCipher) -> Database {
-        Database { pool, credentials }
+    pub fn notify_change(&self, change: DataChange) {
+        self.events.publish(AppEvent::DataChanged(change));
+    }
+
+    pub fn notify_coalesced_change(&self, change: DataChange) {
+        self.events.publish_coalesced_change(change);
+    }
+
+    pub fn new(
+        pool: SqlitePool,
+        credentials: credentials::CredentialCipher,
+        events: EventBus,
+    ) -> Database {
+        Database {
+            pool,
+            credentials,
+            events,
+        }
     }
 }

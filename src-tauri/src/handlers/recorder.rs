@@ -4,7 +4,6 @@ use crate::danmu2ass;
 use crate::database::record::RecordRow;
 use crate::database::recorder::RecorderRow;
 use crate::database::task::TaskRow;
-use crate::progress::progress_reporter::EventEmitter;
 use crate::progress::progress_reporter::ProgressReporter;
 use crate::progress::progress_reporter::ProgressReporterTrait;
 use crate::recorder_manager::{GenerateWholeClipParams, RecorderList};
@@ -527,11 +526,7 @@ pub async fn generate_whole_clip(
         )
         .await?;
 
-    #[cfg(feature = "gui")]
-    let emitter = EventEmitter::new(state.app_handle.clone());
-    #[cfg(feature = "headless")]
-    let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
-    let reporter = ProgressReporter::new(state.db.clone(), &emitter, &task.id).await?;
+    let reporter = ProgressReporter::new(state.db.clone(), &state.events, &task.id).await?;
 
     log::info!("Create task: {} {}", task.id, task.task_type);
     // create a tokio task to run in background

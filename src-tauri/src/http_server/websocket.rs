@@ -1,100 +1,77 @@
-use serde_json::{json, Value};
+use serde_json::Value;
 use socketioxide::{
-    extract::{Data, SocketRef},
+    extract::{AckSender, Data, SocketRef, TryData},
     layer::SocketIoLayer,
     SocketIo,
 };
-use tokio::sync::broadcast;
 
+use super::event_delivery::EventDelivery;
+use crate::events::{RoomForwarder, RoomTopic};
 use crate::state::State;
-use recorder::events::RecorderEvent;
+use std::sync::{Arc, Mutex};
 
 pub async fn create_websocket_server(state: State) -> SocketIoLayer {
     let (layer, io) = SocketIo::new_layer();
 
-    // Clone the state for the namespace handler
-    let state_clone = state.clone();
-
     io.ns("/ws", move |socket: SocketRef| {
-        let state = state_clone.clone();
-
-        // Subscribe to progress events
-        let mut rx = state.progress_manager.subscribe();
-
-        // Spawn a task to handle progress events for this socket
-        let socket_clone = socket.clone();
-        tokio::spawn(async move {
-            loop {
-                match rx.recv().await {
-                    Ok(event) => {
-                        let (event_type, message) = match event {
-                            RecorderEvent::ProgressUpdate { id, content } => (
-                                "progress-update",
-                                json!({
-                                        "id": id,
-                                        "content": content
-                                }),
-                            ),
-                            RecorderEvent::ProgressFinished {
-                                id,
-                                success,
-                                message,
-                            } => (
-                                "progress-finished",
-                                json!({
-                                        "id": id,
-                                        "success": success,
-                                        "message": message
-                                }),
-                            ),
-                            RecorderEvent::DanmuReceived {
-                                room,
-                                ts,
-                                event_type,
-                                content,
-                                user_name,
-                                price,
-                                sc_duration,
-                            } => (
-                                "danmu",
-                                json!({
-                                        "room": room,
-                                        "ts": ts,
-                                        "type": event_type,
-                                        "content": content,
-                                        "user_name": user_name,
-                                        "price": price,
-                                        "sc_duration": sc_duration
-                                }),
-                            ),
-                            _ => continue,
-                        };
-
-                        if let Err(e) = socket_clone.emit(event_type, &message) {
-                            log::warn!("Failed to emit progress event to WebSocket client: {}", e);
-                            break;
-                        }
-                    }
-                    Err(broadcast::error::RecvError::Closed) => {
-                        log::info!("Progress channel closed, stopping WebSocket progress stream");
-                        break;
-                    }
-                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                        log::warn!("WebSocket client lagged, skipped {} events", skipped);
-                    }
+        let mut events = state.events.subscribe();
+        let event_socket = socket.clone();
+        let delivery = EventDelivery::default();
+        let control_delivery = delivery.clone();
+        let event_task = tokio::spawn(async move {
+            while let Ok(event) = events.recv().await {
+                let event = event.client_event();
+                if let Err(error) = control_delivery
+                    .control(|| event_socket.emit(&event.name, &event.payload))
+                    .await
+                {
+                    log::warn!("Failed to emit application event to WebSocket client: {error}");
+                    break;
                 }
             }
         });
 
-        // Handle client messages
+        let rooms = Arc::new(Mutex::new(RoomForwarder::default()));
+        let room_subscriptions = rooms.clone();
+        let bus = state.events.clone();
+        socket.on(
+            "event-rooms",
+            move |socket: SocketRef, TryData::<Vec<RoomTopic>>(topics), ack: AckSender| {
+                let delivery = delivery.clone();
+                let result = topics
+                    .map_err(|error| error.to_string())
+                    .and_then(|topics| {
+                        room_subscriptions
+                            .lock()
+                            .unwrap()
+                            .set_rooms(&bus, topics, move |event| {
+                                delivery
+                                    .preview(|| socket.emit(&event.name, &event.payload))
+                                    .map_err(|error| error.to_string())
+                            })
+                    });
+                if let Err(error) = &result {
+                    log::warn!("Invalid room event subscription: {error}");
+                }
+                let response = match result {
+                    Ok(()) => serde_json::json!({ "ok": true }),
+                    Err(error) => serde_json::json!({ "ok": false, "error": error }),
+                };
+                if let Err(error) = ack.send(&response) {
+                    log::warn!("Failed to acknowledge room subscription: {error}");
+                }
+            },
+        );
+
         socket.on("message", |socket: SocketRef, Data::<Value>(data)| {
-            log::debug!("Received WebSocket message: {:?}", data);
-            // Echo back the message for testing
+            log::debug!("Received WebSocket message: {data:?}");
             socket.emit("echo", &data).ok();
         });
 
-        // Handle client disconnect
-        socket.on_disconnect(|socket: SocketRef| {
+        let abort = event_task.abort_handle();
+        socket.on_disconnect(move |socket: SocketRef| {
+            abort.abort();
+            rooms.lock().unwrap().clear();
             log::info!("WebSocket client disconnected: {}", socket.id);
         });
 

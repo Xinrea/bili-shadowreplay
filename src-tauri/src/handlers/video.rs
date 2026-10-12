@@ -2,7 +2,7 @@ use crate::database::task::TaskRow;
 use crate::database::video::VideoRow;
 use crate::ffmpeg;
 use crate::handlers::utils::get_disk_info_inner;
-use crate::progress::progress_reporter::{EventEmitter, ProgressReporter, ProgressReporterTrait};
+use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
 use crate::recorder_manager::ClipRangeParams;
 use crate::subtitle_generator::{item_to_srt, SubtitleGeneratorType};
 use crate::task::{Task, TaskPriority};
@@ -319,11 +319,7 @@ pub async fn clip_range(
         }
     }
 
-    #[cfg(feature = "gui")]
-    let emitter = EventEmitter::new(state.app_handle.clone());
-    #[cfg(feature = "headless")]
-    let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
-    let reporter = ProgressReporter::new(state.db.clone(), &emitter, &event_id).await?;
+    let reporter = ProgressReporter::new(state.db.clone(), &state.events, &event_id).await?;
     let mut params_without_cover = params.clone();
     params_without_cover.cover = String::new();
     let task = TaskRow {
@@ -547,11 +543,7 @@ pub async fn upload_procedure(
     video_id: i64,
     profile: Profile,
 ) -> Result<String, String> {
-    #[cfg(feature = "gui")]
-    let emitter = EventEmitter::new(state.app_handle.clone());
-    #[cfg(feature = "headless")]
-    let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
-    let reporter = ProgressReporter::new(state.db.clone(), &emitter, &event_id).await?;
+    let reporter = ProgressReporter::new(state.db.clone(), &state.events, &event_id).await?;
     let task = TaskRow {
         id: event_id.clone(),
         task_type: "upload_procedure".to_string(),
@@ -846,11 +838,7 @@ async fn generate_video_subtitle_inner(
     event_id: String,
     id: i64,
 ) -> Result<String, String> {
-    #[cfg(feature = "gui")]
-    let emitter = EventEmitter::new(state.app_handle.clone());
-    #[cfg(feature = "headless")]
-    let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
-    let reporter = ProgressReporter::new(state.db.clone(), &emitter, &event_id).await?;
+    let reporter = ProgressReporter::new(state.db.clone(), &state.events, &event_id).await?;
     let task = TaskRow {
         id: event_id.clone(),
         task_type: "generate_video_subtitle".to_string(),
@@ -974,11 +962,7 @@ pub async fn encode_video_subtitle(
     id: i64,
     srt_style: String,
 ) -> Result<VideoRow, String> {
-    #[cfg(feature = "gui")]
-    let emitter = EventEmitter::new(state.app_handle.clone());
-    #[cfg(feature = "headless")]
-    let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
-    let reporter = ProgressReporter::new(state.db.clone(), &emitter, &event_id).await?;
+    let reporter = ProgressReporter::new(state.db.clone(), &state.events, &event_id).await?;
     let task = TaskRow {
         id: event_id.clone(),
         task_type: "encode_video_subtitle".to_string(),
@@ -1088,12 +1072,7 @@ pub async fn import_external_video(
     title: String,
     room_id: String,
 ) -> Result<VideoRow, String> {
-    #[cfg(feature = "gui")]
-    let emitter = EventEmitter::new(state.app_handle.clone());
-    #[cfg(feature = "headless")]
-    let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
-
-    let reporter = ProgressReporter::new(state.db.clone(), &emitter, &event_id).await?;
+    let reporter = ProgressReporter::new(state.db.clone(), &state.events, &event_id).await?;
 
     let source_path = Path::new(&file_path);
     if !source_path.exists() {
@@ -1227,11 +1206,7 @@ pub async fn clip_video(
     // 获取父视频信息
     let parent_video = state.db.get_video(parent_video_id).await?;
 
-    #[cfg(feature = "gui")]
-    let emitter = EventEmitter::new(state.app_handle.clone());
-    #[cfg(feature = "headless")]
-    let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
-    let reporter = ProgressReporter::new(state.db.clone(), &emitter, &event_id).await?;
+    let reporter = ProgressReporter::new(state.db.clone(), &state.events, &event_id).await?;
 
     // 创建任务记录
     let task = TaskRow {
@@ -1451,11 +1426,7 @@ pub async fn batch_import_external_videos(
     let mut errors = Vec::new();
 
     // 设置批量进度事件发射器
-    #[cfg(feature = "gui")]
-    let emitter = EventEmitter::new(state.app_handle.clone());
-    #[cfg(feature = "headless")]
-    let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
-    let batch_reporter = ProgressReporter::new(state.db.clone(), &emitter, &event_id).await?;
+    let batch_reporter = ProgressReporter::new(state.db.clone(), &state.events, &event_id).await?;
 
     let total_files = file_paths.len();
 

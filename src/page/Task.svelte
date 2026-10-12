@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { createStateRefresh, watchStateChanges } from "../lib/state-refresh";
   import { invoke } from "../lib/invoker";
   import { fade } from "svelte/transition";
   import {
@@ -12,18 +13,23 @@
     X,
   } from "lucide-svelte";
   import type { TaskRow } from "../lib/db";
-  import { onMount, onDestroy } from "svelte";
+  import { onMount } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
 
   let tasks: TaskRow[] = $state([]);
   let loading = $state(true);
   let actionTaskId: string | null = $state(null);
-  let refreshInterval = null;
   let expandedTasks = new SvelteSet<string>();
 
+  const stateRefresh = createStateRefresh(fetch_tasks);
+
   async function update_tasks() {
+    loading = true;
+    await stateRefresh.run();
+  }
+
+  async function fetch_tasks() {
     try {
-      loading = true;
       tasks = await invoke("get_tasks");
       // 按创建时间倒序排列
       tasks.sort(
@@ -287,23 +293,7 @@
     }
   }
 
-  // 设置自动刷新
-  onMount(async () => {
-    // 初始化时加载任务列表
-    update_tasks();
-
-    // 设置每5秒自动刷新
-    refreshInterval = setInterval(() => {
-      update_tasks();
-    }, 5000);
-  });
-
-  // 清理定时器
-  onDestroy(() => {
-    if (refreshInterval) {
-      clearInterval(refreshInterval);
-    }
-  });
+  onMount(() => watchStateChanges(stateRefresh, ["tasks-changed"]));
 </script>
 
 <div

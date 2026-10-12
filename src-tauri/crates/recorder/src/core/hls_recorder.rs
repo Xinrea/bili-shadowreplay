@@ -2,23 +2,25 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::{path::PathBuf, sync::Arc};
+#[cfg(test)]
+use tokio::sync::broadcast;
 
 use chrono::Utc;
-use m3u8_rs::{DateRange, Map, MediaPlaylist, MediaSegment, Playlist, QuotedOrUnquoted, VariantStream};
+use m3u8_rs::{
+    DateRange, Map, MediaPlaylist, MediaSegment, Playlist, QuotedOrUnquoted, VariantStream,
+};
 use reqwest::header::HeaderMap;
 use std::time::Duration;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
-use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock};
 
 use crate::core::playlist::{playlist_content_preview, HlsPlaylist};
 use crate::core::{Codec, Format};
 use crate::errors::RecorderError;
 use crate::timeline::{append_skipped_ad_range, load_skipped_ad_ranges, AdTimeRange};
 use crate::{core::HlsStream, events::RecorderEvent};
-use ffmpeg_utils::{
-    extract_video_metadata, extract_video_metadata_with_init, VideoMetadata,
-};
+use ffmpeg_utils::{extract_video_metadata, extract_video_metadata_with_init, VideoMetadata};
 
 const UPDATE_TIMEOUT: Duration = Duration::from_secs(20);
 const UPDATE_INTERVAL: Duration = Duration::from_secs(1);
@@ -53,7 +55,7 @@ pub struct HlsRecorder {
     selected_variant_key: Arc<RwLock<Option<String>>>,
     variant_selection: HlsVariantSelection,
     client: reqwest::Client,
-    event_channel: broadcast::Sender<RecorderEvent>,
+    event_channel: crate::events::RecorderEventSender,
     work_dir: PathBuf,
     playlist: Arc<Mutex<HlsPlaylist>>,
     headers: HeaderMap,
@@ -253,11 +255,7 @@ fn local_init_filename(uri: &str) -> String {
     // Twitch weaver init URIs often have no file extension; prefer the fMP4
     // fragment extension so HLS preview serves `video/iso.segment` instead of
     // falling back to MPEG-TS.
-    format!(
-        "init-{:x}.{}",
-        hasher.finish(),
-        media_extension(uri, "m4s")
-    )
+    format!("init-{:x}.{}", hasher.finish(), media_extension(uri, "m4s"))
 }
 
 /// Pick a local filename extension from a segment/init URI.
@@ -306,7 +304,7 @@ impl HlsRecorder {
         stream: Arc<HlsStream>,
         client: reqwest::Client,
         cookies: Option<String>,
-        event_channel: broadcast::Sender<RecorderEvent>,
+        event_channel: impl Into<crate::events::RecorderEventSender>,
         work_dir: PathBuf,
         enabled: Arc<AtomicBool>,
     ) -> Result<Self, RecorderError> {
@@ -329,7 +327,7 @@ impl HlsRecorder {
         stream: Arc<HlsStream>,
         client: reqwest::Client,
         cookies: Option<String>,
-        event_channel: broadcast::Sender<RecorderEvent>,
+        event_channel: impl Into<crate::events::RecorderEventSender>,
         work_dir: PathBuf,
         enabled: Arc<AtomicBool>,
         variant_selection: HlsVariantSelection,
@@ -436,7 +434,7 @@ impl HlsRecorder {
             selected_variant_key: Arc::new(RwLock::new(None)),
             variant_selection,
             client,
-            event_channel,
+            event_channel: event_channel.into(),
             work_dir,
             playlist: Arc::new(Mutex::new(playlist)),
             headers,
@@ -779,8 +777,11 @@ impl HlsRecorder {
         }
 
         let source_url = source_stream.ts_url(&segment.uri);
-        let local_uri =
-            local_segment_filename(sequence, &segment.uri, self.segment_fallback_extension().await);
+        let local_uri = local_segment_filename(
+            sequence,
+            &segment.uri,
+            self.segment_fallback_extension().await,
+        );
         let path = self.work_dir.join(&local_uri);
         let size = download(&self.client, &source_url, &path, DOWNLOAD_RETRY).await?;
 
@@ -932,7 +933,11 @@ impl HlsRecorder {
     ///
     /// fMP4 fragments often report absolute decode timestamps to ffprobe, so
     /// the container duration is unusable; prefer the playlist `#EXTINF`.
-    fn segment_duration_secs(segment: &MediaSegment, metadata: &VideoMetadata, using_fmp4: bool) -> f64 {
+    fn segment_duration_secs(
+        segment: &MediaSegment,
+        metadata: &VideoMetadata,
+        using_fmp4: bool,
+    ) -> f64 {
         if using_fmp4 || metadata.duration <= 0.0 {
             segment.duration as f64
         } else {
@@ -1118,11 +1123,14 @@ impl HlsRecorder {
         }
 
         if updated {
-            let _ = self.event_channel.send(RecorderEvent::RecordUpdate {
-                live_id: self.stream.id.clone(),
-                duration_secs: duration_delta,
-                cached_size_bytes: size_delta,
-            });
+            let _ = self
+                .event_channel
+                .send(RecorderEvent::RecordUpdate {
+                    live_id: self.stream.id.clone(),
+                    duration_secs: duration_delta,
+                    cached_size_bytes: size_delta,
+                })
+                .await;
         }
 
         if self.stream.is_expired() {
@@ -2251,7 +2259,8 @@ high-100.ts
         // Twitch CloudFront weaver paths are commonly `/v1/segment/<token>`
         // with no `.mp4` / `.m4s` suffix. When MAP is present the recorder must
         // not invent `.ts` (that would serve `video/mp2t` in the HLS callback).
-        let weaver_seg = "https://aa.cloudfront.hls.ttvnw.net/v1/segment/CvICeYA1Fg1UXbdoIhjzy?dna=1";
+        let weaver_seg =
+            "https://aa.cloudfront.hls.ttvnw.net/v1/segment/CvICeYA1Fg1UXbdoIhjzy?dna=1";
         let weaver_init = "https://aa.cloudfront.hls.ttvnw.net/v1/segment/InitTokenNoExt?dna=1";
         assert_eq!(
             local_segment_filename(42, weaver_seg, "m4s"),
@@ -2261,10 +2270,7 @@ high-100.ts
         assert_eq!(media_extension(weaver_seg, "ts"), "ts");
         assert!(local_init_filename(weaver_init).ends_with(".m4s"));
         assert_eq!(
-            media_extension(
-                "https://cdn.test/v1/segment/token.mp4?dna=1",
-                "m4s"
-            ),
+            media_extension("https://cdn.test/v1/segment/token.mp4?dna=1", "m4s"),
             "mp4"
         );
     }

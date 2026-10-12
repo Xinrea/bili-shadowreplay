@@ -3,6 +3,7 @@
 </script>
 
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import { invoke, TAURI_ENV, ENDPOINT, listen, log } from "../invoker";
   import type { AccountInfo } from "../db";
   import type {
@@ -13,6 +14,7 @@
     Range,
   } from "../interface";
   import { formatScPrice, getScColors } from "../superchat";
+  import { keepEventSubscription } from "../event-subscription";
 
   import { save } from "@tauri-apps/plugin-dialog";
   import {
@@ -22,6 +24,18 @@
     DANMU_FLUSH_INTERVAL_MS,
   } from "../live-preview-perf";
   const DANMU_STATISTIC_GAP = 5;
+  let destroyed = false;
+  let initialized = false;
+  let stopDanmu: (() => void) | undefined;
+  let cancelDanmuBatch: (() => void) | undefined;
+  const danmuSubscription = new AbortController();
+  onDestroy(() => {
+    destroyed = true;
+    danmuSubscription.abort();
+    document.removeEventListener("shaka-ui-loaded", init);
+    stopDanmu?.();
+    cancelDanmuBatch?.();
+  });
 
   interface Props {
     platform: string;
@@ -429,6 +443,8 @@ ${mediaPlaylistUrl}`;
   }
 
   async function init() {
+    if (destroyed || initialized) return;
+    initialized = true;
     update_stream_list();
 
     setInterval(async () => {
@@ -665,10 +681,10 @@ ${mediaPlaylistUrl}`;
       const danmuBatcher = createDanmuBatcher<DanmuEntry>((batch) => {
         danmu_records = danmu_records.concat(batch);
       }, DANMU_FLUSH_INTERVAL_MS);
-      await listen("danmu", (event: { payload: DanmuEntry & { room: string } }) => {
-        if (event.payload.room !== room_id) {
-          return;
-        }
+      cancelDanmuBatch = () => danmuBatcher.cancel();
+      if (destroyed) return;
+      stopDanmu = keepEventSubscription((signal) => listen("danmu", (event) => {
+        if (destroyed) return;
         if (global_offset == 0) {
           return;
         }
@@ -690,6 +706,9 @@ ${mediaPlaylistUrl}`;
         danmu_displayed[event.payload.ts] = true;
         danmuBatcher.push(danmu_record);
         renderFloatingEntry(danmu_record);
+      }, { platform, room: room_id }, signal), danmuSubscription.signal, (error) => {
+        danmuBatcher.cancel();
+        log.error("弹幕订阅失败，将重试:", error);
       });
     }
 

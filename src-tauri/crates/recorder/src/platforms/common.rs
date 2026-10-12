@@ -225,10 +225,13 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
     async fn check_live(&self) -> bool {
         let platform = self.platform().as_str();
         let room_id = self.room_id();
-        let pre_live_status = self.room_info().read().await.status;
+        let previous_room = self.room_info().read().await.clone();
+        let pre_live_status = previous_room.status;
 
         match self.poll_room().await {
             Ok(poll) => {
+                let mut metadata_changed = previous_room.room_title != poll.room_title
+                    || previous_room.room_cover != poll.room_cover;
                 *self.room_info().write().await = RoomInfo {
                     platform: platform.to_string(),
                     room_id: room_id.clone(),
@@ -237,7 +240,18 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                     status: poll.live,
                 };
                 if let Some(user) = poll.user {
-                    *self.user_info().write().await = user;
+                    let user_info = self.user_info();
+                    let mut current = user_info.write().await;
+                    metadata_changed |= current.user_id != user.user_id
+                        || current.user_name != user.user_name
+                        || current.user_avatar != user.user_avatar;
+                    *current = user;
+                }
+                if metadata_changed && pre_live_status == poll.live {
+                    let _ = self
+                        .event_channel()
+                        .send(RecorderEvent::RoomMetadataUpdated)
+                        .await;
                 }
 
                 if poll.live && !pre_live_status {
@@ -259,9 +273,12 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
 
                     if poll.live {
                         self.on_live_start().await;
-                        let _ = self.event_channel().send(RecorderEvent::LiveStart {
-                            recorder: self.info().await,
-                        });
+                        let _ = self
+                            .event_channel()
+                            .send(RecorderEvent::LiveStart {
+                                recorder: self.info().await,
+                            })
+                            .await;
                     } else {
                         self.end_live().await;
                     }
@@ -317,15 +334,20 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
         self.should_continue().store(false, Ordering::Relaxed);
     }
 
-    /// Emit `LiveEnd` and clear the session state. The event owns a snapshot,
-    /// so the session can be cleared after sending it.
+    /// Clear the session before publishing `LiveEnd`, preserving its IDs in
+    /// the event snapshot for archive lookup and automatic clip generation.
     async fn end_live(&self) {
-        let _ = self.event_channel().send(RecorderEvent::LiveEnd {
-            platform: self.platform(),
-            room_id: self.room_id(),
-            recorder: self.info().await,
-        });
+        let mut ended = self.info().await;
         self.reset_live().await;
+        ended.recording = false;
+        let _ = self
+            .event_channel()
+            .send(RecorderEvent::LiveEnd {
+                platform: self.platform(),
+                room_id: self.room_id(),
+                recorder: ended,
+            })
+            .await;
     }
 
     /// Select the app recording id for this attempt. Reuse it only if a
@@ -378,13 +400,15 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
         }
 
         *self.live_id().write().await = live_id.to_string();
+        self.is_recording().store(true, Ordering::Relaxed);
 
         // Send record start event
-        let _ = self.event_channel().send(RecorderEvent::RecordStart {
-            recorder: self.info().await,
-        });
-
-        self.is_recording().store(true, Ordering::Relaxed);
+        let _ = self
+            .event_channel()
+            .send(RecorderEvent::RecordStart {
+                recorder: self.info().await,
+            })
+            .await;
 
         match pull {
             StreamPull::Hls {
@@ -486,7 +510,7 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                                 if let Some(received) =
                                     RecorderEvent::danmu_received_from_event(room_id.clone(), &event)
                                 {
-                                    let _ = self.event_channel().send(received);
+                                    self.emit_preview_event(received);
                                 }
                                 if let Some(storage) = self.danmu_storage().write().await.as_ref() {
                                     if let Err(error) = storage.add_event(event).await {
@@ -499,7 +523,7 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                                 if let Some(received) =
                                     RecorderEvent::danmu_received_from_event(room_id.clone(), &event)
                                 {
-                                    let _ = self.event_channel().send(received);
+                                    self.emit_preview_event(received);
                                 }
                                 if let Some(storage) = self.danmu_storage().write().await.as_ref() {
                                     if let Err(error) = storage.add_event(event).await {
@@ -539,6 +563,7 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                 if recorder.check_live().await {
                     // Live status is ok, start recording
                     let mut restart_immediately = false;
+                    let mut ended_recording = None;
                     if recorder.should_record().await {
                         let live_id = recorder.next_live_id().await;
                         if let Err(error) = recorder.start_recording(&live_id).await {
@@ -581,13 +606,20 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                         // cleared again by `reset_recording`, so a failed
                         // setup emits no `RecordEnd` without its `RecordStart`.
                         if !recorder.live_id().read().await.is_empty() {
-                            let _ = recorder.event_channel().send(RecorderEvent::RecordEnd {
-                                recorder: recorder.info().await,
-                            });
+                            ended_recording = Some(recorder.info().await);
                         }
                     }
 
                     recorder.reset_recording().await;
+                    if let Some(mut ended) = ended_recording {
+                        // Keep the ended archive's ID in the event, but publish
+                        // only after the queryable recorder state is reset.
+                        ended.recording = false;
+                        let _ = recorder
+                            .event_channel()
+                            .send(RecorderEvent::RecordEnd { recorder: ended })
+                            .await;
+                    }
 
                     // An expired stream resumes immediately with a fresh one.
                     if recorder.should_continue().load(Ordering::Relaxed) || restart_immediately {
@@ -642,4 +674,106 @@ pub(crate) async fn download_file(
     let mut file = tokio::fs::File::create(path).await?;
     tokio::io::AsyncWriteExt::write_all(&mut file, &bytes).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        account::Account, events::recorder_event_channel, platforms::PlatformType, Recorder,
+    };
+    use std::{path::PathBuf, sync::atomic::AtomicU64};
+    use tokio::sync::RwLock;
+
+    #[derive(Clone)]
+    struct Metadata(Arc<RwLock<(String, String, Option<UserInfo>)>>);
+
+    #[async_trait]
+    impl RecorderTrait for Recorder<Metadata> {
+        async fn run(&self) {}
+    }
+
+    #[async_trait]
+    impl PlatformApi for Recorder<Metadata> {
+        async fn poll_room(&self) -> Result<RoomPoll, RecorderError> {
+            let (title, cover, user) = self.extra.0.read().await.clone();
+            Ok(RoomPoll {
+                live: true,
+                room_title: title,
+                room_cover: cover,
+                user,
+                platform_live_id: None,
+            })
+        }
+        async fn poll_stream(&self) -> bool {
+            false
+        }
+        async fn open_pull(&self, _: &str) -> Result<StreamPull, RecorderError> {
+            Err(RecorderError::NoStreamAvailable)
+        }
+        async fn clear_stream(&self) {}
+    }
+
+    #[tokio::test]
+    async fn metadata_changes_notify_after_state_is_queryable_without_live_transition() {
+        let (tx, mut rx) = recorder_event_channel(4);
+        let metadata = Metadata(Arc::new(RwLock::new((
+            "title".into(),
+            "cover".into(),
+            None,
+        ))));
+        let recorder = Recorder::with_extra(
+            PlatformType::Twitch,
+            "room",
+            &Account::default(),
+            PathBuf::new(),
+            tx,
+            Arc::new(AtomicU64::new(10)),
+            false,
+            metadata.clone(),
+        );
+        recorder.room_info.write().await.status = true;
+        recorder.check_live().await;
+        assert!(matches!(
+            rx.recv().await,
+            Some(RecorderEvent::RoomMetadataUpdated)
+        ));
+        recorder.check_live().await;
+        assert!(tokio::time::timeout(Duration::from_millis(20), rx.recv())
+            .await
+            .is_err());
+        *metadata.0.write().await = ("new title".into(), "new cover".into(), None);
+        recorder.check_live().await;
+        assert!(matches!(
+            rx.recv().await,
+            Some(RecorderEvent::RoomMetadataUpdated)
+        ));
+        let info = recorder.info().await;
+        assert!(info.room_info.status);
+        assert_eq!(info.room_info.room_title, "new title");
+        assert_eq!(info.room_info.room_cover, "new cover");
+        metadata.0.write().await.2 = Some(UserInfo {
+            user_id: "user".into(),
+            user_name: "new name".into(),
+            user_avatar: "new avatar".into(),
+        });
+        recorder.check_live().await;
+        assert!(matches!(
+            rx.recv().await,
+            Some(RecorderEvent::RoomMetadataUpdated)
+        ));
+        let info = recorder.info().await;
+        assert_eq!(info.user_info.user_name, "new name");
+        assert_eq!(info.user_info.user_avatar, "new avatar");
+        recorder.check_live().await;
+        assert!(tokio::time::timeout(Duration::from_millis(20), rx.recv())
+            .await
+            .is_err());
+        metadata.0.write().await.2 = None;
+        recorder.check_live().await;
+        assert!(tokio::time::timeout(Duration::from_millis(20), rx.recv())
+            .await
+            .is_err());
+        assert_eq!(recorder.info().await.user_info.user_name, "new name");
+    }
 }

@@ -10,7 +10,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use tokio::{
-    sync::{broadcast, Mutex, RwLock},
+    sync::{Mutex, RwLock},
     task::JoinHandle,
 };
 
@@ -20,7 +20,9 @@ pub trait RecorderBasicTrait {
     fn room_id(&self) -> String;
     fn account(&self) -> &Account;
     fn client(&self) -> &reqwest::Client;
-    fn event_channel(&self) -> &broadcast::Sender<RecorderEvent>;
+    fn event_channel(&self) -> &crate::events::RecorderEventSender;
+    fn set_preview_sink(&self, sink: crate::events::PreviewEventSink);
+    fn emit_preview_event(&self, event: RecorderEvent);
     fn cache_dir(&self) -> PathBuf;
     fn quit(&self) -> Arc<atomic::AtomicBool>;
     fn enabled(&self) -> Arc<atomic::AtomicBool>;

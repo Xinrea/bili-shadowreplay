@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { createStateRefresh, watchStateChanges } from "../lib/state-refresh";
   import { invoke, open, onOpenUrl, get_static_url, get } from "../lib/invoker";
   import { message } from "@tauri-apps/plugin-dialog";
   import { fade, scale } from "svelte/transition";
@@ -107,6 +108,8 @@
     return cover_url;
   }
 
+  const stateRefresh = createStateRefresh(update_summary);
+
   async function update_summary() {
     let new_summary = (await invoke("get_recorder_list")) as RecorderList;
     room_count = new_summary.count;
@@ -148,8 +151,7 @@
 
     summary = new_summary;
   }
-  update_summary();
-  setInterval(update_summary, 5000);
+  onMount(() => watchStateChanges(stateRefresh, ["recorders-changed"]));
 
   // modals
   let deleteModal = $state(false);

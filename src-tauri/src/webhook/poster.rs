@@ -123,15 +123,18 @@ impl WebhookPoster {
 
     /// Post data with retry logic
     async fn post_with_retry(&self, data: &str) -> Result<(), WebhookPostError> {
-        if self.config.read().await.url.is_empty() {
+        // Release the configuration locks before network I/O or retry delays.
+        let config = self.config.read().await.clone();
+        if config.url.is_empty() {
             log::debug!("Webhook URL is empty, skipping");
             return Ok(());
         }
+        let client = self.client.read().await.clone();
 
         let mut last_error = None;
 
-        for attempt in 1..=self.config.read().await.retry_attempts {
-            match self.send_request(data).await {
+        for attempt in 1..=config.retry_attempts {
+            match self.send_request(data, &config, &client).await {
                 Ok(()) => {
                     if attempt > 1 {
                         info!("Webhook posted successfully on attempt {attempt}");
@@ -140,13 +143,12 @@ impl WebhookPoster {
                 }
                 Err(e) => {
                     last_error = Some(e);
-                    if attempt < self.config.read().await.retry_attempts {
+                    if attempt < config.retry_attempts {
                         warn!(
                             "Webhook post attempt {} failed, retrying in {:?}",
-                            attempt,
-                            self.config.read().await.retry_delay
+                            attempt, config.retry_delay
                         );
-                        sleep(self.config.read().await.retry_delay).await;
+                        sleep(config.retry_delay).await;
                     }
                 }
             }
@@ -159,12 +161,17 @@ impl WebhookPoster {
     }
 
     /// Send the actual HTTP request
-    async fn send_request(&self, data: &str) -> Result<(), WebhookPostError> {
-        let webhook_url = self.config.read().await.url.clone();
-        let mut request = self.client.read().await.post(&webhook_url);
+    async fn send_request(
+        &self,
+        data: &str,
+        config: &WebhookConfig,
+        client: &Client,
+    ) -> Result<(), WebhookPostError> {
+        let webhook_url = &config.url;
+        let mut request = client.post(webhook_url);
 
         // Add custom headers if configured
-        if let Some(headers) = &self.config.read().await.headers {
+        if let Some(headers) = &config.headers {
             for (key, value) in headers {
                 request = request.header(key, value);
             }
@@ -322,5 +329,53 @@ mod tests {
         let poster = WebhookPoster::new(config).unwrap();
         let result = poster.post_json("{}").await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn slow_webhook_does_not_hold_the_configuration_lock() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let handler_started = started.clone();
+        let handler_release = release.clone();
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::post(move || {
+                let started = handler_started.clone();
+                let release = handler_release.clone();
+                async move {
+                    started.notify_one();
+                    release.notified().await;
+                    "ok"
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let poster = WebhookPoster::new(WebhookConfig {
+            url,
+            ..Default::default()
+        })
+        .unwrap();
+        let sender = poster.clone();
+        let request = tokio::spawn(async move { sender.post_json("{}").await });
+        tokio::time::timeout(Duration::from_secs(2), started.notified())
+            .await
+            .unwrap();
+        let updated = tokio::time::timeout(
+            Duration::from_secs(1),
+            poster.update_config(WebhookConfig::default()),
+        )
+        .await;
+        release.notify_waiters();
+        server.abort();
+        request.abort();
+        assert!(
+            updated.is_ok(),
+            "Network I/O must not block configuration updates"
+        );
+        updated.unwrap().unwrap();
     }
 }

@@ -4,8 +4,9 @@ use crate::database::record::RecordRow;
 use crate::database::recorder::RecorderRow;
 use crate::database::video::VideoRow;
 use crate::database::{Database, DatabaseError};
+use crate::events::{DataChange, EventBus};
 use crate::ffmpeg::{clip_timeline_anchors, encode_video_danmu, transcode, Range};
-use crate::progress::progress_reporter::{EventEmitter, ProgressReporter, ProgressReporterTrait};
+use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
 use crate::subtitle_generator::{item_to_srt, SubtitleGeneratorType};
 use crate::task::{Task, TaskManager, TaskPriority};
 use crate::webhook::events::{self, Payload};
@@ -16,6 +17,7 @@ use recorder::account::Account;
 use recorder::danmu::{DanmuEntry, DanmuStorage};
 use recorder::errors::RecorderError;
 use recorder::events::RecorderEvent;
+use recorder::events::{recorder_event_channel, RecorderEventReceiver, RecorderEventSender};
 use recorder::platforms::bilibili::BiliRecorder;
 use recorder::platforms::douyin::DouyinRecorder;
 use recorder::platforms::douyu::DouyuRecorder;
@@ -41,7 +43,6 @@ use tauri_plugin_notification::NotificationExt;
 use thiserror::Error;
 use tokio::fs::{remove_file, write, File};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::broadcast;
 use tokio::sync::RwLock;
 
 #[cfg(not(feature = "headless"))]
@@ -92,14 +93,14 @@ pub struct RelatedPlaylist {
 pub struct RecorderManager {
     #[cfg(not(feature = "headless"))]
     app_handle: AppHandle,
-    emitter: EventEmitter,
+    events: EventBus,
     db: Arc<Database>,
     config: Arc<RwLock<Config>>,
     task_manager: Arc<TaskManager>,
     resource_dir: PathBuf,
     recorders: Arc<RwLock<HashMap<String, Arc<dyn RecorderTrait + Send + Sync>>>>,
     to_remove: Arc<RwLock<HashSet<String>>>,
-    event_tx: broadcast::Sender<RecorderEvent>,
+    event_tx: RecorderEventSender,
     is_migrating: Arc<AtomicBool>,
     webhook_poster: WebhookPoster,
 }
@@ -172,18 +173,18 @@ async fn live_end_parent_id(
 impl RecorderManager {
     pub fn new(
         #[cfg(not(feature = "headless"))] app_handle: AppHandle,
-        emitter: EventEmitter,
+        events: EventBus,
         db: Arc<Database>,
         config: Arc<RwLock<Config>>,
         task_manager: Arc<TaskManager>,
         resource_dir: PathBuf,
         webhook_poster: WebhookPoster,
     ) -> RecorderManager {
-        let (event_tx, _) = broadcast::channel(100);
+        let (event_tx, event_rx) = recorder_event_channel(512);
         let manager = RecorderManager {
             #[cfg(not(feature = "headless"))]
             app_handle,
-            emitter,
+            events,
             db,
             config,
             task_manager,
@@ -198,7 +199,7 @@ impl RecorderManager {
         // Start event listener
         let manager_clone = manager.clone();
         tokio::spawn(async move {
-            manager_clone.handle_events().await;
+            manager_clone.handle_events(event_rx).await;
         });
 
         let manager_clone = manager.clone();
@@ -209,23 +210,19 @@ impl RecorderManager {
         manager
     }
 
-    pub fn get_event_sender(&self) -> broadcast::Sender<RecorderEvent> {
+    pub fn get_event_sender(&self) -> RecorderEventSender {
         self.event_tx.clone()
     }
 
-    async fn handle_events(&self) {
-        let mut rx = self.event_tx.subscribe();
-        loop {
-            let event = match rx.recv().await {
-                Ok(event) => event,
-                Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    log::warn!("Recorder event listener lagged; skipped {skipped} events");
-                    continue;
-                }
-                Err(broadcast::error::RecvError::Closed) => break,
-            };
+    async fn handle_events(&self, mut rx: RecorderEventReceiver) {
+        while let Some(event) = rx.recv().await {
+            self.events.publish_recorder(&event);
             match event {
+                RecorderEvent::RoomMetadataUpdated => {
+                    self.db.notify_coalesced_change(DataChange::Recorders);
+                }
                 RecorderEvent::LiveStart { recorder } => {
+                    self.db.notify_change(DataChange::Recorders);
                     let event = events::new_webhook_event(
                         events::LIVE_STARTED,
                         Payload::Room(recorder.clone()),
@@ -252,6 +249,7 @@ impl RecorderManager {
                     room_id,
                     recorder,
                 } => {
+                    self.db.notify_change(DataChange::Recorders);
                     let event = events::new_webhook_event(
                         events::LIVE_ENDED,
                         Payload::Room(recorder.clone()),
@@ -275,6 +273,7 @@ impl RecorderManager {
                     }
                 }
                 RecorderEvent::RecordStart { recorder } => {
+                    self.db.notify_change(DataChange::Recorders);
                     // add record entry into db
                     let platform = match PlatformType::from_str(&recorder.room_info.platform) {
                         Ok(platform) => platform,
@@ -314,6 +313,7 @@ impl RecorderManager {
                         .await;
                 }
                 RecorderEvent::RecordEnd { recorder } => {
+                    self.db.notify_change(DataChange::Recorders);
                     log::info!("Record end: {recorder:?}");
                     let live_id = recorder.live_id.clone();
                     if live_id.is_empty() {
@@ -352,40 +352,9 @@ impl RecorderManager {
                         log::info!("Record folder removed: {cache_folder:?}");
                     }
                 }
-                RecorderEvent::ProgressUpdate { id, content } => {
-                    self.emitter
-                        .emit(&RecorderEvent::ProgressUpdate { id, content });
-                }
-                RecorderEvent::ProgressFinished {
-                    id,
-                    success,
-                    message,
-                } => {
-                    self.emitter.emit(&RecorderEvent::ProgressFinished {
-                        id,
-                        success,
-                        message,
-                    });
-                }
-                RecorderEvent::DanmuReceived {
-                    room,
-                    ts,
-                    event_type,
-                    content,
-                    user_name,
-                    price,
-                    sc_duration,
-                } => {
-                    self.emitter.emit(&RecorderEvent::DanmuReceived {
-                        room,
-                        ts,
-                        event_type,
-                        content,
-                        user_name,
-                        price,
-                        sc_duration,
-                    });
-                }
+                RecorderEvent::ProgressUpdate { .. }
+                | RecorderEvent::ProgressFinished { .. }
+                | RecorderEvent::DanmuReceived { .. } => {}
             }
         }
     }
@@ -432,7 +401,7 @@ impl RecorderManager {
             return;
         };
 
-        let Ok(reporter) = ProgressReporter::new(self.db.clone(), &self.emitter, &task.id).await
+        let Ok(reporter) = ProgressReporter::new(self.db.clone(), &self.events, &task.id).await
         else {
             log::error!("Failed to create reporter");
             let _ = self
@@ -695,6 +664,11 @@ impl RecorderManager {
                 })
             }
         };
+        let events = self.events.clone();
+        let topic = crate::events::RoomTopic::new(platform.as_str(), room_id);
+        recorder_boxed.set_preview_sink(Arc::new(move |event| {
+            events.publish_preview(&topic, &event);
+        }));
         let recorder: Arc<dyn RecorderTrait + Send + Sync> = Arc::from(recorder_boxed);
         self.recorders
             .write()
@@ -702,6 +676,7 @@ impl RecorderManager {
             .insert(recorder_id.clone(), recorder.clone());
         // Run without holding the map's read lock: run() awaits internal locks.
         recorder.run().await;
+        self.db.notify_change(DataChange::Recorders);
         // A concurrent remove_recorder/stop_all may have removed the recorder
         // while run() was starting its tasks; stop it so the tasks don't
         // outlive the removal.
@@ -757,6 +732,7 @@ impl RecorderManager {
         // remove recorder
         log::debug!("Remove recorder from manager: {recorder_id}");
         self.recorders.write().await.remove(&recorder_id);
+        self.db.notify_change(DataChange::Recorders);
 
         // remove from to_remove
         log::debug!("Remove from to_remove: {recorder_id}");
@@ -1626,6 +1602,7 @@ impl RecorderManager {
             } else {
                 recorder.disable().await;
             }
+            self.db.notify_change(DataChange::Recorders);
         }
     }
 
@@ -1813,6 +1790,7 @@ mod live_end_tests {
         Database::new(
             pool,
             crate::database::credentials::CredentialCipher::new(&[0; 32]).unwrap(),
+            EventBus::new(),
         )
     }
 

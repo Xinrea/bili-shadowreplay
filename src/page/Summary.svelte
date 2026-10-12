@@ -1,9 +1,10 @@
 <script lang="ts">
+  import { createStateRefresh, watchStateChanges } from "../lib/state-refresh";
 
   import { get_static_url, invoke } from "../lib/invoker";
   import type { RecorderList, DiskInfo } from "../lib/interface";
   import type { RecordItem } from "../lib/db";
-  const INTERVAL = 5000;
+  import { onMount } from "svelte";
   import { scale } from "svelte/transition";
   import {
     CalendarCheck,
@@ -41,6 +42,8 @@
   let hasMore = $state(true);
   let hasNewRecords = $state(false);
   const RECORDS_PER_PAGE = 5;
+
+  const stateRefresh = createStateRefresh(update_summary);
 
   async function update_summary() {
     summary = (await invoke("get_recorder_list")) as RecorderList;
@@ -129,8 +132,7 @@
     }
   }
 
-  update_summary();
-  setInterval(update_summary, INTERVAL);
+  onMount(() => watchStateChanges(stateRefresh, ["recorders-changed", "records-changed"]));
 
   async function get_archive_disk_usage() {
     const total_size = (await invoke("get_archive_disk_usage")) as number;

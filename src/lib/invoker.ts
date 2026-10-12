@@ -1,10 +1,9 @@
 import { invoke as tauri_invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { fetch as tauri_fetch } from "@tauri-apps/plugin-http";
-import { listen as tauri_listen } from "@tauri-apps/api/event";
 import { open as tauri_open } from "@tauri-apps/plugin-shell";
 import { onOpenUrl as tauri_onOpenUrl } from "@tauri-apps/plugin-deep-link";
-import { io, Socket } from "socket.io-client";
+import { createEventClient } from "./events";
 import type { Config } from "./interface";
 
 declare global {
@@ -152,119 +151,7 @@ async function get_static_url(base: string, path: string) {
   return `${staticUrl}/${base}/${encodedPath}`;
 }
 
-let socket: Socket | null = null;
-
-// Socket.IO 事件监听器映射
-const eventListeners: Map<string, Array<(data: any) => void>> = new Map();
-
-function createSocket() {
-  if (socket) {
-    socket.disconnect();
-  }
-
-  // 构建 Socket.IO URL
-  console.log("endpoint:", ENDPOINT);
-  const socketUrl = ENDPOINT;
-  socket = io(`${socketUrl}/ws`, {
-    transports: ["websocket", "polling"],
-    autoConnect: true,
-    reconnection: true,
-  });
-
-  socket.on("connect", () => {
-    console.log("[Socket.IO] Connected to server");
-  });
-
-  socket.on("disconnect", (reason) => {
-    console.log("[Socket.IO] Disconnected from server:", reason);
-  });
-
-  socket.on("connect_error", (error) => {
-    console.error("[Socket.IO] Connection error:", error);
-  });
-
-  // 监听服务器发送的事件
-  socket.on("progress-finished", (data) => {
-    const eventType = `progress-finished:${data.id}`;
-    // 触发对应的事件监听器
-    const listeners = eventListeners.get(eventType);
-    if (listeners) {
-      listeners.forEach((callback) => {
-        try {
-          callback({
-            payload: data,
-          });
-        } catch (e) {
-          console.error(
-            `[Socket.IO] Event listener error for ${eventType}:`,
-            e
-          );
-        }
-      });
-    }
-  });
-
-  socket.on("progress-update", (data) => {
-    const eventType = `progress-update:${data.id}`;
-    const listeners = eventListeners.get(eventType);
-    if (listeners) {
-      listeners.forEach((callback) => {
-        callback({
-          payload: data,
-        });
-      });
-    }
-  });
-
-  socket.on("danmu", (data) => {
-    // 触发对应的事件监听器
-    console.log("danmu:", data);
-    const listeners = eventListeners.get("danmu");
-    if (listeners) {
-      listeners.forEach((callback) => {
-        try {
-          callback({
-            payload: data,
-          });
-        } catch (e) {
-          console.error(`[Socket.IO] Event listener error for danmu:`, e);
-        }
-      });
-    }
-  });
-}
-
-if (!TAURI_ENV) {
-  createSocket();
-}
-
-async function listen<T>(event: string, callback: (data: any) => void) {
-  log.info("listen to event:", event);
-  if (TAURI_ENV) {
-    return await tauri_listen(event, callback);
-  }
-
-  // 将事件监听器添加到映射中
-  if (!eventListeners.has(event)) {
-    eventListeners.set(event, []);
-  }
-  eventListeners.get(event)!.push(callback);
-
-  // 返回一个清理函数
-  return () => {
-    const listeners = eventListeners.get(event);
-    if (listeners) {
-      const index = listeners.indexOf(callback);
-      if (index > -1) {
-        listeners.splice(index, 1);
-      }
-      // 如果没有监听器了，删除这个事件
-      if (listeners.length === 0) {
-        eventListeners.delete(event);
-      }
-    }
-  };
-}
+const { listen } = createEventClient({ tauri: TAURI_ENV, endpoint: ENDPOINT });
 
 async function open(url: string) {
   if (TAURI_ENV) {

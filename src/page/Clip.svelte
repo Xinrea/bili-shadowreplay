@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { createStateRefresh, watchStateChanges } from "../lib/state-refresh";
   import { invoke, TAURI_ENV, get_static_url } from "../lib/invoker";
   import type { VideoItem } from "../lib/interface";
   import ImportVideoDialog from "../lib/components/ImportVideoDialog.svelte";
@@ -51,9 +52,7 @@
   let videoToEditNote: VideoItem | null = $state(null);
   let editingNote = $state("");
 
-  onMount(async () => {
-    await loadVideos();
-  });
+  onMount(() => watchStateChanges(stateRefresh, ["videos-changed"]));
 
   onDestroy(() => {
     stopProgressPolling();
@@ -174,7 +173,13 @@
    * 加载视频数据列表
    * 从后端获取所有视频数据，包含封面信息，并应用筛选条件
    */
+  const stateRefresh = createStateRefresh(fetchVideoList);
+
   async function loadVideoList() {
+    await stateRefresh.run();
+  }
+
+  async function fetchVideoList() {
     try {
       // 获取所有视频
       const allVideos: VideoItem[] = [];

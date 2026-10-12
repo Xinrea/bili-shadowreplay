@@ -2,10 +2,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+#[cfg(test)]
+use tokio::sync::broadcast;
 
 use ffmpeg_utils::ffmpeg_command;
 use m3u8_rs::MediaPlaylist;
-use tokio::sync::broadcast;
 
 use crate::core::playlist::HlsPlaylist;
 use crate::errors::RecorderError;
@@ -18,7 +19,7 @@ pub struct FlvRecorder {
     read_timeout: Option<Duration>,
     work_dir: PathBuf,
     enabled: Arc<AtomicBool>,
-    event_channel: broadcast::Sender<RecorderEvent>,
+    event_channel: crate::events::RecorderEventSender,
     live_id: String,
 }
 
@@ -29,7 +30,7 @@ impl FlvRecorder {
         http_headers: Vec<(String, String)>,
         work_dir: PathBuf,
         enabled: Arc<AtomicBool>,
-        event_channel: broadcast::Sender<RecorderEvent>,
+        event_channel: impl Into<crate::events::RecorderEventSender>,
         live_id: String,
     ) -> Self {
         Self {
@@ -39,7 +40,7 @@ impl FlvRecorder {
             read_timeout: None,
             work_dir,
             enabled,
-            event_channel,
+            event_channel: event_channel.into(),
             live_id,
         }
     }
@@ -134,11 +135,14 @@ impl FlvRecorder {
                     )
                     .await;
                     if let Some((duration_secs, cached_size_bytes)) = duration_delta {
-                        let _ = self.event_channel.send(RecorderEvent::RecordUpdate {
-                            live_id: self.live_id.clone(),
-                            duration_secs,
-                            cached_size_bytes,
-                        });
+                        let _ = self
+                            .event_channel
+                            .send(RecorderEvent::RecordUpdate {
+                                live_id: self.live_id.clone(),
+                                duration_secs,
+                                cached_size_bytes,
+                            })
+                            .await;
                     }
                 }
             }

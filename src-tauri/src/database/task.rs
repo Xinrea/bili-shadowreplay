@@ -1,5 +1,6 @@
 use super::Database;
 use super::DatabaseError;
+use crate::events::DataChange;
 
 #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
 pub struct TaskRow {
@@ -46,6 +47,7 @@ impl Database {
         .bind(&task.created_at)
         .execute(&self.pool)
         .await?;
+        self.notify_change(DataChange::Tasks);
         Ok(())
     }
 
@@ -90,6 +92,11 @@ impl Database {
                 .await?;
         }
 
+        if status == "processing" {
+            self.notify_coalesced_change(DataChange::Tasks);
+        } else {
+            self.notify_change(DataChange::Tasks);
+        }
         Ok(())
     }
 
@@ -98,6 +105,7 @@ impl Database {
             .bind(id)
             .execute(&self.pool)
             .await?;
+        self.notify_change(DataChange::Tasks);
         Ok(())
     }
 
@@ -107,6 +115,7 @@ impl Database {
         )
         .execute(&self.pool)
         .await?;
+        self.notify_change(DataChange::Tasks);
         Ok(())
     }
 }

@@ -46,6 +46,7 @@ pub enum RecorderEvent {
         /// Event type, see [`crate::danmu::PREVIEW_EVENT_TYPES`].
         event_type: String,
         content: String,
+        emoji_content: Option<danmu_stream::EmojiContent>,
         user_name: Option<String>,
         /// Super chat price in CNY (battery). `None` for regular danmaku.
         price: Option<u32>,
@@ -66,6 +67,7 @@ impl RecorderEvent {
             ts,
             event_type: "danmu".to_string(),
             content: content.into(),
+            emoji_content: None,
             user_name: optional_user_name(user_name),
             price: None,
             sc_duration: None,
@@ -87,6 +89,7 @@ impl RecorderEvent {
             room,
             ts: event.ts,
             event_type: event.event_type.clone(),
+            emoji_content: event.emoji_content(),
             content: event
                 .data
                 .get("content")
@@ -151,6 +154,7 @@ mod tests {
                 ts,
                 event_type,
                 content,
+                emoji_content,
                 user_name,
                 price,
                 sc_duration,
@@ -159,6 +163,7 @@ mod tests {
                 assert_eq!(ts, 1_700_000_000_123);
                 assert_eq!(event_type, "danmu");
                 assert_eq!(content, "hello");
+                assert_eq!(emoji_content, None);
                 assert_eq!(user_name.as_deref(), Some("alice"));
                 assert_eq!(price, None);
                 assert_eq!(sc_duration, None);

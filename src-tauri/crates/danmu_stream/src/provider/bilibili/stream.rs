@@ -94,6 +94,7 @@ impl WsStreamCtx {
                         "color": 0,
                         "fan": message.fan,
                         "fan_level": message.fan_level,
+                        "emoji_content": crate::EmojiContent::from_bilibili_raw(&self.raw),
                     })
                 })
                 .unwrap_or_else(|_| self.raw.get("data").cloned().unwrap_or(Value::Null)),
@@ -166,6 +167,45 @@ impl WsStreamCtx {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_metadata_never_loses_danmaku_text() {
+        for (flag, metadata, expected) in [
+            (
+                1,
+                json!({"url": "https://example.com/a.webp", "width": 80, "height": 60, "emoticon_unique": "upower_test"}),
+                true,
+            ),
+            (0, json!({"url": "https://example.com/a.webp"}), false),
+            (1, Value::Null, false),
+            (1, json!({"url": 123}), false),
+            (1, json!({"width": 80}), false),
+            (1, json!({"url": ""}), false),
+            (
+                1,
+                json!({"url": "https://example.com/a.webp", "width": "bad"}),
+                true,
+            ),
+        ] {
+            let raw = json!({"cmd": "DANMU_MSG:4:0:2:2:2:0", "info": [
+                [0,0,0,0,123,0,0,0,0,0,0,0,flag,metadata],
+                "[emoji]", [42, "alice"], []
+            ]});
+            let ctx = WsStreamCtx::new(&raw.to_string()).unwrap();
+            let DanmuMessageType::Event(event) = ctx.match_msg().unwrap() else {
+                panic!("expected event");
+            };
+            assert_eq!(event.data["content"], "[emoji]");
+            assert_eq!(event.raw, raw);
+            assert_eq!(event.emoji_content().is_some(), expected);
+            if expected {
+                assert_eq!(
+                    event.data["emoji_content"]["url"],
+                    "https://example.com/a.webp"
+                );
+            }
+        }
+    }
 
     #[test]
     fn preserves_unknown_bilibili_events() {

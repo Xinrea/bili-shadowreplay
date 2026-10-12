@@ -299,6 +299,13 @@ export interface DanmuEntry {
    */
   type: string;
   content: string;
+  /** Image replacing the text of an emoji danmaku; text remains searchable. */
+  emoji_content?: {
+    url: string;
+    width?: number;
+    height?: number;
+    emoticon_unique?: string;
+  } | null;
   user_name?: string;
   /** Super chat price in CNY. Present for super chats. */
   price?: number;

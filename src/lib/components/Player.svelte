@@ -15,6 +15,8 @@
   } from "../interface";
   import { formatScPrice, getScColors } from "../superchat";
   import { keepEventSubscription } from "../event-subscription";
+  import { renderDanmuContent } from "../danmu-content";
+  import { createFloatingOverlay } from "../floating-overlay";
 
   import { save } from "@tauri-apps/plugin-dialog";
   import {
@@ -28,6 +30,7 @@
   let initialized = false;
   let stopDanmu: (() => void) | undefined;
   let cancelDanmuBatch: (() => void) | undefined;
+  let floatingOverlay: ReturnType<typeof createFloatingOverlay> | undefined;
   const danmuSubscription = new AbortController();
   onDestroy(() => {
     destroyed = true;
@@ -35,6 +38,7 @@
     document.removeEventListener("shaka-ui-loaded", init);
     stopDanmu?.();
     cancelDanmuBatch?.();
+    floatingOverlay?.destroy();
   });
 
   interface Props {
@@ -82,6 +86,10 @@
     selected_range_index = $bindable(-1),
     onMarkerAdd,
   }: Props = $props();
+  $effect(() => {
+    if (!danmu_enabled) floatingOverlay?.clear();
+  });
+
   export function seek(offset: number) {
     video.currentTime = offset;
   }
@@ -731,6 +739,8 @@ ${mediaPlaylistUrl}`;
         : "rgba(255, 0, 0, 0.5)";
     });
 
+    // Initialization can resume after unmount while awaiting archive/accounts.
+    if (destroyed) return;
     // create a area that overlay half top of the video, which shows danmakus floating from right to left
     const overlay = document.createElement("div");
     overlay.style.width = "100%";
@@ -746,6 +756,8 @@ ${mediaPlaylistUrl}`;
     overlay.style.paddingTop = "10%";
     // place overlay to the top of the video
     video.parentElement.appendChild(overlay);
+    const floating = createFloatingOverlay(overlay);
+    floatingOverlay = floating;
 
     // Store the positions of the last few floating items to avoid overlap.
     // One shared array for danmaku and SC cards so the two kinds cannot pick
@@ -774,7 +786,7 @@ ${mediaPlaylistUrl}`;
       return topPosition;
     }
 
-    function danmu_handler(content: string) {
+    function danmu_handler(record: DanmuEntry) {
       const danmaku = document.createElement("p");
       danmaku.style.position = "absolute";
 
@@ -792,14 +804,8 @@ ${mediaPlaylistUrl}`;
       danmaku.style.padding = "0";
       danmaku.style.zIndex = "500";
       danmaku.style.textShadow = "1px 1px 2px rgba(0, 0, 0, 0.6)";
-      danmaku.innerText = content;
-      overlay.appendChild(danmaku);
-      requestAnimationFrame(() => {
-        danmaku.style.transform = `translateX(-${overlay.clientWidth + danmaku.clientWidth}px)`;
-      });
-      danmaku.addEventListener("transitionend", () => {
-        overlay.removeChild(danmaku);
-      });
+      const disposeContent = renderDanmuContent(danmaku, record);
+      floating.add(danmaku, disposeContent);
     }
 
     // Super chats float across the screen like danmaku, rendered as an
@@ -865,29 +871,24 @@ ${mediaPlaylistUrl}`;
       card.style.pointerEvents = "none";
       card.style.zIndex = "500";
       card.style.boxShadow = "0 2px 8px rgba(0, 0, 0, 0.35)";
-      overlay.appendChild(card);
-      requestAnimationFrame(() => {
-        card.style.transform = `translateX(-${overlay.clientWidth + card.clientWidth}px)`;
-      });
-      card.addEventListener("transitionend", () => {
-        overlay.removeChild(card);
-      });
+      floating.add(card);
     }
 
     // Floating overlay renderers keyed by event type. New displayable event
     // kinds register a renderer here; unknown types fall back to a plain
     // danmaku row so their content still shows up.
     const floatingRenderers: Record<string, (entry: DanmuEntry) => void> = {
-      danmu: (entry) => danmu_handler(entry.content),
+      danmu: (entry) => danmu_handler(entry),
       super_chat: (entry) => sc_handler(entry),
     };
 
     function renderFloatingEntry(entry: DanmuEntry) {
+      if (destroyed || !danmu_enabled) return;
       const renderer = floatingRenderers[entry.type];
       if (renderer) {
         renderer(entry);
       } else {
-        danmu_handler(entry.content);
+        danmu_handler(entry);
       }
     }
 

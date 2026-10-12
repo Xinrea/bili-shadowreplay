@@ -22,6 +22,7 @@ pub struct DanmuEntry {
     #[serde(rename = "type")]
     pub event_type: String,
     pub content: String,
+    pub emoji_content: Option<danmu_stream::EmojiContent>,
     pub user_name: Option<String>,
     /// Super chat price in CNY (battery). `None` for other event types.
     pub price: Option<u32>,
@@ -160,6 +161,7 @@ impl DanmuStorage {
                             ts: event.ts - live_start_ts,
                             event_type: event.event_type.clone(),
                             content: content.to_string(),
+                            emoji_content: event.emoji_content(),
                             user_name: event
                                 .data
                                 .get("user_name")
@@ -189,6 +191,57 @@ mod tests {
         for line in lines {
             writeln!(file, "{line}").unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn image_metadata_survives_jsonl_and_matches_live_preview() {
+        let path = std::env::temp_dir().join(format!(
+            "emoji-storage-{}-{}.jsonl",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        let emoji = json!({"url": "https://example.com/emoji.webp", "width": 80, "height": 60, "emoticon_unique": "test"});
+        let raw = json!({"info": [[0,0,0,0,0,0,0,0,0,0,0,0,1,emoji]]});
+        let storage = DanmuStorage::new(&path).await.unwrap();
+        for normalized in [true, false] {
+            let event = LiveEvent {
+                ts: 100,
+                platform: "bilibili".into(),
+                room_id: "1".into(),
+                event_type: "danmu".into(),
+                data: if normalized {
+                    json!({"content": "[emoji]", "emoji_content": emoji})
+                } else {
+                    json!({"content": "[emoji]"})
+                },
+                raw: raw.clone(),
+            };
+            let preview =
+                crate::events::RecorderEvent::danmu_received_from_event("1".into(), &event)
+                    .unwrap();
+            let crate::events::RecorderEvent::DanmuReceived {
+                emoji_content,
+                content,
+                ..
+            } = preview
+            else {
+                panic!("expected preview");
+            };
+            assert_eq!(content, "[emoji]");
+            assert_eq!(serde_json::to_value(emoji_content).unwrap(), emoji);
+            storage.add_event(event).await.unwrap();
+        }
+        drop(storage);
+        let storage = DanmuStorage::new(&path).await.unwrap();
+        let entries = storage.get_entries(0).await;
+        assert_eq!(entries.len(), 2);
+        for entry in entries {
+            let value = serde_json::to_value(entry).unwrap();
+            assert_eq!(value["content"], "[emoji]");
+            assert_eq!(value["emoji_content"], emoji);
+        }
+        drop(storage);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[tokio::test]

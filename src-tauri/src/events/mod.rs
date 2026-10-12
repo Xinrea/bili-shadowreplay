@@ -217,6 +217,7 @@ mod tests {
                 ts,
                 event_type: "danmu".into(),
                 content: "test".into(),
+                emoji_content: None,
                 user_name: None,
                 price: None,
                 sc_duration: None,

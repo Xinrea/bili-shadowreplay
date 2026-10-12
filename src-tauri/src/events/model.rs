@@ -136,6 +136,7 @@ impl AppEvent {
                 ts,
                 event_type,
                 content,
+                emoji_content,
                 user_name,
                 price,
                 sc_duration,
@@ -145,6 +146,7 @@ impl AppEvent {
                     ts: *ts,
                     event_type: event_type.clone(),
                     content: content.clone(),
+                    emoji_content: emoji_content.clone(),
                     user_name: user_name.clone(),
                     price: *price,
                     sc_duration: *sc_duration,
@@ -185,12 +187,32 @@ mod tests {
     }
 
     #[test]
+    fn preview_client_payload_preserves_image_metadata_and_text() {
+        let live = danmu_stream::LiveEvent::new(
+            "bilibili",
+            "123",
+            "danmu",
+            json!({
+                "content": "[emoji]",
+                "emoji_content": {"url": "https://example.com/image.webp", "width": 80}
+            }),
+        );
+        let recorder = RecorderEvent::danmu_received_from_event("123".into(), &live).unwrap();
+        let client = AppEvent::from_preview(&RoomTopic::new("bilibili", "123"), &recorder)
+            .unwrap()
+            .client_event();
+        assert_eq!(client.payload["content"], "[emoji]");
+        assert_eq!(client.payload["emoji_content"], live.data["emoji_content"]);
+    }
+
+    #[test]
     fn recorder_danmu_preserves_room_names_and_super_chat_fields() {
         let event = RecorderEvent::DanmuReceived {
             room: "@EliraPendora".into(),
             ts: 123,
             event_type: "super_chat".into(),
             content: "hello".into(),
+            emoji_content: None,
             user_name: Some("alice".into()),
             price: Some(300),
             sc_duration: Some(60),
@@ -205,6 +227,7 @@ mod tests {
             json!({
                 "platform": "youtube", "room": "@EliraPendora", "ts": 123, "type": "super_chat", "content": "hello",
                 "user_name": "alice", "price": 300, "sc_duration": 60,
+                "emoji_content": null,
             })
         );
     }

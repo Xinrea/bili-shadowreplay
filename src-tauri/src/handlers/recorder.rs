@@ -619,6 +619,7 @@ mod prepare_danmus_for_export_tests {
             ts,
             event_type: "danmu".to_string(),
             content: content.to_string(),
+            emoji_content: None,
             user_name: None,
             price: None,
             sc_duration: None,

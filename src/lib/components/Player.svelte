@@ -15,6 +15,7 @@
   } from "../interface";
   import { formatScPrice, getScColors } from "../superchat";
   import { keepEventSubscription } from "../event-subscription";
+  import { renderDanmuContent } from "../danmu-content";
 
   import { save } from "@tauri-apps/plugin-dialog";
   import {
@@ -774,7 +775,7 @@ ${mediaPlaylistUrl}`;
       return topPosition;
     }
 
-    function danmu_handler(content: string) {
+    function danmu_handler(record: DanmuEntry) {
       const danmaku = document.createElement("p");
       danmaku.style.position = "absolute";
 
@@ -792,12 +793,13 @@ ${mediaPlaylistUrl}`;
       danmaku.style.padding = "0";
       danmaku.style.zIndex = "500";
       danmaku.style.textShadow = "1px 1px 2px rgba(0, 0, 0, 0.6)";
-      danmaku.innerText = content;
+      const disposeContent = renderDanmuContent(danmaku, record);
       overlay.appendChild(danmaku);
       requestAnimationFrame(() => {
         danmaku.style.transform = `translateX(-${overlay.clientWidth + danmaku.clientWidth}px)`;
       });
       danmaku.addEventListener("transitionend", () => {
+        disposeContent();
         overlay.removeChild(danmaku);
       });
     }
@@ -878,7 +880,7 @@ ${mediaPlaylistUrl}`;
     // kinds register a renderer here; unknown types fall back to a plain
     // danmaku row so their content still shows up.
     const floatingRenderers: Record<string, (entry: DanmuEntry) => void> = {
-      danmu: (entry) => danmu_handler(entry.content),
+      danmu: (entry) => danmu_handler(entry),
       super_chat: (entry) => sc_handler(entry),
     };
 
@@ -887,7 +889,7 @@ ${mediaPlaylistUrl}`;
       if (renderer) {
         renderer(entry);
       } else {
-        danmu_handler(entry.content);
+        danmu_handler(entry);
       }
     }
 

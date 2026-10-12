@@ -17,6 +17,7 @@
   import { clickOutside } from "../actions/clickOutside";
   import { virtualListWindow } from "../live-preview-perf";
   import { formatScPrice, getScColors, isSuperChat } from "../superchat";
+  import { danmuContent } from "../danmu-content";
 
   type InspectorTab = "ranges" | "danmu" | "markers" | "clips";
   type DanmuPeak = {
@@ -592,7 +593,7 @@
                       {#if danmu.user_name}
                         <b>{danmu.user_name}</b>
                       {/if}
-                      <span class="danmu-text">{danmu.content}</span>
+                      <span class="danmu-text" use:danmuContent={danmu}></span>
                       {#if isSuperChat(danmu)}
                         <span
                           class="sc-badge"

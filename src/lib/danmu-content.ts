@@ -84,6 +84,9 @@ export function renderDanmuContent(node: HTMLElement, entry: DanmuEntry) {
   const dispose = () => {
     image.removeEventListener("load", onLoad);
     image.removeEventListener("error", onError);
+    // Detaching a row alone does not revoke its image source. Remove it
+    // explicitly; do not assign an empty URL that could resolve to this page.
+    image.removeAttribute("src");
   };
   image.addEventListener("load", onLoad);
   image.addEventListener("error", onError);

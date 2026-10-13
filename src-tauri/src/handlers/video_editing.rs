@@ -2,9 +2,11 @@ use crate::state::State;
 use crate::state_type;
 use base64::Engine;
 use ffmpeg_utils::{extract_video_metadata, ffmpeg_command, path_str, VideoMetadata};
+#[cfg(feature = "gui")]
 use recorder::platforms::PlatformType;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+#[cfg(feature = "gui")]
 use std::str::FromStr;
 
 #[cfg(feature = "gui")]
@@ -16,6 +18,7 @@ pub struct VideoFrame {
     pub image_base64: String,
 }
 
+#[cfg(feature = "gui")]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DanmuHighlight {
     pub start_time: f64,
@@ -25,6 +28,7 @@ pub struct DanmuHighlight {
     pub sample_comments: Vec<String>,
 }
 
+#[cfg(feature = "gui")]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DanmuKeywordMatch {
     pub timestamp: f64,
@@ -145,6 +149,7 @@ async fn extract_frame_at_timestamp(video_path: &Path, timestamp: f64) -> Result
 }
 
 /// Get detailed video metadata
+#[cfg(feature = "gui")]
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_video_metadata(
     state: state_type!(),
@@ -171,6 +176,7 @@ async fn get_video_metadata_internal(video_path: &Path) -> Result<VideoMetadata,
 }
 
 /// Analyze danmu to find highlight moments based on comment density
+#[cfg(feature = "gui")]
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn analyze_danmu_highlights(
     state: state_type!(),
@@ -239,6 +245,7 @@ pub async fn analyze_danmu_highlights(
 }
 
 /// Search for specific keywords in danmu
+#[cfg(feature = "gui")]
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn search_danmu_keywords(
     state: state_type!(),
@@ -280,6 +287,7 @@ pub async fn search_danmu_keywords(
 }
 
 /// Merge multiple videos into one
+#[cfg(feature = "gui")]
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn merge_videos(
     state: state_type!(),
@@ -515,6 +523,7 @@ pub async fn merge_videos(
 }
 
 /// Extract audio from video
+#[cfg(feature = "gui")]
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn extract_video_audio(state: state_type!(), video_id: i64) -> Result<String, String> {
     let video = state
@@ -568,6 +577,7 @@ pub async fn extract_video_audio(state: state_type!(), video_id: i64) -> Result<
 }
 
 /// Get archive metadata
+#[cfg(feature = "gui")]
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_archive_metadata(
     state: state_type!(),
@@ -617,6 +627,44 @@ pub async fn get_archive_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn frame_extraction_returns_base64_jpeg_without_gui() {
+        // Match ffmpeg_utils tests: CI installs FFmpeg, but local contributors
+        // can still run the test suite without the optional media executable.
+        let available = ffmpeg_command()
+            .arg("-version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await;
+        if let Err(error) = &available {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                eprintln!("Skipping frame extraction test: FFmpeg is not installed");
+                return;
+            }
+        }
+        assert!(available.unwrap().success(), "FFmpeg version check failed");
+        let directory = tempfile::tempdir().unwrap();
+        let video_path = directory.path().join("test.mp4");
+        let output = ffmpeg_command()
+            .args(["-f", "lavfi", "-i", "color=c=red:s=32x32:d=1", "-y"])
+            .arg(&video_path)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let data = extract_frame_at_timestamp(&video_path, 0.5).await.unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .unwrap();
+        assert!(bytes.starts_with(&[0xff, 0xd8, 0xff]));
+        assert!(bytes.ends_with(&[0xff, 0xd9]));
+    }
 
     #[test]
     fn relative_video_paths_are_resolved_from_output_directory() {

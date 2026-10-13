@@ -3,6 +3,7 @@ use std::path::Path;
 
 pub mod audio;
 pub mod clip;
+mod danmu;
 pub mod general;
 pub mod hwaccel;
 pub mod metadata;
@@ -14,8 +15,9 @@ pub mod subtitle;
 pub(crate) use audio::get_audio_duration;
 pub use audio::{extract_audio_sample, extract_full_audio};
 pub use clip::{clip_from_video_file, transcode, trim_video};
+pub use danmu::encode_video_danmu;
 pub use metadata::{check_ffmpeg, check_videos, generate_thumbnail};
-pub use subtitle::{encode_video_danmu, encode_video_subtitle, generate_video_subtitle};
+pub use subtitle::{encode_video_subtitle, generate_video_subtitle};
 
 #[cfg(test)]
 use crate::constants;

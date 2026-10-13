@@ -1,5 +1,4 @@
 use crate::config::Config;
-use crate::danmu2ass;
 use crate::database::record::RecordRow;
 use crate::database::recorder::RecorderRow;
 use crate::database::video::VideoRow;
@@ -41,7 +40,7 @@ use std::sync::Arc;
 #[cfg(feature = "gui")]
 use tauri_plugin_notification::NotificationExt;
 use thiserror::Error;
-use tokio::fs::{remove_file, write, File};
+use tokio::fs::{remove_file, File};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::RwLock;
 
@@ -137,8 +136,6 @@ pub enum RecorderManagerError {
     InvalidLiveID,
     #[error("Invalid program date time: {value}")]
     InvalidProgramDateTime { value: String },
-    #[error("Archive danmu ass generation failed: {error}")]
-    ArchiveDanmuAssGenerationFailed { error: String },
 }
 
 impl From<RecorderManagerError> for String {
@@ -1094,54 +1091,27 @@ impl RecorderManager {
 
         log::debug!("Range anchors: {:?}", range_anchors);
 
-        let mut filtered_danmus = Vec::<DanmuEntry>::new();
-        for (i, range) in params.ranges.iter().enumerate() {
-            filtered_danmus.extend(self.filter_danmus_in_range(
-                danmus.clone(),
-                range,
-                range_anchors[i],
-            ));
-        }
-
-        let ass_content = danmu2ass::danmu_to_ass(
-            filtered_danmus,
-            self.config.read().await.danmu_ass_options.clone(),
-        );
-        // Keep the ASS input in a uniquely named RAII-managed file. A fixed
-        // `clip.ass` path could collide with another encode and was left behind
-        // when the task was cancelled between the write and the encode.
-        let ass_dir = clip_file.parent().unwrap_or_else(|| Path::new("."));
-        let ass_file = match tempfile::Builder::new()
-            .prefix(".bili-danmu-")
-            .suffix(".ass")
-            .tempfile_in(ass_dir)
-        {
-            Ok(file) => file.into_temp_path(),
-            Err(e) => {
-                log::error!(
-                    "Failed to create temp ass file in {}: {}",
-                    ass_dir.display(),
-                    e
-                );
-                return Ok(clip_file);
+        let filtered_danmus = if params.ranges.is_empty() {
+            danmus
+        } else {
+            let mut filtered = Vec::new();
+            for (i, range) in params.ranges.iter().enumerate() {
+                filtered.extend(self.filter_danmus_in_range(
+                    danmus.clone(),
+                    range,
+                    range_anchors[i],
+                ));
             }
+            filtered
         };
-        if let Err(e) = write(&ass_file, ass_content).await {
-            log::error!(
-                "Failed to write temp ass file: {} {}",
-                ass_file.display(),
-                e
-            );
-            return Ok(clip_file);
-        }
-
-        let result = encode_video_danmu(reporter, &clip_file, &ass_file).await;
-        // `TempPath` removes the ASS file on every return path, including
-        // cancellation/unwinding. The encoded clip is still an explicit output
-        // and is removed only after the encode attempt, as before.
+        let options = self.config.read().await.danmu_ass_options.clone();
+        let output = encode_video_danmu(reporter, &clip_file, &filtered_danmus, &options)
+            .await
+            .map_err(|err| RecorderManagerError::ClipError { err })?;
+        // Keep the original clip if preparation/encoding fails. The encoder
+        // owns the temporary ASS and downloaded images, including cancellation.
         let _ = remove_file(clip_file).await;
-
-        result.map_err(|e| RecorderManagerError::ClipError { err: e })
+        Ok(output)
     }
 
     fn filter_danmus_in_range(
@@ -1164,14 +1134,14 @@ impl RecorderManager {
         danmus
     }
 
-    async fn generate_archive_danmu_ass(
+    async fn load_archive_danmus(
         &self,
         platform: PlatformType,
         room_id: &str,
         live_id: &str,
-    ) -> Result<PathBuf, RecorderManagerError> {
+    ) -> Result<Vec<DanmuEntry>, RecorderManagerError> {
         log::info!(
-            "Generate archive danmu ass file for {} {} {}",
+            "Load archive danmu for {} {} {}",
             platform.as_str(),
             room_id,
             live_id
@@ -1184,26 +1154,7 @@ impl RecorderManager {
         for d in &mut danmus {
             d.ts -= first_segment_timestamp_milis;
         }
-        let ass_content =
-            danmu2ass::danmu_to_ass(danmus, self.config.read().await.danmu_ass_options.clone());
-        let work_dir = CachePath::new(
-            self.config.read().await.cache.clone().into(),
-            platform,
-            room_id,
-            live_id,
-        );
-        let ass_file_path = work_dir.with_filename("danmu.ass");
-        if let Err(e) = write(&ass_file_path.full_path(), ass_content).await {
-            log::error!(
-                "Failed to write archive danmu ass file: {} {}",
-                ass_file_path.full_path().display(),
-                e
-            );
-            return Err(RecorderManagerError::ArchiveDanmuAssGenerationFailed {
-                error: e.to_string(),
-            });
-        }
-        Ok(ass_file_path.full_path())
+        Ok(danmus)
     }
 
     pub async fn get_recorder_list(&self) -> RecorderList {
@@ -1655,19 +1606,21 @@ impl RecorderManager {
 
         let title = first_playlist.title.clone();
 
-        // generate archive danmu ass file for all playlists
-        let danmu_ass_files = if encode_danmu {
-            let danmu_ass_files = playlists
+        // Keep image metadata through concatenation; the common encoder prepares
+        // each playlist's text and images together in its own temporary directory.
+        let danmu_options = self.config.read().await.danmu_ass_options.clone();
+        let danmu_tracks = if encode_danmu {
+            let danmu_tracks = playlists
                 .iter()
                 .map(async |p| {
                     (self
-                        .generate_archive_danmu_ass(platform, &room_id, &p.live_id)
+                        .load_archive_danmus(platform, &room_id, &p.live_id)
                         .await)
                         .ok()
                 })
                 .collect::<Vec<_>>();
 
-            futures::future::join_all(danmu_ass_files).await
+            futures::future::join_all(danmu_tracks).await
         } else {
             vec![None; playlists.len()]
         };
@@ -1710,7 +1663,8 @@ impl RecorderManager {
         if let Err(e) = crate::ffmpeg::playlist::concat_playlists_to_video(
             reporter,
             &playlists_refs,
-            danmu_ass_files,
+            danmu_tracks,
+            &danmu_options,
             &output_path,
         )
         .await

@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::constants;
 use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
@@ -9,18 +9,6 @@ use super::{
     hwaccel,
     runner::{run_command, ProgressMode, TempArtifact},
 };
-
-/// Minimum output frame rate for rendered danmaku.
-const MIN_DANMU_FPS: f64 = 60.0;
-
-/// Raise low/unknown source rates without lowering sources already above the minimum.
-fn danmu_output_fps(source_fps: f64) -> f64 {
-    if source_fps.is_finite() && source_fps > 0.0 {
-        source_fps.max(MIN_DANMU_FPS)
-    } else {
-        MIN_DANMU_FPS
-    }
-}
 
 fn file_name_str(path: &Path) -> Result<&str, String> {
     path.file_name()
@@ -83,51 +71,6 @@ pub async fn encode_video_subtitle<R: ProgressReporterTrait>(
     .map_err(|error| error.to_string())?;
     log::info!("Encode video subtitle task end: {}", output_path.display());
     Ok(output_filename)
-}
-
-/// Burn an ASS danmu file into a video.
-pub async fn encode_video_danmu<R: ProgressReporterTrait>(
-    reporter: Option<&R>,
-    file: &Path,
-    subtitle: &Path,
-) -> Result<PathBuf, String> {
-    log::info!("Encode video danmu task start: {}", file.display());
-    let danmu_filename = format!("{}{}", constants::PREFIX_DANMAKU, file_name_str(file)?);
-    let output_path = file.with_file_name(&danmu_filename);
-    let subtitle = subtitle_filter_path(subtitle)?;
-    let vf = format!("{},ass={subtitle}", hwaccel::H264_SCALE_PAD_FILTER);
-    let source_fps = match ffmpeg_utils::extract_video_metadata(file).await {
-        Ok(metadata) => metadata.fps,
-        Err(error) => {
-            log::warn!(
-                "Failed to inspect source FPS for {}: {}; using {MIN_DANMU_FPS} FPS",
-                file.display(),
-                error
-            );
-            0.0
-        }
-    };
-    let output_fps = danmu_output_fps(source_fps).to_string();
-
-    let mut command = ffmpeg_command();
-    let video_encoder = hwaccel::get_x264_encoder().await;
-    command.arg("-i").arg(file);
-    hwaccel::apply_x264_encoder_args(&mut command, video_encoder, Some(&vf));
-    command.args(["-c:a", "copy"]);
-    hwaccel::apply_x264_quality_args(&mut command, video_encoder);
-    command.args(["-r", output_fps.as_str()]);
-    command.args(["-y"]).arg(&output_path);
-
-    run_command(
-        command,
-        ProgressMode::prefixed("压制中："),
-        "Encode video danmu",
-        reporter,
-    )
-    .await
-    .map_err(|error| error.to_string())?;
-    log::info!("Encode video danmu task end: {}", output_path.display());
-    Ok(output_path)
 }
 
 /// Generate subtitles through one of the configured subtitle services.
@@ -371,25 +314,5 @@ pub async fn generate_video_subtitle(
                 .generate_subtitle(reporter, &audio_file, language_hint)
                 .await
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{danmu_output_fps, MIN_DANMU_FPS};
-
-    #[test]
-    fn danmu_output_fps_applies_the_minimum_without_clamping_higher_sources() {
-        assert_eq!(danmu_output_fps(30.0), MIN_DANMU_FPS);
-        assert_eq!(danmu_output_fps(59.94), MIN_DANMU_FPS);
-        assert_eq!(danmu_output_fps(60.0), MIN_DANMU_FPS);
-        assert_eq!(danmu_output_fps(120.0), 120.0);
-    }
-
-    #[test]
-    fn danmu_output_fps_falls_back_to_the_minimum_for_unknown_sources() {
-        assert_eq!(danmu_output_fps(0.0), MIN_DANMU_FPS);
-        assert_eq!(danmu_output_fps(f64::NAN), MIN_DANMU_FPS);
-        assert_eq!(danmu_output_fps(f64::INFINITY), MIN_DANMU_FPS);
     }
 }

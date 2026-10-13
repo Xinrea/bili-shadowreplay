@@ -1,6 +1,6 @@
 use recorder::danmu::DanmuEntry;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::{collections::VecDeque, path::PathBuf};
 
 // code reference: https://github.com/tiansh/us-danmaku/blob/master/bilibili/bilibili_ASS_Danmaku_Downloader.user.js
 
@@ -25,10 +25,10 @@ struct DanmakuPosition {
     time: f64,
 }
 
-const PLAY_RES_X: f64 = 1280.0;
-const PLAY_RES_Y: f64 = 720.0;
+pub const PLAY_RES_X: f64 = 1280.0;
+pub const PLAY_RES_Y: f64 = 720.0;
 const BOTTOM_RESERVED: f64 = 50.0;
-const R2L_TIME: f64 = 8.0;
+pub const R2L_TIME: f64 = 8.0;
 const MAX_DELAY: f64 = 6.0;
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -46,15 +46,49 @@ impl Default for Danmu2AssOptions {
     }
 }
 
-pub fn danmu_to_ass(danmus: Vec<DanmuEntry>, options: Danmu2AssOptions) -> String {
-    // Super chats and other event types are shown by the preview UI but never
-    // burned into the video: the ASS subtitle track only renders regular
-    // scrolling danmaku.
-    let mut danmus = danmus;
-    danmus.retain(|danmu| danmu.is_danmu());
+/// A local, decoded image with its footprint in ASS play-resolution units.
+#[derive(Debug, Clone)]
+pub struct DanmuImage {
+    pub path: PathBuf,
+    pub width: f64,
+    pub height: f64,
+}
 
-    let font_size = options.font_size; // Default font size
-    let opacity = options.opacity; // 透明度参数
+#[derive(Debug, Clone)]
+pub struct ImageDanmu {
+    pub image: DanmuImage,
+    pub start: f64,
+    pub top: f64,
+}
+
+pub struct DanmuRenderPlan {
+    pub ass: String,
+    pub images: Vec<ImageDanmu>,
+}
+
+/// Portable ASS exports remain text-only; image extensions such as VSFilterMod's
+/// `\\1img` are not supported by libass or most ASS players.
+pub fn danmu_to_ass(danmus: Vec<DanmuEntry>, options: Danmu2AssOptions) -> String {
+    danmu_render_plan(&danmus, &options, |_| None).ass
+}
+
+/// Text and images must reserve space in the same scheduler. Resolve images
+/// before scheduling so a failed download uses the full text footprint instead.
+pub fn danmu_render_plan(
+    danmus: &[DanmuEntry],
+    options: &Danmu2AssOptions,
+    resolve_image: impl Fn(&DanmuEntry) -> Option<DanmuImage>,
+) -> DanmuRenderPlan {
+    // Exclude SC and other preview-only events. Sort after clip/transition time
+    // remapping, which can interleave messages from adjacent source ranges.
+    let mut danmus: Vec<_> = danmus
+        .iter()
+        .filter(|danmu| danmu.is_danmu() && danmu.ts >= 0)
+        .collect();
+    danmus.sort_by_key(|danmu| danmu.ts);
+
+    let font_size = options.font_size;
+    let opacity = options.opacity;
 
     // 将透明度转换为十六进制Alpha值 (0.0-1.0 -> 0x00-0xFF)
     let alpha = ((1.0 - opacity) * 255.0) as u8;
@@ -81,44 +115,44 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     );
 
     let mut normal = normal_danmaku();
-
-    // Convert danmus to ASS events
-    let events = danmus
-        .iter()
-        .filter_map(|danmu| {
-            // Calculate text width (approximate)
-            let text_width = danmu.content.len() as f64 * font_size * 0.6;
-
-            // Convert timestamp from ms to seconds
-            let t0s = danmu.ts as f64 / 1000.0;
-
-            // Get position from normal_danmaku
-            let pos = normal(t0s, text_width, font_size, false)?;
-
-            // Convert timestamp to ASS time format (H:MM:SS.CC)
-            let start_time = format_time(pos.time);
-            let end_time = format_time(pos.time + R2L_TIME);
-
-            // Escape special characters in the text
-            let text = escape_text(&danmu.content);
-
-            // Create ASS event line with movement effect
-            Some(format!(
+    let mut events = Vec::new();
+    let mut images = Vec::new();
+    for danmu in danmus {
+        let image = resolve_image(danmu);
+        let (width, height) = image
+            .as_ref()
+            .map(|image| (image.width, image.height))
+            .unwrap_or_else(|| (danmu.content.len() as f64 * font_size * 0.6, font_size));
+        let Some(pos) = normal(danmu.ts as f64 / 1000.0, width, height, false) else {
+            continue;
+        };
+        if let Some(image) = image {
+            images.push(ImageDanmu {
+                image,
+                start: pos.time,
+                top: pos.top,
+            });
+        } else {
+            // ASS alignment 2 uses the bottom-center anchor. Its left edge
+            // travels from PLAY_RES_X to -width, matching the collision model
+            // and the image overlay's motion exactly.
+            events.push(format!(
                 "Dialogue: 0,{},{},Default,,0,0,0,,{{\\move({},{},{},{})}}{}",
-                start_time,
-                end_time,
-                PLAY_RES_X + text_width / 2.0,
-                pos.top + font_size, // Start position
-                -text_width,
-                pos.top + font_size, // End position
-                text
-            ))
-        })
-        .collect::<Vec<String>>()
-        .join("\n");
+                format_time(pos.time),
+                format_time(pos.time + R2L_TIME),
+                PLAY_RES_X + width / 2.0,
+                pos.top + height,
+                -width / 2.0,
+                pos.top + height,
+                escape_text(&danmu.content)
+            ));
+        }
+    }
 
-    // Combine header and events
-    format!("{header}\n{events}")
+    DanmuRenderPlan {
+        ass: format!("{header}\n{}", events.join("\n")),
+        images,
+    }
 }
 
 fn format_time(seconds: f64) -> String {
@@ -250,6 +284,80 @@ fn normal_danmaku() -> impl FnMut(f64, f64, f64, bool) -> Option<DanmakuPosition
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn entry(ts: i64, content: &str) -> DanmuEntry {
+        DanmuEntry {
+            ts,
+            event_type: "danmu".into(),
+            content: content.into(),
+            emoji_content: None,
+            user_name: None,
+            price: None,
+            sc_duration: None,
+        }
+    }
+
+    fn image() -> DanmuImage {
+        DanmuImage {
+            path: "emoji.png".into(),
+            width: 108.0,
+            height: 54.0,
+        }
+    }
+
+    #[test]
+    fn images_replace_text_and_share_lanes_with_text() {
+        let entries = vec![entry(1000, "[emoji]"), entry(1000, "hello")];
+        let plan = danmu_render_plan(&entries, &Danmu2AssOptions::default(), |entry| {
+            (entry.content == "[emoji]").then(image)
+        });
+        assert_eq!(plan.images.len(), 1);
+        assert_eq!(plan.images[0].start, 1.0);
+        assert_eq!(plan.images[0].top, 0.0);
+        assert!(!plan.ass.contains("[emoji]"));
+        // Text sits below the 54-unit-high image, not in a 36-unit text lane.
+        assert!(plan.ass.contains("\\move(1334,90,-54,90)"));
+        assert!(plan.ass.contains("hello"));
+    }
+
+    #[test]
+    fn failed_images_fall_back_to_normal_text_layout() {
+        let entries = vec![entry(1000, "[emoji]"), entry(1000, "hello")];
+        let plan = danmu_render_plan(&entries, &Danmu2AssOptions::default(), |_| None);
+        assert!(plan.images.is_empty());
+        assert!(plan.ass.contains("[emoji]"));
+        assert!(plan.ass.contains("\\move(1334,72,-54,72)}hello"));
+    }
+
+    #[test]
+    fn portable_ass_export_keeps_emoji_text() {
+        let mut danmu = entry(1000, "[emoji]");
+        danmu.emoji_content = Some(danmu_stream::EmojiContent {
+            url: "https://i0.hdslb.com/emoji.png".into(),
+            width: Some(80),
+            height: Some(80),
+            emoticon_unique: None,
+        });
+        let ass = danmu_to_ass(vec![danmu], Danmu2AssOptions::default());
+        assert!(ass.contains("[emoji]"));
+        assert!(!ass.contains("\\1img"));
+    }
+
+    #[test]
+    fn render_plan_orders_remapped_times_and_excludes_non_danmu() {
+        let mut sc = entry(0, "super chat");
+        sc.event_type = "super_chat".into();
+        let entries = vec![
+            entry(5000, "late"),
+            sc,
+            entry(-1, "before"),
+            entry(1000, "early"),
+        ];
+        let plan = danmu_render_plan(&entries, &Danmu2AssOptions::default(), |_| Some(image()));
+        assert_eq!(plan.images.len(), 2);
+        assert_eq!(plan.images[0].start, 1.0);
+        assert_eq!(plan.images[1].start, 5.0);
+    }
 
     #[test]
     fn test_format_time_zero() {

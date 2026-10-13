@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use m3u8_rs::{Map, MediaPlaylist};
 use tempfile::{tempdir_in, Builder};
@@ -251,7 +251,8 @@ async fn replace_output(
 pub async fn concat_playlists_to_video(
     reporter: Option<&impl ProgressReporterTrait>,
     playlists: &[&Path],
-    danmu_ass_files: Vec<Option<PathBuf>>,
+    danmu_tracks: Vec<Option<Vec<recorder::danmu::DanmuEntry>>>,
+    danmu_options: &crate::danmu2ass::Danmu2AssOptions,
     output_path: &Path,
 ) -> Result<(), String> {
     let output_dir = output_path
@@ -269,8 +270,9 @@ pub async fn concat_playlists_to_video(
             log::error!("Failed to generate playlist video: {e}");
             continue;
         }
-        if let Some(danmu_ass_file) = danmu_ass_files.get(i).and_then(Option::as_ref) {
-            video_path = super::encode_video_danmu(reporter, &video_path, danmu_ass_file).await?;
+        if let Some(danmus) = danmu_tracks.get(i).and_then(Option::as_ref) {
+            video_path =
+                super::encode_video_danmu(reporter, &video_path, danmus, danmu_options).await?;
         }
         segments.push(video_path);
     }

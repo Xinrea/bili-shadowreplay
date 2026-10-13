@@ -14,6 +14,7 @@ use crate::events::EventBus;
 
 #[derive(Clone)]
 pub struct State {
+    pub mcp_server: Arc<crate::mcp::McpServer>,
     pub db: Arc<Database>,
     pub config: Arc<RwLock<Config>>,
     pub webhook_poster: WebhookPoster,

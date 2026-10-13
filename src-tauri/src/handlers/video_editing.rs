@@ -98,7 +98,14 @@ pub async fn extract_video_frames(
 
 /// Extract a single frame at a specific timestamp
 async fn extract_frame_at_timestamp(video_path: &Path, timestamp: f64) -> Result<String, String> {
-    let output_path = std::env::temp_dir().join(format!("frame_{}.jpg", timestamp));
+    // Give every extraction its own directory: MCP clients may request the
+    // same timestamp concurrently. No open file handle blocks FFmpeg on
+    // Windows, and the directory is removed on both success and failure.
+    let temporary_dir = tempfile::Builder::new()
+        .prefix("bsr-frame-")
+        .tempdir()
+        .map_err(|error| format!("Failed to create frame directory: {error}"))?;
+    let output_path = temporary_dir.path().join("frame.jpg");
 
     let mut cmd = ffmpeg_command();
 
@@ -133,9 +140,6 @@ async fn extract_frame_at_timestamp(video_path: &Path, timestamp: f64) -> Result
         .map_err(|e| format!("Failed to read frame: {}", e))?;
 
     let base64_data = base64::engine::general_purpose::STANDARD.encode(&image_data);
-
-    // Cleanup
-    let _ = tokio::fs::remove_file(&output_path).await;
 
     Ok(base64_data)
 }

@@ -15,6 +15,30 @@ pub async fn get_config(state: state_type!()) -> Result<Config, ()> {
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_mcp_server_status(
+    state: state_type!(),
+) -> Result<crate::mcp::McpServerStatus, String> {
+    Ok(state.mcp_server.status(&state).await)
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn update_mcp_server(
+    state: state_type!(),
+    enabled: bool,
+    port: Option<u16>,
+) -> Result<crate::mcp::McpServerStatus, String> {
+    #[cfg(feature = "headless")]
+    if state.readonly {
+        return Err("MCP settings cannot be changed in readonly mode".into());
+    }
+    #[cfg(feature = "gui")]
+    let app_state = state.inner().clone();
+    #[cfg(feature = "headless")]
+    let app_state = state.clone();
+    state.mcp_server.set_enabled(app_state, enabled, port).await
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_llm_config(state: state_type!()) -> Result<LlmConfig, ()> {
     Ok(state.config.read().await.llm.clone())
 }

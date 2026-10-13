@@ -536,19 +536,8 @@ impl BsrTool {
             other => Err(BsrToolError(format!("Unknown BSR action: {other}"))),
         }
     }
-}
 
-impl Tool for BsrTool {
-    const NAME: &'static str = "bsr";
-    type Error = BsrToolError;
-    type Args = BsrToolArgs;
-    type Output = Value;
-
-    fn description(&self) -> String {
-        "Read, analyse and manage BSR. Read-only actions execute immediately. Actions that change state, generate files, access local files through the browser, or start external operations return a confirmation request that the user must approve in the UI.".into()
-    }
-
-    fn parameters(&self) -> Value {
+    fn action_definitions() -> Vec<Value> {
         let platform = || json!({ "type": "string", "enum": ["bilibili", "douyin", "douyu"] });
         let string = || json!({ "type": "string" });
         let integer = || json!({ "type": "integer" });
@@ -560,7 +549,7 @@ impl Tool for BsrTool {
                 "enum": ["none", "fade", "dissolve", "wipeleft", "wiperight", "slideup", "slidedown"]
             })
         };
-        let actions = vec![
+        vec![
             Self::action_schema(
                 "get_accounts",
                 "Get configured accounts with cookies redacted.",
@@ -813,11 +802,50 @@ impl Tool for BsrTool {
                 json!({ "platform": platform(), "room_id": string(), "live_id": string() }),
                 &["platform", "room_id", "live_id"],
             ),
-        ];
-        json!({
-            "type": "object",
-            "oneOf": actions
-        })
+        ]
+    }
+}
+
+/// Reuse the same BSR action schemas for the local MCP server.
+/// The MCP catalog filters actions to those its executor supports.
+pub(crate) fn bsr_tool_definitions() -> Vec<Value> {
+    BsrTool::action_definitions()
+}
+
+/// Run the shared data-reading implementation without entering Rig's agent
+/// loop. Mutating operations remain behind the built-in assistant's existing
+/// confirmation boundary and are implemented separately by MCP.
+pub(crate) async fn execute_bsr_read_tool(
+    state: &State,
+    action: &str,
+    args: Value,
+) -> Result<Value, String> {
+    let tool = BsrTool {
+        db: state.db.clone(),
+        recorder_manager: state.recorder_manager.clone(),
+        calls: Arc::new(Mutex::new(Vec::new())),
+    };
+    let input = BsrToolArgs {
+        action: action.to_string(),
+        args,
+    }
+    .normalize()
+    .map_err(|error| error.to_string())?;
+    tool.execute(input).await.map_err(|error| error.to_string())
+}
+
+impl Tool for BsrTool {
+    const NAME: &'static str = "bsr";
+    type Error = BsrToolError;
+    type Args = BsrToolArgs;
+    type Output = Value;
+
+    fn description(&self) -> String {
+        "Read, analyse and manage BSR. Read-only actions execute immediately. Actions that change state, generate files, access local files through the browser, or start external operations return a confirmation request that the user must approve in the UI.".into()
+    }
+
+    fn parameters(&self) -> Value {
+        json!({ "type": "object", "oneOf": Self::action_definitions() })
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {

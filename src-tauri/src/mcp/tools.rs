@@ -5,6 +5,7 @@
 use recorder::platforms::PlatformType;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 
 #[cfg(feature = "gui")]
 use tauri::Manager;
@@ -198,7 +199,14 @@ fn constrain_schema(name: &str, schema: &mut Value) {
         "delete_archives" => {
             properties["live_ids"]["minItems"] = json!(1);
         }
+        "encode_video_subtitle" => {
+            properties["srt_style"]["description"] = json!("Comma-separated ASS overrides using FontName, FontSize, PrimaryColour, OutlineColour, Outline, Alignment, MarginV, MarginL, MarginR. Font names may contain letters, digits, spaces, hyphens, underscores, periods or parentheses. Colors use &H followed by 6 or 8 hex digits. Use an empty string for default styling; filter expressions, paths and URLs are not accepted.");
+            properties["srt_style"]["maxLength"] = json!(2048);
+        }
         "clip_range" => {
+            if let Some(properties) = properties.as_object_mut() {
+                properties.remove("reason");
+            }
             let clip = &mut properties["clip_range_params"]["properties"];
             // The backend stores this offset as an i64, although the older
             // assistant schema allowed arbitrary JSON numbers.
@@ -206,6 +214,9 @@ fn constrain_schema(name: &str, schema: &mut Value) {
             clip["ranges"]["minItems"] = json!(1);
             clip["ranges"]["items"]["properties"]["start"]["minimum"] = json!(0);
             clip["ranges"]["items"]["properties"]["end"]["exclusiveMinimum"] = json!(0);
+            if let Some(required) = schema["required"].as_array_mut() {
+                required.retain(|name| name != "reason");
+            }
         }
         "extract_video_frames" => {
             properties["max_frames"]["minimum"] = json!(1);
@@ -227,6 +238,78 @@ fn argument<T: DeserializeOwned>(args: &Value, name: &str) -> Result<T, String> 
         .ok_or_else(|| format!("Missing argument: {name}"))?;
     serde_json::from_value(value.clone())
         .map_err(|error| format!("Invalid argument {name}: {error}"))
+}
+
+/// The backend interpolates force_style inside a quoted FFmpeg filter. Accept
+/// only the override fields produced by SubtitleStyleEditor, with value
+/// grammars that cannot close the quote or introduce another filter/option.
+fn validate_subtitle_style(style: &str) -> Result<(), String> {
+    if style.len() > 2048 || style.chars().any(char::is_control) {
+        return Err(
+            "srt_style must be at most 2048 bytes and contain no control characters".into(),
+        );
+    }
+    if style.trim().is_empty() {
+        return Ok(());
+    }
+
+    let mut fields = HashSet::new();
+    for override_value in style.split(',') {
+        let (field, value) = override_value.split_once('=').ok_or_else(|| {
+            "srt_style must contain comma-separated Key=Value overrides".to_string()
+        })?;
+        let field = field.trim();
+        let value = value.trim();
+        if !fields.insert(field) {
+            return Err(format!("Duplicate subtitle style field: {field}"));
+        }
+        let valid = match field {
+            "FontName" => {
+                !value.is_empty()
+                    && value.chars().all(|character| {
+                        character.is_alphanumeric()
+                            || matches!(character, ' ' | '-' | '_' | '.' | '(' | ')')
+                    })
+            }
+            "PrimaryColour" | "OutlineColour" => {
+                let color = value
+                    .strip_prefix("&H")
+                    .or_else(|| value.strip_prefix("&h"))
+                    .unwrap_or_default();
+                let color = color.strip_suffix('&').unwrap_or(color);
+                matches!(color.len(), 6 | 8)
+                    && color.bytes().all(|character| character.is_ascii_hexdigit())
+            }
+            "FontSize" | "Outline" => {
+                value
+                    .bytes()
+                    .all(|character| character.is_ascii_digit() || character == b'.')
+                    && value.parse::<f64>().is_ok_and(|number| {
+                        number.is_finite()
+                            && if field == "FontSize" {
+                                number > 0.0
+                            } else {
+                                (0.0..=4.0).contains(&number)
+                            }
+                    })
+            }
+            "Alignment" => {
+                value.bytes().all(|character| character.is_ascii_digit())
+                    && value
+                        .parse::<u8>()
+                        .is_ok_and(|number| (1..=11).contains(&number))
+            }
+            "MarginV" | "MarginL" | "MarginR" => {
+                value.bytes().all(|character| character.is_ascii_digit())
+                    && value.parse::<i32>().is_ok_and(|number| number >= 0)
+            }
+            _ => return Err(format!("Unsupported subtitle style field: {field}")),
+        };
+        if !valid {
+            return Err(format!("Invalid subtitle style value for {field}"));
+        }
+    }
+    Ok(())
 }
 
 /// Validate semantic constraints at the execution boundary as well as in the
@@ -270,6 +353,10 @@ fn validate_arguments(name: &str, args: &Value) -> Result<(), String> {
             if ids.is_empty() {
                 return Err("live_ids must not be empty".into());
             }
+        }
+        "encode_video_subtitle" => {
+            let style: String = argument(args, "srt_style")?;
+            validate_subtitle_style(&style)?;
         }
         "clip_range" => {
             let params: crate::recorder_manager::ClipRangeParams =
@@ -633,6 +720,110 @@ mod tests {
             recorder["properties"]["args"]["properties"]["platform"]["enum"],
             json!(["bilibili", "douyin", "douyu"])
         );
+    }
+
+    #[test]
+    fn mcp_clip_schema_omits_unused_reason_and_preserves_assistant_schema() {
+        let tools = definitions(false);
+        let clip = tools
+            .iter()
+            .find(|tool| tool["name"] == "clip_range")
+            .unwrap();
+        assert!(clip["inputSchema"]["properties"].get("reason").is_none());
+        assert_eq!(
+            clip["inputSchema"]["required"],
+            json!(["clip_range_params"])
+        );
+        let assistant = agent::bsr_tool_definitions();
+        let clip = assistant
+            .iter()
+            .find(|schema| schema["properties"]["action"]["const"] == "clip_range")
+            .unwrap();
+        assert!(clip["properties"]["args"]["properties"]
+            .get("reason")
+            .is_some());
+        assert_eq!(
+            clip["properties"]["args"]["required"],
+            json!(["reason", "clip_range_params"])
+        );
+    }
+
+    #[test]
+    fn subtitle_styles_accept_editor_defaults_and_normal_ass_values() {
+        for style in [
+            "",
+            "FontName=Arial,FontSize=18,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,Outline=2,Alignment=2,MarginV=20,MarginL=20,MarginR=20",
+            "FontName=Noto Sans CJK SC,FontSize=24.5,Outline=0.5,Alignment=9",
+            "FontName=思源黑体 (Regular),PrimaryColour=&H00ffffff&,OutlineColour=&h80000000,Alignment=10,MarginL=0",
+            "FontName=Source-Han_Sans.2,Outline=4,Alignment=11",
+        ] {
+            assert!(validate_subtitle_style(style).is_ok(), "Rejected valid style: {style}");
+            assert!(validate_arguments("encode_video_subtitle", &json!({ "id": 1, "srt_style": style })).is_ok());
+        }
+    }
+
+    #[test]
+    fn subtitle_styles_reject_filter_injection_paths_and_unknown_overrides() {
+        for style in [
+            "FontName=Arial',movie=/etc/passwd[out];[in]overlay[out]",
+            "FontName=Arial\\',movie=http://127.0.0.1/private",
+            "FontName=Arial\"",
+            "FontName=Arial;movie=secret",
+            "FontName=Arial[other]",
+            "FontName=http://127.0.0.1/private",
+            "FontName=file:/etc/passwd",
+            "FontName=../secret/font.ttf",
+            "FontName=C:\\Windows\\secret.ttf",
+            "FontName=Arial\nFontSize=18",
+            "FontName=Arial\0",
+            "FontName=Arial,filename=/etc/passwd",
+            "FontName=Arial,fontsdir=/private/fonts",
+            "Bold=1",
+            "FontName=Arial,FontName=Other",
+            "FontName=Arial,",
+            "PrimaryColour=&HFFFFFF:filename=secret",
+            "OutlineColour=&HFFFFFF'",
+            "FontSize=18:enable=1",
+            "MarginV=20,drawtext=text=secret",
+        ] {
+            assert!(
+                validate_subtitle_style(style).is_err(),
+                "Accepted unsafe style: {style}"
+            );
+            assert!(validate_arguments(
+                "encode_video_subtitle",
+                &json!({ "id": 1, "srt_style": style })
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn subtitle_style_values_must_follow_supported_ass_field_grammars() {
+        for style in [
+            "FontName=",
+            "FontSize=0",
+            "FontSize=NaN",
+            "FontSize=1e6",
+            "Outline=-1",
+            "Outline=5",
+            "Alignment=0",
+            "Alignment=12",
+            "Alignment=2.5",
+            "MarginV=-10",
+            "MarginL=20.5",
+            "MarginR=2147483648",
+            "PrimaryColour=#FFFFFF",
+            "PrimaryColour=&H123",
+            "PrimaryColour=&HGGGGGG",
+            "OutlineColour=&HFFFFFFFFFF",
+        ] {
+            assert!(
+                validate_subtitle_style(style).is_err(),
+                "Accepted invalid ASS value: {style}"
+            );
+        }
+        assert!(validate_subtitle_style(&format!("FontName={}", "A".repeat(2048))).is_err());
     }
 
     #[test]

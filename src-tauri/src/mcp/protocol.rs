@@ -5,7 +5,6 @@ use std::sync::{
     Arc,
 };
 
-use async_trait::async_trait;
 use axum::{
     body::Bytes,
     extract::{DefaultBodyLimit, State},
@@ -15,14 +14,14 @@ use axum::{
     routing::post,
     Json, Router,
 };
+use futures::future::BoxFuture;
 use serde_json::{json, Value};
 
 const VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26"];
 
-#[async_trait]
 pub(super) trait Backend: Send + Sync {
     fn definitions(&self) -> Vec<Value>;
-    async fn call(&self, name: &str, arguments: Value) -> Result<Value, String>;
+    fn call<'a>(&'a self, name: &'a str, arguments: Value) -> BoxFuture<'a, Result<Value, String>>;
 }
 
 #[derive(Clone)]
@@ -351,11 +350,18 @@ fn validate_arguments(schema: &Value, value: &Value, path: &str) -> Result<(), S
         }
     }
     if let Some(text) = value.as_str() {
+        let length = text.chars().count() as u64;
         if schema["minLength"]
             .as_u64()
-            .is_some_and(|minimum| (text.chars().count() as u64) < minimum)
+            .is_some_and(|minimum| length < minimum)
         {
             return Err(format!("{path}: string is too short"));
+        }
+        if schema["maxLength"]
+            .as_u64()
+            .is_some_and(|maximum| length > maximum)
+        {
+            return Err(format!("{path}: string is too long"));
         }
     }
     if let Some(properties) = value.as_object() {
@@ -399,7 +405,6 @@ mod mcp_server_tests {
     #[derive(Default)]
     struct TestBackend(AtomicUsize);
 
-    #[async_trait]
     impl Backend for TestBackend {
         fn definitions(&self) -> Vec<Value> {
             vec![
@@ -412,15 +417,21 @@ mod mcp_server_tests {
             ]
         }
 
-        async fn call(&self, name: &str, arguments: Value) -> Result<Value, String> {
-            self.0.fetch_add(1, Ordering::Relaxed);
-            match name {
-                "fail" => Err("Video not found".into()),
-                "frames" => Ok(
-                    json!({"response": {"timestamp": 12}, "parts": [{"type": "image", "data": "frame-bytes", "mimeType": "image/jpeg"}]}),
-                ),
-                _ => Ok(arguments),
-            }
+        fn call<'a>(
+            &'a self,
+            name: &'a str,
+            arguments: Value,
+        ) -> BoxFuture<'a, Result<Value, String>> {
+            Box::pin(async move {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                match name {
+                    "fail" => Err("Video not found".into()),
+                    "frames" => Ok(
+                        json!({"response": {"timestamp": 12}, "parts": [{"type": "image", "data": "frame-bytes", "mimeType": "image/jpeg"}]}),
+                    ),
+                    _ => Ok(arguments),
+                }
+            })
         }
     }
 
@@ -688,5 +699,13 @@ mod mcp_server_tests {
         ] {
             assert!(validate_arguments(&schema, &invalid, "args").is_err());
         }
+    }
+
+    #[test]
+    fn string_schema_limits_count_unicode_characters() {
+        let schema = json!({"type": "string", "minLength": 2, "maxLength": 3});
+        assert!(validate_arguments(&schema, &json!("é漢🙂"), "text").is_ok());
+        assert!(validate_arguments(&schema, &json!("漢"), "text").is_err());
+        assert!(validate_arguments(&schema, &json!("é漢🙂x"), "text").is_err());
     }
 }

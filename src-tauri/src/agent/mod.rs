@@ -31,7 +31,10 @@ use serde_json::{json, Value};
 use tauri::State as TauriState;
 
 use crate::{
-    config::LlmConfig, database::Database, recorder_manager::RecorderManager, state::State,
+    config::LlmConfig,
+    database::{account::AccountRow, Database},
+    recorder_manager::RecorderManager,
+    state::State,
     state_type,
 };
 
@@ -334,6 +337,18 @@ impl BsrTool {
             .ok_or_else(|| BsrToolError(format!("Missing number argument: {name}")))
     }
 
+    fn account_result(accounts: Vec<AccountRow>) -> Value {
+        // Explicitly select display fields: neither authentication cookies nor
+        // CSRF tokens (including future credential fields) belong in tool output.
+        json!({"accounts": accounts.into_iter().map(|account| json!({
+            "platform": account.platform,
+            "uid": account.uid,
+            "name": account.name,
+            "avatar": account.avatar,
+            "created_at": account.created_at,
+        })).collect::<Vec<_>>()})
+    }
+
     async fn execute(&self, input: BsrToolArgs) -> Result<Value, BsrToolError> {
         let args = &input.args;
         match input.action.as_str() {
@@ -343,10 +358,7 @@ impl BsrTool {
                     .get_accounts()
                     .await
                     .map_err(|e| BsrToolError(e.to_string()))?;
-                // Cookies must never be exposed to the LLM provider.
-                Ok(
-                    json!({ "accounts": accounts.into_iter().map(|mut account| { account.cookies = "********".into(); account }).collect::<Vec<_>>() }),
-                )
+                Ok(Self::account_result(accounts))
             }
             "get_recorder_list" => Ok(serde_json::to_value(
                 self.recorder_manager.get_recorder_list().await,
@@ -552,7 +564,7 @@ impl BsrTool {
         vec![
             Self::action_schema(
                 "get_accounts",
-                "Get configured accounts with cookies redacted.",
+                "Get configured account display information without cookies or CSRF tokens.",
                 json!({}),
                 &[],
             ),
@@ -1139,6 +1151,29 @@ pub async fn agent_chat(
 mod tests {
     use super::*;
     use rig_core::message::{DocumentSourceKind, ImageMediaType};
+
+    #[test]
+    fn account_tool_results_omit_all_credentials() {
+        let result = BsrTool::account_result(vec![AccountRow {
+            platform: "bilibili".into(),
+            uid: "123".into(),
+            name: "Streamer".into(),
+            avatar: "avatar.png".into(),
+            created_at: "2026-10-13".into(),
+            cookies: "secret-cookie".into(),
+            csrf: "secret-csrf".into(),
+        }]);
+        let account = result["accounts"][0].as_object().unwrap();
+        assert_eq!(account.len(), 5);
+        assert_eq!(account["uid"], "123");
+        assert_eq!(account["name"], "Streamer");
+        assert_eq!(account["platform"], "bilibili");
+        assert_eq!(account["avatar"], "avatar.png");
+        assert_eq!(account["created_at"], "2026-10-13");
+        assert!(!account.contains_key("cookies"));
+        assert!(!account.contains_key("csrf"));
+        assert!(!result.to_string().contains("secret-"));
+    }
 
     fn tool_message(content: Value) -> AgentMessage {
         AgentMessage {

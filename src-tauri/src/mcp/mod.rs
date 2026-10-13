@@ -5,7 +5,7 @@ mod tools;
 
 use std::sync::{atomic::AtomicBool, Arc};
 
-use async_trait::async_trait;
+use futures::future::BoxFuture;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::{
@@ -256,7 +256,6 @@ impl McpServer {
 
 struct BsrBackend(State);
 
-#[async_trait]
 impl Backend for BsrBackend {
     fn definitions(&self) -> Vec<Value> {
         #[cfg(feature = "headless")]
@@ -266,8 +265,8 @@ impl Backend for BsrBackend {
         tools::definitions(readonly)
     }
 
-    async fn call(&self, name: &str, arguments: Value) -> Result<Value, String> {
-        tools::call(&self.0, name, arguments).await
+    fn call<'a>(&'a self, name: &'a str, arguments: Value) -> BoxFuture<'a, Result<Value, String>> {
+        Box::pin(async move { tools::call(&self.0, name, arguments).await })
     }
 }
 
@@ -276,8 +275,12 @@ mod mcp_server_runtime_tests {
     use super::*;
     use serde_json::json;
     use std::{
+        fs::{File, OpenOptions, TryLockError},
         net::SocketAddr,
-        sync::atomic::{AtomicUsize, Ordering},
+        sync::{
+            atomic::{AtomicU16, AtomicUsize, Ordering},
+            LazyLock,
+        },
         time::Duration,
     };
     use tokio::{
@@ -285,6 +288,77 @@ mod mcp_server_runtime_tests {
         net::TcpStream,
         sync::Notify,
     };
+
+    fn run_in_isolated_process(name: &str) -> bool {
+        let test_name = format!("mcp::mcp_server_runtime_tests::{name}");
+        if std::env::var("BSR_ISOLATED_MCP_TEST").is_ok_and(|value| value == test_name) {
+            return false;
+        }
+        // Other app tests spawn FFmpeg concurrently. A fork/exec can temporarily
+        // retain a parent's listening FD despite close-on-exec. Create listeners
+        // only after this child has started, preserving immediate rebind checks.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &test_name, "--test-threads=1", "--nocapture"])
+            .env("BSR_ISOLATED_MCP_TEST", &test_name)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success() && stdout.contains("1 passed; 0 failed"),
+            "Isolated MCP test {test_name} failed or did not execute exactly one test:\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        true
+    }
+
+    struct TestPorts {
+        next: AtomicU16,
+        end: u16,
+        _lease: File,
+    }
+
+    // Lease disjoint low-port blocks across parallel child processes. Low ports
+    // avoid outgoing ephemeral sockets; the file lock prevents another test
+    // process from reclaiming an address while a rebind assertion is pending.
+    static TEST_PORTS: LazyLock<TestPorts> = LazyLock::new(|| {
+        let directory = std::env::temp_dir().join("bsr-mcp-test-ports");
+        std::fs::create_dir_all(&directory).unwrap();
+        let first = std::process::id() % 100;
+        for offset in 0..100 {
+            let block = (first + offset) % 100;
+            let lease = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(directory.join(format!("block-{block}.lock")))
+                .unwrap();
+            match lease.try_lock() {
+                Ok(()) => {
+                    let start = 20000 + (block as u16) * 100;
+                    return TestPorts {
+                        next: AtomicU16::new(start),
+                        end: start + 100,
+                        _lease: lease,
+                    };
+                }
+                Err(TryLockError::WouldBlock) => continue,
+                Err(TryLockError::Error(error)) => panic!("Cannot lease MCP test ports: {error}"),
+            }
+        }
+        panic!("No MCP test port block is available");
+    });
+
+    async fn reserve_test_listener() -> TcpListener {
+        loop {
+            let port = TEST_PORTS.next.fetch_add(1, Ordering::Relaxed);
+            assert!(port < TEST_PORTS.end, "MCP test port block exhausted");
+            match TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await {
+                Ok(listener) => return listener,
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => continue,
+                Err(error) => panic!("Failed to reserve MCP test port {port}: {error}"),
+            }
+        }
+    }
 
     #[derive(Default)]
     struct TestBackend {
@@ -294,26 +368,29 @@ mod mcp_server_runtime_tests {
         completed: AtomicUsize,
     }
 
-    #[async_trait]
     impl Backend for TestBackend {
         fn definitions(&self) -> Vec<Value> {
             vec![json!({"name": "wait", "inputSchema": {"type": "object", "properties": {}}})]
         }
 
-        async fn call(&self, _name: &str, _arguments: Value) -> Result<Value, String> {
-            self.entered.notify_one();
-            if self.block {
-                self.release.notified().await;
-            }
-            self.completed.fetch_add(1, Ordering::Relaxed);
-            Ok(json!({"done": true}))
+        fn call<'a>(
+            &'a self,
+            _name: &'a str,
+            _arguments: Value,
+        ) -> BoxFuture<'a, Result<Value, String>> {
+            Box::pin(async move {
+                self.entered.notify_one();
+                if self.block {
+                    self.release.notified().await;
+                }
+                self.completed.fetch_add(1, Ordering::Relaxed);
+                Ok(json!({"done": true}))
+            })
         }
     }
 
     async fn start(backend: Arc<TestBackend>) -> (Runtime, SocketAddr, Arc<AtomicBool>) {
-        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-            .await
-            .unwrap();
+        let listener = reserve_test_listener().await;
         let address = listener.local_addr().unwrap();
         let active = Arc::new(AtomicBool::new(true));
         let server = RunningServer::start(
@@ -366,6 +443,10 @@ mod mcp_server_runtime_tests {
 
     #[tokio::test]
     async fn stop_closes_keepalive_connections_and_allows_immediate_rebind() {
+        if run_in_isolated_process("stop_closes_keepalive_connections_and_allows_immediate_rebind")
+        {
+            return;
+        }
         let (mut runtime, address, active) = start(Arc::new(TestBackend::default())).await;
         let mut socket = TcpStream::connect(address).await.unwrap();
         tokio::time::timeout(Duration::from_secs(2), ping(&mut socket, address.port()))
@@ -384,7 +465,9 @@ mod mcp_server_runtime_tests {
             0
         );
 
-        let listener = TcpListener::bind(address).await.unwrap();
+        let listener = TcpListener::bind(address).await.unwrap_or_else(|error| {
+            panic!("MCP listener did not release {address} after shutdown: {error}")
+        });
         let active = Arc::new(AtomicBool::new(true));
         runtime.server = Some(RunningServer::start(
             listener,
@@ -405,6 +488,9 @@ mod mcp_server_runtime_tests {
 
     #[tokio::test]
     async fn stop_is_bounded_and_allows_an_admitted_operation_to_finish() {
+        if run_in_isolated_process("stop_is_bounded_and_allows_an_admitted_operation_to_finish") {
+            return;
+        }
         let backend = Arc::new(TestBackend {
             block: true,
             ..TestBackend::default()
@@ -443,6 +529,10 @@ mod mcp_server_runtime_tests {
 
     #[tokio::test]
     async fn dropping_server_closes_idle_connections_and_releases_listener() {
+        if run_in_isolated_process("dropping_server_closes_idle_connections_and_releases_listener")
+        {
+            return;
+        }
         let (mut runtime, address, active) = start(Arc::new(TestBackend::default())).await;
         let mut socket = TcpStream::connect(address).await.unwrap();
         tokio::time::timeout(Duration::from_secs(2), ping(&mut socket, address.port()))
@@ -531,9 +621,7 @@ mod mcp_server_runtime_tests {
     }
 
     async fn available_port() -> u16 {
-        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-            .await
-            .unwrap();
+        let listener = reserve_test_listener().await;
         listener.local_addr().unwrap().port()
     }
 
@@ -549,6 +637,11 @@ mod mcp_server_runtime_tests {
 
     #[tokio::test]
     async fn changing_port_persists_new_address_and_uses_actual_host_validation() {
+        if run_in_isolated_process(
+            "changing_port_persists_new_address_and_uses_actual_host_validation",
+        ) {
+            return;
+        }
         let fixture = ConfigurationFixture::new();
         let old_port = available_port().await;
         fixture.configure(true, Some(old_port)).await.unwrap();
@@ -598,13 +691,14 @@ mod mcp_server_runtime_tests {
 
     #[tokio::test]
     async fn occupied_port_preserves_existing_listener_and_saved_settings() {
+        if run_in_isolated_process("occupied_port_preserves_existing_listener_and_saved_settings") {
+            return;
+        }
         let fixture = ConfigurationFixture::new();
         let old_port = available_port().await;
         fixture.configure(true, Some(old_port)).await.unwrap();
         let mut old_client = connect_and_ping(old_port).await;
-        let occupied = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-            .await
-            .unwrap();
+        let occupied = reserve_test_listener().await;
         let occupied_port = occupied.local_addr().unwrap().port();
         assert!(fixture.configure(true, Some(occupied_port)).await.is_err());
 
@@ -626,6 +720,10 @@ mod mcp_server_runtime_tests {
 
     #[tokio::test]
     async fn save_failure_and_invalid_port_leave_existing_service_unchanged() {
+        if run_in_isolated_process("save_failure_and_invalid_port_leave_existing_service_unchanged")
+        {
+            return;
+        }
         let fixture = ConfigurationFixture::new();
         let old_port = available_port().await;
         fixture.configure(true, Some(old_port)).await.unwrap();
@@ -639,7 +737,8 @@ mod mcp_server_runtime_tests {
         let new_port = available_port().await;
         fixture.config.write().await.config_path =
             fixture.directory.path().to_string_lossy().into_owned();
-        assert!(fixture.configure(true, Some(new_port)).await.is_err());
+        let error = fixture.configure(true, Some(new_port)).await.err().unwrap();
+        assert!(error.contains("Failed to save config"), "{error}");
         let status = fixture.status().await;
         assert!(status.enabled && status.running);
         assert_eq!(status.port, old_port);
@@ -662,10 +761,13 @@ mod mcp_server_runtime_tests {
 
     #[tokio::test]
     async fn disabled_port_changes_save_without_binding_and_restart_reuses_port() {
+        if run_in_isolated_process(
+            "disabled_port_changes_save_without_binding_and_restart_reuses_port",
+        ) {
+            return;
+        }
         let fixture = ConfigurationFixture::new();
-        let reservation = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-            .await
-            .unwrap();
+        let reservation = reserve_test_listener().await;
         let port = reservation.local_addr().unwrap().port();
         let disabled = fixture.configure(false, Some(port)).await.unwrap();
         assert!(!disabled.enabled && !disabled.running);

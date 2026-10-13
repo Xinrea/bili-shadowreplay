@@ -20,11 +20,12 @@ use crate::{
             add_account, get_account_count, get_accounts, get_qr, get_qr_status, remove_account,
         },
         config::{
-            get_config, get_llm_config, get_static_port, list_llm_models, update_auto_generate,
-            update_clip_name_format, update_danmu_ass_options, update_llm_config, update_notify,
-            update_openai_api_endpoint, update_openai_api_key, update_status_check_interval,
-            update_subtitle_generator_type, update_subtitle_setting, update_webhook_url,
-            update_whisper_language, update_whisper_model, update_whisper_prompt,
+            get_config, get_llm_config, get_mcp_server_status, get_static_port, list_llm_models,
+            update_auto_generate, update_clip_name_format, update_danmu_ass_options,
+            update_llm_config, update_mcp_server, update_notify, update_openai_api_endpoint,
+            update_openai_api_key, update_status_check_interval, update_subtitle_generator_type,
+            update_subtitle_setting, update_webhook_url, update_whisper_language,
+            update_whisper_model, update_whisper_prompt,
         },
         message::{delete_message, get_messages, read_message},
         recorder::{
@@ -207,6 +208,29 @@ async fn handler_get_config(
         .await
         .map_err(|_| ApiError::from("Failed to get config"))?;
     Ok(Json(ApiResponse::success(config)))
+}
+
+async fn handler_get_mcp_server_status(
+    state: axum::extract::State<State>,
+) -> Result<Json<ApiResponse<crate::mcp::McpServerStatus>>, ApiError> {
+    Ok(Json(ApiResponse::success(
+        get_mcp_server_status(state.0).await?,
+    )))
+}
+
+#[derive(Deserialize)]
+struct UpdateMcpServerRequest {
+    enabled: bool,
+    port: Option<u16>,
+}
+
+async fn handler_update_mcp_server(
+    state: axum::extract::State<State>,
+    Json(request): Json<UpdateMcpServerRequest>,
+) -> Result<Json<ApiResponse<crate::mcp::McpServerStatus>>, ApiError> {
+    Ok(Json(ApiResponse::success(
+        update_mcp_server(state.0, request.enabled, request.port).await?,
+    )))
 }
 
 async fn handler_get_llm_config(
@@ -1833,6 +1857,7 @@ pub async fn start_api_server(state: State) {
     // Only add add/remove routes if not in readonly mode
     if !state.readonly {
         app = app
+            .route("/api/update_mcp_server", post(handler_update_mcp_server))
             .route("/api/get_qr", post(handler_get_qr))
             .route("/api/get_qr_status", post(handler_get_qr_status))
             .route("/api/add_account", post(handler_add_account))
@@ -1952,6 +1977,10 @@ pub async fn start_api_server(state: State) {
     app = app
         // Config commands
         .route("/api/get_config", post(handler_get_config))
+        .route(
+            "/api/get_mcp_server_status",
+            post(handler_get_mcp_server_status),
+        )
         .route("/api/get_llm_config", post(handler_get_llm_config))
         .route("/api/list_llm_models", post(handler_list_llm_models))
         .route("/api/get_static_port", post(handler_get_static_port))

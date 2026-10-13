@@ -4,7 +4,7 @@
   import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
   import { clickOutside } from "../lib/actions/clickOutside";
 
-  import type { Config } from "../lib/interface";
+  import type { Config, McpServerStatus } from "../lib/interface";
   import {
     Bell,
     HardDrive,
@@ -15,6 +15,8 @@
     SquareBottomDashedScissors,
     Bot,
     RefreshCw,
+    Plug,
+    Copy,
   } from "lucide-svelte";
   import { onMount } from "svelte";
 
@@ -28,6 +30,8 @@
     post_notify: true,
     auto_cleanup: true,
     auto_subtitle: false,
+    mcp_enabled: false,
+    mcp_port: 18763,
     subtitle_generator_type: "whisper",
     openai_api_endpoint: "",
     openai_api_key: "",
@@ -67,6 +71,121 @@
   let showModelList = $state(false);
   let llmSaveChain: Promise<void> = Promise.resolve();
   let launchAtLogin = $state(false);
+  let mcpStatus: McpServerStatus | null = $state(null);
+  let mcpLoading = $state(true);
+  let mcpError = $state("");
+  let mcpPortDraft: number | undefined = $state(18763);
+  let mcpPortError = $state("");
+  let mcpSaveMessage = $state("");
+  let mcpCopyMessage = $state("");
+  let mcpPortChanged = $derived(
+    mcpStatus !== null && mcpPortDraft !== mcpStatus.port,
+  );
+  let mcpUrl = $derived(
+    mcpStatus?.url || `http://127.0.0.1:${setting_model.mcp_port}/mcp`,
+  );
+  let mcpClientConfig = $derived(
+    JSON.stringify(
+      { mcpServers: { bsr: { type: "http", url: mcpUrl } } },
+      null,
+      2,
+    ),
+  );
+
+  function applyMcpServerStatus(
+    status: McpServerStatus,
+    resetPortDraft = true,
+  ) {
+    mcpStatus = status;
+    setting_model.mcp_enabled = status.enabled;
+    setting_model.mcp_port = status.port;
+    if (resetPortDraft) mcpPortDraft = status.port;
+    mcpError = status.error || "";
+  }
+
+  async function loadMcpServerStatus() {
+    mcpLoading = true;
+    mcpError = "";
+    mcpPortError = "";
+    mcpSaveMessage = "";
+    try {
+      applyMcpServerStatus(
+        await invoke<McpServerStatus>("get_mcp_server_status"),
+      );
+    } catch (error) {
+      mcpError = String(error);
+    } finally {
+      mcpLoading = false;
+    }
+  }
+
+  async function updateMcpServer() {
+    if (!mcpStatus) return;
+    // 开关沿用已经保存的端口，输入框中的未保存内容不会改变监听地址。
+    await saveMcpServer(setting_model.mcp_enabled);
+  }
+
+  async function updateMcpPort() {
+    if (!mcpStatus) return;
+    mcpSaveMessage = "";
+    if (
+      mcpPortDraft === undefined ||
+      !Number.isInteger(mcpPortDraft) ||
+      mcpPortDraft < 1024 ||
+      mcpPortDraft > 65535
+    ) {
+      mcpPortError = "端口必须为 1024–65535 之间的整数";
+      return;
+    }
+    mcpPortError = "";
+    await saveMcpServer(mcpStatus.enabled, mcpPortDraft);
+  }
+
+  async function saveMcpServer(enabled: boolean, port?: number) {
+    if (!mcpStatus || mcpLoading) return;
+    const previousStatus = mcpStatus;
+    const resetPortDraft = port !== undefined;
+    mcpLoading = true;
+    mcpError = "";
+    mcpSaveMessage = "";
+    mcpCopyMessage = "";
+    try {
+      const status = await invoke<McpServerStatus>("update_mcp_server", {
+        enabled,
+        ...(port === undefined ? {} : { port }),
+      });
+      applyMcpServerStatus(status, resetPortDraft);
+      if (resetPortDraft) {
+        mcpSaveMessage = status.port !== previousStatus.port
+          ? `端口已保存${status.running ? "，服务已切换到新端口" : ""}。请将外部 Agent 的 MCP 地址更新为 ${status.url}`
+          : "端口已保存";
+      }
+    } catch (error) {
+      applyMcpServerStatus(previousStatus, resetPortDraft);
+      // 更新失败后读取实际状态，避免将保存失败或服务启动失败显示为成功。
+      try {
+        applyMcpServerStatus(
+          await invoke<McpServerStatus>("get_mcp_server_status"),
+          resetPortDraft,
+        );
+      } catch {
+        // 无法重新读取时保留最后一次确认过的状态。
+      }
+      mcpError = String(error);
+    } finally {
+      mcpLoading = false;
+    }
+  }
+
+  async function copyMcpConnection(content: string, label: string) {
+    mcpCopyMessage = "";
+    try {
+      await navigator.clipboard.writeText(content);
+      mcpCopyMessage = `${label}已复制`;
+    } catch {
+      mcpCopyMessage = "复制失败，请手动选择并复制下方内容";
+    }
+  }
 
   function handleEndpointChange() {
     endpointValue = normalizeEndpoint(endpointValue);
@@ -289,7 +408,10 @@
 
   onMount(async () => {
     await get_config();
-    await loadLaunchAtLogin();
+    await Promise.all([
+      loadLaunchAtLogin(),
+      ...(TAURI_ENV || endpoint !== "" ? [loadMcpServerStatus()] : []),
+    ]);
   });
 </script>
 
@@ -431,6 +553,185 @@
         {/if}
 
         {#if TAURI_ENV || endpoint != ""}
+          <!-- MCP Server Settings -->
+          <div class="space-y-4">
+            <h2
+              class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
+            >
+              <Plug class="w-5 h-5 dark:icon-white" />
+              <span>MCP Server</span>
+            </h2>
+            <div
+              class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700"
+            >
+              <div class="p-4 space-y-3">
+                <div class="flex items-center justify-between gap-6">
+                  <div>
+                    <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                      启用 MCP Server
+                    </h3>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                      允许本机外部 Agent 查询录播、管理录制及执行切片等操作，修改立即生效并自动保存
+                    </p>
+                  </div>
+                  <label class="relative inline-block w-11 h-6 shrink-0">
+                    <input
+                      type="checkbox"
+                      class="peer opacity-0 w-0 h-0"
+                      aria-label="启用 MCP Server"
+                      bind:checked={setting_model.mcp_enabled}
+                      onchange={updateMcpServer}
+                      disabled={mcpLoading || !mcpStatus}
+                    />
+                    <span
+                      class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5 peer-disabled:opacity-50 peer-disabled:cursor-wait peer-focus-visible:ring-2 peer-focus-visible:ring-blue-500 peer-focus-visible:ring-offset-2"
+                    ></span>
+                  </label>
+                </div>
+                <div class="flex items-center gap-3 text-sm" aria-live="polite">
+                  <span
+                    class={mcpStatus?.running
+                      ? "text-green-600 dark:text-green-400"
+                      : "text-gray-500 dark:text-gray-400"}
+                  >
+                    {mcpLoading
+                      ? "正在更新状态…"
+                      : !mcpStatus
+                        ? "无法获取服务状态"
+                        : mcpStatus.running
+                          ? "运行中"
+                          : mcpStatus.enabled
+                            ? "已启用，服务未运行"
+                            : "已关闭"}
+                  </span>
+                  <button
+                    type="button"
+                    class="inline-flex items-center gap-1 text-blue-500 hover:text-blue-700 disabled:opacity-50"
+                    onclick={loadMcpServerStatus}
+                    disabled={mcpLoading}
+                  >
+                    <RefreshCw class="w-3.5 h-3.5" />
+                    刷新状态
+                  </button>
+                </div>
+                {#if mcpError}
+                  <p class="text-sm text-red-500 whitespace-pre-wrap" role="alert">
+                    {mcpError}
+                  </p>
+                {/if}
+              </div>
+              <div class="p-4 space-y-3">
+                <div class="flex flex-wrap items-center justify-between gap-4">
+                  <div>
+                    <label
+                      for="mcp-server-port"
+                      class="text-sm font-medium text-gray-900 dark:text-white"
+                    >
+                      MCP 端口
+                    </label>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                      默认 18763，可使用 1024–65535；保存后立即生效，服务关闭时也会保存
+                    </p>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <input
+                      id="mcp-server-port"
+                      type="number"
+                      min="1024"
+                      max="65535"
+                      step="1"
+                      class="w-28 px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white disabled:opacity-50"
+                      bind:value={mcpPortDraft}
+                      disabled={mcpLoading || !mcpStatus}
+                      aria-invalid={mcpPortError ? "true" : "false"}
+                      aria-describedby={mcpPortError ? "mcp-port-error" : undefined}
+                      oninput={() => {
+                        mcpPortError = "";
+                        mcpSaveMessage = "";
+                      }}
+                    />
+                    <button
+                      type="button"
+                      class="px-3 py-2 rounded-lg bg-blue-500 text-sm text-white hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                      onclick={updateMcpPort}
+                      disabled={mcpLoading || !mcpStatus}
+                    >
+                      保存端口
+                    </button>
+                  </div>
+                </div>
+                {#if mcpPortChanged}
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    端口更改尚未保存，开关仍使用已保存的端口 {mcpStatus?.port}。
+                  </p>
+                {/if}
+                {#if mcpPortError}
+                  <p id="mcp-port-error" class="text-sm text-red-500" role="alert">
+                    {mcpPortError}
+                  </p>
+                {/if}
+                {#if mcpSaveMessage}
+                  <p class="text-sm text-green-600 dark:text-green-400 break-all" role="status">
+                    {mcpSaveMessage}
+                  </p>
+                {/if}
+              </div>
+              <div class="p-4 space-y-3">
+                <div class="flex items-center justify-between gap-3">
+                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                    连接地址（Streamable HTTP）
+                  </h3>
+                  <button
+                    type="button"
+                    class="inline-flex items-center gap-1 text-sm text-blue-500 hover:text-blue-700"
+                    onclick={() => copyMcpConnection(mcpUrl, "地址")}
+                  >
+                    <Copy class="w-3.5 h-3.5" />
+                    复制地址
+                  </button>
+                </div>
+                <code
+                  class="block select-text break-all rounded-lg bg-gray-100 dark:bg-gray-700 p-3 text-sm text-gray-900 dark:text-white"
+                >{mcpUrl}</code>
+                <p class="text-sm text-gray-500 dark:text-gray-400">
+                  服务仅监听 BSR 所在机器的 127.0.0.1。外部客户端负责操作确认；BSR 只读模式下仅提供查询工具。见<a
+                    href="https://bsr.xinrea.cn/usage/features/mcp.html"
+                    class="text-blue-500 hover:text-blue-700"
+                    target="_blank"
+                    rel="noreferrer">MCP 使用文档</a
+                  >。
+                </p>
+                <details>
+                  <summary class="cursor-pointer text-sm text-gray-600 dark:text-gray-300">
+                    客户端配置示例
+                  </summary>
+                  <div class="mt-3 space-y-2">
+                    <pre
+                      class="overflow-auto select-text rounded-lg bg-gray-100 dark:bg-gray-700 p-3 text-xs text-gray-900 dark:text-white"
+                    ><code>{mcpClientConfig}</code></pre>
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                      <p class="text-xs text-gray-500 dark:text-gray-400">
+                        配置格式因客户端而异，请选择 HTTP 传输并使用上方 URL
+                      </p>
+                      <button
+                        type="button"
+                        class="inline-flex items-center gap-1 text-sm text-blue-500 hover:text-blue-700"
+                        onclick={() => copyMcpConnection(mcpClientConfig, "配置")}
+                      >
+                        <Copy class="w-3.5 h-3.5" />
+                        复制配置
+                      </button>
+                    </div>
+                  </div>
+                </details>
+                {#if mcpCopyMessage}
+                  <p class="text-sm text-gray-500 dark:text-gray-400" aria-live="polite">
+                    {mcpCopyMessage}
+                  </p>
+                {/if}
+              </div>
+            </div>
+          </div>
           <!-- Storage Settings -->
           {#if TAURI_ENV}
             <div class="space-y-4">

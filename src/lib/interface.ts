@@ -140,6 +140,8 @@ export interface Config {
   post_notify: boolean;
   auto_cleanup: boolean;
   auto_subtitle: boolean;
+  mcp_enabled: boolean;
+  mcp_port: number;
   subtitle_generator_type: string;
   whisper_model: string;
   whisper_prompt: string;
@@ -153,6 +155,14 @@ export interface Config {
   danmu_ass_options: Danmu2AssOptions;
   powerlive_key: string;
   llm: LlmConfig;
+}
+
+export interface McpServerStatus {
+  enabled: boolean;
+  running: boolean;
+  port: number;
+  url: string;
+  error: string | null;
 }
 
 export interface LlmConfig {

@@ -12,6 +12,7 @@ mod ffmpeg;
 mod handlers;
 #[cfg(feature = "headless")]
 mod http_server;
+mod mcp;
 mod migration;
 mod progress;
 mod recorder_manager;
@@ -606,6 +607,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     let _ = try_convert_entry_to_m3u8(&db, config.read().await.cache.clone().into()).await;
 
     Ok(State {
+        mcp_server: Arc::new(mcp::McpServer::default()),
         db,
         config,
         webhook_poster,
@@ -736,6 +738,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
     let _ = try_convert_entry_to_m3u8(&db, cache_path.clone().into()).await;
 
     Ok(Some(State {
+        mcp_server: Arc::new(mcp::McpServer::default()),
         events,
         db,
         config,
@@ -825,6 +828,8 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::account::get_qr_status,
         crate::handlers::account::get_qr,
         crate::handlers::config::get_config,
+        crate::handlers::config::get_mcp_server_status,
+        crate::handlers::config::update_mcp_server,
         crate::handlers::config::get_llm_config,
         crate::handlers::config::list_llm_models,
         crate::handlers::config::get_static_port,
@@ -1000,7 +1005,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(v) => log::info!("Checked ffmpeg version: {v}"),
                 }
 
-                app.manage(state);
+                app.manage(state.clone());
+                state.mcp_server.restore(state.clone()).await;
                 Ok(())
             })
         })
@@ -1014,6 +1020,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let recorder_manager = state.recorder_manager.clone();
                 log::info!("Stopping all recorders...");
                 tauri::async_runtime::block_on(async move {
+                    state.mcp_server.stop().await;
                     recorder_manager.stop_all().await;
                 });
                 log::info!("All recorders stopped successfully.");
@@ -1079,6 +1086,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // get params from command line
     let args = Args::parse();
     let state = setup_server_state(args).await?;
+    state.mcp_server.restore(state.clone()).await;
 
     // check ffmpeg status
     match ffmpeg::check_ffmpeg().await {
@@ -1087,6 +1095,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let recorder_manager = state.recorder_manager.clone();
+    let mcp_server = state.mcp_server.clone();
     tokio::select! {
         _ = http_server::api_server::start_api_server(state) => {}
         _ = shutdown_signal() => {
@@ -1095,6 +1104,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     log::info!("Stopping all recorders...");
+    mcp_server.stop().await;
     recorder_manager.stop_all().await;
     log::info!("All recorders stopped successfully.");
     Ok(())

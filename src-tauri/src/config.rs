@@ -1,5 +1,6 @@
 use chrono::Local;
 use serde::{Deserialize, Serialize};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{self, AtomicU64};
 use std::sync::Arc;
@@ -46,6 +47,45 @@ pub struct Config {
     pub powerlive_key: String,
     #[serde(default = "default_llm_config")]
     pub llm: LlmConfig,
+    #[serde(default)]
+    pub mcp_enabled: bool,
+    #[serde(default = "default_mcp_port")]
+    pub mcp_port: u16,
+}
+
+pub const DEFAULT_MCP_PORT: u16 = 18763;
+
+fn default_mcp_port() -> u16 {
+    DEFAULT_MCP_PORT
+}
+
+fn update_mounted_config(path: &Path, content: &[u8]) -> io::Result<()> {
+    // Linux cannot rename over a single-file bind mount. Update that inode
+    // without truncating it first, preserving its permissions and mount.
+    // Attempt to restore the original bytes on an I/O error; this fallback
+    // cannot provide atomicity against a process crash or a failed rollback.
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)?;
+    let mut previous = Vec::new();
+    file.read_to_end(&mut previous)?;
+    let write_contents = |file: &mut std::fs::File, bytes: &[u8]| -> io::Result<()> {
+        file.seek(SeekFrom::Start(0))?;
+        file.write_all(bytes)?;
+        file.set_len(bytes.len() as u64)?;
+        file.sync_all()
+    };
+    if let Err(error) = write_contents(&mut file, content) {
+        if let Err(rollback) = write_contents(&mut file, &previous) {
+            return Err(io::Error::new(
+                error.kind(),
+                format!("{error}; restoring the previous configuration also failed: {rollback}"),
+            ));
+        }
+        return Err(error);
+    }
+    Ok(())
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -126,6 +166,110 @@ fn default_llm_config() -> LlmConfig {
     }
 }
 
+#[cfg(test)]
+mod mcp_config_tests {
+    use super::*;
+
+    #[test]
+    fn mcp_is_disabled_for_existing_and_new_configs() {
+        let old = include_str!("../config.example.toml")
+            .replace("mcp_enabled = false\n", "")
+            .replace("mcp_port = 18763\n", "");
+        let old = toml::from_str::<Config>(&old).unwrap();
+        assert!(!old.mcp_enabled);
+        assert_eq!(old.mcp_port, DEFAULT_MCP_PORT);
+        let directory = tempfile::tempdir().unwrap();
+        let config = Config::load(
+            &directory.path().join("config.toml"),
+            directory.path(),
+            directory.path(),
+        )
+        .unwrap();
+        assert!(!config.mcp_enabled);
+        assert_eq!(config.mcp_port, DEFAULT_MCP_PORT);
+    }
+
+    #[test]
+    fn mcp_setting_persists_and_save_failures_are_reported() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let mut config = Config::load(&path, directory.path(), directory.path()).unwrap();
+        config.mcp_enabled = true;
+        config.mcp_port = 18764;
+        config.try_save().unwrap();
+        let reloaded = Config::load(&path, directory.path(), directory.path()).unwrap();
+        assert!(reloaded.mcp_enabled);
+        assert_eq!(reloaded.mcp_port, 18764);
+        config.config_path = directory.path().to_string_lossy().into_owned();
+        assert!(config.try_save().is_err());
+    }
+
+    #[test]
+    fn busy_replace_updates_existing_inode_and_removes_trailing_content() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let mut config = Config::load(&path, directory.path(), directory.path()).unwrap();
+        std::fs::OpenOptions::new().append(true).open(&path).unwrap()
+            .write_all(b"\n# Long trailing comment which must disappear when replacing the shorter configuration\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        }
+        let previous_metadata = std::fs::metadata(&path).unwrap();
+        config.mcp_enabled = true;
+        config.mcp_port = 19763;
+        let expected = toml::to_string(&config).unwrap();
+        assert!((expected.len() as u64) < previous_metadata.len());
+        config
+            .try_save_with(|pending, _| {
+                Err(tempfile::PersistError {
+                    error: io::Error::from(io::ErrorKind::ResourceBusy),
+                    file: pending,
+                })
+            })
+            .unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+        let saved = Config::load(&path, directory.path(), directory.path()).unwrap();
+        assert!(saved.mcp_enabled);
+        assert_eq!(saved.mcp_port, 19763);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            let saved_metadata = std::fs::metadata(&path).unwrap();
+            assert_eq!(saved_metadata.ino(), previous_metadata.ino());
+            assert_eq!(saved_metadata.dev(), previous_metadata.dev());
+            assert_eq!(
+                saved_metadata.permissions().mode(),
+                previous_metadata.permissions().mode()
+            );
+        }
+    }
+
+    #[test]
+    fn non_busy_replace_errors_preserve_the_original_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let mut config = Config::load(&path, directory.path(), directory.path()).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        config.mcp_enabled = true;
+        config.mcp_port = 19763;
+        for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::Other] {
+            assert!(config
+                .try_save_with(|pending, _| Err(tempfile::PersistError {
+                    error: io::Error::from(kind),
+                    file: pending,
+                }))
+                .is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+        }
+        let saved = Config::load(&path, directory.path(), directory.path()).unwrap();
+        assert!(!saved.mcp_enabled);
+        assert_eq!(saved.mcp_port, DEFAULT_MCP_PORT);
+    }
+}
+
 impl Config {
     pub fn load(
         config_path: &PathBuf,
@@ -173,6 +317,8 @@ impl Config {
             update_interval: Arc::new(AtomicU64::new(default_status_check_interval())),
             powerlive_key: default_powerlive_key(),
             llm: default_llm_config(),
+            mcp_enabled: false,
+            mcp_port: default_mcp_port(),
         };
 
         config.save();
@@ -181,15 +327,49 @@ impl Config {
     }
 
     pub fn save(&self) {
-        let content = match toml::to_string(&self) {
-            Ok(content) => content,
-            Err(e) => {
-                log::error!("Failed to serialize config: {e}");
-                return;
+        if let Err(error) = self.try_save() {
+            log::error!("{error}");
+        }
+    }
+
+    pub fn try_save(&self) -> Result<(), String> {
+        self.try_save_with(|pending, path| pending.persist(path))
+    }
+
+    fn try_save_with(
+        &self,
+        persist: impl FnOnce(
+            tempfile::NamedTempFile,
+            &Path,
+        ) -> Result<std::fs::File, tempfile::PersistError>,
+    ) -> Result<(), String> {
+        let content = toml::to_string(self)
+            .map_err(|error| format!("Failed to serialize config: {error}"))?;
+        // Follow existing symlinks and replace the file only after a complete
+        // write, so a failed settings change cannot truncate the old config.
+        let path = std::fs::canonicalize(&self.config_path)
+            .unwrap_or_else(|_| PathBuf::from(&self.config_path));
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let failure = |error| format!("Failed to save config {}: {error}", self.config_path);
+        let mut pending = tempfile::NamedTempFile::new_in(parent).map_err(failure)?;
+        pending.write_all(content.as_bytes()).map_err(failure)?;
+        if let Ok(metadata) = std::fs::metadata(&path) {
+            pending
+                .as_file()
+                .set_permissions(metadata.permissions())
+                .map_err(failure)?;
+        }
+        pending.as_file().sync_all().map_err(failure)?;
+        match persist(pending, &path) {
+            Ok(_) => Ok(()),
+            Err(error) if error.error.kind() == io::ErrorKind::ResourceBusy => {
+                drop(error.file);
+                update_mounted_config(&path, content.as_bytes()).map_err(failure)
             }
-        };
-        if let Err(e) = std::fs::write(self.config_path.clone(), content) {
-            log::error!("Failed to save config: {} {}", e, self.config_path);
+            Err(error) => Err(failure(error.error)),
         }
     }
 

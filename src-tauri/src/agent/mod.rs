@@ -31,7 +31,10 @@ use serde_json::{json, Value};
 use tauri::State as TauriState;
 
 use crate::{
-    config::LlmConfig, database::Database, recorder_manager::RecorderManager, state::State,
+    config::LlmConfig,
+    database::{account::AccountRow, Database},
+    recorder_manager::RecorderManager,
+    state::State,
     state_type,
 };
 
@@ -334,6 +337,18 @@ impl BsrTool {
             .ok_or_else(|| BsrToolError(format!("Missing number argument: {name}")))
     }
 
+    fn account_result(accounts: Vec<AccountRow>) -> Value {
+        // Explicitly select display fields: neither authentication cookies nor
+        // CSRF tokens (including future credential fields) belong in tool output.
+        json!({"accounts": accounts.into_iter().map(|account| json!({
+            "platform": account.platform,
+            "uid": account.uid,
+            "name": account.name,
+            "avatar": account.avatar,
+            "created_at": account.created_at,
+        })).collect::<Vec<_>>()})
+    }
+
     async fn execute(&self, input: BsrToolArgs) -> Result<Value, BsrToolError> {
         let args = &input.args;
         match input.action.as_str() {
@@ -343,10 +358,7 @@ impl BsrTool {
                     .get_accounts()
                     .await
                     .map_err(|e| BsrToolError(e.to_string()))?;
-                // Cookies must never be exposed to the LLM provider.
-                Ok(
-                    json!({ "accounts": accounts.into_iter().map(|mut account| { account.cookies = "********".into(); account }).collect::<Vec<_>>() }),
-                )
+                Ok(Self::account_result(accounts))
             }
             "get_recorder_list" => Ok(serde_json::to_value(
                 self.recorder_manager.get_recorder_list().await,
@@ -536,19 +548,8 @@ impl BsrTool {
             other => Err(BsrToolError(format!("Unknown BSR action: {other}"))),
         }
     }
-}
 
-impl Tool for BsrTool {
-    const NAME: &'static str = "bsr";
-    type Error = BsrToolError;
-    type Args = BsrToolArgs;
-    type Output = Value;
-
-    fn description(&self) -> String {
-        "Read, analyse and manage BSR. Read-only actions execute immediately. Actions that change state, generate files, access local files through the browser, or start external operations return a confirmation request that the user must approve in the UI.".into()
-    }
-
-    fn parameters(&self) -> Value {
+    fn action_definitions() -> Vec<Value> {
         let platform = || json!({ "type": "string", "enum": ["bilibili", "douyin", "douyu"] });
         let string = || json!({ "type": "string" });
         let integer = || json!({ "type": "integer" });
@@ -560,10 +561,10 @@ impl Tool for BsrTool {
                 "enum": ["none", "fade", "dissolve", "wipeleft", "wiperight", "slideup", "slidedown"]
             })
         };
-        let actions = vec![
+        vec![
             Self::action_schema(
                 "get_accounts",
-                "Get configured accounts with cookies redacted.",
+                "Get configured account display information without cookies or CSRF tokens.",
                 json!({}),
                 &[],
             ),
@@ -813,11 +814,50 @@ impl Tool for BsrTool {
                 json!({ "platform": platform(), "room_id": string(), "live_id": string() }),
                 &["platform", "room_id", "live_id"],
             ),
-        ];
-        json!({
-            "type": "object",
-            "oneOf": actions
-        })
+        ]
+    }
+}
+
+/// Reuse the same BSR action schemas for the local MCP server.
+/// The MCP catalog filters actions to those its executor supports.
+pub(crate) fn bsr_tool_definitions() -> Vec<Value> {
+    BsrTool::action_definitions()
+}
+
+/// Run the shared data-reading implementation without entering Rig's agent
+/// loop. Mutating operations remain behind the built-in assistant's existing
+/// confirmation boundary and are implemented separately by MCP.
+pub(crate) async fn execute_bsr_read_tool(
+    state: &State,
+    action: &str,
+    args: Value,
+) -> Result<Value, String> {
+    let tool = BsrTool {
+        db: state.db.clone(),
+        recorder_manager: state.recorder_manager.clone(),
+        calls: Arc::new(Mutex::new(Vec::new())),
+    };
+    let input = BsrToolArgs {
+        action: action.to_string(),
+        args,
+    }
+    .normalize()
+    .map_err(|error| error.to_string())?;
+    tool.execute(input).await.map_err(|error| error.to_string())
+}
+
+impl Tool for BsrTool {
+    const NAME: &'static str = "bsr";
+    type Error = BsrToolError;
+    type Args = BsrToolArgs;
+    type Output = Value;
+
+    fn description(&self) -> String {
+        "Read, analyse and manage BSR. Read-only actions execute immediately. Actions that change state, generate files, access local files through the browser, or start external operations return a confirmation request that the user must approve in the UI.".into()
+    }
+
+    fn parameters(&self) -> Value {
+        json!({ "type": "object", "oneOf": Self::action_definitions() })
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
@@ -1111,6 +1151,29 @@ pub async fn agent_chat(
 mod tests {
     use super::*;
     use rig_core::message::{DocumentSourceKind, ImageMediaType};
+
+    #[test]
+    fn account_tool_results_omit_all_credentials() {
+        let result = BsrTool::account_result(vec![AccountRow {
+            platform: "bilibili".into(),
+            uid: "123".into(),
+            name: "Streamer".into(),
+            avatar: "avatar.png".into(),
+            created_at: "2026-10-13".into(),
+            cookies: "secret-cookie".into(),
+            csrf: "secret-csrf".into(),
+        }]);
+        let account = result["accounts"][0].as_object().unwrap();
+        assert_eq!(account.len(), 5);
+        assert_eq!(account["uid"], "123");
+        assert_eq!(account["name"], "Streamer");
+        assert_eq!(account["platform"], "bilibili");
+        assert_eq!(account["avatar"], "avatar.png");
+        assert_eq!(account["created_at"], "2026-10-13");
+        assert!(!account.contains_key("cookies"));
+        assert!(!account.contains_key("csrf"));
+        assert!(!result.to_string().contains("secret-"));
+    }
 
     fn tool_message(content: Value) -> AgentMessage {
         AgentMessage {

@@ -58,7 +58,7 @@ BSR 必须保持运行。客户端连接后会自动发现当前可用工具，�
 | 字幕 | 读取或生成录播及切片字幕、将字幕压制到切片 | `get_archive_subtitle`、`get_video_subtitle`、`generate_archive_subtitle`、`generate_video_subtitle`、`encode_video_subtitle` |
 | 后台任务 | 查询任务进度、删除任务记录 | `get_background_tasks`、`delete_background_task` |
 
-`get_video_cover` 会读取封面文件，返回图片内容块，并附带视频 ID 和封面文件名。支持 JPEG、PNG、GIF 和 WebP，MIME 类型按文件内容判断；没有封面、文件无法读取或格式不支持时返回工具错误。
+`get_video_cover` 会读取输出目录内的封面文件，或解码数据库中遗留的 Base64 图片 data URL，返回图片内容块，并附带视频 ID 和封面文件名（内嵌封面为 `null`）。支持 JPEG、PNG、GIF 和 WebP，MIME 类型按图片内容判断；没有封面、文件无法读取或格式不支持时返回工具错误。
 
 `extract_video_frames` 在桌面模式和 headless 模式均可使用，返回 JPEG 图片内容块和对应时间戳。运行环境需要提供 FFmpeg 和 ffprobe，并能读取切片视频文件；只读 headless 模式也可使用此工具。
 

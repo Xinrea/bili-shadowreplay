@@ -630,6 +630,21 @@ mod tests {
 
     #[tokio::test]
     async fn frame_extraction_returns_base64_jpeg_without_gui() {
+        // Match ffmpeg_utils tests: CI installs FFmpeg, but local contributors
+        // can still run the test suite without the optional media executable.
+        let available = ffmpeg_command()
+            .arg("-version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await;
+        if let Err(error) = &available {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                eprintln!("Skipping frame extraction test: FFmpeg is not installed");
+                return;
+            }
+        }
+        assert!(available.unwrap().success(), "FFmpeg version check failed");
         let directory = tempfile::tempdir().unwrap();
         let video_path = directory.path().join("test.mp4");
         let output = ffmpeg_command()

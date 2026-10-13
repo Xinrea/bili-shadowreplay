@@ -7,7 +7,7 @@ use recorder::platforms::PlatformType;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Component, Path};
 
 #[cfg(feature = "gui")]
 use tauri::Manager;
@@ -399,21 +399,40 @@ fn validate_arguments(name: &str, args: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// Covers are stored as files relative to the configured output directory.
-/// Keep the filename as metadata, but send the bytes as an MCP image block.
+/// Read current file-backed covers and legacy inline covers without duplicating
+/// the image bytes in the text/structured metadata.
 async fn video_cover_result(output_dir: &Path, id: i64, cover: &str) -> Result<Value, String> {
     if cover.is_empty() {
         return Err(format!("Video {id} has no cover"));
     }
-    let cover_path = output_dir.join(cover);
-    let bytes = tokio::fs::read(&cover_path).await.map_err(|error| {
-        format!(
-            "Failed to read video cover {}: {error}",
-            cover_path.display()
-        )
-    })?;
+    let inline = cover.starts_with("data:");
+    let bytes = if inline {
+        let (_, data) = cover
+            .split_once(',')
+            .filter(|(header, _)| header.starts_with("data:image/") && header.ends_with(";base64"))
+            .ok_or_else(|| format!("Video {id} cover must be a Base64 image data URL"))?;
+        base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(|error| format!("Failed to decode video {id} cover: {error}"))?
+    } else {
+        if !Path::new(cover)
+            .components()
+            .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
+        {
+            return Err(format!(
+                "Video {id} cover must be a relative path inside the output directory"
+            ));
+        }
+        let cover_path = output_dir.join(cover);
+        tokio::fs::read(&cover_path).await.map_err(|error| {
+            format!(
+                "Failed to read video cover {}: {error}",
+                cover_path.display()
+            )
+        })?
+    };
     if bytes.is_empty() {
-        return Err(format!("Video cover is empty: {}", cover_path.display()));
+        return Err(format!("Video cover is empty for video {id}"));
     }
     // Cover updates write to a .jpg filename even when the supplied data URL
     // contains another image format. Determine the MIME type from the bytes.
@@ -427,12 +446,11 @@ async fn video_cover_result(output_dir: &Path, id: i64, cover: &str) -> Result<V
         "image/webp"
     } else {
         return Err(format!(
-            "Unsupported video cover image format: {}",
-            cover_path.display()
+            "Unsupported video cover image format for video {id}"
         ));
     };
     Ok(json!({
-        "response": { "id": id, "cover": cover },
+        "response": { "id": id, "cover": if inline { None } else { Some(cover) } },
         "parts": [{
             "type": "image",
             "data": base64::engine::general_purpose::STANDARD.encode(bytes),
@@ -716,6 +734,46 @@ mod tests {
             .await
             .unwrap_err()
             .contains("Unsupported video cover image format"));
+    }
+
+    #[tokio::test]
+    async fn legacy_inline_video_covers_return_images_without_duplicate_base64_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let bytes = b"\x89PNG\r\n\x1a\n";
+        let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+        // The byte signature, rather than the legacy header, is authoritative.
+        let cover = format!("data:image/jpeg;base64,{data}");
+        let result = video_cover_result(directory.path(), 42, &cover)
+            .await
+            .unwrap();
+        assert_eq!(result["parts"][0]["data"], data);
+        assert_eq!(result["parts"][0]["mimeType"], "image/png");
+        assert_eq!(result["response"], json!({"id": 42, "cover": null}));
+        assert!(!result["response"].to_string().contains(&data));
+        for invalid in [
+            "data:image/png,unencoded",
+            "data:image/png;base64,invalid!",
+            "data:text/plain;base64,aGVsbG8=",
+        ] {
+            assert!(video_cover_result(directory.path(), 42, invalid)
+                .await
+                .is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn video_cover_rejects_absolute_paths_and_parent_traversal() {
+        let directory = tempfile::tempdir().unwrap();
+        for cover in [
+            directory.path().join("cover.jpg").to_str().unwrap(),
+            "../cover.jpg",
+            "nested/../../cover.jpg",
+        ] {
+            assert!(video_cover_result(directory.path(), 42, cover)
+                .await
+                .unwrap_err()
+                .contains("must be a relative path"));
+        }
     }
 
     #[test]

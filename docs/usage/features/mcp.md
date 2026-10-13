@@ -58,11 +58,14 @@ BSR 必须保持运行。客户端连接后会自动发现当前可用工具，�
 | 字幕 | 读取或生成录播及切片字幕、将字幕压制到切片 | `get_archive_subtitle`、`get_video_subtitle`、`generate_archive_subtitle`、`generate_video_subtitle`、`encode_video_subtitle` |
 | 后台任务 | 查询任务进度、删除任务记录 | `get_background_tasks`、`delete_background_task` |
 
+`get_video_cover` 会读取封面文件，返回图片内容块，并附带视频 ID 和封面文件名。支持 JPEG、PNG、GIF 和 WebP，MIME 类型按文件内容判断；没有封面、文件无法读取或格式不支持时返回工具错误。
+
+`extract_video_frames` 在桌面模式和 headless 模式均可使用，返回 JPEG 图片内容块和对应时间戳。运行环境需要提供 FFmpeg 和 ffprobe，并能读取切片视频文件；只读 headless 模式也可使用此工具。
+
 以下工具依赖现有桌面视频处理模块，仅桌面模式提供；headless 模式不会显示这些工具。
 
 | 操作 | 工具 |
 | --- | --- |
-| 提取视频帧 | `extract_video_frames` |
 | 读取视频或录播的媒体元数据 | `get_video_metadata`、`get_archive_metadata` |
 | 合并切片 | `merge_videos` |
 | 提取视频音频 | `extract_video_audio` |
@@ -86,5 +89,6 @@ MCP Server 使用单独配置的端口（默认 `18763`），仅监听 BSR 所�
 - 更改端口后客户端无法连接：将外部 Agent 的 MCP URL 更新为设置中显示的新地址，并重新连接。
 - 客户端连接失败：确认使用 HTTP / Streamable HTTP 传输、完整的 `/mcp` 路径，并确认 Agent 与 BSR 的 `127.0.0.1` 位于同一台机器或网络命名空间。
 - 只能看到查询工具：检查 BSR 是否以只读 headless 模式启动。
-- 找不到视频帧、媒体元数据、音频提取或合并工具：这些工具仅桌面模式提供。
+- 找不到媒体元数据、音频提取或合并工具：这些工具仅桌面模式提供。
+- 视频帧提取失败：确认 FFmpeg 和 ffprobe 可用，且配置的输出目录中存在对应视频文件。
 - 网页设置中无法复制：浏览器可能限制了剪贴板访问，可直接选择地址或配置示例手动复制。

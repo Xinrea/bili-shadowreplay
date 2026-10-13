@@ -2,10 +2,12 @@
 //! readers keep this catalog aligned with the in-app assistant; writes use the
 //! same handlers as the application UI after the user enables the MCP server.
 
+use base64::Engine;
 use recorder::platforms::PlatformType;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::path::Path;
 
 #[cfg(feature = "gui")]
 use tauri::Manager;
@@ -28,7 +30,6 @@ enum Action {
     EncodeVideoSubtitle,
     ClipRange,
     GenerateArchiveSubtitle,
-    #[cfg(feature = "gui")]
     ExtractVideoFrames,
     #[cfg(feature = "gui")]
     GetVideoMetadata,
@@ -71,7 +72,6 @@ impl Action {
             "encode_video_subtitle" => Self::EncodeVideoSubtitle,
             "clip_range" => Self::ClipRange,
             "generate_archive_subtitle" => Self::GenerateArchiveSubtitle,
-            #[cfg(feature = "gui")]
             "extract_video_frames" => Self::ExtractVideoFrames,
             #[cfg(feature = "gui")]
             "get_video_metadata" => Self::GetVideoMetadata,
@@ -85,25 +85,16 @@ impl Action {
         })
     }
 
-    #[cfg(feature = "gui")]
     fn readonly(self) -> bool {
-        matches!(
-            self,
+        match self {
             Self::Read
-                | Self::GetVideoCover
-                | Self::GetVideoSubtitle
-                | Self::ExtractVideoFrames
-                | Self::GetVideoMetadata
-                | Self::GetArchiveMetadata
-        )
-    }
-
-    #[cfg(not(feature = "gui"))]
-    fn readonly(self) -> bool {
-        matches!(
-            self,
-            Self::Read | Self::GetVideoCover | Self::GetVideoSubtitle
-        )
+            | Self::GetVideoCover
+            | Self::GetVideoSubtitle
+            | Self::ExtractVideoFrames => true,
+            #[cfg(feature = "gui")]
+            Self::GetVideoMetadata | Self::GetArchiveMetadata => true,
+            _ => false,
+        }
     }
 
     fn destructive(self) -> bool {
@@ -140,11 +131,14 @@ pub(super) fn definitions(readonly: bool) -> Vec<Value> {
             constrain_schema(name, &mut input_schema);
             // Confirmation is provided by external clients. The in-app
             // assistant retains its own, separate confirmation behavior.
-            let description = schema["description"]
+            let mut description = schema["description"]
                 .as_str()
                 .unwrap_or_default()
                 .replace(" after user confirmation because the result is handled locally", "")
                 .replace(" after user confirmation", "");
+            if name == "get_video_cover" {
+                description = "Get a video's cover as an image, with its ID and stored cover filename as metadata.".into();
+            }
             Some(json!({
                 "name": name,
                 "description": description,
@@ -405,6 +399,48 @@ fn validate_arguments(name: &str, args: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// Covers are stored as files relative to the configured output directory.
+/// Keep the filename as metadata, but send the bytes as an MCP image block.
+async fn video_cover_result(output_dir: &Path, id: i64, cover: &str) -> Result<Value, String> {
+    if cover.is_empty() {
+        return Err(format!("Video {id} has no cover"));
+    }
+    let cover_path = output_dir.join(cover);
+    let bytes = tokio::fs::read(&cover_path).await.map_err(|error| {
+        format!(
+            "Failed to read video cover {}: {error}",
+            cover_path.display()
+        )
+    })?;
+    if bytes.is_empty() {
+        return Err(format!("Video cover is empty: {}", cover_path.display()));
+    }
+    // Cover updates write to a .jpg filename even when the supplied data URL
+    // contains another image format. Determine the MIME type from the bytes.
+    let mime_type = if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        "image/jpeg"
+    } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "image/png"
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        "image/gif"
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        "image/webp"
+    } else {
+        return Err(format!(
+            "Unsupported video cover image format: {}",
+            cover_path.display()
+        ));
+    };
+    Ok(json!({
+        "response": { "id": id, "cover": cover },
+        "parts": [{
+            "type": "image",
+            "data": base64::engine::general_purpose::STANDARD.encode(bytes),
+            "mimeType": mime_type
+        }]
+    }))
+}
+
 pub(super) async fn call(state: &State, name: &str, args: Value) -> Result<Value, String> {
     #[cfg(feature = "headless")]
     let readonly = state.readonly;
@@ -477,9 +513,14 @@ pub(super) async fn call(state: &State, name: &str, args: Value) -> Result<Value
             Ok(json!({ "success": true }))
         }
         Action::GetVideoCover => {
-            let cover =
-                handlers::video::get_video_cover(command_state, argument(&args, "id")?).await?;
-            Ok(json!({ "cover": cover }))
+            let id = argument(&args, "id")?;
+            let cover = state
+                .db
+                .get_video_cover(id)
+                .await
+                .map_err(|error| error.to_string())?;
+            let output_dir = state.config.read().await.output.clone();
+            video_cover_result(Path::new(&output_dir), id, &cover).await
         }
         Action::GetVideoSubtitle => {
             let subtitle =
@@ -531,7 +572,6 @@ pub(super) async fn call(state: &State, name: &str, args: Value) -> Result<Value
             .await?;
             Ok(json!({ "subtitle": subtitle }))
         }
-        #[cfg(feature = "gui")]
         Action::ExtractVideoFrames => {
             let timestamps = args
                 .get("timestamps")
@@ -611,6 +651,73 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
+    #[tokio::test]
+    async fn video_cover_reads_output_file_and_returns_image_bytes_with_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let bytes = [0xff, 0xd8, 0xff, 0xd9];
+        tokio::fs::write(directory.path().join("cover.jpg"), bytes)
+            .await
+            .unwrap();
+        let result = video_cover_result(directory.path(), 42, "cover.jpg")
+            .await
+            .unwrap();
+        assert_eq!(result["response"], json!({"id": 42, "cover": "cover.jpg"}));
+        let image = &result["parts"][0];
+        assert_eq!(image["type"], "image");
+        assert_eq!(image["mimeType"], "image/jpeg");
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(image["data"].as_str().unwrap())
+                .unwrap(),
+            bytes
+        );
+    }
+
+    #[tokio::test]
+    async fn video_cover_reports_absent_missing_and_empty_files() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(video_cover_result(directory.path(), 42, "")
+            .await
+            .unwrap_err()
+            .contains("has no cover"));
+        assert!(video_cover_result(directory.path(), 42, "missing.jpg")
+            .await
+            .unwrap_err()
+            .contains("Failed to read video cover"));
+        tokio::fs::write(directory.path().join("empty.jpg"), [])
+            .await
+            .unwrap();
+        assert!(video_cover_result(directory.path(), 42, "empty.jpg")
+            .await
+            .unwrap_err()
+            .contains("Video cover is empty"));
+    }
+
+    #[tokio::test]
+    async fn video_cover_uses_image_bytes_instead_of_filename_for_mime_type() {
+        let directory = tempfile::tempdir().unwrap();
+        for (bytes, mime) in [
+            (b"\x89PNG\r\n\x1a\n".as_slice(), "image/png"),
+            (b"GIF89a".as_slice(), "image/gif"),
+            (b"RIFF\x00\x00\x00\x00WEBP".as_slice(), "image/webp"),
+        ] {
+            tokio::fs::write(directory.path().join("cover.jpg"), bytes)
+                .await
+                .unwrap();
+            let result = video_cover_result(directory.path(), 42, "cover.jpg")
+                .await
+                .unwrap();
+            assert_eq!(result["parts"][0]["mimeType"], mime);
+        }
+        tokio::fs::write(directory.path().join("cover.jpg"), b"not an image")
+            .await
+            .unwrap();
+        assert!(video_cover_result(directory.path(), 42, "cover.jpg")
+            .await
+            .unwrap_err()
+            .contains("Unsupported video cover image format"));
+    }
+
     #[test]
     fn catalog_contains_only_unique_executable_tools() {
         let tools = definitions(false);
@@ -624,6 +731,8 @@ mod tests {
         }
         for name in [
             "get_accounts",
+            "extract_video_frames",
+            "get_video_cover",
             "get_danmu_record",
             "clip_range",
             "add_recorder",
@@ -651,6 +760,8 @@ mod tests {
             .all(|tool| tool["annotations"]["readOnlyHint"] == true));
         assert!(resolve_action("get_recorder_list", true).is_ok());
         assert!(resolve_action("get_video_subtitle", true).is_ok());
+        assert!(resolve_action("extract_video_frames", true).is_ok());
+        assert!(resolve_action("get_video_cover", true).is_ok());
         for name in [
             "add_recorder",
             "delete_archive",
@@ -891,7 +1002,6 @@ mod tests {
             .map(|tool| tool["name"].as_str().unwrap().to_owned())
             .collect::<HashSet<_>>();
         for name in [
-            "extract_video_frames",
             "get_video_metadata",
             "merge_videos",
             "extract_video_audio",

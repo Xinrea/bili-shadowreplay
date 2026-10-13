@@ -56,7 +56,7 @@
     "ts-node": "^10.9.1",
     "tslib": "^2.4.1",
     "typescript": "^5.5.0",
-    "vite": "^7.3.5",
+    "vite": "^6.4.4",
     "vitepress": "^1.6.3",
     "vitepress-plugin-mermaid": "^2.0.17"
   },

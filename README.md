@@ -19,7 +19,17 @@ BiliBili ShadowReplay 是一个缓存直播并进行实时编辑投稿的工具�
 - Twitch
 - 快手
 - 虎牙
-- YouTube（直播录制与直播聊天）
+- YouTube
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=xinrea%2Fbili-shadowreplay&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=xinrea/bili-shadowreplay&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=xinrea/bili-shadowreplay&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=xinrea/bili-shadowreplay&type=date&legend=top-left" />
+ </picture>
+</a>
 
 ## 安装和使用
 

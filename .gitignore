@@ -40,3 +40,6 @@ docs/.vitepress/dist
 *.debug.map
 
 .cargo
+
+# Local updater signing key (never commit the private key).
+.updater/

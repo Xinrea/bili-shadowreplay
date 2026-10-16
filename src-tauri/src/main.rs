@@ -754,7 +754,21 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
 #[cfg(feature = "gui")]
 fn setup_plugins(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     let migrations = get_migrations();
+    let updater = tauri_plugin_updater::Builder::new();
+    // Keep CPU and CUDA installations on their respective Windows release tracks.
+    #[cfg(target_os = "windows")]
+    let updater = updater.target(format!(
+        "windows-{}-{}",
+        std::env::consts::ARCH,
+        if cfg!(feature = "cuda") {
+            "cuda"
+        } else {
+            "cpu"
+        }
+    ));
     let builder = builder
+        .plugin(updater.build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_focus();

@@ -6,6 +6,8 @@ on:
       - "v*"
 jobs:
   publish-tauri:
+    outputs:
+      prerelease: ${{ steps.release_info.outputs.prerelease }}
     permissions:
       contents: write
     strategy:
@@ -44,16 +46,6 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Set build type
-        id: build_type
-        run: |
-          if [[ "${{ github.ref }}" == *"rc"* ]]; then
-            echo "debug=true" >> $GITHUB_OUTPUT
-          else
-            echo "debug=false" >> $GITHUB_OUTPUT
-          fi
-        shell: bash
-
       - name: install dependencies (ubuntu only)
         if: matrix.platform == 'ubuntu-22.04' # This must match the platform value defined above.
         run: |
@@ -65,6 +57,10 @@ jobs:
         with:
           node-version: lts/*
           cache: "yarn" # Set this to npm, yarn or pnpm.
+
+      - name: Validate release tag and version
+        id: release_info
+        run: node scripts/updater-manifest.mjs release-info
 
       - name: install Rust stable
         uses: dtolnay/rust-toolchain@stable # Set this to dtolnay/rust-toolchain@nightly
@@ -150,7 +146,7 @@ jobs:
           echo "current_tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
         shell: bash
 
-      - uses: tauri-apps/tauri-action@v0
+      - uses: tauri-apps/tauri-action@1ddc7b49b13c3038297360482fcb3e058764d7c9 # v0.6.2
         id: tauri
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -163,11 +159,11 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: v__VERSION__
+          tagName: ${{ steps.release_info.outputs.tag }}
           releaseName: "BiliBili ShadowReplay v__VERSION__"
           releaseBody: "> [!NOTE]\n> 如果你是第一次下载安装，请参考 [安装准备](https://bsr.xinrea.cn/getting-started/installation/desktop.html) 选择合适的版本。\n> Changelog: https://github.com/Xinrea/bili-shadowreplay/compare/${{ steps.get_previous_tag.outputs.previous_tag }}...${{ steps.get_previous_tag.outputs.current_tag }}"
           releaseDraft: true
-          prerelease: false
+          prerelease: ${{ steps.release_info.outputs.prerelease }}
           # Merge once after all builds to avoid CPU/CUDA collisions and upload races.
           includeUpdaterJson: false
           args: ${{ matrix.args }} ${{ matrix.features == 'cuda' && '--config src-tauri/tauri.windows.cuda.conf.json' || '' }}
@@ -230,6 +226,7 @@ jobs:
 
   publish-updater:
     needs: publish-tauri
+    if: needs.publish-tauri.outputs.prerelease == 'false'
     runs-on: ubuntu-latest
     permissions:
       contents: write

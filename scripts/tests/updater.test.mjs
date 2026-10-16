@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
-import { createManifest, mergeManifests } from "../updater-manifest.mjs";
+import { createManifest, mergeManifests, releaseInfo } from "../updater-manifest.mjs";
 
 async function fixture({ desktop = true, check = async () => null, relaunch = async () => {} } = {}) {
   const context = vm.createContext({ __APP_VERSION__: "2.24.0" });
@@ -117,7 +117,7 @@ test("checks share a request, close old resources, clear stale notifications, an
   assert.equal(closed, 1);
   assert.equal(f.hasNewVersion.value, false);
   const third = f.checkForUpdates(); finish.reject(new Error("offline")); await third;
-  assert.equal(f.updateStatus.value.phase, "error");
+  assert.equal(f.updateStatus.value.phase, "check-error");
 });
 
 test("web deployments never call desktop update or restart APIs", async () => {
@@ -151,4 +151,13 @@ test("incomplete, duplicate, mismatched or unsigned release manifests fail close
   assert.throws(() => mergeManifests([...all, all[0]]), /Duplicate/);
   assert.throws(() => mergeManifests([all[0], { ...all[1], version: "2.26.0" }]), /versions do not match/);
   assert.throws(() => createManifest({ artifacts: [], target: "darwin-aarch64" }), /No signed updater/);
+  assert.throws(() => mergeManifests(all.map((entry) => ({ ...entry, version: "2.25.0-rc.1" }))), /Prereleases cannot/);
+});
+
+test("release metadata isolates prereleases and rejects tag/package version mismatches", () => {
+  assert.deepEqual(releaseInfo("2.25.0", "refs/tags/v2.25.0"), { tag: "v2.25.0", prerelease: false });
+  assert.equal(releaseInfo("2.25.0-rc.1", "refs/tags/v2.25.0-rc.1").prerelease, true);
+  assert.equal(releaseInfo("2.25.0-beta.2", "refs/heads/main").prerelease, true);
+  assert.throws(() => releaseInfo("2.24.0", "refs/tags/v2.25.0-rc.1"), /does not match/);
+  assert.throws(() => releaseInfo("2.24.0-rc.1", "refs/tags/v2.24.0"), /does not match/);
 });

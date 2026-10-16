@@ -7,7 +7,7 @@ export const hasNewVersion = writable(false);
 export const currentVersion = writable(__APP_VERSION__);
 export const latestVersion = writable("");
 
-type UpdatePhase = "idle" | "checking" | "available" | "downloading" | "installing" | "restarting" | "restart-required" | "error";
+type UpdatePhase = "idle" | "checking" | "check-error" | "available" | "downloading" | "installing" | "restarting" | "restart-required" | "error";
 interface UpdateStatus {
   phase: UpdatePhase;
   downloaded: number;
@@ -49,7 +49,7 @@ export function checkForUpdates(): Promise<void> {
       if (update) latestVersion.set(`v${update.version.replace(/^v/, "")}`);
       updateStatus.set({ phase: update ? "available" : "idle", downloaded: 0 });
     } catch (error) {
-      updateStatus.set({ phase: "error", downloaded: 0, error: String(error) });
+      updateStatus.set({ phase: "check-error", downloaded: 0, error: String(error) });
     } finally {
       checking = null;
     }

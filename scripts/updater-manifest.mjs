@@ -1,6 +1,16 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 import { pathToFileURL } from "node:url";
+
+export function releaseInfo(version, ref) {
+  const parsed = /^(\d+\.\d+\.\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(version);
+  if (!parsed) throw new Error(`Invalid release version: ${version}`);
+  const tag = `v${version}`;
+  if (ref.startsWith("refs/tags/") && ref !== `refs/tags/${tag}`) {
+    throw new Error(`Release tag ${ref} does not match package version ${tag}`);
+  }
+  return { tag, prerelease: Boolean(parsed[2]) };
+}
 
 // Match tauri-action's release asset naming, including its filename sanitizing.
 function assetName(file, target) {
@@ -34,6 +44,7 @@ export function createManifest({ artifacts, target, version, repository, readSig
 export function mergeManifests(manifests) {
   const version = manifests[0]?.version;
   if (!version) throw new Error("No updater manifests provided");
+  if (releaseInfo(version, "").prerelease) throw new Error("Prereleases cannot be published to the stable updater index");
   const platforms = {};
   for (const manifest of manifests) {
     if (manifest.version !== version) throw new Error("Updater versions do not match");
@@ -52,7 +63,11 @@ export function mergeManifests(manifests) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [command, output, ...inputs] = process.argv.slice(2);
   let manifest;
-  if (command === "create") {
+  if (command === "release-info") {
+    const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+    const { tag, prerelease } = releaseInfo(version, process.env.GITHUB_REF);
+    appendFileSync(process.env.GITHUB_OUTPUT, `tag=${tag}\nprerelease=${prerelease}\n`);
+  } else if (command === "create") {
     manifest = createManifest({
       artifacts: JSON.parse(process.env.UPDATER_ARTIFACTS),
       target: process.env.UPDATER_TARGET,
@@ -62,7 +77,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   } else if (command === "merge") {
     manifest = mergeManifests(inputs.map((file) => JSON.parse(readFileSync(file, "utf8"))));
   } else {
-    throw new Error("Usage: updater-manifest.mjs create|merge OUTPUT [INPUT...]");
+    throw new Error("Usage: updater-manifest.mjs release-info | create|merge OUTPUT [INPUT...]");
   }
-  writeFileSync(output, JSON.stringify(manifest, null, 2) + "\n");
+  if (manifest) writeFileSync(output, JSON.stringify(manifest, null, 2) + "\n");
 }

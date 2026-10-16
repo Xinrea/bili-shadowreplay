@@ -111,8 +111,8 @@
             {#if $updateStatus.phase === "idle"}<p class="text-xs text-gray-500">当前已是最新版本</p>{/if}
           {/if}
           {#if $updateStatus.error}
-            <p class="text-sm text-red-500" role="alert">
-              {$updateStatus.phase === "restart-required" ? "更新已安装，请重试重启或手动重启应用。" : "更新失败，请重试或前往发布页下载安装。"}
+            <p class="text-sm" class:text-gray-500={$updateStatus.phase === "check-error"} class:text-red-500={$updateStatus.phase !== "check-error"} role={$updateStatus.phase === "check-error" ? "status" : "alert"}>
+              {$updateStatus.phase === "check-error" ? "暂时无法检查更新，请稍后重试。" : $updateStatus.phase === "restart-required" ? "更新已安装，请重试重启或手动重启应用。" : "更新失败，请重试或前往发布页下载安装。"}
             </p>
             <p class="text-xs text-gray-500 break-words">{$updateStatus.error}</p>
             <button class="text-sm text-blue-500 hover:text-blue-600" onclick={() => open("https://github.com/Xinrea/bili-shadowreplay/releases/latest")}>前往发布页</button>

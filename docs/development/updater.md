@@ -26,6 +26,8 @@ yarn tauri build
 
 Release workflow 为五个平台生成签名安装包和独立 manifest，再统一合并 `latest.json` 上传到 Release 草稿。所有平台成功后才会生成完整更新索引，避免并发覆盖或将 CPU 用户升级为 CUDA 包。检查草稿中的安装包、`.sig` 与 `latest.json` 后发布正式 Release，客户端即可检测。
 
+Git tag 必须与 `package.json` 版本完全一致（例如 `v2.25.0-rc.1` 对应 `2.25.0-rc.1`）。包含预发布标识的版本会标记为 GitHub prerelease，并跳过稳定版 `latest.json` 的上传；更新索引合并脚本也拒绝预发布版本。Tauri Action 固定在 v0.6.2 的提交，以保持更新包下载名称稳定。
+
 旧版本 Release 没有签名更新包和 `latest.json`，无法通过更新器安装。首次使用此功能需要手动安装包含更新器的版本；后续签名版本才可应用内升级。
 
 官方更新器配置：[Tauri Updater](https://v2.tauri.app/plugin/updater/)。

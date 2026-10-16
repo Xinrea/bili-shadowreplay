@@ -295,8 +295,7 @@ pub async fn generate_video_subtitle(
         }
         SubtitleGeneratorType::PowerLive => {
             let db = powerlive_db.ok_or("请先在设置中登录 PowerLive 账号")?;
-            let token = crate::powerlive::access_token(db).await?;
-            let generator = crate::subtitle_generator::powerlive::new(&token).await?;
+            let generator = crate::subtitle_generator::powerlive::new(db).await?;
             let extension = file
                 .extension()
                 .and_then(|extension| extension.to_str())

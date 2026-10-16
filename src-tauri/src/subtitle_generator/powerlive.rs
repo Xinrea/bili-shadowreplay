@@ -10,16 +10,14 @@ use crate::{
     subtitle_generator::{GenerateResult, SubtitleGenerator, SubtitleGeneratorType},
 };
 
-const API_URL: &str = "https://api.powerlive.io/service/subtitle";
-
 #[derive(Clone)]
-pub struct PowerLive {
+pub struct PowerLive<'a> {
     client: Client,
-    access_token: String,
-    api_url: String,
+    db: &'a crate::database::Database,
+    api_base: String,
 }
 
-pub async fn new(access_token: &str) -> Result<PowerLive, String> {
+pub async fn new(db: &crate::database::Database) -> Result<PowerLive<'_>, String> {
     let client = Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(600))
@@ -27,13 +25,13 @@ pub async fn new(access_token: &str) -> Result<PowerLive, String> {
         .map_err(|e| e.to_string())?;
     Ok(PowerLive {
         client,
-        access_token: access_token.to_string(),
-        api_url: API_URL.to_string(),
+        db,
+        api_base: crate::powerlive::API_BASE.to_string(),
     })
 }
 
 #[async_trait]
-impl SubtitleGenerator for PowerLive {
+impl SubtitleGenerator for PowerLive<'_> {
     async fn generate_subtitle(
         &self,
         _reporter: Option<&(impl ProgressReporterTrait + 'static)>,
@@ -67,30 +65,27 @@ impl SubtitleGenerator for PowerLive {
             _ => "audio/opus",
         };
 
-        let audio_file = Part::bytes(audio_data)
-            .mime_str(mime_type)
-            .map_err(|e| format!("Failed to set MIME type: {e}"))?
-            .file_name(file_name);
-
-        let form = Form::new()
-            .text("format", file_extension)
-            .text("sentence_max_length", "10")
-            .part("file", audio_file);
-
-        let response = self
-            .client
-            .post(&self.api_url)
-            .header("Authorization", format!("Bearer {}", self.access_token))
-            .multipart(form)
-            .send()
-            .await
-            .map_err(|e| format!("Failed to send request: {e}"))?;
+        let (response, _) =
+            crate::powerlive::authenticated_request(self.db, &self.api_base, |token| {
+                // Multipart bodies must be rebuilt to retry a rejected access token once.
+                let audio_file = Part::bytes(audio_data.clone())
+                    .mime_str(mime_type)
+                    .map_err(|e| format!("Failed to set MIME type: {e}"))?
+                    .file_name(file_name.clone());
+                let form = Form::new()
+                    .text("format", file_extension.clone())
+                    .text("sentence_max_length", "10")
+                    .part("file", audio_file);
+                Ok(self
+                    .client
+                    .post(format!("{}/service/subtitle", self.api_base))
+                    .bearer_auth(token)
+                    .multipart(form))
+            })
+            .await?;
 
         if !response.status().is_success() {
             let status = response.status();
-            if status == reqwest::StatusCode::UNAUTHORIZED {
-                return Err("PowerLive 登录已失效，请在设置中重新登录".into());
-            }
             let body = response
                 .json::<serde_json::Value>()
                 .await
@@ -125,14 +120,28 @@ impl SubtitleGenerator for PowerLive {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{extract::Multipart, http::HeaderMap, routing::post, Json, Router};
+    use axum::{
+        extract::{Form as AxumForm, Multipart, State},
+        http::{HeaderMap, StatusCode},
+        response::IntoResponse,
+        routing::post,
+        Json, Router,
+    };
+    use std::{
+        collections::HashMap,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+    };
 
     #[tokio::test]
-    async fn uploads_audio_with_account_bearer_and_parses_subtitles() {
+    async fn retries_unauthorized_upload_with_refreshed_bearer_and_same_audio() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let endpoint = format!("http://{}/service/subtitle", listener.local_addr().unwrap());
-        let router = Router::new().route("/service/subtitle", post(|headers: HeaderMap, mut form: Multipart| async move {
-            assert_eq!(headers["authorization"], "Bearer test-account-token");
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let router = Router::new().route("/service/subtitle", post(|State(calls): State<Arc<AtomicUsize>>, headers: HeaderMap, mut form: Multipart| async move {
+            calls.fetch_add(1, Ordering::SeqCst);
             let mut names = Vec::new();
             while let Some(field) = form.next_field().await.unwrap() {
                 let name = field.name().unwrap().to_string();
@@ -149,16 +158,38 @@ mod tests {
                 names.push(name);
             }
             assert_eq!(names.len(), 3);
-            Json(serde_json::json!({"subtitle": "1\n00:00:00,000 --> 00:00:01,000\n测试字幕\n\n"}))
-        }));
+            if headers["authorization"] == "Bearer test-account-token" {
+                StatusCode::UNAUTHORIZED.into_response()
+            } else {
+                assert_eq!(headers["authorization"], "Bearer new-access");
+                Json(serde_json::json!({"subtitle": "1\n00:00:00,000 --> 00:00:01,000\n测试字幕\n\n"})).into_response()
+            }
+        })).route("/oauth/token", post(|AxumForm(form): AxumForm<HashMap<String, String>>| async move {
+            assert_eq!(form["refresh_token"], "refresh-token");
+            Json(serde_json::json!({"access_token":"new-access", "refresh_token":"rotated-refresh", "expires_in":900, "token_type":"Bearer"}))
+        })).with_state(calls.clone());
         let server = tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
         });
         let directory = tempfile::tempdir().unwrap();
         let audio = directory.path().join("audio.opus");
         tokio::fs::write(&audio, b"test-audio").await.unwrap();
-        let mut generator = new("test-account-token").await.unwrap();
-        generator.api_url = endpoint;
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for migration in crate::get_migrations() {
+            sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
+        }
+        let db = crate::database::Database::new(
+            pool,
+            crate::database::credentials::CredentialCipher::new(&[0; 32]).unwrap(),
+            crate::events::EventBus::new(),
+        );
+        db.save_powerlive_session(&serde_json::json!({"access_token":"test-account-token", "refresh_token":"refresh-token", "expires_at":chrono::Utc::now().timestamp()+900, "name":"Alice", "subject":"user-1"}).to_string()).await.unwrap();
+        let mut generator = new(&db).await.unwrap();
+        generator.api_base = endpoint;
         let result = generator
             .generate_subtitle(
                 None::<&crate::progress::progress_reporter::ProgressReporter>,
@@ -168,6 +199,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.subtitle_content.len(), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
         server.abort();
     }
 }

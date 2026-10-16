@@ -17,6 +17,7 @@
   let busy = $state(false);
   let error = $state("");
   let statusError = $state("");
+  let logoutFailed = $state(false);
   let loading = $state(true);
   let mounted = false;
   let lastCreditAttempt = 0;
@@ -36,7 +37,11 @@
         creditUpdatedAt = new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
       }
     } catch (e) {
-      if (mounted && !busy && status.subject === subject) creditError = String(e);
+      if (mounted && !busy && status.subject === subject) {
+        creditError = String(e);
+        await stateRefresh.run();
+        if (mounted && !status.logged_in) error = String(e);
+      }
     } finally {
       if (mounted) {
         creditLoading = false;
@@ -54,6 +59,7 @@
         creditUpdatedAt = "";
         creditError = "";
         lastCreditAttempt = 0;
+        logoutFailed = false;
       }
       status = result;
       loading = false;
@@ -86,10 +92,10 @@
     catch (e) { error = String(e); }
     finally { busy = false; await refreshAccount(); }
   }
-  async function logout() {
-    busy = true; error = "";
-    try { await invoke("logout_powerlive"); }
-    catch (e) { error = String(e); }
+  async function logout(localOnly = false) {
+    busy = true; error = ""; logoutFailed = false;
+    try { await invoke("logout_powerlive", { localOnly }); }
+    catch (e) { error = String(e); logoutFailed = true; }
     finally { busy = false; await refreshAccount(); }
   }
   async function openDashboard() {
@@ -142,7 +148,7 @@
             PowerLive 控制台
             <ExternalLink size={14} aria-hidden="true" />
           </button>
-          <button type="button" class="logout-button" disabled={busy} onclick={logout}>退出登录</button>
+          <button type="button" class="logout-button" disabled={busy} onclick={() => logout()}>退出登录</button>
         {:else}
           <button type="button" class="primary-button" disabled={busy || loading} onclick={login}>{busy ? "处理中…" : "登录 PowerLive"}</button>
         {/if}
@@ -187,6 +193,12 @@
     </div>
   {/if}
   {#if error || statusError || status.error}<p class="account-error" role="alert">{error || statusError || status.error}</p>{/if}
+  {#if logoutFailed && status.logged_in}
+    <div class="local-logout">
+      <p>仅清除本机凭据，不撤销远端授权。</p>
+      <button type="button" class="secondary-button" disabled={busy} onclick={() => logout(true)}>仅清除本地登录</button>
+    </div>
+  {/if}
 </section>
 
 <style>
@@ -234,6 +246,8 @@
   .empty-state p { margin: 0; font-size: 13px; line-height: 1.7; }
   .credit-error, .account-error { margin: 8px 0 0; color: #dc2626; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
   .account-error { margin-top: 12px; }
+  .local-logout { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-top: 8px; }
+  .local-logout p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
   :global(.dark) .powerlive-account { color: #f3f4f6; --muted: #b1b6bf; --border: #55565b; --soft: #333438; --surface: #3c3c3e; --hover: #48494d; }
   :global(.dark) .connection-badge { color: #9bddb2; background: #284735; }
   :global(.dark) .logout-button:hover:enabled { color: #fca5a5; background: #512d32; }

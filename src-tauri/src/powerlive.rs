@@ -75,46 +75,110 @@ async fn save(db: &Database, session: &Session) -> Result<(), String> {
         .await?;
     Ok(())
 }
+async fn clear_session(db: &Database) -> Result<(), String> {
+    match db.remove_account("powerlive", "session").await {
+        Ok(()) | Err(DatabaseError::NotFound) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 #[cfg(feature = "gui")]
 async fn token_request(values: &[(&str, &str)]) -> Result<Tokens, String> {
-    token_request_at(&format!("{API_BASE}/oauth/token"), values).await
+    token_request_at(&format!("{API_BASE}/oauth/token"), values)
+        .await
+        .map_err(|error| error.to_string())
 }
-async fn token_request_at(endpoint: &str, values: &[(&str, &str)]) -> Result<Tokens, String> {
-    let response = client()?
+
+#[derive(Debug, thiserror::Error)]
+enum TokenError {
+    #[error("PowerLive 授权已失效，请重新登录")]
+    InvalidCredentials,
+    #[error("{0}")]
+    Other(String),
+}
+
+async fn token_request_at(endpoint: &str, values: &[(&str, &str)]) -> Result<Tokens, TokenError> {
+    let response = client()
+        .map_err(TokenError::Other)?
         .post(endpoint)
         .form(values)
         .send()
         .await
-        .map_err(|_| "无法连接 PowerLive 登录服务，请稍后重试".to_string())?;
-    if !response.status().is_success() {
-        return Err("PowerLive 授权已失效，请重新登录".into());
+        .map_err(|_| TokenError::Other("无法连接 PowerLive 登录服务，请稍后重试".into()))?;
+    let status = response.status();
+    if matches!(
+        status,
+        reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::UNAUTHORIZED
+    ) {
+        return Err(TokenError::InvalidCredentials);
+    }
+    if !status.is_success() {
+        return Err(TokenError::Other(format!(
+            "PowerLive 登录服务暂不可用（{status}），请稍后重试"
+        )));
     }
     let tokens: Tokens = response
         .json()
         .await
-        .map_err(|_| "PowerLive 返回了无效的登录信息")?;
+        .map_err(|_| TokenError::Other("PowerLive 返回了无效的登录信息".into()))?;
     if tokens.access_token.is_empty()
         || tokens.expires_in <= 0
         || !tokens.token_type.eq_ignore_ascii_case("bearer")
     {
-        return Err("PowerLive 返回了无效的登录信息".into());
+        return Err(TokenError::Other("PowerLive 返回了无效的登录信息".into()));
     }
     Ok(tokens)
 }
 
-/// Serialize refreshes so rotating refresh tokens are never reused by concurrent tasks.
-pub async fn access_token(db: &Database) -> Result<String, String> {
-    access_token_from(db, &format!("{API_BASE}/oauth/token")).await
-}
-async fn access_token_from(db: &Database, endpoint: &str) -> Result<String, String> {
+// Only token refreshes hold the operation lock; long subtitle uploads do not block logout.
+async fn session_for_request(db: &Database, endpoint: &str) -> Result<Session, String> {
     let _guard = OPERATION.lock().await;
-    Ok(refresh_session(db, endpoint).await?.access_token)
+    refresh_session(db, endpoint, None).await
 }
 
-async fn refresh_session(db: &Database, endpoint: &str) -> Result<Session, String> {
+/// Retry an unauthorized request once, without reusing a rotated refresh token or changing accounts.
+pub async fn authenticated_request(
+    db: &Database,
+    base: &str,
+    build: impl Fn(&str) -> Result<reqwest::RequestBuilder, String>,
+) -> Result<(reqwest::Response, String), String> {
+    let endpoint = format!("{base}/oauth/token");
+    let mut session = session_for_request(db, &endpoint).await?;
+    for attempt in 0..2 {
+        let response = build(&session.access_token)?
+            .send()
+            .await
+            .map_err(|_| "无法连接 PowerLive 服务，请检查网络后重试")?;
+        if response.status() != reqwest::StatusCode::UNAUTHORIZED {
+            return Ok((response, session.subject));
+        }
+        let _guard = OPERATION.lock().await;
+        let current = load(db).await?.ok_or("请先在设置中登录 PowerLive 账号")?;
+        if current.subject != session.subject {
+            return Err("PowerLive 账号已变更，请重新操作".into());
+        }
+        if attempt == 1 {
+            // A concurrent request may already have saved a newer, valid access token.
+            if current.access_token == session.access_token {
+                clear_session(db).await?;
+            }
+            return Err("PowerLive 登录已失效，请重新登录".into());
+        }
+        session = refresh_session(db, &endpoint, Some(&session.access_token)).await?;
+    }
+    unreachable!("unauthorized requests return after one retry")
+}
+
+async fn refresh_session(
+    db: &Database,
+    endpoint: &str,
+    rejected_token: Option<&str>,
+) -> Result<Session, String> {
     let mut session = load(db).await?.ok_or("请先在设置中登录 PowerLive 账号")?;
-    if session.expires_at <= Utc::now().timestamp() + 60 {
-        let tokens = token_request_at(
+    if session.expires_at <= Utc::now().timestamp() + 60
+        || rejected_token == Some(session.access_token.as_str())
+    {
+        let tokens = match token_request_at(
             endpoint,
             &[
                 ("grant_type", "refresh_token"),
@@ -122,7 +186,16 @@ async fn refresh_session(db: &Database, endpoint: &str) -> Result<Session, Strin
                 ("refresh_token", &session.refresh_token),
             ],
         )
-        .await?;
+        .await
+        {
+            Ok(tokens) => tokens,
+            Err(error) => {
+                if matches!(error, TokenError::InvalidCredentials) {
+                    clear_session(db).await?;
+                }
+                return Err(error.to_string());
+            }
+        };
         session.access_token = tokens.access_token;
         if !tokens.refresh_token.is_empty() {
             session.refresh_token = tokens.refresh_token;
@@ -177,18 +250,13 @@ pub async fn get_powerlive_account(
 
 #[cfg(any(feature = "gui", test))]
 async fn account_info_from(db: &Database, base: &str) -> Result<AccountInfo, String> {
-    // Keep account switches and logout from racing the balance request.
-    let _guard = OPERATION.lock().await;
-    let session = refresh_session(db, &format!("{base}/oauth/token")).await?;
-    let response = client()?
-        .get(format!("{base}/service/account"))
-        .bearer_auth(&session.access_token)
-        .send()
-        .await
-        .map_err(|_| "无法刷新 PowerLive 剩余额度，请检查网络后重试")?;
-    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-        return Err("PowerLive 登录已失效，请重新登录".into());
-    }
+    let client = client()?;
+    let (response, subject) = authenticated_request(db, base, |token| {
+        Ok(client
+            .get(format!("{base}/service/account"))
+            .bearer_auth(token))
+    })
+    .await?;
     if !response.status().is_success() {
         return Err(format!(
             "PowerLive 额度刷新失败（{}），请稍后重试",
@@ -199,7 +267,7 @@ async fn account_info_from(db: &Database, base: &str) -> Result<AccountInfo, Str
         .json()
         .await
         .map_err(|_| "PowerLive 返回的额度信息无效")?;
-    if account.subject != session.subject {
+    if account.subject != subject {
         return Err("PowerLive 账号信息不匹配，请重新登录".into());
     }
     Ok(account)
@@ -463,7 +531,10 @@ pub async fn cancel_powerlive_login() {
 
 #[cfg(feature = "gui")]
 #[tauri::command]
-pub async fn logout_powerlive(state: tauri::State<'_, crate::state::State>) -> Result<(), String> {
+pub async fn logout_powerlive(
+    state: tauri::State<'_, crate::state::State>,
+    local_only: Option<bool>,
+) -> Result<(), String> {
     let _guard = OPERATION.lock().await;
     let mut flow = flow().lock().await;
     if let Some(stop) = flow.stop.take() {
@@ -471,23 +542,42 @@ pub async fn logout_powerlive(state: tauri::State<'_, crate::state::State>) -> R
     }
     flow.id = None;
     flow.error = None;
-    if let Some(session) = load(&state.db).await? {
-        // Keep the local session available if revocation fails, so logout can be retried.
-        let response = client()?
-            .post(format!("{API_BASE}/oauth/revoke"))
-            .form(&[
-                ("client_id", CLIENT_ID),
-                ("token", &session.refresh_token),
-                ("token_type_hint", "refresh_token"),
-            ])
-            .send()
-            .await
-            .map_err(|_| "退出登录失败，请检查网络后重试")?;
-        if !response.status().is_success() {
-            return Err("退出登录失败，请稍后重试".into());
+    drop(flow);
+    logout_session(
+        &state.db,
+        &format!("{API_BASE}/oauth/revoke"),
+        local_only.unwrap_or(false),
+    )
+    .await
+}
+
+#[cfg(any(feature = "gui", test))]
+async fn logout_session(db: &Database, endpoint: &str, local_only: bool) -> Result<(), String> {
+    if !local_only {
+        if let Some(session) = load(db).await? {
+            // Retain credentials on temporary failures; explicit local-only logout bypasses the network.
+            let response = client()?
+                .post(endpoint)
+                .form(&[
+                    ("client_id", CLIENT_ID),
+                    ("token", &session.refresh_token),
+                    ("token_type_hint", "refresh_token"),
+                ])
+                .send()
+                .await
+                .map_err(|_| "退出登录失败，请检查网络后重试")?;
+            let status = response.status();
+            if !status.is_success()
+                && !matches!(
+                    status,
+                    reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::UNAUTHORIZED
+                )
+            {
+                return Err("退出登录失败，请稍后重试，或仅清除本地登录".into());
+            }
         }
-        state.db.remove_account("powerlive", "session").await?;
     }
+    clear_session(db).await?;
     Ok(())
 }
 
@@ -547,11 +637,11 @@ mod tests {
             axum::serve(listener, router).await.unwrap();
         });
         let (first, second) = tokio::join!(
-            access_token_from(&db, &endpoint),
-            access_token_from(&db, &endpoint)
+            session_for_request(&db, &endpoint),
+            session_for_request(&db, &endpoint)
         );
-        assert_eq!(first.unwrap(), "new-access");
-        assert_eq!(second.unwrap(), "new-access");
+        assert_eq!(first.unwrap().access_token, "new-access");
+        assert_eq!(second.unwrap().access_token, "new-access");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         let stored = load(&db).await.unwrap().unwrap();
         assert_eq!(stored.refresh_token, "rotated-refresh");
@@ -618,11 +708,207 @@ mod tests {
             .err()
             .unwrap()
             .contains("不匹配"));
-        assert!(account_info_from(&db, &base)
+        server.abort();
+    }
+
+    async fn valid_session_db() -> Database {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
             .await
-            .err()
-            .unwrap()
-            .contains("登录已失效"));
+            .unwrap();
+        for migration in crate::get_migrations() {
+            sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
+        }
+        let db = Database::new(
+            pool,
+            crate::database::credentials::CredentialCipher::new(&[0; 32]).unwrap(),
+            crate::events::EventBus::new(),
+        );
+        save(
+            &db,
+            &Session {
+                access_token: "account-token".into(),
+                refresh_token: "refresh-token".into(),
+                expires_at: Utc::now().timestamp() + 900,
+                name: "Alice".into(),
+                subject: "user-1".into(),
+            },
+        )
+        .await
+        .unwrap();
+        db
+    }
+
+    #[tokio::test]
+    async fn revoke_invalid_tokens_clears_login_but_temporary_errors_allow_local_logout() {
+        use axum::{http::StatusCode, routing::post, Router};
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        for status in [
+            StatusCode::NO_CONTENT,
+            StatusCode::BAD_REQUEST,
+            StatusCode::UNAUTHORIZED,
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::SERVICE_UNAVAILABLE,
+        ] {
+            let db = valid_session_db().await;
+            let calls = Arc::new(AtomicUsize::new(0));
+            let requests = calls.clone();
+            let router = Router::new().route(
+                "/revoke",
+                post(move || {
+                    requests.fetch_add(1, Ordering::SeqCst);
+                    async move { status }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = format!("http://{}/revoke", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                axum::serve(listener, router).await.unwrap();
+            });
+            let result = logout_session(&db, &endpoint, false).await;
+            let temporary = status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
+            assert_eq!(result.is_err(), temporary, "{status}");
+            assert_eq!(load(&db).await.unwrap().is_some(), temporary, "{status}");
+            logout_session(&db, &endpoint, true).await.unwrap();
+            assert!(load(&db).await.unwrap().is_none());
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn offline_logout_can_clear_local_and_corrupt_credentials_without_network() {
+        let db = valid_session_db().await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/revoke", listener.local_addr().unwrap());
+        drop(listener);
+        assert!(logout_session(&db, &endpoint, false).await.is_err());
+        assert!(load(&db).await.unwrap().is_some());
+        logout_session(&db, "not-a-url", true).await.unwrap();
+        assert!(load(&db).await.unwrap().is_none());
+        db.save_powerlive_session("invalid session JSON")
+            .await
+            .unwrap();
+        logout_session(&db, "not-a-url", true).await.unwrap();
+        assert!(load(&db).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn unauthorized_account_refresh_distinguishes_invalid_and_temporary_failures() {
+        use axum::{
+            http::StatusCode,
+            response::IntoResponse,
+            routing::{get, post},
+            Json, Router,
+        };
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        for status in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::UNAUTHORIZED,
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::BAD_GATEWAY,
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::OK,
+        ] {
+            let db = valid_session_db().await;
+            let calls = Arc::new(AtomicUsize::new(0));
+            let requests = calls.clone();
+            let router = Router::new()
+                .route("/service/account", get(move || {
+                    requests.fetch_add(1, Ordering::SeqCst);
+                    async { StatusCode::UNAUTHORIZED }
+                }))
+                .route("/oauth/token", post(move || async move {
+                    if status == StatusCode::OK {
+                        Json(serde_json::json!({"access_token":"new-access", "refresh_token":"new-refresh", "expires_in":900, "token_type":"Bearer"})).into_response()
+                    } else { status.into_response() }
+                }));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                axum::serve(listener, router).await.unwrap();
+            });
+            let error = account_info_from(&db, &base).await.err().unwrap();
+            let temporary = status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
+            assert_eq!(load(&db).await.unwrap().is_some(), temporary, "{status}");
+            assert!(
+                error.contains(if temporary {
+                    "请稍后重试"
+                } else {
+                    "失效"
+                }),
+                "{status}: {error}"
+            );
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                if status == StatusCode::OK { 2 } else { 1 }
+            );
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_unauthorized_accounts_refresh_once_and_retry_with_rotated_token() {
+        use axum::{
+            extract::Form,
+            http::{HeaderMap, StatusCode},
+            response::IntoResponse,
+            routing::{get, post},
+            Json, Router,
+        };
+        use std::{
+            collections::HashMap,
+            sync::{
+                atomic::{AtomicUsize, Ordering},
+                Arc,
+            },
+        };
+        let db = valid_session_db().await;
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let refreshes = Arc::new(AtomicUsize::new(0));
+        let calls = refreshes.clone();
+        let router = Router::new()
+            .route("/service/account", get(move |headers: HeaderMap| {
+                let barrier = barrier.clone();
+                async move {
+                    if headers["authorization"] == "Bearer account-token" {
+                        barrier.wait().await;
+                        StatusCode::UNAUTHORIZED.into_response()
+                    } else {
+                        assert_eq!(headers["authorization"], "Bearer new-access");
+                        Json(serde_json::json!({"subject":"user-1", "name":"Alice", "credit":120})).into_response()
+                    }
+                }
+            }))
+            .route("/oauth/token", post(move |Form(form): Form<HashMap<String,String>>| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(form["refresh_token"], "refresh-token");
+                async { Json(serde_json::json!({"access_token":"new-access", "refresh_token":"rotated-refresh", "expires_in":900, "token_type":"Bearer"})) }
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(account_info_from(&db, &base), account_info_from(&db, &base))
+        })
+        .await
+        .unwrap();
+        assert_eq!(first.unwrap().credit, 120);
+        assert_eq!(second.unwrap().credit, 120);
+        assert_eq!(refreshes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            load(&db).await.unwrap().unwrap().refresh_token,
+            "rotated-refresh"
+        );
         server.abort();
     }
 

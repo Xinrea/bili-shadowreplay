@@ -6,6 +6,8 @@ on:
       - "v*"
 jobs:
   publish-tauri:
+    outputs:
+      prerelease: ${{ steps.release_info.outputs.prerelease }}
     permissions:
       contents: write
     strategy:
@@ -15,12 +17,15 @@ jobs:
           - platform: "macos-latest" # for Intel based macs.
             args: "--target x86_64-apple-darwin"
             target: "x86_64-apple-darwin"
+            updater-target: "darwin-x86_64"
           - platform: "macos-latest" # for Apple silicon macs.
             args: "--target aarch64-apple-darwin"
             target: "aarch64-apple-darwin"
+            updater-target: "darwin-aarch64"
           - platform: "ubuntu-22.04"
             args: ""
             target: ""
+            updater-target: "linux-x86_64"
           # CUDA 13.1 nvcc only supports MSVC from VS 2019-2022. The
           # windows-latest image migrated to VS 2026 in June 2026, which
           # nvcc rejects, so pin the CUDA build to windows-2022.
@@ -28,26 +33,18 @@ jobs:
             args: "--features cuda"
             features: "cuda"
             target: ""
+            updater-target: "windows-x86_64-cuda"
           - platform: "windows-latest"
             args: ""
             features: "cpu"
             target: ""
+            updater-target: "windows-x86_64-cpu"
 
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
-
-      - name: Set build type
-        id: build_type
-        run: |
-          if [[ "${{ github.ref }}" == *"rc"* ]]; then
-            echo "debug=true" >> $GITHUB_OUTPUT
-          else
-            echo "debug=false" >> $GITHUB_OUTPUT
-          fi
-        shell: bash
 
       - name: install dependencies (ubuntu only)
         if: matrix.platform == 'ubuntu-22.04' # This must match the platform value defined above.
@@ -60,6 +57,10 @@ jobs:
         with:
           node-version: lts/*
           cache: "yarn" # Set this to npm, yarn or pnpm.
+
+      - name: Validate release tag and version
+        id: release_info
+        run: node scripts/updater-manifest.mjs release-info
 
       - name: install Rust stable
         uses: dtolnay/rust-toolchain@stable # Set this to dtolnay/rust-toolchain@nightly
@@ -111,6 +112,16 @@ jobs:
         # If you don't have `beforeBuildCommand` configured you may want to build your frontend here too.
         run: yarn install # change this to npm or pnpm depending on which one you use.
 
+      - name: Validate updater signing key
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::Set the TAURI_SIGNING_PRIVATE_KEY repository secret before publishing signed updates. See docs/development/updater.md."
+            exit 1
+          fi
+
       - name: Copy CUDA DLLs (Windows CUDA only)
         if: matrix.features == 'cuda'
         shell: pwsh
@@ -135,7 +146,8 @@ jobs:
           echo "current_tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
         shell: bash
 
-      - uses: tauri-apps/tauri-action@v0
+      - uses: tauri-apps/tauri-action@1ddc7b49b13c3038297360482fcb3e058764d7c9 # v0.6.2
+        id: tauri
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CMAKE_OSX_DEPLOYMENT_TARGET: "13.3"
@@ -144,13 +156,31 @@ jobs:
           # Sentry DSN baked into the binary at build time (option_env! in main.rs).
           # When unset, Sentry is disabled in the build instead of using a default.
           SENTRY_ENDPOINT: ${{ secrets.SENTRY_ENDPOINT }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: v__VERSION__
+          tagName: ${{ steps.release_info.outputs.tag }}
           releaseName: "BiliBili ShadowReplay v__VERSION__"
           releaseBody: "> [!NOTE]\n> 如果你是第一次下载安装，请参考 [安装准备](https://bsr.xinrea.cn/getting-started/installation/desktop.html) 选择合适的版本。\n> Changelog: https://github.com/Xinrea/bili-shadowreplay/compare/${{ steps.get_previous_tag.outputs.previous_tag }}...${{ steps.get_previous_tag.outputs.current_tag }}"
           releaseDraft: true
-          prerelease: false
+          prerelease: ${{ steps.release_info.outputs.prerelease }}
+          # Merge once after all builds to avoid CPU/CUDA collisions and upload races.
+          includeUpdaterJson: false
           args: ${{ matrix.args }} ${{ matrix.features == 'cuda' && '--config src-tauri/tauri.windows.cuda.conf.json' || '' }}
+
+      - name: Create platform updater manifest
+        env:
+          UPDATER_ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
+          UPDATER_VERSION: ${{ steps.tauri.outputs.appVersion }}
+          UPDATER_TARGET: ${{ matrix.updater-target }}
+        run: node scripts/updater-manifest.mjs create updater-${{ matrix.updater-target }}.json
+
+      - name: Collect updater manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: updater-${{ matrix.updater-target }}
+          path: updater-${{ matrix.updater-target }}.json
+          if-no-files-found: error
 
       - name: Generate dSYM for Sentry (macOS only)
         if: matrix.platform == 'macos-latest'
@@ -193,3 +223,28 @@ jobs:
           fi
           echo "Uploading debug files from: $DEBUG_DIR"
           npx --yes @sentry/cli@2 debug-files upload --include-sources "$DEBUG_DIR"
+
+  publish-updater:
+    needs: publish-tauri
+    if: needs.publish-tauri.outputs.prerelease == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: updater-*
+          path: updater-manifests
+          merge-multiple: true
+      - name: Merge and upload complete updater manifest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node scripts/updater-manifest.mjs merge latest.json updater-manifests/*.json
+          VERSION=$(node -p "JSON.parse(require('fs').readFileSync('latest.json', 'utf8')).version")
+          gh release upload "v$VERSION" latest.json --clobber

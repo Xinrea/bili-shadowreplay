@@ -1,22 +1,28 @@
 <script lang="ts">
-  import { open } from "../lib/invoker";
-  import { BookOpen, MessageCircle, Video, Heart } from "lucide-svelte";
-  import { hasNewVersion, latestVersion } from "../lib/stores/version";
+  import { onMount } from "svelte";
+  import { open, TAURI_ENV } from "../lib/invoker";
+  import { BookOpen, MessageCircle, Download, LoaderCircle, Heart } from "lucide-svelte";
+  import { hasNewVersion, latestVersion, updateStatus, checkForUpdates, installUpdate, isNewerVersion } from "../lib/stores/version";
   let version = `v${__APP_VERSION__}`;
   let showDonateModal = $state(false);
-  let releases = $state([]);
+  let releases = $state<{ version: string; date: string; description: string; url: string }[]>([]);
+  let releasesError = $state("");
+  let updateBusy = $derived(["checking", "downloading", "installing", "restarting"].includes($updateStatus.phase));
+  let downloadPercent = $derived($updateStatus.total
+    ? Math.min(100, Math.floor($updateStatus.downloaded / $updateStatus.total * 100))
+    : undefined);
 
   // get releases from github api
-  fetch("https://api.github.com/repos/Xinrea/bili-shadowreplay/releases")
-    .then((response) => response.json())
-    .then((data) => {
-      // Filter out prerelease versions
-      const stableReleases = data.filter((release) => !release.prerelease);
+  async function loadReleases(signal: AbortSignal) {
+    try {
+      const response = await fetch("https://api.github.com/repos/Xinrea/bili-shadowreplay/releases", { signal });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      const stableReleases = data.filter((release) => !release.prerelease && !release.draft);
       const latest = stableReleases[0]?.tag_name;
-      latestVersion.set(latest);
-      // Compare versions and set hasNewVersion
-      if (version && latest !== version) {
-        hasNewVersion.set(true);
+      if (!TAURI_ENV) {
+        latestVersion.set(latest || "");
+        hasNewVersion.set(isNewerVersion(latest || "", version));
       }
       releases = stableReleases.slice(0, 3).map((release) => ({
         version: release.tag_name,
@@ -24,7 +30,17 @@
         description: release.body,
         url: release.html_url,
       }));
-    });
+    } catch (error) {
+      if (!signal.aborted) releasesError = `无法加载更新日志：${error}`;
+    }
+  }
+
+  onMount(() => {
+    const controller = new AbortController();
+    void loadReleases(controller.signal);
+    void checkForUpdates();
+    return () => controller.abort();
+  });
 
   function formatReleaseNotes(notes) {
     if (!notes) return [];
@@ -60,16 +76,50 @@
   <div class="max-w-2xl mx-auto space-y-8">
     <!-- App Info -->
     <div class="text-center space-y-4">
-      <div
-        class="w-24 h-24 mx-auto bg-gradient-to-br from-blue-500 to-purple-600 rounded-2xl shadow-lg flex items-center justify-center"
-      >
-        <Video class="w-12 h-12 icon-white" />
-      </div>
+      <img src="/icon.svg" alt="BiliBili ShadowReplay Logo" class="w-24 h-24 mx-auto" />
       <div>
         <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">
           BiliBili ShadowReplay
         </h1>
         <p class="text-gray-500 dark:text-gray-400">Version {version}</p>
+      </div>
+      <div class="space-y-2" aria-live="polite" aria-busy={updateBusy}>
+        {#if TAURI_ENV}
+          {#if $hasNewVersion || ["downloading", "installing", "restarting", "restart-required"].includes($updateStatus.phase)}
+            <button
+              class="inline-flex items-center gap-2 rounded-lg bg-blue-500 px-4 py-2 text-sm font-medium text-white hover:bg-blue-600 disabled:opacity-60 disabled:cursor-wait"
+              disabled={updateBusy}
+              onclick={installUpdate}
+            >
+              {#if updateBusy}<LoaderCircle class="w-4 h-4 animate-spin" />{:else}<Download class="w-4 h-4" />{/if}
+              {#if $updateStatus.phase === "downloading"}
+                正在下载{downloadPercent === undefined ? "…" : ` ${downloadPercent}%`}
+              {:else if $updateStatus.phase === "installing"}正在安装…
+              {:else if $updateStatus.phase === "restarting"}正在重启…
+              {:else if $updateStatus.phase === "restart-required"}重启应用
+              {:else}更新至 {$latestVersion}{/if}
+            </button>
+            <p class="text-xs text-gray-500">更新完成后将自动重启应用，请先结束录制和正在执行的任务。</p>
+            {#if $updateStatus.phase === "downloading" && downloadPercent !== undefined}
+              <progress class="w-48 h-1.5 accent-blue-500" value={downloadPercent} max="100" aria-label="更新下载进度"></progress>
+            {/if}
+          {/if}
+          {#if !["downloading", "installing", "restarting", "restart-required"].includes($updateStatus.phase)}
+            <button class="block mx-auto text-sm text-blue-500 hover:text-blue-600 disabled:opacity-50" disabled={updateBusy} onclick={checkForUpdates}>
+              {$updateStatus.phase === "checking" ? "正在检查更新…" : "检查更新"}
+            </button>
+            {#if $updateStatus.phase === "idle"}<p class="text-xs text-gray-500">当前已是最新版本</p>{/if}
+          {/if}
+          {#if $updateStatus.error}
+            <p class="text-sm" class:text-gray-500={$updateStatus.phase === "check-error"} class:text-red-500={$updateStatus.phase !== "check-error"} role={$updateStatus.phase === "check-error" ? "status" : "alert"}>
+              {$updateStatus.phase === "check-error" ? "暂时无法检查更新，请稍后重试。" : $updateStatus.phase === "restart-required" ? "更新已安装，请重试重启或手动重启应用。" : "更新失败，请重试或前往发布页下载安装。"}
+            </p>
+            <p class="text-xs text-gray-500 break-words">{$updateStatus.error}</p>
+            <button class="text-sm text-blue-500 hover:text-blue-600" onclick={() => open("https://github.com/Xinrea/bili-shadowreplay/releases/latest")}>前往发布页</button>
+          {/if}
+        {:else if $hasNewVersion}
+          <p class="text-sm text-blue-500">发现新版本 {$latestVersion}，请更新服务端部署。</p>
+        {/if}
       </div>
     </div>
 
@@ -133,6 +183,7 @@
       <h2 class="text-lg font-medium text-gray-900 dark:text-white">
         What's New
       </h2>
+      {#if releasesError}<p class="text-sm text-gray-500" role="status">{releasesError}</p>{/if}
       <div
         class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700"
       >

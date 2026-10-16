@@ -1,0 +1,6 @@
+{
+  "identifier": "updater",
+  "description": "Allow the main window to install signed updates and restart the app.",
+  "windows": ["main"],
+  "permissions": ["updater:default", "process:allow-restart"]
+}

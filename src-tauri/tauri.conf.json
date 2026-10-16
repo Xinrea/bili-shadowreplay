@@ -15,7 +15,8 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "targets": "all"
+    "targets": "all",
+    "createUpdaterArtifacts": true
   },
   "productName": "bili-shadowreplay",
   "version": "../package.json",
@@ -27,6 +28,15 @@
     "deep-link": {
       "desktop": {
         "schemes": ["bsr"]
+      }
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk4NDI2QURBMzM0NTYxMEMKUldRTVlVVXoybXBDbUR4a2hjQ0NsMHpaeDk5eFQvbDVWdllpS05qMXBxNWZSMEY1YU4xYUtzUkQK",
+      "endpoints": [
+        "https://github.com/Xinrea/bili-shadowreplay/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   },

@@ -19,6 +19,9 @@
     Copy,
   } from "lucide-svelte";
   import { onMount } from "svelte";
+  import PowerLiveAccount from "../lib/components/PowerLiveAccount.svelte";
+
+  let { active = true }: { active?: boolean } = $props();
 
   let setting_model: Config = $state({
     cache: "",
@@ -35,7 +38,6 @@
     subtitle_generator_type: "whisper",
     openai_api_endpoint: "",
     openai_api_key: "",
-    powerlive_key: "",
     llm: {
       provider: "openai",
       endpoint: "https://api.openai.com/v1",
@@ -428,6 +430,9 @@
       </div>
 
       <!-- Settings Sections -->
+      <div class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700">
+        <PowerLiveAccount {active} />
+      </div>
       <div class="space-y-6 pb-6">
         <div class="space-y-4">
           <h2
@@ -1192,35 +1197,7 @@
                 </div>
               </div>
               <!-- Whisper Model Path -->
-              {#if setting_model.subtitle_generator_type === "powerlive"}
-                <div class="p-4">
-                  <div class="flex items-center justify-between">
-                    <div>
-                      <h3
-                        class="text-sm font-medium text-gray-900 dark:text-white"
-                      >
-                        PowerLive API 密钥
-                      </h3>
-                      <p class="text-sm text-gray-500 dark:text-gray-400">
-                        设置 PowerLive API 的访问密钥
-                      </p>
-                    </div>
-                    <div class="flex items-center space-x-2">
-                      <input
-                        type="password"
-                        class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
-                        bind:value={setting_model.powerlive_key}
-                        onchange={async () => {
-                          await invoke("update_powerlive_key", {
-                            powerliveKey: setting_model.powerlive_key,
-                          });
-                        }}
-                        placeholder="pk_..."
-                      />
-                    </div>
-                  </div>
-                </div>
-              {:else}
+              {#if setting_model.subtitle_generator_type !== "powerlive"}
                 {#if TAURI_ENV && setting_model.subtitle_generator_type === "whisper"}
                   <div class="p-4">
                     <div class="flex items-center justify-between">

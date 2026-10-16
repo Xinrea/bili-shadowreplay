@@ -85,6 +85,7 @@ pub async fn generate_video_subtitle(
     openai_api_key: &str,
     openai_api_endpoint: &str,
     language_hint: &str,
+    powerlive_db: Option<&crate::database::Database>,
 ) -> Result<GenerateResult, String> {
     match generator_type {
         SubtitleGeneratorType::Whisper => {
@@ -293,23 +294,23 @@ pub async fn generate_video_subtitle(
             Ok(full_result)
         }
         SubtitleGeneratorType::PowerLive => {
-            let generator = crate::subtitle_generator::powerlive::new(
-                "pk_d2755cd38ef03f7ed3a92be1f1471e4adea90a1a5d4b3900345298a68fba0821",
-            )
-            .await
-            .map_err(|_| "Failed to initialize PowerLive".to_string())?;
+            let db = powerlive_db.ok_or("请先在设置中登录 PowerLive 账号")?;
+            let generator = crate::subtitle_generator::powerlive::new(db).await?;
             let extension = file
                 .extension()
                 .and_then(|extension| extension.to_str())
                 .unwrap_or_default();
-            let audio_file = if matches!(extension, "opus" | "wav" | "mp3" | "m4a" | "flac") {
+            let _extracted;
+            let audio_file = if matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "opus" | "wav" | "mp3" | "m4a" | "flac"
+            ) {
                 file.to_path_buf()
             } else {
-                file.with_extension("opus")
+                let path = super::audio::extract_full_audio(file).await?;
+                _extracted = TempArtifact::new(path.clone());
+                path
             };
-            if !audio_file.exists() {
-                return Err("Audio file not found".to_string());
-            }
             generator
                 .generate_subtitle(reporter, &audio_file, language_hint)
                 .await

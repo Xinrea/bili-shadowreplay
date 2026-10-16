@@ -1375,6 +1375,7 @@ impl RecorderManager {
             &config.openai_api_key,
             &config.openai_api_endpoint,
             &config.whisper_language,
+            Some(&self.db),
         )
         .await;
         // write subtitle file

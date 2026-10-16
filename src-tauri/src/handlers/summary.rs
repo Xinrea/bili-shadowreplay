@@ -248,6 +248,7 @@ async fn run_summary(
             &config.openai_api_key,
             &config.openai_api_endpoint,
             &config.whisper_language,
+            Some(&state.db),
         )
         .await;
         let _ = tokio::fs::remove_file(&audio_path).await;

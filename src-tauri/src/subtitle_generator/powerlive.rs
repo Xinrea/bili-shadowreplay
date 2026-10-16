@@ -1,8 +1,3 @@
-// curl -X POST https://www.powerlive.io/api/service/subtitle \                       base at 19:00:43
-//   -H "Authorization: Bearer xxxxxx" \
-//   -F "format=opus" \
-//   -F "sentence_max_length=10" \
-//   -F "file=@/Users/xinreasuper/Desktop/shadowreplay-test/output2/[27628030][1762873698516][生日月和轴一前辈的夜夜夜谈][2025-11-11_23-35-01].opus"
 use async_trait::async_trait;
 use reqwest::{
     multipart::{Form, Part},
@@ -15,24 +10,28 @@ use crate::{
     subtitle_generator::{GenerateResult, SubtitleGenerator, SubtitleGeneratorType},
 };
 
-const API_URL: &str = "https://www.powerlive.io/api/service/subtitle";
-
-#[derive(Debug, Clone)]
-pub struct PowerLive {
+#[derive(Clone)]
+pub struct PowerLive<'a> {
     client: Client,
-    api_key: String,
+    db: &'a crate::database::Database,
+    api_base: String,
 }
 
-pub async fn new(api_key: &str) -> Result<PowerLive, String> {
-    let client = Client::new();
+pub async fn new(db: &crate::database::Database) -> Result<PowerLive<'_>, String> {
+    let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(600))
+        .build()
+        .map_err(|e| e.to_string())?;
     Ok(PowerLive {
         client,
-        api_key: api_key.to_string(),
+        db,
+        api_base: crate::powerlive::API_BASE.to_string(),
     })
 }
 
 #[async_trait]
-impl SubtitleGenerator for PowerLive {
+impl SubtitleGenerator for PowerLive<'_> {
     async fn generate_subtitle(
         &self,
         _reporter: Option<&(impl ProgressReporterTrait + 'static)>,
@@ -54,7 +53,7 @@ impl SubtitleGenerator for PowerLive {
         let file_extension = audio_path
             .extension()
             .and_then(|ext| ext.to_str())
-            .map(|s| s.to_string())
+            .map(str::to_ascii_lowercase)
             .unwrap_or_else(|| "opus".to_string());
 
         let mime_type = match file_extension.to_lowercase().as_str() {
@@ -66,29 +65,33 @@ impl SubtitleGenerator for PowerLive {
             _ => "audio/opus",
         };
 
-        let audio_file = Part::bytes(audio_data)
-            .mime_str(mime_type)
-            .map_err(|e| format!("Failed to set MIME type: {e}"))?
-            .file_name(file_name);
-
-        let form = Form::new()
-            .text("format", file_extension)
-            .text("sentence_max_length", "10")
-            .part("file", audio_file);
-
-        let response = self
-            .client
-            .post(API_URL)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .multipart(form)
-            .send()
-            .await
-            .map_err(|e| format!("Failed to send request: {e}"))?;
+        let (response, _) =
+            crate::powerlive::authenticated_request(self.db, &self.api_base, |token| {
+                // Multipart bodies must be rebuilt to retry a rejected access token once.
+                let audio_file = Part::bytes(audio_data.clone())
+                    .mime_str(mime_type)
+                    .map_err(|e| format!("Failed to set MIME type: {e}"))?
+                    .file_name(file_name.clone());
+                let form = Form::new()
+                    .text("format", file_extension.clone())
+                    .text("sentence_max_length", "10")
+                    .part("file", audio_file);
+                Ok(self
+                    .client
+                    .post(format!("{}/service/subtitle", self.api_base))
+                    .bearer_auth(token)
+                    .multipart(form))
+            })
+            .await?;
 
         if !response.status().is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            log::error!("API request failed: {error_text}");
-            return Err(format!("Failed to generate subtitle: {error_text}"));
+            let status = response.status();
+            let body = response
+                .json::<serde_json::Value>()
+                .await
+                .unwrap_or_default();
+            let message = body["message"].as_str().unwrap_or("PowerLive 字幕生成失败");
+            return Err(format!("PowerLive ({status}): {message}"));
         }
 
         let body = response
@@ -111,5 +114,92 @@ impl SubtitleGenerator for PowerLive {
             subtitle_id: String::new(),
             subtitle_content,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        extract::{Form as AxumForm, Multipart, State},
+        http::{HeaderMap, StatusCode},
+        response::IntoResponse,
+        routing::post,
+        Json, Router,
+    };
+    use std::{
+        collections::HashMap,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+    };
+
+    #[tokio::test]
+    async fn retries_unauthorized_upload_with_refreshed_bearer_and_same_audio() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let router = Router::new().route("/service/subtitle", post(|State(calls): State<Arc<AtomicUsize>>, headers: HeaderMap, mut form: Multipart| async move {
+            calls.fetch_add(1, Ordering::SeqCst);
+            let mut names = Vec::new();
+            while let Some(field) = form.next_field().await.unwrap() {
+                let name = field.name().unwrap().to_string();
+                match name.as_str() {
+                    "format" => assert_eq!(field.text().await.unwrap(), "opus"),
+                    "sentence_max_length" => assert_eq!(field.text().await.unwrap(), "10"),
+                    "file" => {
+                        assert_eq!(field.file_name(), Some("audio.opus"));
+                        assert_eq!(field.content_type(), Some("audio/opus"));
+                        assert_eq!(field.bytes().await.unwrap().as_ref(), b"test-audio");
+                    }
+                    _ => panic!("unexpected field"),
+                }
+                names.push(name);
+            }
+            assert_eq!(names.len(), 3);
+            if headers["authorization"] == "Bearer test-account-token" {
+                StatusCode::UNAUTHORIZED.into_response()
+            } else {
+                assert_eq!(headers["authorization"], "Bearer new-access");
+                Json(serde_json::json!({"subtitle": "1\n00:00:00,000 --> 00:00:01,000\n测试字幕\n\n"})).into_response()
+            }
+        })).route("/oauth/token", post(|AxumForm(form): AxumForm<HashMap<String, String>>| async move {
+            assert_eq!(form["refresh_token"], "refresh-token");
+            Json(serde_json::json!({"access_token":"new-access", "refresh_token":"rotated-refresh", "expires_in":900, "token_type":"Bearer"}))
+        })).with_state(calls.clone());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let audio = directory.path().join("audio.opus");
+        tokio::fs::write(&audio, b"test-audio").await.unwrap();
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for migration in crate::get_migrations() {
+            sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
+        }
+        let db = crate::database::Database::new(
+            pool,
+            crate::database::credentials::CredentialCipher::new(&[0; 32]).unwrap(),
+            crate::events::EventBus::new(),
+        );
+        db.save_powerlive_session(&serde_json::json!({"access_token":"test-account-token", "refresh_token":"refresh-token", "expires_at":chrono::Utc::now().timestamp()+900, "name":"Alice", "subject":"user-1"}).to_string()).await.unwrap();
+        let mut generator = new(&db).await.unwrap();
+        generator.api_base = endpoint;
+        let result = generator
+            .generate_subtitle(
+                None::<&crate::progress::progress_reporter::ProgressReporter>,
+                &audio,
+                "zh",
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.subtitle_content.len(), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        server.abort();
     }
 }

@@ -875,6 +875,7 @@ async fn generate_video_subtitle_inner(
         &openai_api_key,
         &openai_api_endpoint,
         language_hint,
+        Some(&state.db),
     )
     .await
     {

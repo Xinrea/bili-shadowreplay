@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>{{title}} · PowerLive · Bili ShadowReplay</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        font-synthesis: none;
+        -webkit-font-smoothing: antialiased;
+        color: #202321;
+        background: #f7f8f6;
+        --surface: #fff;
+        --subtle: #f9faf8;
+        --border: #e2e5df;
+        --muted: #676e67;
+        --faint: #737a73;
+        --button: #242924;
+        --button-hover: #3a423b;
+        --button-text: #fff;
+        --status: #237449;
+        --status-surface: #edf6ef;
+      }
+      * { box-sizing: border-box; }
+      body {
+        display: flex;
+        flex-direction: column;
+        min-height: 100vh;
+        min-height: 100svh;
+        margin: 0;
+      }
+      body.error { --status: #946017; --status-surface: #faf1e4; }
+      svg { display: block; flex-shrink: 0; }
+      .success .error-only, .error .success-only { display: none; }
+      .page-header, .page-footer {
+        width: calc(100% - 96px);
+        max-width: 1184px;
+        margin-inline: auto;
+      }
+      .page-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+        min-height: 100px;
+        border-bottom: 1px solid var(--border);
+      }
+      .brand { display: flex; align-items: center; gap: 11px; }
+      .brand-icon { display: flex; flex-shrink: 0; }
+      .brand-icon svg { width: 38px; height: 38px; }
+      .brand-name { font-size: 16px; font-weight: 650; letter-spacing: -0.35px; }
+      .header-label { color: var(--muted); font-size: 12px; letter-spacing: 0.04em; }
+      main {
+        display: flex;
+        align-items: center;
+        flex: 1;
+        width: 100%;
+        padding: 88px 48px 104px;
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 340px;
+        align-items: center;
+        gap: 88px;
+        width: 100%;
+        max-width: 1000px;
+        margin-inline: auto;
+      }
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0 0 25px;
+        color: var(--status);
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .status-icon {
+        display: grid;
+        place-items: center;
+        width: 24px;
+        height: 24px;
+        border: 1px solid currentColor;
+        border-radius: 50%;
+      }
+      .status-icon svg { width: 14px; height: 14px; }
+      h1 {
+        margin: 0;
+        font-size: clamp(30px, 3.5vw, 44px);
+        font-weight: 650;
+        line-height: 1.3;
+        letter-spacing: -1.3px;
+        text-wrap: balance;
+      }
+      .description {
+        max-width: 430px;
+        margin: 21px 0 0;
+        color: var(--muted);
+        font-size: 16px;
+        line-height: 1.9;
+        text-wrap: pretty;
+      }
+      .actions { margin-top: 36px; }
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 24px;
+        min-height: 50px;
+        padding: 13px 20px;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        color: var(--button-text);
+        background: var(--button);
+        font-size: 14px;
+        font-weight: 600;
+        line-height: 1.5;
+        text-decoration: none;
+        transition: background 150ms ease;
+      }
+      .button:hover { background: var(--button-hover); }
+      .button:focus-visible { outline: 2px solid var(--status); outline-offset: 5px; }
+      .hint {
+        max-width: 410px;
+        margin: 15px 0 0;
+        color: var(--faint);
+        font-size: 12px;
+        line-height: 1.8;
+        text-wrap: pretty;
+      }
+      .connection {
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: var(--surface);
+        box-shadow: 0 4px 16px -8px #18251c0d;
+      }
+      .connection-body { padding: 28px; }
+      .eyebrow {
+        margin: 0 0 24px;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.12em;
+      }
+      .service { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+      h2 { margin: 0; font-size: 25px; font-weight: 650; line-height: 1.2; letter-spacing: -0.8px; }
+      .service-description { margin: 7px 0 0; color: var(--muted); font-size: 12px; }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        margin-top: 3px;
+        padding: 5px 8px;
+        border-radius: 5px;
+        color: var(--status);
+        background: var(--status-surface);
+        font-size: 11px;
+        font-weight: 500;
+        line-height: 1.4;
+        white-space: nowrap;
+      }
+      .badge::before { width: 5px; height: 5px; border-radius: 50%; background: currentColor; content: ""; }
+      dl { display: grid; gap: 18px; margin: 28px 0 0; padding-top: 24px; border-top: 1px solid var(--border); }
+      .detail { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; font-size: 12px; line-height: 1.6; }
+      dt { flex-shrink: 0; color: var(--muted); }
+      dd { margin: 0; font-weight: 500; text-align: right; }
+      .connection-footer {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 17px 28px;
+        border-top: 1px solid var(--border);
+        color: var(--muted);
+        background: var(--subtle);
+        font-size: 12px;
+        line-height: 1.6;
+      }
+      .page-footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        min-height: 76px;
+        border-top: 1px solid var(--border);
+        color: var(--faint);
+        font-size: 11px;
+        line-height: 1.6;
+      }
+      .page-footer p { margin: 0; }
+      @media (max-width: 900px) {
+        .layout { gap: 48px; grid-template-columns: minmax(0, 1fr) 300px; }
+        .connection-body { padding: 24px; }
+        .connection-footer { padding-inline: 24px; }
+      }
+      @media (max-width: 720px) {
+        .page-header, .page-footer { width: calc(100% - 48px); }
+        .page-header { min-height: 80px; }
+        .brand-name { font-size: 15px; }
+        .header-label { display: none; }
+        main { padding: 56px 24px; }
+        .layout { grid-template-columns: minmax(0, 1fr); gap: 36px; max-width: 440px; }
+        h1 { font-size: 34px; letter-spacing: -0.8px; }
+        .status { margin-bottom: 20px; }
+        .description { font-size: 15px; margin-top: 16px; }
+        .actions { margin-top: 28px; }
+        .button { display: flex; width: 100%; justify-content: space-between; }
+        .eyebrow { margin-bottom: 20px; }
+        .page-footer { flex-wrap: wrap; justify-content: center; gap: 6px 20px; padding-block: 20px; text-align: center; }
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          color: #e9ece7;
+          background: #151815;
+          --surface: #1c201c;
+          --subtle: #202520;
+          --border: #333a33;
+          --muted: #a7b0a6;
+          --faint: #9aa598;
+          --button: #e5ebe2;
+          --button-hover: #fff;
+          --button-text: #202820;
+          --status: #9ad4ae;
+          --status-surface: #26392d;
+        }
+        body.error { --status: #e1ba79; --status-surface: #3a3022; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .button { transition: none; }
+      }
+    </style>
+  </head>
+  <body class="{{appearance}}">
+    <header class="page-header">
+      <div class="brand">
+        <span class="brand-icon" aria-hidden="true">{{logo}}</span>
+        <span class="brand-name">Bili ShadowReplay</span>
+      </div>
+      <span class="header-label">PowerLive 账号授权</span>
+    </header>
+    <main aria-labelledby="status-title">
+      <div class="layout">
+        <section class="result" aria-labelledby="status-title">
+          <p class="status">
+            <span class="status-icon" aria-hidden="true">
+              <svg class="success-only" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4 4L19 6" /></svg>
+              <svg class="error-only" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v9m0 4v.01" /></svg>
+            </span>
+            <span class="success-only">授权已完成</span>
+            <span class="error-only">授权未完成</span>
+          </p>
+          <h1 id="status-title">{{title}}</h1>
+          <p class="description">{{description}}</p>
+          <div class="actions">
+            <a class="button" href="bsr://powerlive/login" aria-describedby="return-hint">
+              返回 Bili ShadowReplay
+              <svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17 17 7M7 7h10v10" /></svg>
+            </a>
+            <p class="hint" id="return-hint">{{hint}}</p>
+          </div>
+        </section>
+        <section class="connection" aria-labelledby="service-title">
+          <div class="connection-body">
+            <p class="eyebrow">连接详情</p>
+            <div class="service">
+              <div>
+                <h2 id="service-title">PowerLive</h2>
+                <p class="service-description">字幕服务</p>
+              </div>
+              <span class="badge success-only">已连接</span>
+              <span class="badge error-only">未完成</span>
+            </div>
+            <dl>
+              <div class="detail"><dt>应用</dt><dd>Bili ShadowReplay</dd></div>
+              <div class="detail"><dt>用途</dt><dd>字幕生成</dd></div>
+            </dl>
+          </div>
+          <div class="connection-footer">
+            <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 21h8m-4-4v4" /></svg>
+            <span class="success-only">已就绪，返回桌面应用继续</span>
+            <span class="error-only">返回桌面应用，重新发起登录</span>
+          </div>
+        </section>
+      </div>
+    </main>
+    <footer class="page-footer">
+      <p>Bili ShadowReplay <span aria-hidden="true">&nbsp;·&nbsp;</span> 直播录制与精彩回放</p>
+      <p>返回软件后，可关闭此页面</p>
+    </footer>
+    {{script}}
+  </body>
+</html>

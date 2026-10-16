@@ -105,6 +105,16 @@ impl Database {
         Ok(account)
     }
 
+    pub async fn save_powerlive_session(&self, session: &str) -> Result<(), DatabaseError> {
+        sqlx::query("INSERT INTO accounts (uid, platform, name, avatar, csrf, cookies, created_at, credentials_encrypted) VALUES ('session', 'powerlive', '', '', $1, $2, $3, $4) ON CONFLICT(uid, platform) DO UPDATE SET cookies = excluded.cookies, csrf = excluded.csrf, credentials_encrypted = excluded.credentials_encrypted")
+            .bind(self.credentials.encrypt("")?)
+            .bind(self.credentials.encrypt(session)?)
+            .bind(chrono::Utc::now().to_rfc3339())
+            .bind(CredentialCipher::ENCRYPTED)
+            .execute(&self.pool).await?;
+        Ok(())
+    }
+
     pub async fn add_account(&self, account: &AccountRow) -> Result<(), DatabaseError> {
         sqlx::query("INSERT INTO accounts (uid, platform, name, avatar, csrf, cookies, created_at, credentials_encrypted) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)").bind(&account.uid).bind(&account.platform).bind(&account.name).bind(&account.avatar).bind(self.credentials.encrypt(&account.csrf)?).bind(self.credentials.encrypt(&account.cookies)?).bind(&account.created_at).bind(CredentialCipher::ENCRYPTED).execute(&self.pool).await?;
 
@@ -124,7 +134,7 @@ impl Database {
     }
 
     pub async fn get_accounts(&self) -> Result<Vec<AccountRow>, DatabaseError> {
-        sqlx::query_as::<_, AccountRow>("SELECT * FROM accounts")
+        sqlx::query_as::<_, AccountRow>("SELECT * FROM accounts WHERE platform <> 'powerlive'")
             .fetch_all(&self.pool)
             .await?
             .into_iter()
@@ -170,6 +180,55 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn powerlive_session_is_encrypted_replaced_and_hidden_from_account_lists() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for migration in crate::get_migrations() {
+            sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
+        }
+        let db = Database::new(
+            pool.clone(),
+            CredentialCipher::new(&[0; 32]).unwrap(),
+            crate::events::EventBus::new(),
+        );
+        db.save_powerlive_session("first-access-and-refresh-token")
+            .await
+            .unwrap();
+        assert!(db.get_accounts().await.unwrap().is_empty());
+        let (stored, encrypted): (String, bool) = sqlx::query_as(
+            "SELECT cookies, credentials_encrypted FROM accounts WHERE platform = 'powerlive'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(encrypted, CredentialCipher::ENCRYPTED);
+        if CredentialCipher::ENCRYPTED {
+            assert!(!stored.contains("first-access"));
+        }
+        db.save_powerlive_session("rotated-refresh-token")
+            .await
+            .unwrap();
+        assert_eq!(
+            db.get_account("powerlive", "session")
+                .await
+                .unwrap()
+                .cookies,
+            "rotated-refresh-token"
+        );
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE platform = 'powerlive'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 1);
+        db.remove_account("powerlive", "session").await.unwrap();
+        assert!(db.get_account("powerlive", "session").await.is_err());
+    }
 
     #[cfg(feature = "credential-encryption")]
     #[tokio::test]

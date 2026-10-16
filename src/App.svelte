@@ -124,7 +124,7 @@
         <Account />
       </div>
       <div class="page" class:visible={active == "设置"}>
-        <Setting />
+        <Setting active={active === "设置"} />
       </div>
       <div class="page" class:visible={active == "关于"}>
         <About />

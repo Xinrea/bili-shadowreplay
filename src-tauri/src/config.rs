@@ -43,8 +43,6 @@ pub struct Config {
     pub danmu_ass_options: Danmu2AssOptions,
     #[serde(skip)]
     pub update_interval: Arc<AtomicU64>,
-    #[serde(default = "default_powerlive_key")]
-    pub powerlive_key: String,
     #[serde(default = "default_llm_config")]
     pub llm: LlmConfig,
     #[serde(default)]
@@ -150,10 +148,6 @@ fn default_whisper_language() -> String {
 }
 
 fn default_webhook_url() -> String {
-    String::new()
-}
-
-fn default_powerlive_key() -> String {
     String::new()
 }
 
@@ -315,7 +309,6 @@ impl Config {
             webhook_url: default_webhook_url(),
             danmu_ass_options: default_danmu_ass_options(),
             update_interval: Arc::new(AtomicU64::new(default_status_check_interval())),
-            powerlive_key: default_powerlive_key(),
             llm: default_llm_config(),
             mcp_enabled: false,
             mcp_port: default_mcp_port(),

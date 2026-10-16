@@ -459,6 +459,7 @@ mod tests {
             "",
             "",
             "zh",
+            None,
         )
         .await;
         assert!(result.is_err());
@@ -475,10 +476,26 @@ mod tests {
             "",
             "",
             "zh",
+            None,
         )
         .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("API key not configured"));
+
+        let result = generate_video_subtitle(
+            None,
+            test_file,
+            SubtitleGeneratorType::PowerLive,
+            Path::new(""),
+            "",
+            "",
+            "",
+            "",
+            "zh",
+            None,
+        )
+        .await;
+        assert!(result.unwrap_err().contains("登录 PowerLive"));
 
         // 未知类型应在服务边界之前被拒绝
         let error = SubtitleGeneratorType::parse("unknown_type").unwrap_err();

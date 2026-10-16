@@ -14,6 +14,7 @@ mod handlers;
 mod http_server;
 mod mcp;
 mod migration;
+mod powerlive;
 mod progress;
 mod recorder_manager;
 mod state;
@@ -862,7 +863,11 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::config::update_whisper_language,
         crate::handlers::config::update_webhook_url,
         crate::handlers::config::update_danmu_ass_options,
-        crate::handlers::config::update_powerlive_key,
+        crate::powerlive::get_powerlive_status,
+        crate::powerlive::get_powerlive_account,
+        crate::powerlive::begin_powerlive_login,
+        crate::powerlive::cancel_powerlive_login,
+        crate::powerlive::logout_powerlive,
         crate::handlers::config::update_llm_config,
         crate::handlers::message::get_messages,
         crate::handlers::message::read_message,

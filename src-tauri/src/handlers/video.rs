@@ -14,6 +14,7 @@ use recorder::platforms::bilibili;
 use recorder::platforms::bilibili::profile::Profile;
 use serde_json::json;
 use std::fs::File;
+use std::future::Future;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -338,93 +339,121 @@ pub async fn clip_range(
     state.db.add_task(&task).await?;
     log::info!("Create task: {} {}", task.id, task.task_type);
 
-    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-
     #[cfg(feature = "gui")]
     let state_clone = (*state).clone();
     #[cfg(feature = "headless")]
     let state_clone = state.clone();
 
     let task_id = event_id.clone();
-    state
+    run_queued(
+        &state,
+        &event_id,
+        async move {
+            match clip_range_inner(&state_clone, &reporter, params).await {
+                Ok(video) => {
+                    reporter.finish(true, "切片完成").await;
+                    let _ = state_clone
+                        .db
+                        .update_task(&task_id, "success", "切片完成", None)
+                        .await;
+
+                    if state_clone.config.read().await.auto_subtitle {
+                        let subtitle_event_id = format!("{task_id}_subtitle");
+                        let result = generate_video_subtitle_inner(
+                            &state_clone,
+                            subtitle_event_id,
+                            video.id,
+                        )
+                        .await;
+                        match result {
+                            Ok(subtitle) => {
+                                let result =
+                                    update_video_subtitle_inner(&state_clone, video.id, subtitle)
+                                        .await;
+                                if let Err(e) = result {
+                                    log::error!("Update video subtitle error: {e}");
+                                }
+                            }
+                            Err(e) => log::error!("Generate video subtitle error: {e}"),
+                        }
+                    }
+
+                    let event = events::new_webhook_event(
+                        events::CLIP_GENERATED,
+                        events::Payload::Clip(video.clone()),
+                    );
+
+                    if let Err(e) = state_clone.webhook_poster.post_event(&event).await {
+                        log::error!("Post webhook event error: {e}");
+                    }
+
+                    Ok(video)
+                }
+                Err(e) => {
+                    reporter.finish(false, &format!("切片失败: {e}")).await;
+                    let _ = state_clone
+                        .db
+                        .update_task(&task_id, "failed", &format!("切片失败: {e}"), None)
+                        .await;
+                    Err(e)
+                }
+            }
+        },
+        "切片任务已取消",
+        "切片任务失败",
+    )
+    .await
+}
+
+/// Run `job` on the task queue and wait for its result, so the request can be
+/// cancelled from the task list like any other queued task.
+async fn run_queued<T: Send + 'static>(
+    state: &State,
+    task_id: &str,
+    job: impl Future<Output = Result<T, String>> + Send + 'static,
+    cancelled_message: &str,
+    failed_message: &str,
+) -> Result<T, String> {
+    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+    let enqueue_result = state
         .task_manager
         .add_task(Task::new(
-            task_id.clone(),
+            task_id.to_string(),
             TaskPriority::Normal,
             async move {
-                let result = match clip_range_inner(&state_clone, &reporter, params).await {
-                    Ok(video) => {
-                        reporter.finish(true, "切片完成").await;
-                        let _ = state_clone
-                            .db
-                            .update_task(&task_id, "success", "切片完成", None)
-                            .await;
-
-                        if state_clone.config.read().await.auto_subtitle {
-                            let subtitle_event_id = format!("{task_id}_subtitle");
-                            let result = generate_video_subtitle_inner(
-                                &state_clone,
-                                subtitle_event_id,
-                                video.id,
-                            )
-                            .await;
-                            match result {
-                                Ok(subtitle) => {
-                                    let result = update_video_subtitle_inner(
-                                        &state_clone,
-                                        video.id,
-                                        subtitle,
-                                    )
-                                    .await;
-                                    if let Err(e) = result {
-                                        log::error!("Update video subtitle error: {e}");
-                                    }
-                                }
-                                Err(e) => log::error!("Generate video subtitle error: {e}"),
-                            }
-                        }
-
-                        let event = events::new_webhook_event(
-                            events::CLIP_GENERATED,
-                            events::Payload::Clip(video.clone()),
-                        );
-
-                        if let Err(e) = state_clone.webhook_poster.post_event(&event).await {
-                            log::error!("Post webhook event error: {e}");
-                        }
-
-                        Ok(video)
-                    }
-                    Err(e) => {
-                        reporter.finish(false, &format!("切片失败: {e}")).await;
-                        let _ = state_clone
-                            .db
-                            .update_task(&task_id, "failed", &format!("切片失败: {e}"), None)
-                            .await;
-                        Err(e)
-                    }
-                };
-
+                let result = job.await;
                 let task_result = result.as_ref().map(|_| ()).map_err(Clone::clone);
                 let _ = result_tx.send(result);
                 task_result
             },
         ))
-        .await?;
+        .await;
+    if let Err(error) = enqueue_result {
+        // The caller already recorded the task; never leave it pending with no
+        // worker that could run or cancel it.
+        state
+            .db
+            .update_task(task_id, "failed", &format!("加入队列失败: {error}"), None)
+            .await?;
+        return Err(error);
+    }
 
     match result_rx.await {
         Ok(result) => result,
+        // The worker dropped without a result: cancelled through the task list,
+        // or an unexpected exit, which must remain a visible failure.
         Err(_) => {
             let cancelled = state
                 .db
-                .get_task(&event_id)
+                .get_task(task_id)
                 .await
                 .is_ok_and(|task| task.status == "cancelled");
             Err(if cancelled {
-                "切片任务已取消".to_string()
+                cancelled_message
             } else {
-                "切片任务失败".to_string()
-            })
+                failed_message
+            }
+            .to_string())
         }
     }
 }
@@ -449,6 +478,7 @@ async fn clip_range_inner(
         .clip_range(Some(reporter), clip_file, &params)
         .await?;
     log::info!("Clip range done, doing post processing");
+    reporter.update("正在保存切片").await;
     // get file metadata from fs
     let metadata = std::fs::metadata(&file).map_err(|e| {
         log::error!("Get file metadata error: {} {}", e, file.display());
@@ -1431,37 +1461,52 @@ pub async fn clip_video(
     };
     state.db.add_task(&task).await?;
 
-    match clip_video_inner(
+    #[cfg(feature = "gui")]
+    let state_clone = (*state).clone();
+    #[cfg(feature = "headless")]
+    let state_clone = state.clone();
+
+    let task_id = event_id.clone();
+    run_queued(
         &state,
-        &reporter,
-        parent_video,
-        start_time,
-        end_time,
-        clip_title,
+        &task_id,
+        async move {
+            match clip_video_inner(
+                &state_clone,
+                &reporter,
+                parent_video,
+                start_time,
+                end_time,
+                clip_title,
+            )
+            .await
+            {
+                Ok(video) => {
+                    reporter.finish(true, "切片完成").await;
+                    state_clone
+                        .db
+                        .update_task(&event_id, "success", "切片完成", None)
+                        .await?;
+                    Ok(video)
+                }
+                Err(e) => {
+                    reporter.finish(false, &format!("切片失败: {e}")).await;
+                    state_clone
+                        .db
+                        .update_task(&event_id, "failed", &format!("切片失败: {e}"), None)
+                        .await?;
+                    Err(e)
+                }
+            }
+        },
+        "切片任务已取消",
+        "切片任务失败",
     )
     .await
-    {
-        Ok(video) => {
-            reporter.finish(true, "切片完成").await;
-            state
-                .db
-                .update_task(&event_id, "success", "切片完成", None)
-                .await?;
-            Ok(video)
-        }
-        Err(e) => {
-            reporter.finish(false, &format!("切片失败: {e}")).await;
-            state
-                .db
-                .update_task(&event_id, "failed", &format!("切片失败: {e}"), None)
-                .await?;
-            Err(e)
-        }
-    }
 }
 
 async fn clip_video_inner(
-    state: &state_type!(),
+    state: &State,
     reporter: &ProgressReporter,
     parent_video: VideoRow,
     start_time: f64,
@@ -2098,6 +2143,107 @@ mod queued_subtitle_tests {
                 }
             );
         }
+    }
+
+    #[tokio::test]
+    async fn queued_video_clip_can_be_cancelled_from_the_task_list() {
+        use tokio::time::{timeout, Duration};
+
+        let dir = tempfile::tempdir().unwrap();
+        let state = fixture(dir.path(), 1, false).await;
+        let request_state = state.clone();
+        let request = tokio::spawn(async move {
+            clip_video(
+                request_state,
+                "video-clip".into(),
+                1,
+                0.0,
+                1.0,
+                "Clip".into(),
+            )
+            .await
+        });
+        timeout(Duration::from_secs(3), async {
+            while state.task_manager.queue_size().await == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("video clip must enqueue so the task list can cancel it");
+
+        cancel(state.clone(), "video-clip".into()).await.unwrap();
+        let error = timeout(Duration::from_secs(1), request)
+            .await
+            .expect("video clip request must unblock when cancelled")
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error, "切片任务已取消");
+    }
+
+    #[tokio::test]
+    async fn video_clip_rejected_by_a_full_queue_is_marked_failed() {
+        use tokio::time::{timeout, Duration};
+
+        let dir = tempfile::tempdir().unwrap();
+        let state = fixture(dir.path(), 1, false).await;
+        let first_state = state.clone();
+        let first = tokio::spawn(async move {
+            clip_video(first_state, "first".into(), 1, 0.0, 1.0, "Clip".into()).await
+        });
+        timeout(Duration::from_secs(3), async {
+            while state.task_manager.queue_size().await == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first video clip must occupy the queue");
+
+        assert_eq!(
+            clip_video(state.clone(), "overflow".into(), 1, 0.0, 1.0, "Clip".into())
+                .await
+                .unwrap_err(),
+            "Queue is full"
+        );
+        assert_eq!(
+            state.db.get_task("overflow").await.unwrap().status,
+            "failed"
+        );
+
+        cancel(state.clone(), "first".into()).await.unwrap();
+        timeout(Duration::from_secs(1), first)
+            .await
+            .expect("cancelled video clip must unblock")
+            .unwrap()
+            .unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn whole_clip_rejected_by_a_full_queue_is_marked_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = fixture(dir.path(), 1, false).await;
+        encode_video_subtitle(state.clone(), "first".into(), 1, String::new(), None)
+            .await
+            .unwrap();
+
+        let error = crate::handlers::recorder::generate_whole_clip(
+            state.clone(),
+            false,
+            "bilibili".into(),
+            "room".into(),
+            "parent".into(),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error, "Queue is full");
+        let tasks = state.db.get_tasks().await.unwrap();
+        let whole_clip = tasks
+            .iter()
+            .find(|task| task.task_type == "generate_whole_clip")
+            .expect("the rejected whole clip task is still recorded");
+        assert_eq!(whole_clip.status, "failed");
+        cancel(state, "first".into()).await.unwrap();
     }
 
     #[tokio::test]

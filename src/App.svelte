@@ -10,6 +10,7 @@
   import Task from "./page/Task.svelte";
   import AI from "./page/AI.svelte";
   import Archive from "./page/Archive.svelte";
+  import TaskCenter from "./lib/components/TaskCenter.svelte";
   import { onMount } from "svelte";
 
   let active = $state("总览");
@@ -90,6 +91,8 @@
     return () => window.removeEventListener("navigate-settings", onNavSettings);
   });
 </script>
+
+<TaskCenter />
 
 <main>
   <div class="wrap">

@@ -13,11 +13,10 @@
     Pen,
     Scissors,
     CircleHelp,
+    Loader2,
   } from "lucide-svelte";
   import {
     generateEventId,
-    type ProgressFinished,
-    type ProgressUpdate,
     type SubtitleStyle,
     type VideoItem,
     type Profile,
@@ -30,10 +29,11 @@
   import { buildSubtitleAss, DEFAULT_SUBTITLE_STYLE, loadSubtitleStyle as readSubtitleStyle } from "../subtitle-ass";
   import CoverEditor from "./CoverEditor.svelte";
   import TypeSelect from "./TypeSelect.svelte";
+  import InspectorPanel from "./InspectorPanel.svelte";
+  import { announceTask, openTaskCenter, settleTask, wasCancelled } from "../stores/tasks";
   import {
     invoke,
     TAURI_ENV,
-    listen,
     log,
     close_window,
     get_static_url,
@@ -106,20 +106,26 @@
   let subtitleAss = $derived(buildSubtitleAss(subtitles, subtitleStyle));
 
   let submittingEncode = $state(false);
-  let encodeStatus = $state("");
   let current_generate_event_id = $state(null);
   let windowCloseUnlisten: (() => void) | null = null;
   let activeTab = $state("subtitle"); // 添加当前激活的 tab
+  let inspectorCollapsed = $state(false);
 
   // 切片功能相关变量
   let clipStartTime = $state(0);
   let clipEndTime = $state(0);
   let clipTitle = $state("");
-  let clipping = $state(false);
-  let current_clip_event_id = $state(null);
   let showShortcutHelp = $state(false);
   let lastVideoId = $state(-1); // 记录上一个视频ID，避免重复初始化
   let clipTimesSet = $state(false); // 标记用户是否主动设置过切片时间
+  // 提交后选区会立即清空，所以只有用户设置过的有效选区才能生成切片
+  let clipRangeIssue = $derived(
+    !clipTimesSet || clipEndTime <= clipStartTime
+      ? "先用 [ 和 ] 设置切片范围"
+      : clipEndTime - clipStartTime < 1
+        ? "切片长度不能少于1秒"
+        : "",
+  );
 
   // 进度条拖动相关变量
   let isDraggingSeekbar = $state(false);
@@ -339,71 +345,38 @@
     destroyWaveSurfer();
   });
 
-  function update_generate_prompt(content: string) {
-    const generate_prompt = document.getElementById("generate-prompt");
-    if (generate_prompt) {
-      generate_prompt.textContent = content;
-    }
-  }
-
-  function update_post_prompt(str: string) {
-    const span = document.getElementById("post-prompt");
-    if (span) {
-      span.textContent = str;
-    }
-  }
-
   // 投稿相关函数
   async function do_post() {
-    if (!video) {
+    if (!video || current_post_event_id) {
       return;
     }
 
-    let event_id = generateEventId();
-    current_post_event_id = event_id;
-
-    update_post_prompt(`投稿上传中`);
-
-    const clear_update_listener = await listen(
-      `progress-update:${event_id}`,
-      (e) => {
-        update_post_prompt(e.payload.content);
-      }
-    );
-    const clear_finished_listener = await listen(
-      `progress-finished:${event_id}`,
-      (e) => {
-        update_post_prompt(`投稿`);
-        if (!e.payload.success) {
-          alert(e.payload.message);
-        }
-
-        current_post_event_id = null;
-
-        clear_update_listener();
-        clear_finished_listener();
-      }
-    );
-
+    const eventId = generateEventId();
+    current_post_event_id = eventId;
     // update profile in local storage
     window.localStorage.setItem("profile-" + roomId, JSON.stringify(profile));
-    invoke("upload_procedure", {
-      uid: uid_selected,
-      eventId: event_id,
-      roomId: roomId,
-      videoId: video.id,
-      profile: profile,
-    }).then(async () => {
+    announceTask({
+      id: eventId,
+      task_type: "upload_procedure",
+      metadata: JSON.stringify({ video_id: video.id, profile: { title: profile.title } }),
+    });
+    openTaskCenter(eventId);
+    try {
+      await invoke("upload_procedure", {
+        uid: uid_selected,
+        eventId,
+        roomId: roomId,
+        videoId: video.id,
+        profile: profile,
+      });
       uid_selected = 0;
       await onVideoListUpdate?.();
-    });
-  }
-
-  async function cancel_post() {
-    if (!current_post_event_id) {
-      return;
+    } catch (error) {
+      alert("投稿失败：" + error);
+    } finally {
+      current_post_event_id = null;
+      settleTask(eventId);
     }
-    invoke("cancel", { eventId: current_post_event_id });
   }
 
   function pauseVideo() {
@@ -532,34 +505,27 @@
   }
 
   async function generateSubtitles() {
-    if (video?.file) {
-      current_generate_event_id = generateEventId();
-      const clear_update_listener = await listen(
-        `progress-update:${current_generate_event_id}`,
-        (e) => {
-          update_generate_prompt(e.payload.content);
-        }
-      );
-      const clear_finished_listener = await listen(
-        `progress-finished:${current_generate_event_id}`,
-        (e) => {
-          update_generate_prompt(`AI 生成字幕`);
-          if (!e.payload.success) {
-            alert("生成字幕失败: " + e.payload.message);
-          }
-
-          current_generate_event_id = null;
-
-          clear_update_listener();
-          clear_finished_listener();
-        }
-      );
+    if (!video?.file || current_generate_event_id) return;
+    const eventId = generateEventId();
+    current_generate_event_id = eventId;
+    announceTask({
+      id: eventId,
+      task_type: "generate_video_subtitle",
+      metadata: JSON.stringify({ video_id: video.id }),
+    });
+    openTaskCenter(eventId);
+    try {
       const savedSubtitles = (await invoke("generate_video_subtitle", {
-        eventId: current_generate_event_id,
+        eventId,
         id: video.id,
       })) as string;
       subtitles = srtToSubtitles(savedSubtitles);
       selectedSubtitleIndex = -1;
+    } catch (error) {
+      alert("生成字幕失败：" + error);
+    } finally {
+      current_generate_event_id = null;
+      settleTask(eventId);
     }
   }
 
@@ -710,80 +676,57 @@
   }
 
   async function generateClip() {
-    if (!video) return;
-
-    // 如果没有设置切片标题，则以当前本地时间戳命名
-    if (!clipTitle.trim()) {
-      const now = new Date();
-      const pad = (n) => n.toString().padStart(2, "0");
-      const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-      clipTitle = `clip_${timestamp}`;
-    }
-
-    if (clipStartTime >= clipEndTime) {
-      alert("开始时间必须小于结束时间");
-      return;
-    }
+    // 选区在提交时已清空，重复点击或连按 G 时直接忽略
+    if (!video || !clipTimesSet || clipStartTime >= clipEndTime) return;
 
     if (clipEndTime - clipStartTime < 1) {
       alert("切片长度不能少于1秒");
       return;
     }
 
-    clipping = true;
-    current_clip_event_id = generateEventId();
-    const clear_update_listener = await listen(
-      `progress-update:${current_clip_event_id}`,
-      (e) => {
-        update_clip_prompt(e.payload.content);
-      }
-    );
-    const clear_finished_listener = await listen(
-      `progress-finished:${current_clip_event_id}`,
-      (e) => {
-        update_clip_prompt(`生成切片`);
-        if (e.payload.success) {
-          // 切片生成成功，刷新视频列表
-          if (onVideoListUpdate) {
-            onVideoListUpdate();
-          }
-          // 重置切片设置
-          clipStartTime = 0;
-          clipEndTime = 0;
-          clipTitle = "";
-          clipTimesSet = false; // 重置标记
-        } else {
-          alert("切片生成失败: " + e.payload.message);
-        }
-        clipping = false;
+    // 如果没有设置切片标题，则以当前本地时间戳命名
+    let title = clipTitle.trim();
+    if (!title) {
+      const now = new Date();
+      const pad = (n) => n.toString().padStart(2, "0");
+      const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+      title = `clip_${timestamp}`;
+    }
 
-        current_clip_event_id = null;
-
-        clear_update_listener();
-        clear_finished_listener();
-      }
-    );
+    const eventId = generateEventId();
+    const request = {
+      eventId,
+      parentVideoId: video.id,
+      startTime: clipStartTime,
+      endTime: clipEndTime,
+      clipTitle: title,
+    };
+    announceTask({
+      id: eventId,
+      task_type: "clip_video",
+      metadata: JSON.stringify({
+        parent_video_id: request.parentVideoId,
+        start_time: request.startTime,
+        end_time: request.endTime,
+        clip_title: title,
+      }),
+    });
+    openTaskCenter(eventId);
+    // The range now belongs to this task, so the next clip starts fresh.
+    clearClipSelection();
+    clipTitle = "";
 
     try {
-      await invoke("clip_video", {
-        eventId: current_clip_event_id,
-        parentVideoId: video.id,
-        startTime: clipStartTime,
-        endTime: clipEndTime,
-        clipTitle: clipTitle,
-      });
+      await invoke("clip_video", request);
+      await onVideoListUpdate?.();
     } catch (error) {
-      console.error("切片失败:", error);
-      alert("切片失败: " + error);
-      clipping = false;
-      current_clip_event_id = null;
-    }
-  }
-
-  function update_clip_prompt(text: string) {
-    let span = document.getElementById("generate-clip-prompt");
-    if (span) {
-      span.textContent = text;
+      const message = String(error);
+      // Cancelled from the task center, or elsewhere such as the task page.
+      if (!wasCancelled(eventId) && !message.endsWith("切片任务已取消")) {
+        alert("切片生成失败：" + message);
+      }
+    } finally {
+      settleTask(eventId);
     }
   }
 
@@ -868,8 +811,8 @@
         }
         break;
       case "KeyG":
-        // 与「生成切片」按钮的禁用状态一致，避免按住或连按时重复提交
-        if (clipEnabled && !clipping && current_clip_event_id == null) {
+        // 多个切片任务可以同时进行
+        if (clipEnabled) {
           event.preventDefault();
           generateClip();
         }
@@ -1586,22 +1529,28 @@
   async function encodeVideoSubtitle() {
     if (submittingEncode) return;
     submittingEncode = true;
-    encodeStatus = "";
     // Capture the selected video/document before any await or further editing.
     const id = video.id;
     const assContent = subtitleAss;
+    const eventId = generateEventId();
     try {
       await saveSubtitles();
+      announceTask({
+        id: eventId,
+        task_type: "encode_video_subtitle",
+        metadata: JSON.stringify({ video_id: id }),
+      });
+      openTaskCenter(eventId);
       await invoke("encode_video_subtitle", {
-        eventId: generateEventId(),
+        eventId,
         id,
         srtStyle: "",
         assContent,
       });
-      encodeStatus = "已加入压制队列，可继续添加任务。在任务页面查看进度或取消。";
     } catch (error) {
-      encodeStatus = "加入压制队列失败：" + error;
+      alert("加入压制队列失败：" + error);
     } finally {
+      settleTask(eventId);
       submittingEncode = false;
     }
   }
@@ -1778,80 +1727,7 @@
           </button>
         </div>
       </div>
-
-      <div class="flex items-center space-x-2">
-        {#if canBeClipped(video)}
-          <button
-            class="px-4 py-1.5 text-sm bg-green-600 text-white rounded-md hover:bg-green-600/90 transition-colors duration-200 border border-gray-600/50 flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
-            onclick={generateClip}
-            disabled={clipping || current_clip_event_id != null}
-          >
-            {#if clipping || current_clip_event_id != null}
-              <svg
-                class="animate-spin h-4 w-4"
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-              >
-                <circle
-                  class="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  stroke-width="4"
-                ></circle>
-                <path
-                  class="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                ></path>
-              </svg>
-            {:else}
-              <Scissors class="w-4 h-4" />
-            {/if}
-            <span id="generate-clip-prompt"
-              >{clipping ? "生成中..." : "生成切片"}</span
-            >
-          </button>
-        {/if}
-        <button
-          class="px-4 py-1.5 text-sm bg-[#0A84FF] text-white rounded-md hover:bg-[#0A84FF]/90 transition-colors duration-200 border border-gray-600/50 flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
-          onclick={() => (showEncodeModal = true)}
-          disabled={submittingEncode}
-        >
-          {#if submittingEncode}
-            <svg
-              class="animate-spin h-4 w-4"
-              xmlns="http://www.w3.org/2000/svg"
-              fill="none"
-              viewBox="0 0 24 24"
-            >
-              <circle
-                class="opacity-25"
-                cx="12"
-                cy="12"
-                r="10"
-                stroke="currentColor"
-                stroke-width="4"
-              ></circle>
-              <path
-                class="opacity-75"
-                fill="currentColor"
-                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 714 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-              ></path>
-            </svg>
-          {:else}
-            <Film class="w-4 h-4" />
-          {/if}
-          <span>{submittingEncode ? "提交中..." : "压制字幕"}</span>
-        </button>
-      </div>
     </div>
-
-    {#if encodeStatus}
-      <p role="status" class="px-4 py-2 text-xs text-gray-300">{encodeStatus}</p>
-    {/if}
 
     <!-- 编码确认 Modal -->
     {#if showEncodeModal}
@@ -1887,7 +1763,7 @@
 
           <!-- Modal 内容 -->
           <div class="p-4 text-gray-300">
-            将当前字幕和样式加入压制队列，按顺序执行。提交后可继续编辑或添加其他压制任务，也可在任务页面取消。每个任务完成后都会生成独立的带字幕切片。
+            将当前字幕和样式加入压制队列，按顺序执行。提交后可继续编辑或添加其他压制任务，进度和取消都在任务列表中。每个任务完成后都会生成独立的带字幕切片。
           </div>
 
           <!-- Modal 底部按钮 -->
@@ -1914,9 +1790,9 @@
       </div>
     {/if}
 
-    <div class="flex h-[calc(100vh-3.5rem)]">
+    <div class="relative flex h-[calc(100vh-3.5rem)] overflow-hidden">
       <!-- 视频区域 -->
-      <div class="flex-1 flex flex-col">
+      <div class="flex-1 flex flex-col min-w-0">
         <!-- 切片控制信息条 -->
         {#if canBeClipped(video)}
           <div
@@ -2292,333 +2168,229 @@
         </div>
       </div>
 
-      <!-- 字幕编辑面板 -->
-      <div
-        class="w-80 border-l border-gray-800/50 bg-[#2c2c2e] overflow-y-auto sidebar-scrollbar"
+      <InspectorPanel
+        title="切片编辑"
+        tabs={[
+          { id: "subtitle", label: "字幕", count: subtitles.length },
+          { id: "upload", label: "投稿" },
+        ]}
+        bind:activeTab
+        bind:collapsed={inspectorCollapsed}
+        summary={canBeClipped(video)
+          ? { label: "切片范围", value: clipEndTime > clipStartTime ? `${formatTime(clipStartTime)} – ${formatTime(clipEndTime)}` : "未选择" }
+          : { label: "字幕", value: `${subtitles.length} 条` }}
       >
-        <!-- Tab 导航 -->
-        <div class="flex border-b border-gray-800/50 bg-[#1c1c1e]">
+        {#snippet actions()}
+          {#if canBeClipped(video)}
+            <button
+              type="button"
+              class="footer-button"
+              title={clipRangeIssue || "按当前切片范围生成新切片（G）"}
+              disabled={clipRangeIssue !== ""}
+              onclick={generateClip}
+            >
+              <Scissors class="h-3.5 w-3.5" />
+              生成切片
+            </button>
+          {/if}
           <button
-            class="px-6 py-3 text-sm font-medium transition-all duration-200 relative"
-            class:text-white={activeTab === "subtitle"}
-            class:text-gray-400={activeTab !== "subtitle"}
-            class:bg-[#2c2c2e]={activeTab === "subtitle"}
-            class:bg-transparent={activeTab !== "subtitle"}
-            onclick={() => (activeTab = "subtitle")}
+            type="button"
+            class="footer-button primary"
+            disabled={submittingEncode || subtitles.length === 0}
+            title={subtitles.length === 0 ? "字幕列表为空，没有可压制的字幕" : undefined}
+            onclick={() => (showEncodeModal = true)}
           >
-            字幕
-            {#if activeTab === "subtitle"}
-              <div
-                class="absolute bottom-0 left-0 right-0 h-0.5 bg-[#0A84FF]"
-              ></div>
+            {#if submittingEncode}
+              <Loader2 class="h-3.5 w-3.5 animate-spin" />
+            {:else}
+              <Film class="h-3.5 w-3.5" />
             {/if}
+            压制字幕
           </button>
+        {/snippet}
 
-          <button
-            class="px-6 py-3 text-sm font-medium transition-all duration-200 relative"
-            class:text-white={activeTab === "upload"}
-            class:text-gray-400={activeTab !== "upload"}
-            class:bg-[#2c2c2e]={activeTab === "upload"}
-            class:bg-transparent={activeTab !== "upload"}
-            onclick={() => (activeTab = "upload")}
-          >
-            快速投稿
-            {#if activeTab === "upload"}
-              <div
-                class="absolute bottom-0 left-0 right-0 h-0.5 bg-[#0A84FF]"
-              ></div>
-            {/if}
-          </button>
-        </div>
-
-        <!-- Tab 内容 -->
         {#if activeTab === "subtitle"}
-          <!-- 字幕 Tab 内容 -->
-          <div>
-            <div class="w-full sticky top-0 bg-[#2c2c2e] z-10 p-4 pb-3">
-              <div class="flex flex-col space-y-2">
-                <div class="flex space-x-2">
-                  <button
-                    class="flex-1 px-3 py-1.5 text-sm bg-[#1c1c1e] text-gray-300 rounded-lg hover:bg-[#2c2c2e] transition-colors duration-200 flex items-center justify-center space-x-1 border border-gray-700"
-                    onclick={() => (showStyleEditor = true)}
-                  >
-                    <Settings class="w-4 h-4" />
-                    <span>字幕样式</span>
-                  </button>
-                  <button
-                    class="flex-1 px-3 py-1.5 text-sm bg-[#1c1c1e] text-gray-300 rounded-lg hover:bg-[#2c2c2e] transition-colors duration-200 flex items-center justify-center space-x-1 border border-gray-700"
-                    onclick={clearSubtitles}
-                  >
-                    <Eraser class="w-4 h-4" />
-                    <span>清空列表</span>
-                  </button>
-                </div>
-                <div class="flex space-x-2">
-                  <button
-                    class="flex-1 px-3 py-1.5 text-sm bg-[#1c1c1e] text-gray-300 rounded-lg hover:bg-[#2c2c2e] transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-1 border border-gray-700"
-                    onclick={generateSubtitles}
-                    disabled={current_generate_event_id !== null}
-                  >
-                    {#if current_generate_event_id !== null}
-                      <svg
-                        class="animate-spin h-4 w-4"
-                        xmlns="http://www.w3.org/2000/svg"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                      >
-                        <circle
-                          class="opacity-25"
-                          cx="12"
-                          cy="12"
-                          r="10"
-                          stroke="currentColor"
-                          stroke-width="4"
-                        ></circle>
-                        <path
-                          class="opacity-75"
-                          fill="currentColor"
-                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                        ></path>
-                      </svg>
-                    {:else}
-                      <BrainCircuit class="w-4 h-4" />
-                    {/if}
-                    <span id="generate-prompt">AI 生成字幕</span>
-                  </button>
-                </div>
-              </div>
-            </div>
+          <div class="subtitle-toolbar">
+            <button type="button" class="tool-button" onclick={() => (showStyleEditor = true)}>
+              <Settings class="h-3.5 w-3.5" />
+              字幕样式
+            </button>
+            <button type="button" class="tool-button" onclick={clearSubtitles}>
+              <Eraser class="h-3.5 w-3.5" />
+              清空列表
+            </button>
+            <button
+              type="button"
+              class="tool-button"
+              onclick={generateSubtitles}
+              disabled={current_generate_event_id !== null}
+            >
+              {#if current_generate_event_id !== null}
+                <Loader2 class="h-3.5 w-3.5 animate-spin" />
+                生成中
+              {:else}
+                <BrainCircuit class="h-3.5 w-3.5" />
+                AI 字幕
+              {/if}
+            </button>
+          </div>
 
-            <!-- 字幕列表 -->
-            <div class="border-t border-gray-800/70">
+          {#if subtitles.length > 0}
+            <div class="subtitle-list">
               {#each subtitles as subtitle, index}
                 <div
                   bind:this={subtitleRowElements[index]}
-                  class="group min-h-[42px] px-3 flex items-center gap-2 border-b border-l-2 border-b-gray-800/70 border-l-transparent transition-colors duration-150 hover:bg-white/[0.03] {currentSubtitleIndices.includes(
-                    index
-                  )
-                    ? 'bg-[#0A84FF]/10 border-l-[#0A84FF]'
-                    : ''} {selectedSubtitleIndex === index
-                    ? 'ring-1 ring-inset ring-[#0A84FF]/60'
-                    : ''}"
+                  class="subtitle-row"
+                  class:playing={currentSubtitleIndices.includes(index)}
+                  class:selected={selectedSubtitleIndex === index}
                 >
                   <button
-                    class="w-6 shrink-0 text-right text-[11px] hover:text-[#0A84FF] font-mono {selectedSubtitleIndex ===
-                    index
-                      ? 'text-[#0A84FF]'
-                      : 'text-gray-500'}"
+                    type="button"
+                    class="subtitle-index"
                     title="选中并跳转到字幕开始"
                     onclick={() => selectSubtitle(index, true)}
                   >
                     {index + 1}
                   </button>
-
-                  <div class="min-w-0 flex-1 py-1">
-                    <input
-                      type="text"
-                      bind:value={subtitle.text}
-                      onfocus={() => selectSubtitle(index)}
-                      onkeydown={handleSubtitleInputKeydown}
-                      class="w-full min-w-0 px-1 py-0.5 bg-transparent text-[13px] text-gray-200 rounded border border-transparent focus:bg-[#1c1c1e] focus:border-[#0A84FF]/70 transition-colors outline-none"
-                      placeholder="输入字幕文本"
-                    />
-                  </div>
-
+                  <input
+                    type="text"
+                    bind:value={subtitle.text}
+                    onfocus={() => selectSubtitle(index)}
+                    onkeydown={handleSubtitleInputKeydown}
+                    class="subtitle-text"
+                    placeholder="输入字幕文本"
+                  />
                   <button
-                    class="p-1 shrink-0 text-gray-600 opacity-60 hover:opacity-100 hover:text-[#0A84FF] transition-all"
+                    type="button"
+                    class="subtitle-action"
                     title="在后面添加字幕"
                     onclick={() => insertSubtitleAfter(index)}
                   >
-                    <Plus class="w-3.5 h-3.5" />
+                    <Plus class="h-3.5 w-3.5" />
                   </button>
                   <button
-                    class="p-1 shrink-0 text-gray-600 opacity-60 hover:opacity-100 hover:text-red-400 transition-all"
+                    type="button"
+                    class="subtitle-action danger"
                     title="删除字幕"
                     onclick={async () => await removeSubtitle(index)}
                   >
-                    <Trash2 class="w-3.5 h-3.5" />
+                    <Trash2 class="h-3.5 w-3.5" />
                   </button>
                 </div>
               {/each}
             </div>
-          </div>
+          {:else}
+            <div class="empty-state">
+              <strong>还没有字幕</strong>
+              <span>点击上方「AI 字幕」自动生成</span>
+            </div>
+          {/if}
         {:else if activeTab === "upload"}
-          <!-- 投稿 Tab 内容 -->
-          <div class="p-4 space-y-6">
-            <!-- 封面预览 -->
+          <div class="upload-form">
             {#if video && video.id != -1}
               <section>
-                <div class="group">
-                  <div
-                    class="text-sm text-gray-400 mb-2 flex items-center justify-between"
-                  >
-                    <span>视频封面</span>
-                    <button
-                      class="text-[#0A84FF] hover:text-[#0A84FF]/80 transition-colors duration-200 flex items-center space-x-1"
-                      onclick={() => (show_cover_editor = true)}
-                    >
-                      <Pen class="w-4 h-4" />
-                      <span class="text-xs">创建新封面</span>
-                    </button>
-                  </div>
-                  <div
-                    class="relative rounded-xl overflow-hidden bg-black/20 border border-gray-800/50"
-                  >
-                    {#if video.cover && video.cover.trim() !== ""}
-                      <img
-                        src={video.cover}
-                        alt="视频封面"
-                        class="w-full"
-                        onerror={handleCoverError}
-                        style:display={showDefaultCoverIcon ? "none" : "block"}
-                      />
-                    {/if}
-                    {#if !video.cover || video.cover.trim() === "" || showDefaultCoverIcon}
-                      <div
-                        class="w-full aspect-video flex items-center justify-center bg-gray-800"
-                      >
-                        <!-- 默认视频图标 -->
-                        <svg
-                          class="w-16 h-16 text-gray-400"
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                            stroke-width="2"
-                            d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"
-                          ></path>
-                        </svg>
-                      </div>
-                    {/if}
-                  </div>
+                <div class="section-heading">
+                  <h3>视频封面</h3>
+                  <button type="button" class="link-button" onclick={() => (show_cover_editor = true)}>
+                    <Pen class="h-3 w-3" />
+                    创建新封面
+                  </button>
+                </div>
+                <div class="cover-frame">
+                  {#if video.cover && video.cover.trim() !== ""}
+                    <img
+                      src={video.cover}
+                      alt="视频封面"
+                      onerror={handleCoverError}
+                      style:display={showDefaultCoverIcon ? "none" : "block"}
+                    />
+                  {/if}
+                  {#if !video.cover || video.cover.trim() === "" || showDefaultCoverIcon}
+                    <div class="cover-placeholder">暂无封面</div>
+                  {/if}
                 </div>
               </section>
             {/if}
 
-            <!-- 基本信息 -->
-            <div class="space-y-4">
-              <h3 class="text-sm font-medium text-gray-400">基本信息</h3>
-              <!-- 标题 -->
-              <div class="space-y-2">
-                <label
-                  for="title"
-                  class="block text-sm font-medium text-gray-300">标题</label
-                >
+            <section>
+              <div class="section-heading"><h3>基本信息</h3></div>
+              <div class="field">
+                <label for="title">标题</label>
                 <input
                   id="title"
                   type="text"
                   bind:value={profile.title}
                   placeholder="输入视频标题"
-                  class="w-full px-3 py-2 bg-[#1c1c1e] text-white rounded-lg border border-gray-800/50 focus:border-[#0A84FF] transition duration-200 outline-none hover:border-gray-700/50"
+                  class="panel-input"
                 />
               </div>
-
-              <!-- 视频分区 -->
-              <div class="space-y-2">
-                <label for="tid" class="block text-sm font-medium text-gray-300"
-                  >视频分区</label
-                >
+              <div class="field">
+                <label for="tid">视频分区</label>
                 <div class="w-full" id="tid">
                   <TypeSelect bind:value={profile.tid} />
                 </div>
               </div>
-
-              <!-- 投稿账号 -->
-              <div class="space-y-2">
-                <label for="uid" class="block text-sm font-medium text-gray-300"
-                  >投稿账号</label
-                >
-                <select
-                  bind:value={uid_selected}
-                  class="w-full px-3 py-2 bg-[#1c1c1e] text-white rounded-lg border border-gray-800/50 focus:border-[#0A84FF] transition duration-200 outline-none appearance-none hover:border-gray-700/50"
-                >
+              <div class="field">
+                <label for="uid">投稿账号</label>
+                <select id="uid" bind:value={uid_selected} class="panel-input">
                   <option value={0}>选择账号</option>
                   {#each accounts as account}
                     <option value={account.value}>{account.name}</option>
                   {/each}
                 </select>
               </div>
-            </div>
+            </section>
 
-            <!-- 详细信息 -->
-            <div class="space-y-4">
-              <h3 class="text-sm font-medium text-gray-400">详细信息</h3>
-              <!-- 描述 -->
-              <div class="space-y-2">
-                <label
-                  for="desc"
-                  class="block text-sm font-medium text-gray-300">描述</label
-                >
+            <section>
+              <div class="section-heading"><h3>详细信息</h3></div>
+              <div class="field">
+                <label for="desc">描述</label>
                 <textarea
                   id="desc"
                   bind:value={profile.desc}
                   placeholder="输入视频描述"
-                  class="w-full px-3 py-2 bg-[#1c1c1e] text-white rounded-lg border border-gray-800/50 focus:border-[#0A84FF] transition duration-200 outline-none resize-none h-24 hover:border-gray-700/50"
-></textarea>
+                  class="panel-input h-20 resize-none"
+                ></textarea>
               </div>
-
-              <!-- 标签 -->
-              <div class="space-y-2">
-                <label for="tag" class="block text-sm font-medium text-gray-300"
-                  >标签</label
-                >
+              <div class="field">
+                <label for="tag">标签</label>
                 <input
                   id="tag"
                   type="text"
                   bind:value={profile.tag}
                   placeholder="输入视频标签，用逗号分隔"
-                  class="w-full px-3 py-2 bg-[#1c1c1e] text-white rounded-lg border border-gray-800/50 focus:border-[#0A84FF] transition duration-200 outline-none hover:border-gray-700/50"
+                  class="panel-input"
                 />
               </div>
-
-              <!-- 动态 -->
-              <div class="space-y-2">
-                <label
-                  for="dynamic"
-                  class="block text-sm font-medium text-gray-300">动态</label
-                >
+              <div class="field">
+                <label for="dynamic">动态</label>
                 <textarea
                   id="dynamic"
                   bind:value={profile.dynamic}
                   placeholder="输入动态内容"
-                  class="w-full px-3 py-2 bg-[#1c1c1e] text-white rounded-lg border border-gray-800/50 focus:border-[#0A84FF] transition duration-200 outline-none resize-none h-24 hover:border-gray-700/50"
-></textarea>
+                  class="panel-input h-20 resize-none"
+                ></textarea>
               </div>
-            </div>
+            </section>
 
-            <!-- 投稿按钮 -->
             {#if video}
-              <div class="pt-4">
-                <div class="flex gap-2">
-                  <button
-                    onclick={do_post}
-                    disabled={current_post_event_id != null || !uid_selected}
-                    class="flex-1 px-3 py-2 bg-[#0A84FF] text-white rounded-lg transition-all duration-200 hover:bg-[#0A84FF]/90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2 text-sm"
-                  >
-                    {#if current_post_event_id != null}
-                      <div
-                        class="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin"
-></div>
-                    {/if}
-                    <span id="post-prompt">投稿</span>
-                  </button>
-                  {#if current_post_event_id != null}
-                    <button
-                      onclick={() => cancel_post()}
-                      class="px-3 py-2 bg-red-500 text-white rounded-lg transition-all duration-200 hover:bg-red-500/90 flex items-center justify-center text-sm"
-                    >
-                      取消
-                    </button>
-                  {/if}
-                </div>
-              </div>
+              <button
+                type="button"
+                class="footer-button primary w-full justify-center"
+                onclick={do_post}
+                disabled={current_post_event_id != null || !uid_selected}
+              >
+                {#if current_post_event_id != null}
+                  <Loader2 class="h-3.5 w-3.5 animate-spin" />
+                  投稿中
+                {:else}
+                  投稿
+                {/if}
+              </button>
             {/if}
           </div>
         {/if}
-      </div>
+      </InspectorPanel>
     </div>
   </div>
 {/if}
@@ -2650,6 +2422,261 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <style>
+  /* Inspector panel content; matches ArchiveInspector's palette. */
+  .footer-button {
+    display: inline-flex;
+    height: 30px;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+    border: 1px solid #344052;
+    border-radius: 8px;
+    background: #202733;
+    padding: 0 11px;
+    color: #dce5f3;
+    font-size: 12px;
+    transition: background-color 150ms ease, border-color 150ms ease;
+  }
+
+  .footer-button:hover:not(:disabled) {
+    border-color: #4a5a70;
+  }
+
+  .footer-button.primary {
+    border-color: transparent;
+    background: #0a84ff;
+    color: white;
+  }
+
+  .footer-button.primary:hover:not(:disabled) {
+    background: rgb(10 132 255 / 90%);
+  }
+
+  .footer-button:disabled,
+  .tool-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  .subtitle-toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    margin: 0 -16px;
+    background: #171c25;
+    padding: 0 16px 10px;
+  }
+
+  .tool-button {
+    display: inline-flex;
+    height: 30px;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    white-space: nowrap;
+    border: 1px solid #293442;
+    border-radius: 8px;
+    background: #202733;
+    color: #c4cfdd;
+    font-size: 11px;
+  }
+
+  .tool-button:hover:not(:disabled) {
+    border-color: #3a4658;
+    color: #edf4ff;
+  }
+
+  .subtitle-list {
+    overflow: hidden;
+    border: 1px solid #293442;
+    border-radius: 10px;
+    background: #202733;
+  }
+
+  .subtitle-row {
+    display: flex;
+    min-height: 38px;
+    align-items: center;
+    gap: 4px;
+    border-bottom: 1px solid #293442;
+    border-left: 2px solid transparent;
+    padding: 0 6px 0 4px;
+  }
+
+  .subtitle-row:last-child {
+    border-bottom: 0;
+  }
+
+  .subtitle-row:hover {
+    background: rgb(255 255 255 / 3%);
+  }
+
+  .subtitle-row.playing {
+    border-left-color: #35a7ff;
+    background: rgb(53 167 255 / 10%);
+  }
+
+  .subtitle-row.selected {
+    box-shadow: inset 0 0 0 1px rgb(53 167 255 / 60%);
+  }
+
+  .subtitle-index {
+    width: 22px;
+    flex-shrink: 0;
+    color: #6f7b8d;
+    font-family: ui-monospace, monospace;
+    font-size: 10px;
+    text-align: right;
+  }
+
+  .subtitle-index:hover,
+  .subtitle-row.selected .subtitle-index {
+    color: #55b9ff;
+  }
+
+  .subtitle-text {
+    min-width: 0;
+    flex: 1;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+    padding: 3px 5px;
+    color: #dce5f3;
+    font-size: 12px;
+    outline: none;
+  }
+
+  .subtitle-text:focus {
+    border-color: rgb(10 132 255 / 70%);
+    background: #0f131a;
+  }
+
+  .subtitle-action {
+    display: inline-flex;
+    flex-shrink: 0;
+    padding: 4px;
+    color: #6f7b8d;
+    opacity: 0.7;
+  }
+
+  .subtitle-action:hover {
+    color: #55b9ff;
+    opacity: 1;
+  }
+
+  .subtitle-action.danger:hover {
+    color: #ff6b6b;
+  }
+
+  .empty-state {
+    display: flex;
+    min-height: 120px;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 5px;
+    color: #718095;
+    font-size: 10px;
+    text-align: center;
+  }
+
+  .empty-state strong {
+    color: #a8b3c3;
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  .upload-form {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .upload-form section {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .section-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .section-heading h3 {
+    margin: 0;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .link-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: #55b9ff;
+    font-size: 10px;
+    font-weight: 500;
+  }
+
+  .cover-frame {
+    overflow: hidden;
+    border: 1px solid #293442;
+    border-radius: 9px;
+    background: #0c1016;
+  }
+
+  .cover-frame img {
+    width: 100%;
+  }
+
+  .cover-placeholder {
+    display: flex;
+    aspect-ratio: 16 / 9;
+    align-items: center;
+    justify-content: center;
+    color: #657186;
+    font-size: 10px;
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .field label {
+    color: #9aa6b8;
+    font-size: 10px;
+  }
+
+  .panel-input {
+    width: 100%;
+    border: 1px solid #293442;
+    border-radius: 8px;
+    background: #0f131a;
+    padding: 7px 10px;
+    color: #e9eef8;
+    font-size: 12px;
+    outline: none;
+    transition: border-color 150ms ease;
+  }
+
+  .panel-input:hover {
+    border-color: #3a4658;
+  }
+
+  .panel-input:focus {
+    border-color: #0a84ff;
+  }
+
+  .panel-input::placeholder {
+    color: #5d6878;
+  }
+
   /* 拖动时禁用过渡动画，避免与JS更新冲突 */
   .no-transition {
     transition: none !important;

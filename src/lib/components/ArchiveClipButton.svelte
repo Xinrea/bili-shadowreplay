@@ -1,14 +1,17 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
-  import { Loader2, Scissors } from "lucide-svelte";
+  import { Scissors } from "lucide-svelte";
   import type { RecordItem } from "../db";
   import {
     clipRange,
     generateEventId,
+    type ClipRangeParams,
     type Range,
     type VideoItem,
   } from "../interface";
-  import { invoke, listen, log } from "../invoker";
+  import { announceTask, openTaskCenter, settleTask, wasCancelled } from "../stores/tasks";
+
+  // Progress is shown by <TaskCenter />, which the host window must mount.
 
   interface Props {
     archive?: RecordItem | null;
@@ -18,7 +21,6 @@
     captureCover?: boolean;
     variant?: "primary" | "compact";
     disabled?: boolean;
-    running?: boolean;
     onGenerated?: (video: VideoItem) => void;
     onFailed?: (message: string) => void;
   }
@@ -31,7 +33,6 @@
     captureCover = false,
     variant = "primary",
     disabled = false,
-    running = $bindable(false),
     onGenerated,
     onFailed
   }: Props = $props();
@@ -47,20 +48,17 @@
   ];
 
   let showConfirm = $state(false);
-  let currentEventId: string | null = $state(null);
-  let progressText = $state("生成切片");
   let clipNote = $state("");
   let danmuEnabled = $state(false);
   let fixEncoding = $state(false);
   let transition = $state("none");
-  let clearUpdateListener: (() => void) | null = null;
-  let clearFinishedListener: (() => void) | null = null;
-  let cancellingEventId: string | null = null;
+  /** Clip requests still awaiting a result; several may run at once. */
+  let inFlight = 0;
 
   let activeRanges = $derived(ranges.filter((range) => range.activated !== false));
 
   function openConfirm() {
-    if (!archive || disabled || currentEventId) return;
+    if (!archive || disabled) return;
     clipNote = initialNote;
     showConfirm = true;
   }
@@ -114,95 +112,57 @@
     return canvas.toDataURL();
   }
 
-  function clearListeners() {
-    clearUpdateListener?.();
-    clearUpdateListener = null;
-    clearFinishedListener?.();
-    clearFinishedListener = null;
-  }
-
-  function resetTaskState(eventId?: string) {
-    if (eventId && currentEventId !== eventId) return;
-    clearListeners();
-    currentEventId = null;
-    running = false;
-    progressText = "生成切片";
-  }
-
   async function generateClip() {
-    if (!archive || activeRanges.length === 0 || currentEventId) return;
+    if (!archive || activeRanges.length === 0) return;
     showConfirm = false;
     const eventId = generateEventId();
-    currentEventId = eventId;
-    running = true;
-    progressText = "切片生成中";
-
-    clearUpdateListener = await listen(`progress-update:${eventId}`, (event) => {
-      progressText = event.payload.content;
+    const params: ClipRangeParams = {
+      title: archive.title,
+      note: clipNote,
+      room_id: archive.room_id,
+      platform: archive.platform,
+      cover: getCover(),
+      live_id: archive.live_id,
+      ranges: activeRanges,
+      danmu: danmuEnabled,
+      local_offset:
+        localOffset ??
+        (parseInt(
+          localStorage.getItem(`local_offset:${archive.live_id}`) || "0",
+          10,
+        ) || 0),
+      fix_encoding: fixEncoding,
+      transition: transition !== "none" ? transition : undefined,
+    };
+    // The form now belongs to the next clip.
+    transition = "none";
+    announceTask({
+      id: eventId,
+      task_type: "clip_range",
+      metadata: JSON.stringify({ params: { ...params, cover: "" } }),
     });
-    clearFinishedListener = await listen(
-      `progress-finished:${eventId}`,
-      (event) => {
-        if (!event.payload.success && cancellingEventId !== eventId) {
-          const message = String(event.payload.message || "未知错误");
-          alert("请检查 ffmpeg 是否配置正确：" + message);
-          onFailed?.(message);
-        }
-        resetTaskState(eventId);
-      },
-    );
+    openTaskCenter(eventId);
 
+    inFlight += 1;
     try {
-      const video = await clipRange(eventId, {
-        title: archive.title,
-        note: clipNote,
-        room_id: archive.room_id,
-        platform: archive.platform,
-        cover: getCover(),
-        live_id: archive.live_id,
-        ranges: activeRanges,
-        danmu: danmuEnabled,
-        local_offset:
-          localOffset ??
-          (parseInt(
-            localStorage.getItem(`local_offset:${archive.live_id}`) || "0",
-            10,
-          ) || 0),
-        fix_encoding: fixEncoding,
-        transition: transition !== "none" ? transition : undefined,
-      });
-      clipNote = "";
-      transition = "none";
+      const video = await clipRange(eventId, params);
       onGenerated?.(video as VideoItem);
     } catch (error) {
       const message = String(error);
+      // Cancelled from the task center, or elsewhere such as the task page.
       // Desktop and web invoke wrappers prepend context to the backend error.
-      const cancelled = message.endsWith("切片任务已取消");
-      if (currentEventId === eventId && cancellingEventId !== eventId && !cancelled) {
+      if (!wasCancelled(eventId) && !message.endsWith("切片任务已取消")) {
         alert("切片生成失败：" + message);
         onFailed?.(message);
       }
     } finally {
-      resetTaskState(eventId);
-    }
-  }
-
-  async function cancelClip() {
-    if (!currentEventId || cancellingEventId === currentEventId) return;
-    const eventId = currentEventId;
-    cancellingEventId = eventId;
-    try {
-      await invoke("cancel", { eventId });
-    } catch (error) {
-      log.warn("Failed to cancel clip task", error);
-    } finally {
-      resetTaskState(eventId);
-      if (cancellingEventId === eventId) cancellingEventId = null;
+      inFlight -= 1;
+      settleTask(eventId);
     }
   }
 
   function handleBeforeUnload(event: BeforeUnloadEvent) {
-    if (!currentEventId) return;
+    if (inFlight === 0) return;
     const message = "切片任务将在后台继续运行，可前往任务页面管理后台任务。";
     event.preventDefault();
     event.returnValue = message;
@@ -210,39 +170,22 @@
   }
 
   onMount(() => window.addEventListener("beforeunload", handleBeforeUnload));
-  onDestroy(() => {
-    window.removeEventListener("beforeunload", handleBeforeUnload);
-    clearListeners();
-  });
+  onDestroy(() => window.removeEventListener("beforeunload", handleBeforeUnload));
 </script>
 
-<div class={variant === "compact" ? "contents" : "flex items-center gap-2"}>
-    <button
-      type="button"
-      onclick={openConfirm}
-      disabled={disabled || !archive || currentEventId !== null}
-      class={variant === "compact"
-        ? "inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-violet-200 bg-white px-2.5 py-1.5 text-xs font-medium text-violet-700 transition-colors hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-violet-700 dark:bg-gray-900 dark:text-violet-300 dark:hover:bg-violet-950/60"
-        : "inline-flex items-center gap-2 rounded-lg bg-[#0A84FF] px-4 py-1.5 text-sm text-white transition-all duration-200 hover:bg-[#0A84FF]/90 disabled:cursor-not-allowed disabled:opacity-50"}
-    >
-      {#if currentEventId}
-        <Loader2 class="h-4 w-4 animate-spin" />
-      {:else if variant === "compact"}
-        <Scissors class="h-3.5 w-3.5" />
-      {/if}
-      <span>{progressText}</span>
-    </button>
-
-    {#if currentEventId && variant === "primary"}
-      <button
-        type="button"
-        onclick={cancelClip}
-        class="rounded-lg px-4 py-1.5 text-sm text-red-500 transition-all duration-200 hover:bg-red-500/10"
-      >
-        取消
-      </button>
-    {/if}
-</div>
+<button
+  type="button"
+  onclick={openConfirm}
+  disabled={disabled || !archive}
+  class={variant === "compact"
+    ? "inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-violet-200 bg-white px-2.5 py-1.5 text-xs font-medium text-violet-700 transition-colors hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-violet-700 dark:bg-gray-900 dark:text-violet-300 dark:hover:bg-violet-950/60"
+    : "inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-lg bg-[#0A84FF] px-4 py-1.5 text-sm text-white transition-all duration-200 hover:bg-[#0A84FF]/90 disabled:cursor-not-allowed disabled:opacity-50"}
+>
+  {#if variant === "compact"}
+    <Scissors class="h-3.5 w-3.5" />
+  {/if}
+  <span>生成切片</span>
+</button>
 
 {#if showConfirm}
   <div class="fixed inset-0 z-[100] flex items-center justify-center">

@@ -6,7 +6,7 @@ use tokio::io::AsyncWriteExt;
 use crate::{
     ffmpeg::{
         hwaccel,
-        runner::{run_command, ProgressMode},
+        runner::{run_command, ProgressMode, ProgressTotal},
     },
     progress::progress_reporter::ProgressReporterTrait,
 };
@@ -46,12 +46,18 @@ fn escape_concat_path(path: &Path) -> String {
 pub async fn handle_ffmpeg_process(
     reporter: Option<&impl ProgressReporterTrait>,
     ffmpeg_process: tokio::process::Command,
+    total: ProgressTotal,
 ) -> Result<(), String> {
     log::info!("[FFmpeg] {:?}", ffmpeg_process);
-    run_command(ffmpeg_process, ProgressMode::OutTimeMs, "FFmpeg", reporter)
-        .await
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+    run_command(
+        ffmpeg_process,
+        ProgressMode::stage("合并视频", total),
+        "FFmpeg",
+        reporter,
+    )
+    .await
+    .map(|_| ())
+    .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -271,7 +277,7 @@ async fn concat_videos_with_demuxer(
         .ok_or_else(|| format!("Invalid output path (non-UTF8): {}", output_path.display()))?]);
     ffmpeg_process.args(["-y"]);
 
-    handle_ffmpeg_process(reporter, ffmpeg_process).await
+    handle_ffmpeg_process(reporter, ffmpeg_process, ProgressTotal::FirstInput).await
 }
 
 async fn encode_filter_concat(
@@ -279,6 +285,7 @@ async fn encode_filter_concat(
     videos: &[PathBuf],
     output_path: &Path,
     filter_complex: String,
+    total: ProgressTotal,
 ) -> Result<(), String> {
     let mut ffmpeg_process = ffmpeg_command();
 
@@ -315,7 +322,7 @@ async fn encode_filter_concat(
         .to_str()
         .ok_or_else(|| format!("Invalid output path (non-UTF8): {}", output_path.display()))?]);
 
-    handle_ffmpeg_process(reporter, ffmpeg_process).await
+    handle_ffmpeg_process(reporter, ffmpeg_process, total).await
 }
 
 /// Concatenate videos with optional transition effects
@@ -341,7 +348,14 @@ pub async fn concat_videos_with_transition(
         let video_refs: Vec<&Path> = videos.iter().map(|p| p.as_path()).collect();
         let normalize = !super::check_videos(&video_refs).await;
         let filter_complex = build_hardcut_concat_filter_complex(videos.len(), normalize);
-        return encode_filter_concat(reporter, videos, output_path, filter_complex).await;
+        return encode_filter_concat(
+            reporter,
+            videos,
+            output_path,
+            filter_complex,
+            ProgressTotal::AllInputs,
+        )
+        .await;
     }
 
     let transition_duration = super::TRANSITION_DURATION_SECS;
@@ -355,7 +369,17 @@ pub async fn concat_videos_with_transition(
 
     let filter_complex =
         build_transition_filter_complex(&durations, transition_type, transition_duration);
-    encode_filter_concat(reporter, videos, output_path, filter_complex).await
+    // Each transition overlaps the neighbouring clips by its duration.
+    let output_duration =
+        durations.iter().sum::<f64>() - transition_duration * (durations.len() - 1) as f64;
+    encode_filter_concat(
+        reporter,
+        videos,
+        output_path,
+        filter_complex,
+        ProgressTotal::Known(output_duration),
+    )
+    .await
 }
 
 #[cfg(test)]

@@ -228,9 +228,21 @@ export interface Marker {
   content: string;
 }
 
+/** Measurable progress of one processing stage; times are media seconds. */
+export interface StageProgress {
+  stage: string;
+  processed: number;
+  total?: number;
+  /** Processing speed relative to realtime. */
+  speed?: number;
+}
+
 export interface ProgressUpdate {
   id: string;
+  /** Plain-text form, always present. */
   content: string;
+  /** Present when the stage reports measurable progress. */
+  progress?: StageProgress;
 }
 
 export interface ProgressFinished {

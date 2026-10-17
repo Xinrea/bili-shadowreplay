@@ -536,7 +536,7 @@ pub async fn generate_whole_clip(
     let state_clone = state.clone();
 
     let task_id = task.id.clone();
-    state
+    let enqueue_result = state
         .task_manager
         .add_task(Task::new(
             task_id.clone(),
@@ -576,7 +576,15 @@ pub async fn generate_whole_clip(
                 }
             },
         ))
-        .await?;
+        .await;
+    if let Err(error) = enqueue_result {
+        // Never leave the recorded task pending with no worker to run or cancel it.
+        state
+            .db
+            .update_task(&task.id, "failed", &format!("加入队列失败: {error}"), None)
+            .await?;
+        return Err(error);
+    }
     Ok(task)
 }
 

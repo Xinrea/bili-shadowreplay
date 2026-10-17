@@ -7,6 +7,7 @@
 //! desired, a [`ProgressReporterTrait`] implementation.
 
 use std::{
+    collections::BTreeMap,
     ffi::{OsStr, OsString},
     io,
     path::PathBuf,
@@ -14,16 +15,19 @@ use std::{
     process::Stdio,
 };
 
-use async_ffmpeg_sidecar::{event::FfmpegEvent, log_parser::FfmpegLogParser};
+use async_ffmpeg_sidecar::{
+    event::FfmpegEvent,
+    log_parser::{parse_time_str, FfmpegLogParser},
+};
 use async_trait::async_trait;
 use thiserror::Error;
 use tokio::{io::BufReader, process::Command};
 
-use crate::progress::progress_reporter::ProgressReporterTrait;
+use crate::progress::progress_reporter::{ProgressReporterTrait, StageProgress};
 use ffmpeg_utils::ffmpeg_command;
 
 /// How a job turns parsed ffmpeg events into progress updates.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum ProgressMode {
     /// Do not call the reporter and do not add ffmpeg's `-progress` option.
     #[default]
@@ -34,27 +38,28 @@ pub enum ProgressMode {
     /// `-progress pipe:2`, so that value is used when no summary progress event
     /// is available.
     Time,
-    /// Report `<prefix><timestamp><suffix>`, which keeps each job's existing
-    /// user-visible wording ("压制中：…", "切片进度: …").
-    Labeled { prefix: String, suffix: String },
-    /// Report the raw microsecond value from an `out_time_ms=` log event.
-    OutTimeMs,
+    /// Report [`StageProgress`] under a user-facing stage name such as "压制弹幕".
+    Stage { name: String, total: ProgressTotal },
+}
+
+/// Where a stage's total media duration comes from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ProgressTotal {
+    /// The first input's duration: single-video jobs, and overlays whose extra
+    /// inputs are still images.
+    FirstInput,
+    /// The sum of all input durations, as in hard-cut concatenation.
+    AllInputs,
+    /// A duration the caller already knows, such as a trim length.
+    Known(f64),
 }
 
 impl ProgressMode {
-    /// Report `<prefix><timestamp>`.
-    pub fn prefixed(prefix: impl Into<String>) -> Self {
-        Self::Labeled {
-            prefix: prefix.into(),
-            suffix: String::new(),
-        }
-    }
-
-    /// Report `<prefix><timestamp><suffix>`.
-    pub fn labeled(prefix: impl Into<String>, suffix: impl Into<String>) -> Self {
-        Self::Labeled {
-            prefix: prefix.into(),
-            suffix: suffix.into(),
+    /// Report measurable progress under `name`.
+    pub fn stage(name: impl Into<String>, total: ProgressTotal) -> Self {
+        Self::Stage {
+            name: name.into(),
+            total,
         }
     }
 
@@ -72,23 +77,79 @@ impl ProgressMode {
             _ => None,
         }
     }
+}
 
-    fn message_for(&self, event: &FfmpegEvent) -> Option<String> {
-        match self {
-            Self::None => None,
-            Self::Time => Self::progress_time(event).map(ToOwned::to_owned),
-            Self::Labeled { prefix, suffix } => {
-                Self::progress_time(event).map(|time| format!("{prefix}{time}{suffix}"))
+enum ProgressReport {
+    Text(String),
+    Stage(StageProgress),
+}
+
+/// Follows one job's ffmpeg events and turns them into progress reports.
+#[derive(Default)]
+struct ProgressTracker {
+    input_durations: BTreeMap<u32, f64>,
+    speed: Option<f64>,
+    last_processed: Option<f64>,
+}
+
+impl ProgressTracker {
+    fn observe(&mut self, mode: &ProgressMode, event: &FfmpegEvent) -> Option<ProgressReport> {
+        let (name, total) = match mode {
+            ProgressMode::None => return None,
+            ProgressMode::Time => {
+                return ProgressMode::progress_time(event)
+                    .map(|time| ProgressReport::Text(time.to_owned()));
             }
-            Self::OutTimeMs => match event {
-                FfmpegEvent::Log(_, content) => content
-                    .strip_prefix("out_time_ms=")
-                    .map(str::trim)
-                    .filter(|content| !content.is_empty())
-                    .map(ToOwned::to_owned),
-                _ => None,
-            },
+            ProgressMode::Stage { name, total } => (name, *total),
+        };
+
+        match event {
+            FfmpegEvent::ParsedDuration(duration) => {
+                self.input_durations
+                    .insert(duration.input_index, duration.duration);
+            }
+            FfmpegEvent::Progress(progress) if progress.speed > 0.0 => {
+                self.speed = Some(f64::from(progress.speed));
+            }
+            FfmpegEvent::Log(_, content) => {
+                if let Some(speed) = content
+                    .strip_prefix("speed=")
+                    .and_then(|speed| speed.trim().trim_end_matches('x').parse::<f64>().ok())
+                    .filter(|speed| *speed > 0.0)
+                {
+                    self.speed = Some(speed);
+                }
+            }
+            _ => {}
         }
+
+        // Negative before the first output frame, e.g. "-577014:32:22.77".
+        let processed = ProgressMode::progress_time(event)
+            .and_then(parse_time_str)?
+            .max(0.0);
+        // The stats line and the -progress block repeat the same position.
+        if self.last_processed == Some(processed) {
+            return None;
+        }
+        self.last_processed = Some(processed);
+
+        Some(ProgressReport::Stage(StageProgress {
+            stage: name.clone(),
+            processed,
+            total: self.total(total),
+            speed: self.speed,
+        }))
+    }
+
+    fn total(&self, total: ProgressTotal) -> Option<f64> {
+        match total {
+            ProgressTotal::FirstInput => self.input_durations.get(&0).copied(),
+            ProgressTotal::AllInputs => {
+                (!self.input_durations.is_empty()).then(|| self.input_durations.values().sum())
+            }
+            ProgressTotal::Known(total) => Some(total),
+        }
+        .filter(|total| *total > 0.0)
     }
 }
 
@@ -100,7 +161,7 @@ impl ProgressMode {
 /// "arguments plus one output file" case from being repeated at every call
 /// site.  If a caller needs a different ffmpeg argument layout, it can leave
 /// `output` unset and put every argument in `args` directly.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FfmpegJob {
     pub args: Vec<OsString>,
     pub output: Option<PathBuf>,
@@ -244,6 +305,7 @@ impl FfmpegJob {
                 context: context.clone(),
             })?;
         let mut parser = FfmpegLogParser::new(BufReader::new(stderr));
+        let mut tracker = ProgressTracker::default();
         let mut logs = Vec::new();
 
         loop {
@@ -266,10 +328,14 @@ impl FfmpegJob {
                     if let FfmpegEvent::Log(_, content) = &event {
                         logs.push(content.clone());
                     }
-                    if let (Some(reporter), Some(message)) =
-                        (reporter, self.progress.message_for(&event))
-                    {
-                        reporter.update(&message).await;
+                    if let Some(reporter) = reporter {
+                        match tracker.observe(&self.progress, &event) {
+                            Some(ProgressReport::Text(message)) => reporter.update(&message).await,
+                            Some(ProgressReport::Stage(progress)) => {
+                                reporter.progress(progress).await
+                            }
+                            None => {}
+                        }
                     }
                 }
             }
@@ -403,7 +469,7 @@ impl ProgressReporterTrait for NoopReporter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_ffmpeg_sidecar::event::{FfmpegProgress, LogLevel};
+    use async_ffmpeg_sidecar::event::{FfmpegDuration, FfmpegProgress, LogLevel};
     use std::sync::{Arc, Mutex};
 
     #[derive(Clone, Default)]
@@ -434,36 +500,117 @@ mod tests {
         })
     }
 
-    #[test]
-    fn progress_modes_have_distinct_basic_behavior() {
-        let progress = sample_progress_event();
-        assert_eq!(ProgressMode::None.message_for(&progress), None);
-        assert_eq!(
-            ProgressMode::Time.message_for(&progress),
-            Some("00:00:01.00".to_owned())
-        );
+    fn observe_all(mode: &ProgressMode, events: &[FfmpegEvent]) -> Vec<ProgressReport> {
+        let mut tracker = ProgressTracker::default();
+        events
+            .iter()
+            .filter_map(|event| tracker.observe(mode, event))
+            .collect()
+    }
 
-        let out_time = FfmpegEvent::Log(LogLevel::Info, "out_time_ms=1000000".to_owned());
-        assert_eq!(ProgressMode::None.message_for(&out_time), None);
+    fn duration_event(input_index: u32, duration: f64) -> FfmpegEvent {
+        FfmpegEvent::ParsedDuration(FfmpegDuration {
+            input_index,
+            duration,
+            raw_log_message: String::new(),
+        })
+    }
+
+    fn stage_reports(reports: Vec<ProgressReport>) -> Vec<StageProgress> {
+        reports
+            .into_iter()
+            .map(|report| match report {
+                ProgressReport::Stage(progress) => progress,
+                ProgressReport::Text(text) => panic!("expected stage progress, got {text:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn time_mode_reports_raw_timestamps() {
+        let progress = sample_progress_event();
+        assert!(observe_all(&ProgressMode::None, std::slice::from_ref(&progress)).is_empty());
+        let out_time = FfmpegEvent::Log(LogLevel::Info, "out_time=00:00:01.00".to_owned());
+        let reports = observe_all(&ProgressMode::Time, &[progress, out_time]);
+        let texts: Vec<_> = reports
+            .into_iter()
+            .map(|report| match report {
+                ProgressReport::Text(text) => text,
+                ProgressReport::Stage(progress) => panic!("unexpected {progress:?}"),
+            })
+            .collect();
+        assert_eq!(texts, ["00:00:01.00", "00:00:01.00"]);
+    }
+
+    #[test]
+    fn stage_mode_measures_against_the_first_input() {
+        let mode = ProgressMode::stage("压制弹幕", ProgressTotal::FirstInput);
+        let reports = stage_reports(observe_all(
+            &mode,
+            &[
+                duration_event(0, 4.0),
+                // A still-image overlay input must not change the total.
+                duration_event(1, 0.04),
+                sample_progress_event(),
+                // The -progress block repeats the stats line position.
+                FfmpegEvent::Log(LogLevel::Info, "out_time=00:00:01.000000".to_owned()),
+                FfmpegEvent::Log(LogLevel::Info, "speed=2.5x".to_owned()),
+                FfmpegEvent::Log(LogLevel::Info, "out_time=00:00:03.000000".to_owned()),
+            ],
+        ));
         assert_eq!(
-            ProgressMode::OutTimeMs.message_for(&out_time),
-            Some("1000000".to_owned())
+            reports,
+            [
+                StageProgress {
+                    stage: "压制弹幕".into(),
+                    processed: 1.0,
+                    total: Some(4.0),
+                    speed: Some(1.0),
+                },
+                StageProgress {
+                    stage: "压制弹幕".into(),
+                    processed: 3.0,
+                    total: Some(4.0),
+                    speed: Some(2.5),
+                },
+            ]
         );
-        assert_eq!(
-            ProgressMode::Time.message_for(&FfmpegEvent::Log(
+    }
+
+    #[test]
+    fn stage_mode_totals_can_sum_inputs_or_be_known() {
+        let events = [
+            duration_event(0, 4.0),
+            duration_event(1, 6.0),
+            sample_progress_event(),
+        ];
+        let summed = stage_reports(observe_all(
+            &ProgressMode::stage("合并视频", ProgressTotal::AllInputs),
+            &events,
+        ));
+        assert_eq!(summed[0].total, Some(10.0));
+        let known = stage_reports(observe_all(
+            &ProgressMode::stage("裁剪", ProgressTotal::Known(2.0)),
+            &events,
+        ));
+        assert_eq!(known[0].total, Some(2.0));
+        let unknown = stage_reports(observe_all(
+            &ProgressMode::stage("合并视频", ProgressTotal::FirstInput),
+            &[sample_progress_event()],
+        ));
+        assert_eq!(unknown[0].total, None);
+    }
+
+    #[test]
+    fn stage_mode_clamps_negative_start_times() {
+        let reports = stage_reports(observe_all(
+            &ProgressMode::stage("压制弹幕", ProgressTotal::FirstInput),
+            &[FfmpegEvent::Log(
                 LogLevel::Info,
-                "out_time=00:00:01.00".to_owned(),
-            )),
-            Some("00:00:01.00".to_owned())
-        );
-        assert_eq!(
-            ProgressMode::prefixed("压制中：").message_for(&progress),
-            Some("压制中：00:00:01.00".to_owned())
-        );
-        assert_eq!(
-            ProgressMode::labeled("正在转换视频格式... ", " (无损转换)").message_for(&progress),
-            Some("正在转换视频格式... 00:00:01.00 (无损转换)".to_owned())
-        );
+                "out_time=-577014:32:22.771233".to_owned(),
+            )],
+        ));
+        assert_eq!(reports[0].processed, 0.0);
     }
 
     #[tokio::test]

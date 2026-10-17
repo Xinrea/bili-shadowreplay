@@ -29,7 +29,7 @@ use ffmpeg_utils::extract_video_metadata;
 use ffmpeg_utils::ffmpeg_command;
 use serde::{Deserialize, Serialize};
 
-use self::runner::{run_command, ProgressMode};
+use self::runner::{run_command, ProgressMode, ProgressTotal};
 
 /// File name of `path` as UTF-8, for display and ffmpeg filter strings.
 #[cfg(test)]
@@ -102,7 +102,10 @@ pub async fn execute_ffmpeg_conversion(
 ) -> Result<(), String> {
     run_command(
         cmd,
-        ProgressMode::labeled("正在转换视频格式... ", format!(" ({mode_name})")),
+        ProgressMode::stage(
+            format!("转换视频格式（{mode_name}）"),
+            ProgressTotal::FirstInput,
+        ),
         format!("视频格式转换失败 ({mode_name})"),
         Some(reporter),
     )

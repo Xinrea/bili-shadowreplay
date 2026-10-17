@@ -22,15 +22,37 @@ pub async fn clip_multiple_from_playlist(
         .map_err(|e| format!("Failed to create output directory: {e}"))?;
     let temp_dir = tempdir_in(output_dir)
         .map_err(|e| format!("Failed to create playlist clip directory: {e}"))?;
-    let mut clips = Vec::with_capacity(ranges.len());
+    let count = ranges.len();
+    let mut clips = Vec::with_capacity(count);
 
     for (i, range) in ranges.iter().enumerate() {
         let video_path = temp_dir.path().join(format!("clip-{i}.mp4"));
-        clip_from_playlist(reporter, playlist_path, &video_path, Some(range.clone())).await?;
+        let stage = if count > 1 {
+            format!("提取片段 {}/{count}", i + 1)
+        } else {
+            "提取片段".to_string()
+        };
+        let extracting = reporter.map(|reporter| reporter.stage(&stage));
+        clip_from_playlist(
+            extracting.as_ref(),
+            playlist_path,
+            &video_path,
+            Some(range.clone()),
+        )
+        .await?;
         clips.push(video_path);
     }
 
-    super::general::concat_videos_with_transition(reporter, &clips, output_path, transition).await
+    // A single clip is only remuxed here, so it stays part of extraction.
+    let merging = reporter.map(|reporter| {
+        reporter.stage(if count > 1 {
+            "合并片段"
+        } else {
+            "提取片段"
+        })
+    });
+    super::general::concat_videos_with_transition(merging.as_ref(), &clips, output_path, transition)
+        .await
 }
 
 pub async fn clip_from_playlist(

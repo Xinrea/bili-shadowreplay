@@ -160,110 +160,6 @@ fn default_llm_config() -> LlmConfig {
     }
 }
 
-#[cfg(test)]
-mod mcp_config_tests {
-    use super::*;
-
-    #[test]
-    fn mcp_is_disabled_for_existing_and_new_configs() {
-        let old = include_str!("../config.example.toml")
-            .replace("mcp_enabled = false\n", "")
-            .replace("mcp_port = 18763\n", "");
-        let old = toml::from_str::<Config>(&old).unwrap();
-        assert!(!old.mcp_enabled);
-        assert_eq!(old.mcp_port, DEFAULT_MCP_PORT);
-        let directory = tempfile::tempdir().unwrap();
-        let config = Config::load(
-            &directory.path().join("config.toml"),
-            directory.path(),
-            directory.path(),
-        )
-        .unwrap();
-        assert!(!config.mcp_enabled);
-        assert_eq!(config.mcp_port, DEFAULT_MCP_PORT);
-    }
-
-    #[test]
-    fn mcp_setting_persists_and_save_failures_are_reported() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("config.toml");
-        let mut config = Config::load(&path, directory.path(), directory.path()).unwrap();
-        config.mcp_enabled = true;
-        config.mcp_port = 18764;
-        config.try_save().unwrap();
-        let reloaded = Config::load(&path, directory.path(), directory.path()).unwrap();
-        assert!(reloaded.mcp_enabled);
-        assert_eq!(reloaded.mcp_port, 18764);
-        config.config_path = directory.path().to_string_lossy().into_owned();
-        assert!(config.try_save().is_err());
-    }
-
-    #[test]
-    fn busy_replace_updates_existing_inode_and_removes_trailing_content() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("config.toml");
-        let mut config = Config::load(&path, directory.path(), directory.path()).unwrap();
-        std::fs::OpenOptions::new().append(true).open(&path).unwrap()
-            .write_all(b"\n# Long trailing comment which must disappear when replacing the shorter configuration\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
-        }
-        let previous_metadata = std::fs::metadata(&path).unwrap();
-        config.mcp_enabled = true;
-        config.mcp_port = 19763;
-        let expected = toml::to_string(&config).unwrap();
-        assert!((expected.len() as u64) < previous_metadata.len());
-        config
-            .try_save_with(|pending, _| {
-                Err(tempfile::PersistError {
-                    error: io::Error::from(io::ErrorKind::ResourceBusy),
-                    file: pending,
-                })
-            })
-            .unwrap();
-
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
-        let saved = Config::load(&path, directory.path(), directory.path()).unwrap();
-        assert!(saved.mcp_enabled);
-        assert_eq!(saved.mcp_port, 19763);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::{MetadataExt, PermissionsExt};
-            let saved_metadata = std::fs::metadata(&path).unwrap();
-            assert_eq!(saved_metadata.ino(), previous_metadata.ino());
-            assert_eq!(saved_metadata.dev(), previous_metadata.dev());
-            assert_eq!(
-                saved_metadata.permissions().mode(),
-                previous_metadata.permissions().mode()
-            );
-        }
-    }
-
-    #[test]
-    fn non_busy_replace_errors_preserve_the_original_file() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("config.toml");
-        let mut config = Config::load(&path, directory.path(), directory.path()).unwrap();
-        let original = std::fs::read(&path).unwrap();
-        config.mcp_enabled = true;
-        config.mcp_port = 19763;
-        for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::Other] {
-            assert!(config
-                .try_save_with(|pending, _| Err(tempfile::PersistError {
-                    error: io::Error::from(kind),
-                    file: pending,
-                }))
-                .is_err());
-            assert_eq!(std::fs::read(&path).unwrap(), original);
-        }
-        let saved = Config::load(&path, directory.path(), directory.path()).unwrap();
-        assert!(!saved.mcp_enabled);
-        assert_eq!(saved.mcp_port, DEFAULT_MCP_PORT);
-    }
-}
-
 impl Config {
     pub fn load(
         config_path: &PathBuf,
@@ -441,5 +337,109 @@ impl Config {
         self.update_interval
             .store(interval, atomic::Ordering::Relaxed);
         self.save();
+    }
+}
+
+#[cfg(test)]
+mod mcp_config_tests {
+    use super::*;
+
+    #[test]
+    fn mcp_is_disabled_for_existing_and_new_configs() {
+        let old = include_str!("../config.example.toml")
+            .replace("mcp_enabled = false\n", "")
+            .replace("mcp_port = 18763\n", "");
+        let old = toml::from_str::<Config>(&old).unwrap();
+        assert!(!old.mcp_enabled);
+        assert_eq!(old.mcp_port, DEFAULT_MCP_PORT);
+        let directory = tempfile::tempdir().unwrap();
+        let config = Config::load(
+            &directory.path().join("config.toml"),
+            directory.path(),
+            directory.path(),
+        )
+        .unwrap();
+        assert!(!config.mcp_enabled);
+        assert_eq!(config.mcp_port, DEFAULT_MCP_PORT);
+    }
+
+    #[test]
+    fn mcp_setting_persists_and_save_failures_are_reported() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let mut config = Config::load(&path, directory.path(), directory.path()).unwrap();
+        config.mcp_enabled = true;
+        config.mcp_port = 18764;
+        config.try_save().unwrap();
+        let reloaded = Config::load(&path, directory.path(), directory.path()).unwrap();
+        assert!(reloaded.mcp_enabled);
+        assert_eq!(reloaded.mcp_port, 18764);
+        config.config_path = directory.path().to_string_lossy().into_owned();
+        assert!(config.try_save().is_err());
+    }
+
+    #[test]
+    fn busy_replace_updates_existing_inode_and_removes_trailing_content() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let mut config = Config::load(&path, directory.path(), directory.path()).unwrap();
+        std::fs::OpenOptions::new().append(true).open(&path).unwrap()
+            .write_all(b"\n# Long trailing comment which must disappear when replacing the shorter configuration\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        }
+        let previous_metadata = std::fs::metadata(&path).unwrap();
+        config.mcp_enabled = true;
+        config.mcp_port = 19763;
+        let expected = toml::to_string(&config).unwrap();
+        assert!((expected.len() as u64) < previous_metadata.len());
+        config
+            .try_save_with(|pending, _| {
+                Err(tempfile::PersistError {
+                    error: io::Error::from(io::ErrorKind::ResourceBusy),
+                    file: pending,
+                })
+            })
+            .unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+        let saved = Config::load(&path, directory.path(), directory.path()).unwrap();
+        assert!(saved.mcp_enabled);
+        assert_eq!(saved.mcp_port, 19763);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            let saved_metadata = std::fs::metadata(&path).unwrap();
+            assert_eq!(saved_metadata.ino(), previous_metadata.ino());
+            assert_eq!(saved_metadata.dev(), previous_metadata.dev());
+            assert_eq!(
+                saved_metadata.permissions().mode(),
+                previous_metadata.permissions().mode()
+            );
+        }
+    }
+
+    #[test]
+    fn non_busy_replace_errors_preserve_the_original_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let mut config = Config::load(&path, directory.path(), directory.path()).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        config.mcp_enabled = true;
+        config.mcp_port = 19763;
+        for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::Other] {
+            assert!(config
+                .try_save_with(|pending, _| Err(tempfile::PersistError {
+                    error: io::Error::from(kind),
+                    file: pending,
+                }))
+                .is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+        }
+        let saved = Config::load(&path, directory.path(), directory.path()).unwrap();
+        assert!(!saved.mcp_enabled);
+        assert_eq!(saved.mcp_port, DEFAULT_MCP_PORT);
     }
 }

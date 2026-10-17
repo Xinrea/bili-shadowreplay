@@ -1181,6 +1181,9 @@
     const newTime = (x / rect.width) * videoElement.duration;
     previewTime = newTime;
 
+    // 拖动到松手才会跳转，先结束区间试听，免得等待中的试听在拖动时开始播放
+    stopRangePlayback?.();
+
     // 暂停播放
     if (isPlaying) {
       videoElement.pause();

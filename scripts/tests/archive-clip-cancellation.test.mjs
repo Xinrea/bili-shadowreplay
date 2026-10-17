@@ -11,8 +11,9 @@ function deferred() {
 }
 
 async function fixture({ variant = "primary" } = {}) {
-  const alerts = [], failures = [], requests = [], cancellations = [];
-  const listeners = new Map();
+  const alerts = [], failures = [], generated = [], requests = [];
+  const announced = [], settled = [], opened = [];
+  const cancelled = new Set();
   let nextId = 0;
   const context = vm.createContext({
     $state: (value) => value,
@@ -22,6 +23,7 @@ async function fixture({ variant = "primary" } = {}) {
       archive: { title: "Archive", room_id: "1", live_id: "2", platform: "bilibili" },
       ranges: [{ start: 0, end: 10 }],
       variant,
+      onGenerated: (video) => generated.push(video),
       onFailed: (message) => failures.push(message),
     }),
     localStorage: { getItem: () => null },
@@ -29,34 +31,27 @@ async function fixture({ variant = "primary" } = {}) {
   });
   const dependencies = {
     svelte: { onMount() {}, onDestroy() {} },
-    "lucide-svelte": { Loader2() {}, Scissors() {} },
+    "lucide-svelte": { Scissors() {} },
     "../interface": {
       generateEventId: () => `clip-${++nextId}`,
-      clipRange: (eventId) => {
+      clipRange: (eventId, params) => {
         const result = deferred();
-        requests.push({ eventId, ...result });
+        requests.push({ eventId, params, ...result });
         return result.promise;
       },
     },
-    "../invoker": {
-      invoke: (command, { eventId }) => {
-        assert.equal(command, "cancel");
-        const result = deferred();
-        cancellations.push({ eventId, ...result });
-        return result.promise;
-      },
-      listen: async (name, listener) => {
-        listeners.set(name, listener);
-        return () => listeners.delete(name);
-      },
-      log: { warn() {} },
+    "../stores/tasks": {
+      announceTask: (task) => announced.push(task),
+      openTaskCenter: (highlight) => opened.push(highlight),
+      settleTask: (id) => settled.push(id),
+      wasCancelled: (id) => cancelled.has(id),
     },
   };
-  // Run the component's actual async handlers with plain fixture state; no DOM
-  // or reactive rendering is needed to reproduce the two RPC completion orders.
+  // Run the component's actual async handler with plain fixture state; no DOM
+  // or reactive rendering is needed to reproduce the RPC completion orders.
   const source = await readFile(new URL("../../src/lib/components/ArchiveClipButton.svelte", import.meta.url), "utf8");
   const script = source.match(/<script lang="ts">([\s\S]*?)<\/script>/)[1];
-  const output = ts.transpileModule(`${script}\nexport { generateClip, cancelClip };`, {
+  const output = ts.transpileModule(`${script}\nexport { generateClip };`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
   }).outputText;
   const module = new vm.SourceTextModule(output, { context });
@@ -71,43 +66,66 @@ async function fixture({ variant = "primary" } = {}) {
     return linked.get(name);
   });
   await module.evaluate();
-  return { handlers: module.namespace, alerts, failures, requests, cancellations, listeners };
+  return {
+    handlers: module.namespace, alerts, failures, generated, requests,
+    announced, settled, opened, cancelled,
+  };
 }
 
 async function startClip(f) {
   const count = f.requests.length;
   const completion = f.handlers.generateClip();
-  // Allow both asynchronous event subscriptions to attach before clipRange.
-  for (let i = 0; i < 10; i++) await Promise.resolve();
+  await Promise.resolve();
   assert.equal(f.requests.length, count + 1);
   return { completion, request: f.requests.at(-1) };
 }
 
-test("cancelled clip result can reject before cancel returns without showing a failure", async () => {
+test("a started clip is announced, highlighted, and settled with its result", async () => {
   const f = await fixture();
   const { completion, request } = await startClip(f);
-  const cancellation = f.handlers.cancelClip();
-  await f.handlers.cancelClip();
-  assert.equal(f.cancellations.length, 1);
-  assert.equal(f.cancellations[0].eventId, request.eventId);
+  assert.equal(f.announced.length, 1);
+  assert.equal(f.announced[0].id, request.eventId);
+  assert.equal(f.announced[0].task_type, "clip_range");
+  // The cover is a data URL the task list never needs.
+  assert.equal(JSON.parse(f.announced[0].metadata).params.cover, "");
+  assert.deepEqual(f.opened, [request.eventId]);
+  assert.deepEqual(f.settled, []);
 
+  request.resolve({ id: 1 });
+  await completion;
+  assert.deepEqual(f.generated, [{ id: 1 }]);
+  assert.deepEqual(f.settled, [request.eventId]);
+  assert.deepEqual(f.alerts, []);
+});
+
+test("clips can be generated while another is still running", async () => {
+  const f = await fixture();
+  const first = await startClip(f);
+  const second = await startClip(f);
+  assert.notEqual(first.request.eventId, second.request.eventId);
+  assert.deepEqual(f.opened, [first.request.eventId, second.request.eventId]);
+
+  second.request.resolve({ id: 2 });
+  await second.completion;
+  first.request.resolve({ id: 1 });
+  await first.completion;
+  assert.deepEqual(f.generated, [{ id: 2 }, { id: 1 }]);
+  assert.deepEqual(f.settled, [second.request.eventId, first.request.eventId]);
+});
+
+test("a clip cancelled from the task center fails silently whatever the backend reports", async () => {
+  const f = await fixture();
+  const { completion, request } = await startClip(f);
+  f.cancelled.add(request.eventId);
   request.reject("切片任务失败");
   await completion;
   assert.deepEqual(f.alerts, []);
   assert.deepEqual(f.failures, []);
-  assert.equal(f.listeners.size, 0);
-  f.cancellations[0].resolve();
-  await cancellation;
-
-  const retry = await startClip(f);
-  retry.request.reject("切片任务失败");
-  await retry.completion;
-  assert.deepEqual(f.alerts, ["切片生成失败：切片任务失败"]);
-  assert.deepEqual(f.failures, ["切片任务失败"]);
+  assert.deepEqual(f.settled, [request.eventId]);
 });
 
 for (const variant of ["primary", "compact"]) {
-  test(`task-page cancellation of a ${variant} clip is silent without calling cancelClip`, async () => {
+  test(`task-page cancellation of a ${variant} clip is silent`, async () => {
     // Raw backend rejection and the desktop/web invoke wrappers carry the same
     // terminal cancellation message, with different Error prefixes.
     for (const error of [
@@ -119,43 +137,19 @@ for (const variant of ["primary", "compact"]) {
       const { completion, request } = await startClip(f);
       request.reject(error);
       await completion;
-      assert.equal(f.cancellations.length, 0);
       assert.deepEqual(f.alerts, []);
       assert.deepEqual(f.failures, []);
-      assert.equal(f.listeners.size, 0);
-
-      const retry = await startClip(f);
-      retry.request.resolve({ id: 1 });
-      await retry.completion;
-      assert.equal(f.listeners.size, 0);
+      assert.deepEqual(f.settled, [request.eventId]);
     }
   });
 }
 
-test("failure progress arriving during cancellation does not show an FFmpeg error", async () => {
+test("a real failure alerts and reports once", async () => {
   const f = await fixture();
   const { completion, request } = await startClip(f);
-  const cancellation = f.handlers.cancelClip();
-  f.listeners.get(`progress-finished:${request.eventId}`)({
-    payload: { success: false, message: "任务已取消" },
-  });
-  request.reject("切片任务失败");
-  await completion;
-  assert.deepEqual(f.alerts, []);
-  assert.deepEqual(f.failures, []);
-  f.cancellations[0].resolve();
-  await cancellation;
-});
-
-test("real failure progress still alerts and reports the failure once", async () => {
-  const f = await fixture();
-  const { completion, request } = await startClip(f);
-  f.listeners.get(`progress-finished:${request.eventId}`)({
-    payload: { success: false, message: "切片失败: encoder unavailable" },
-  });
   request.reject("encoder unavailable");
   await completion;
-  assert.deepEqual(f.alerts, ["请检查 ffmpeg 是否配置正确：切片失败: encoder unavailable"]);
-  assert.deepEqual(f.failures, ["切片失败: encoder unavailable"]);
-  assert.equal(f.listeners.size, 0);
+  assert.deepEqual(f.alerts, ["切片生成失败：encoder unavailable"]);
+  assert.deepEqual(f.failures, ["encoder unavailable"]);
+  assert.deepEqual(f.settled, [request.eventId]);
 });

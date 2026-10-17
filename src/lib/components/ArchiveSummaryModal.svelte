@@ -5,6 +5,7 @@
   import { invoke } from "../invoker";
   import ArchiveClipButton from "./ArchiveClipButton.svelte";
   import CopyMarkdownButton from "./CopyMarkdownButton.svelte";
+  import TaskCenterButton from "./TaskCenterButton.svelte";
   import type {
     RecordItem,
     RecordSummary,
@@ -212,9 +213,12 @@
             {archive.title}
           </p>
         </div>
-        <button class="rounded-lg p-2 hover:bg-gray-100 dark:hover:bg-gray-800" onclick={close}>
-          <X class="h-5 w-5" />
-        </button>
+        <div class="flex shrink-0 items-center gap-2">
+          <TaskCenterButton />
+          <button class="rounded-lg p-2 hover:bg-gray-100 dark:hover:bg-gray-800" onclick={close}>
+            <X class="h-5 w-5" />
+          </button>
+        </div>
       </div>
 
       <div class="flex-1 overflow-y-auto p-6">

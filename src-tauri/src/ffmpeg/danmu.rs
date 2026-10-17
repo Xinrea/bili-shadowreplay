@@ -5,6 +5,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     process::Stdio,
+    sync::OnceLock,
     time::Duration,
 };
 
@@ -29,6 +30,43 @@ use super::{
 };
 
 const MIN_DANMU_FPS: f64 = 60.0;
+
+/// FFmpeg 7 still accepts `-filter_complex_script`. FFmpeg 9 removed it; the
+/// replacement `-/filter_complex <file>` reads the same graph from a file, which
+/// keeps long danmaku tracks off the OS command-line limit.
+fn select_filter_complex_file_option(help: &str) -> &'static str {
+    if help.contains("-filter_complex_script") {
+        "-filter_complex_script"
+    } else {
+        "-/filter_complex"
+    }
+}
+
+async fn filter_complex_file_option() -> &'static str {
+    static OPTION: OnceLock<&'static str> = OnceLock::new();
+    if let Some(option) = OPTION.get() {
+        return option;
+    }
+
+    let help = match ffmpeg_command()
+        .args(["-hide_banner", "-h", "full"])
+        .output()
+        .await
+    {
+        Ok(output) => {
+            let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+            text.push_str(&String::from_utf8_lossy(&output.stderr));
+            text
+        }
+        Err(error) => {
+            log::warn!("Failed to query ffmpeg options; using -/filter_complex: {error}");
+            String::new()
+        }
+    };
+    let option = select_filter_complex_file_option(&help);
+    let _ = OPTION.set(option);
+    OPTION.get().copied().unwrap_or(option)
+}
 const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 const IMAGE_TIMEOUT: Duration = Duration::from_secs(10);
 // Keep in sync with src/lib/danmu-content.ts. Never let recorded URLs request
@@ -438,15 +476,11 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
         // input. The main video determines duration, including silent videos.
         command.args(["-threads", "1", "-i"]).arg(image);
     }
-    // A script avoids OS command-line limits for large danmaku tracks.
-    command.args([
-        "-filter_complex_script",
-        "filter.txt",
-        "-map",
-        "[outv]",
-        "-map",
-        "0:a?",
-    ]);
+    // A file avoids OS command-line limits for large danmaku tracks.
+    command
+        .arg(filter_complex_file_option().await)
+        .arg("filter.txt")
+        .args(["-map", "[outv]", "-map", "0:a?"]);
     hwaccel::apply_x264_encoder_only(&mut command, encoder);
     hwaccel::apply_x264_quality_args(&mut command, encoder);
     command
@@ -510,6 +544,18 @@ mod tests {
     impl ProgressReporterTrait for NoopReporter {
         async fn update(&self, _content: &str) {}
         async fn finish(&self, _success: bool, _message: &str) {}
+    }
+
+    #[test]
+    fn filter_complex_file_option_follows_the_installed_ffmpeg() {
+        assert_eq!(
+            select_filter_complex_file_option("-filter_complex_script <filename>"),
+            "-filter_complex_script"
+        );
+        assert_eq!(
+            select_filter_complex_file_option("-filter_complex <graph>\n-filter_complex_threads"),
+            "-/filter_complex"
+        );
     }
 
     #[test]

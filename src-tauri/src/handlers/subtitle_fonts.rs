@@ -326,10 +326,7 @@ fn cache_font(font: FontFile, cache_root: &Path) -> Result<SubtitlePreviewFont, 
     let file_name = format!("{source_key}-{}.{extension}", &version[..16]);
     let directory = cache_root.join(FONT_CACHE_DIRECTORY);
     let destination = directory.join(&file_name);
-    if std::fs::metadata(&destination)
-        .map(|cached| cached.len() != metadata.len())
-        .unwrap_or(true)
-    {
+    if !is_cached(&destination, metadata.len()) {
         std::fs::create_dir_all(&directory)
             .map_err(|error| format!("创建字幕字体缓存失败：{error}"))?;
         let mut temporary = tempfile::NamedTempFile::new_in(&directory)
@@ -338,10 +335,9 @@ fn cache_font(font: FontFile, cache_root: &Path) -> Result<SubtitlePreviewFont, 
             File::open(&font.path).map_err(|error| format!("打开系统字幕字体失败：{error}"))?;
         std::io::copy(&mut source, temporary.as_file_mut())
             .map_err(|error| format!("缓存系统字幕字体失败：{error}"))?;
-        temporary
-            .persist(&destination)
-            .map_err(|error| format!("保存字幕字体缓存失败：{error}"))?;
-        remove_previous_versions(&directory, &source_key, &file_name)?;
+        if store_cached_font(temporary, &destination, metadata.len())? {
+            remove_previous_versions(&directory, &source_key, &file_name);
+        }
     }
     Ok(SubtitlePreviewFont {
         family: font.family,
@@ -351,16 +347,45 @@ fn cache_font(font: FontFile, cache_root: &Path) -> Result<SubtitlePreviewFont, 
     })
 }
 
-fn remove_previous_versions(
-    directory: &Path,
-    source_key: &str,
-    current: &str,
-) -> Result<(), String> {
+fn is_cached(path: &Path, length: u64) -> bool {
+    std::fs::metadata(path).is_ok_and(|cached| cached.len() == length)
+}
+
+/// Move a completed copy into place without replacing an existing entry.
+/// Concurrent requests may copy the same font; the name encodes the source
+/// size and mtime, so an entry of the right size is that same version. Never
+/// replacing it also avoids Windows failing to replace a file FFmpeg is reading
+/// through an encode directory's hard link. Returns whether this copy was used.
+fn store_cached_font(
+    temporary: tempfile::NamedTempFile,
+    destination: &Path,
+    length: u64,
+) -> Result<bool, String> {
+    match temporary.persist_noclobber(destination) {
+        Ok(_) => Ok(true),
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            if is_cached(destination, length) {
+                return Ok(false);
+            }
+            // A damaged entry of the wrong size is replaced.
+            error
+                .file
+                .persist(destination)
+                .map_err(|error| format!("保存字幕字体缓存失败：{error}"))?;
+            Ok(true)
+        }
+        Err(error) => Err(format!("保存字幕字体缓存失败：{}", error.error)),
+    }
+}
+
+/// Best-effort cleanup: a stale copy may still be open on Windows (an encode
+/// reading it through a hard link), which must not fail the current request.
+fn remove_previous_versions(directory: &Path, source_key: &str, current: &str) {
     let prefix = format!("{source_key}-");
-    for entry in
-        std::fs::read_dir(directory).map_err(|error| format!("读取字幕字体缓存失败：{error}"))?
-    {
-        let entry = entry.map_err(|error| format!("读取字幕字体缓存失败：{error}"))?;
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else {
             continue;
@@ -371,10 +396,9 @@ fn remove_previous_versions(
         match std::fs::remove_file(entry.path()) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("清理过期字幕字体缓存失败：{error}")),
+            Err(error) => log::warn!("清理过期字幕字体缓存失败：{error}"),
         }
     }
-    Ok(())
 }
 
 /// Supply the WASM renderer with installed font files also supplied to native
@@ -696,6 +720,60 @@ mod tests {
         );
         assert!(!cache.join(&first.file).exists());
         assert!(cache.join(&unrelated.file).exists());
+    }
+
+    #[test]
+    fn a_concurrently_cached_copy_is_kept_and_a_damaged_entry_is_replaced() {
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("font.ttf");
+        let copy = |content: &[u8]| {
+            let mut file = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
+            std::io::Write::write_all(&mut file, content).unwrap();
+            file
+        };
+
+        assert!(store_cached_font(copy(b"first"), &destination, 5).unwrap());
+        // Another request finished first: keep its entry, discard this copy.
+        assert!(!store_cached_font(copy(b"other"), &destination, 5).unwrap());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"first");
+        // An entry whose size does not match its version is replaced.
+        std::fs::write(&destination, b"bad").unwrap();
+        assert!(store_cached_font(copy(b"fixed"), &destination, 5).unwrap());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"fixed");
+        // Discarded copies do not leave temporary files behind.
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn concurrent_requests_for_the_same_font_all_succeed() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.ttc");
+        let cache = directory.path().join("cache");
+        std::fs::write(&source, vec![7; 4 * 1024 * 1024]).unwrap();
+        let barrier = std::sync::Barrier::new(8);
+        let files: Vec<_> = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        cache_font(font_file(&source), &cache).unwrap().file
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect()
+        });
+        assert!(files.iter().all(|file| file == &files[0]));
+        let entries: Vec<_> = std::fs::read_dir(cache.join(FONT_CACHE_DIRECTORY))
+            .unwrap()
+            .collect();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            std::fs::read(cache.join(&files[0])).unwrap().len(),
+            4 * 1024 * 1024
+        );
     }
 
     #[test]

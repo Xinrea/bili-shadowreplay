@@ -683,10 +683,6 @@ pub async fn cancel(state: state_type!(), event_id: String) -> Result<(), String
         }
         Err(e) => return Err(e),
     }
-    ProgressReporter::new(state.db.clone(), &state.events, &event_id)
-        .await?
-        .finish(false, "任务已取消")
-        .await;
     if let Some(task) = task_before_cancel {
         if task.task_type == "generate_archive_summary" {
             if let Ok(metadata) = serde_json::from_str::<serde_json::Value>(&task.metadata) {
@@ -1964,6 +1960,79 @@ mod queued_subtitle_tests {
         );
         assert_eq!(state.task_manager.queue_size().await, 1);
         cancel(state, "first".into()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelling_pending_and_running_tasks_closes_result_without_failure_progress() {
+        use crate::{
+            events::{AppEvent, DataChange},
+            task::TaskStatus,
+        };
+        use tokio::{
+            sync::oneshot,
+            time::{timeout, Duration},
+        };
+
+        for running in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let state = fixture(dir.path(), 1, running).await;
+            let task = state
+                .db
+                .generate_task("clip_range", "waiting", "{}")
+                .await
+                .unwrap();
+            let (started_tx, started_rx) = oneshot::channel();
+            let (result_tx, result_rx) = oneshot::channel();
+            state
+                .task_manager
+                .add_task(Task::new(
+                    task.id.clone(),
+                    TaskPriority::Normal,
+                    async move {
+                        started_tx.send(()).unwrap();
+                        let result = std::future::pending::<Result<(), String>>().await;
+                        let _ = result_tx.send(result);
+                        Ok(())
+                    },
+                ))
+                .await
+                .unwrap();
+            if running {
+                timeout(Duration::from_secs(1), started_rx)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            }
+            let mut events = state.events.subscribe();
+
+            cancel(state.clone(), task.id.clone()).await.unwrap();
+
+            assert_eq!(
+                state.db.get_task(&task.id).await.unwrap().status,
+                "cancelled"
+            );
+            assert_eq!(
+                state.task_manager.get_task_status(&task.id).await,
+                Some(TaskStatus::Cancelled)
+            );
+            assert!(timeout(Duration::from_secs(1), result_rx)
+                .await
+                .expect("dropping the task must unblock its result receiver")
+                .is_err());
+            assert!(matches!(
+                timeout(Duration::from_secs(1), events.recv())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                AppEvent::DataChanged(DataChange::Tasks)
+            ));
+            assert!(
+                timeout(Duration::from_millis(10), events.recv())
+                    .await
+                    .is_err(),
+                "cancellation must refresh tasks without publishing failure progress"
+            );
+        }
     }
 
     #[tokio::test]

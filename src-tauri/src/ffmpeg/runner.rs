@@ -363,17 +363,28 @@ pub struct JobOutput {
 #[derive(Debug)]
 pub struct TempArtifact {
     path: PathBuf,
+    keep: bool,
 }
 
 impl TempArtifact {
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            keep: false,
+        }
+    }
+
+    /// Preserve a completed output; failed or cancelled jobs keep the guard armed.
+    pub fn keep(mut self) {
+        self.keep = true;
     }
 }
 
 impl Drop for TempArtifact {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        if !self.keep {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -490,6 +501,125 @@ mod tests {
                 .as_slice(),
             [String::from("00:00:01.00")]
         );
+    }
+
+    #[test]
+    fn partial_outputs_are_removed_but_completed_outputs_are_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let partial = dir.path().join("partial.mp4");
+        std::fs::write(&partial, b"partial").unwrap();
+        drop(TempArtifact::new(&partial));
+        assert!(!partial.exists());
+        let completed = dir.path().join("completed.mp4");
+        std::fs::write(&completed, b"complete").unwrap();
+        TempArtifact::new(&completed).keep();
+        assert!(completed.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelling_queued_runner_terminates_real_ffmpeg_and_advances_queue() {
+        use crate::task::{Task, TaskManager, TaskManagerConfig, TaskPriority, TaskStatus};
+        use tokio::sync::{oneshot, Notify};
+        use tokio::time::{sleep, timeout, Duration};
+
+        #[derive(Clone)]
+        struct StartedReporter(Arc<Notify>);
+        #[async_trait]
+        impl ProgressReporterTrait for StartedReporter {
+            async fn update(&self, _: &str) {
+                self.0.notify_one();
+            }
+            async fn finish(&self, _: bool, _: &str) {}
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("ffmpeg.pid");
+        // exec keeps the PID owned by the runner. No shell child survives it.
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "printf '%s' \"$$\" > \"$1\"; shift; exec ffmpeg \"$@\"",
+            "runner-test",
+        ]);
+        command.arg(&pid_file).args([
+            "-hide_banner",
+            "-re",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=size=16x16:rate=10",
+            "-t",
+            "60",
+            "-f",
+            "null",
+            "-",
+        ]);
+        let started = Arc::new(Notify::new());
+        let reporter = StartedReporter(started.clone());
+        let mut manager = TaskManager::with_config(TaskManagerConfig {
+            max_concurrent_tasks: 1,
+            check_interval_ms: 5,
+            max_queue_size: 20,
+        });
+        manager
+            .add_task(Task::new(
+                "encode".into(),
+                TaskPriority::Normal,
+                async move {
+                    FfmpegJob::new()
+                        .progress(ProgressMode::Time)
+                        .run_with_command(command, Some(&reporter))
+                        .await
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                },
+            ))
+            .await
+            .unwrap();
+        let (next_tx, next_rx) = oneshot::channel();
+        manager
+            .add_task(Task::new("next".into(), TaskPriority::Normal, async move {
+                let _ = next_tx.send(());
+                Ok(())
+            }))
+            .await
+            .unwrap();
+        manager.start();
+        timeout(Duration::from_secs(10), started.notified())
+            .await
+            .expect("FFmpeg must report progress");
+        let pid = std::fs::read_to_string(pid_file).unwrap();
+        let alive = || {
+            let pid = pid.clone();
+            async move {
+                Command::new("kill")
+                    .args(["-0", &pid])
+                    .stderr(Stdio::null())
+                    .status()
+                    .await
+                    .unwrap()
+                    .success()
+            }
+        };
+        assert!(alive().await);
+        manager.cancel_task("encode").await.unwrap();
+        timeout(Duration::from_secs(3), async {
+            while alive().await {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("cancelled FFmpeg process must exit");
+        timeout(Duration::from_secs(1), next_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            manager.get_task_status("encode").await,
+            Some(TaskStatus::Cancelled)
+        );
+        manager.stop().await;
     }
 
     #[cfg(unix)]

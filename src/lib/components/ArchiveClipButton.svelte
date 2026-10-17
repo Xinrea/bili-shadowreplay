@@ -55,6 +55,7 @@
   let transition = $state("none");
   let clearUpdateListener: (() => void) | null = null;
   let clearFinishedListener: (() => void) | null = null;
+  let cancellingEventId: string | null = null;
 
   let activeRanges = $derived(ranges.filter((range) => range.activated !== false));
 
@@ -142,7 +143,7 @@
     clearFinishedListener = await listen(
       `progress-finished:${eventId}`,
       (event) => {
-        if (!event.payload.success) {
+        if (!event.payload.success && cancellingEventId !== eventId) {
           const message = String(event.payload.message || "未知错误");
           alert("请检查 ffmpeg 是否配置正确：" + message);
           onFailed?.(message);
@@ -174,8 +175,10 @@
       transition = "none";
       onGenerated?.(video as VideoItem);
     } catch (error) {
-      if (currentEventId === eventId) {
-        const message = String(error);
+      const message = String(error);
+      // Desktop and web invoke wrappers prepend context to the backend error.
+      const cancelled = message.endsWith("切片任务已取消");
+      if (currentEventId === eventId && cancellingEventId !== eventId && !cancelled) {
         alert("切片生成失败：" + message);
         onFailed?.(message);
       }
@@ -185,14 +188,16 @@
   }
 
   async function cancelClip() {
-    if (!currentEventId) return;
+    if (!currentEventId || cancellingEventId === currentEventId) return;
     const eventId = currentEventId;
+    cancellingEventId = eventId;
     try {
       await invoke("cancel", { eventId });
     } catch (error) {
       log.warn("Failed to cancel clip task", error);
     } finally {
       resetTaskState(eventId);
+      if (cancellingEventId === eventId) cancellingEventId = null;
     }
   }
 

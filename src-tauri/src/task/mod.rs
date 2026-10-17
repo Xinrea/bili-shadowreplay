@@ -169,6 +169,14 @@ impl TaskManager {
     /// Add a task to the queue
     pub async fn add_task(&self, task: Task) -> Result<(), String> {
         let mut queue = self.queue.lock().await;
+        let mut statuses = self.task_statuses.write().await;
+
+        if matches!(
+            statuses.get(&task.task_id),
+            Some(TaskStatus::Pending | TaskStatus::Running)
+        ) {
+            return Err("Task already exists".to_string());
+        }
 
         if self.config.max_queue_size > 0 && queue.len() >= self.config.max_queue_size {
             return Err("Queue is full".to_string());
@@ -185,42 +193,49 @@ impl TaskManager {
         queue.insert(insert_pos, task);
 
         // Update task status
-        let mut statuses = self.task_statuses.write().await;
         statuses.insert(task_id, TaskStatus::Pending);
 
         Ok(())
     }
 
     /// Cancel a task by ID
+    #[allow(dead_code)]
     pub async fn cancel_task(&self, task_id: &str) -> Result<(), String> {
-        // Check if task is running
+        self.cancel_task_if(task_id, async { Ok(true) })
+            .await
+            .map(|_| ())
+    }
+
+    /// Claim persisted cancellation before aborting a worker. A completed task
+    /// may still have a running handle while its scheduler wrapper is finishing.
+    pub async fn cancel_task_if<F>(&self, task_id: &str, claim: F) -> Result<bool, String>
+    where
+        F: Future<Output = Result<bool, String>> + Send,
+    {
+        // Use the scheduler's lock order so a task cannot move from the queue
+        // to the running map between these checks.
+        let mut queue = self.queue.lock().await;
         let mut running_tasks = self.running_tasks.write().await;
+        let pos = queue.iter().position(|t| t.task_id == task_id);
+        if !running_tasks.contains_key(task_id) && pos.is_none() {
+            return Err("Task not found".to_string());
+        }
+        if !claim.await? {
+            return Ok(false);
+        }
+
         if let Some(handle) = running_tasks.remove(task_id) {
             handle.abort();
-            drop(running_tasks); // Release lock before await
-            let mut statuses = self.task_statuses.write().await;
-            statuses.insert(task_id.to_string(), TaskStatus::Cancelled);
-            return Ok(());
+            // Keep the slot locked until the future (and its owned FFmpeg
+            // child with kill_on_drop) has been dropped. The persistence guard
+            // above decides whether cancellation won over task completion.
+            let _ = handle.await;
+        } else if let Some(pos) = pos {
+            queue.remove(pos);
         }
-        drop(running_tasks); // Release lock before await
-
-        // Check if task is in queue
-        let pos = {
-            let queue = self.queue.lock().await;
-            queue.iter().position(|t| t.task_id == task_id)
-        };
-
-        if let Some(pos) = pos {
-            {
-                let mut queue = self.queue.lock().await;
-                queue.remove(pos);
-            } // Release queue lock before await
-            let mut statuses = self.task_statuses.write().await;
-            statuses.insert(task_id.to_string(), TaskStatus::Cancelled);
-            return Ok(());
-        }
-
-        Err("Task not found".to_string())
+        let mut statuses = self.task_statuses.write().await;
+        statuses.insert(task_id.to_string(), TaskStatus::Cancelled);
+        Ok(true)
     }
 
     /// Get the status of a task
@@ -270,23 +285,15 @@ impl TaskManager {
         task_statuses: &Arc<RwLock<HashMap<String, TaskStatus>>>,
         max_concurrent: usize,
     ) {
-        // Check if we have available slots
-        let running_count = {
-            let running = running_tasks.read().await;
-            running.len()
-        };
-
-        if running_count >= max_concurrent {
+        let mut queue = queue.lock().await;
+        let mut running = running_tasks.write().await;
+        // Reclaim panicked/aborted workers before testing capacity.
+        running.retain(|_, handle| !handle.is_finished());
+        if running.len() >= max_concurrent {
             return;
         }
 
-        // Get the next task from queue
-        let mut task_opt = {
-            let mut queue = queue.lock().await;
-            queue.pop_front()
-        };
-
-        if let Some(mut task) = task_opt.take() {
+        if let Some(mut task) = queue.pop_front() {
             let task_id = task.task_id.clone();
 
             // Update status to running
@@ -305,7 +312,10 @@ impl TaskManager {
                 let handle = tokio::spawn(async move {
                     let result = task_fn.await;
 
-                    // Update status based on result
+                    // Match the scheduler/cancellation lock order. Registration
+                    // below holds this lock so even an immediate completion
+                    // cannot remove itself before its handle is registered.
+                    let mut running = running_tasks_clone.write().await;
                     let mut statuses = task_statuses_clone.write().await;
                     match result {
                         Ok(_) => {
@@ -317,33 +327,12 @@ impl TaskManager {
                     }
 
                     // Remove from running tasks
-                    let mut running = running_tasks_clone.write().await;
                     running.remove(&task_id_clone);
                 });
 
                 // Add to running tasks
-                let mut running = running_tasks.write().await;
                 running.insert(task_id, handle);
             }
-        }
-
-        // Clean up completed tasks from running list
-        Self::cleanup_finished_tasks(running_tasks).await;
-    }
-
-    /// Clean up finished task handles
-    async fn cleanup_finished_tasks(running_tasks: &Arc<RwLock<HashMap<String, JoinHandle<()>>>>) {
-        let mut running = running_tasks.write().await;
-        let mut finished_ids = Vec::new();
-
-        for (task_id, handle) in running.iter() {
-            if handle.is_finished() {
-                finished_ids.push(task_id.clone());
-            }
-        }
-
-        for task_id in finished_ids {
-            running.remove(&task_id);
         }
     }
 }
@@ -365,7 +354,165 @@ impl Drop for TaskManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::time::sleep;
+    use tokio::sync::{mpsc, oneshot};
+    use tokio::time::{sleep, timeout};
+
+    fn fast_manager(max_queue_size: usize) -> TaskManager {
+        TaskManager::with_config(TaskManagerConfig {
+            max_concurrent_tasks: 1,
+            check_interval_ms: 5,
+            max_queue_size,
+        })
+    }
+
+    #[tokio::test]
+    async fn serial_fifo_and_pending_cancellation() {
+        let mut manager = fast_manager(20);
+        let (events_tx, mut events) = mpsc::unbounded_channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let first_tx = events_tx.clone();
+        manager
+            .add_task(Task::new(
+                "first".into(),
+                TaskPriority::Normal,
+                async move {
+                    first_tx.send("first started").unwrap();
+                    let _ = release_rx.await;
+                    first_tx.send("first finished").unwrap();
+                    Ok(())
+                },
+            ))
+            .await
+            .unwrap();
+        for id in ["second", "cancel-pending", "third"] {
+            let tx = events_tx.clone();
+            manager
+                .add_task(Task::new(id.into(), TaskPriority::Normal, async move {
+                    tx.send(id).unwrap();
+                    Ok(())
+                }))
+                .await
+                .unwrap();
+        }
+        manager.start();
+        assert_eq!(
+            timeout(Duration::from_secs(1), events.recv())
+                .await
+                .unwrap(),
+            Some("first started")
+        );
+        assert_eq!(manager.running_count().await, 1);
+        assert_eq!(manager.queue_size().await, 3);
+        manager.cancel_task("cancel-pending").await.unwrap();
+        assert_eq!(
+            manager.get_task_status("cancel-pending").await,
+            Some(TaskStatus::Cancelled)
+        );
+        assert!(timeout(Duration::from_millis(25), events.recv())
+            .await
+            .is_err());
+        release_tx.send(()).unwrap();
+        for expected in ["first finished", "second", "third"] {
+            assert_eq!(
+                timeout(Duration::from_secs(1), events.recv())
+                    .await
+                    .unwrap(),
+                Some(expected)
+            );
+        }
+        manager.stop().await;
+    }
+
+    #[tokio::test]
+    async fn cancellation_waits_for_worker_drop_and_next_job_runs() {
+        let mut manager = fast_manager(20);
+        let (started_tx, started_rx) = oneshot::channel();
+        let (dropped_tx, mut dropped_rx) = oneshot::channel();
+        let (next_tx, next_rx) = oneshot::channel();
+        struct DropSignal(Option<oneshot::Sender<()>>);
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                if let Some(tx) = self.0.take() {
+                    let _ = tx.send(());
+                }
+            }
+        }
+        manager
+            .add_task(Task::new(
+                "running".into(),
+                TaskPriority::Normal,
+                async move {
+                    let _guard = DropSignal(Some(dropped_tx));
+                    let _ = started_tx.send(());
+                    std::future::pending::<()>().await;
+                    Ok(())
+                },
+            ))
+            .await
+            .unwrap();
+        manager
+            .add_task(Task::new("next".into(), TaskPriority::Normal, async move {
+                let _ = next_tx.send(());
+                Ok(())
+            }))
+            .await
+            .unwrap();
+        manager.start();
+        timeout(Duration::from_secs(1), started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        manager.cancel_task("running").await.unwrap();
+        // Cancellation must not return before owned resources are released.
+        assert_eq!(dropped_rx.try_recv(), Ok(()));
+        timeout(Duration::from_secs(1), next_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            manager.get_task_status("running").await,
+            Some(TaskStatus::Cancelled)
+        );
+        manager.stop().await;
+    }
+
+    #[tokio::test]
+    async fn full_queue_and_duplicate_ids_are_rejected_without_losing_jobs() {
+        let manager = fast_manager(1);
+        manager
+            .add_task(Task::new("first".into(), TaskPriority::Normal, async {
+                Ok(())
+            }))
+            .await
+            .unwrap();
+        assert_eq!(
+            manager
+                .add_task(Task::new("first".into(), TaskPriority::Normal, async {
+                    Ok(())
+                }))
+                .await
+                .unwrap_err(),
+            "Task already exists"
+        );
+        assert_eq!(
+            manager
+                .add_task(Task::new("second".into(), TaskPriority::Normal, async {
+                    Ok(())
+                }))
+                .await
+                .unwrap_err(),
+            "Queue is full"
+        );
+        assert_eq!(manager.queue_size().await, 1);
+        manager.cancel_task("first").await.unwrap();
+        manager
+            .add_task(Task::new("second".into(), TaskPriority::Normal, async {
+                Ok(())
+            }))
+            .await
+            .unwrap();
+        assert_eq!(manager.queue_size().await, 1);
+    }
 
     #[tokio::test]
     async fn test_task_manager_basic() {
@@ -415,22 +562,32 @@ mod tests {
         });
         manager.start();
 
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let low_tx = tx.clone();
+
         // Add low priority task
-        let task1 = Task::new("low".to_string(), TaskPriority::Low, async {
-            sleep(Duration::from_millis(100)).await;
+        let task1 = Task::new("low".to_string(), TaskPriority::Low, async move {
+            low_tx.send("low").unwrap();
             Ok(())
         });
 
         // Add high priority task
-        let task2 = Task::new("high".to_string(), TaskPriority::High, async {
-            sleep(Duration::from_millis(100)).await;
+        let task2 = Task::new("high".to_string(), TaskPriority::High, async move {
+            tx.send("high").unwrap();
             Ok(())
         });
 
         manager.add_task(task1).await.unwrap();
         manager.add_task(task2).await.unwrap();
 
-        sleep(Duration::from_millis(500)).await;
+        assert_eq!(
+            timeout(Duration::from_secs(1), rx.recv()).await.unwrap(),
+            Some("high")
+        );
+        assert_eq!(
+            timeout(Duration::from_secs(1), rx.recv()).await.unwrap(),
+            Some("low")
+        );
 
         manager.stop().await;
     }

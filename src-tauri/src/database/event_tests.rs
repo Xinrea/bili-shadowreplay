@@ -146,6 +146,71 @@ async fn tasks_notify_on_creation_progress_completion_and_deletion() {
 }
 
 #[tokio::test]
+async fn cancelled_task_cannot_be_revived_by_late_progress_or_completion() {
+    let db = database().await;
+    let task = db
+        .generate_task("encode_video_subtitle", "waiting", "{}")
+        .await
+        .unwrap();
+    db.update_task(&task.id, "cancelled", "任务取消", None)
+        .await
+        .unwrap();
+    for status in ["processing", "success", "failed"] {
+        db.update_task(&task.id, status, "late update", Some("{\"late\":true}"))
+            .await
+            .unwrap();
+        let row = db.get_task(&task.id).await.unwrap();
+        assert_eq!(row.status, "cancelled");
+        assert_eq!(row.message, "任务取消");
+        assert_eq!(row.metadata, "{}");
+    }
+}
+
+#[tokio::test]
+async fn completed_task_cannot_be_overwritten_by_cancellation() {
+    let db = database().await;
+    for status in ["success", "failed"] {
+        let task = db
+            .generate_task("encode_video_subtitle", "waiting", "{}")
+            .await
+            .unwrap();
+        db.update_task(&task.id, status, "finished", Some("{\"finished\":true}"))
+            .await
+            .unwrap();
+        assert!(!db.cancel_task_if_active(&task.id).await.unwrap());
+        for metadata in [None, Some("{\"cancelled\":true}")] {
+            db.update_task(&task.id, "cancelled", "任务取消", metadata)
+                .await
+                .unwrap();
+            let row = db.get_task(&task.id).await.unwrap();
+            assert_eq!(row.status, status);
+            assert_eq!(row.message, "finished");
+            assert_eq!(row.metadata, "{\"finished\":true}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn cancellation_claim_only_succeeds_once_for_active_tasks() {
+    let db = database().await;
+    for status in ["pending", "processing"] {
+        let task = db
+            .generate_task("encode_video_subtitle", "waiting", "{}")
+            .await
+            .unwrap();
+        db.update_task(&task.id, status, "working", None)
+            .await
+            .unwrap();
+        assert!(db.cancel_task_if_active(&task.id).await.unwrap());
+        assert!(!db.cancel_task_if_active(&task.id).await.unwrap());
+        let row = db.get_task(&task.id).await.unwrap();
+        assert_eq!(row.status, "cancelled");
+        assert_eq!(row.message, "任务取消");
+    }
+    assert!(!db.cancel_task_if_active("missing").await.unwrap());
+}
+
+#[tokio::test]
 async fn recording_statistics_notify_after_committing_and_coalesce_bursts() {
     let db = database().await;
     let mut changes = db.events.subscribe();

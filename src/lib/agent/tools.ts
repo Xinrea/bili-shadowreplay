@@ -87,7 +87,7 @@ const confirmedToolExecutors: Record<string, ToolExecutor> = {
 
   encode_video_subtitle: executor(
     async ({ id, srt_style }: { id: number; srt_style: string }) =>
-      invoke("encode_video_subtitle", { id, srtStyle: srt_style }),
+      invoke("encode_video_subtitle", { eventId: generateEventId(), id, srtStyle: srt_style }),
   ),
 
   post_video_to_bilibili: executor(

@@ -85,8 +85,30 @@ pub async fn encode_video_subtitle<R: ProgressReporterTrait>(
         Err(error) => return Err(format!("字幕文件不可用：{} ({error})", subtitle.display())),
     }
 
-    let output_filename = format!("{}{}", constants::PREFIX_SUBTITLE, file_name_str(file)?);
+    // Keep the source name readable and append a short ID before the extension.
+    let source_name = Path::new(file_name_str(file)?);
+    let stem = source_name
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .ok_or_else(|| format!("Invalid file name: {}", file.display()))?;
+    let extension = source_name
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| format!(".{extension}"))
+        .unwrap_or_default();
+    let output_filename = loop {
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let name = format!(
+            "{}{stem}_{}{extension}",
+            constants::PREFIX_SUBTITLE,
+            &id[..8]
+        );
+        if !file.with_file_name(&name).exists() {
+            break name;
+        }
+    };
     let output_path = file.with_file_name(&output_filename);
+    let output_guard = super::runner::TempArtifact::new(&output_path);
     let vf = subtitle_filter(subtitle, &srt_style, fonts_directory)?;
     let mut command = ffmpeg_command();
     let video_encoder = hwaccel::get_x264_encoder().await;
@@ -104,6 +126,7 @@ pub async fn encode_video_subtitle<R: ProgressReporterTrait>(
     )
     .await
     .map_err(|error| error.to_string())?;
+    output_guard.keep();
     log::info!("Encode video subtitle task end: {}", output_path.display());
     Ok(output_filename)
 }

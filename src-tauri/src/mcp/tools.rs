@@ -561,7 +561,7 @@ pub(super) async fn call(state: &State, name: &str, args: Value) -> Result<Value
         }
         Action::EncodeVideoSubtitle => {
             let event_id = format!("mcp-{}", uuid::Uuid::new_v4());
-            let video = handlers::video::encode_video_subtitle(
+            let task = handlers::video::encode_video_subtitle(
                 command_state,
                 event_id.clone(),
                 argument(&args, "id")?,
@@ -569,7 +569,7 @@ pub(super) async fn call(state: &State, name: &str, args: Value) -> Result<Value
                 None,
             )
             .await?;
-            Ok(json!({ "video": video, "event_id": event_id }))
+            Ok(json!({ "task": task, "event_id": event_id }))
         }
         Action::ClipRange => {
             let event_id = format!("mcp-{}", uuid::Uuid::new_v4());

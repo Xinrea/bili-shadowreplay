@@ -815,6 +815,8 @@
         "input, textarea, select, [contenteditable='true'], [data-hotkey-block]"
       );
     if (isInInput || event.altKey) return;
+    // 只有方向键允许按住连发；其它键连发会反复重启试听或跟着播放头改写时间
+    if (event.repeat && !event.code.startsWith("Arrow")) return;
 
     const clipEnabled = canBeClipped(video);
 
@@ -950,7 +952,7 @@
     });
   }
 
-  // 播放 [start, end) 后自动暂停；期间手动暂停或跳转会结束区间试听
+  // 播放 [start, end) 后自动暂停；从按键起，用户跳转或自行播放、暂停都会结束区间试听
   async function playRange(start: number, end: number) {
     const video = videoElement;
     if (!video?.duration) return;
@@ -962,30 +964,24 @@
 
     let frame = 0;
     let stopped = false;
+    let waitingForSeek = true;
     const stop = () => {
       stopped = true;
       cancelAnimationFrame(frame);
-      video.removeEventListener("seeking", stop);
+      video.removeEventListener("seeking", handleSeeking);
+      video.removeEventListener("play", handlePlay);
+      video.removeEventListener("timeupdate", checkEnd);
       if (stopRangePlayback === stop) stopRangePlayback = null;
     };
-    stopRangePlayback = stop;
-
-    video.pause();
-    isPlaying = false;
-    await seekVideo(start);
-    if (stopped) return;
-    try {
-      await video.play();
-    } catch {
-      stop();
-      return;
-    }
-    if (stopped) return;
-    isPlaying = true;
-    video.addEventListener("seeking", stop);
-
-    // timeupdate 每秒只触发约 4 次，用逐帧检查保证在 end 附近及时停下
-    const tick = () => {
+    // 跳转过程中 currentTime 即目标位置：目标不是 start 的跳转来自用户（时间轴、方向键等）
+    const handleSeeking = () => {
+      if (Math.abs(video.currentTime - start) > 0.001) stop();
+    };
+    // 还在等待跳转时用户自己开始播放，交给用户控制
+    const handlePlay = () => {
+      if (waitingForSeek) stop();
+    };
+    const checkEnd = () => {
       if (stopped) return;
       currentTime = video.currentTime;
       if (video.paused) {
@@ -994,10 +990,33 @@
         video.pause();
         isPlaying = false;
         stop();
-      } else {
-        frame = requestAnimationFrame(tick);
       }
     };
+    stopRangePlayback = stop;
+    video.addEventListener("seeking", handleSeeking);
+    video.addEventListener("play", handlePlay);
+
+    video.pause();
+    isPlaying = false;
+    await seekVideo(start);
+    if (stopped) return;
+    waitingForSeek = false;
+    try {
+      await video.play();
+    } catch {
+      stop();
+      return;
+    }
+    if (stopped) return;
+    isPlaying = true;
+
+    // timeupdate 每秒只触发约 4 次，用逐帧检查保证在 end 附近及时停下；
+    // 窗口隐藏时 requestAnimationFrame 会暂停，timeupdate 作为兜底
+    const tick = () => {
+      checkEnd();
+      if (!stopped) frame = requestAnimationFrame(tick);
+    };
+    video.addEventListener("timeupdate", checkEnd);
     frame = requestAnimationFrame(tick);
   }
 

@@ -35,6 +35,10 @@ use crate::{
             get_recent_record, get_recorder_list, get_room_info, get_today_record_count,
             get_total_length, remove_recorder, send_danmaku, set_enable, ExportDanmuOptions,
         },
+        subtitle_fonts::{
+            get_subtitle_font_families, get_subtitle_preview_fonts, SubtitleFontFamily,
+            SubtitlePreviewFont,
+        },
         summary::{
             delete_archive_summary, generate_archive_summary, get_archive_summary,
             get_archive_summary_statuses,
@@ -1113,6 +1117,8 @@ struct EncodeVideoSubtitleRequest {
     event_id: String,
     id: i64,
     srt_style: String,
+    #[serde(default)]
+    ass_content: Option<String>,
 }
 
 async fn handler_encode_video_subtitle(
@@ -1124,11 +1130,33 @@ async fn handler_encode_video_subtitle(
         encode_video_subtitle_param.event_id.clone(),
         encode_video_subtitle_param.id,
         encode_video_subtitle_param.srt_style,
+        encode_video_subtitle_param.ass_content,
     )
     .await?;
     Ok(Json(ApiResponse::success(
         encode_video_subtitle_param.event_id,
     )))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SubtitlePreviewFontsRequest {
+    font_name: String,
+}
+
+async fn handler_get_subtitle_preview_fonts(
+    state: axum::extract::State<State>,
+    Json(param): Json<SubtitlePreviewFontsRequest>,
+) -> Result<Json<ApiResponse<Vec<SubtitlePreviewFont>>>, ApiError> {
+    let fonts = get_subtitle_preview_fonts(state.0, param.font_name).await?;
+    Ok(Json(ApiResponse::success(fonts)))
+}
+
+async fn handler_get_subtitle_font_families(
+    state: axum::extract::State<State>,
+) -> Result<Json<ApiResponse<Vec<SubtitleFontFamily>>>, ApiError> {
+    let families = get_subtitle_font_families(state.0).await?;
+    Ok(Json(ApiResponse::success(families)))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2032,6 +2060,14 @@ pub async fn start_api_server(state: State) {
         .route("/api/get_all_videos", post(handler_get_all_videos))
         .route("/api/get_video_typelist", post(handler_get_video_typelist))
         .route("/api/get_video_subtitle", post(handler_get_video_subtitle))
+        .route(
+            "/api/get_subtitle_preview_fonts",
+            post(handler_get_subtitle_preview_fonts),
+        )
+        .route(
+            "/api/get_subtitle_font_families",
+            post(handler_get_subtitle_font_families),
+        )
         .route("/api/get_file_size", post(handler_get_file_size))
         .route("/api/delete_task", post(handler_delete_task))
         .route("/api/get_tasks", post(handler_get_tasks))

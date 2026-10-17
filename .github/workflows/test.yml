@@ -7,8 +7,8 @@ on:
     branches: [ main ]
 
 jobs:
-  updater:
-    name: Test desktop updater
+  frontend:
+    name: Frontend tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -17,7 +17,8 @@ jobs:
           node-version: lts/*
           cache: yarn
       - run: yarn install --frozen-lockfile
-      - run: yarn run test:updater
+      # Runs every scripts/tests/*.test.mjs, so new test files need no CI change.
+      - run: yarn test
 
   test:
     name: Run Tests

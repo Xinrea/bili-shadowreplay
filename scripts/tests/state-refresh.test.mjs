@@ -264,12 +264,19 @@ async function invokerFixture({ tauri = false, invokeRoom = async () => null, na
   } }).outputText;
   const eventModule = new vm.SourceTextModule(eventOutput, { context });
   const module = new vm.SourceTextModule(outputText, { context });
+  // One module per specifier, kept referenced until evaluation finishes. Both
+  // files import some packages, and Node can collect an unreferenced
+  // SyntheticModule after link() and then segfault in evaluate().
+  const linked = new Map();
   await module.link((name) => {
     if (name === "./events") return eventModule;
     assert.ok(dependencies[name], `Unexpected dependency: ${name}`);
-    return new vm.SyntheticModule(Object.keys(dependencies[name]), function () {
-      for (const [key, value] of Object.entries(dependencies[name])) this.setExport(key, value);
-    }, { context });
+    if (!linked.has(name)) {
+      linked.set(name, new vm.SyntheticModule(Object.keys(dependencies[name]), function () {
+        for (const [key, value] of Object.entries(dependencies[name])) this.setExport(key, value);
+      }, { context }));
+    }
+    return linked.get(name);
   });
   await module.evaluate();
   return { api: module.namespace, socketHandlers, tauriListeners, nativeOptions, sent, socket, roomCommands, retryTimers,

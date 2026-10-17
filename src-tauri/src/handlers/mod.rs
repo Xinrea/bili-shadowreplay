@@ -6,6 +6,7 @@ pub mod macros;
 pub mod message;
 pub mod migrate;
 pub mod recorder;
+pub mod subtitle_fonts;
 pub mod summary;
 pub mod task;
 pub mod utils;

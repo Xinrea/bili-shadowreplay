@@ -15,7 +15,6 @@
   } from "lucide-svelte";
   import {
     generateEventId,
-    parseSubtitleStyle,
     type ProgressFinished,
     type ProgressUpdate,
     type SubtitleStyle,
@@ -25,6 +24,8 @@
     default_profile,
   } from "../interface";
   import SubtitleStyleEditor from "./SubtitleStyleEditor.svelte";
+  import AssSubtitlePreview from "./AssSubtitlePreview.svelte";
+  import { buildSubtitleAss, DEFAULT_SUBTITLE_STYLE, loadSubtitleStyle as readSubtitleStyle } from "../subtitle-ass";
   import CoverEditor from "./CoverEditor.svelte";
   import TypeSelect from "./TypeSelect.svelte";
   import {
@@ -85,7 +86,6 @@
   let isMuted = $state(false);
   let currentSubtitleIndex = $state(-1);
   let currentSubtitleIndices: number[] = $state([]);
-  let currentSubtitles: Subtitle[] = $state([]);
   let subtitleElements: HTMLElement[] = $state([]);
   let subtitleLanes: number[] = $state([]);
   let subtitleLaneCount = $state(1);
@@ -94,19 +94,10 @@
   let nextSubtitleLayerOrder = 0;
   let timelineContainer: HTMLElement = $state();
   let showEncodeModal = $state(false);
-  let videoWidth = 0;
-  let videoHeight = $state(0);
-  let subtitleStyle: SubtitleStyle = $state({
-    fontName: "Arial",
-    fontSize: 18,
-    fontColor: "#FFFFFF",
-    outlineColor: "#000000",
-    outlineWidth: 2,
-    alignment: 2,
-    marginV: 20,
-    marginL: 20,
-    marginR: 20,
-  });
+  let previewContainer: HTMLElement = $state();
+  let previewFrameWidth = $state(0);
+  let subtitleStyle: SubtitleStyle = $state({ ...DEFAULT_SUBTITLE_STYLE });
+  let subtitleAss = $derived(buildSubtitleAss(subtitles, subtitleStyle));
 
   let current_encode_event_id = $state(null);
   let current_generate_event_id = $state(null);
@@ -571,10 +562,7 @@
 
   // 加载字幕样式
   function loadSubtitleStyle() {
-    const savedStyle = localStorage.getItem(`subtitle_style_${roomId}`);
-    if (savedStyle) {
-      subtitleStyle = JSON.parse(savedStyle);
-    }
+    subtitleStyle = readSubtitleStyle(roomId);
   }
 
 
@@ -589,9 +577,6 @@
       isPlaying = false;
       currentTime = 0;
       currentSubtitleIndex = -1;
-      // 获取视频实际尺寸
-      videoWidth = videoElement.videoWidth;
-      videoHeight = videoElement.videoHeight;
     }
     await loadSubtitles(); // 加载保存的字幕
     initClipTimes(); // 初始化切片时间
@@ -800,7 +785,7 @@
 
   // 键盘快捷键处理
   function handleKeydown(event: KeyboardEvent) {
-    if (!show || !isVideoLoaded) return;
+    if (!show || !isVideoLoaded || showStyleEditor) return;
 
     const target = event.target as HTMLElement | null;
     const tagName = target?.tagName;
@@ -1295,7 +1280,8 @@
     const result = await invoke("encode_video_subtitle", {
       eventId: event_id,
       id: video.id,
-      srtStyle: parseSubtitleStyle(subtitleStyle),
+      srtStyle: "",
+      assContent: subtitleAss,
     });
     console.log(result);
     // 压制成功后更新视频列表
@@ -1364,13 +1350,8 @@
           currentTime >= subtitle.startTime && currentTime < subtitle.endTime
       )
       .map(({ index }) => index);
-    const activeSubtitles = activeSubtitleIndices
-      .map((index) => subtitles[index])
-      .sort((a, b) => a.layerOrder - b.layerOrder);
-
     currentSubtitleIndices = activeSubtitleIndices;
     currentSubtitleIndex = activeSubtitleIndices[0] ?? -1;
-    currentSubtitles = activeSubtitles;
   });
   $effect(() => {
     window.localStorage.setItem("profile-" + roomId, JSON.stringify(profile));
@@ -1400,6 +1381,20 @@
     if (!showStyleEditor) {
       loadSubtitleStyle();
     }
+  });
+
+  // The encoder scales and pads to 1920×1080 before applying ASS. Preview the
+  // same complete output frame, including the bars on portrait/ultrawide input.
+  $effect(() => {
+    const container = previewContainer;
+    if (!container) return;
+    const resize = () => {
+      previewFrameWidth = Math.min(container.clientWidth, container.clientHeight * 16 / 9);
+    };
+    const observer = new ResizeObserver(resize);
+    observer.observe(container);
+    resize();
+    return () => observer.disconnect();
   });
 </script>
 
@@ -1622,12 +1617,13 @@
         {/if}
         <!-- 视频容器 -->
         <div class="flex-1 bg-black relative">
-          <div class="absolute inset-0 flex items-center">
+          <div bind:this={previewContainer} class="absolute inset-0 flex items-center justify-center">
+            <div class="relative aspect-video" style:width="{previewFrameWidth}px">
             <!-- svelte-ignore a11y_media_has_caption -->
             <video
               bind:this={videoElement}
               src={video?.file}
-              class="w-full h-auto max-h-full cursor-pointer"
+              class="absolute inset-0 w-full h-full object-contain cursor-pointer"
               ontimeupdate={handleTimeUpdate}
               onended={handleVideoEnded}
               onloadedmetadata={handleVideoLoaded}
@@ -1705,34 +1701,10 @@
                 {/if}
               </div>
             {/if}
-            <!-- 字幕显示 -->
-            {#if currentSubtitles.length > 0}
-              <div
-                class="absolute bottom-8 left-1/2 -translate-x-1/2 max-w-[90%] px-4 py-2 flex flex-col-reverse items-center gap-1 text-white"
-                style="
-                  font-family: {subtitleStyle.fontName};
-                  font-size: {videoHeight * (subtitleStyle.fontSize / 720)}px;
-                  color: {subtitleStyle.fontColor};
-                  text-shadow: {`
-                    ${subtitleStyle.outlineWidth}px ${subtitleStyle.outlineWidth}px 0 ${subtitleStyle.outlineColor},
-                    -${subtitleStyle.outlineWidth}px ${subtitleStyle.outlineWidth}px 0 ${subtitleStyle.outlineColor},
-                    ${subtitleStyle.outlineWidth}px -${subtitleStyle.outlineWidth}px 0 ${subtitleStyle.outlineColor},
-                    -${subtitleStyle.outlineWidth}px -${subtitleStyle.outlineWidth}px 0 ${subtitleStyle.outlineColor}
-                  `};
-                  text-align: {subtitleStyle.alignment === 1
-                  ? 'left'
-                  : subtitleStyle.alignment === 2
-                    ? 'center'
-                    : 'right'};
-                  margin-bottom: {videoHeight *
-                  (subtitleStyle.marginV / 720)}px;
-                "
-              >
-                {#each currentSubtitles as subtitle}
-                  <div class="max-w-full whitespace-pre-wrap">{subtitle.text}</div>
-                {/each}
-              </div>
+            {#if isVideoLoaded && videoElement}
+              <AssSubtitlePreview assContent={subtitleAss} video={videoElement} fontName={subtitleStyle.fontName} />
             {/if}
+            </div>
           </div>
         </div>
 
@@ -2389,6 +2361,7 @@
 <SubtitleStyleEditor
   bind:show={showStyleEditor}
   {roomId}
+  onSave={(style) => (subtitleStyle = style)}
   onClose={() => (showStyleEditor = false)}
 />
 

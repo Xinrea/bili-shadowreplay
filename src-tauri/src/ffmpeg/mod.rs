@@ -331,6 +331,7 @@ mod tests {
             Path::new("tests/video/test.mp4"),
             Path::new("tests/video/does_not_exist.srt"),
             "FontSize=24".to_string(),
+            None,
         )
         .await;
 
@@ -348,6 +349,7 @@ mod tests {
             Path::new("tests/video/test.mp4"),
             &empty_srt,
             "FontSize=24".to_string(),
+            None,
         )
         .await;
 

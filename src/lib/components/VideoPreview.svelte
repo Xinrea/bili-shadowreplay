@@ -90,7 +90,7 @@
   let subtitleLanes: number[] = $state([]);
   let subtitleLaneCount = $state(1);
   let subtitleTrackHeight = $state(48);
-  let timelineTotalHeight = $state(196);
+  let timelineTotalHeight = $state(156);
   let nextSubtitleLayerOrder = 0;
   let timelineContainer: HTMLElement = $state();
   let showEncodeModal = $state(false);
@@ -178,8 +178,8 @@
 
     // 波形容器跟随时间轴内容宽度，缩放由外层时间轴统一控制
     container.style.width = "100%";
-    container.style.height = "54px";
-    container.style.minHeight = "54px";
+    container.style.height = "46px";
+    container.style.minHeight = "46px";
     container.style.display = "block";
 
     console.log("Creating WaveSurfer with:", {
@@ -194,12 +194,12 @@
     try {
       wavesurfer = WaveSurfer.create({
         container: container,
-        waveColor: "#4a5568",
-        progressColor: "#10B981",
-        cursorColor: "#10B981",
+        waveColor: "rgba(196, 181, 253, 0.4)",
+        progressColor: "#a78bfa",
+        cursorWidth: 0, // 播放头由时间轴统一绘制
         barWidth: 2,
         barRadius: 1,
-        height: 54,
+        height: 46,
         normalize: true,
         interact: true, // 启用交互，允许点击切换进度
         plugins: [],
@@ -1340,7 +1340,7 @@
     subtitleLanes = laneLayout.lanes;
     subtitleLaneCount = laneLayout.count;
     subtitleTrackHeight = Math.max(48, subtitleLaneCount * 36 + 8);
-    timelineTotalHeight = 148 + subtitleTrackHeight;
+    timelineTotalHeight = 108 + subtitleTrackHeight;
   });
   $effect(() => {
     const activeSubtitleIndices = subtitles
@@ -1798,7 +1798,7 @@
           </div>
         </div>
 
-        <!-- 三轨时间轴：字幕、视频、音频共用同一时间坐标 -->
+        <!-- 时间轴：字幕轨与音视频轨共用同一时间坐标 -->
         <div class="bg-[#1c1c1e] border-t border-gray-800/50">
           <div
             class="flex overflow-hidden"
@@ -1810,17 +1810,9 @@
               <div
                 class="order-0 h-7 px-3 flex items-center border-b border-gray-800/70 text-[10px] uppercase tracking-wider"
               >时间</div>
-              <div
-                class="order-2 h-14 px-3 flex items-center gap-2 border-b border-gray-800/70"
-              >
+              <div class="order-2 h-20 px-3 flex items-center gap-2">
                 <span class="w-2 h-2 rounded-sm bg-violet-500"></span>
                 视频
-              </div>
-              <div
-                class="order-3 h-16 px-3 flex items-center gap-2"
-              >
-                <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
-                音频
               </div>
               <div
                 class="order-1 px-3 flex items-center gap-2 border-b border-gray-800/70"
@@ -1892,42 +1884,24 @@
                 </div>
 
                 <div
-                  class="order-2 shrink-0 relative h-14 border-b border-gray-800/70 bg-violet-950/10 overflow-hidden"
+                  class="order-2 shrink-0 relative h-20 bg-violet-950/10 overflow-hidden"
                 >
                   <div
-                    class="absolute inset-x-1 inset-y-1 rounded-md border border-violet-500/50 bg-violet-500/20 overflow-hidden"
+                    class="absolute inset-x-1 inset-y-1 rounded-md border border-violet-500/50 bg-violet-500/15 overflow-hidden"
                   >
                     <div
-                      class="h-full px-3 flex items-center gap-2 text-xs text-violet-100"
+                      class="h-6 px-3 flex items-center gap-2 text-xs text-violet-100 bg-violet-500/20"
                     >
-                      <Film class="w-4 h-4 shrink-0 text-violet-300" />
+                      <Film class="w-3.5 h-3.5 shrink-0 text-violet-300" />
                       <span class="truncate">{getVideoDisplayName()}</span>
                       <span
                         class="ml-auto text-[10px] text-violet-200/70 font-mono"
                         >{formatTime(videoElement?.duration || 0)}</span
                       >
                     </div>
-                    {#if canBeClipped(video) && clipTimesSet}
-                      <div
-                        class="absolute inset-y-0 border-x-2 border-green-400 bg-green-400/20 pointer-events-none"
-                        style="left: {(clipStartTime /
-                          (videoElement?.duration || 1)) *
-                          100}%; right: {100 -
-                          (clipEndTime / (videoElement?.duration || 1)) * 100}%"
-                      ></div>
-                    {/if}
-                  </div>
-                </div>
-
-                <div
-                  class="order-3 shrink-0 relative h-16 bg-emerald-950/10 overflow-hidden"
-                >
-                  <div
-                    class="absolute inset-x-1 inset-y-1 rounded-md border border-emerald-500/50 bg-emerald-500/10 overflow-hidden"
-                  >
                     {#if isWaveformLoading}
                       <div
-                        class="absolute inset-0 z-10 flex items-center justify-center gap-2 text-xs text-gray-400 bg-[#1c1c1e]/70"
+                        class="absolute inset-x-0 top-6 bottom-0 z-10 flex items-center justify-center gap-2 text-xs text-gray-400 bg-[#1c1c1e]/70"
                       >
                         <svg
                           class="animate-spin h-4 w-4"
@@ -1954,9 +1928,18 @@
                     {/if}
                     <div
                       bind:this={waveformContainer}
-                      class="absolute inset-0 waveform-container"
+                      class="absolute inset-x-0 top-6 bottom-0 waveform-container"
                       data-waveform-container
                     ></div>
+                    {#if canBeClipped(video) && clipTimesSet}
+                      <div
+                        class="absolute inset-y-0 z-10 border-x-2 border-green-400 bg-green-400/20 pointer-events-none"
+                        style="left: {(clipStartTime /
+                          (videoElement?.duration || 1)) *
+                          100}%; right: {100 -
+                          (clipEndTime / (videoElement?.duration || 1)) * 100}%"
+                      ></div>
+                    {/if}
                   </div>
                 </div>
 

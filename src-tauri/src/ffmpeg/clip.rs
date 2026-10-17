@@ -5,7 +5,7 @@ use ffmpeg_utils::ffmpeg_command;
 
 use super::{
     hwaccel,
-    runner::{run_command, FfmpegJob, ProgressMode},
+    runner::{run_command, FfmpegJob, ProgressMode, ProgressTotal},
 };
 
 /// Re-encode or remux a video into `output_path`.
@@ -34,9 +34,14 @@ pub async fn transcode<R: ProgressReporterTrait>(
     }
 
     command.args(["-y"]).arg(output_path);
+    let stage = if copy_codecs {
+        "转封装"
+    } else {
+        "重新编码"
+    };
     run_command(
         command,
-        ProgressMode::prefixed("压制中："),
+        ProgressMode::stage(stage, ProgressTotal::FirstInput),
         "Transcode",
         reporter,
     )
@@ -67,7 +72,7 @@ pub async fn trim_video<R: ProgressReporterTrait>(
             "-y".to_string(),
         ])
         .output(output_path.to_path_buf())
-        .progress(ProgressMode::prefixed("切片中："))
+        .progress(ProgressMode::stage("裁剪", ProgressTotal::Known(duration)))
         .context("Trim video");
     job.run(reporter)
         .await
@@ -106,7 +111,7 @@ pub async fn clip_from_video_file<R: ProgressReporterTrait>(
 
     run_command(
         command,
-        ProgressMode::prefixed("切片进度: "),
+        ProgressMode::stage("切片", ProgressTotal::Known(duration)),
         "切片",
         reporter,
     )

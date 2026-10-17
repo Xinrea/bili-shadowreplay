@@ -2,6 +2,7 @@
   import { invoke, get_static_url } from "./lib/invoker";
   import { onMount } from "svelte";
   import VideoPreview from "./lib/components/VideoPreview.svelte";
+  import TaskCenter from "./lib/components/TaskCenter.svelte";
   import type { Config, VideoItem } from "./lib/interface";
   import { set_title } from "./lib/invoker";
 
@@ -84,6 +85,8 @@
     }
   }
 </script>
+
+<TaskCenter />
 
 {#if showVideoPreview && video && roomId.length > 0}
   <VideoPreview

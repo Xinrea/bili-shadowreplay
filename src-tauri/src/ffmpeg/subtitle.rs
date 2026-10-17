@@ -7,7 +7,7 @@ use ffmpeg_utils::ffmpeg_command;
 
 use super::{
     hwaccel,
-    runner::{run_command, ProgressMode, TempArtifact},
+    runner::{run_command, ProgressMode, ProgressTotal, TempArtifact},
 };
 
 fn file_name_str(path: &Path) -> Result<&str, String> {
@@ -120,7 +120,7 @@ pub async fn encode_video_subtitle<R: ProgressReporterTrait>(
 
     run_command(
         command,
-        ProgressMode::prefixed("压制中："),
+        ProgressMode::stage("压制字幕", ProgressTotal::FirstInput),
         "Encode video subtitle",
         Some(reporter),
     )

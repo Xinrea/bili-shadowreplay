@@ -233,6 +233,7 @@ mod tests {
         bus.publish(AppEvent::ProgressUpdate {
             id: "task".into(),
             content: "working".into(),
+            progress: None,
         });
         bus.publish(AppEvent::DataChanged(DataChange::Videos));
         bus.publish(AppEvent::ProgressFinished {

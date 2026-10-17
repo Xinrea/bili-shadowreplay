@@ -1,7 +1,6 @@
 <script lang="ts">
   import {
     Check,
-    ChevronRight,
     Download,
     ExternalLink,
     Filter,
@@ -12,6 +11,7 @@
   import type { DanmuEntry, Marker, Range, VideoItem } from "../interface";
   import { onDestroy } from "svelte";
   import ArchiveClipButton from "./ArchiveClipButton.svelte";
+  import InspectorPanel from "./InspectorPanel.svelte";
   import MarkerPanel from "./MarkerPanel.svelte";
   import { TAURI_ENV } from "../invoker";
   import { clickOutside } from "../actions/clickOutside";
@@ -45,9 +45,8 @@
     danmuKeywords?: string[];
     videos?: GeneratedVideo[];
     selectedVideo?: GeneratedVideo | null;
-    clipRunning?: boolean;
     selectedRangeIndex?: number;
-    onCollapse?: () => void;
+    collapsed?: boolean;
     onPeakThresholdChange?: (value: number) => void;
     onDanmuKeywordsChange?: (keywords: string[]) => void;
     onSeek?: (seconds: number) => void;
@@ -71,9 +70,8 @@
     danmuKeywords = [],
     videos = [],
     selectedVideo = null,
-    clipRunning = $bindable(false),
     selectedRangeIndex = $bindable(-1),
-    onCollapse,
+    collapsed = $bindable(false),
     onPeakThresholdChange,
     onDanmuKeywordsChange,
     onSeek,
@@ -207,12 +205,12 @@
     }
   });
 
-  const tabs: { id: InspectorTab; label: string }[] = [
-    { id: "ranges", label: "选区" },
+  let tabs: { id: InspectorTab; label: string; count?: number }[] = $derived([
+    { id: "ranges", label: "选区", count: activeRanges.length },
     { id: "danmu", label: "弹幕" },
-    { id: "markers", label: "标记" },
+    { id: "markers", label: "标记", count: markers.length },
     { id: "clips", label: "切片" },
-  ];
+  ]);
 
   function formatTime(seconds: number) {
     const total = Math.max(0, Math.floor(seconds || 0));
@@ -305,462 +303,408 @@
   });
 </script>
 
-<aside class="inspector">
-  <div class="inspector-heading">
-    <h2>素材检查器</h2>
-    <button type="button" title="收起检查器" onclick={onCollapse}>
-      <ChevronRight size={17} />
-    </button>
-  </div>
-
-  <div class="tabs" role="tablist" aria-label="素材分类">
-    {#each tabs as tab}
-      <button
-        type="button"
-        role="tab"
-        aria-selected={activeTab === tab.id}
-        class:active={activeTab === tab.id}
-        onclick={() => (activeTab = tab.id)}
-      >
-        {tab.label}
-        {#if tab.id === "ranges" && activeRanges.length > 0}
-          <span>{activeRanges.length}</span>
-        {/if}
-        {#if tab.id === "markers" && markers.length > 0}
-          <span>{markers.length}</span>
-        {/if}
-      </button>
-    {/each}
-  </div>
-
-  <div
-    class="inspector-content"
-    class:panel-fill={activeTab === "danmu"}
-  >
-    {#if activeTab === "ranges"}
-      <section class="range-summary">
-        <div class="summary-meta">
-          <span>已选内容</span>
-          <span class="summary-duration">{formatTime(activeDuration)}</span>
-          {#if ranges.length > 0}
-            <span class="summary-count">{activeRanges.length}/{ranges.length}</span>
-          {/if}
-        </div>
-        <label
-          class="select-all-toggle"
-          class:checked={ranges.length > 0 &&
-            ranges.every((range) => range.activated !== false)}
-        >
-          <input
-            type="checkbox"
-            checked={ranges.length > 0 &&
-              ranges.every((range) => range.activated !== false)}
-            onchange={(event) => {
-              const active = (event.currentTarget as HTMLInputElement).checked;
-              ranges = ranges.map((range) => ({ ...range, activated: active }));
-            }}
-          />
-          <span class="check-mark" aria-hidden="true">
-            {#if ranges.length > 0 &&
-              ranges.every((range) => range.activated !== false)}
-              <Check size={10} strokeWidth={2.5} />
-            {/if}
-          </span>
-          <span>全选</span>
-        </label>
-      </section>
-
-      <section class="range-list" aria-label="选区列表">
-        {#each ranges as range, index}
-          <article
-            class="range-card"
-            class:selected={selectedRangeIndex === index}
-            class:inactive={range.activated === false}
-          >
-            <label
-              class="range-toggle"
-              class:checked={range.activated !== false}
-              title={range.activated === false ? "启用选区" : "停用选区"}
-            >
-              <input
-                type="checkbox"
-                checked={range.activated !== false}
-                onchange={(event) =>
-                  toggleRange(
-                    index,
-                    (event.currentTarget as HTMLInputElement).checked,
-                  )}
-              />
-              <span class="check-mark" aria-hidden="true">
-                {#if range.activated !== false}
-                  <Check size={10} strokeWidth={2.5} />
-                {/if}
-              </span>
-            </label>
-            <button
-              type="button"
-              class="range-main"
-              onclick={() => selectRange(index, range)}
-            >
-              <span class="range-title">{index + 1}</span>
-              <span class="range-time">
-                {formatTime(range.start)} → {formatTime(range.end)}
-              </span>
-              <span class="range-duration">
-                {formatTime(range.end - range.start)}
-              </span>
-            </button>
-            <div class="range-actions">
-              <button
-                type="button"
-                title="删除选区"
-                onclick={() => removeRange(index)}
-              >
-                <Trash2 size={13} />
-              </button>
-            </div>
-          </article>
-        {:else}
-          <div class="empty-state">
-            <strong>还没有选区</strong>
-            <span>在下方时间线点击“新建选区”开始剪辑</span>
-          </div>
-        {/each}
-      </section>
-
-      <section class="recommendations">
-        <div class="section-heading">
-          <div>
-            <h3>智能推荐</h3>
-            <span>基于弹幕热度发现精彩片段</span>
-          </div>
-          {#if danmuPeaks.some((peak) => !peak.exists)}
-            <button type="button" onclick={onAddAllPeaks}>全部添加</button>
-          {/if}
-        </div>
-        <label class="keyword-field">
-          <span>关键词过滤</span>
-          <div class="keyword-editor">
-            {#each danmuKeywords as keyword, index}
-              <span class="keyword-chip">
-                {keyword}
-                <button
-                  type="button"
-                  aria-label={`删除关键词 ${keyword}`}
-                  onclick={() => removeKeyword(index)}
-                >
-                  ×
-                </button>
-              </span>
-            {/each}
-            <input
-              bind:value={keywordDraft}
-              placeholder={danmuKeywords.length === 0
-                ? "输入关键词后回车，留空则使用全部弹幕"
-                : "继续添加…"}
-              onkeydown={handleKeywordKeydown}
-              onblur={commitKeywordDraft}
-            />
-          </div>
-        </label>
-        <label class="threshold">
-          <span>峰值阈值 {pendingPeakThreshold}%</span>
-          <input
-            type="range"
-            min="50"
-            max="100"
-            value={pendingPeakThreshold}
-            oninput={(event) =>
-              schedulePeakThresholdChange(
-                Number((event.currentTarget as HTMLInputElement).value),
-              )}
-          />
-        </label>
-        <div class="peak-list">
-          {#each danmuPeaks as peak}
-            <button
-              type="button"
-              class:exists={peak.exists}
-              onclick={() => {
-                if (peak.exists) onSeek?.(peak.start);
-                else onAddPeak?.(peak);
-              }}
-            >
-              <span>
-                {formatTime(peak.start)} → {formatTime(peak.end)}
-                <small>{peak.count} 条弹幕</small>
-              </span>
-              <b>{peak.exists ? "已存在" : "+ 添加"}</b>
-            </button>
-          {:else}
-            <p class="empty-copy">
-              {#if danmuRecords.length === 0}
-                暂无弹幕数据
-              {:else if danmuKeywords.length > 0 && keywordMatchedCount === 0}
-                当前关键词下无匹配弹幕
-              {:else}
-                当前阈值下未发现峰值
-              {/if}
-            </p>
-          {/each}
-        </div>
-      </section>
-    {:else if activeTab === "danmu"}
-      <section class="danmu-panel">
-        <div
-          class="danmu-toolbar"
-          use:clickOutside={() => (showDanmuTypeFilter = false)}
-        >
-          <label class="search-box">
-            <Search size={13} />
-            <input
-              bind:value={danmuSearch}
-              oninput={resetDanmuListScroll}
-              placeholder="搜索弹幕 / SC 内容"
-            />
-          </label>
-          <div class="type-filter">
-            <button
-              type="button"
-              class="filter-button"
-              class:active={danmuTypeFilter !== "all"}
-              title="按类型筛选"
-              onclick={() => (showDanmuTypeFilter = !showDanmuTypeFilter)}
-            >
-              <Filter size={13} />
-            </button>
-            {#if showDanmuTypeFilter}
-              <div class="filter-dropdown">
-                {#each DANMU_TYPE_FILTERS as option (option.value)}
-                  <label class="filter-option">
-                    <input
-                      type="radio"
-                      name="danmu-type-filter"
-                      checked={danmuTypeFilter === option.value}
-                      onchange={() => setDanmuTypeFilter(option.value)}
-                    />
-                    <span>{option.label}</span>
-                  </label>
-                {/each}
-              </div>
-            {/if}
-          </div>
-        </div>
-        <div class="result-count">
-          共 {danmuRecords.length} 条 · 显示 {filteredDanmu.length} 条
-        </div>
-        <div
-          class="danmu-list"
-          bind:this={danmuListEl}
-          onscroll={(event) => {
-            const element = event.currentTarget as HTMLElement;
-            danmuScrollTop = element.scrollTop;
-            danmuViewportHeight = element.clientHeight;
-            hideScTooltip();
-          }}
-        >
-          {#if filteredDanmu.length === 0}
-            <div class="empty-state">
-              <strong>没有匹配的内容</strong>
-            </div>
-          {:else}
-            <div
-              class="danmu-list-spacer"
-              style:height={`${danmuWindow.totalHeight}px`}
-            >
-              <div
-                class="danmu-list-window"
-                style:transform={`translateY(${danmuWindow.offsetY}px)`}
-              >
-                {#each filteredDanmu.slice(danmuWindow.start, danmuWindow.end) as danmu, index (`${danmu.ts}:${danmu.user_name ?? ""}:${danmu.content}:${danmuWindow.start + index}`)}
-                  <button
-                    type="button"
-                    class="danmu-entry"
-                    class:sc-entry={isSuperChat(danmu)}
-                    onclick={() => onSeek?.(danmu.ts / 1000 - globalOffset)}
-                    onmouseenter={(event) => {
-                      if (isSuperChat(danmu)) {
-                        showScTooltip(
-                          danmu,
-                          event.currentTarget as HTMLElement,
-                        );
-                      }
-                    }}
-                    onmouseleave={hideScTooltip}
-                  >
-                    <time>{formatTime(danmu.ts / 1000 - globalOffset)}</time>
-                    <span class="danmu-content">
-                      {#if danmu.user_name}
-                        <b>{danmu.user_name}</b>
-                      {/if}
-                      <span class="danmu-text" use:danmuContent={danmu}></span>
-                      {#if isSuperChat(danmu)}
-                        <span
-                          class="sc-badge"
-                          style:background={getScColors(danmu.price ?? 0)
-                            .content}
-                        >
-                          SC {formatScPrice(danmu.price ?? 0)}
-                        </span>
-                      {/if}
-                    </span>
-                  </button>
-                {/each}
-              </div>
-            </div>
-          {/if}
-        </div>
-        {#if scTooltip}
-          {@const colors = getScColors(scTooltip.entry.price ?? 0)}
-          <div
-            class="sc-tooltip"
-            style:left="{scTooltip.x}px"
-            style:top="{scTooltip.y}px"
-          >
-            <div
-              class="sc-tooltip-head"
-              style:background-color={colors.info}
-              style:border-color={colors.content}
-            >
-              <span class="sc-tooltip-user">{scTooltip.entry.user_name}</span>
-              <span class="sc-tooltip-price" style:color={colors.content}>
-                {formatScPrice(scTooltip.entry.price ?? 0)}
-              </span>
-            </div>
-            <div
-              class="sc-tooltip-body"
-              style:background-color={colors.content}
-            >
-              {scTooltip.entry.content}
-            </div>
-          </div>
-        {/if}
-      </section>
-    {:else if activeTab === "markers"}
-      <MarkerPanel
-        {archive}
-        bind:markers
-        embedded
-        onMarkerClick={(marker) => onSeek?.(marker.offset)}
-      />
-    {:else}
-      <section class="clips-panel">
-        <div class="section-heading">
-          <div>
-            <h3>已生成切片</h3>
-            <span>当前直播间下共 {videos.length} 个切片</span>
-          </div>
-        </div>
-        <div class="clip-list">
-          {#each videos as item}
-            <article
-              class="clip-card"
-              class:selected={selectedVideo?.id === item.id}
-              role="button"
-              tabindex="0"
-              onclick={() => onVideoSelect?.(item.id)}
-              onkeydown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  onVideoSelect?.(item.id);
-                }
-              }}
-            >
-              <div class="clip-preview">
-                {#if item.cover}
-                  <img src={item.cover} alt="" />
-                {:else}
-                  <span>暂无封面</span>
-                {/if}
-              </div>
-              <div class="clip-info">
-                <span class="clip-name" title={item.name}>{item.name}</span>
-                <div
-                  class="clip-actions"
-                  onclick={(event) => event.stopPropagation()}
-                  onkeydown={(event) => event.stopPropagation()}
-                >
-                  <button
-                    type="button"
-                    title="打开切片"
-                    onclick={() => onOpenVideo?.(item.id)}
-                  >
-                    <ExternalLink size={13} />
-                  </button>
-                  {#if !TAURI_ENV}
-                    <button
-                      type="button"
-                      title="下载切片"
-                      onclick={() => onDownloadVideo?.(item.id)}
-                    >
-                      <Download size={13} />
-                    </button>
-                  {/if}
-                  <button
-                    type="button"
-                    title="删除切片"
-                    class="danger"
-                    onclick={() => onDeleteVideo?.(item.id)}
-                  >
-                    <Trash2 size={13} />
-                  </button>
-                </div>
-              </div>
-            </article>
-          {:else}
-            <div class="empty-state">
-              <strong>还没有生成切片</strong>
-              <span>启用选区后可在下方合成为一个切片</span>
-            </div>
-          {/each}
-        </div>
-      </section>
-    {/if}
-  </div>
-
-  <footer class="inspector-footer">
-    <div>
-      <span>{activeRanges.length} 个选区</span>
-      <strong>合成后约 {formatTime(activeDuration)}</strong>
-    </div>
+<InspectorPanel
+  title="素材检查器"
+  {tabs}
+  bind:activeTab
+  bind:collapsed
+  fillContent={activeTab === "danmu"}
+  summary={{
+    label: `${activeRanges.length} 个选区`,
+    value: `合成后约 ${formatTime(activeDuration)}`,
+  }}
+>
+  {#snippet actions()}
     <ArchiveClipButton
       {archive}
       ranges={activeRanges}
       captureCover
-      bind:running={clipRunning}
       onGenerated={onGenerated}
     />
-  </footer>
-</aside>
+  {/snippet}
+
+  {#if activeTab === "ranges"}
+    <section class="range-summary">
+      <div class="summary-meta">
+        <span>已选内容</span>
+        <span class="summary-duration">{formatTime(activeDuration)}</span>
+        {#if ranges.length > 0}
+          <span class="summary-count">{activeRanges.length}/{ranges.length}</span>
+        {/if}
+      </div>
+      <label
+        class="select-all-toggle"
+        class:checked={ranges.length > 0 &&
+          ranges.every((range) => range.activated !== false)}
+      >
+        <input
+          type="checkbox"
+          checked={ranges.length > 0 &&
+            ranges.every((range) => range.activated !== false)}
+          onchange={(event) => {
+            const active = (event.currentTarget as HTMLInputElement).checked;
+            ranges = ranges.map((range) => ({ ...range, activated: active }));
+          }}
+        />
+        <span class="check-mark" aria-hidden="true">
+          {#if ranges.length > 0 &&
+            ranges.every((range) => range.activated !== false)}
+            <Check size={10} strokeWidth={2.5} />
+          {/if}
+        </span>
+        <span>全选</span>
+      </label>
+    </section>
+
+    <section class="range-list" aria-label="选区列表">
+      {#each ranges as range, index}
+        <article
+          class="range-card"
+          class:selected={selectedRangeIndex === index}
+          class:inactive={range.activated === false}
+        >
+          <label
+            class="range-toggle"
+            class:checked={range.activated !== false}
+            title={range.activated === false ? "启用选区" : "停用选区"}
+          >
+            <input
+              type="checkbox"
+              checked={range.activated !== false}
+              onchange={(event) =>
+                toggleRange(
+                  index,
+                  (event.currentTarget as HTMLInputElement).checked,
+                )}
+            />
+            <span class="check-mark" aria-hidden="true">
+              {#if range.activated !== false}
+                <Check size={10} strokeWidth={2.5} />
+              {/if}
+            </span>
+          </label>
+          <button
+            type="button"
+            class="range-main"
+            onclick={() => selectRange(index, range)}
+          >
+            <span class="range-title">{index + 1}</span>
+            <span class="range-time">
+              {formatTime(range.start)} → {formatTime(range.end)}
+            </span>
+            <span class="range-duration">
+              {formatTime(range.end - range.start)}
+            </span>
+          </button>
+          <div class="range-actions">
+            <button
+              type="button"
+              title="删除选区"
+              onclick={() => removeRange(index)}
+            >
+              <Trash2 size={13} />
+            </button>
+          </div>
+        </article>
+      {:else}
+        <div class="empty-state">
+          <strong>还没有选区</strong>
+          <span>在下方时间线点击“新建选区”开始剪辑</span>
+        </div>
+      {/each}
+    </section>
+
+    <section class="recommendations">
+      <div class="section-heading">
+        <div>
+          <h3>智能推荐</h3>
+          <span>基于弹幕热度发现精彩片段</span>
+        </div>
+        {#if danmuPeaks.some((peak) => !peak.exists)}
+          <button type="button" onclick={onAddAllPeaks}>全部添加</button>
+        {/if}
+      </div>
+      <label class="keyword-field">
+        <span>关键词过滤</span>
+        <div class="keyword-editor">
+          {#each danmuKeywords as keyword, index}
+            <span class="keyword-chip">
+              {keyword}
+              <button
+                type="button"
+                aria-label={`删除关键词 ${keyword}`}
+                onclick={() => removeKeyword(index)}
+              >
+                ×
+              </button>
+            </span>
+          {/each}
+          <input
+            bind:value={keywordDraft}
+            placeholder={danmuKeywords.length === 0
+              ? "输入关键词后回车，留空则使用全部弹幕"
+              : "继续添加…"}
+            onkeydown={handleKeywordKeydown}
+            onblur={commitKeywordDraft}
+          />
+        </div>
+      </label>
+      <label class="threshold">
+        <span>峰值阈值 {pendingPeakThreshold}%</span>
+        <input
+          type="range"
+          min="50"
+          max="100"
+          value={pendingPeakThreshold}
+          oninput={(event) =>
+            schedulePeakThresholdChange(
+              Number((event.currentTarget as HTMLInputElement).value),
+            )}
+        />
+      </label>
+      <div class="peak-list">
+        {#each danmuPeaks as peak}
+          <button
+            type="button"
+            class:exists={peak.exists}
+            onclick={() => {
+              if (peak.exists) onSeek?.(peak.start);
+              else onAddPeak?.(peak);
+            }}
+          >
+            <span>
+              {formatTime(peak.start)} → {formatTime(peak.end)}
+              <small>{peak.count} 条弹幕</small>
+            </span>
+            <b>{peak.exists ? "已存在" : "+ 添加"}</b>
+          </button>
+        {:else}
+          <p class="empty-copy">
+            {#if danmuRecords.length === 0}
+              暂无弹幕数据
+            {:else if danmuKeywords.length > 0 && keywordMatchedCount === 0}
+              当前关键词下无匹配弹幕
+            {:else}
+              当前阈值下未发现峰值
+            {/if}
+          </p>
+        {/each}
+      </div>
+    </section>
+  {:else if activeTab === "danmu"}
+    <section class="danmu-panel">
+      <div
+        class="danmu-toolbar"
+        use:clickOutside={() => (showDanmuTypeFilter = false)}
+      >
+        <label class="search-box">
+          <Search size={13} />
+          <input
+            bind:value={danmuSearch}
+            oninput={resetDanmuListScroll}
+            placeholder="搜索弹幕 / SC 内容"
+          />
+        </label>
+        <div class="type-filter">
+          <button
+            type="button"
+            class="filter-button"
+            class:active={danmuTypeFilter !== "all"}
+            title="按类型筛选"
+            onclick={() => (showDanmuTypeFilter = !showDanmuTypeFilter)}
+          >
+            <Filter size={13} />
+          </button>
+          {#if showDanmuTypeFilter}
+            <div class="filter-dropdown">
+              {#each DANMU_TYPE_FILTERS as option (option.value)}
+                <label class="filter-option">
+                  <input
+                    type="radio"
+                    name="danmu-type-filter"
+                    checked={danmuTypeFilter === option.value}
+                    onchange={() => setDanmuTypeFilter(option.value)}
+                  />
+                  <span>{option.label}</span>
+                </label>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      </div>
+      <div class="result-count">
+        共 {danmuRecords.length} 条 · 显示 {filteredDanmu.length} 条
+      </div>
+      <div
+        class="danmu-list"
+        bind:this={danmuListEl}
+        onscroll={(event) => {
+          const element = event.currentTarget as HTMLElement;
+          danmuScrollTop = element.scrollTop;
+          danmuViewportHeight = element.clientHeight;
+          hideScTooltip();
+        }}
+      >
+        {#if filteredDanmu.length === 0}
+          <div class="empty-state">
+            <strong>没有匹配的内容</strong>
+          </div>
+        {:else}
+          <div
+            class="danmu-list-spacer"
+            style:height={`${danmuWindow.totalHeight}px`}
+          >
+            <div
+              class="danmu-list-window"
+              style:transform={`translateY(${danmuWindow.offsetY}px)`}
+            >
+              {#each filteredDanmu.slice(danmuWindow.start, danmuWindow.end) as danmu, index (`${danmu.ts}:${danmu.user_name ?? ""}:${danmu.content}:${danmuWindow.start + index}`)}
+                <button
+                  type="button"
+                  class="danmu-entry"
+                  class:sc-entry={isSuperChat(danmu)}
+                  onclick={() => onSeek?.(danmu.ts / 1000 - globalOffset)}
+                  onmouseenter={(event) => {
+                    if (isSuperChat(danmu)) {
+                      showScTooltip(
+                        danmu,
+                        event.currentTarget as HTMLElement,
+                      );
+                    }
+                  }}
+                  onmouseleave={hideScTooltip}
+                >
+                  <time>{formatTime(danmu.ts / 1000 - globalOffset)}</time>
+                  <span class="danmu-content">
+                    {#if danmu.user_name}
+                      <b>{danmu.user_name}</b>
+                    {/if}
+                    <span class="danmu-text" use:danmuContent={danmu}></span>
+                    {#if isSuperChat(danmu)}
+                      <span
+                        class="sc-badge"
+                        style:background={getScColors(danmu.price ?? 0)
+                          .content}
+                      >
+                        SC {formatScPrice(danmu.price ?? 0)}
+                      </span>
+                    {/if}
+                  </span>
+                </button>
+              {/each}
+            </div>
+          </div>
+        {/if}
+      </div>
+      {#if scTooltip}
+        {@const colors = getScColors(scTooltip.entry.price ?? 0)}
+        <div
+          class="sc-tooltip"
+          style:left="{scTooltip.x}px"
+          style:top="{scTooltip.y}px"
+        >
+          <div
+            class="sc-tooltip-head"
+            style:background-color={colors.info}
+            style:border-color={colors.content}
+          >
+            <span class="sc-tooltip-user">{scTooltip.entry.user_name}</span>
+            <span class="sc-tooltip-price" style:color={colors.content}>
+              {formatScPrice(scTooltip.entry.price ?? 0)}
+            </span>
+          </div>
+          <div
+            class="sc-tooltip-body"
+            style:background-color={colors.content}
+          >
+            {scTooltip.entry.content}
+          </div>
+        </div>
+      {/if}
+    </section>
+  {:else if activeTab === "markers"}
+    <MarkerPanel
+      {archive}
+      bind:markers
+      embedded
+      onMarkerClick={(marker) => onSeek?.(marker.offset)}
+    />
+  {:else}
+    <section class="clips-panel">
+      <div class="section-heading">
+        <div>
+          <h3>已生成切片</h3>
+          <span>当前直播间下共 {videos.length} 个切片</span>
+        </div>
+      </div>
+      <div class="clip-list">
+        {#each videos as item}
+          <article
+            class="clip-card"
+            class:selected={selectedVideo?.id === item.id}
+            role="button"
+            tabindex="0"
+            onclick={() => onVideoSelect?.(item.id)}
+            onkeydown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onVideoSelect?.(item.id);
+              }
+            }}
+          >
+            <div class="clip-preview">
+              {#if item.cover}
+                <img src={item.cover} alt="" />
+              {:else}
+                <span>暂无封面</span>
+              {/if}
+            </div>
+            <div class="clip-info">
+              <span class="clip-name" title={item.name}>{item.name}</span>
+              <div
+                class="clip-actions"
+                onclick={(event) => event.stopPropagation()}
+                onkeydown={(event) => event.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  title="打开切片"
+                  onclick={() => onOpenVideo?.(item.id)}
+                >
+                  <ExternalLink size={13} />
+                </button>
+                {#if !TAURI_ENV}
+                  <button
+                    type="button"
+                    title="下载切片"
+                    onclick={() => onDownloadVideo?.(item.id)}
+                  >
+                    <Download size={13} />
+                  </button>
+                {/if}
+                <button
+                  type="button"
+                  title="删除切片"
+                  class="danger"
+                  onclick={() => onDeleteVideo?.(item.id)}
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            </div>
+          </article>
+        {:else}
+          <div class="empty-state">
+            <strong>还没有生成切片</strong>
+            <span>启用选区后可在下方合成为一个切片</span>
+          </div>
+        {/each}
+      </div>
+    </section>
+  {/if}
+</InspectorPanel>
 
 <style>
-  .inspector {
-    display: flex;
-    width: 340px;
-    height: 100%;
-    min-height: 0;
-    flex-direction: column;
-    border-left: 1px solid #2b3340;
-    background: #171c25;
-    color: #e9eef8;
-  }
-
-  .inspector-heading {
-    display: flex;
-    height: 50px;
-    flex: 0 0 50px;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0 16px 0 18px;
-  }
-
-  .inspector-heading h2 {
-    margin: 0;
-    font-size: 14px;
-    font-weight: 650;
-  }
-
-  .inspector-heading button,
   .range-actions button,
   .range-actions label,
   .clip-actions button {
@@ -769,59 +713,6 @@
     justify-content: center;
     border-radius: 7px;
     color: #8c98aa;
-  }
-
-  .inspector-heading button {
-    width: 28px;
-    height: 28px;
-    background: #222a36;
-  }
-
-  .tabs {
-    display: grid;
-    margin: 0 16px 14px;
-    grid-template-columns: repeat(4, 1fr);
-    border-radius: 9px;
-    background: #0f131a;
-    padding: 3px;
-  }
-
-  .tabs button {
-    display: flex;
-    height: 31px;
-    align-items: center;
-    justify-content: center;
-    gap: 5px;
-    border-radius: 7px;
-    color: #8490a3;
-    font-size: 11px;
-  }
-
-  .tabs button.active {
-    background: #293341;
-    color: #edf4ff;
-  }
-
-  .tabs button span {
-    min-width: 16px;
-    border-radius: 999px;
-    background: #168de0;
-    padding: 1px 5px;
-    color: white;
-    font-size: 9px;
-  }
-
-  .inspector-content {
-    min-height: 0;
-    flex: 1;
-    overflow-y: auto;
-    padding: 0 16px 16px;
-  }
-
-  .inspector-content.panel-fill {
-    display: flex;
-    overflow: hidden;
-    flex-direction: column;
   }
 
   .range-summary {
@@ -1524,37 +1415,6 @@
 
   .empty-state span {
     font-size: 10px;
-  }
-
-  .inspector-footer {
-    display: flex;
-    min-height: 66px;
-    flex: 0 0 66px;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    border-top: 1px solid #2b3340;
-    background: #141922;
-    padding: 10px 16px;
-  }
-
-  .inspector-footer > div:first-child {
-    display: flex;
-    min-width: 0;
-    flex-direction: column;
-    gap: 3px;
-  }
-
-  .inspector-footer span {
-    color: #7f8b9d;
-    font-size: 9px;
-  }
-
-  .inspector-footer strong {
-    color: #dce5f3;
-    font-size: 10px;
-    font-weight: 500;
-    white-space: nowrap;
   }
 
   button:focus-visible {

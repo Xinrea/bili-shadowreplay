@@ -10,7 +10,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import Player from "./lib/components/Player.svelte";
   import type { AccountItem, RecordItem } from "./lib/db";
-  import { Maximize, Minimize, PanelRightOpen } from "lucide-svelte";
+  import { Maximize, Minimize } from "lucide-svelte";
   import {
     type VideoItem,
     type Marker,
@@ -20,6 +20,7 @@
   } from "./lib/interface";
   import ArchiveInspector from "./lib/components/ArchiveInspector.svelte";
   import ArchiveTimeline from "./lib/components/ArchiveTimeline.svelte";
+  import TaskCenter from "./lib/components/TaskCenter.svelte";
   import { onDestroy, onMount } from "svelte";
   import {
     createThrottledRunner,
@@ -344,7 +345,6 @@
   ));
   let global_offset = $state(0);
 
-  let clip_running = $state(false);
   let videos: PreviewVideo[] = $state([]);
 
   let selected_video: PreviewVideo | null = $state(null);
@@ -605,6 +605,7 @@
 
 <svelte:document onfullscreenchange={syncFullscreen} />
 <svelte:window onkeydowncapture={onFullscreenKeydown} />
+<TaskCenter />
 
 <main>
   <div class="preview-workspace">
@@ -698,48 +699,30 @@
         onRangeDrag={seekDuringRangeDrag}
       />
     </div>
-    <div
-      class="inspector-shell"
-      class:w-[340px]={!rpanel_collapsed}
-      class:w-0={rpanel_collapsed}
-    >
-      {#if rpanel_collapsed}
-        <button
-          type="button"
-          class="open-inspector"
-          title="展开素材检查器"
-          onclick={() => (rpanel_collapsed = false)}
-        >
-          <PanelRightOpen size={17} />
-        </button>
-      {:else}
-        <ArchiveInspector
-          {archive}
-          bind:ranges
-          bind:markers
-          danmuRecords={danmu_records}
-          globalOffset={global_offset}
-          danmuPeaks={danmu_peaks}
-          peakThreshold={peak_threshold}
-          danmuKeywords={danmu_keywords}
-          onPeakThresholdChange={handlePeakThresholdChange}
-          onDanmuKeywordsChange={handleDanmuKeywordsChange}
-          {videos}
-          selectedVideo={selected_video}
-          bind:clipRunning={clip_running}
-          bind:selectedRangeIndex={selected_range_index}
-          onCollapse={() => (rpanel_collapsed = true)}
-          onSeek={(seconds) => player?.seek(seconds)}
-          onAddPeak={add_peak_to_ranges}
-          onAddAllPeaks={add_all_peaks_to_ranges}
-          onVideoSelect={selectVideo}
-          onDeleteVideo={delete_video}
-          onDownloadVideo={save_video}
-          onOpenVideo={open_clip}
-          onGenerated={handleClipGenerated}
-        />
-      {/if}
-    </div>
+    <ArchiveInspector
+      {archive}
+      bind:ranges
+      bind:markers
+      danmuRecords={danmu_records}
+      globalOffset={global_offset}
+      danmuPeaks={danmu_peaks}
+      peakThreshold={peak_threshold}
+      danmuKeywords={danmu_keywords}
+      onPeakThresholdChange={handlePeakThresholdChange}
+      onDanmuKeywordsChange={handleDanmuKeywordsChange}
+      {videos}
+      selectedVideo={selected_video}
+      bind:selectedRangeIndex={selected_range_index}
+      bind:collapsed={rpanel_collapsed}
+      onSeek={(seconds) => player?.seek(seconds)}
+      onAddPeak={add_peak_to_ranges}
+      onAddAllPeaks={add_all_peaks_to_ranges}
+      onVideoSelect={selectVideo}
+      onDeleteVideo={delete_video}
+      onDownloadVideo={save_video}
+      onOpenVideo={open_clip}
+      onGenerated={handleClipGenerated}
+    />
   </div>
 </main>
 
@@ -831,45 +814,5 @@
   .fullscreen-button:focus-visible {
     outline: 2px solid #0a84ff;
     outline-offset: 2px;
-  }
-
-  .inspector-shell {
-    position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 510;
-    flex: 0 0 auto;
-    overflow: visible;
-    box-shadow: -12px 0 32px rgb(0 0 0 / 28%);
-    transition: width 200ms ease;
-  }
-
-  .open-inspector {
-    position: absolute;
-    top: 12px;
-    right: 8px;
-    display: inline-flex;
-    width: 34px;
-    height: 34px;
-    align-items: center;
-    justify-content: center;
-    border: 1px solid #344052;
-    border-radius: 9px;
-    background: #202733;
-    color: #dce5f3;
-    box-shadow: 0 6px 18px rgb(0 0 0 / 30%);
-  }
-
-  .open-inspector:focus-visible {
-    outline: 2px solid #0a84ff;
-    outline-offset: 2px;
-  }
-
-  @media (min-width: 1100px) {
-    .inspector-shell {
-      position: relative;
-      box-shadow: none;
-    }
   }
 </style>

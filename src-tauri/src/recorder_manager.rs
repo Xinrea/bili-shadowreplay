@@ -1022,9 +1022,15 @@ impl RecorderManager {
         }
 
         if params.ranges.is_empty() {
-            crate::ffmpeg::playlist::clip_from_playlist(reporter, &playlist_path, &clip_file, None)
-                .await
-                .map_err(|e| RecorderManagerError::ClipError { err: e.to_string() })?;
+            let extracting = reporter.map(|reporter| reporter.stage("提取片段"));
+            crate::ffmpeg::playlist::clip_from_playlist(
+                extracting.as_ref(),
+                &playlist_path,
+                &clip_file,
+                None,
+            )
+            .await
+            .map_err(|e| RecorderManagerError::ClipError { err: e.to_string() })?;
         } else {
             crate::ffmpeg::playlist::clip_multiple_from_playlist(
                 reporter,
@@ -1040,7 +1046,8 @@ impl RecorderManager {
         if params.fix_encoding && !params.danmu {
             // transcode clip_file
             let tmp_clip_file = clip_file.with_extension("tmp.mp4");
-            if let Err(e) = transcode(reporter, &clip_file, &tmp_clip_file, false).await {
+            let fixing = reporter.map(|reporter| reporter.stage("修复编码"));
+            if let Err(e) = transcode(fixing.as_ref(), &clip_file, &tmp_clip_file, false).await {
                 log::error!("Failed to transcode clip file: {e}");
                 return Err(RecorderManagerError::ClipError { err: e.to_string() });
             }

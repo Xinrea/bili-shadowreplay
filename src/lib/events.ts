@@ -2,7 +2,7 @@ import { listen as tauriListen } from "@tauri-apps/api/event";
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { io } from "socket.io-client";
-import type { DanmuEntry } from "./interface";
+import type { DanmuEntry, ProgressUpdate } from "./interface";
 
 type Listener = (payload: unknown) => void;
 export type RoomTopic = { platform: string; room: string };
@@ -21,7 +21,7 @@ export type AppEvent<T> = { payload: T };
 export type StateChangeEvent =
   | "videos-changed" | "tasks-changed" | "recorders-changed" | "records-changed" | "state-resync";
 export type EventPayload<E extends string> =
-  E extends `progress-update:${string}` ? { id: string; content: string } :
+  E extends `progress-update:${string}` ? ProgressUpdate :
   E extends `progress-finished:${string}` ? { id: string; success: boolean; message: string } :
   E extends "danmu" ? DanmuEntry & RoomTopic :
   E extends StateChangeEvent ? null : unknown;

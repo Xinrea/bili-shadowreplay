@@ -26,7 +26,7 @@ use crate::{
 
 use super::{
     hwaccel,
-    runner::{run_command, ProgressMode},
+    runner::{run_command, ProgressMode, ProgressTotal},
 };
 
 const MIN_DANMU_FPS: f64 = 60.0;
@@ -488,7 +488,7 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
         .arg(&absolute_output);
     run_command(
         command,
-        ProgressMode::prefixed("压制中："),
+        ProgressMode::stage("压制弹幕", ProgressTotal::FirstInput),
         "Encode video danmu",
         reporter,
     )

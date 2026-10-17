@@ -13,6 +13,7 @@
     X,
   } from "lucide-svelte";
   import type { TaskRow } from "../lib/db";
+  import { taskTypeName } from "../lib/task-progress";
   import { onMount } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
 
@@ -249,25 +250,6 @@
     }
   }
 
-  function get_task_type_name(task_type: string) {
-    switch (task_type.toLowerCase()) {
-      case "clip_range":
-        return "切片生成";
-      case "upload_procedure":
-        return "切片投稿";
-      case "generate_video_subtitle":
-        return "生成字幕";
-      case "encode_video_subtitle":
-        return "压制字幕";
-      case "generate_whole_clip":
-        return "生成完整录播";
-      case "generate_archive_summary":
-        return "录播总结";
-      default:
-        return task_type;
-    }
-  }
-
   function get_task_type_color(task_type: string) {
     switch (task_type.toLowerCase()) {
       case "clip_range":
@@ -426,9 +408,9 @@
                     ></span>
                     <span
                       class="text-sm font-medium text-gray-900 dark:text-white truncate"
-                      title={get_task_type_name(task.task_type)}
+                      title={taskTypeName(task.task_type)}
                     >
-                      {get_task_type_name(task.task_type)}
+                      {taskTypeName(task.task_type)}
                     </span>
                   </div>
 

@@ -22,11 +22,18 @@ async function fixture({ desktop = true, check = async () => null, relaunch = as
     target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext,
   } }).outputText;
   const module = new vm.SourceTextModule(output, { context });
+  // One module per specifier, kept referenced until evaluation finishes. Node
+  // can collect an unreferenced SyntheticModule after link() and then segfault
+  // in evaluate().
+  const linked = new Map();
   await module.link((name) => {
     const exports = dependencies[name];
-    return new vm.SyntheticModule(Object.keys(exports), function () {
-      for (const [key, value] of Object.entries(exports)) this.setExport(key, value);
-    }, { context });
+    if (!linked.has(name)) {
+      linked.set(name, new vm.SyntheticModule(Object.keys(exports), function () {
+        for (const [key, value] of Object.entries(exports)) this.setExport(key, value);
+      }, { context }));
+    }
+    return linked.get(name);
   });
   await module.evaluate();
   return module.namespace;

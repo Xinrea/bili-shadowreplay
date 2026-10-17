@@ -665,14 +665,15 @@ async fn upload_procedure_inner(
 pub async fn cancel(state: state_type!(), event_id: String) -> Result<(), String> {
     log::info!("Cancel task: {event_id}");
     let task_before_cancel = state.db.get_task(&event_id).await.ok();
-    let cancel_result = state.task_manager.cancel_task(&event_id).await;
+    let cancel_result = state
+        .task_manager
+        .cancel_task_if(&event_id, async {
+            Ok(state.db.cancel_task_if_active(&event_id).await?)
+        })
+        .await;
     match cancel_result {
-        Ok(()) => {
-            state
-                .db
-                .update_task(&event_id, "cancelled", "任务取消", None)
-                .await?;
-        }
+        Ok(true) => {}
+        Ok(false) => return Ok(()),
         Err(e) if e == "Task not found" => {
             let task = state.db.get_task(&event_id).await?;
             if matches!(task.status.as_str(), "pending" | "processing") {
@@ -1846,7 +1847,7 @@ mod queued_subtitle_tests {
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
-    async fn fixture(dir: &Path, capacity: usize) -> State {
+    async fn fixture(dir: &Path, capacity: usize, start_scheduler: bool) -> State {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -1882,12 +1883,15 @@ mod queued_subtitle_tests {
         }))
         .unwrap();
         let config = Arc::new(RwLock::new(config));
-        // Leave the scheduler stopped: submitting jobs must return without
-        // waiting for FFmpeg, even while all execution slots are unavailable.
-        let task_manager = Arc::new(TaskManager::with_config(TaskManagerConfig {
+        let mut task_manager = TaskManager::with_config(TaskManagerConfig {
             max_queue_size: capacity,
+            check_interval_ms: 5,
             ..Default::default()
-        }));
+        });
+        if start_scheduler {
+            task_manager.start();
+        }
+        let task_manager = Arc::new(task_manager);
         let webhook_poster = WebhookPoster::new(WebhookConfig::default()).unwrap();
         let recorder_manager = Arc::new(RecorderManager::new(
             events.clone(),
@@ -1913,7 +1917,8 @@ mod queued_subtitle_tests {
     #[tokio::test]
     async fn consecutive_submissions_return_pending_jobs_and_can_be_cancelled() {
         let dir = tempfile::tempdir().unwrap();
-        let state = fixture(dir.path(), 2).await;
+        // Submission must return even when the scheduler is stopped.
+        let state = fixture(dir.path(), 2, false).await;
         for id in ["first", "second"] {
             let task = tokio::time::timeout(
                 std::time::Duration::from_secs(1),
@@ -1943,7 +1948,7 @@ mod queued_subtitle_tests {
     #[tokio::test]
     async fn queue_full_marks_submission_failed_instead_of_leaving_it_pending() {
         let dir = tempfile::tempdir().unwrap();
-        let state = fixture(dir.path(), 1).await;
+        let state = fixture(dir.path(), 1, false).await;
         encode_video_subtitle(state.clone(), "first".into(), 1, String::new(), None)
             .await
             .unwrap();
@@ -1962,9 +1967,96 @@ mod queued_subtitle_tests {
     }
 
     #[tokio::test]
+    async fn cancellation_preserves_committed_result_while_worker_is_still_running() {
+        use crate::task::TaskStatus;
+        use tokio::{
+            sync::oneshot,
+            time::{timeout, Duration},
+        };
+
+        for status in ["success", "failed"] {
+            let dir = tempfile::tempdir().unwrap();
+            let state = fixture(dir.path(), 1, true).await;
+            let task = state
+                .db
+                .generate_task("encode_video_subtitle", "waiting", "{}")
+                .await
+                .unwrap();
+            let task_id = task.id.clone();
+            let worker_db = state.db.clone();
+            let (committed_tx, committed_rx) = oneshot::channel();
+            let (release_tx, release_rx) = oneshot::channel();
+            state
+                .task_manager
+                .add_task(Task::new(
+                    task.id.clone(),
+                    TaskPriority::Normal,
+                    async move {
+                        worker_db
+                            .update_task(&task_id, status, "finished", Some("{\"finished\":true}"))
+                            .await
+                            .unwrap();
+                        committed_tx.send(()).unwrap();
+                        // Hold the worker after the terminal DB commit, reproducing the
+                        // window before the scheduler removes its running handle.
+                        release_rx.await.unwrap();
+                        if status == "failed" {
+                            Err("encode failed".to_string())
+                        } else {
+                            Ok(())
+                        }
+                    },
+                ))
+                .await
+                .unwrap();
+            timeout(Duration::from_secs(1), committed_rx)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                state.task_manager.get_task_status(&task.id).await,
+                Some(TaskStatus::Running)
+            );
+            let mut events = state.events.subscribe();
+
+            cancel(state.clone(), task.id.clone()).await.unwrap();
+
+            let row = state.db.get_task(&task.id).await.unwrap();
+            assert_eq!(row.status, status);
+            assert_eq!(row.message, "finished");
+            assert_eq!(row.metadata, "{\"finished\":true}");
+            assert_eq!(
+                state.task_manager.get_task_status(&task.id).await,
+                Some(TaskStatus::Running)
+            );
+            assert!(
+                timeout(Duration::from_millis(10), events.recv())
+                    .await
+                    .is_err(),
+                "ignored cancellation must not publish cancelled progress"
+            );
+            release_tx
+                .send(())
+                .expect("completed worker must not be aborted");
+            let expected = if status == "failed" {
+                TaskStatus::Failed("encode failed".into())
+            } else {
+                TaskStatus::Completed
+            };
+            timeout(Duration::from_secs(1), async {
+                while state.task_manager.get_task_status(&task.id).await != Some(expected.clone()) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn cancelling_an_unmanaged_task_does_not_claim_it_was_stopped() {
         let dir = tempfile::tempdir().unwrap();
-        let state = fixture(dir.path(), 1).await;
+        let state = fixture(dir.path(), 1, false).await;
         let task = state
             .db
             .generate_task("upload_procedure", "working", "{}")

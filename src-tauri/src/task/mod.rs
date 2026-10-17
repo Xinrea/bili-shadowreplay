@@ -199,31 +199,43 @@ impl TaskManager {
     }
 
     /// Cancel a task by ID
+    #[allow(dead_code)]
     pub async fn cancel_task(&self, task_id: &str) -> Result<(), String> {
+        self.cancel_task_if(task_id, async { Ok(true) })
+            .await
+            .map(|_| ())
+    }
+
+    /// Claim persisted cancellation before aborting a worker. A completed task
+    /// may still have a running handle while its scheduler wrapper is finishing.
+    pub async fn cancel_task_if<F>(&self, task_id: &str, claim: F) -> Result<bool, String>
+    where
+        F: Future<Output = Result<bool, String>> + Send,
+    {
         // Use the scheduler's lock order so a task cannot move from the queue
         // to the running map between these checks.
         let mut queue = self.queue.lock().await;
         let mut running_tasks = self.running_tasks.write().await;
+        let pos = queue.iter().position(|t| t.task_id == task_id);
+        if !running_tasks.contains_key(task_id) && pos.is_none() {
+            return Err("Task not found".to_string());
+        }
+        if !claim.await? {
+            return Ok(false);
+        }
+
         if let Some(handle) = running_tasks.remove(task_id) {
             handle.abort();
             // Keep the slot locked until the future (and its owned FFmpeg
-            // child with kill_on_drop) has been dropped. No progress writes
-            // from this task can race the caller's cancelled status afterward.
+            // child with kill_on_drop) has been dropped. The persistence guard
+            // above decides whether cancellation won over task completion.
             let _ = handle.await;
-            let mut statuses = self.task_statuses.write().await;
-            statuses.insert(task_id.to_string(), TaskStatus::Cancelled);
-            return Ok(());
-        }
-
-        let pos = queue.iter().position(|t| t.task_id == task_id);
-        if let Some(pos) = pos {
+        } else if let Some(pos) = pos {
             queue.remove(pos);
-            let mut statuses = self.task_statuses.write().await;
-            statuses.insert(task_id.to_string(), TaskStatus::Cancelled);
-            return Ok(());
         }
-
-        Err("Task not found".to_string())
+        let mut statuses = self.task_statuses.write().await;
+        statuses.insert(task_id.to_string(), TaskStatus::Cancelled);
+        Ok(true)
     }
 
     /// Get the status of a task

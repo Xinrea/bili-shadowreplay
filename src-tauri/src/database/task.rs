@@ -73,23 +73,44 @@ impl Database {
         message: &str,
         metadata: Option<&str>,
     ) -> Result<(), DatabaseError> {
-        if let Some(metadata) = metadata {
-            let _ = sqlx::query(
-                "UPDATE tasks SET status = $1, message = $2, metadata = $3 WHERE id = $4 AND status != 'cancelled'",
+        self.update_task_inner(id, status, message, metadata)
+            .await?;
+        Ok(())
+    }
+
+    /// Atomically claim cancellation only while a task is pending or processing.
+    pub async fn cancel_task_if_active(&self, id: &str) -> Result<bool, DatabaseError> {
+        self.update_task_inner(id, "cancelled", "任务取消", None)
+            .await
+    }
+
+    async fn update_task_inner(
+        &self,
+        id: &str,
+        status: &str,
+        message: &str,
+        metadata: Option<&str>,
+    ) -> Result<bool, DatabaseError> {
+        let result = if let Some(metadata) = metadata {
+            sqlx::query(
+                "UPDATE tasks SET status = $1, message = $2, metadata = $3 WHERE id = $4 AND status != 'cancelled' AND ($1 != 'cancelled' OR status IN ('pending', 'processing'))",
             )
             .bind(status)
             .bind(message)
             .bind(metadata)
             .bind(id)
             .execute(&self.pool)
-            .await?;
+            .await?
         } else {
-            let _ = sqlx::query("UPDATE tasks SET status = $1, message = $2 WHERE id = $3 AND status != 'cancelled'")
+            sqlx::query("UPDATE tasks SET status = $1, message = $2 WHERE id = $3 AND status != 'cancelled' AND ($1 != 'cancelled' OR status IN ('pending', 'processing'))")
                 .bind(status)
                 .bind(message)
                 .bind(id)
                 .execute(&self.pool)
-                .await?;
+                .await?
+        };
+        if result.rows_affected() == 0 {
+            return Ok(false);
         }
 
         if status == "processing" {
@@ -97,7 +118,7 @@ impl Database {
         } else {
             self.notify_change(DataChange::Tasks);
         }
-        Ok(())
+        Ok(true)
     }
 
     pub async fn delete_task(&self, id: &str) -> Result<(), DatabaseError> {

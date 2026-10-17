@@ -12,6 +12,7 @@
     Download,
     Pen,
     Scissors,
+    CircleHelp,
   } from "lucide-svelte";
   import {
     generateEventId,
@@ -25,6 +26,7 @@
   } from "../interface";
   import SubtitleStyleEditor from "./SubtitleStyleEditor.svelte";
   import AssSubtitlePreview from "./AssSubtitlePreview.svelte";
+  import ShortcutHelpModal from "./ShortcutHelpModal.svelte";
   import { buildSubtitleAss, DEFAULT_SUBTITLE_STYLE, loadSubtitleStyle as readSubtitleStyle } from "../subtitle-ass";
   import CoverEditor from "./CoverEditor.svelte";
   import TypeSelect from "./TypeSelect.svelte";
@@ -86,7 +88,10 @@
   let isMuted = $state(false);
   let currentSubtitleIndex = $state(-1);
   let currentSubtitleIndices: number[] = $state([]);
-  let subtitleElements: HTMLElement[] = $state([]);
+  let selectedSubtitleIndex = $state(-1); // 快捷键操作的字幕，与播放位置无关
+  let subtitleRowElements: HTMLElement[] = $state([]);
+  let subtitleBlockElements: HTMLElement[] = $state([]);
+  let snapTime: number | null = $state(null); // 拖动字幕时当前吸附到的时间点
   let subtitleLanes: number[] = $state([]);
   let subtitleLaneCount = $state(1);
   let subtitleTrackHeight = $state(48);
@@ -110,7 +115,7 @@
   let clipTitle = $state("");
   let clipping = $state(false);
   let current_clip_event_id = $state(null);
-  let show_detail = $state(false); // 控制快捷键说明的展开
+  let showShortcutHelp = $state(false);
   let lastVideoId = $state(-1); // 记录上一个视频ID，避免重复初始化
   let clipTimesSet = $state(false); // 标记用户是否主动设置过切片时间
 
@@ -133,6 +138,12 @@
   let isWaveformLoaded = false;
   let isWaveformLoading = $state(false);
   let syncTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  // 字幕打轴相关
+  const PREVIEW_SPAN = 0.5; // Q/W/E/D 试听片段长度，与 Aegisub 一致
+  const MIN_SUBTITLE_DURATION = 0.1;
+  const SNAP_THRESHOLD_PX = 8; // 拖动吸附距离（像素）
+  let stopRangePlayback: (() => void) | null = null; // 结束当前的区间试听
 
 
 
@@ -316,6 +327,7 @@
     if (windowCloseUnlisten) {
       windowCloseUnlisten();
     }
+    stopRangePlayback?.();
     // 清理 WaveSurfer 实例
     destroyWaveSurfer();
   });
@@ -443,10 +455,12 @@
   }
 
   function formatSrtTime(time: number): string {
-    const hours = Math.floor(time / 3600);
-    const minutes = Math.floor((time % 3600) / 60);
-    const seconds = Math.floor(time % 60);
-    const milliseconds = Math.floor((time % 1) * 1000);
+    // 先取整到毫秒：直接对浮点数取余会得到 5.6 % 1 = 0.5999…，每保存一次少 1ms
+    const totalMs = Math.round(time * 1000);
+    const hours = Math.floor(totalMs / 3600000);
+    const minutes = Math.floor(totalMs / 60000) % 60;
+    const seconds = Math.floor(totalMs / 1000) % 60;
+    const milliseconds = totalMs % 1000;
     return `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")},${milliseconds.toString().padStart(3, "0")}`;
   }
 
@@ -545,6 +559,7 @@
         id: video.id,
       })) as string;
       subtitles = srtToSubtitles(savedSubtitles);
+      selectedSubtitleIndex = -1;
     }
   }
 
@@ -556,6 +571,7 @@
       })) as string;
       if (savedSubtitles) {
         subtitles = srtToSubtitles(savedSubtitles);
+        selectedSubtitleIndex = -1;
       }
     }
   }
@@ -577,6 +593,7 @@
       isPlaying = false;
       currentTime = 0;
       currentSubtitleIndex = -1;
+      selectedSubtitleIndex = -1;
     }
     await loadSubtitles(); // 加载保存的字幕
     initClipTimes(); // 初始化切片时间
@@ -783,9 +800,9 @@
     return video.status !== -1;
   }
 
-  // 键盘快捷键处理
+  // 键盘快捷键处理：按物理键位（event.code）匹配，不受输入法和大小写影响
   function handleKeydown(event: KeyboardEvent) {
-    if (!show || !isVideoLoaded || showStyleEditor) return;
+    if (!show || !isVideoLoaded || showStyleEditor || showShortcutHelp) return;
 
     const target = event.target as HTMLElement | null;
     const tagName = target?.tagName;
@@ -797,85 +814,316 @@
       !!target?.closest(
         "input, textarea, select, [contenteditable='true'], [data-hotkey-block]"
       );
+    if (isInInput || event.altKey) return;
+    // 只有方向键允许按住连发；其它键连发会反复重启试听或跟着播放头改写时间
+    if (event.repeat && !event.code.startsWith("Arrow")) return;
 
-    switch (event.key) {
-      case "【":
-      case "[":
-        if (!isInInput && canBeClipped(video)) {
+    const clipEnabled = canBeClipped(video);
+
+    // Aegisub 的 Ctrl+3 / Ctrl+4，macOS 上也接受 ⌘
+    if (event.ctrlKey || event.metaKey) {
+      if (event.shiftKey) return;
+      switch (event.code) {
+        case "Digit3":
+          event.preventDefault();
+          setSubtitleBoundaryToPlayhead(true);
+          break;
+        case "Digit4":
+          event.preventDefault();
+          setSubtitleBoundaryToPlayhead(false);
+          break;
+      }
+      return;
+    }
+
+    if (event.shiftKey) {
+      switch (event.code) {
+        case "BracketLeft":
+          if (clipEnabled) {
+            event.preventDefault();
+            seekToClipStart();
+          }
+          break;
+        case "BracketRight":
+          if (clipEnabled) {
+            event.preventDefault();
+            seekToClipEnd();
+          }
+          break;
+      }
+      return;
+    }
+
+    switch (event.code) {
+      case "BracketLeft":
+        if (clipEnabled) {
           event.preventDefault();
           setClipStartTime();
         }
         break;
-      case "】":
-      case "]":
-        if (!isInInput && canBeClipped(video)) {
+      case "BracketRight":
+        if (clipEnabled) {
           event.preventDefault();
           setClipEndTime();
         }
         break;
-      case "q":
-      case "Q":
-        if (!isInInput && canBeClipped(video)) {
-          event.preventDefault();
-          seekToClipStart();
-        }
-        break;
-      case "e":
-      case "E":
-        if (!isInInput && canBeClipped(video)) {
-          event.preventDefault();
-          seekToClipEnd();
-        }
-        break;
-      case " ":
-        if (!isInInput) {
-          event.preventDefault();
-          togglePlay();
-        }
-        break;
-      case "ArrowLeft":
-        if (!isInInput) {
-          event.preventDefault();
-          if (videoElement) {
-            videoElement.currentTime = Math.max(
-              0,
-              videoElement.currentTime - 5
-            );
-          }
-        }
-        break;
-      case "ArrowRight":
-        if (!isInInput) {
-          event.preventDefault();
-          if (videoElement) {
-            videoElement.currentTime = Math.min(
-              videoElement.duration,
-              videoElement.currentTime + 5
-            );
-          }
-        }
-        break;
-      case "g":
-      case "G":
-        if (!isInInput && canBeClipped(video)) {
+      case "KeyG":
+        // 与「生成切片」按钮的禁用状态一致，避免按住或连按时重复提交
+        if (clipEnabled && !clipping && current_clip_event_id == null) {
           event.preventDefault();
           generateClip();
         }
         break;
-      case "c":
-      case "C":
-        if (!isInInput && canBeClipped(video)) {
+      case "KeyC":
+        if (clipEnabled) {
           event.preventDefault();
           clearClipSelection();
         }
         break;
-      case "h":
-      case "H":
-        if (!isInInput && canBeClipped(video)) {
-          event.preventDefault();
-          show_detail = !show_detail;
+      case "Space":
+        event.preventDefault();
+        togglePlay();
+        break;
+      case "ArrowLeft":
+        event.preventDefault();
+        if (videoElement) {
+          videoElement.currentTime = Math.max(0, videoElement.currentTime - 5);
         }
         break;
+      case "ArrowRight":
+        event.preventDefault();
+        if (videoElement) {
+          videoElement.currentTime = Math.min(
+            videoElement.duration,
+            videoElement.currentTime + 5
+          );
+        }
+        break;
+      // 以下为 Aegisub 默认的打轴键位，作用于选中的字幕
+      case "KeyZ":
+        event.preventDefault();
+        selectAdjacentSubtitle(-1);
+        break;
+      case "KeyX":
+        event.preventDefault();
+        selectAdjacentSubtitle(1);
+        break;
+      case "KeyS":
+        event.preventDefault();
+        playSubtitlePart("whole");
+        break;
+      case "KeyQ":
+        event.preventDefault();
+        playSubtitlePart("before");
+        break;
+      case "KeyW":
+        event.preventDefault();
+        playSubtitlePart("after");
+        break;
+      case "KeyE":
+        event.preventDefault();
+        playSubtitlePart("begin");
+        break;
+      case "KeyD":
+        event.preventDefault();
+        playSubtitlePart("end");
+        break;
+    }
+  }
+
+  // 跳转并等待 seeked：远距离跳转需要解码，不等待会吃掉试听片段的开头
+  function seekVideo(time: number): Promise<void> {
+    const video = videoElement;
+    return new Promise((resolve) => {
+      if (Math.abs(video.currentTime - time) < 0.001) {
+        resolve();
+        return;
+      }
+      let timer: ReturnType<typeof setTimeout>;
+      const done = () => {
+        clearTimeout(timer);
+        video.removeEventListener("seeked", done);
+        resolve();
+      };
+      timer = setTimeout(done, 2000); // 兜底，避免 seeked 事件丢失时一直等待
+      video.addEventListener("seeked", done);
+      video.currentTime = time;
+      currentTime = time;
+    });
+  }
+
+  // 播放 [start, end) 后自动暂停；从按键起，用户跳转或自行播放、暂停都会结束区间试听
+  async function playRange(start: number, end: number) {
+    const video = videoElement;
+    if (!video?.duration) return;
+    stopRangePlayback?.();
+
+    start = Math.max(0, start);
+    end = Math.min(video.duration, end);
+    if (end - start < 0.01) return;
+
+    let frame = 0;
+    let stopped = false;
+    let waitingForSeek = true;
+    const stop = () => {
+      stopped = true;
+      cancelAnimationFrame(frame);
+      video.removeEventListener("seeking", handleSeeking);
+      video.removeEventListener("play", handlePlay);
+      video.removeEventListener("timeupdate", checkEnd);
+      if (stopRangePlayback === stop) stopRangePlayback = null;
+    };
+    // 跳转过程中 currentTime 即目标位置：目标不是 start 的跳转来自用户（时间轴、方向键等）
+    const handleSeeking = () => {
+      if (Math.abs(video.currentTime - start) > 0.001) stop();
+    };
+    // 还在等待跳转时用户自己开始播放，交给用户控制
+    const handlePlay = () => {
+      if (waitingForSeek) stop();
+    };
+    const checkEnd = () => {
+      if (stopped) return;
+      currentTime = video.currentTime;
+      if (video.paused) {
+        stop();
+      } else if (video.currentTime >= end) {
+        video.pause();
+        isPlaying = false;
+        stop();
+      }
+    };
+    stopRangePlayback = stop;
+    video.addEventListener("seeking", handleSeeking);
+    video.addEventListener("play", handlePlay);
+
+    video.pause();
+    isPlaying = false;
+    await seekVideo(start);
+    if (stopped) return;
+    waitingForSeek = false;
+    try {
+      await video.play();
+    } catch {
+      stop();
+      return;
+    }
+    if (stopped) return;
+    isPlaying = true;
+
+    // timeupdate 每秒只触发约 4 次，用逐帧检查保证在 end 附近及时停下；
+    // 窗口隐藏时 requestAnimationFrame 会暂停，timeupdate 作为兜底
+    const tick = () => {
+      checkEnd();
+      if (!stopped) frame = requestAnimationFrame(tick);
+    };
+    video.addEventListener("timeupdate", checkEnd);
+    frame = requestAnimationFrame(tick);
+  }
+
+  // 快捷键作用的字幕：优先用选中的字幕，未选中时取播放位置所在的字幕并选中它
+  function resolveTargetSubtitle(): number {
+    if (selectedSubtitleIndex >= 0 && selectedSubtitleIndex < subtitles.length) {
+      return selectedSubtitleIndex;
+    }
+    const time = videoElement?.currentTime ?? 0;
+    const index = subtitles.findIndex(
+      (sub) => time >= sub.startTime && time < sub.endTime
+    );
+    if (index >= 0) selectedSubtitleIndex = index;
+    return index;
+  }
+
+  function selectSubtitle(index: number, seek = false) {
+    if (index < 0 || index >= subtitles.length) return;
+    selectedSubtitleIndex = index;
+    subtitleRowElements[index]?.scrollIntoView({
+      behavior: "smooth",
+      block: "nearest",
+    });
+    if (seek) {
+      seekToTime(subtitles[index].startTime);
+      subtitleBlockElements[index]?.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest",
+        inline: "nearest",
+      });
+    }
+  }
+
+  // Z / X：选中上一条 / 下一条字幕并跳到开头；未选中时以播放位置为基准
+  function selectAdjacentSubtitle(direction: -1 | 1) {
+    if (!videoElement) return;
+    const time = videoElement.currentTime;
+    let index: number;
+    if (selectedSubtitleIndex >= 0 && selectedSubtitleIndex < subtitles.length) {
+      index = selectedSubtitleIndex + direction;
+    } else if (direction > 0) {
+      index = subtitles.findIndex((sub) => sub.startTime > time + 0.001);
+    } else {
+      index = subtitles.length - 1;
+      while (index >= 0 && subtitles[index].startTime >= time - 0.001) index--;
+    }
+    selectSubtitle(index, true);
+  }
+
+  // S / Q / W / E / D：试听选中字幕的整段、前后 500ms、开头或结尾 500ms
+  function playSubtitlePart(
+    part: "whole" | "before" | "after" | "begin" | "end"
+  ) {
+    const index = resolveTargetSubtitle();
+    if (index < 0) return;
+    const { startTime, endTime } = subtitles[index];
+    const ranges = {
+      whole: [startTime, endTime],
+      before: [startTime - PREVIEW_SPAN, startTime],
+      after: [endTime, endTime + PREVIEW_SPAN],
+      begin: [startTime, Math.min(startTime + PREVIEW_SPAN, endTime)],
+      end: [Math.max(endTime - PREVIEW_SPAN, startTime), endTime],
+    };
+    const [start, end] = ranges[part];
+    playRange(start, end);
+  }
+
+  // Ctrl/⌘+3、Ctrl/⌘+4：把选中字幕的开始 / 结束设为当前播放位置
+  function setSubtitleBoundaryToPlayhead(isStart: boolean) {
+    if (!videoElement?.duration) return;
+    const index = resolveTargetSubtitle();
+    if (index < 0) return;
+
+    const videoDuration = videoElement.duration;
+    const time = videoElement.currentTime;
+    const sub = subtitles[index];
+    const length = Math.max(sub.endTime - sub.startTime, MIN_SUBTITLE_DURATION);
+    let { startTime, endTime } = sub;
+    // 越过另一端时保持原时长，而不是把字幕压成最短
+    if (isStart) {
+      startTime = Math.min(time, videoDuration - MIN_SUBTITLE_DURATION);
+      if (endTime - startTime < MIN_SUBTITLE_DURATION) {
+        endTime = Math.min(startTime + length, videoDuration);
+      }
+    } else {
+      endTime = Math.max(time, MIN_SUBTITLE_DURATION);
+      if (endTime - startTime < MIN_SUBTITLE_DURATION) {
+        startTime = Math.max(endTime - length, 0);
+      }
+    }
+    subtitles[index] = { ...sub, startTime, endTime };
+    sortSubtitles();
+  }
+
+  // 按开始时间重新排序，选中的仍是同一条字幕
+  function sortSubtitles() {
+    const selected = subtitles[selectedSubtitleIndex];
+    subtitles = [...subtitles].sort((a, b) => a.startTime - b.startTime);
+    selectedSubtitleIndex = selected ? subtitles.indexOf(selected) : -1;
+  }
+
+  // 字幕输入框内按 Enter / Esc 退出编辑，回到快捷键操作
+  function handleSubtitleInputKeydown(event: KeyboardEvent) {
+    if (event.isComposing || event.keyCode === 229) return; // 输入法选词中
+    if (event.key === "Enter" || event.key === "Escape") {
+      event.preventDefault();
+      (event.currentTarget as HTMLInputElement).blur();
     }
   }
 
@@ -932,6 +1180,9 @@
     const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
     const newTime = (x / rect.width) * videoElement.duration;
     previewTime = newTime;
+
+    // 拖动到松手才会跳转，先结束区间试听，免得等待中的试听在拖动时开始播放
+    stopRangePlayback?.();
 
     // 暂停播放
     if (isPlaying) {
@@ -1051,9 +1302,10 @@
     videoElement.currentTime = startTime;
     currentTime = startTime;
     currentSubtitleIndex = index + 1;
+    selectedSubtitleIndex = index + 1;
 
     setTimeout(() => {
-      subtitleElements[index + 1]
+      subtitleRowElements[index + 1]
         ?.querySelector<HTMLInputElement>("input")
         ?.focus();
     });
@@ -1067,31 +1319,43 @@
 
       if (isStart) {
         // 开始时间约束：不能小于0，不能大于结束时间-0.1秒
-        const newStartTime = Math.max(0, Math.min(time, sub.endTime - 0.1));
+        const newStartTime = Math.max(
+          0,
+          Math.min(time, sub.endTime - MIN_SUBTITLE_DURATION)
+        );
         return { ...sub, startTime: newStartTime };
       } else {
         // 结束时间约束：不能小于开始时间+0.1秒，不能大于视频总长度
         const newEndTime = Math.min(
           videoElement.duration,
-          Math.max(time, sub.startTime + 0.1)
+          Math.max(time, sub.startTime + MIN_SUBTITLE_DURATION)
         );
         return { ...sub, endTime: newEndTime };
       }
     });
   }
 
-  function moveSubtitle(index: number, newStartTime: number) {
+  // 整体移动字幕；alignEnd 时以结束时间为基准，保证吸附后与目标精确相等
+  function moveSubtitle(index: number, time: number, alignEnd = false) {
     if (!videoElement?.duration) return;
 
     const sub = subtitles[index];
     const duration = sub.endTime - sub.startTime;
 
-    // 约束开始时间到有效范围 [0, videoDuration - duration]
-    const finalStartTime = Math.max(
-      0,
-      Math.min(newStartTime, videoElement.duration - duration)
-    );
-    const finalEndTime = finalStartTime + duration;
+    let finalStartTime: number;
+    let finalEndTime: number;
+    if (alignEnd) {
+      // 约束结束时间到有效范围 [duration, videoDuration]
+      finalEndTime = Math.max(duration, Math.min(time, videoElement.duration));
+      finalStartTime = finalEndTime - duration;
+    } else {
+      // 约束开始时间到有效范围 [0, videoDuration - duration]
+      finalStartTime = Math.max(
+        0,
+        Math.min(time, videoElement.duration - duration)
+      );
+      finalEndTime = finalStartTime + duration;
+    }
 
     subtitles = subtitles.map((s, i) =>
       i === index
@@ -1102,11 +1366,17 @@
 
   async function removeSubtitle(index: number) {
     subtitles = subtitles.filter((_, i) => i !== index);
+    if (selectedSubtitleIndex === index) {
+      selectedSubtitleIndex = -1;
+    } else if (selectedSubtitleIndex > index) {
+      selectedSubtitleIndex--;
+    }
     await saveSubtitles(); // 删除字幕时保存
   }
 
   async function clearSubtitles() {
     subtitles = [];
+    selectedSubtitleIndex = -1;
     await saveSubtitles(); // 清空字幕时保存
   }
 
@@ -1134,6 +1404,8 @@
   }
 
   function handleBlockMouseDown(e: MouseEvent, index: number) {
+    selectSubtitle(index);
+
     const sub = subtitles[index];
     const rect = timelineElement.getBoundingClientRect();
     const x = e.clientX - rect.left;
@@ -1161,6 +1433,32 @@
     }
   }
 
+  // 拖动吸附：返回距 time 最近且在阈值内的吸附点（其它字幕的起止时间与播放头）
+  function findSnapTime(
+    time: number,
+    excludeIndex: number,
+    rect: DOMRect,
+    accept: (target: number) => boolean = () => true
+  ): number | null {
+    const targets = [videoElement.currentTime];
+    for (let i = 0; i < subtitles.length; i++) {
+      if (i === excludeIndex) continue;
+      targets.push(subtitles[i].startTime, subtitles[i].endTime);
+    }
+
+    const threshold = (SNAP_THRESHOLD_PX / rect.width) * videoElement.duration;
+    let best: number | null = null;
+    let bestDistance = threshold;
+    for (const target of targets) {
+      const distance = Math.abs(target - time);
+      if (distance <= bestDistance && accept(target)) {
+        best = target;
+        bestDistance = distance;
+      }
+    }
+    return best;
+  }
+
   function handleTimelineMouseMove(e: MouseEvent) {
     if (!draggingSubtitle || !timelineElement) return;
 
@@ -1169,7 +1467,18 @@
     // 直接使用容器的实际宽度计算时间，与 getSubtitleStyle 逻辑保持一致
     const time = (x / rect.width) * videoElement.duration;
 
-    updateSubtitleTime(draggingSubtitle.index, draggingSubtitle.isStart, time);
+    // 按住 Shift 时暂时关闭吸附；只吸附到不会让字幕短于最小时长的位置
+    const { index, isStart } = draggingSubtitle;
+    const sub = subtitles[index];
+    snapTime = e.shiftKey
+      ? null
+      : findSnapTime(time, index, rect, (target) =>
+          isStart
+            ? target <= sub.endTime - MIN_SUBTITLE_DURATION
+            : target >= sub.startTime + MIN_SUBTITLE_DURATION
+        );
+
+    updateSubtitleTime(index, isStart, snapTime ?? time);
   }
 
   function handleBlockMouseMove(e: MouseEvent) {
@@ -1181,19 +1490,40 @@
     const mouseTime = (x / rect.width) * videoElement.duration;
     const newStartTime = mouseTime - dragOffset; // 使用偏移量计算新的开始时间
 
-    moveSubtitle(draggingBlock, newStartTime);
+    snapTime = null;
+    if (!e.shiftKey) {
+      // 开始和结束都可以吸附，取离吸附点更近的一端
+      const sub = subtitles[draggingBlock];
+      const newEndTime = newStartTime + (sub.endTime - sub.startTime);
+      const startSnap = findSnapTime(newStartTime, draggingBlock, rect);
+      const endSnap = findSnapTime(newEndTime, draggingBlock, rect);
+      if (
+        endSnap !== null &&
+        (startSnap === null ||
+          Math.abs(endSnap - newEndTime) < Math.abs(startSnap - newStartTime))
+      ) {
+        snapTime = endSnap;
+        moveSubtitle(draggingBlock, endSnap, true);
+        return;
+      }
+      snapTime = startSnap;
+    }
+
+    moveSubtitle(draggingBlock, snapTime ?? newStartTime);
   }
 
   function handleTimelineMouseUp() {
     draggingSubtitle = null;
-    subtitles = [...subtitles].sort((a, b) => a.startTime - b.startTime);
+    snapTime = null;
+    sortSubtitles();
     document.removeEventListener("mousemove", handleTimelineMouseMove);
     document.removeEventListener("mouseup", handleTimelineMouseUp);
   }
 
   function handleBlockMouseUp() {
     draggingBlock = null;
-    subtitles = [...subtitles].sort((a, b) => a.startTime - b.startTime);
+    snapTime = null;
+    sortSubtitles();
     document.removeEventListener("mousemove", handleBlockMouseMove);
     document.removeEventListener("mouseup", handleBlockMouseUp);
   }
@@ -1296,6 +1626,8 @@
       // 清空字幕列表
       subtitles = [];
       currentSubtitleIndex = -1;
+      selectedSubtitleIndex = -1;
+      stopRangePlayback?.();
       // 重置视频状态
       if (videoElement) {
         videoElement.currentTime = 0;
@@ -1328,7 +1660,9 @@
       isVideoLoaded = false;
       subtitles = []; // 清空字幕列表
       currentSubtitleIndex = -1;
-      subtitleElements = [];
+      selectedSubtitleIndex = -1;
+      subtitleRowElements = [];
+      subtitleBlockElements = [];
       loadSubtitleStyle(); // 加载字幕样式
 
       // 销毁旧的波形图实例
@@ -1358,8 +1692,8 @@
   });
   // 监听当前字幕索引变化
   $effect(() => {
-    if (currentSubtitleIndex >= 0 && subtitleElements[currentSubtitleIndex]) {
-      subtitleElements[currentSubtitleIndex].scrollIntoView({
+    if (currentSubtitleIndex >= 0 && subtitleRowElements[currentSubtitleIndex]) {
+      subtitleRowElements[currentSubtitleIndex].scrollIntoView({
         behavior: "smooth",
         block: "nearest",
       });
@@ -1630,77 +1964,6 @@
               onclick={togglePlay}
 ></video>
 
-            <!-- 切片快捷键说明 -->
-            {#if canBeClipped(video)}
-              <div
-                id="overlay"
-                class="absolute top-2 left-2 rounded-md px-2 py-2 flex flex-col pointer-events-none"
-                style="background-color: rgba(0, 0, 0, 0.5); color: white; font-size: 0.8em;"
-              >
-                <p style="margin: 0;">
-                  快捷键说明
-                  <kbd
-                    style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;"
-                    >h</kbd
-                  >展开
-                </p>
-                {#if show_detail}
-                  <span>
-                    <p style="margin: 0;">
-                      <kbd
-                        style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;"
-                        >[</kbd
-                      >设定选区开始
-                    </p>
-                    <p style="margin: 0;">
-                      <kbd
-                        style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;"
-                        >]</kbd
-                      >设定选区结束
-                    </p>
-                    <p style="margin: 0;">
-                      <kbd
-                        style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;"
-                        >q</kbd
-                      >跳转到选区开始
-                    </p>
-                    <p style="margin: 0;">
-                      <kbd
-                        style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;"
-                        >e</kbd
-                      >跳转到选区结束
-                    </p>
-                    <p style="margin: 0;">
-                      <kbd
-                        style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;"
-                        >g</kbd
-                      >生成切片
-                    </p>
-                    <p style="margin: 0;">
-                      <kbd
-                        style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;"
-                        >c</kbd
-                      >清除选区
-                    </p>
-                    <p style="margin: 0;">
-                      <kbd
-                        style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;"
-                        >Space</kbd
-                      >播放/暂停
-                    </p>
-                    <p style="margin: 0;">
-                      <kbd
-                        style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;"
-                        >←</kbd
-                      ><kbd
-                        style="border: 1px solid white; padding: 0 0.2em; border-radius: 0.2em; margin: 4px;"
-                        >→</kbd
-                      >前进/后退
-                    </p>
-                  </span>
-                {/if}
-              </div>
-            {/if}
             {#if isVideoLoaded && videoElement}
               <AssSubtitlePreview assContent={subtitleAss} video={videoElement} fontName={subtitleStyle.fontName} />
             {/if}
@@ -1794,6 +2057,15 @@
                 oninput={handleVolumeChange}
                 class="w-20 h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
               />
+              <span class="h-4 w-px bg-gray-700/70"></span>
+              <button
+                class="text-gray-400 hover:text-white transition-colors duration-200"
+                title="快捷键说明"
+                aria-label="快捷键说明"
+                onclick={() => (showShortcutHelp = true)}
+              >
+                <CircleHelp class="w-4 h-4" />
+              </button>
             </div>
           </div>
         </div>
@@ -1956,14 +2228,16 @@
                   {/if}
                   {#each subtitles as subtitle, index}
                     <div
-                      bind:this={subtitleElements[index]}
+                      bind:this={subtitleBlockElements[index]}
                       role="button"
                       tabindex="0"
                       class="absolute h-8 rounded-md border border-[#0A84FF]/50 bg-[#0A84FF]/20 cursor-move overflow-hidden {currentSubtitleIndices.includes(
                         index
-                      ) || draggingSubtitle?.index === index || draggingBlock === index
+                      ) || draggingSubtitle?.index === index || draggingBlock === index || selectedSubtitleIndex === index
                         ? 'z-20 border-[#0A84FF]/90 bg-[#0A84FF]/30'
-                        : 'z-10'}"
+                        : 'z-10'} {selectedSubtitleIndex === index
+                        ? 'ring-1 ring-white/80'
+                        : ''}"
                       style={getSubtitleStyle(subtitle, index)}
                       onmousedown={(e) => handleBlockMouseDown(e, index)}
                       onclick={(event) => event.stopPropagation()}
@@ -1995,6 +2269,15 @@
                     class="absolute top-7 bottom-0 w-px bg-green-400/80 pointer-events-none z-20"
                     style="left: {(clipEndTime /
                       (videoElement?.duration || 1)) *
+                      100}%"
+                  ></div>
+                {/if}
+
+                <!-- 拖动字幕时的吸附位置 -->
+                {#if snapTime !== null}
+                  <div
+                    class="absolute top-7 bottom-0 w-px bg-amber-300 pointer-events-none z-30"
+                    style="left: {(snapTime / (videoElement?.duration || 1)) *
                       100}%"
                   ></div>
                 {/if}
@@ -2118,17 +2401,22 @@
             <div class="border-t border-gray-800/70">
               {#each subtitles as subtitle, index}
                 <div
-                  bind:this={subtitleElements[index]}
+                  bind:this={subtitleRowElements[index]}
                   class="group min-h-[42px] px-3 flex items-center gap-2 border-b border-l-2 border-b-gray-800/70 border-l-transparent transition-colors duration-150 hover:bg-white/[0.03] {currentSubtitleIndices.includes(
                     index
                   )
                     ? 'bg-[#0A84FF]/10 border-l-[#0A84FF]'
+                    : ''} {selectedSubtitleIndex === index
+                    ? 'ring-1 ring-inset ring-[#0A84FF]/60'
                     : ''}"
                 >
                   <button
-                    class="w-6 shrink-0 text-right text-[11px] text-gray-500 hover:text-[#0A84FF] font-mono"
-                    title="跳转到字幕开始"
-                    onclick={() => seekToTime(subtitle.startTime)}
+                    class="w-6 shrink-0 text-right text-[11px] hover:text-[#0A84FF] font-mono {selectedSubtitleIndex ===
+                    index
+                      ? 'text-[#0A84FF]'
+                      : 'text-gray-500'}"
+                    title="选中并跳转到字幕开始"
+                    onclick={() => selectSubtitle(index, true)}
                   >
                     {index + 1}
                   </button>
@@ -2137,6 +2425,8 @@
                     <input
                       type="text"
                       bind:value={subtitle.text}
+                      onfocus={() => selectSubtitle(index)}
+                      onkeydown={handleSubtitleInputKeydown}
                       class="w-full min-w-0 px-1 py-0.5 bg-transparent text-[13px] text-gray-200 rounded border border-transparent focus:bg-[#1c1c1e] focus:border-[#0A84FF]/70 transition-colors outline-none"
                       placeholder="输入字幕文本"
                     />
@@ -2346,6 +2636,11 @@
   {roomId}
   onSave={(style) => (subtitleStyle = style)}
   onClose={() => (showStyleEditor = false)}
+/>
+
+<ShortcutHelpModal
+  bind:show={showShortcutHelp}
+  showClipShortcuts={canBeClipped(video)}
 />
 
 <CoverEditor

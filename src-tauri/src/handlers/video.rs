@@ -676,14 +676,16 @@ pub async fn cancel(state: state_type!(), event_id: String) -> Result<(), String
         Err(e) if e == "Task not found" => {
             let task = state.db.get_task(&event_id).await?;
             if matches!(task.status.as_str(), "pending" | "processing") {
-                state
-                    .db
-                    .update_task(&event_id, "cancelled", "任务取消", None)
-                    .await?;
+                return Err("任务尚未进入队列或不支持取消，请稍后重试".to_string());
             }
+            return Ok(());
         }
         Err(e) => return Err(e),
     }
+    ProgressReporter::new(state.db.clone(), &state.events, &event_id)
+        .await?
+        .finish(false, "任务已取消")
+        .await;
     if let Some(task) = task_before_cancel {
         if task.task_type == "generate_archive_summary" {
             if let Ok(metadata) = serde_json::from_str::<serde_json::Value>(&task.metadata) {
@@ -964,13 +966,29 @@ pub async fn encode_video_subtitle(
     id: i64,
     srt_style: String,
     ass_content: Option<String>,
-) -> Result<VideoRow, String> {
+) -> Result<TaskRow, String> {
+    let video = state.db.get_video(id).await?;
+    let (filepath, cache) = {
+        let config = state.config.read().await;
+        (
+            Path::new(&config.output).join(&video.file),
+            PathBuf::from(&config.cache),
+        )
+    };
+    // Freeze both ASS and legacy SRT inputs at submission time. Later edits
+    // must not change a job that is waiting in the queue.
+    let subtitle =
+        prepare_subtitle_encoding_input(&filepath, srt_style.clone(), ass_content.as_deref())?;
+    let font_name = ass_content
+        .as_deref()
+        .map(ass_primary_font_name)
+        .transpose()?;
     let reporter = ProgressReporter::new(state.db.clone(), &state.events, &event_id).await?;
     let task = TaskRow {
         id: event_id.clone(),
         task_type: "encode_video_subtitle".to_string(),
         status: "pending".to_string(),
-        message: String::new(),
+        message: "等待字幕压制".to_string(),
         metadata: json!({
             "video_id": id,
             "srt_style": srt_style,
@@ -981,24 +999,57 @@ pub async fn encode_video_subtitle(
     };
     state.db.add_task(&task).await?;
     log::info!("Create task: {task:?}");
-    match encode_video_subtitle_inner(&state, &reporter, id, srt_style, ass_content).await {
-        Ok(video) => {
-            reporter.finish(true, "字幕编码完成").await;
-            state
-                .db
-                .update_task(&event_id, "success", "字幕编码完成", None)
-                .await?;
-            Ok(video)
-        }
-        Err(e) => {
-            reporter.finish(false, &format!("字幕编码失败: {e}")).await;
-            state
-                .db
-                .update_task(&event_id, "failed", &format!("字幕编码失败: {e}"), None)
-                .await?;
-            Err(e)
-        }
+    #[cfg(feature = "gui")]
+    let state_clone = (*state).clone();
+    #[cfg(feature = "headless")]
+    let state_clone = state.clone();
+
+    let task_id = event_id.clone();
+    let enqueue_result = state
+        .task_manager
+        .add_task(Task::new(
+            task_id.clone(),
+            TaskPriority::Normal,
+            async move {
+                reporter.update("准备字幕压制").await;
+                let result = encode_video_subtitle_inner(
+                    &state_clone,
+                    &reporter,
+                    SubtitleEncodingJob {
+                        video,
+                        filepath,
+                        cache,
+                        subtitle,
+                        font_name,
+                    },
+                )
+                .await;
+                let (status, message) = match &result {
+                    Ok(_) => ("success", "字幕编码完成".to_string()),
+                    Err(error) => ("failed", format!("字幕编码失败: {error}")),
+                };
+                state_clone
+                    .db
+                    .update_task(&task_id, status, &message, None)
+                    .await?;
+                reporter.finish(result.is_ok(), &message).await;
+                result.map(|_| ())
+            },
+        ))
+        .await;
+    if let Err(error) = enqueue_result {
+        state
+            .db
+            .update_task(
+                &event_id,
+                "failed",
+                &format!("加入压制队列失败: {error}"),
+                None,
+            )
+            .await?;
+        return Err(error);
     }
+    Ok(task)
 }
 
 const MAX_ASS_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
@@ -1073,11 +1124,19 @@ fn ass_primary_font_name(content: &str) -> Result<String, String> {
     Err("ASS 字幕样式需要包含 Format 定义和有效的 Fontname 字段".to_string())
 }
 
-/// Keep the generated ASS file alive until FFmpeg finishes, including error paths.
+/// Keep a snapshot of the submitted subtitles alive until the job finishes.
 struct SubtitleEncodingInput {
     path: PathBuf,
     force_style: String,
-    _temporary_ass: Option<tempfile::TempPath>,
+    _temporary_subtitle: tempfile::TempPath,
+}
+
+struct SubtitleEncodingJob {
+    video: VideoRow,
+    filepath: PathBuf,
+    cache: PathBuf,
+    subtitle: SubtitleEncodingInput,
+    font_name: Option<String>,
 }
 
 fn prepare_subtitle_encoding_input(
@@ -1085,47 +1144,50 @@ fn prepare_subtitle_encoding_input(
     srt_style: String,
     ass_content: Option<&str>,
 ) -> Result<SubtitleEncodingInput, String> {
-    let Some(content) = ass_content else {
-        return Ok(SubtitleEncodingInput {
-            path: video_path.with_extension("srt"),
-            force_style: srt_style,
-            _temporary_ass: None,
-        });
+    let (content, extension, force_style) = if let Some(content) = ass_content {
+        validate_ass_document(content)?;
+        (content.to_string(), ".ass", String::new())
+    } else {
+        let source = video_path.with_extension("srt");
+        let content = std::fs::read_to_string(&source)
+            .map_err(|error| format!("字幕文件不可用：{} ({error})", source.display()))?;
+        if content.trim().is_empty() {
+            return Err(format!("字幕文件为空：{}", source.display()));
+        }
+        (content, ".srt", srt_style)
     };
-
-    validate_ass_document(content)?;
     let mut file = tempfile::Builder::new()
         .prefix("bili-shadowreplay-subtitle-")
-        .suffix(".ass")
+        .suffix(extension)
         .tempfile()
-        .map_err(|error| format!("创建临时 ASS 字幕文件失败：{error}"))?;
+        .map_err(|error| format!("创建临时字幕文件失败：{error}"))?;
     file.write_all(content.as_bytes())
-        .map_err(|error| format!("写入临时 ASS 字幕文件失败：{error}"))?;
-    let temporary_ass = file.into_temp_path();
+        .map_err(|error| format!("写入临时字幕文件失败：{error}"))?;
+    let temporary_subtitle = file.into_temp_path();
     Ok(SubtitleEncodingInput {
-        path: temporary_ass.to_path_buf(),
+        path: temporary_subtitle.to_path_buf(),
         // The preview and burn-in must use the exact same ASS document. Applying
         // legacy SRT overrides here would silently change the document's styles.
-        force_style: String::new(),
-        _temporary_ass: Some(temporary_ass),
+        force_style,
+        _temporary_subtitle: temporary_subtitle,
     })
 }
 
 async fn encode_video_subtitle_inner(
-    state: &state_type!(),
+    state: &State,
     reporter: &ProgressReporter,
-    id: i64,
-    srt_style: String,
-    ass_content: Option<String>,
+    job: SubtitleEncodingJob,
 ) -> Result<VideoRow, String> {
-    let video = state.db.get_video(id).await?;
-    let config = state.config.read().await;
-    let filepath = Path::new(&config.output).join(&video.file);
-    let subtitle = prepare_subtitle_encoding_input(&filepath, srt_style, ass_content.as_deref())?;
+    let SubtitleEncodingJob {
+        video,
+        filepath,
+        cache,
+        subtitle,
+        font_name,
+    } = job;
     // Kept alive until FFmpeg exits; dropping it removes the directory.
-    let fonts_directory = if let Some(content) = ass_content.as_deref() {
-        let font_name = ass_primary_font_name(content)?;
-        Some(prepare_subtitle_font_directory(PathBuf::from(&config.cache), font_name).await?)
+    let fonts_directory = if let Some(font_name) = font_name {
+        Some(prepare_subtitle_font_directory(cache, font_name).await?)
     } else {
         None
     };
@@ -1165,7 +1227,15 @@ async fn encode_video_subtitle_inner(
             status: video.status,
             room_id: video.room_id,
             created_at: Local::now().to_rfc3339(),
-            cover: video.cover.clone(),
+            cover: if output_cover_path.exists() {
+                output_cover_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default()
+                    .to_string()
+            } else {
+                String::new()
+            },
             file: output_filename,
             note: video.note.clone(),
             length: video.length,
@@ -1677,16 +1747,37 @@ mod subtitle_encoding_tests {
         [Events]\nDialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,字幕\\N第二行\n";
 
     #[test]
-    fn legacy_srt_input_preserves_path_and_style() {
-        let input = prepare_subtitle_encoding_input(
-            Path::new("/videos/clip.mp4"),
-            "FontName=Arial,FontSize=24".to_string(),
-            None,
-        )
-        .unwrap();
-        assert_eq!(input.path, Path::new("/videos/clip.srt"));
-        assert_eq!(input.force_style, "FontName=Arial,FontSize=24");
-        assert!(input._temporary_ass.is_none());
+    fn legacy_srt_input_snapshots_content_and_style_and_removes_temporary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let video = dir.path().join("clip.mp4");
+        let source = video.with_extension("srt");
+        let original = "1\n00:00:00,000 --> 00:00:01,000\nOriginal\n";
+        std::fs::write(&source, original).unwrap();
+        let path;
+        {
+            let input = prepare_subtitle_encoding_input(
+                &video,
+                "FontName=Arial,FontSize=24".to_string(),
+                None,
+            )
+            .unwrap();
+            path = input.path.clone();
+            std::fs::write(&source, "Later edits").unwrap();
+            assert_ne!(input.path, source);
+            assert_eq!(std::fs::read_to_string(&input.path).unwrap(), original);
+            assert_eq!(input.force_style, "FontName=Arial,FontSize=24");
+        }
+        assert!(!path.exists());
+        assert_eq!(std::fs::read_to_string(source).unwrap(), "Later edits");
+    }
+
+    #[test]
+    fn legacy_srt_rejects_missing_and_empty_input_before_enqueuing() {
+        let dir = tempfile::tempdir().unwrap();
+        let video = dir.path().join("clip.mp4");
+        assert!(prepare_subtitle_encoding_input(&video, String::new(), None).is_err());
+        std::fs::write(video.with_extension("srt"), " \n").unwrap();
+        assert!(prepare_subtitle_encoding_input(&video, String::new(), None).is_err());
     }
 
     #[test]
@@ -1737,5 +1828,149 @@ mod subtitle_encoding_tests {
         ] {
             assert!(ass_primary_font_name(invalid).is_err());
         }
+    }
+}
+
+#[cfg(all(test, feature = "headless"))]
+mod queued_subtitle_tests {
+    use super::*;
+    use crate::{
+        config::Config,
+        database::{credentials::CredentialCipher, Database},
+        events::EventBus,
+        mcp::McpServer,
+        recorder_manager::RecorderManager,
+        task::{TaskManager, TaskManagerConfig},
+        webhook::poster::{WebhookConfig, WebhookPoster},
+    };
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    async fn fixture(dir: &Path, capacity: usize) -> State {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE videos (
+                id INTEGER PRIMARY KEY, room_id TEXT, cover TEXT, file TEXT,
+                note TEXT, length INTEGER, size INTEGER, status INTEGER, bvid TEXT,
+                title TEXT, desc TEXT, tags TEXT, area INTEGER, created_at TEXT, platform TEXT
+            );
+            CREATE TABLE tasks (
+                id TEXT PRIMARY KEY, type TEXT, status TEXT, message TEXT,
+                metadata TEXT, created_at TEXT
+            );
+            INSERT INTO videos VALUES (1, 'room', '', 'clip.mp4', '', 1, 0, 0, '', '', '', '', 0, '', 'bilibili');",
+        ).execute(&pool).await.unwrap();
+        std::fs::write(
+            dir.join("clip.srt"),
+            "1\n00:00:00,000 --> 00:00:01,000\nOriginal\n",
+        )
+        .unwrap();
+        let events = EventBus::new();
+        let db = Arc::new(Database::new(
+            pool,
+            CredentialCipher::new(&[0; 32]).unwrap(),
+            events.clone(),
+        ));
+        let config: Config = serde_json::from_value(json!({
+            "output": dir, "cache": dir,
+            "live_start_notify": false, "live_end_notify": false,
+            "clip_notify": false, "post_notify": false,
+        }))
+        .unwrap();
+        let config = Arc::new(RwLock::new(config));
+        // Leave the scheduler stopped: submitting jobs must return without
+        // waiting for FFmpeg, even while all execution slots are unavailable.
+        let task_manager = Arc::new(TaskManager::with_config(TaskManagerConfig {
+            max_queue_size: capacity,
+            ..Default::default()
+        }));
+        let webhook_poster = WebhookPoster::new(WebhookConfig::default()).unwrap();
+        let recorder_manager = Arc::new(RecorderManager::new(
+            events.clone(),
+            db.clone(),
+            config.clone(),
+            task_manager.clone(),
+            dir.to_path_buf(),
+            webhook_poster.clone(),
+        ));
+        State {
+            mcp_server: Arc::new(McpServer::default()),
+            db,
+            config,
+            webhook_poster,
+            recorder_manager,
+            task_manager,
+            resource_dir: dir.to_path_buf(),
+            events,
+            readonly: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn consecutive_submissions_return_pending_jobs_and_can_be_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = fixture(dir.path(), 2).await;
+        for id in ["first", "second"] {
+            let task = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                encode_video_subtitle(state.clone(), id.into(), 1, String::new(), None),
+            )
+            .await
+            .expect("submission must return without running the job")
+            .unwrap();
+            assert_eq!(task.id, id);
+            assert_eq!(task.status, "pending");
+            assert_eq!(state.db.get_task(id).await.unwrap().status, "pending");
+        }
+        assert_eq!(state.task_manager.queue_size().await, 2);
+        cancel(state.clone(), "second".into()).await.unwrap();
+        assert_eq!(state.task_manager.queue_size().await, 1);
+        assert_eq!(
+            state.db.get_task("second").await.unwrap().status,
+            "cancelled"
+        );
+        // Repeated cancellation is harmless; it must not affect the first job.
+        cancel(state.clone(), "second".into()).await.unwrap();
+        assert_eq!(state.task_manager.queue_size().await, 1);
+        assert_eq!(state.db.get_task("first").await.unwrap().status, "pending");
+        cancel(state, "first".into()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn queue_full_marks_submission_failed_instead_of_leaving_it_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = fixture(dir.path(), 1).await;
+        encode_video_subtitle(state.clone(), "first".into(), 1, String::new(), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            encode_video_subtitle(state.clone(), "overflow".into(), 1, String::new(), None)
+                .await
+                .unwrap_err(),
+            "Queue is full"
+        );
+        assert_eq!(
+            state.db.get_task("overflow").await.unwrap().status,
+            "failed"
+        );
+        assert_eq!(state.task_manager.queue_size().await, 1);
+        cancel(state, "first".into()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelling_an_unmanaged_task_does_not_claim_it_was_stopped() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = fixture(dir.path(), 1).await;
+        let task = state
+            .db
+            .generate_task("upload_procedure", "working", "{}")
+            .await
+            .unwrap();
+        assert!(cancel(state.clone(), task.id.clone()).await.is_err());
+        assert_eq!(state.db.get_task(&task.id).await.unwrap().status, "pending");
     }
 }

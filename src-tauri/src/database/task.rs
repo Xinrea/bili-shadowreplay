@@ -75,7 +75,7 @@ impl Database {
     ) -> Result<(), DatabaseError> {
         if let Some(metadata) = metadata {
             let _ = sqlx::query(
-                "UPDATE tasks SET status = $1, message = $2, metadata = $3 WHERE id = $4",
+                "UPDATE tasks SET status = $1, message = $2, metadata = $3 WHERE id = $4 AND status != 'cancelled'",
             )
             .bind(status)
             .bind(message)
@@ -84,7 +84,7 @@ impl Database {
             .execute(&self.pool)
             .await?;
         } else {
-            let _ = sqlx::query("UPDATE tasks SET status = $1, message = $2 WHERE id = $3")
+            let _ = sqlx::query("UPDATE tasks SET status = $1, message = $2 WHERE id = $3 AND status != 'cancelled'")
                 .bind(status)
                 .bind(message)
                 .bind(id)

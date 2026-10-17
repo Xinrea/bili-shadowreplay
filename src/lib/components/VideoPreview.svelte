@@ -39,6 +39,7 @@
     get_static_url,
   } from "../invoker";
   import { onDestroy, onMount } from "svelte";
+  import { createStateRefresh, watchStateChanges } from "../state-refresh";
   import { listen as tauriListen } from "@tauri-apps/api/event";
   import type { AccountInfo } from "../db";
   import WaveSurfer from "wavesurfer.js";
@@ -104,7 +105,8 @@
   let subtitleStyle: SubtitleStyle = $state({ ...DEFAULT_SUBTITLE_STYLE });
   let subtitleAss = $derived(buildSubtitleAss(subtitles, subtitleStyle));
 
-  let current_encode_event_id = $state(null);
+  let submittingEncode = $state(false);
+  let encodeStatus = $state("");
   let current_generate_event_id = $state(null);
   let windowCloseUnlisten: (() => void) | null = null;
   let activeTab = $state("subtitle"); // 添加当前激活的 tab
@@ -282,6 +284,11 @@
     }
   }
 
+  const videoListRefresh = createStateRefresh(async () => {
+    await onVideoListUpdate?.();
+  });
+  onMount(() => watchStateChanges(videoListRefresh, ["videos-changed"]));
+
   // on window close, save subtitles
   onMount(async () => {
     if (TAURI_ENV) {
@@ -331,13 +338,6 @@
     // 清理 WaveSurfer 实例
     destroyWaveSurfer();
   });
-
-  function update_encode_prompt(content: string) {
-    const encode_prompt = document.getElementById("encode-prompt");
-    if (encode_prompt) {
-      encode_prompt.textContent = content;
-    }
-  }
 
   function update_generate_prompt(content: string) {
     const generate_prompt = document.getElementById("generate-prompt");
@@ -1584,38 +1584,26 @@
   }
 
   async function encodeVideoSubtitle() {
-    await saveSubtitles();
-    const event_id = generateEventId();
-    current_encode_event_id = event_id;
-    const clear_update_listener = await listen(
-      `progress-update:${event_id}`,
-      (e) => {
-        update_encode_prompt(e.payload.content);
-      }
-    );
-    const clear_finished_listener = await listen(
-      `progress-finished:${event_id}`,
-      (e) => {
-        update_encode_prompt(`压制字幕`);
-        if (!e.payload.success) {
-          alert("压制失败: " + e.payload.message);
-        }
-
-        current_encode_event_id = null;
-
-        clear_update_listener();
-        clear_finished_listener();
-      }
-    );
-    const result = await invoke("encode_video_subtitle", {
-      eventId: event_id,
-      id: video.id,
-      srtStyle: "",
-      assContent: subtitleAss,
-    });
-    console.log(result);
-    // 压制成功后更新视频列表
-    await onVideoListUpdate?.();
+    if (submittingEncode) return;
+    submittingEncode = true;
+    encodeStatus = "";
+    // Capture the selected video/document before any await or further editing.
+    const id = video.id;
+    const assContent = subtitleAss;
+    try {
+      await saveSubtitles();
+      await invoke("encode_video_subtitle", {
+        eventId: generateEventId(),
+        id,
+        srtStyle: "",
+        assContent,
+      });
+      encodeStatus = "已加入压制队列，可继续添加任务。在任务页面查看进度或取消。";
+    } catch (error) {
+      encodeStatus = "加入压制队列失败：" + error;
+    } finally {
+      submittingEncode = false;
+    }
   }
 
   function handleVideoSelect(e: Event) {
@@ -1830,9 +1818,9 @@
         <button
           class="px-4 py-1.5 text-sm bg-[#0A84FF] text-white rounded-md hover:bg-[#0A84FF]/90 transition-colors duration-200 border border-gray-600/50 flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
           onclick={() => (showEncodeModal = true)}
-          disabled={current_encode_event_id != null}
+          disabled={submittingEncode}
         >
-          {#if current_encode_event_id != null}
+          {#if submittingEncode}
             <svg
               class="animate-spin h-4 w-4"
               xmlns="http://www.w3.org/2000/svg"
@@ -1856,10 +1844,14 @@
           {:else}
             <Film class="w-4 h-4" />
           {/if}
-          <span id="encode-prompt">压制字幕</span>
+          <span>{submittingEncode ? "提交中..." : "压制字幕"}</span>
         </button>
       </div>
     </div>
+
+    {#if encodeStatus}
+      <p role="status" class="px-4 py-2 text-xs text-gray-300">{encodeStatus}</p>
+    {/if}
 
     <!-- 编码确认 Modal -->
     {#if showEncodeModal}
@@ -1895,7 +1887,7 @@
 
           <!-- Modal 内容 -->
           <div class="p-4 text-gray-300">
-            压制需要耗费一定的时间，请耐心等待；压制完成后，切片列表中会出现新的带有字幕的切片。确定要进行压制吗？
+            将当前字幕和样式加入压制队列，按顺序执行。提交后可继续编辑或添加其他压制任务，也可在任务页面取消。每个任务完成后都会生成独立的带字幕切片。
           </div>
 
           <!-- Modal 底部按钮 -->

@@ -2218,6 +2218,35 @@ mod queued_subtitle_tests {
     }
 
     #[tokio::test]
+    async fn whole_clip_rejected_by_a_full_queue_is_marked_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = fixture(dir.path(), 1, false).await;
+        encode_video_subtitle(state.clone(), "first".into(), 1, String::new(), None)
+            .await
+            .unwrap();
+
+        let error = crate::handlers::recorder::generate_whole_clip(
+            state.clone(),
+            false,
+            "bilibili".into(),
+            "room".into(),
+            "parent".into(),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error, "Queue is full");
+        let tasks = state.db.get_tasks().await.unwrap();
+        let whole_clip = tasks
+            .iter()
+            .find(|task| task.task_type == "generate_whole_clip")
+            .expect("the rejected whole clip task is still recorded");
+        assert_eq!(whole_clip.status, "failed");
+        cancel(state, "first".into()).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn cancellation_preserves_committed_result_while_worker_is_still_running() {
         use crate::task::TaskStatus;
         use tokio::{

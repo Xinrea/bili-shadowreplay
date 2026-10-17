@@ -38,8 +38,16 @@
     }
   }
 
+  // Handled in the capture phase: while open, the modal owns the keyboard, so
+  // page shortcuts underneath (e.g. the player's Escape, which clears the
+  // selected range) never see the keys. Default actions such as Tab still apply.
   function handleKeydown(event: KeyboardEvent) {
-    if ($taskCenter.open && event.key === "Escape") closeTaskCenter();
+    if (!$taskCenter.open) return;
+    event.stopPropagation();
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeTaskCenter();
+    }
   }
 
   // Bring a newly started task into view; the list is newest first, but it may
@@ -53,7 +61,7 @@
   });
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
+<svelte:window onkeydowncapture={handleKeydown} />
 
 {#if $taskCenter.open}
   <!-- Above full-window editors such as the clip preview (z-1000) and their dialogs. -->

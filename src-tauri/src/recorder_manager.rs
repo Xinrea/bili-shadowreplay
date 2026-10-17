@@ -413,7 +413,7 @@ impl RecorderManager {
         let self_clone = self.clone();
         let task_id = task.id.clone();
         let room_id = room_id.to_string();
-        let _ = self
+        let enqueue_result = self
             .task_manager
             .add_task(Task::new(
                 task_id.clone(),
@@ -470,6 +470,13 @@ impl RecorderManager {
                 },
             ))
             .await;
+        if let Err(error) = enqueue_result {
+            log::error!("Failed to queue whole clip for {recorder_id}: {error}");
+            let _ = self
+                .db
+                .update_task(&task.id, "failed", &format!("加入队列失败: {error}"), None)
+                .await;
+        }
     }
 
     pub fn set_migrating(&self, migrating: bool) {

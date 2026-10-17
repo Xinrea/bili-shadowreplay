@@ -1,6 +1,7 @@
 use crate::database::task::TaskRow;
 use crate::database::video::VideoRow;
 use crate::ffmpeg;
+use crate::handlers::subtitle_fonts::prepare_subtitle_font_directory;
 use crate::handlers::utils::get_disk_info_inner;
 use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
 use crate::recorder_manager::ClipRangeParams;
@@ -962,6 +963,7 @@ pub async fn encode_video_subtitle(
     event_id: String,
     id: i64,
     srt_style: String,
+    ass_content: Option<String>,
 ) -> Result<VideoRow, String> {
     let reporter = ProgressReporter::new(state.db.clone(), &state.events, &event_id).await?;
     let task = TaskRow {
@@ -972,13 +974,14 @@ pub async fn encode_video_subtitle(
         metadata: json!({
             "video_id": id,
             "srt_style": srt_style,
+            "subtitle_format": if ass_content.is_some() { "ass" } else { "srt" },
         })
         .to_string(),
         created_at: Utc::now().to_rfc3339(),
     };
     state.db.add_task(&task).await?;
     log::info!("Create task: {task:?}");
-    match encode_video_subtitle_inner(&state, &reporter, id, srt_style).await {
+    match encode_video_subtitle_inner(&state, &reporter, id, srt_style, ass_content).await {
         Ok(video) => {
             reporter.finish(true, "字幕编码完成").await;
             state
@@ -998,19 +1001,142 @@ pub async fn encode_video_subtitle(
     }
 }
 
+const MAX_ASS_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
+
+fn validate_ass_document(content: &str) -> Result<(), String> {
+    if content.len() > MAX_ASS_DOCUMENT_BYTES {
+        return Err("ASS 字幕文件不能超过 8 MiB".to_string());
+    }
+    if content.contains('\0') {
+        return Err("ASS 字幕文件不能包含 NUL 字符".to_string());
+    }
+
+    let mut script_info = false;
+    let mut styles = false;
+    let mut events = false;
+    let mut style = false;
+    let mut dialogue = false;
+    let mut section = "";
+    for line in content.trim_start_matches('\u{feff}').lines() {
+        let line = line.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            section = line;
+            script_info |= section.eq_ignore_ascii_case("[Script Info]");
+            styles |= section.eq_ignore_ascii_case("[V4+ Styles]");
+            events |= section.eq_ignore_ascii_case("[Events]");
+        } else if let Some((key, value)) = line.split_once(':') {
+            if section.eq_ignore_ascii_case("[V4+ Styles]") {
+                style |= key.eq_ignore_ascii_case("Style") && !value.trim().is_empty();
+            } else if section.eq_ignore_ascii_case("[Events]") {
+                dialogue |= key.eq_ignore_ascii_case("Dialogue") && !value.trim().is_empty();
+            }
+        }
+    }
+    if !script_info || !styles || !events || !style || !dialogue {
+        return Err(
+            "ASS 字幕需要包含 [Script Info]、[V4+ Styles]、[Events] 以及有效的 Style 和 Dialogue 行"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn ass_primary_font_name(content: &str) -> Result<String, String> {
+    let mut in_styles = false;
+    let mut font_index = None;
+    for line in content.trim_start_matches('\u{feff}').lines() {
+        let line = line.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            in_styles = line.eq_ignore_ascii_case("[V4+ Styles]");
+            continue;
+        }
+        if !in_styles {
+            continue;
+        }
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        if key.eq_ignore_ascii_case("Format") {
+            font_index = value
+                .split(',')
+                .position(|field| field.trim().eq_ignore_ascii_case("Fontname"));
+        } else if key.eq_ignore_ascii_case("Style") {
+            if let Some(index) = font_index {
+                if let Some(font) = value.split(',').nth(index).map(str::trim) {
+                    if !font.is_empty() {
+                        return Ok(font.to_string());
+                    }
+                }
+            }
+        }
+    }
+    Err("ASS 字幕样式需要包含 Format 定义和有效的 Fontname 字段".to_string())
+}
+
+/// Keep the generated ASS file alive until FFmpeg finishes, including error paths.
+struct SubtitleEncodingInput {
+    path: PathBuf,
+    force_style: String,
+    _temporary_ass: Option<tempfile::TempPath>,
+}
+
+fn prepare_subtitle_encoding_input(
+    video_path: &Path,
+    srt_style: String,
+    ass_content: Option<&str>,
+) -> Result<SubtitleEncodingInput, String> {
+    let Some(content) = ass_content else {
+        return Ok(SubtitleEncodingInput {
+            path: video_path.with_extension("srt"),
+            force_style: srt_style,
+            _temporary_ass: None,
+        });
+    };
+
+    validate_ass_document(content)?;
+    let mut file = tempfile::Builder::new()
+        .prefix("bili-shadowreplay-subtitle-")
+        .suffix(".ass")
+        .tempfile()
+        .map_err(|error| format!("创建临时 ASS 字幕文件失败：{error}"))?;
+    file.write_all(content.as_bytes())
+        .map_err(|error| format!("写入临时 ASS 字幕文件失败：{error}"))?;
+    let temporary_ass = file.into_temp_path();
+    Ok(SubtitleEncodingInput {
+        path: temporary_ass.to_path_buf(),
+        // The preview and burn-in must use the exact same ASS document. Applying
+        // legacy SRT overrides here would silently change the document's styles.
+        force_style: String::new(),
+        _temporary_ass: Some(temporary_ass),
+    })
+}
+
 async fn encode_video_subtitle_inner(
     state: &state_type!(),
     reporter: &ProgressReporter,
     id: i64,
     srt_style: String,
+    ass_content: Option<String>,
 ) -> Result<VideoRow, String> {
     let video = state.db.get_video(id).await?;
     let config = state.config.read().await;
     let filepath = Path::new(&config.output).join(&video.file);
-    let subtitle_path = filepath.with_extension("srt");
-
-    let output_filename =
-        ffmpeg::encode_video_subtitle(reporter, &filepath, &subtitle_path, srt_style).await?;
+    let subtitle = prepare_subtitle_encoding_input(&filepath, srt_style, ass_content.as_deref())?;
+    // Kept alive until FFmpeg exits; dropping it removes the directory.
+    let fonts_directory = if let Some(content) = ass_content.as_deref() {
+        let font_name = ass_primary_font_name(content)?;
+        Some(prepare_subtitle_font_directory(PathBuf::from(&config.cache), font_name).await?)
+    } else {
+        None
+    };
+    let output_filename = ffmpeg::encode_video_subtitle(
+        reporter,
+        &filepath,
+        &subtitle.path,
+        subtitle.force_style.clone(),
+        fonts_directory.as_ref().map(|directory| directory.path()),
+    )
+    .await?;
     let output_filepath = filepath.with_file_name(&output_filename);
     let cover_path = filepath.with_extension("jpg");
     let output_cover_path = output_filepath.with_extension("jpg");
@@ -1540,4 +1666,76 @@ pub async fn generate_audio_sample(state: state_type!(), video_id: i64) -> Resul
         let _ = crate::ffmpeg::extract_audio_sample(&video_path).await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod subtitle_encoding_tests {
+    use super::*;
+
+    const ASS: &str = "[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\n\
+        [V4+ Styles]\nStyle: Default,Arial,48,&H00FFFFFF\n\
+        [Events]\nDialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,字幕\\N第二行\n";
+
+    #[test]
+    fn legacy_srt_input_preserves_path_and_style() {
+        let input = prepare_subtitle_encoding_input(
+            Path::new("/videos/clip.mp4"),
+            "FontName=Arial,FontSize=24".to_string(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(input.path, Path::new("/videos/clip.srt"));
+        assert_eq!(input.force_style, "FontName=Arial,FontSize=24");
+        assert!(input._temporary_ass.is_none());
+    }
+
+    #[test]
+    fn ass_input_is_preserved_without_srt_overrides_and_removed_after_use() {
+        let path;
+        {
+            let input = prepare_subtitle_encoding_input(
+                Path::new("/videos/clip.mp4"),
+                "FontName=Other,FontSize=99".to_string(),
+                Some(ASS),
+            )
+            .unwrap();
+            path = input.path.clone();
+            assert_eq!(path.extension().unwrap(), "ass");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), ASS);
+            assert!(input.force_style.is_empty());
+        }
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn ass_validation_rejects_missing_sections_empty_events_nul_and_oversized_documents() {
+        assert!(validate_ass_document(ASS).is_ok());
+        assert!(validate_ass_document(&format!("\u{feff}{ASS}")).is_ok());
+        for invalid in [
+            "",
+            "[Script Info]\n[V4+ Styles]\n[Events]",
+            "[Script Info]\n[V4+ Styles]\nStyle: Default,Arial\n[Events]",
+            "[Script Info]\n[V4+ Styles]\n[Events]\nStyle: Default,Arial\nDialogue: example",
+        ] {
+            assert!(validate_ass_document(invalid).is_err(), "{invalid}");
+        }
+        assert!(validate_ass_document(&format!("{ASS}\0")).is_err());
+        assert!(validate_ass_document(&" ".repeat(MAX_ASS_DOCUMENT_BYTES + 1)).is_err());
+    }
+
+    #[test]
+    fn ass_font_name_uses_style_format_order_and_ignores_other_sections() {
+        let standard = "[Script Info]\nFontname: Wrong\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize\nStyle: Default, Microsoft YaHei, 48\n[Events]\n";
+        assert_eq!(ass_primary_font_name(standard).unwrap(), "Microsoft YaHei");
+        let reordered =
+            "[V4+ Styles]\nFormat: Fontsize,Name,Fontname\nStyle: 48,Default,思源黑体\n";
+        assert_eq!(ass_primary_font_name(reordered).unwrap(), "思源黑体");
+        for invalid in [
+            "[V4+ Styles]\nStyle: Default,Arial,48",
+            "[V4+ Styles]\nFormat: Name,Fontsize\nStyle: Default,48",
+            "[V4+ Styles]\nFormat: Name,Fontname\nStyle: Default, ",
+        ] {
+            assert!(ass_primary_font_name(invalid).is_err());
+        }
+    }
 }

@@ -249,27 +249,8 @@ export interface SubtitleStyle {
   marginV: number;
   marginL: number;
   marginR: number;
-}
-
-export function parseSubtitleStyle(style: SubtitleStyle): string {
-  // Convert hex color to ASS/SSA format (&HBBGGRR)
-  function hexToAssColor(hex: string): string {
-    if (!hex.startsWith("#")) return hex;
-    const r = hex.slice(1, 3);
-    const g = hex.slice(3, 5);
-    const b = hex.slice(5, 7);
-    return `&H${b}${g}${r}`;
-  }
-
-  return `FontName=${style.fontName},FontSize=${
-    style.fontSize
-  },PrimaryColour=${hexToAssColor(
-    style.fontColor
-  )},OutlineColour=${hexToAssColor(style.outlineColor)},Outline=${
-    style.outlineWidth
-  },Alignment=${style.alignment},MarginV=${style.marginV},MarginL=${
-    style.marginL
-  },MarginR=${style.marginR}`;
+  /** Canonical V4+ Format/Style source, in the 1920 × 1080 script coordinate space. */
+  assStyle?: string;
 }
 
 export interface Range {

@@ -3,6 +3,33 @@ import { resolve } from "path";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { readFileSync } from "fs";
 
+// libass resolves its WASM binary beside its classic worker. Keep these names
+// together in development and production instead of hashing them separately.
+function libassAssets() {
+  const directory = resolve(__dirname, "node_modules/libass-wasm/dist/js");
+  const files = new Map([
+    ["subtitles-octopus-worker.js", "text/javascript"],
+    ["subtitles-octopus-worker.wasm", "application/wasm"],
+    ["COPYRIGHT", "text/plain"],
+  ]);
+  return {
+    name: "libass-assets",
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        const name = request.url?.split("?")[0]?.replace(/^\/libass\//, "");
+        if (!request.url?.startsWith("/libass/") || !files.has(name)) return next();
+        response.setHeader("Content-Type", files.get(name));
+        response.end(readFileSync(resolve(directory, name)));
+      });
+    },
+    generateBundle() {
+      for (const name of files.keys()) {
+        this.emitFile({ type: "asset", fileName: `libass/${name}`, source: readFileSync(resolve(directory, name)) });
+      }
+    },
+  };
+}
+
 // Read package.json
 const packageJson = JSON.parse(
   readFileSync(resolve(__dirname, "package.json"), "utf-8")
@@ -28,6 +55,7 @@ export default defineConfig(async ({ mode }) => {
     },
     plugins: [
       svelte(),
+      libassAssets(),
     ],
 
     // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

@@ -912,6 +912,8 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::video::update_video_subtitle,
         crate::handlers::video::update_video_note,
         crate::handlers::video::encode_video_subtitle,
+        crate::handlers::subtitle_fonts::get_subtitle_preview_fonts,
+        crate::handlers::subtitle_fonts::get_subtitle_font_families,
         crate::handlers::video::generic_ffmpeg_command,
         crate::handlers::video::import_external_video,
         crate::handlers::video::batch_import_external_videos,

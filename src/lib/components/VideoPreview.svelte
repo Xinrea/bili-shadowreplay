@@ -118,6 +118,14 @@
   let showShortcutHelp = $state(false);
   let lastVideoId = $state(-1); // 记录上一个视频ID，避免重复初始化
   let clipTimesSet = $state(false); // 标记用户是否主动设置过切片时间
+  // 提交后选区会立即清空，所以只有用户设置过的有效选区才能生成切片
+  let clipRangeIssue = $derived(
+    !clipTimesSet || clipEndTime <= clipStartTime
+      ? "先用 [ 和 ] 设置切片范围"
+      : clipEndTime - clipStartTime < 1
+        ? "切片长度不能少于1秒"
+        : "",
+  );
 
   // 进度条拖动相关变量
   let isDraggingSeekbar = $state(false);
@@ -668,12 +676,8 @@
   }
 
   async function generateClip() {
-    if (!video) return;
-
-    if (clipStartTime >= clipEndTime) {
-      alert("开始时间必须小于结束时间");
-      return;
-    }
+    // 选区在提交时已清空，重复点击或连按 G 时直接忽略
+    if (!video || !clipTimesSet || clipStartTime >= clipEndTime) return;
 
     if (clipEndTime - clipStartTime < 1) {
       alert("切片长度不能少于1秒");
@@ -2181,7 +2185,8 @@
             <button
               type="button"
               class="footer-button"
-              title="按当前切片范围生成新切片（G）"
+              title={clipRangeIssue || "按当前切片范围生成新切片（G）"}
+              disabled={clipRangeIssue !== ""}
               onclick={generateClip}
             >
               <Scissors class="h-3.5 w-3.5" />

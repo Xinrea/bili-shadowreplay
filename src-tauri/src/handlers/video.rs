@@ -415,7 +415,7 @@ async fn run_queued<T: Send + 'static>(
     failed_message: &str,
 ) -> Result<T, String> {
     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-    state
+    let enqueue_result = state
         .task_manager
         .add_task(Task::new(
             task_id.to_string(),
@@ -427,7 +427,16 @@ async fn run_queued<T: Send + 'static>(
                 task_result
             },
         ))
-        .await?;
+        .await;
+    if let Err(error) = enqueue_result {
+        // The caller already recorded the task; never leave it pending with no
+        // worker that could run or cancel it.
+        state
+            .db
+            .update_task(task_id, "failed", &format!("加入队列失败: {error}"), None)
+            .await?;
+        return Err(error);
+    }
 
     match result_rx.await {
         Ok(result) => result,
@@ -2169,6 +2178,43 @@ mod queued_subtitle_tests {
             .unwrap()
             .unwrap_err();
         assert_eq!(error, "切片任务已取消");
+    }
+
+    #[tokio::test]
+    async fn video_clip_rejected_by_a_full_queue_is_marked_failed() {
+        use tokio::time::{timeout, Duration};
+
+        let dir = tempfile::tempdir().unwrap();
+        let state = fixture(dir.path(), 1, false).await;
+        let first_state = state.clone();
+        let first = tokio::spawn(async move {
+            clip_video(first_state, "first".into(), 1, 0.0, 1.0, "Clip".into()).await
+        });
+        timeout(Duration::from_secs(3), async {
+            while state.task_manager.queue_size().await == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first video clip must occupy the queue");
+
+        assert_eq!(
+            clip_video(state.clone(), "overflow".into(), 1, 0.0, 1.0, "Clip".into())
+                .await
+                .unwrap_err(),
+            "Queue is full"
+        );
+        assert_eq!(
+            state.db.get_task("overflow").await.unwrap().status,
+            "failed"
+        );
+
+        cancel(state.clone(), "first".into()).await.unwrap();
+        timeout(Duration::from_secs(1), first)
+            .await
+            .expect("cancelled video clip must unblock")
+            .unwrap()
+            .unwrap_err();
     }
 
     #[tokio::test]

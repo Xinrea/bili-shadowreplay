@@ -10,7 +10,7 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-async function fixture() {
+async function fixture({ variant = "primary" } = {}) {
   const alerts = [], failures = [], requests = [], cancellations = [];
   const listeners = new Map();
   let nextId = 0;
@@ -21,6 +21,7 @@ async function fixture() {
     $props: () => ({
       archive: { title: "Archive", room_id: "1", live_id: "2", platform: "bilibili" },
       ranges: [{ start: 0, end: 10 }],
+      variant,
       onFailed: (message) => failures.push(message),
     }),
     localStorage: { getItem: () => null },
@@ -99,11 +100,37 @@ test("cancelled clip result can reject before cancel returns without showing a f
   await cancellation;
 
   const retry = await startClip(f);
-  retry.request.reject("real encoding failure");
+  retry.request.reject("切片任务失败");
   await retry.completion;
-  assert.deepEqual(f.alerts, ["切片生成失败：real encoding failure"]);
-  assert.deepEqual(f.failures, ["real encoding failure"]);
+  assert.deepEqual(f.alerts, ["切片生成失败：切片任务失败"]);
+  assert.deepEqual(f.failures, ["切片任务失败"]);
 });
+
+for (const variant of ["primary", "compact"]) {
+  test(`task-page cancellation of a ${variant} clip is silent without calling cancelClip`, async () => {
+    // Raw backend rejection and the desktop/web invoke wrappers carry the same
+    // terminal cancellation message, with different Error prefixes.
+    for (const error of [
+      "切片任务已取消",
+      new Error("Failed to invoke clip_range:\n切片任务已取消"),
+      new Error("Failed to invoke clip_range:\nError: 切片任务已取消"),
+    ]) {
+      const f = await fixture({ variant });
+      const { completion, request } = await startClip(f);
+      request.reject(error);
+      await completion;
+      assert.equal(f.cancellations.length, 0);
+      assert.deepEqual(f.alerts, []);
+      assert.deepEqual(f.failures, []);
+      assert.equal(f.listeners.size, 0);
+
+      const retry = await startClip(f);
+      retry.request.resolve({ id: 1 });
+      await retry.completion;
+      assert.equal(f.listeners.size, 0);
+    }
+  });
+}
 
 test("failure progress arriving during cancellation does not show an FFmpeg error", async () => {
   const f = await fixture();

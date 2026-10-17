@@ -412,9 +412,21 @@ pub async fn clip_range(
         ))
         .await?;
 
-    result_rx
-        .await
-        .unwrap_or_else(|_| Err("切片任务失败".to_string()))
+    match result_rx.await {
+        Ok(result) => result,
+        Err(_) => {
+            let cancelled = state
+                .db
+                .get_task(&event_id)
+                .await
+                .is_ok_and(|task| task.status == "cancelled");
+            Err(if cancelled {
+                "切片任务已取消".to_string()
+            } else {
+                "切片任务失败".to_string()
+            })
+        }
+    }
 }
 
 async fn clip_range_inner(
@@ -2031,6 +2043,59 @@ mod queued_subtitle_tests {
                     .await
                     .is_err(),
                 "cancellation must refresh tasks without publishing failure progress"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn clip_request_distinguishes_cancelled_tasks_from_unexpected_worker_drops() {
+        use tokio::time::{timeout, Duration};
+
+        for cancelled in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let state = fixture(dir.path(), 1, false).await;
+            let request_state = state.clone();
+            let request = tokio::spawn(async move {
+                let params = serde_json::from_value(json!({
+                    "title": "Clip", "note": "", "cover": "", "platform": "bilibili",
+                    "room_id": "room", "live_id": "live", "ranges": [],
+                    "danmu": false, "local_offset": 0, "fix_encoding": false,
+                }))
+                .unwrap();
+                clip_range(request_state, "clip-request".into(), params).await
+            });
+            timeout(Duration::from_secs(3), async {
+                while state.task_manager.queue_size().await == 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("clip request must enqueue before cancellation");
+
+            if cancelled {
+                cancel(state.clone(), "clip-request".into()).await.unwrap();
+            } else {
+                // Drop the worker without a persisted cancellation, as with an
+                // unexpected worker exit. This must remain a visible failure.
+                state
+                    .task_manager
+                    .cancel_task("clip-request")
+                    .await
+                    .unwrap();
+            }
+
+            let error = timeout(Duration::from_secs(1), request)
+                .await
+                .expect("clip request must unblock when its worker is dropped")
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(
+                error,
+                if cancelled {
+                    "切片任务已取消"
+                } else {
+                    "切片任务失败"
+                }
             );
         }
     }

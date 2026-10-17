@@ -175,8 +175,10 @@
       transition = "none";
       onGenerated?.(video as VideoItem);
     } catch (error) {
-      if (currentEventId === eventId && cancellingEventId !== eventId) {
-        const message = String(error);
+      const message = String(error);
+      // Desktop and web invoke wrappers prepend context to the backend error.
+      const cancelled = message.endsWith("切片任务已取消");
+      if (currentEventId === eventId && cancellingEventId !== eventId && !cancelled) {
         alert("切片生成失败：" + message);
         onFailed?.(message);
       }

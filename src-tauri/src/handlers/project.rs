@@ -345,7 +345,7 @@ pub async fn update_project_timeline(
     id: i64,
     timeline: Timeline,
 ) -> Result<ProjectView, String> {
-    save_editor_timeline(&state, id, timeline).await?;
+    save_editor_timeline(&state.db, id, timeline).await?;
     let project = state.db.get_project(id).await?;
     single_project_view(&state, project).await
 }
@@ -363,16 +363,15 @@ pub async fn update_project_danmu(
 /// Save the editor's timeline with the project's danmaku setting, which has a
 /// command of its own and may have changed on the uploads page meanwhile.
 async fn save_editor_timeline(
-    state: &State,
+    db: &Database,
     id: i64,
     mut timeline: Timeline,
 ) -> Result<Timeline, String> {
     for _ in 0..TIMELINE_EDIT_ATTEMPTS {
-        let saved = state.db.get_project(id).await?.timeline;
+        let saved = db.get_project(id).await?.timeline;
         timeline.danmu = Timeline::parse(&saved)?.danmu;
         let now = Local::now().to_rfc3339();
-        if state
-            .db
+        if db
             .replace_project_timeline(id, &saved, &timeline.to_json(), &now)
             .await?
         {
@@ -432,7 +431,7 @@ pub(crate) async fn remove_material_from_projects(
     material_id: i64,
 ) -> Result<(), String> {
     for project in projects_using(&state.db, material_id).await? {
-        edit_project_timeline(state, project.id, |timeline| {
+        edit_project_timeline(&state.db, project.id, |timeline| {
             timeline.remove_material(material_id)
         })
         .await?;
@@ -447,19 +446,18 @@ const TIMELINE_EDIT_ATTEMPTS: usize = 5;
 /// saved timeline. The write only replaces the timeline it was made from, so
 /// a save from the editor in between is edited again instead of overwritten.
 async fn edit_project_timeline(
-    state: &State,
+    db: &Database,
     id: i64,
     mut edit: impl FnMut(&mut Timeline) -> bool,
 ) -> Result<(), String> {
     for _ in 0..TIMELINE_EDIT_ATTEMPTS {
-        let saved = state.db.get_project(id).await?.timeline;
+        let saved = db.get_project(id).await?.timeline;
         let mut timeline = Timeline::parse(&saved)?;
         if !edit(&mut timeline) {
             return Ok(());
         }
         let now = Local::now().to_rfc3339();
-        if state
-            .db
+        if db
             .replace_project_timeline(id, &saved, &timeline.to_json(), &now)
             .await?
         {
@@ -635,7 +633,7 @@ async fn attach_material_subtitles(
         return Ok(());
     };
     let cues = srt_cues(&content);
-    edit_project_timeline(state, project_id, |timeline| {
+    edit_project_timeline(&state.db, project_id, |timeline| {
         let clips: Vec<String> = timeline
             .clips
             .iter()
@@ -751,7 +749,7 @@ async fn upload_render(
 
 /// Turn burning danmaku into the project's exports and uploads on or off.
 pub(crate) async fn set_project_danmu(state: &State, id: i64, danmu: bool) -> Result<(), String> {
-    edit_project_timeline(state, id, |timeline| {
+    edit_project_timeline(&state.db, id, |timeline| {
         let changed = timeline.danmu != danmu;
         timeline.danmu = danmu;
         changed
@@ -887,7 +885,7 @@ pub async fn export_project(
     let materials = materials_by_id(&state, &timeline.material_ids()).await?;
     timeline.validate(|id| materials.get(&id).map(material_duration))?;
     // Rendered with the project's danmaku setting, as saved.
-    let timeline = save_editor_timeline(&state, id, timeline).await?;
+    let timeline = save_editor_timeline(&state.db, id, timeline).await?;
 
     let (path, download) = match target {
         Some(path) => (mp4_path(PathBuf::from(path)), None),
@@ -1238,6 +1236,59 @@ mod tests {
 
         assert!(db.get_projects().await.unwrap().is_empty());
         assert_eq!(db.get_videos_needing_project().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn editor_saves_keep_the_danmaku_setting_switched_elsewhere() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for migration in crate::get_migrations() {
+            sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
+        }
+        let db = Database::new(
+            pool,
+            CredentialCipher::new(&[0; 32]).unwrap(),
+            crate::events::EventBus::new(),
+        );
+        let editor = Timeline::from_materials(&[(1, 10.0)]);
+        let project = db
+            .add_project(&ProjectRow {
+                id: 0,
+                room_id: "1".into(),
+                platform: "bilibili".into(),
+                title: "t".into(),
+                note: String::new(),
+                cover: String::new(),
+                timeline: editor.to_json(),
+                profile: String::new(),
+                status: 0,
+                bvid: String::new(),
+                created_at: "2026-10-18".into(),
+                updated_at: "2026-10-18".into(),
+            })
+            .await
+            .unwrap();
+
+        // The uploads page turns danmaku on while the editor still has it off.
+        edit_project_timeline(&db, project.id, |timeline| {
+            timeline.danmu = true;
+            true
+        })
+        .await
+        .unwrap();
+        let mut trimmed = editor.clone();
+        trimmed.clips[0].end = 8.0;
+        let saved = save_editor_timeline(&db, project.id, trimmed)
+            .await
+            .unwrap();
+
+        // The editor's trim is saved, and so is the setting switched elsewhere.
+        assert!(saved.danmu);
+        let stored = Timeline::parse(&db.get_project(project.id).await.unwrap().timeline).unwrap();
+        assert_eq!((stored.danmu, stored.clips[0].end), (true, 8.0));
     }
 
     #[test]

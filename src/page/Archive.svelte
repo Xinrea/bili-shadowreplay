@@ -31,6 +31,7 @@
   import { SvelteSet } from "svelte/reactivity";
   import GenerateWholeClipModal from "../lib/components/GenerateWholeClipModal.svelte";
   import ArchiveSummaryModal from "../lib/components/ArchiveSummaryModal.svelte";
+  import PageTitlebar from "../lib/components/PageTitlebar.svelte";
   import type { RecorderInfo, RecorderList } from "src/lib/interface";
 
   let archives: RecordItem[] = [];
@@ -188,26 +189,26 @@
   function summaryButtonClass(archive: RecordItem) {
     switch (getSummaryStatus(archive)) {
       case "processing":
-        return "hover:bg-blue-500/10";
+        return "hover:bg-accent-soft";
       case "success":
-        return "hover:bg-green-500/10";
+        return "hover:bg-success-soft";
       case "failed":
-        return "hover:bg-red-500/10";
+        return "hover:bg-danger-soft";
       default:
-        return "hover:bg-violet-500/10";
+        return "hover:bg-accent-soft";
     }
   }
 
   function summaryIconClass(archive: RecordItem) {
     switch (getSummaryStatus(archive)) {
       case "processing":
-        return "text-blue-500";
+        return "text-accent-fg";
       case "success":
-        return "text-green-500";
+        return "text-success-fg";
       case "failed":
-        return "text-red-500";
+        return "text-danger-fg";
       default:
-        return "text-violet-500";
+        return "text-accent-fg";
     }
   }
 
@@ -549,44 +550,34 @@
   }
 </script>
 
-<div class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50">
-  <div class="space-y-6">
-    <!-- Header -->
-    <div class="flex justify-between items-center">
-      <div class="space-y-1">
-        <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">
-          录播档案
-        </h1>
-        <p class="text-sm text-gray-500 dark:text-gray-400">
-          管理所有直播间的录播记录，可以查看、播放和管理历史直播内容。
-        </p>
-      </div>
+<PageTitlebar title="录播档案">
+  {#snippet subtitle()}
+    <span class="truncate text-[12px] text-fg-muted">
+      管理所有直播间的录播记录，可以查看、播放和管理历史直播内容。
+    </span>
+  {/snippet}
+  <button
+    class="titlebar-icon-button"
+    title="刷新"
+    aria-label="刷新"
+    onclick={loadArchives}
+    disabled={loading}
+  >
+    <RefreshCw class="h-4 w-4 {loading ? 'animate-spin' : ''}" />
+  </button>
+</PageTitlebar>
 
-      <div class="flex items-center space-x-3">
-        <button
-          class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
-          onclick={loadArchives}
-          disabled={loading}
-        >
-          <RefreshCw
-            class="w-4 h-4 text-white {loading ? 'animate-spin' : ''}"
-          />
-          <span>刷新</span>
-        </button>
-      </div>
-    </div>
-
+<div class="flex-1 overflow-auto bg-canvas p-5 custom-scrollbar-light">
+  <div class="space-y-4">
     <!-- 筛选和排序工具栏 -->
-    <div
-      class="p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 space-y-4"
-    >
-      <div class="flex justify-between items-center flex-wrap gap-4">
+    <div class="ui-card space-y-3 p-3">
+      <div class="flex flex-wrap items-center justify-between gap-3">
         <!-- 左侧：筛选器和分页 -->
-        <div class="flex space-x-3">
+        <div class="flex items-center gap-2.5">
           <select
             bind:value={selectedRoomId}
             onchange={applyFilters}
-            class="px-3 py-2 bg-gray-100 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 cursor-pointer"
+            class="ui-input min-w-[160px]"
           >
             <option value={null}>所有直播间</option>
             {#each roomOptions as option}
@@ -597,78 +588,68 @@
           <!-- 分页控制 -->
           {#if totalCount > 0}
             <div
-              class="flex items-center space-x-3 px-4 py-2 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200 dark:border-gray-600"
+              class="flex h-[30px] items-center gap-2.5 rounded-[8px] bg-sunken px-2.5 text-[12px]"
             >
               <!-- 记录统计 -->
-              <div class="flex items-center space-x-1">
-                <span
-                  class="text-sm font-medium text-blue-600 dark:text-blue-400"
-                >
+              <div class="flex items-center gap-1">
+                <span class="font-medium tabular-nums text-accent-fg">
                   {totalCount}
                 </span>
-                <span class="text-sm text-gray-500 dark:text-gray-400"
-                  >条记录</span
-                >
+                <span class="text-fg-muted">条记录</span>
               </div>
 
               <!-- 分隔线 -->
-              <div class="h-4 w-px bg-gray-300 dark:bg-gray-600"></div>
+              <div class="h-3.5 w-px bg-line-strong"></div>
 
               <!-- 每页大小选择 -->
-              <div class="flex items-center space-x-2">
-                <span class="text-sm text-gray-600 dark:text-gray-400"
-                  >每页</span
-                >
+              <div class="flex items-center gap-1.5">
+                <span class="text-fg-muted">每页</span>
                 <select
                   bind:value={pageSize}
                   onchange={() => changePageSize(pageSize)}
-                  class="px-2 py-1 text-sm bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-500 rounded-md text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 cursor-pointer min-w-[50px]"
+                  class="ui-input h-[22px] min-w-[56px] rounded-[6px] pl-2 tabular-nums"
                 >
                   {#each pageSizeOptions as size}
                     <option value={size}>{size}</option>
                   {/each}
                 </select>
-                <span class="text-sm text-gray-600 dark:text-gray-400">条</span>
+                <span class="text-fg-muted">条</span>
               </div>
 
               <!-- 分页导航 -->
               {#if totalPages > 1}
                 <!-- 分隔线 -->
-                <div class="h-4 w-px bg-gray-300 dark:bg-gray-600"></div>
+                <div class="h-3.5 w-px bg-line-strong"></div>
 
-                <div class="flex items-center space-x-2">
+                <div class="flex items-center gap-1">
                   <button
-                    class="p-1.5 text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-white dark:hover:bg-gray-700 rounded-md transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                    class="inline-flex h-[22px] w-[22px] items-center justify-center rounded-[6px] text-fg-muted transition-colors hover:bg-control-hover hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-muted"
                     onclick={prevPage}
                     disabled={currentPage === 1}
                     title="上一页"
                   >
-                    <ChevronUp class="w-4 h-4 rotate-[-90deg]" />
+                    <ChevronUp class="h-4 w-4 rotate-[-90deg]" />
                   </button>
 
                   <div
-                    class="flex items-center px-2 py-1 bg-white dark:bg-gray-700 rounded-md border border-gray-200 dark:border-gray-500 min-w-[60px] justify-center"
+                    class="flex h-[22px] min-w-[56px] items-center justify-center rounded-[6px] bg-selected px-2 tabular-nums shadow-sm"
                   >
-                    <span
-                      class="text-sm font-medium text-gray-700 dark:text-gray-300"
-                    >
+                    <span class="font-medium text-fg">
                       {currentPage}
                     </span>
-                    <span class="text-sm text-gray-400 dark:text-gray-500 mx-1"
-                      >/</span
-                    >
-                    <span class="text-sm text-gray-500 dark:text-gray-400">
+                    <span class="mx-1 text-fg-faint">/</span>
+                    <span class="text-fg-muted">
                       {totalPages}
                     </span>
                   </div>
 
                   <button
-                    class="p-1.5 text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-white dark:hover:bg-gray-700 rounded-md transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                    class="inline-flex h-[22px] w-[22px] items-center justify-center rounded-[6px] text-fg-muted transition-colors hover:bg-control-hover hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-muted"
                     onclick={nextPage}
                     disabled={currentPage === totalPages}
                     title="下一页"
                   >
-                    <ChevronDown class="w-4 h-4 rotate-[-90deg]" />
+                    <ChevronDown class="h-4 w-4 rotate-[-90deg]" />
                   </button>
                 </div>
               {/if}
@@ -677,85 +658,70 @@
         </div>
 
         <!-- 右侧：排序按钮 -->
-        <div class="flex items-center space-x-2">
-          <span class="text-sm text-gray-600 dark:text-gray-400">排序:</span>
+        <div class="flex items-center gap-1.5">
+          <span class="mr-0.5 text-[12px] text-fg-muted">排序:</span>
           <button
-            class="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors {sortBy ===
-            'room_id'
-              ? 'bg-blue-500 text-white'
-              : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
+            class="ui-btn {sortBy === 'room_id' ? 'ui-btn-active' : ''}"
             onclick={() => toggleSort("room_id")}
           >
             直播间号
             {#if sortBy === "room_id"}
               {#if sortOrder === "asc"}
-                <ChevronUp class="w-3 h-3 inline ml-1" />
+                <ChevronUp class="h-3 w-3" />
               {:else}
-                <ChevronDown class="w-3 h-3 inline ml-1" />
+                <ChevronDown class="h-3 w-3" />
               {/if}
             {/if}
           </button>
           <button
-            class="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors {sortBy ===
-            'title'
-              ? 'bg-blue-500 text-white'
-              : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
+            class="ui-btn {sortBy === 'title' ? 'ui-btn-active' : ''}"
             onclick={() => toggleSort("title")}
           >
             标题
             {#if sortBy === "title"}
               {#if sortOrder === "asc"}
-                <ChevronUp class="w-3 h-3 inline ml-1" />
+                <ChevronUp class="h-3 w-3" />
               {:else}
-                <ChevronDown class="w-3 h-3 inline ml-1" />
+                <ChevronDown class="h-3 w-3" />
               {/if}
             {/if}
           </button>
           <button
-            class="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors {sortBy ===
-            'length'
-              ? 'bg-blue-500 text-white'
-              : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
+            class="ui-btn {sortBy === 'length' ? 'ui-btn-active' : ''}"
             onclick={() => toggleSort("length")}
           >
             时长
             {#if sortBy === "length"}
               {#if sortOrder === "asc"}
-                <ChevronUp class="w-3 h-3 inline ml-1" />
+                <ChevronUp class="h-3 w-3" />
               {:else}
-                <ChevronDown class="w-3 h-3 inline ml-1" />
+                <ChevronDown class="h-3 w-3" />
               {/if}
             {/if}
           </button>
           <button
-            class="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors {sortBy ===
-            'size'
-              ? 'bg-blue-500 text-white'
-              : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
+            class="ui-btn {sortBy === 'size' ? 'ui-btn-active' : ''}"
             onclick={() => toggleSort("size")}
           >
             大小
             {#if sortBy === "size"}
               {#if sortOrder === "asc"}
-                <ChevronUp class="w-3 h-3 inline ml-1" />
+                <ChevronUp class="h-3 w-3" />
               {:else}
-                <ChevronDown class="w-3 h-3 inline ml-1" />
+                <ChevronDown class="h-3 w-3" />
               {/if}
             {/if}
           </button>
           <button
-            class="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors {sortBy ===
-            'created_at'
-              ? 'bg-blue-500 text-white'
-              : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
+            class="ui-btn {sortBy === 'created_at' ? 'ui-btn-active' : ''}"
             onclick={() => toggleSort("created_at")}
           >
             创建时间
             {#if sortBy === "created_at"}
               {#if sortOrder === "asc"}
-                <ChevronUp class="w-3 h-3 inline ml-1" />
+                <ChevronUp class="h-3 w-3" />
               {:else}
-                <ChevronDown class="w-3 h-3 inline ml-1" />
+                <ChevronDown class="h-3 w-3" />
               {/if}
             {/if}
           </button>
@@ -765,24 +731,22 @@
       <!-- 批量操作栏 -->
       {#if selectedArchives.size > 0}
         <div
-          class="flex justify-between items-center pt-4 border-t border-gray-200 dark:border-gray-700"
+          class="flex items-center justify-between border-t border-line pt-3"
         >
-          <div class="flex items-center space-x-2">
-            <div class="w-2 h-2 bg-amber-500 rounded-full"></div>
-            <span
-              class="text-sm text-amber-700 dark:text-amber-300 font-medium"
-            >
+          <div class="flex items-center gap-2">
+            <div class="h-2 w-2 rounded-full bg-warning"></div>
+            <span class="text-[12px] font-medium text-warning-fg">
               已选择 {selectedArchives.size} 项
             </span>
           </div>
           <button
-            class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors flex items-center space-x-2"
+            class="ui-btn ui-btn-danger"
             onclick={() => {
               showDeleteConfirm = true;
               archiveToDelete = null;
             }}
           >
-            <Trash2 class="w-4 h-4" />
+            <Trash2 class="h-3.5 w-3.5" />
             <span>删除选中</span>
           </button>
         </div>
@@ -790,38 +754,33 @@
     </div>
 
     <!-- Archive List -->
-    <div
-      class="bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden"
-    >
+    <div class="ui-card overflow-hidden">
       {#if loadError}
         <div
-          class="flex flex-col items-center justify-center p-12 space-y-4 text-gray-500 dark:text-gray-400"
+          class="flex flex-col items-center justify-center gap-3 p-12 text-fg-muted"
         >
-          <div class="text-red-500 dark:text-red-400 text-lg">加载失败</div>
-          <p class="text-sm">{loadError}</p>
-          <button
-            class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
-            onclick={loadArchives}
-          >
+          <div class="text-[14px] font-medium text-danger-fg">加载失败</div>
+          <p class="text-[12px]">{loadError}</p>
+          <button class="ui-btn ui-btn-primary" onclick={loadArchives}>
             重试
           </button>
         </div>
       {:else if loading}
         <div
-          class="flex flex-col items-center justify-center p-12 space-y-4 text-gray-500 dark:text-gray-400"
+          class="flex flex-col items-center justify-center gap-3 p-12 text-fg-muted"
         >
-          <RefreshCw class="w-8 h-8 animate-spin" />
-          <span>加载录播列表中...</span>
+          <RefreshCw class="h-6 w-6 animate-spin text-fg-faint" />
+          <span class="text-[13px]">加载录播列表中...</span>
         </div>
       {:else if filteredArchives.length === 0 && !loading}
         <div
-          class="flex flex-col items-center justify-center p-12 space-y-4 text-gray-500 dark:text-gray-400"
+          class="flex flex-col items-center justify-center gap-3 p-12 text-fg-muted"
         >
-          <History class="w-12 h-12" />
-          <h3 class="text-lg font-medium text-gray-900 dark:text-white">
+          <History class="h-10 w-10 text-fg-faint" />
+          <h3 class="text-[14px] font-medium text-fg">
             暂无录播
           </h3>
-          <p class="text-sm">
+          <p class="text-[12px]">
             {selectedRoomId !== null
               ? "该直播间还没有录播记录"
               : "还没有任何录播记录"}
@@ -831,73 +790,71 @@
         <div class="overflow-x-auto custom-scrollbar-light">
           <table class="w-full">
             <thead>
-              <tr class="border-b border-gray-200 dark:border-gray-700/50">
-                <th class="px-4 py-3 text-left w-12">
+              <tr class="border-b border-line">
+                <th class="w-12 px-4 py-2.5 text-left">
                   <input
                     type="checkbox"
                     checked={selectedArchives.size ===
                       filteredArchives.length && filteredArchives.length > 0}
                     onchange={selectAllArchives}
-                    class="rounded border-gray-300 dark:border-gray-600"
+                    class="ui-checkbox"
                   />
                 </th>
                 <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400"
+                  class="px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted"
                   >直播时间</th
                 >
                 <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400"
+                  class="px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted"
                   >直播间</th
                 >
                 <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400"
+                  class="px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted"
                   >标题</th
                 >
                 <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400"
+                  class="px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted"
                   >时长</th
                 >
                 <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400"
+                  class="px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted"
                   >大小</th
                 >
                 <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400"
+                  class="px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted"
                   >码率</th
                 >
                 <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400"
+                  class="px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted"
                   >操作</th
                 >
               </tr>
             </thead>
-            <tbody class="divide-y divide-gray-200 dark:divide-gray-700/50">
+            <tbody class="divide-y divide-line">
               {#each filteredArchives as archive (getArchiveKey(archive))}
-                <tr
-                  class="group hover:bg-[#f5f5f7] dark:hover:bg-[#3a3a3c] transition-colors"
-                >
-                  <td class="px-4 py-3">
+                <tr class="group transition-colors hover:bg-control-hover/50">
+                  <td class="px-4 py-2.5">
                     <input
                       type="checkbox"
                       checked={selectedArchives.has(archive.live_id)}
                       onchange={() => toggleArchiveSelection(archive.live_id)}
-                      class="rounded border-gray-300 dark:border-gray-600"
+                      class="ui-checkbox"
                     />
                   </td>
 
-                  <td class="px-4 py-3">
+                  <td class="px-4 py-2.5">
                     <div class="flex flex-col">
-                      <span class="text-sm text-gray-900 dark:text-white"
+                      <span class="text-[13px] tabular-nums text-fg"
                         >{formatDate(archive.created_at).split(" ")[0]}</span
                       >
-                      <span class="text-xs text-gray-500 dark:text-gray-400"
+                      <span class="text-[11px] tabular-nums text-fg-muted"
                         >{formatDate(archive.created_at).split(" ")[1]}</span
                       >
                     </div>
                   </td>
 
-                  <td class="px-4 py-3">
-                    <div class="flex items-center space-x-2">
+                  <td class="px-4 py-2.5">
+                    <div class="flex items-center gap-2">
                       {#if archive.platform === "bilibili"}
                         <BilibiliIcon class="w-4 h-4" />
                       {:else if archive.platform === "douyin"}
@@ -915,102 +872,101 @@
                       {:else if archive.platform === "youtube"}
                         <YouTubeIcon class="w-4 h-4" />
                       {:else}
-                        <Globe class="w-4 h-4 text-gray-400" />
+                        <Globe class="h-4 w-4 text-fg-faint" />
                       {/if}
                       {#if getRoomUrl(archive.platform, archive.room_id)}
                         <a
                           href={getRoomUrl(archive.platform, archive.room_id)}
                           target="_blank"
                           rel="noopener noreferrer"
-                          class="text-blue-500 hover:text-blue-700 text-sm"
+                          class="text-[13px] text-accent-fg underline-offset-2 hover:underline"
                           title={`打开 ${formatPlatform(archive.platform)} 直播间`}
                         >
                           {archive.room_id}
                         </a>
                       {:else}
-                        <span class="text-sm text-gray-900 dark:text-white"
+                        <span class="text-[13px] text-fg"
                           >{archive.room_id}</span
                         >
                       {/if}
                     </div>
                   </td>
 
-                  <td class="px-4 py-3">
-                    <div class="flex items-center space-x-3">
+                  <td class="px-4 py-2.5">
+                    <div class="flex items-center gap-3">
                       {#if archive.cover}
                         <img
                           src={archive.cover}
                           alt="封面"
-                          class="w-12 h-8 rounded object-cover flex-shrink-0"
+                          class="h-8 w-12 flex-shrink-0 rounded-[5px] object-cover"
                         />
                       {/if}
-                      <span
-                        class="text-sm text-gray-900 dark:text-white truncate"
+                      <span class="truncate text-[13px] text-fg"
                         >{archive.title}</span
                       >
                     </div>
                   </td>
 
-                  <td class="px-4 py-3">
-                    <div class="flex items-center space-x-2">
-                      <Clock class="w-4 h-4 text-gray-400" />
-                      <span class="text-sm text-gray-900 dark:text-white"
+                  <td class="px-4 py-2.5">
+                    <div class="flex items-center gap-1.5">
+                      <Clock class="h-3.5 w-3.5 text-fg-faint" />
+                      <span class="text-[13px] tabular-nums text-fg"
                         >{formatDuration(archive.length)}</span
                       >
                     </div>
                   </td>
 
-                  <td class="px-4 py-3">
-                    <div class="flex items-center space-x-2">
-                      <HardDrive class="w-4 h-4 text-gray-400" />
-                      <span class="text-sm text-gray-900 dark:text-white"
+                  <td class="px-4 py-2.5">
+                    <div class="flex items-center gap-1.5">
+                      <HardDrive class="h-3.5 w-3.5 text-fg-faint" />
+                      <span class="text-[13px] tabular-nums text-fg"
                         >{formatSize(archive.size)}</span
                       >
                     </div>
                   </td>
 
-                  <td class="px-4 py-3">
-                    <span class="text-sm text-gray-500 dark:text-gray-400"
+                  <td class="px-4 py-2.5">
+                    <span class="text-[12px] tabular-nums text-fg-muted"
                       >{calcBitrate(archive.size, archive.length)} Kbps</span
                     >
                   </td>
 
-                  <td class="px-4 py-3">
-                    <div class="flex items-center space-x-2">
+                  <td class="px-4 py-2.5">
+                    <div class="flex items-center gap-1">
                       <button
-                        class="p-1.5 rounded-lg hover:bg-blue-500/10 transition-colors"
+                        class="rounded-[7px] p-1.5 transition-colors hover:bg-accent-soft"
                         title="预览录播"
                         onclick={() => playArchive(archive)}
                       >
-                        <Play class="w-4 h-4 text-blue-500" />
+                        <Play class="h-4 w-4 text-accent-fg" />
                       </button>
                       <button
-                        class="p-1.5 rounded-lg hover:bg-blue-500/10 transition-colors"
+                        class="rounded-[7px] p-1.5 transition-colors hover:bg-accent-soft"
                         title="生成完整切片"
                         onclick={() => openWholeClipModal(archive)}
                       >
-                        <FileVideo class="w-4 h-4 text-blue-500" />
+                        <FileVideo class="h-4 w-4 text-accent-fg" />
                       </button>
                       <button
-                        class="p-1.5 rounded-lg transition-colors {summaryButtonClass(archive)}"
+                        class="rounded-[7px] p-1.5 transition-colors {summaryButtonClass(archive)}"
                         title={summaryButtonTitle(archive)}
                         onclick={() => openSummaryModal(archive)}
                       >
                         {#if getSummaryStatus(archive) === "processing"}
-                          <Loader2 class="w-4 h-4 animate-spin {summaryIconClass(archive)}" />
+                          <Loader2 class="h-4 w-4 animate-spin {summaryIconClass(archive)}" />
                         {:else}
-                          <Sparkles class="w-4 h-4 {summaryIconClass(archive)}" />
+                          <Sparkles class="h-4 w-4 {summaryIconClass(archive)}" />
                         {/if}
                       </button>
                       <button
-                        class="p-1.5 rounded-lg hover:bg-red-500/10 transition-colors"
+                        class="rounded-[7px] p-1.5 transition-colors hover:bg-danger-soft"
                         title="删除记录"
                         onclick={() => {
                           archiveToDelete = archive;
                           showDeleteConfirm = true;
                         }}
                       >
-                        <Trash2 class="w-4 h-4 text-red-500" />
+                        <Trash2 class="h-4 w-4 text-danger-fg" />
                       </button>
                     </div>
                   </td>
@@ -1026,49 +982,43 @@
 
 <!-- Delete Confirmation Modal -->
 {#if showDeleteConfirm}
-  <div
-    class="fixed inset-0 bg-black/20 dark:bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center"
-  >
-    <div
-      class="mac-modal w-[400px] bg-white dark:bg-[#323234] rounded-xl shadow-xl overflow-hidden"
-    >
-      <div class="p-6 space-y-4">
-        <div class="text-center space-y-2">
-          <h3 class="text-base font-medium text-gray-900 dark:text-white">
-            确认删除
-          </h3>
-          <p class="text-sm text-gray-500 dark:text-gray-400">
-            {#if archiveToDelete}
-              确定要删除录播 "{archiveToDelete.title}" 吗？
-            {:else}
-              确定要删除选中的 {selectedArchives.size} 个录播吗？
-            {/if}
-          </p>
-          <p class="text-xs text-red-600 dark:text-red-500">此操作无法撤销。</p>
-        </div>
-        <div class="flex justify-center space-x-3">
-          <button
-            class="w-24 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg transition-colors"
-            onclick={() => {
-              showDeleteConfirm = false;
-              archiveToDelete = null;
-            }}
-          >
-            取消
-          </button>
-          <button
-            class="w-24 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors"
-            onclick={() => {
-              if (archiveToDelete) {
-                deleteArchive(archiveToDelete);
-              } else {
-                deleteSelectedArchives();
-              }
-            }}
-          >
-            删除
-          </button>
-        </div>
+  <div class="ui-modal-backdrop">
+    <div class="ui-modal w-[400px]">
+      <div class="ui-modal-header">
+        <h3>确认删除</h3>
+      </div>
+      <div class="ui-modal-body space-y-2">
+        <p class="text-[13px] text-fg-secondary">
+          {#if archiveToDelete}
+            确定要删除录播 "{archiveToDelete.title}" 吗？
+          {:else}
+            确定要删除选中的 {selectedArchives.size} 个录播吗？
+          {/if}
+        </p>
+        <p class="text-[12px] text-danger-fg">此操作无法撤销。</p>
+      </div>
+      <div class="ui-modal-footer">
+        <button
+          class="ui-btn min-w-[72px]"
+          onclick={() => {
+            showDeleteConfirm = false;
+            archiveToDelete = null;
+          }}
+        >
+          取消
+        </button>
+        <button
+          class="ui-btn ui-btn-danger min-w-[72px]"
+          onclick={() => {
+            if (archiveToDelete) {
+              deleteArchive(archiveToDelete);
+            } else {
+              deleteSelectedArchives();
+            }
+          }}
+        >
+          删除
+        </button>
       </div>
     </div>
   </div>
@@ -1089,19 +1039,6 @@
 />
 
 <style>
-  /* macOS style modal */
-  .mac-modal {
-    box-shadow:
-      0 20px 25px -5px rgba(0, 0, 0, 0.1),
-      0 10px 10px -5px rgba(0, 0, 0, 0.04);
-  }
-
-  :global(.dark) .mac-modal {
-    box-shadow:
-      0 20px 25px -5px rgba(0, 0, 0, 0.3),
-      0 10px 10px -5px rgba(0, 0, 0, 0.1);
-  }
-
   /* fixed icon size in tables */
   :global(.table-icon) {
     width: 1rem; /* 16px, same as Tailwind w-4 */

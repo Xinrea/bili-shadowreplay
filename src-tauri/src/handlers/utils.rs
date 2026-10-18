@@ -218,6 +218,56 @@ pub async fn open_log_folder(state: state_type!()) -> Result<(), String> {
     Ok(())
 }
 
+/// Preview windows draw their own title bar (`TitleBar.svelte`): on macOS it
+/// sits under the native traffic lights, elsewhere it replaces the decorations.
+/// Keep the traffic light position in sync with `tauri.macos.conf.json`.
+#[cfg(feature = "gui")]
+fn with_custom_titlebar<'a, R: tauri::Runtime, M: Manager<R>>(
+    builder: tauri::WebviewWindowBuilder<'a, R, M>,
+) -> tauri::WebviewWindowBuilder<'a, R, M> {
+    #[cfg(target_os = "macos")]
+    {
+        builder
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true)
+            .traffic_light_position(tauri::LogicalPosition::new(16.0, 22.0))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        builder.decorations(false)
+    }
+}
+
+/// Changes the calling window's title. On macOS, AppKit lays the title bar out
+/// again on every title change, which moves the traffic lights back to their
+/// default position. Marking the content view dirty in the same main-thread
+/// turn makes wry re-apply the custom position when it redraws after that.
+#[cfg(feature = "gui")]
+#[tauri::command]
+pub fn set_window_title(window: tauri::WebviewWindow, title: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        window
+            .with_webview(move |webview| {
+                let ns_window = webview.ns_window().cast::<objc2_app_kit::NSWindow>();
+                if ns_window.is_null() {
+                    return;
+                }
+                // SAFETY: `with_webview` runs on the main thread while the window is alive.
+                let ns_window = unsafe { &*ns_window };
+                ns_window.setTitle(&objc2_foundation::NSString::from_str(&title));
+                if let Some(view) = ns_window.contentView() {
+                    unsafe { view.setNeedsDisplay(true) };
+                }
+            })
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        window.set_title(&title).map_err(|e| e.to_string())
+    }
+}
+
 #[cfg(feature = "gui")]
 #[tauri::command]
 pub async fn open_live(
@@ -261,7 +311,7 @@ pub async fn open_live(
             ),
         )
         .title(format!("Live[{}] {}", room_id, live_id))
-        .theme(Some(Theme::Light))
+        .theme(Some(Theme::Dark))
         .inner_size(1200.0, 800.0)
         .effects(WindowEffectsConfig {
             effects: vec![
@@ -273,7 +323,7 @@ pub async fn open_live(
             color: None,
         });
 
-        if let Err(e) = builder.decorations(true).build() {
+        if let Err(e) = with_custom_titlebar(builder).build() {
             log::error!("live window build failed: {e}");
             return Err(format!("打开直播窗口失败：{e}"));
         }
@@ -305,7 +355,7 @@ pub async fn open_clip(state: state_type!(), video_id: i64) -> Result<(), String
         tauri::WebviewUrl::App(format!("index_clip.html?id={video_id}").into()),
     )
     .title(format!("Clip window:{video_id}"))
-    .theme(Some(Theme::Light))
+    .theme(Some(Theme::Dark))
     .inner_size(1200.0, 800.0)
     .effects(WindowEffectsConfig {
         effects: vec![
@@ -317,7 +367,7 @@ pub async fn open_clip(state: state_type!(), video_id: i64) -> Result<(), String
         color: None,
     });
 
-    if let Err(e) = builder.decorations(true).build() {
+    if let Err(e) = with_custom_titlebar(builder).build() {
         log::error!("clip window build failed: {e}");
         return Err(format!("打开切片窗口失败：{e}"));
     }

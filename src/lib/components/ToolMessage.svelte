@@ -35,16 +35,16 @@
     if (message.status === "success") {
       return {
         icon: CheckCircle,
-        color: "text-green-500",
-        bgColor: "bg-green-50 dark:bg-green-900/20",
-        borderColor: "border-green-200 dark:border-green-700",
+        color: "text-success",
+        bgColor: "bg-success-soft",
+        borderColor: "border-success/40",
       };
     } else {
       return {
         icon: AlertCircle,
-        color: "text-red-500",
-        bgColor: "bg-red-50 dark:bg-red-900/20",
-        borderColor: "border-red-200 dark:border-red-700",
+        color: "text-danger",
+        bgColor: "bg-danger-soft",
+        borderColor: "border-danger/40",
       };
     }
   }
@@ -64,40 +64,40 @@
 </script>
 
 <div class="flex justify-start">
-  <div class="flex items-start space-x-3 max-w-2xl">
+  <div class="flex max-w-2xl items-start gap-2.5">
     <div
-      class="w-8 h-8 rounded-full bg-green-500 flex items-center justify-center flex-shrink-0"
+      class="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-success/30 bg-success-soft text-success-fg"
     >
-      <Wrench class="w-4 h-4 text-white" />
+      <Wrench class="h-3.5 w-3.5" />
     </div>
 
-    <div class="flex flex-col space-y-1">
-      <div class="flex items-center space-x-2">
-        <span class="text-sm font-medium text-gray-700 dark:text-gray-300">
+    <div class="flex min-w-0 flex-col space-y-1">
+      <div class="flex h-6 items-center gap-2">
+        <span class="text-[12px] font-medium text-fg-secondary">
           工具响应
         </span>
-        <span class="text-xs text-gray-500 dark:text-gray-400">
+        <span class="text-[11px] tabular-nums text-fg-muted">
           {formatTime(messageTime)}
         </span>
         <CopyMarkdownButton content={markdownContent} />
       </div>
 
       <div
-        class="bg-white dark:bg-gray-800 rounded-2xl px-4 py-3 shadow-sm border border-gray-200 dark:border-gray-700"
+        class="rounded-[10px] border border-line bg-surface px-3.5 py-2.5"
       >
-        <div class="text-gray-900 dark:text-white text-sm leading-relaxed">
+        <div class="text-[13px] leading-relaxed text-fg">
           <!-- 工具信息头部 -->
-          <div class="mb-3">
-            <div class="flex items-center space-x-2 mb-2">
+          <div class="mb-2">
+            <div class="flex items-center gap-1.5">
               <StatusIcon
-                class="w-4 h-4 {statusInfo.color}"
+                class="h-3.5 w-3.5 flex-shrink-0 {statusInfo.color}"
               />
               <span
-                class="text-sm font-medium text-gray-700 dark:text-gray-300"
+                class="min-w-0 break-all text-[12px] font-medium text-fg"
               >
                 {message.name}
               </span>
-              <span class="text-xs text-gray-500 dark:text-gray-400">
+              <span class="flex-shrink-0 text-[11px] text-fg-muted">
                 (ID: {formatToolCallId(message.toolCallId)})
               </span>
             </div>
@@ -108,12 +108,12 @@
             <!-- 折叠按钮 -->
             <button
               onclick={toggleExpanded}
-              class="flex items-center space-x-2 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
+              class="flex items-center gap-1 rounded-[6px] text-[12px] text-fg-muted transition-colors hover:text-fg"
             >
               {#if isExpanded}
-                <ChevronDown class="w-4 h-4" />
+                <ChevronDown class="h-3.5 w-3.5" />
               {:else}
-                <ChevronRight class="w-4 h-4" />
+                <ChevronRight class="h-3.5 w-3.5" />
               {/if}
               <span>{isExpanded ? "收起详情" : "展开详情"}</span>
             </button>
@@ -121,10 +121,10 @@
             <!-- 折叠内容 -->
             {#if isExpanded}
               <div
-                class="bg-gray-50 dark:bg-gray-700 rounded-lg p-3 border border-gray-200 dark:border-gray-600"
+                class="rounded-[8px] border border-line bg-sunken p-3"
               >
                 <div
-                  class="space-y-3 text-sm text-gray-700 dark:text-gray-300 leading-relaxed"
+                  class="space-y-3 text-[12px] leading-relaxed text-fg-secondary"
                 >
                   {#if contentParts.length === 0}
                     无响应内容
@@ -135,10 +135,10 @@
                           src={part.src}
                           alt={part.alt}
                           loading="lazy"
-                          class="max-h-[28rem] max-w-full rounded-lg border border-gray-200 object-contain dark:border-gray-600"
+                          class="max-h-[28rem] max-w-full rounded-[8px] border border-line object-contain"
                         />
                       {:else if part.format === "json"}
-                        <pre class="overflow-x-auto whitespace-pre-wrap break-words text-xs">{part.text}</pre>
+                        <pre class="overflow-x-auto whitespace-pre-wrap break-words text-[11px]">{part.text}</pre>
                       {:else}
                         <div class="whitespace-pre-wrap break-words">{part.text}</div>
                       {/if}
@@ -150,7 +150,7 @@
           </div>
 
           <!-- 状态信息 -->
-          <div class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+          <div class="ui-badge mt-2 {message.status === 'success' ? 'ui-badge-success' : 'ui-badge-danger'}">
             状态: {message.status}
           </div>
         </div>

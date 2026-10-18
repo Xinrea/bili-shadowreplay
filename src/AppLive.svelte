@@ -10,7 +10,12 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import Player from "./lib/components/Player.svelte";
   import type { AccountItem, RecordItem } from "./lib/db";
-  import { Maximize, Minimize } from "lucide-svelte";
+  import {
+    Maximize,
+    Minimize,
+    PanelRightClose,
+    PanelRightOpen,
+  } from "lucide-svelte";
   import {
     type VideoItem,
     type Marker,
@@ -21,6 +26,8 @@
   import ArchiveInspector from "./lib/components/ArchiveInspector.svelte";
   import ArchiveTimeline from "./lib/components/ArchiveTimeline.svelte";
   import TaskCenter from "./lib/components/TaskCenter.svelte";
+  import TaskCenterButton from "./lib/components/TaskCenterButton.svelte";
+  import TitleBar from "./lib/components/TitleBar.svelte";
   import { onDestroy, onMount } from "svelte";
   import {
     createThrottledRunner,
@@ -608,12 +615,44 @@
 <TaskCenter />
 
 <main>
+  <TitleBar tone="dark" title={archive?.title || "录播预览"}>
+    <span class="room-tag">{platform?.toUpperCase()}#{room_id}</span>
+    {#if player_is_live}
+      <span class="live-tag"><span></span>直播中</span>
+    {/if}
+    {#snippet actions()}
+      <TaskCenterButton tone="dark" />
+      <button
+        type="button"
+        class="titlebar-icon-button"
+        title="全屏播放"
+        aria-label="全屏播放"
+        onclick={toggleFullscreen}
+      >
+        <Maximize size={16} />
+      </button>
+      <button
+        type="button"
+        class="titlebar-icon-button"
+        class:active={!rpanel_collapsed}
+        title={rpanel_collapsed ? "展开素材检查器" : "收起素材检查器"}
+        aria-label={rpanel_collapsed ? "展开素材检查器" : "收起素材检查器"}
+        aria-pressed={!rpanel_collapsed}
+        onclick={() => (rpanel_collapsed = !rpanel_collapsed)}
+      >
+        {#if rpanel_collapsed}
+          <PanelRightOpen size={16} />
+        {:else}
+          <PanelRightClose size={16} />
+        {/if}
+      </button>
+    {/snippet}
+  </TitleBar>
   <div class="preview-workspace">
     <div class="preview-main">
       <div
         class="video-stage"
         class:native-fullscreen={TAURI_ENV && is_fullscreen}
-        class:inspector-collapsed={rpanel_collapsed}
         bind:this={video_stage}
       >
         <Player
@@ -648,19 +687,17 @@
             ].sort((a, b) => a.offset - b.offset);
           }}
         />
-        <button
-          type="button"
-          class="fullscreen-button"
-          title={is_fullscreen ? "退出全屏" : "全屏播放"}
-          aria-label={is_fullscreen ? "退出全屏" : "全屏播放"}
-          onclick={toggleFullscreen}
-        >
-          {#if is_fullscreen}
+        {#if is_fullscreen}
+          <button
+            type="button"
+            class="fullscreen-button"
+            title="退出全屏"
+            aria-label="退出全屏"
+            onclick={toggleFullscreen}
+          >
             <Minimize size={19} />
-          {:else}
-            <Maximize size={19} />
-          {/if}
-        </button>
+          </button>
+        {/if}
       </div>
       <ArchiveTimeline
         bind:ranges
@@ -713,7 +750,7 @@
       {videos}
       selectedVideo={selected_video}
       bind:selectedRangeIndex={selected_range_index}
-      bind:collapsed={rpanel_collapsed}
+      collapsed={rpanel_collapsed}
       onSeek={(seconds) => player?.seek(seconds)}
       onAddPeak={add_peak_to_ranges}
       onAddAllPeaks={add_all_peaks_to_ranges}
@@ -792,21 +829,6 @@
     cursor: pointer;
   }
 
-  .video-stage.inspector-collapsed .fullscreen-button {
-    right: 54px;
-  }
-
-  @media (max-width: 1099px) {
-    .video-stage:not(.inspector-collapsed) .fullscreen-button {
-      right: min(352px, calc(100% - 48px));
-    }
-  }
-
-  .video-stage:fullscreen .fullscreen-button,
-  .video-stage.native-fullscreen .fullscreen-button {
-    right: 12px;
-  }
-
   .fullscreen-button:hover {
     background: rgb(0 0 0 / 75%);
   }
@@ -814,5 +836,34 @@
   .fullscreen-button:focus-visible {
     outline: 2px solid #0a84ff;
     outline-offset: 2px;
+  }
+
+  .room-tag {
+    flex-shrink: 0;
+    border-radius: 5px;
+    background: #222a36;
+    padding: 2px 6px;
+    color: #8c98aa;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+
+  .live-tag {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 5px;
+    color: #ff6b6b;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .live-tag span {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
   }
 </style>

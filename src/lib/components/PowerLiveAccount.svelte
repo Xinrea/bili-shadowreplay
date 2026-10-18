@@ -142,15 +142,15 @@
     {#if TAURI_ENV}
       <div class="account-actions">
         {#if status.pending}
-          <button type="button" class="secondary-button" disabled={busy} onclick={cancel}>取消登录</button>
+          <button type="button" class="ui-btn" disabled={busy} onclick={cancel}>取消登录</button>
         {:else if status.logged_in}
-          <button type="button" class="secondary-button" disabled={busy} onclick={openDashboard}>
+          <button type="button" class="ui-btn" disabled={busy} onclick={openDashboard}>
             PowerLive 控制台
             <ExternalLink size={14} aria-hidden="true" />
           </button>
-          <button type="button" class="logout-button" disabled={busy} onclick={() => logout()}>退出登录</button>
+          <button type="button" class="ui-btn ui-btn-ghost logout-button" disabled={busy} onclick={() => logout()}>退出登录</button>
         {:else}
-          <button type="button" class="primary-button" disabled={busy || loading} onclick={login}>{busy ? "处理中…" : "登录 PowerLive"}</button>
+          <button type="button" class="ui-btn ui-btn-primary" disabled={busy || loading} onclick={login}>{busy ? "处理中…" : "登录 PowerLive"}</button>
         {/if}
       </div>
     {/if}
@@ -163,14 +163,14 @@
         <div class="identity-copy">
           <div class="identity-heading">
             <p class="account-name">{displayName}</p>
-            <span class="connection-badge"><span aria-hidden="true"></span>已连接</span>
+            <span class="ui-badge ui-badge-success connection-badge"><span aria-hidden="true"></span>已连接</span>
           </div>
         </div>
       </div>
       <div class="credit-panel" aria-busy={creditLoading}>
         <div class="credit-heading">
           <p>剩余额度</p>
-          <button type="button" class="refresh-button" class:refreshing={creditLoading} disabled={busy || creditLoading} onclick={refreshAccount} aria-label={creditLoading ? "正在刷新额度" : "刷新额度"} title={creditLoading ? "正在刷新额度" : "刷新额度"}>
+          <button type="button" class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost refresh-button" class:refreshing={creditLoading} disabled={busy || creditLoading} onclick={refreshAccount} aria-label={creditLoading ? "正在刷新额度" : "刷新额度"} title={creditLoading ? "正在刷新额度" : "刷新额度"}>
             <RefreshCw size={14} aria-hidden="true" />
           </button>
         </div>
@@ -196,7 +196,7 @@
   {#if logoutFailed && status.logged_in}
     <div class="local-logout">
       <p>仅清除本机凭据，不撤销远端授权。</p>
-      <button type="button" class="secondary-button" disabled={busy} onclick={() => logout(true)}>仅清除本地登录</button>
+      <button type="button" class="ui-btn ui-btn-sm" disabled={busy} onclick={() => logout(true)}>仅清除本地登录</button>
     </div>
   {/if}
 </section>
@@ -205,58 +205,38 @@
   .powerlive-account {
     container-type: inline-size;
     padding: 16px;
-    color: #111827;
-    --muted: #6b7280;
-    --border: #e5e7eb;
-    --soft: #f8fafc;
-    --surface: #fff;
-    --hover: #f3f4f6;
+    color: rgb(var(--c-fg));
   }
   .account-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
   .section-heading h3 { margin: 0; font-size: 14px; font-weight: 600; line-height: 1.5; }
-  .account-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-  button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; flex-shrink: 0; min-height: 34px; padding: 7px 12px; border: 1px solid transparent; border-radius: 7px; font: inherit; font-size: 12px; font-weight: 500; line-height: 1.5; cursor: pointer; transition: background-color 150ms, color 150ms; }
-  button:focus-visible { outline: 2px solid #2563eb; outline-offset: 3px; }
-  button:disabled { opacity: 0.5; cursor: default; }
-  .secondary-button { border-color: var(--border); color: inherit; background: var(--surface); }
-  .secondary-button:hover:enabled { background: var(--hover); }
-  .logout-button { color: var(--muted); background: transparent; }
-  .logout-button:hover:enabled { color: #dc2626; background: #fef2f2; }
-  .primary-button { color: #fff; background: #2563eb; }
-  .primary-button:hover:enabled { background: #1d4ed8; }
-  .account-summary { display: grid; grid-template-columns: minmax(0, 1fr) minmax(250px, 32%); align-items: center; border: 1px solid var(--border); border-radius: 10px; background: var(--soft); }
-  .identity { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 16px; }
+  .account-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+  .logout-button:hover:enabled { color: rgb(var(--c-danger-fg)); background: rgb(var(--c-danger-soft)); }
+  .account-summary { display: grid; grid-template-columns: minmax(0, 1fr) minmax(250px, 32%); align-items: center; border: 1px solid rgb(var(--c-line)); border-radius: 10px; background: rgb(var(--c-control)); }
+  .identity { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 14px 16px; }
   .powerlive-logo { display: block; flex-shrink: 0; width: 36px; height: 36px; }
   .identity-copy { min-width: 0; }
-  .identity-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; }
-  .account-name { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
-  .connection-badge { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; padding: 2px 7px; border-radius: 5px; color: #15803d; background: #eaf5ed; font-size: 10px; font-weight: 500; line-height: 1.5; }
+  .identity-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+  .account-name { margin: 0; font-size: 14px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
   .connection-badge span { width: 4px; height: 4px; border-radius: 50%; background: currentColor; }
-  .credit-panel { min-width: 0; margin-block: 12px; padding: 0 16px; border-left: 1px solid var(--border); }
-  .credit-heading { display: flex; align-items: center; gap: 6px; min-height: 24px; }
-  .credit-heading p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
-  .refresh-button { min-height: 24px; width: 24px; padding: 4px; color: var(--muted); background: transparent; border-radius: 5px; }
-  .refresh-button:hover:enabled { color: #2563eb; background: var(--border); }
+  .credit-panel { min-width: 0; margin-block: 12px; padding: 0 16px; border-left: 1px solid rgb(var(--c-line)); }
+  .credit-heading { display: flex; align-items: center; gap: 4px; min-height: 26px; }
+  .credit-heading p { margin: 0; color: rgb(var(--c-fg-muted)); font-size: 12px; line-height: 1.5; }
   .refreshing :global(svg) { animation: refresh-spin 1s linear infinite; }
-  .credit-value { margin: 0 0 2px; font-size: 24px; font-weight: 600; line-height: 1.25; letter-spacing: -0.6px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-  .credit-unavailable { margin-block: 7px; color: var(--muted); font-size: 18px; letter-spacing: 0; }
-  .credit-meta { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
-  .empty-state { display: flex; align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; color: var(--muted); background: var(--soft); }
-  .empty-icon { display: grid; place-items: center; flex-shrink: 0; width: 32px; height: 32px; border: 1px solid var(--border); border-radius: 50%; background: var(--surface); }
-  .empty-state p { margin: 0; font-size: 13px; line-height: 1.7; }
-  .credit-error, .account-error { margin: 8px 0 0; color: #dc2626; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+  .credit-value { margin: 0 0 2px; font-size: 22px; font-weight: 600; line-height: 1.25; letter-spacing: -0.5px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .credit-unavailable { margin-block: 6px; color: rgb(var(--c-fg-muted)); font-size: 16px; letter-spacing: 0; }
+  .credit-meta { margin: 0; color: rgb(var(--c-fg-muted)); font-size: 11px; line-height: 1.6; }
+  .empty-state { display: flex; align-items: center; gap: 10px; padding: 12px; border: 1px solid rgb(var(--c-line)); border-radius: 10px; color: rgb(var(--c-fg-muted)); background: rgb(var(--c-control)); }
+  .empty-icon { display: grid; place-items: center; flex-shrink: 0; width: 32px; height: 32px; border: 1px solid rgb(var(--c-line)); border-radius: 50%; color: rgb(var(--c-fg-faint)); background: rgb(var(--c-surface)); }
+  .empty-state p { margin: 0; font-size: 12px; line-height: 1.7; }
+  .credit-error, .account-error { margin: 8px 0 0; color: rgb(var(--c-danger-fg)); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
   .account-error { margin-top: 12px; }
   .local-logout { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-top: 8px; }
-  .local-logout p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
-  :global(.dark) .powerlive-account { color: #f3f4f6; --muted: #b1b6bf; --border: #55565b; --soft: #333438; --surface: #3c3c3e; --hover: #48494d; }
-  :global(.dark) .connection-badge { color: #9bddb2; background: #284735; }
-  :global(.dark) .logout-button:hover:enabled { color: #fca5a5; background: #512d32; }
-  :global(.dark) .credit-error, :global(.dark) .account-error { color: #fca5a5; }
+  .local-logout p { margin: 0; color: rgb(var(--c-fg-muted)); font-size: 12px; line-height: 1.6; }
   @container (max-width: 600px) {
     .account-header { flex-wrap: wrap; }
     .account-summary { grid-template-columns: minmax(0, 1fr); }
     .identity { padding: 12px 16px; }
-    .credit-panel { margin: 0 16px; padding: 12px 0; border-left: 0; border-top: 1px solid var(--border); }
+    .credit-panel { margin: 0 16px; padding: 12px 0; border-left: 0; border-top: 1px solid rgb(var(--c-line)); }
   }
   @container (max-width: 360px) {
     .account-actions { width: 100%; }

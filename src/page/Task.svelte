@@ -14,6 +14,7 @@
   } from "lucide-svelte";
   import type { TaskRow } from "../lib/db";
   import { taskTypeName } from "../lib/task-progress";
+  import PageTitlebar from "../lib/components/PageTitlebar.svelte";
   import { onMount } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
 
@@ -93,18 +94,18 @@
     switch (status.toLowerCase()) {
       case "completed":
       case "success":
-        return "text-green-600 dark:text-green-400";
+        return "text-success-fg";
       case "failed":
       case "error":
-        return "text-red-600 dark:text-red-400";
+        return "text-danger-fg";
       case "running":
       case "processing":
-        return "text-blue-600 dark:text-blue-400";
+        return "text-accent-fg";
       case "pending":
       case "waiting":
-        return "text-yellow-600 dark:text-yellow-400";
+        return "text-warning-fg";
       default:
-        return "text-gray-600 dark:text-gray-400";
+        return "text-fg-muted";
     }
   }
 
@@ -112,18 +113,18 @@
     switch (status.toLowerCase()) {
       case "completed":
       case "success":
-        return "bg-green-100 dark:bg-green-900/20";
+        return "bg-success-soft";
       case "failed":
       case "error":
-        return "bg-red-100 dark:bg-red-900/20";
+        return "bg-danger-soft";
       case "running":
       case "processing":
-        return "bg-blue-100 dark:bg-blue-900/20";
+        return "bg-accent-soft";
       case "pending":
       case "waiting":
-        return "bg-yellow-100 dark:bg-yellow-900/20";
+        return "bg-warning-soft";
       default:
-        return "bg-gray-100 dark:bg-gray-900/20";
+        return "bg-control";
     }
   }
 
@@ -234,19 +235,19 @@
   function get_json_token_color(type: JsonTokenType) {
     switch (type) {
       case "key":
-        return "text-purple-600 dark:text-purple-300";
+        return "text-violet-500";
       case "string":
-        return "text-green-700 dark:text-green-400";
+        return "text-success-fg";
       case "number":
-        return "text-blue-600 dark:text-blue-400";
+        return "text-accent-fg";
       case "boolean":
-        return "text-orange-600 dark:text-orange-400";
+        return "text-warning-fg";
       case "null":
-        return "text-gray-400 dark:text-gray-500";
+        return "text-fg-faint";
       case "punctuation":
-        return "text-gray-500 dark:text-gray-400";
+        return "text-fg-muted";
       default:
-        return "text-gray-700 dark:text-gray-300";
+        return "text-fg-secondary";
     }
   }
 
@@ -255,15 +256,15 @@
       case "clip_range":
         return "bg-purple-500";
       case "upload_procedure":
-        return "bg-green-500";
+        return "bg-success";
       case "generate_video_subtitle":
-        return "bg-blue-500";
+        return "bg-accent";
       case "encode_video_subtitle":
-        return "bg-orange-500";
+        return "bg-warning";
       case "generate_archive_summary":
         return "bg-violet-500";
       default:
-        return "bg-gray-500";
+        return "bg-fg-faint";
     }
   }
 
@@ -278,60 +279,50 @@
   onMount(() => watchStateChanges(stateRefresh, ["tasks-changed"]));
 </script>
 
-<div
-  class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50 dark:bg-black"
->
-  <div class="space-y-6">
-    <!-- Header -->
-    <div class="flex justify-between items-center">
-      <div class="space-y-1">
-        <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">
-          任务列表
-        </h1>
-        <p class="text-sm text-gray-500 dark:text-gray-400">
-          查看后台任务的执行状态、消息和详细信息。
-        </p>
-      </div>
-      <button
-        onclick={update_tasks}
-        class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
-        disabled={loading}
-        title="刷新任务列表"
-      >
-        <RefreshCw
-          class="w-4 h-4 text-white {loading ? 'animate-spin' : ''}"
-        />
-        <span>刷新</span>
-      </button>
-    </div>
+<PageTitlebar title="任务列表">
+  {#snippet subtitle()}
+    <span class="truncate text-[12px] text-fg-muted">
+      查看后台任务的执行状态、消息和详细信息。
+    </span>
+  {/snippet}
+  <button
+    class="titlebar-icon-button"
+    title="刷新任务列表"
+    aria-label="刷新任务列表"
+    onclick={update_tasks}
+    disabled={loading}
+  >
+    <RefreshCw class="h-4 w-4 {loading ? 'animate-spin' : ''}" />
+  </button>
+</PageTitlebar>
 
+<div class="flex-1 overflow-auto bg-canvas p-6 custom-scrollbar-light">
+  <div class="space-y-4">
     <!-- Task summary -->
-    <div
-      class="p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700"
-    >
-      <div class="flex items-center flex-wrap gap-x-6 gap-y-2">
-        <div class="flex items-center space-x-2">
-          <span class="text-sm text-gray-500 dark:text-gray-400">全部任务</span>
-          <span class="text-sm font-medium text-blue-600 dark:text-blue-400">
+    <div class="ui-card px-4 py-3">
+      <div class="flex flex-wrap items-center gap-x-5 gap-y-2">
+        <div class="flex items-center gap-2">
+          <span class="text-[12px] text-fg-muted">全部任务</span>
+          <span class="text-[12px] font-semibold text-accent-fg tabular-nums">
             {tasks.length}
           </span>
         </div>
-        <div class="h-4 w-px bg-gray-300 dark:bg-gray-600"></div>
-        <div class="flex items-center space-x-2">
-          <span class="w-2 h-2 rounded-full bg-blue-500"></span>
-          <span class="text-sm text-gray-600 dark:text-gray-300">
+        <div class="h-3.5 w-px bg-line-strong"></div>
+        <div class="flex items-center gap-2">
+          <span class="h-1.5 w-1.5 rounded-full bg-accent"></span>
+          <span class="text-[12px] text-fg-secondary tabular-nums">
             进行中 {count_tasks("running", "processing")}
           </span>
         </div>
-        <div class="flex items-center space-x-2">
-          <span class="w-2 h-2 rounded-full bg-yellow-500"></span>
-          <span class="text-sm text-gray-600 dark:text-gray-300">
+        <div class="flex items-center gap-2">
+          <span class="h-1.5 w-1.5 rounded-full bg-warning"></span>
+          <span class="text-[12px] text-fg-secondary tabular-nums">
             等待中 {count_tasks("pending", "waiting")}
           </span>
         </div>
-        <div class="flex items-center space-x-2">
-          <span class="w-2 h-2 rounded-full bg-red-500"></span>
-          <span class="text-sm text-gray-600 dark:text-gray-300">
+        <div class="flex items-center gap-2">
+          <span class="h-1.5 w-1.5 rounded-full bg-danger"></span>
+          <span class="text-[12px] text-fg-secondary tabular-nums">
             失败 {count_tasks("failed", "error")}
           </span>
         </div>
@@ -339,30 +330,28 @@
     </div>
 
     <!-- Task List -->
-    <div
-      class="bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden"
-    >
+    <div class="ui-card overflow-hidden">
       {#if loading && tasks.length === 0}
         <div
-          class="flex flex-col items-center justify-center p-12 space-y-4 text-gray-500 dark:text-gray-400"
+          class="flex flex-col items-center justify-center space-y-3 p-12 text-[12px] text-fg-muted"
         >
-          <RefreshCw class="w-8 h-8 animate-spin" />
+          <RefreshCw class="h-6 w-6 animate-spin text-fg-faint" />
           <span>加载中...</span>
         </div>
       {:else if tasks.length === 0}
         <div
-          class="flex flex-col items-center justify-center p-12 space-y-4 text-gray-500 dark:text-gray-400"
+          class="flex flex-col items-center justify-center space-y-3 p-12 text-fg-muted"
         >
-          <Clock class="w-12 h-12" />
-          <h3 class="text-lg font-medium text-gray-900 dark:text-white">
+          <Clock class="h-10 w-10 text-fg-faint" />
+          <h3 class="text-[14px] font-medium text-fg">
             暂无任务
           </h3>
-          <p class="text-sm">当前没有任务记录</p>
+          <p class="text-[12px]">当前没有任务记录</p>
         </div>
       {:else}
         <div class="overflow-x-auto custom-scrollbar-light">
           <div
-            class="min-w-[820px] grid grid-cols-[minmax(150px,1.1fr)_minmax(240px,2fr)_110px_170px_68px] gap-3 items-center px-4 py-3 border-b border-gray-200 dark:border-gray-700/50 text-sm font-medium text-gray-500 dark:text-gray-400"
+            class="grid min-w-[820px] grid-cols-[minmax(150px,1.1fr)_minmax(240px,2fr)_110px_170px_68px] items-center gap-3 border-b border-line bg-chrome/60 px-4 py-2 text-[11px] font-medium text-fg-muted"
           >
             <span>任务</span>
             <span>消息 / ID</span>
@@ -371,19 +360,19 @@
             <span class="text-right">操作</span>
           </div>
 
-          <div class="min-w-[820px] divide-y divide-gray-100 dark:divide-gray-700">
+          <div class="min-w-[820px] divide-y divide-line">
             {#each tasks as task (task.id)}
               <div
-                class="group hover:bg-[#f5f5f7] dark:hover:bg-[#3a3a3c] transition-colors"
+                class="group transition-colors hover:bg-control-hover/50"
                 in:fade={{ duration: 120 }}
                 out:fade={{ duration: 120 }}
               >
                 <div
-                  class="grid grid-cols-[minmax(150px,1.1fr)_minmax(240px,2fr)_110px_170px_68px] gap-3 items-center min-h-[52px] px-4"
+                  class="grid min-h-[48px] grid-cols-[minmax(150px,1.1fr)_minmax(240px,2fr)_110px_170px_68px] items-center gap-3 px-4"
                 >
-                  <div class="flex items-center gap-2 min-w-0">
+                  <div class="flex min-w-0 items-center gap-2">
                     <button
-                      class="shrink-0 p-1 -ml-1 rounded-md text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                      class="-ml-1 shrink-0 rounded-[6px] p-1 text-fg-faint transition-colors hover:bg-control-hover hover:text-fg"
                       onclick={() => toggleMetadata(task.id)}
                       title={expandedTasks.has(task.id)
                         ? "收起任务详情"
@@ -402,35 +391,36 @@
                       />
                     </button>
                     <span
-                      class="w-2 h-2 shrink-0 {get_task_type_color(
+                      class="h-2 w-2 shrink-0 {get_task_type_color(
                         task.task_type,
                       )} rounded-full"
                     ></span>
                     <span
-                      class="text-sm font-medium text-gray-900 dark:text-white truncate"
+                      class="truncate text-[13px] font-medium text-fg"
                       title={taskTypeName(task.task_type)}
                     >
                       {taskTypeName(task.task_type)}
                     </span>
                   </div>
 
-                  <div class="min-w-0 flex items-center gap-2">
+                  <div class="flex min-w-0 items-center gap-2">
                     <span
-                      class="text-sm text-gray-700 dark:text-gray-300 truncate"
-                      class:text-gray-400={!task.message}
+                      class="truncate text-[12px] {task.message
+                        ? 'text-fg-secondary'
+                        : 'text-fg-faint'}"
                       title={task.message || "无任务消息"}
                     >
                       {task.message || "无任务消息"}
                     </span>
                     <span
-                      class="shrink-0 max-w-[92px] truncate font-mono text-[10px] text-gray-400 dark:text-gray-500"
+                      class="max-w-[92px] shrink-0 truncate font-mono text-[10px] text-fg-faint"
                       title={task.id}
                     >{task.id}</span>
                   </div>
 
                   <div>
                     <span
-                      class="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium {get_status_bg_color(
+                      class="ui-badge text-[11px] {get_status_bg_color(
                         task.status,
                       )} {get_status_color(task.status)}"
                       title={task.status}
@@ -448,7 +438,7 @@
                   </div>
 
                   <time
-                    class="text-xs tabular-nums text-gray-500 dark:text-gray-400"
+                    class="text-[11px] tabular-nums text-fg-muted"
                     datetime={task.created_at}
                   >
                     {format_date(task.created_at)}
@@ -456,10 +446,10 @@
 
                   <div class="flex justify-end">
                     <button
-                      class={`h-7 min-w-[28px] px-1.5 rounded-md transition-colors flex justify-center items-center gap-1 ${
+                      class={`flex h-7 min-w-[28px] items-center justify-center gap-1 rounded-[7px] px-1.5 transition-colors ${
                         is_cancelable_status(task.status)
-                          ? "text-amber-600 hover:text-amber-700 hover:bg-amber-100 dark:hover:bg-amber-900/20"
-                          : "text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20"
+                          ? "text-warning-fg hover:bg-warning-soft"
+                          : "text-fg-faint hover:bg-danger-soft hover:text-danger-fg"
                       } ${actionTaskId === task.id ? "cursor-wait" : ""}`}
                       onclick={() =>
                         is_cancelable_status(task.status)
@@ -488,70 +478,56 @@
                     in:fade={{ duration: 120 }}
                     out:fade={{ duration: 120 }}
                   >
-                    <div
-                      class="border-t border-gray-200 dark:border-gray-700/50 pt-4 space-y-4"
-                    >
+                    <div class="space-y-4 border-t border-line pt-3">
                       <div
-                        class="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-3"
+                        class="grid grid-cols-2 gap-x-6 gap-y-3 md:grid-cols-4"
                       >
                         <div class="min-w-0">
-                          <div
-                            class="mb-1 text-xs text-gray-400 dark:text-gray-500"
-                          >
+                          <div class="mb-1 text-[11px] text-fg-faint">
                             任务 ID
                           </div>
                           <div
-                            class="font-mono text-xs text-gray-700 dark:text-gray-300 break-all select-text"
+                            class="select-text break-all font-mono text-[11px] text-fg-secondary"
                           >
                             {task.id}
                           </div>
                         </div>
                         <div class="min-w-0">
-                          <div
-                            class="mb-1 text-xs text-gray-400 dark:text-gray-500"
-                          >
+                          <div class="mb-1 text-[11px] text-fg-faint">
                             原始任务类型
                           </div>
                           <div
-                            class="font-mono text-xs text-gray-700 dark:text-gray-300 break-all select-text"
+                            class="select-text break-all font-mono text-[11px] text-fg-secondary"
                           >
                             {task.task_type}
                           </div>
                         </div>
                         <div class="min-w-0">
-                          <div
-                            class="mb-1 text-xs text-gray-400 dark:text-gray-500"
-                          >
+                          <div class="mb-1 text-[11px] text-fg-faint">
                             原始状态
                           </div>
                           <div
-                            class="font-mono text-xs text-gray-700 dark:text-gray-300 break-all select-text"
+                            class="select-text break-all font-mono text-[11px] text-fg-secondary"
                           >
                             {task.status}
                           </div>
                         </div>
                         <div class="min-w-0">
-                          <div
-                            class="mb-1 text-xs text-gray-400 dark:text-gray-500"
-                          >
+                          <div class="mb-1 text-[11px] text-fg-faint">
                             创建时间
                           </div>
-                          <div
-                            class="text-xs text-gray-700 dark:text-gray-300"
-                          >
+                          <div class="text-[11px] tabular-nums text-fg-secondary">
                             {format_date(task.created_at)}
                           </div>
                         </div>
                       </div>
 
                       <div>
-                        <div
-                          class="mb-1.5 text-xs text-gray-400 dark:text-gray-500"
-                        >
+                        <div class="mb-1.5 text-[11px] text-fg-faint">
                           完整消息
                         </div>
                         <div
-                          class="text-sm leading-5 text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-words select-text"
+                          class="select-text whitespace-pre-wrap break-words text-[12px] leading-5 text-fg-secondary"
                         >
                           {task.message || "无任务消息"}
                         </div>
@@ -559,13 +535,11 @@
 
                       {#if task.metadata}
                         <div>
-                          <div
-                            class="mb-1.5 text-xs text-gray-400 dark:text-gray-500"
-                          >
+                          <div class="mb-1.5 text-[11px] text-fg-faint">
                             Metadata
                           </div>
                           <pre
-                            class="p-3 bg-gray-50 dark:bg-[#2c2c2e] rounded-lg border border-gray-200 dark:border-gray-700 text-xs leading-5 overflow-x-auto select-text"
+                            class="select-text overflow-x-auto rounded-[8px] border border-line bg-sunken p-3 text-[11px] leading-5"
                           >{#each tokenize_json(task.metadata) as token}<span class={get_json_token_color(token.type)}>{token.text}</span>{/each}</pre>
                         </div>
                       {/if}

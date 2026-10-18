@@ -526,218 +526,191 @@
 {/if}
 
 {#if showDialog}
-  <div
-    class="fixed inset-0 bg-black/20 dark:bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4"
-  >
-    <div
-      class="bg-white dark:bg-[#323234] rounded-xl shadow-xl w-full max-w-[600px] max-h-[90vh] overflow-hidden flex flex-col"
-    >
-      <div class="flex-1 overflow-y-auto">
-        <div class="p-6 space-y-4">
-          <div class="flex justify-between items-center">
-            <h3 class="text-lg font-medium text-gray-900 dark:text-white">
-              导入外部视频
-            </h3>
-            <button
-              onclick={closeDialog}
-              class="text-gray-400 hover:text-gray-600"
-            >
-              <X class="w-5 h-5" />
-            </button>
-          </div>
+  <div class="ui-modal-backdrop">
+    <div class="ui-modal max-h-[90vh] w-full max-w-[600px]">
+      <div class="ui-modal-header">
+        <h3 class="text-[14px] font-semibold text-fg">导入外部视频</h3>
+        <button
+          onclick={closeDialog}
+          class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost -mr-1.5"
+        >
+          <X class="h-4 w-4" />
+        </button>
+      </div>
 
-          <!-- 文件选择区域 -->
-          <div
-            class="border-2 border-dashed rounded-lg p-8 text-center transition-colors {dragOver
-              ? 'border-blue-400 bg-blue-50 dark:bg-blue-900/20'
-              : 'border-gray-300 dark:border-gray-600'}"
-            role="presentation"
-            ondragover={handleDragOver}
-            ondragleave={handleDragLeave}
-            ondrop={handleDrop}
-          >
-            {#if uploading}
-              <!-- 上传进度 -->
-              <div class="space-y-4">
-                <Upload
-                  class="w-12 h-12 text-blue-500 mx-auto animate-bounce"
-                />
-                <p class="text-sm text-gray-900 dark:text-white font-medium">
-                  上传中...
-                </p>
+      <div class="ui-modal-body space-y-4">
+        <!-- 文件选择区域 -->
+        <div
+          class="rounded-[10px] border border-dashed p-8 text-center transition-colors {dragOver
+            ? 'border-accent bg-accent-soft'
+            : 'border-line-strong bg-control/40'}"
+          role="presentation"
+          ondragover={handleDragOver}
+          ondragleave={handleDragLeave}
+          ondrop={handleDrop}
+        >
+          {#if uploading}
+            <!-- 上传进度 -->
+            <div class="space-y-3">
+              <Upload class="mx-auto h-10 w-10 animate-bounce text-accent" />
+              <p class="text-[13px] font-medium text-fg">上传中...</p>
+              <div class="h-1.5 w-full overflow-hidden rounded-full bg-sunken">
                 <div
-                  class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2"
+                  class="h-1.5 rounded-full bg-accent transition-all"
+                  style="width: {uploadProgress}%"
+                ></div>
+              </div>
+              <p class="text-[11px] tabular-nums text-fg-muted">
+                {uploadProgress}%
+              </p>
+            </div>
+          {:else if batchImporting}
+            <!-- 批量导入中 -->
+            <div class="space-y-3">
+              <div class="flex items-center justify-center">
+                <svg
+                  class="h-10 w-10 animate-spin text-accent"
+                  xmlns="http://www.w3.org/2000/svg"
+                  fill="none"
+                  viewBox="0 0 24 24"
                 >
-                  <div
-                    class="bg-blue-500 h-2 rounded-full transition-all"
-                    style="width: {uploadProgress}%"
-                  ></div>
+                  <circle
+                    class="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    stroke-width="4"
+                  ></circle>
+                  <path
+                    class="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                  ></path>
+                </svg>
+              </div>
+              <p class="text-[13px] font-medium text-fg">批量导入进行中...</p>
+              <div class="text-[12px] text-fg-muted">{importProgress}</div>
+              {#if currentFileName}
+                <div class="break-all text-[11px] text-fg-faint">
+                  当前文件：{currentFileName}
                 </div>
-                <p class="text-xs text-gray-500">{uploadProgress}%</p>
+              {/if}
+            </div>
+          {:else if selectedFilePath}
+            <!-- 已选择文件 -->
+            <div class="space-y-2">
+              <div class="flex items-center justify-center pb-1">
+                <CheckCircle class="mx-auto h-10 w-10 text-success" />
               </div>
-            {:else if batchImporting}
-              <!-- 批量导入中 -->
-              <div class="space-y-4">
-                <div class="flex items-center justify-center">
-                  <svg
-                    class="animate-spin h-12 w-12 text-blue-500"
-                    xmlns="http://www.w3.org/2000/svg"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                  >
-                    <circle
-                      class="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      stroke-width="4"
-                    ></circle>
-                    <path
-                      class="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                    ></path>
-                  </svg>
-                </div>
-                <p class="text-sm text-gray-900 dark:text-white font-medium">
-                  批量导入进行中...
-                </p>
-                <div class="text-xs text-gray-500">{importProgress}</div>
-                {#if currentFileName}
-                  <div class="text-xs text-gray-400 break-all">
-                    当前文件：{currentFileName}
-                  </div>
-                {/if}
-              </div>
-            {:else if selectedFilePath}
-              <!-- 已选择文件 -->
-              <div class="space-y-4">
-                <div class="flex items-center justify-center">
-                  <CheckCircle class="w-12 h-12 text-green-500 mx-auto" />
-                </div>
-                <p class="text-sm text-gray-900 dark:text-white font-medium">
-                  {selectedFileName}
-                </p>
-                <p class="text-xs text-gray-500">
-                  大小: {formatFileSize(selectedFileSize)}
-                </p>
-                <p
-                  class="text-xs text-gray-400 break-all"
-                  title={selectedFilePath}
-                >
-                  {selectedFilePath}
-                </p>
-                <button
-                  onclick={() => {
-                    selectedFilePath = null;
-                    selectedFileName = "";
-                    selectedFileSize = 0;
-                    videoTitle = "";
-                  }}
-                  class="text-sm text-red-500 hover:text-red-700"
-                >
-                  重新选择
-                </button>
-              </div>
-            {:else}
-              <!-- 选择文件提示 -->
-              <div class="space-y-4">
-                <Upload class="w-12 h-12 text-gray-400 mx-auto" />
-                {#if TAURI_ENV}
-                  <p class="text-sm text-gray-600 dark:text-gray-400">
-                    点击按钮选择视频文件（支持多选）
-                  </p>
-                {:else}
-                  <p class="text-sm text-gray-600 dark:text-gray-400">
-                    拖拽视频文件到此处，或点击按钮选择文件（支持多选）
-                  </p>
-                {/if}
-                <p class="text-xs text-gray-500 dark:text-gray-500">
-                  支持 MP4, MKV, AVI, MOV, WMV, FLV, M4V, WebM 格式
-                </p>
-              </div>
-            {/if}
-
-            {#if !uploading && !selectedFilePath && !batchImporting}
-              <button
-                onclick={handleFileSelect}
-                class="mt-4 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+              <p class="break-all text-[13px] font-medium text-fg">
+                {selectedFileName}
+              </p>
+              <p class="text-[12px] text-fg-muted">
+                大小: {formatFileSize(selectedFileSize)}
+              </p>
+              <p
+                class="break-all text-[11px] text-fg-faint"
+                title={selectedFilePath}
               >
-                {TAURI_ENV ? "选择文件" : "选择或拖拽文件"}
+                {selectedFilePath}
+              </p>
+              <button
+                onclick={() => {
+                  selectedFilePath = null;
+                  selectedFileName = "";
+                  selectedFileSize = 0;
+                  videoTitle = "";
+                }}
+                class="mt-1 text-[12px] text-danger-fg hover:underline"
+              >
+                重新选择
               </button>
-            {/if}
-          </div>
-
-          <!-- 视频信息编辑 -->
-          {#if selectedFilePath}
-            <div class="space-y-4">
-              <div>
-                <label
-                  for="video-title-input"
-                  class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2"
-                >
-                  视频标题
-                </label>
-                <input
-                  id="video-title-input"
-                  type="text"
-                  bind:value={videoTitle}
-                  class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400"
-                  placeholder="输入视频标题"
-                />
-              </div>
+            </div>
+          {:else}
+            <!-- 选择文件提示 -->
+            <div class="space-y-2">
+              <Upload class="mx-auto mb-1 h-10 w-10 text-fg-faint" />
+              {#if TAURI_ENV}
+                <p class="text-[13px] text-fg-secondary">
+                  点击按钮选择视频文件（支持多选）
+                </p>
+              {:else}
+                <p class="text-[13px] text-fg-secondary">
+                  拖拽视频文件到此处，或点击按钮选择文件（支持多选）
+                </p>
+              {/if}
+              <p class="text-[11px] text-fg-muted">
+                支持 MP4, MKV, AVI, MOV, WMV, FLV, M4V, WebM 格式
+              </p>
             </div>
           {/if}
+
+          {#if !uploading && !selectedFilePath && !batchImporting}
+            <button
+              onclick={handleFileSelect}
+              class="ui-btn ui-btn-primary mt-4"
+            >
+              {TAURI_ENV ? "选择文件" : "选择或拖拽文件"}
+            </button>
+          {/if}
         </div>
+
+        <!-- 视频信息编辑 -->
+        {#if selectedFilePath}
+          <div class="space-y-4">
+            <div>
+              <label for="video-title-input" class="ui-label mb-1.5 block">
+                视频标题
+              </label>
+              <input
+                id="video-title-input"
+                type="text"
+                bind:value={videoTitle}
+                class="ui-input w-full"
+                placeholder="输入视频标题"
+              />
+            </div>
+          </div>
+        {/if}
       </div>
 
       <!-- 操作按钮 - 固定在底部 -->
-      <div
-        class="border-t border-gray-200 dark:border-gray-700 p-4 bg-gray-50 dark:bg-[#2a2a2c]"
-      >
-        <div class="flex justify-end space-x-3">
-          <button
-            onclick={closeDialog}
-            class="px-4 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg transition-colors"
-          >
-            取消
-          </button>
-          <button
-            onclick={startImport}
-            disabled={!selectedFilePath ||
-              importing ||
-              !videoTitle.trim() ||
-              uploading ||
-              batchImporting}
-            class="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center space-x-2"
-          >
-            {#if importing}
-              <svg
-                class="animate-spin h-4 w-4"
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-              >
-                <circle
-                  class="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  stroke-width="4"
-                ></circle>
-                <path
-                  class="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                ></path>
-              </svg>
-            {/if}
-            <span>{importing ? importProgress || "导入中..." : "开始导入"}</span
+      <div class="ui-modal-footer">
+        <button onclick={closeDialog} class="ui-btn">取消</button>
+        <button
+          onclick={startImport}
+          disabled={!selectedFilePath ||
+            importing ||
+            !videoTitle.trim() ||
+            uploading ||
+            batchImporting}
+          class="inline-flex h-[30px] items-center gap-1.5 whitespace-nowrap rounded-[8px] bg-success px-[11px] text-[12px] font-medium text-white transition-colors hover:bg-success/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-success"
+        >
+          {#if importing}
+            <svg
+              class="h-3.5 w-3.5 animate-spin"
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
             >
-          </button>
-        </div>
+              <circle
+                class="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                stroke-width="4"
+              ></circle>
+              <path
+                class="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+              ></path>
+            </svg>
+          {/if}
+          <span>{importing ? importProgress || "导入中..." : "开始导入"}</span>
+        </button>
       </div>
     </div>
   </div>

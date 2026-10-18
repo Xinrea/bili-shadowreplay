@@ -121,7 +121,8 @@ async function get(url: string) {
 
 async function set_title(title: string) {
   if (TAURI_ENV) {
-    return await getCurrentWebviewWindow().setTitle(title);
+    // Not `setTitle()`: on macOS that resets the traffic light position.
+    return await invoke("set_window_title", { title });
   }
 
   document.title = title;

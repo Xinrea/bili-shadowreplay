@@ -1,16 +1,15 @@
 <script lang="ts" generics="T extends string">
   import type { Snippet } from "svelte";
-  import { ChevronRight, PanelRightOpen } from "lucide-svelte";
-  import TaskCenterButton from "./TaskCenterButton.svelte";
 
   // The right-hand panel of preview windows. Place it as the last child of a
   // `position: relative` row; below 1100px it overlays the content instead.
+  // The window's title bar holds the button that toggles `collapsed`.
 
   interface Props {
     title: string;
     tabs: { id: T; label: string; count?: number }[];
     activeTab: T;
-    collapsed?: boolean;
+    collapsed: boolean;
     /** Let the active tab manage its own scrolling, e.g. a virtual list. */
     fillContent?: boolean;
     /** Shown at the left of the bottom bar. */
@@ -24,7 +23,7 @@
     title,
     tabs,
     activeTab = $bindable(),
-    collapsed = $bindable(false),
+    collapsed,
     fillContent = false,
     summary = null,
     actions,
@@ -33,32 +32,10 @@
 </script>
 
 <div class="inspector-shell" class:collapsed>
-  {#if collapsed}
-    <button
-      type="button"
-      class="open-inspector"
-      title="展开{title}"
-      aria-label="展开{title}"
-      onclick={() => (collapsed = false)}
-    >
-      <PanelRightOpen size={17} />
-    </button>
-  {:else}
+  {#if !collapsed}
     <aside class="inspector" aria-label={title}>
       <div class="inspector-heading">
         <h2>{title}</h2>
-        <div class="heading-actions">
-          <TaskCenterButton tone="dark" />
-          <button
-            type="button"
-            class="collapse-button"
-            title="收起{title}"
-            aria-label="收起{title}"
-            onclick={() => (collapsed = true)}
-          >
-            <ChevronRight size={17} />
-          </button>
-        </div>
       </div>
 
       <div
@@ -130,22 +107,6 @@
     }
   }
 
-  .open-inspector {
-    position: absolute;
-    top: 12px;
-    right: 8px;
-    display: inline-flex;
-    width: 34px;
-    height: 34px;
-    align-items: center;
-    justify-content: center;
-    border: 1px solid #344052;
-    border-radius: 9px;
-    background: #202733;
-    color: #dce5f3;
-    box-shadow: 0 6px 18px rgb(0 0 0 / 30%);
-  }
-
   .inspector {
     display: flex;
     width: 340px;
@@ -159,34 +120,16 @@
 
   .inspector-heading {
     display: flex;
-    height: 50px;
-    flex: 0 0 50px;
+    height: 46px;
+    flex: 0 0 46px;
     align-items: center;
-    justify-content: space-between;
-    padding: 0 16px 0 18px;
+    padding: 0 18px;
   }
 
   .inspector-heading h2 {
     margin: 0;
     font-size: 14px;
     font-weight: 650;
-  }
-
-  .heading-actions {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .collapse-button {
-    display: inline-flex;
-    width: 28px;
-    height: 28px;
-    align-items: center;
-    justify-content: center;
-    border-radius: 7px;
-    background: #222a36;
-    color: #8c98aa;
   }
 
   .tabs {

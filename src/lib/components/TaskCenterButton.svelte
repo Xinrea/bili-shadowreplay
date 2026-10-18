@@ -3,7 +3,7 @@
   import { activeTasks, openTaskCenter } from "../stores/tasks";
 
   interface Props {
-    /** "dark" for always-dark surfaces such as the clip inspector. */
+    /** "dark" for the preview windows; "adaptive" follows the theme. */
     tone?: "adaptive" | "dark";
   }
 
@@ -19,8 +19,8 @@
       ? 'bg-[#0A84FF]/15 text-[#4da3ff] hover:bg-[#0A84FF]/25'
       : 'bg-[#222a36] text-[#8c98aa] hover:text-[#dce5f3]'
     : count > 0
-      ? 'bg-blue-50 text-blue-600 hover:bg-blue-100 dark:bg-blue-500/15 dark:text-blue-300 dark:hover:bg-blue-500/25'
-      : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'}"
+      ? 'bg-accent-soft text-accent-fg hover:bg-accent-soft/80'
+      : 'bg-control text-fg-secondary hover:bg-control-hover hover:text-fg'}"
   title="查看进行中的任务"
   onclick={() => openTaskCenter()}
 >

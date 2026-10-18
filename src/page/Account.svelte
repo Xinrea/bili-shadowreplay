@@ -7,6 +7,7 @@
   import type { AccountItem, AccountInfo } from "../lib/db";
   import { Ellipsis, Plus } from "lucide-svelte";
   import PlatformIconTabs from "../lib/components/PlatformIconTabs.svelte";
+  import PageTitlebar from "../lib/components/PageTitlebar.svelte";
 
   let account_info: AccountInfo = $state({
     accounts: [],
@@ -157,99 +158,88 @@
   onmousedown={handleModalClickOutside}
 />
 
-<div
-  class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50 dark:bg-black"
->
-  <div class="space-y-6">
-    <!-- Header -->
-    <div class="flex justify-between items-center">
-      <div class="flex items-center space-x-4">
-        <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">
-          账号
-        </h1>
-        <div
-          class="flex items-center space-x-2 text-sm text-gray-500 dark:text-gray-400"
-        >
-          <span> 共 {account_info.accounts.length} 个</span>
-        </div>
-      </div>
-      <button
-        onclick={() => {
-          addModal = true;
-          if (activeTab === "qr") {
-            requestAnimationFrame(handle_qr);
-          }
-        }}
-        class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center space-x-2"
-      >
-        <Plus class="w-5 h-5 icon-white" />
-        <span>添加账号</span>
-      </button>
-    </div>
+<PageTitlebar title="账号">
+  {#snippet subtitle()}
+    <span class="whitespace-nowrap text-[12px] text-fg-muted">
+      共 {account_info.accounts.length} 个
+    </span>
+  {/snippet}
+  <button
+    onclick={() => {
+      addModal = true;
+      if (activeTab === "qr") {
+        requestAnimationFrame(handle_qr);
+      }
+    }}
+    class="ui-btn ui-btn-primary h-7 gap-1 rounded-[7px] px-2.5"
+  >
+    <Plus class="h-3.5 w-3.5" />
+    添加账号
+  </button>
+</PageTitlebar>
 
+<div class="flex-1 overflow-auto bg-canvas p-6 custom-scrollbar-light">
+  <div class="space-y-6">
     <!-- Account List -->
-    <div class="space-y-4">
+    <div class="space-y-3">
       <!-- Online Account -->
       {#each account_info.accounts as account (account.uid)}
-        <div
-          class="p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 hover:border-blue-500 dark:hover:border-blue-400 transition-colors"
-        >
+        <div class="ui-card p-4 transition-colors hover:border-line-strong">
           <div class="flex items-center justify-between">
-            <div class="flex items-center space-x-4">
+            <div class="flex min-w-0 items-center gap-3">
               <div class="relative shrink-0">
                 <img
                   alt="avatar"
-                  class="w-12 h-12 rounded-full object-cover"
+                  class="h-11 w-11 rounded-full border border-line object-cover"
                   src={account.avatar}
                 />
               </div>
-              <div>
-                <div class="flex items-center space-x-2">
+              <div class="min-w-0">
+                <div class="flex items-center gap-2">
                   <span
-                    class="inline-flex items-center px-2 py-1 text-xs font-medium rounded-full {account.platform ===
-                    'bilibili'
-                      ? 'bg-pink-100 text-pink-800 dark:bg-pink-900 dark:text-pink-200'
+                    class="ui-badge {account.platform === 'bilibili'
+                      ? 'bg-pink-500/15 text-pink-500'
                       : account.platform === 'douyin' ||
                           account.platform === 'tiktok'
                         ? 'bg-black text-white'
                         : account.platform === 'huya'
                           ? 'text-white'
-                          : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200'}"
+                          : ''}"
                     style={account.platform === "huya"
                       ? "background-color: #ff9600"
                       : ""}
                   >
                     {platform_display(account.platform)}
                   </span>
-                  <h3 class="font-medium text-gray-900 dark:text-white">
+                  <h3 class="text-[13px] font-medium text-fg">
                     {account.name || account.uid}
                   </h3>
                 </div>
-                <p class="text-sm text-gray-600 dark:text-gray-400">
+                <p class="mt-1 text-[11px] text-fg-muted tabular-nums">
                   UID: {account.uid}
                 </p>
               </div>
             </div>
-            <div class="flex items-center space-x-3">
+            <div class="flex items-center gap-2">
               <div class="relative dropdown-container">
                 <button
-                  class="p-2 rounded-lg hover:bg-[#e5e5e5] dark:hover:bg-[#3a3a3c]"
+                  class="ui-btn ui-btn-ghost ui-btn-icon"
                   onclick={(event) => {
                     event.stopPropagation();
                     toggleDropdown(account.uid);
                   }}
                 >
-                  <Ellipsis class="w-5 h-5 dark:icon-white" />
+                  <Ellipsis class="h-4 w-4" />
                 </button>
                 {#if activeDropdown === account.uid}
                   <div
-                    class="absolute right-0 mt-2 w-48 rounded-lg shadow-lg bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 backdrop-blur-xl bg-opacity-90 dark:bg-opacity-90"
+                    class="ui-menu absolute right-0 z-20 mt-1 w-40"
                     style="transform-origin: top right;"
                     in:scale={{ duration: 100, start: 0.95 }}
                     out:scale={{ duration: 100, start: 0.95 }}
                   >
                     <button
-                      class="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-[#e5e5e5] dark:hover:bg-[#3a3a3c] rounded-t-lg rounded-b-lg"
+                      class="ui-menu-item danger"
                       onclick={async () => {
                         await invoke("remove_account", {
                           platform: account.platform,
@@ -271,7 +261,7 @@
 
       <!-- Add Account Card -->
       <button
-        class="w-full p-4 rounded-xl border-2 border-dashed border-gray-300 dark:border-gray-600 hover:border-blue-500 dark:hover:border-blue-400 transition-colors"
+        class="w-full rounded-[10px] border border-dashed border-line-strong p-4 transition-colors hover:border-accent/60 hover:bg-accent-soft/40"
         onclick={() => {
           addModal = true;
           if (activeTab === "qr") {
@@ -281,15 +271,15 @@
       >
         <div class="flex flex-col items-center justify-center space-y-2">
           <div
-            class="w-12 h-12 rounded-full bg-blue-500/10 flex items-center justify-center"
+            class="flex h-10 w-10 items-center justify-center rounded-full bg-accent-soft text-accent-fg"
           >
-            <Plus class="w-6 h-6 icon-primary" />
+            <Plus class="h-5 w-5" />
           </div>
-          <div class="text-center">
-            <p class="text-sm font-medium text-blue-600 dark:text-blue-400">
+          <div class="space-y-0.5 text-center">
+            <p class="text-[13px] font-medium text-accent-fg">
               添加新账号
             </p>
-            <p class="text-xs text-gray-500 dark:text-gray-400">
+            <p class="ui-hint">
               添加一个新账号，用于获取直播流和投稿
             </p>
           </div>
@@ -301,21 +291,21 @@
 
 {#if addModal}
   <div
-    class="fixed inset-0 bg-black/20 dark:bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center"
+    class="ui-modal-backdrop"
     transition:fade={{ duration: 200 }}
   >
     <div
-      class="mac-modal w-[400px] bg-white dark:bg-[#323234] rounded-xl shadow-xl overflow-hidden"
+      class="mac-modal ui-modal w-[400px]"
       transition:scale={{ duration: 150, start: 0.95 }}
     >
       <!-- Header -->
-      <div class="px-6 py-4 border-b border-gray-200 dark:border-gray-700/50">
-        <h2 class="text-base font-medium text-gray-900 dark:text-white">
+      <div class="ui-modal-header">
+        <h2>
           添加账号
         </h2>
       </div>
 
-      <div class="p-6 space-y-6">
+      <div class="ui-modal-body space-y-5">
         <PlatformIconTabs
           bind:value={selectedPlatform}
           platforms={[
@@ -337,12 +327,10 @@
 
         <!-- Login Methods (Only show for Bilibili) -->
         {#if selectedPlatform === "bilibili"}
-          <div class="flex rounded-lg bg-[#f5f5f7] dark:bg-[#1c1c1e] p-1">
+          <div class="ui-tabs flex w-full">
             <button
-              class="flex-1 px-4 py-1.5 text-sm rounded-md transition-colors {activeTab ===
-              'qr'
-                ? 'bg-white dark:bg-[#3c3c3e] shadow-sm font-medium'
-                : 'text-gray-600 dark:text-gray-400'}"
+              class="ui-tab flex-1"
+              class:active={activeTab === "qr"}
               onclick={() => {
                 activeTab = "qr";
                 requestAnimationFrame(handle_qr);
@@ -351,10 +339,8 @@
               扫码登录
             </button>
             <button
-              class="flex-1 px-4 py-1.5 text-sm rounded-md transition-colors {activeTab ===
-              'manual'
-                ? 'bg-white dark:bg-[#3c3c3e] shadow-sm font-medium'
-                : 'text-gray-600 dark:text-gray-400'}"
+              class="ui-tab flex-1"
+              class:active={activeTab === "manual"}
               onclick={() => {
                 activeTab = "manual";
               }}
@@ -367,29 +353,31 @@
         <!-- Tab Content -->
         <div class="space-y-4">
           {#if selectedPlatform === "bilibili" && activeTab === "qr"}
-            <div class="flex flex-col items-center space-y-4">
-              <div class="bg-white p-4 rounded-lg">
+            <div class="flex flex-col items-center space-y-3">
+              <!-- QR codes need a white quiet zone to scan in either theme. -->
+              <div class="rounded-[8px] border border-line bg-white p-3">
                 <canvas id="qr"></canvas>
               </div>
-              <p class="text-sm text-center text-gray-600 dark:text-gray-400">
+              <p class="text-center text-[12px] text-fg-muted">
                 请使用 BiliBili App 扫描二维码登录
               </p>
             </div>
           {:else}
-            <div class="space-y-4">
-              <p class="text-sm text-gray-600 dark:text-gray-400">
+            <div class="space-y-3">
+              <p class="text-[12px] text-fg-secondary">
                 <Textarea
                   bind:value={cookie_str}
                   rows={4}
-                  class="w-full px-3 py-2 bg-[#f5f5f7] dark:bg-[#1c1c1e] border-0 rounded-lg resize-none focus:ring-2 focus:ring-blue-500"
+                  class="ui-input w-full resize-none rounded-[8px] border-line-strong bg-control text-fg dark:border-line-strong dark:bg-control dark:text-fg dark:placeholder-fg-faint"
+                  unWrappedClass="px-2.5 py-2 text-[12px] focus:border-accent focus:ring-0 dark:focus:border-accent dark:focus:ring-0 disabled:cursor-not-allowed disabled:opacity-50"
                   placeholder={`请粘贴 ${selectedPlatform} 账号的 Cookie`}
                 />
               </p>
-              <div class="flex justify-end items-center space-x-2">
+              <div class="flex items-center justify-end gap-3">
                 {#if selectedPlatform !== "bilibili"}
                   <a
                     href="https://bsr.xinrea.cn/getting-started/config/account.html"
-                    class="text-blue-500 hover:underline text-sm"
+                    class="text-[12px] text-accent-fg hover:underline"
                     target="_blank"
                     rel="noopener noreferrer"
                   >
@@ -397,7 +385,7 @@
                   >
                 {/if}
                 <button
-                  class="px-4 py-2 bg-[#0A84FF] hover:bg-[#0A84FF]/90 text-white text-sm font-medium rounded-lg transition-colors"
+                  class="ui-btn ui-btn-primary"
                   onclick={() => {
                     add_cookie();
                   }}

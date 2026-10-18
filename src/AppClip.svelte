@@ -3,6 +3,7 @@
   import { onMount } from "svelte";
   import VideoPreview from "./lib/components/VideoPreview.svelte";
   import TaskCenter from "./lib/components/TaskCenter.svelte";
+  import TitleBar from "./lib/components/TitleBar.svelte";
   import type { Config, VideoItem } from "./lib/interface";
   import { set_title } from "./lib/invoker";
 
@@ -98,14 +99,15 @@
     onVideoListUpdate={handleVideoListUpdate}
   />
 {:else}
-  <main
-    class="flex items-center justify-center h-screen bg-[#1c1c1e] text-white"
-  >
-    <div class="text-center">
-      <div
-        class="animate-spin h-8 w-8 border-2 border-[#0A84FF] border-t-transparent rounded-full mx-auto mb-4"
-      ></div>
-      <p>加载中...</p>
+  <main class="flex flex-col h-screen bg-[#1c1c1e] text-white">
+    <TitleBar tone="dark" title="切片预览" />
+    <div class="flex flex-1 items-center justify-center">
+      <div class="text-center">
+        <div
+          class="animate-spin h-8 w-8 border-2 border-[#0A84FF] border-t-transparent rounded-full mx-auto mb-4"
+        ></div>
+        <p>加载中...</p>
+      </div>
     </div>
   </main>
 {/if}

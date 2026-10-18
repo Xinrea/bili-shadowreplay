@@ -71,7 +71,7 @@
     videos = [],
     selectedVideo = null,
     selectedRangeIndex = $bindable(-1),
-    collapsed = $bindable(false),
+    collapsed = false,
     onPeakThresholdChange,
     onDanmuKeywordsChange,
     onSeek,
@@ -307,7 +307,7 @@
   title="素材检查器"
   {tabs}
   bind:activeTab
-  bind:collapsed
+  {collapsed}
   fillContent={activeTab === "danmu"}
   summary={{
     label: `${activeRanges.length} 个选区`,

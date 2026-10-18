@@ -70,43 +70,33 @@
 </script>
 
 <div class="flex justify-start">
-  <div class="flex items-start space-x-3" class:max-w-2xl={!hasTable} class:max-w-4xl={hasTable}>
+  <div class="flex items-start gap-2.5" class:max-w-2xl={!hasTable} class:max-w-4xl={hasTable}>
     <div
-      class="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0"
-      class:bg-blue-500={!isError}
-      class:bg-red-500={isError}
+      class="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-white {isError ? 'bg-danger' : 'bg-accent'}"
     >
       {#if isError}
-        <AlertTriangle class="w-4 h-4 text-white" />
+        <AlertTriangle class="h-3.5 w-3.5" />
       {:else}
-        <Bot class="w-4 h-4 text-white" />
+        <Bot class="h-3.5 w-3.5" />
       {/if}
     </div>
 
-    <div class="flex flex-col space-y-1">
-      <div class="flex items-center space-x-2">
-        <span class="text-sm font-medium text-gray-700 dark:text-gray-300">
+    <div class="flex min-w-0 flex-col space-y-1">
+      <div class="flex h-6 items-center gap-2">
+        <span class="text-[12px] font-medium text-fg-secondary">
           小轴
         </span>
-        <span class="text-xs text-gray-500 dark:text-gray-400">
+        <span class="text-[11px] tabular-nums text-fg-muted">
           {formatTime(messageTime)}
         </span>
         <CopyMarkdownButton content={markdownContent} />
       </div>
 
       <div
-        class="rounded-2xl px-4 py-3 shadow-sm border"
-        class:bg-white={!isError}
-        class:dark:bg-gray-800={!isError}
-        class:border-gray-200={!isError}
-        class:dark:border-gray-700={!isError}
-        class:bg-red-50={isError}
-        class:border-red-300={isError}
-        class:dark:border-red-700={isError}
-        class:dark:bg-red-900={isError}
+        class="rounded-[10px] border px-3.5 py-2.5 {isError ? 'border-danger/40 bg-danger-soft' : 'border-line bg-surface'}"
       >
         <div
-          class="text-gray-900 dark:text-white text-sm leading-relaxed prose prose-sm max-w-none [&_.prose]:bg-transparent [&_.prose_*]:bg-transparent [&_p]:bg-transparent [&_div]:bg-transparent [&_span]:bg-transparent [&_code]:bg-gray-100 dark:bg-gray-700 [&_pre]:bg-gray-100 dark:bg-gray-700 [&_blockquote]:bg-transparent [&_ul]:bg-transparent [&_ol]:bg-transparent [&_li]:bg-transparent [&_h1]:bg-transparent [&_h2]:bg-transparent [&_h3]:bg-transparent [&_h4]:bg-transparent [&_h5]:bg-transparent [&_h6]:bg-transparent [&_p]:m-0 [&_p]:p-0 [&_div]:m-0 [&_div]:p-0 [&_ul]:m-0 [&_ul]:p-0 [&_ol]:m-0 [&_ol]:p-0 [&_li]:m-0 [&_li]:p-0 [&_li]:mb-0 [&_li]:mt-0 [&_h1]:m-0 [&_h1]:p-0 [&_h2]:m-0 [&_h2]:p-0 [&_h3]:m-0 [&_h3]:p-0 [&_h4]:m-0 [&_h4]:p-0 [&_h5]:m-0 [&_h5]:p-0 [&_h6]:m-0 [&_h6]:p-0 [&_blockquote]:m-0 [&_blockquote]:p-0"
+          class="prose prose-sm max-w-none text-[13px] leading-relaxed text-fg [&_.prose]:bg-transparent [&_.prose_*]:bg-transparent [&_p]:bg-transparent [&_div]:bg-transparent [&_span]:bg-transparent [&_code]:rounded-[4px] [&_code]:bg-sunken [&_code]:px-1 [&_code]:py-px [&_code]:text-[12px] [&_code]:text-fg-secondary [&_pre]:overflow-x-auto [&_pre]:rounded-[8px] [&_pre]:p-3 [&_pre]:border [&_pre]:border-line [&_pre]:bg-sunken [&_pre]:text-[12px] [&_pre]:text-fg-secondary [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_a]:text-accent-fg [&_a:hover]:underline [&_blockquote]:bg-transparent [&_ul]:bg-transparent [&_ol]:bg-transparent [&_li]:bg-transparent [&_h1]:bg-transparent [&_h2]:bg-transparent [&_h3]:bg-transparent [&_h4]:bg-transparent [&_h5]:bg-transparent [&_h6]:bg-transparent [&_p]:m-0 [&_p]:p-0 [&_div]:m-0 [&_div]:p-0 [&_ul]:m-0 [&_ul]:p-0 [&_ol]:m-0 [&_ol]:p-0 [&_li]:m-0 [&_li]:p-0 [&_li]:mb-0 [&_li]:mt-0 [&_h1]:m-0 [&_h1]:p-0 [&_h2]:m-0 [&_h2]:p-0 [&_h3]:m-0 [&_h3]:p-0 [&_h4]:m-0 [&_h4]:p-0 [&_h5]:m-0 [&_h5]:p-0 [&_h6]:m-0 [&_h6]:p-0 [&_blockquote]:m-0 [&_blockquote]:p-0"
         >
           <div class="space-y-3">
             {#each contentParts as part}
@@ -115,10 +105,10 @@
                   src={part.src}
                   alt={part.alt}
                   loading="lazy"
-                  class="max-h-[28rem] max-w-full rounded-lg border border-gray-200 object-contain dark:border-gray-600"
+                  class="max-h-[28rem] max-w-full rounded-[8px] border border-line object-contain"
                 />
               {:else if part.format === "json"}
-                <pre class="overflow-x-auto whitespace-pre-wrap break-words rounded-lg p-3 text-xs">{part.text}</pre>
+                <pre class="overflow-x-auto whitespace-pre-wrap break-words rounded-[8px] p-3 text-[12px]">{part.text}</pre>
               {:else}
                 <div class:table-container={containsTable(part.text)}>
                   {@html marked(part.text)}
@@ -129,17 +119,17 @@
         </div>
 
         {#if message.toolCalls.length > 0}
-          <div class="space-y-2 mt-3">
+          <div class="mt-3 space-y-2">
             {#each message.toolCalls as toolCall}
               <div
-                class="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded-lg p-3"
+                class="rounded-[8px] border border-line bg-control p-3"
               >
-                <div class="flex items-center space-x-2 mb-2">
+                <div class="mb-2 flex items-center gap-2">
                   <div
-                    class="w-5 h-5 rounded bg-blue-500 flex items-center justify-center"
+                    class="flex h-5 w-5 items-center justify-center rounded-[5px] bg-accent-soft text-accent-fg"
                   >
                     <svg
-                      class="w-3 h-3 text-white"
+                      class="h-3 w-3"
                       fill="none"
                       stroke="currentColor"
                       viewBox="0 0 24 24"
@@ -159,7 +149,7 @@
                     </svg>
                   </div>
                   <span
-                    class="text-sm font-medium text-blue-700 dark:text-blue-300"
+                    class="min-w-0 break-all text-[12px] font-medium text-fg"
                   >
                     工具调用: {toolCall.name}
                   </span>
@@ -168,13 +158,13 @@
                 {#if Object.keys(toolCall.args).length > 0}
                   <div class="mb-2">
                     <div
-                      class="text-xs font-medium text-gray-600 dark:text-gray-400 mb-1"
+                      class="mb-1 text-[11px] font-medium text-fg-muted"
                     >
                       参数:
                     </div>
-                    <div class="bg-gray-50 dark:bg-gray-800 rounded p-2">
+                    <div class="rounded-[6px] border border-line bg-sunken p-2">
                       <pre
-                        class="text-xs text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-words">{JSON.stringify(
+                        class="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-fg-secondary">{JSON.stringify(
                           toolCall.args,
                           null,
                           2
@@ -184,57 +174,57 @@
                 {/if}
 
                 {#if toolCall.id}
-                  <div class="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                  <div class="mb-2 break-all text-[11px] text-fg-muted">
                     ID: {toolCall.id}
                   </div>
                 {/if}
 
                 <!-- 工具调用状态或操作按钮 -->
                 <div
-                  class="flex items-center justify-between mt-3 pt-2 border-t border-blue-200 dark:border-blue-700"
+                  class="mt-3 flex items-center justify-between border-t border-line pt-2.5"
                 >
                   {#if isExecutedToolCall(toolCall)}
                     {#if toolCallFailed(toolCall)}
-                      <div class="space-y-1 text-red-600 dark:text-red-400">
-                        <div class="flex items-center space-x-2">
-                          <AlertTriangle class="w-4 h-4" />
-                          <span class="text-sm font-medium">调用失败</span>
+                      <div class="space-y-1 text-danger-fg">
+                        <div class="flex items-center gap-1.5">
+                          <AlertTriangle class="h-3.5 w-3.5" />
+                          <span class="text-[12px] font-medium">调用失败</span>
                         </div>
-                        <div class="text-xs break-words">{toolCallError(toolCall)}</div>
+                        <div class="break-words text-[11px]">{toolCallError(toolCall)}</div>
                       </div>
                     {:else}
-                      <div class="flex items-center space-x-2 text-green-600 dark:text-green-400">
-                        <Check class="w-4 h-4" />
-                        <span class="text-sm font-medium">已完成</span>
+                      <div class="flex items-center gap-1.5 text-success-fg">
+                        <Check class="h-3.5 w-3.5" />
+                        <span class="text-[12px] font-medium">已完成</span>
                       </div>
                     {/if}
                   {:else if getToolCallState(toolCall.id) === 'confirmed'}
                     <!-- 显示状态 -->
-                      <div class="flex items-center space-x-2 text-green-600 dark:text-green-400">
-                        <Check class="w-4 h-4" />
-                        <span class="text-sm font-medium">已确认</span>
+                      <div class="flex items-center gap-1.5 text-success-fg">
+                        <Check class="h-3.5 w-3.5" />
+                        <span class="text-[12px] font-medium">已确认</span>
                       </div>
                   {:else if getToolCallState(toolCall.id) === 'rejected'}
-                      <div class="flex items-center space-x-2 text-red-600 dark:text-red-400">
-                        <X class="w-4 h-4" />
-                        <span class="text-sm font-medium">已拒绝</span>
+                      <div class="flex items-center gap-1.5 text-danger-fg">
+                        <X class="h-3.5 w-3.5" />
+                        <span class="text-[12px] font-medium">已拒绝</span>
                       </div>
                   {:else if isPendingToolCall(toolCall)}
-                    <div class="flex items-center space-x-2 w-full">
+                    <div class="flex w-full items-center gap-2">
                       <button
                         onclick={() => onToolCallReject?.(toolCall)}
                         disabled={confirmationDisabled}
-                        class="flex items-center space-x-1 px-4 py-2 bg-red-500 hover:bg-red-600 active:bg-red-700 text-white text-xs font-medium rounded-lg shadow-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                        class="ui-btn ui-btn-sm ui-btn-danger px-3"
                       >
-                        <X class="w-3 h-3" />
+                        <X class="h-3 w-3" />
                         <span>拒绝</span>
                       </button>
                       <button
                         onclick={() => onToolCallConfirm?.(toolCall)}
                         disabled={confirmationDisabled}
-                        class="flex items-center justify-center space-x-1 px-4 py-2 bg-blue-500 hover:bg-blue-600 active:bg-blue-700 text-white text-xs font-medium rounded-lg shadow-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800 disabled:opacity-50 disabled:cursor-not-allowed flex-1"
+                        class="ui-btn ui-btn-sm ui-btn-primary flex-1"
                       >
-                        <Check class="w-3 h-3" />
+                        <Check class="h-3 w-3" />
                         <span>确认执行</span>
                       </button>
                     </div>

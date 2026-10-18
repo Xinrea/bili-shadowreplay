@@ -1076,6 +1076,8 @@ async fn handler_update_project_info(
 struct UpdateProjectTimelineRequest {
     id: i64,
     timeline: Timeline,
+    #[serde(default)]
+    base: Option<Timeline>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1097,7 +1099,7 @@ async fn handler_update_project_timeline(
     state: axum::extract::State<State>,
     Json(param): Json<UpdateProjectTimelineRequest>,
 ) -> Result<Json<ApiResponse<ProjectView>>, ApiError> {
-    let project = update_project_timeline(state.0, param.id, param.timeline).await?;
+    let project = update_project_timeline(state.0, param.id, param.timeline, param.base).await?;
     Ok(Json(ApiResponse::success(project)))
 }
 
@@ -1119,6 +1121,8 @@ struct ExportProjectRequest {
     subtitle_ass: Option<String>,
     #[serde(default)]
     target: Option<String>,
+    #[serde(default)]
+    base: Option<Timeline>,
 }
 
 async fn handler_export_project(
@@ -1132,6 +1136,7 @@ async fn handler_export_project(
         param.timeline,
         param.subtitle_ass,
         param.target,
+        param.base,
     )
     .await?;
     Ok(Json(ApiResponse::success(started)))

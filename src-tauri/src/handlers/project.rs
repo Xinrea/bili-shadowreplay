@@ -340,12 +340,15 @@ pub async fn update_project_info(
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
+/// Save the editor's timeline. `base` is the saved timeline the editor last
+/// knew, so edits the backend made since are kept.
 pub async fn update_project_timeline(
     state: state_type!(),
     id: i64,
     timeline: Timeline,
+    base: Option<Timeline>,
 ) -> Result<ProjectView, String> {
-    save_editor_timeline(&state.db, id, timeline).await?;
+    save_editor_timeline(&state.db, id, timeline, base).await?;
     let project = state.db.get_project(id).await?;
     single_project_view(&state, project).await
 }
@@ -365,17 +368,28 @@ pub async fn update_project_danmu(
 async fn save_editor_timeline(
     db: &Database,
     id: i64,
-    mut timeline: Timeline,
+    edited: Timeline,
+    base: Option<Timeline>,
 ) -> Result<Timeline, String> {
-    // An editor that has not heard of a deletion yet must not restore its clips.
-    for material_id in timeline.material_ids() {
-        if let Err(DatabaseError::DB(sqlx::Error::RowNotFound)) = db.get_video(material_id).await {
-            timeline.remove_material(material_id);
-        }
-    }
     for _ in 0..TIMELINE_EDIT_ATTEMPTS {
         let saved = db.get_project(id).await?.timeline;
-        timeline.danmu = Timeline::parse(&saved)?.danmu;
+        let current = Timeline::parse(&saved)?;
+        let mut timeline = edited.clone();
+        // The backend's edits since the editor last heard: without what it
+        // last saw, only the danmaku setting.
+        match &base {
+            Some(base) => timeline.merge_saved_edits(base, &current),
+            None => timeline.danmu = current.danmu,
+        }
+        // An editor that has not heard of a deletion yet must not restore its
+        // clips; checked on each attempt, as a deletion edits the timeline.
+        for material_id in timeline.material_ids() {
+            if let Err(DatabaseError::DB(sqlx::Error::RowNotFound)) =
+                db.get_video(material_id).await
+            {
+                timeline.remove_material(material_id);
+            }
+        }
         let now = Local::now().to_rfc3339();
         if db
             .replace_project_timeline(id, &saved, &timeline.to_json(), &now)
@@ -883,6 +897,7 @@ pub async fn export_project(
     timeline: Timeline,
     subtitle_ass: Option<String>,
     target: Option<String>,
+    base: Option<Timeline>,
 ) -> Result<ExportStarted, String> {
     let project = state.db.get_project(id).await?;
     if timeline.clips.is_empty() {
@@ -891,7 +906,7 @@ pub async fn export_project(
     let materials = materials_by_id(&state, &timeline.material_ids()).await?;
     timeline.validate(|id| materials.get(&id).map(material_duration))?;
     // Rendered with the project's danmaku setting, as saved.
-    let timeline = save_editor_timeline(&state.db, id, timeline).await?;
+    let timeline = save_editor_timeline(&state.db, id, timeline, base).await?;
 
     let (path, download) = match target {
         Some(path) => (mp4_path(PathBuf::from(path)), None),
@@ -1294,7 +1309,7 @@ mod tests {
         .unwrap();
         let mut trimmed = editor.clone();
         trimmed.clips[0].end = 8.0;
-        let saved = save_editor_timeline(&db, project.id, trimmed)
+        let saved = save_editor_timeline(&db, project.id, trimmed, None)
             .await
             .unwrap();
 
@@ -1302,6 +1317,73 @@ mod tests {
         assert!(saved.danmu);
         let stored = Timeline::parse(&db.get_project(project.id).await.unwrap().timeline).unwrap();
         assert_eq!((stored.danmu, stored.clips[0].end), (true, 8.0));
+    }
+
+    #[tokio::test]
+    async fn editor_saves_keep_subtitles_recognized_since_the_editor_last_heard() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for migration in crate::get_migrations() {
+            sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
+        }
+        sqlx::raw_sql(
+            "INSERT INTO videos (id, room_id, cover, file, note, length, size, status, bvid, title, desc, tags, area, created_at, platform)
+             VALUES (1, '1', '', 'a.mp4', '', 10, 1, 0, '', '', '', '', 0, '', 'bilibili'),
+                    (2, '1', '', 'b.mp4', '', 10, 1, 0, '', '', '', '', 0, '', 'bilibili');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let db = Database::new(
+            pool,
+            CredentialCipher::new(&[0; 32]).unwrap(),
+            crate::events::EventBus::new(),
+        );
+        // Clip b already has subtitles the editor knows about.
+        let mut base = Timeline::from_materials(&[(1, 10.0), (2, 10.0)]);
+        let (a, b) = (base.clips[0].id.clone(), base.clips[1].id.clone());
+        base.set_clip_subtitles(&b, vec![(1.0, 2.0, "old".into())]);
+        let project = db
+            .add_project(&ProjectRow {
+                id: 0,
+                room_id: "1".into(),
+                platform: "bilibili".into(),
+                title: "t".into(),
+                note: String::new(),
+                cover: String::new(),
+                timeline: base.to_json(),
+                profile: String::new(),
+                status: 0,
+                bvid: String::new(),
+                created_at: "2026-10-18".into(),
+                updated_at: "2026-10-18".into(),
+            })
+            .await
+            .unwrap();
+
+        // Recognition fills clip a while the editor trims it and deletes
+        // clip b's subtitles, without having heard of the recognition.
+        edit_project_timeline(&db, project.id, |timeline| {
+            timeline.set_clip_subtitles(&a, vec![(3.0, 4.0, "recognized".into())]);
+            true
+        })
+        .await
+        .unwrap();
+        let mut edited = base.clone();
+        edited.clips[0].end = 8.0;
+        edited.subtitles.clear();
+        let saved = save_editor_timeline(&db, project.id, edited, Some(base))
+            .await
+            .unwrap();
+
+        let stored = Timeline::parse(&db.get_project(project.id).await.unwrap().timeline).unwrap();
+        assert_eq!(stored.to_json(), saved.to_json());
+        assert_eq!(stored.clips[0].end, 8.0);
+        let texts: Vec<&str> = stored.subtitles.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, ["recognized"]);
     }
 
     #[tokio::test]
@@ -1346,7 +1428,9 @@ mod tests {
             .await
             .unwrap();
 
-        let saved = save_editor_timeline(&db, project.id, editor).await.unwrap();
+        let saved = save_editor_timeline(&db, project.id, editor, None)
+            .await
+            .unwrap();
 
         assert_eq!(saved.material_ids(), vec![1]);
         let stored = Timeline::parse(&db.get_project(project.id).await.unwrap().timeline).unwrap();

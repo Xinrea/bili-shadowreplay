@@ -193,14 +193,15 @@
   async function loadProject() {
     try {
       const view = await invoke<ProjectItem>("get_project", { id: projectId });
-      project = view;
-      syncedTimeline = view.timeline;
-      title = view.title;
-      await set_title(view.title || "切片");
-      await loadMaterials();
+      // Together, so a refresh during the loads below merges into this timeline.
       let loaded = parseTimeline(view.timeline);
       if (!loaded.subtitle_style) loaded = { ...loaded, subtitle_style: loadSubtitleStyle(view.room_id) };
       timeline = loaded;
+      syncedTimeline = view.timeline;
+      project = view;
+      title = view.title;
+      await set_title(view.title || "切片");
+      await loadMaterials();
       void loadMaterialData();
     } catch (error) {
       loadError = String(error);
@@ -333,7 +334,11 @@
     let editedMeanwhile = false;
     saving = (async () => {
       try {
-        const view = await invoke<ProjectItem>("update_project_timeline", { id: projectId, timeline: snapshot });
+        const view = await invoke<ProjectItem>("update_project_timeline", {
+          id: projectId,
+          timeline: snapshot,
+          base: parseTimeline(syncedTimeline),
+        });
         editedMeanwhile = timeline !== snapshot;
         // Merged against what was sent: the backend keeps its danmaku setting
         // and drops clips of materials deleted meanwhile.
@@ -460,8 +465,11 @@
     if (!project || title === project.title) return;
     try {
       // Only the title: the note is edited from the projects list.
-      await invoke("update_project_info", { id: projectId, title });
-      await set_title(title || "切片");
+      const saved = title;
+      await invoke("update_project_info", { id: projectId, title: saved });
+      // So a later change back is saved too, before the refresh reports it.
+      if (project) project = { ...project, title: saved };
+      await set_title(saved || "切片");
     } catch (error) {
       alert("保存切片信息失败：" + error);
     }
@@ -682,8 +690,10 @@
       });
       if (!target) return;
     }
-    // The export renders the saved danmaku setting.
+    // The export renders the saved danmaku setting, and the subtitles below
+    // must include any the backend has added meanwhile.
     await saveAll();
+    await projectRefresh.run();
     const eventId = generateEventId();
     exporting = eventId;
     let unlisten: (() => void) | null = null;
@@ -716,6 +726,7 @@
         timeline,
         subtitleAss: subtitles.length > 0 ? subtitleAss : null,
         target,
+        base: parseTimeline(syncedTimeline),
       });
       openTaskCenter(eventId);
       settle();

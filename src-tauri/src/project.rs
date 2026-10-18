@@ -146,6 +146,33 @@ impl Timeline {
     }
 
     /// Distinct materials in timeline order.
+    /// Bring the backend's own edits of a saved timeline into this one, which
+    /// is being edited. Between `base`, the saved timeline the editor last
+    /// knew, and `saved`, the saved one now, the backend may switch danmaku,
+    /// remove the clips of a deleted material and fill clips that had none
+    /// with recognized subtitles; everything else stays as edited here. The
+    /// editor merges the same way when it hears of a change.
+    pub fn merge_saved_edits(&mut self, base: &Timeline, saved: &Timeline) {
+        self.danmu = saved.danmu;
+        let remaining = saved.material_ids();
+        for material_id in base.material_ids() {
+            if !remaining.contains(&material_id) {
+                self.remove_material(material_id);
+            }
+        }
+        let filled: Vec<TimelineSubtitle> = saved
+            .subtitles
+            .iter()
+            .filter(|subtitle| self.clips.iter().any(|clip| clip.id == subtitle.clip_id))
+            .filter(|subtitle| {
+                !base.subtitles.iter().any(|s| s.clip_id == subtitle.clip_id)
+                    && !self.subtitles.iter().any(|s| s.clip_id == subtitle.clip_id)
+            })
+            .cloned()
+            .collect();
+        self.subtitles.extend(filled);
+    }
+
     pub fn material_ids(&self) -> Vec<i64> {
         let mut ids = Vec::new();
         for clip in &self.clips {

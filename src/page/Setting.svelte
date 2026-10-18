@@ -432,7 +432,7 @@
 <PageTitlebar title="设置" />
 
 <div class="flex-1 overflow-auto custom-scrollbar-light bg-canvas">
-  <div class="h-screen">
+  <div>
     <div class="p-5 space-y-5">
       <!-- Settings Sections -->
       <div class="ui-card">

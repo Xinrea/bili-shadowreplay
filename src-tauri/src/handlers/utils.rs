@@ -249,8 +249,12 @@ pub fn set_window_title(window: tauri::WebviewWindow, title: String) -> Result<(
     {
         window
             .with_webview(move |webview| {
+                let ns_window = webview.ns_window().cast::<objc2_app_kit::NSWindow>();
+                if ns_window.is_null() {
+                    return;
+                }
                 // SAFETY: `with_webview` runs on the main thread while the window is alive.
-                let ns_window = unsafe { &*webview.ns_window().cast::<objc2_app_kit::NSWindow>() };
+                let ns_window = unsafe { &*ns_window };
                 ns_window.setTitle(&objc2_foundation::NSString::from_str(&title));
                 if let Some(view) = ns_window.contentView() {
                     unsafe { view.setNeedsDisplay(true) };
@@ -307,7 +311,7 @@ pub async fn open_live(
             ),
         )
         .title(format!("Live[{}] {}", room_id, live_id))
-        .theme(Some(Theme::Light))
+        .theme(Some(Theme::Dark))
         .inner_size(1200.0, 800.0)
         .effects(WindowEffectsConfig {
             effects: vec![
@@ -351,7 +355,7 @@ pub async fn open_clip(state: state_type!(), video_id: i64) -> Result<(), String
         tauri::WebviewUrl::App(format!("index_clip.html?id={video_id}").into()),
     )
     .title(format!("Clip window:{video_id}"))
-    .theme(Some(Theme::Light))
+    .theme(Some(Theme::Dark))
     .inner_size(1200.0, 800.0)
     .effects(WindowEffectsConfig {
         effects: vec![

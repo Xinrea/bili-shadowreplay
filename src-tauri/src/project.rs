@@ -145,7 +145,6 @@ impl Timeline {
         })
     }
 
-    /// Distinct materials in timeline order.
     /// Bring the backend's own edits of a saved timeline into this one, which
     /// is being edited. Between `base`, the saved timeline the editor last
     /// knew, and `saved`, the saved one now, the backend may switch danmaku,
@@ -173,6 +172,7 @@ impl Timeline {
         self.subtitles.extend(filled);
     }
 
+    /// Distinct materials in timeline order.
     pub fn material_ids(&self) -> Vec<i64> {
         let mut ids = Vec::new();
         for clip in &self.clips {

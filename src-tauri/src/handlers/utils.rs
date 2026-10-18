@@ -5,12 +5,8 @@ use crate::state_type;
 
 #[cfg(feature = "gui")]
 use {
-    recorder::platforms::PlatformType,
-    std::process::Command,
-    tauri::State as TauriState,
-    tauri::{Manager, Theme},
-    tauri_utils::config::WindowEffectsConfig,
-    tokio::fs::OpenOptions,
+    recorder::platforms::PlatformType, std::process::Command, tauri::Manager,
+    tauri::State as TauriState, tauri_utils::config::WindowEffectsConfig, tokio::fs::OpenOptions,
     tokio::io::AsyncWriteExt,
 };
 
@@ -311,7 +307,6 @@ pub async fn open_live(
             ),
         )
         .title(format!("Live[{}] {}", room_id, live_id))
-        .theme(Some(Theme::Dark))
         .inner_size(1200.0, 800.0)
         .effects(WindowEffectsConfig {
             effects: vec![
@@ -355,7 +350,6 @@ pub async fn open_clip(state: state_type!(), video_id: i64) -> Result<(), String
         tauri::WebviewUrl::App(format!("index_clip.html?id={video_id}").into()),
     )
     .title(format!("Clip window:{video_id}"))
-    .theme(Some(Theme::Dark))
     .inner_size(1200.0, 800.0)
     .effects(WindowEffectsConfig {
         effects: vec![

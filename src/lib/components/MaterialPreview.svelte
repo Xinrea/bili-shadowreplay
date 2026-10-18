@@ -2,6 +2,7 @@
   import { Clapperboard, Download, Film } from "lucide-svelte";
   import { onMount } from "svelte";
   import { get_static_url, invoke, set_title, TAURI_ENV } from "../invoker";
+  import { onWindowClose, releaseMedia } from "../window-chrome";
   import type { DanmuEntry, VideoItem } from "../interface";
   import TitleBar from "./TitleBar.svelte";
 
@@ -32,6 +33,8 @@
     while (index + 1 < danmus.length && danmus[index + 1].ts / 1000 <= currentTime) index++;
     return index;
   });
+
+  onMount(() => onWindowClose(releaseMedia));
 
   onMount(async () => {
     try {

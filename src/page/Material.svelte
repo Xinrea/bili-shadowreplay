@@ -27,6 +27,7 @@
   } from "lucide-svelte";
   import { SvelteSet } from "svelte/reactivity";
   import { registerCommands } from "../lib/stores/commands";
+  import { requestUpload } from "../lib/uploads";
   import { AnnotationOutline } from "flowbite-svelte-icons";
   import BilibiliIcon from "../lib/components/BilibiliIcon.svelte";
   import DouyinIcon from "../lib/components/DouyinIcon.svelte";
@@ -800,7 +801,7 @@
                   >创建时间</th
                 >
                 <th
-                  class="px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted w-28"
+                  class="px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted w-52"
                   >操作</th
                 >
               </tr>
@@ -1056,7 +1057,7 @@
                     </div>
                   </td>
 
-                  <td class="px-4 py-2.5 w-28">
+                  <td class="px-4 py-2.5 w-52">
                     <div class="flex items-center gap-1">
                       <button
                         class="action-button hover:bg-accent-soft"
@@ -1072,6 +1073,13 @@
                         onclick={() => createProject([video])}
                       >
                         <Clapperboard class="h-3.5 w-3.5 text-accent-fg" />
+                      </button>
+                      <button
+                        class="action-button hover:bg-accent-soft"
+                        title="投稿"
+                        onclick={() => requestUpload("material", video.id)}
+                      >
+                        <Upload class="h-3.5 w-3.5 text-accent-fg" />
                       </button>
                       <button
                         class="action-button hover:bg-success-soft"

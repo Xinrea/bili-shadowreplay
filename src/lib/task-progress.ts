@@ -67,6 +67,10 @@ export function taskTypeName(taskType: string) {
       return "素材生成";
     case "export_project":
       return "切片导出";
+    case "render_material_danmu":
+      return "素材压制弹幕";
+    case "upload":
+      return "投稿";
     case "upload_project":
       return "切片投稿";
     case "clip_video":
@@ -125,6 +129,7 @@ const CANCELLABLE_TASK_TYPES = new Set([
   "clip_range",
   "generate_materials",
   "export_project",
+  "render_material_danmu",
   "clip_video",
   "encode_video_subtitle",
   "generate_whole_clip",

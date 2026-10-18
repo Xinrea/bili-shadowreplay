@@ -542,6 +542,50 @@ fn get_migrations() -> Vec<Migration> {
             ",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 19,
+            description: "add_uploads",
+            // Projects posted before uploads existed keep their history. Legacy
+            // projects created at startup add their own records.
+            sql: r"
+                CREATE TABLE uploads (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source TEXT NOT NULL DEFAULT 'file',
+                    source_id INTEGER NOT NULL DEFAULT 0,
+                    file TEXT NOT NULL DEFAULT '',
+                    room_id TEXT NOT NULL DEFAULT '',
+                    uid TEXT NOT NULL DEFAULT '',
+                    cover TEXT NOT NULL DEFAULT '',
+                    profile TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    message TEXT NOT NULL DEFAULT '',
+                    bvid TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                INSERT INTO uploads (source, source_id, room_id, profile, status, bvid, created_at, updated_at)
+                    SELECT 'project', id, room_id, profile, 'posted', bvid, updated_at, updated_at
+                    FROM projects WHERE bvid != '';
+            ",
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 20,
+            description: "drop_project_exports",
+            // Exports are written to a file the user picks and uploads render
+            // their own video, so projects no longer track an export.
+            sql: r"
+                ALTER TABLE projects DROP COLUMN output;
+                ALTER TABLE projects DROP COLUMN output_hash;
+            ",
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 21,
+            description: "add_upload_danmu",
+            sql: "ALTER TABLE uploads ADD COLUMN danmu INTEGER NOT NULL DEFAULT 0;",
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -618,6 +662,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     let db = Arc::new(Database::new(db_pool, credentials, events.clone()));
     db.migrate_account_credentials().await?;
     db.finish_pending_tasks().await?;
+    db.fail_interrupted_uploads().await?;
     db.finish_pending_record_summaries().await?;
 
     let webhook_poster =
@@ -744,6 +789,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
     ));
     db.migrate_account_credentials().await?;
     db.finish_pending_tasks().await?;
+    db.fail_interrupted_uploads().await?;
     db.finish_pending_record_summaries().await?;
     let webhook_poster =
         webhook::poster::create_webhook_poster(&config.read().await.webhook_url, None)
@@ -968,15 +1014,21 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::project::create_project,
         crate::handlers::project::update_project_info,
         crate::handlers::project::update_project_timeline,
-        crate::handlers::project::update_project_profile,
-        crate::handlers::project::update_project_cover,
         crate::handlers::project::delete_project,
         crate::handlers::project::export_project,
-        crate::handlers::project::upload_project,
         crate::handlers::project::get_material_usage,
         crate::handlers::project::get_material_peaks,
         crate::handlers::project::get_material_danmu,
         crate::handlers::project::generate_materials,
+        crate::handlers::upload::get_uploads,
+        crate::handlers::upload::get_upload,
+        crate::handlers::upload::create_upload,
+        crate::handlers::upload::update_upload,
+        crate::handlers::upload::update_upload_cover,
+        crate::handlers::upload::update_upload_danmu,
+        crate::handlers::upload::delete_upload,
+        crate::handlers::upload::post_upload,
+        crate::handlers::upload::request_upload,
         crate::handlers::task::get_tasks,
         crate::handlers::task::delete_task,
         crate::handlers::utils::show_in_folder,

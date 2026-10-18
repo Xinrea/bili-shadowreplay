@@ -15,6 +15,7 @@ pub mod record;
 pub mod recorder;
 pub mod summary;
 pub mod task;
+pub mod upload;
 pub mod video;
 
 pub struct Database {

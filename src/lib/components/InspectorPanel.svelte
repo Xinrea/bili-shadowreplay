@@ -41,27 +41,30 @@
         <h2>{title}</h2>
       </div>
 
-      <div
-        class="tabs"
-        role="tablist"
-        aria-label={title}
-        style:grid-template-columns="repeat({tabs.length}, 1fr)"
-      >
-        {#each tabs as tab (tab.id)}
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === tab.id}
-            class:active={activeTab === tab.id}
-            onclick={() => (activeTab = tab.id)}
-          >
-            {tab.label}
-            {#if tab.count}
-              <span>{tab.count}</span>
-            {/if}
-          </button>
-        {/each}
-      </div>
+      <!-- A single tab needs no switcher; the title names the panel. -->
+      {#if tabs.length > 1}
+        <div
+          class="tabs"
+          role="tablist"
+          aria-label={title}
+          style:grid-template-columns="repeat({tabs.length}, 1fr)"
+        >
+          {#each tabs as tab (tab.id)}
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === tab.id}
+              class:active={activeTab === tab.id}
+              onclick={() => (activeTab = tab.id)}
+            >
+              {tab.label}
+              {#if tab.count}
+                <span>{tab.count}</span>
+              {/if}
+            </button>
+          {/each}
+        </div>
+      {/if}
 
       <div class="inspector-content" class:panel-fill={fillContent}>
         {@render children()}

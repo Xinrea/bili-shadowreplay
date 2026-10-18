@@ -17,7 +17,7 @@ pub(crate) use audio::get_audio_duration;
 pub use audio::{extract_audio_sample, extract_full_audio};
 pub use clip::{clip_from_video_file, transcode, trim_video};
 pub use danmu::encode_video_danmu;
-pub use metadata::{check_ffmpeg, check_videos, generate_thumbnail};
+pub use metadata::{check_ffmpeg, check_videos, extract_frame, generate_thumbnail};
 pub use subtitle::{encode_video_subtitle, generate_video_subtitle};
 
 #[cfg(test)]

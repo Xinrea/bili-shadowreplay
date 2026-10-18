@@ -12,6 +12,17 @@ use ffmpeg_utils::{extract_video_metadata, ffmpeg_command};
 /// Generate thumbnail file from video, capturing a frame at the specified timestamp.
 pub async fn generate_thumbnail(video_full_path: &Path, timestamp: f64) -> Result<PathBuf, String> {
     let thumbnail_full_path = video_full_path.with_extension("jpg");
+    extract_frame(video_full_path, timestamp, &thumbnail_full_path).await?;
+    Ok(thumbnail_full_path)
+}
+
+/// Save the frame of `video_full_path` at `timestamp` as the image `target`.
+pub async fn extract_frame(
+    video_full_path: &Path,
+    timestamp: f64,
+    target: &Path,
+) -> Result<(), String> {
+    let thumbnail_full_path = target.to_path_buf();
     FfmpegJob::new()
         .args([
             "-i".to_string(),
@@ -37,7 +48,7 @@ pub async fn generate_thumbnail(video_full_path: &Path, timestamp: f64) -> Resul
     } else {
         log::info!("生成缩略图完成: {}", thumbnail_full_path.display());
     }
-    Ok(thumbnail_full_path)
+    Ok(())
 }
 
 /// Trying to run ffmpeg for version

@@ -256,6 +256,7 @@
     switch (task_type.toLowerCase()) {
       case "clip_range":
         return "bg-purple-500";
+      case "upload":
       case "upload_procedure":
         return "bg-success";
       case "generate_video_subtitle":

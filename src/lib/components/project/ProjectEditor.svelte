@@ -2,9 +2,11 @@
   import {
     BrainCircuit,
     CircleHelp,
+    Download,
     Eraser,
     Film,
     Loader2,
+    MessageSquareText,
     Pause,
     Play,
     Plus,
@@ -13,10 +15,13 @@
     Settings,
     Trash2,
     Undo2,
+    Upload,
     Volume2,
     VolumeX,
+    X,
   } from "lucide-svelte";
   import { onDestroy, onMount, tick, untrack } from "svelte";
+  import { save } from "@tauri-apps/plugin-dialog";
   import { get_static_url, invoke, listen, log, set_title, TAURI_ENV } from "../../invoker";
   import {
     generateEventId,
@@ -40,7 +45,6 @@
     setClipSubtitles,
     splitClip,
     timelineDuration,
-    trimClip,
     updateSubtitleText,
     visibleSubtitles,
     MIN_SUBTITLE_DURATION,
@@ -58,7 +62,6 @@
   import TitleBar from "../TitleBar.svelte";
   import MaterialBin, { type BinMaterial } from "./MaterialBin.svelte";
   import ProjectTimelineView, { type MaterialInfo } from "./ProjectTimeline.svelte";
-  import ProjectUploadPanel from "./ProjectUploadPanel.svelte";
   import "./project-editor.css";
 
   interface Props {
@@ -73,7 +76,6 @@
   let project: ProjectItem | null = $state(null);
   let loadError = $state("");
   let title = $state("");
-  let note = $state("");
   let timeline: ProjectTimeline = $state.raw(parseTimeline(""));
   let undoStack: ProjectTimeline[] = $state.raw([]);
   let redoStack: ProjectTimeline[] = $state.raw([]);
@@ -90,7 +92,6 @@
   let muted = $state(false);
   let selectedClipId: string | null = $state(null);
   let selectedSubtitleId: string | null = $state(null);
-  let activeTab: "subtitle" | "clips" | "export" | "upload" = $state("subtitle");
   let showStyleEditor = $state(false);
   let showShortcutHelp = $state(false);
   let showAiModal = $state(false);
@@ -98,6 +99,7 @@
   let aiRegenerate = $state(false);
   let aiRunning = $state(false);
   let exporting: string | null = $state(null);
+  let requestingUpload = $state(false);
   let saveState: "saved" | "pending" | "saving" | "error" = $state("saved");
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -121,12 +123,6 @@
     (timeline.subtitle_style as SubtitleStyle | null) ?? loadSubtitleStyle(roomId),
   );
   let subtitleAss = $derived(buildSubtitleAss(projectCues(timeline), subtitleStyle));
-  let selectedClip = $derived(placed.find((item) => item.clip.id === selectedClipId) ?? null);
-  let currentClip = $derived(clipAt(timeline, time));
-  let coverVideoUrl = $derived(
-    (currentClip && materials.get(currentClip.clip.material_id)?.url) ?? "",
-  );
-  let exportState = $derived(project?.export_state ?? "none");
   let visibleDanmuCount = $derived(
     placed.reduce((total, item) => {
       const times = danmuCounts.get(item.clip.material_id) ?? [];
@@ -176,6 +172,10 @@
 
   function applyProjectView(view: ProjectItem) {
     project = view;
+    // The uploads page can switch danmaku too; follow it unless an edit here
+    // is still being saved.
+    const danmu = parseTimeline(view.timeline).danmu;
+    if (danmu !== timeline.danmu && saveState === "saved") timeline = { ...timeline, danmu };
   }
 
   async function loadProject() {
@@ -183,7 +183,6 @@
       const view = await invoke<ProjectItem>("get_project", { id: projectId });
       project = view;
       title = view.title;
-      note = view.note;
       await set_title(view.title || "切片");
       await loadMaterials();
       let loaded = parseTimeline(view.timeline);
@@ -395,16 +394,11 @@
     }
   }
 
-  function setClipEdge(clipId: string, edge: "start" | "end", value: number) {
-    const clip = timeline.clips.find((item) => item.id === clipId);
-    if (!clip || !Number.isFinite(value)) return;
-    commit(trimClip(timeline, clipId, edge, value, materials.get(clip.material_id)?.duration ?? 0));
-  }
-
   async function saveInfo() {
-    if (!project || (title === project.title && note === project.note)) return;
+    if (!project || title === project.title) return;
     try {
-      await invoke("update_project_info", { id: projectId, title, note });
+      // The note is edited from the projects list; keep its latest value.
+      await invoke("update_project_info", { id: projectId, title, note: project.note });
       await set_title(title || "切片");
     } catch (error) {
       alert("保存切片信息失败：" + error);
@@ -606,44 +600,59 @@
 
   // ---- Export --------------------------------------------------------------
 
+  /** Write the timeline to a file the user picks, or download it on the web. */
   async function exportProject() {
     if (exporting || !project) return;
     if (timeline.clips.length === 0) {
       alert("时间轴上还没有片段");
       return;
     }
+    const fileName = `${(title || "切片").replace(/[\\/:*?"<>|]/g, "_")}.mp4`;
+    let target: string | null = null;
+    if (TAURI_ENV) {
+      target = await save({
+        title: "导出切片",
+        defaultPath: fileName,
+        filters: [{ name: "MP4 视频", extensions: ["mp4"] }],
+      });
+      if (!target) return;
+    }
     await flushSave();
     const eventId = generateEventId();
     exporting = eventId;
     let unlisten: (() => void) | null = null;
+    // The export may finish before the invoke returns where it is written.
+    let started: ExportStarted | null = null;
+    let finished: { success: boolean; message: string } | null = null;
+    const settle = () => {
+      if (!started || !finished) return;
+      exporting = null;
+      if (finished.success) {
+        void exportFinished(started, fileName);
+      } else if (!wasCancelled(eventId) && !finished.message.endsWith("已取消")) {
+        alert(finished.message);
+      }
+    };
     try {
       unlisten = await listen<{ success: boolean; message: string }>(`progress-finished:${eventId}`, (event) => {
         unlisten?.();
-        exporting = null;
-        void projectRefresh.run();
-        if (!event.payload.success && !wasCancelled(eventId) && !event.payload.message.endsWith("已取消")) {
-          alert(event.payload.message);
-        }
+        finished = event.payload;
+        settle();
       });
       announceTask({
         id: eventId,
         task_type: "export_project",
-        metadata: JSON.stringify({ project_id: projectId, title: project.title }),
+        metadata: JSON.stringify({ project_id: projectId, title }),
       });
-      const started = await invoke<ExportStarted>("export_project", {
+      started = await invoke<ExportStarted>("export_project", {
         eventId,
         id: projectId,
         timeline,
         subtitleAss: subtitles.length > 0 ? subtitleAss : null,
+        target,
       });
-      if (started.task) {
-        openTaskCenter(eventId);
-      } else {
-        unlisten();
-        exporting = null;
-        alert(started.message);
-      }
-      await projectRefresh.run();
+      openTaskCenter(eventId);
+      settle();
     } catch (error) {
       unlisten?.();
       exporting = null;
@@ -653,17 +662,42 @@
     }
   }
 
-  async function downloadExport() {
-    if (!project?.output) return;
-    const a = document.createElement("a");
-    a.href = await get_static_url("output", project.output);
-    a.download = `${project.title || "切片"}.mp4`;
-    a.click();
+  async function exportFinished(started: ExportStarted, fileName: string) {
+    if (started.download) {
+      const a = document.createElement("a");
+      a.href = await get_static_url("cache", started.download);
+      a.download = fileName;
+      a.click();
+      return;
+    }
+    // Tauri's dialog plugin makes confirm() asynchronous.
+    if (await confirm(`导出完成：${started.path}\n\n是否在文件夹中显示？`)) {
+      void invoke("show_in_folder", { path: started.path });
+    }
+  }
+
+  /** Continue in the main window, which starts a draft for this project. */
+  async function requestUpload() {
+    if (requestingUpload) return;
+    requestingUpload = true;
+    try {
+      await flushSave();
+      await invoke("request_upload", { source: "project", id: projectId });
+    } catch (error) {
+      alert("打开投稿失败：" + error);
+    } finally {
+      requestingUpload = false;
+    }
   }
 
   // ---- Keyboard ------------------------------------------------------------
 
   function handleKeydown(event: KeyboardEvent) {
+    if (showAiModal && event.key === "Escape") {
+      event.preventDefault();
+      showAiModal = false;
+      return;
+    }
     if (showStyleEditor || showShortcutHelp || showAiModal) return;
     const target = event.target instanceof Element ? event.target : null;
     if (
@@ -718,13 +752,6 @@
     const secs = (total % 60).toFixed(1).padStart(4, "0");
     return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${secs}` : `${minutes}:${secs}`;
   }
-
-  const exportDescriptions = {
-    material: "切片只包含一个完整素材且没有字幕和弹幕，投稿时直接使用素材文件，无需导出。",
-    none: "切片还没有导出。导出会按时间轴重新编码，并压制字幕和弹幕。",
-    stale: "切片在上次导出后有修改，需要重新导出。",
-    ready: "导出文件与当前时间轴一致，可以直接投稿。",
-  };
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -765,8 +792,28 @@
       <span class="mx-1 h-4 w-px bg-[#2b3340]"></span>
       <button
         type="button"
-        class="titlebar-export"
-        title="导出切片"
+        class="titlebar-toggle"
+        aria-pressed={timeline.danmu}
+        title="导出和投稿生成视频时{timeline.danmu ? '压制' : '不压制'}弹幕（片段范围内共 {visibleDanmuCount} 条）"
+        onclick={() => commit({ ...timeline, danmu: !timeline.danmu })}
+      >
+        <MessageSquareText class="h-3.5 w-3.5" />
+        弹幕{timeline.danmu ? "：开" : "：关"}
+      </button>
+      <button
+        type="button"
+        class="titlebar-button"
+        title="在主窗口为这个切片新建投稿"
+        disabled={requestingUpload || timeline.clips.length === 0}
+        onclick={requestUpload}
+      >
+        <Upload class="h-3.5 w-3.5" />
+        投稿
+      </button>
+      <button
+        type="button"
+        class="titlebar-button primary"
+        title={TAURI_ENV ? "导出为视频文件" : "导出并下载视频文件"}
         disabled={exporting !== null || timeline.clips.length === 0}
         onclick={exportProject}
       >
@@ -774,7 +821,7 @@
           <Loader2 class="h-3.5 w-3.5 animate-spin" />
           导出中
         {:else}
-          <Film class="h-3.5 w-3.5" />
+          <Download class="h-3.5 w-3.5" />
           导出
         {/if}
       </button>
@@ -815,246 +862,94 @@
       </div>
 
       <InspectorPanel
-        title="切片编辑"
-        tabs={[
-          { id: "subtitle", label: "字幕", count: subtitles.length },
-          { id: "clips", label: "片段", count: timeline.clips.length },
-          { id: "export", label: "导出" },
-          { id: "upload", label: "投稿" },
-        ]}
-        bind:activeTab
+        title="字幕"
+        tabs={[{ id: "subtitle", label: "字幕", count: subtitles.length }]}
+        activeTab="subtitle"
         collapsed={false}
         docked
       >
-
-        {#if activeTab === "subtitle"}
-          <div class="panel-toolbar">
-            <button type="button" class="tool-button" onclick={() => (showStyleEditor = true)}>
-              <Settings class="h-3.5 w-3.5" />
-              样式
-            </button>
-            <button type="button" class="tool-button" onclick={clearSubtitles} disabled={timeline.subtitles.length === 0}>
-              <Eraser class="h-3.5 w-3.5" />
-              清空
-            </button>
-            <button
-              type="button"
-              class="tool-button"
-              disabled={aiRunning || timeline.clips.length === 0}
-              onclick={() => {
-                aiOverwrite = false;
-                aiRegenerate = false;
-                showAiModal = true;
-              }}
-            >
-              {#if aiRunning}
-                <Loader2 class="h-3.5 w-3.5 animate-spin" />
-                识别中
-              {:else}
-                <BrainCircuit class="h-3.5 w-3.5" />
-                AI 字幕
-              {/if}
-            </button>
-          </div>
-
-          {#if subtitles.length > 0}
-            <div class="row-list">
-              {#each subtitles as entry, index (entry.subtitle.id)}
-                <div
-                  class="row"
-                  data-subtitle-row={entry.subtitle.id}
-                  class:playing={time >= entry.start && time < entry.end}
-                  class:selected={selectedSubtitleId === entry.subtitle.id}
-                >
-                  <button type="button" class="row-index" title="选中并跳转" onclick={() => selectSubtitle(entry.subtitle.id, true)}>
-                    {index + 1}
-                  </button>
-                  <input
-                    type="text"
-                    class="row-text"
-                    value={entry.subtitle.text}
-                    placeholder="输入字幕文本"
-                    onfocus={() => {
-                      selectSubtitle(entry.subtitle.id);
-                      beginEdit();
-                    }}
-                    oninput={(event) => (timeline = updateSubtitleText(timeline, entry.subtitle.id, event.currentTarget.value))}
-                    onblur={endEdit}
-                    onkeydown={(event) => {
-                      if (event.isComposing || event.keyCode === 229) return;
-                      if (event.key === "Enter" || event.key === "Escape") {
-                        event.preventDefault();
-                        event.currentTarget.blur();
-                      }
-                    }}
-                  />
-                  <button type="button" class="row-action" title="在后面添加字幕" onclick={() => insertSubtitleAfter(entry.subtitle.id)}>
-                    <Plus class="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    class="row-action danger"
-                    title="删除字幕"
-                    onclick={() => commit(removeSubtitle(timeline, entry.subtitle.id))}
-                  >
-                    <Trash2 class="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              {/each}
-            </div>
-          {:else}
-            <div class="empty-state">
-              <strong>还没有字幕</strong>
-              <span>点击「AI 字幕」识别，或在时间轴播放头处添加</span>
-            </div>
-          {/if}
-          {#if hiddenSubtitleCount > 0}
-            <p class="hint mt-2">另有 {hiddenSubtitleCount} 条字幕位于片段裁剪范围之外，已隐藏；拉长片段后会重新显示。</p>
-          {/if}
-        {:else if activeTab === "clips"}
-          <div class="flex flex-col gap-3">
-            <div class="field">
-              <label for="project-note">备注</label>
-              <textarea id="project-note" class="panel-input h-16 resize-none" bind:value={note} onblur={saveInfo} placeholder="为切片添加备注"></textarea>
-            </div>
-
-            {#if selectedClip}
-              {@const material = materials.get(selectedClip.clip.material_id)}
-              <div class="clip-detail">
-                <div class="flex items-center justify-between gap-2">
-                  <span class="truncate text-[12px] font-medium" title={material?.name}>{material?.name ?? "素材已删除"}</span>
-                  <button type="button" class="link-button" onclick={() => void invoke("open_clip", { videoId: selectedClip.clip.material_id })}>
-                    预览素材
-                  </button>
-                </div>
-                <div class="grid grid-cols-2 gap-2">
-                  <div class="field">
-                    <label for="clip-start">入点（秒）</label>
-                    <input
-                      id="clip-start"
-                      type="number"
-                      step="0.1"
-                      min="0"
-                      class="panel-input"
-                      value={selectedClip.clip.start.toFixed(2)}
-                      onchange={(event) => setClipEdge(selectedClip.clip.id, "start", Number(event.currentTarget.value))}
-                    />
-                  </div>
-                  <div class="field">
-                    <label for="clip-end">出点（秒）</label>
-                    <input
-                      id="clip-end"
-                      type="number"
-                      step="0.1"
-                      min="0"
-                      class="panel-input"
-                      value={selectedClip.clip.end.toFixed(2)}
-                      onchange={(event) => setClipEdge(selectedClip.clip.id, "end", Number(event.currentTarget.value))}
-                    />
-                  </div>
-                </div>
-                <p class="hint">
-                  片段时长 {formatTime(selectedClip.duration)}，素材总长 {formatTime(material?.duration ?? 0)}；也可以拖动时间轴上片段的左右边缘调整。
-                </p>
-              </div>
-            {/if}
-
-            {#if placed.length > 0}
-              <div class="row-list">
-                {#each placed as item (item.clip.id)}
-                  <div class="row" class:selected={selectedClipId === item.clip.id} class:playing={currentClip?.clip.id === item.clip.id}>
-                    <button
-                      type="button"
-                      class="row-index"
-                      onclick={() => {
-                        selectedClipId = item.clip.id;
-                        selectedSubtitleId = null;
-                        seek(item.offset);
-                      }}
-                    >
-                      {item.index + 1}
-                    </button>
-                    <button
-                      type="button"
-                      class="row-text truncate text-left"
-                      onclick={() => {
-                        selectedClipId = item.clip.id;
-                        selectedSubtitleId = null;
-                        seek(item.offset);
-                      }}
-                    >
-                      {materials.get(item.clip.material_id)?.name ?? "素材已删除"}
-                    </button>
-                    <span class="shrink-0 font-mono text-[10px] text-gray-500">{formatTime(item.duration)}</span>
-                    <button type="button" class="row-action danger" title="删除片段" onclick={() => commit(removeClip(timeline, item.clip.id))}>
-                      <Trash2 class="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                {/each}
-              </div>
+        <div class="panel-toolbar">
+          <button type="button" class="tool-button" onclick={() => (showStyleEditor = true)}>
+            <Settings class="h-3.5 w-3.5" />
+            样式
+          </button>
+          <button type="button" class="tool-button" onclick={clearSubtitles} disabled={timeline.subtitles.length === 0}>
+            <Eraser class="h-3.5 w-3.5" />
+            清空
+          </button>
+          <button
+            type="button"
+            class="tool-button"
+            disabled={aiRunning || timeline.clips.length === 0}
+            onclick={() => {
+              aiOverwrite = false;
+              aiRegenerate = false;
+              showAiModal = true;
+            }}
+          >
+            {#if aiRunning}
+              <Loader2 class="h-3.5 w-3.5 animate-spin" />
+              识别中
             {:else}
-              <div class="empty-state">
-                <strong>时间轴是空的</strong>
-                <span>从左侧素材库拖入素材，或点击素材右侧的 ＋</span>
-              </div>
+              <BrainCircuit class="h-3.5 w-3.5" />
+              AI 字幕
             {/if}
-            <p class="hint">片段在主轨道上首尾相接播放：拖动片段可调整顺序，⌘B 在播放头处分割。</p>
-          </div>
-        {:else if activeTab === "export"}
-          <div class="flex flex-col gap-4">
-            <label class="toggle">
-              <input
-                type="checkbox"
-                checked={timeline.danmu}
-                onchange={(event) => commit({ ...timeline, danmu: event.currentTarget.checked })}
-              />
-              <span>
-                压制弹幕
-                <span class="hint block">片段范围内共有 {visibleDanmuCount} 条弹幕（来自素材保存的弹幕）</span>
-              </span>
-            </label>
+          </button>
+        </div>
 
-            <div class="export-state {exportState}">
-              {exportDescriptions[exportState]}
-            </div>
-
-            <button
-              type="button"
-              class="footer-button primary justify-center"
-              disabled={exporting !== null || timeline.clips.length === 0}
-              onclick={exportProject}
-            >
-              {#if exporting}
-                <Loader2 class="h-3.5 w-3.5 animate-spin" />
-                导出中，可在任务中心查看进度
-              {:else}
-                <Film class="h-3.5 w-3.5" />
-                {exportState === "ready" ? "重新导出" : "导出切片"}
-              {/if}
-            </button>
-
-            {#if exportState === "ready" && project?.output}
-              <div class="flex flex-col gap-1">
-                <span class="hint">导出文件：{project.output}</span>
-                {#if !TAURI_ENV}
-                  <button type="button" class="link-button self-start" onclick={downloadExport}>下载导出文件</button>
-                {/if}
+        {#if subtitles.length > 0}
+          <div class="row-list">
+            {#each subtitles as entry, index (entry.subtitle.id)}
+              <div
+                class="row"
+                data-subtitle-row={entry.subtitle.id}
+                class:playing={time >= entry.start && time < entry.end}
+                class:selected={selectedSubtitleId === entry.subtitle.id}
+              >
+                <button type="button" class="row-index" title="选中并跳转" onclick={() => selectSubtitle(entry.subtitle.id, true)}>
+                  {index + 1}
+                </button>
+                <input
+                  type="text"
+                  class="row-text"
+                  value={entry.subtitle.text}
+                  placeholder="输入字幕文本"
+                  onfocus={() => {
+                    selectSubtitle(entry.subtitle.id);
+                    beginEdit();
+                  }}
+                  oninput={(event) => (timeline = updateSubtitleText(timeline, entry.subtitle.id, event.currentTarget.value))}
+                  onblur={endEdit}
+                  onkeydown={(event) => {
+                    if (event.isComposing || event.keyCode === 229) return;
+                    if (event.key === "Enter" || event.key === "Escape") {
+                      event.preventDefault();
+                      event.currentTarget.blur();
+                    }
+                  }}
+                />
+                <button type="button" class="row-action" title="在后面添加字幕" onclick={() => insertSubtitleAfter(entry.subtitle.id)}>
+                  <Plus class="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  class="row-action danger"
+                  title="删除字幕"
+                  onclick={() => commit(removeSubtitle(timeline, entry.subtitle.id))}
+                >
+                  <Trash2 class="h-3.5 w-3.5" />
+                </button>
               </div>
-            {/if}
-
-            <p class="hint">
-              导出会把各片段统一缩放到 1920×1080 后拼接，并压制当前字幕（与预览一致）。任务在后台队列中执行，可以继续编辑或关闭窗口。
-            </p>
+            {/each}
           </div>
-        {:else if activeTab === "upload" && project}
-          <ProjectUploadPanel
-            {project}
-            {exportState}
-            {coverVideoUrl}
-            exporting={exporting !== null}
-            onExport={exportProject}
-            onChanged={() => void projectRefresh.run()}
-          />
+        {:else}
+          <div class="empty-state">
+            <strong>还没有字幕</strong>
+            <span>点击「AI 字幕」识别，或在时间轴播放头处添加</span>
+          </div>
+        {/if}
+        {#if hiddenSubtitleCount > 0}
+          <p class="hint mt-2">另有 {hiddenSubtitleCount} 条字幕位于片段裁剪范围之外，已隐藏；拉长片段后会重新显示。</p>
         {/if}
       </InspectorPanel>
     </div>
@@ -1122,23 +1017,46 @@
 </div>
 
 {#if showAiModal}
-  <div class="fixed inset-0 z-[1100] flex items-center justify-center bg-black/50">
-    <div class="w-[440px] max-w-[90vw] rounded-lg bg-[#2c2c2e] shadow-xl">
-      <div class="border-b border-gray-800/50 px-4 py-3 text-sm font-medium text-gray-200">AI 字幕</div>
-      <div class="space-y-3 p-4 text-[13px] text-gray-300">
-        <p>按素材识别字幕，每个素材只识别一次，结果会缓存并按片段范围放入时间轴。</p>
-        <label class="flex items-center gap-2">
-          <input type="checkbox" bind:checked={aiOverwrite} />
-          覆盖已有字幕的片段
-        </label>
-        <label class="flex items-center gap-2">
-          <input type="checkbox" bind:checked={aiRegenerate} />
-          忽略缓存，重新识别
-        </label>
+  <div class="ui-modal-backdrop z-[1100]">
+    <div class="ui-modal w-[440px] max-w-full" role="dialog" aria-modal="true" aria-labelledby="ai-subtitle-title">
+      <div class="ui-modal-header">
+        <h3 id="ai-subtitle-title" class="flex items-center gap-2">
+          <BrainCircuit class="h-4 w-4 shrink-0 text-accent-fg" />
+          AI 字幕
+        </h3>
+        <button
+          type="button"
+          class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost -mr-1.5"
+          aria-label="关闭"
+          onclick={() => (showAiModal = false)}
+        >
+          <X class="h-4 w-4" />
+        </button>
       </div>
-      <div class="flex justify-end gap-2 border-t border-gray-800/50 px-4 py-3">
-        <button class="footer-button" onclick={() => (showAiModal = false)}>取消</button>
-        <button class="footer-button primary" onclick={generateSubtitles}>开始</button>
+      <div class="ui-modal-body space-y-4">
+        <p class="text-[13px] leading-relaxed text-fg-secondary">
+          按素材识别字幕，每个素材只识别一次，结果会缓存并按片段范围放入时间轴。
+        </p>
+        <div class="space-y-2.5">
+          <label class="flex cursor-pointer items-start gap-2.5">
+            <input type="checkbox" bind:checked={aiOverwrite} class="ui-checkbox mt-0.5" />
+            <span class="text-[13px] text-fg-secondary">
+              覆盖已有字幕的片段
+              <span class="block text-[11px] text-fg-muted">默认只为还没有字幕的片段识别</span>
+            </span>
+          </label>
+          <label class="flex cursor-pointer items-start gap-2.5">
+            <input type="checkbox" bind:checked={aiRegenerate} class="ui-checkbox mt-0.5" />
+            <span class="text-[13px] text-fg-secondary">
+              忽略缓存，重新识别
+              <span class="block text-[11px] text-fg-muted">识别结果不准确，或更换了字幕生成器时使用</span>
+            </span>
+          </label>
+        </div>
+      </div>
+      <div class="ui-modal-footer">
+        <button type="button" class="ui-btn" onclick={() => (showAiModal = false)}>取消</button>
+        <button type="button" class="ui-btn ui-btn-primary" onclick={generateSubtitles}>开始识别</button>
       </div>
     </div>
   </div>
@@ -1230,28 +1148,51 @@
     padding: 6px 12px;
   }
 
-  .titlebar-export {
+  .titlebar-button,
+  .titlebar-toggle {
     display: inline-flex;
     height: 28px;
     align-items: center;
     gap: 6px;
+    border: 1px solid #344052;
     border-radius: 7px;
-    background: #0a84ff;
-    padding: 0 12px;
-    color: white;
+    background: #202733;
+    padding: 0 11px;
+    color: #dce5f3;
     font-size: 12px;
     font-weight: 500;
     white-space: nowrap;
-    transition: background-color 150ms ease;
+    transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
   }
 
-  .titlebar-export:hover:not(:disabled) {
+  .titlebar-button:hover:not(:disabled),
+  .titlebar-toggle:hover {
+    border-color: #4a5a70;
+  }
+
+  .titlebar-button.primary {
+    border-color: transparent;
+    background: #0a84ff;
+    color: white;
+  }
+
+  .titlebar-button.primary:hover:not(:disabled) {
     background: rgb(10 132 255 / 88%);
   }
 
-  .titlebar-export:disabled {
+  .titlebar-button:disabled {
     cursor: not-allowed;
     opacity: 0.5;
+  }
+
+  .titlebar-toggle {
+    color: #8c98aa;
+  }
+
+  .titlebar-toggle[aria-pressed="true"] {
+    border-color: rgb(10 132 255 / 70%);
+    background: rgb(10 132 255 / 15%);
+    color: #55b9ff;
   }
 
   .play-button {
@@ -1281,66 +1222,5 @@
     margin: 0 -16px 10px;
     background: #171c25;
     padding: 0 16px 10px;
-  }
-
-  .field {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .field label {
-    color: #9aa6b8;
-    font-size: 10px;
-  }
-
-  .clip-detail {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    border: 1px solid #293442;
-    border-radius: 10px;
-    background: #202733;
-    padding: 10px;
-  }
-
-  .link-button {
-    color: #55b9ff;
-    font-size: 10px;
-    font-weight: 500;
-    white-space: nowrap;
-  }
-
-  .toggle {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    color: #dce5f3;
-    font-size: 12px;
-    cursor: pointer;
-  }
-
-  .toggle input {
-    margin-top: 2px;
-  }
-
-  .export-state {
-    border: 1px solid #293442;
-    border-radius: 8px;
-    background: #202733;
-    padding: 10px;
-    color: #c4cfdd;
-    font-size: 11px;
-    line-height: 1.6;
-  }
-
-  .export-state.ready {
-    border-color: rgb(48 209 88 / 35%);
-    color: #a7f3d0;
-  }
-
-  .export-state.stale {
-    border-color: rgb(255 159 10 / 35%);
-    color: #fcd9a6;
   }
 </style>

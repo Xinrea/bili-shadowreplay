@@ -1,14 +1,14 @@
 <script lang="ts">
   import { createStateRefresh, watchStateChanges } from "../lib/state-refresh";
-  import { invoke, TAURI_ENV, get_static_url } from "../lib/invoker";
-  import type { ProjectExportState, ProjectItem } from "../lib/interface";
+  import { invoke, get_static_url } from "../lib/invoker";
+  import type { ProjectItem } from "../lib/interface";
   import PageTitlebar from "../lib/components/PageTitlebar.svelte";
   import { onMount } from "svelte";
   import {
     Calendar,
     Clapperboard,
     Clock,
-    Download,
+    Edit,
     Pencil,
     Plus,
     RefreshCw,
@@ -17,6 +17,7 @@
     Upload,
   } from "lucide-svelte";
   import { registerCommands } from "../lib/stores/commands";
+  import { requestUpload } from "../lib/uploads";
 
   interface ProjectRow extends ProjectItem {
     coverUrl: string;
@@ -28,6 +29,8 @@
   let search = $state("");
   let sortBy: "updated_at" | "created_at" | "title" | "duration" = $state("updated_at");
   let projectToDelete: ProjectRow | null = $state(null);
+  let projectToNote: ProjectRow | null = $state(null);
+  let editingNote = $state("");
   let creating = $state(false);
 
   let roomIds = $derived([...new Set(projects.map((project) => project.room_id))].filter(Boolean).sort());
@@ -130,11 +133,24 @@
     }
   }
 
-  async function downloadExport(project: ProjectRow) {
-    const a = document.createElement("a");
-    a.href = await get_static_url("output", project.output);
-    a.download = `${project.title || "切片"}.mp4`;
-    a.click();
+  function openNoteDialog(project: ProjectRow) {
+    projectToNote = project;
+    editingNote = project.note;
+  }
+
+  async function saveNote() {
+    if (!projectToNote) return;
+    try {
+      await invoke("update_project_info", {
+        id: projectToNote.id,
+        title: projectToNote.title,
+        note: editingNote.trim(),
+      });
+      projectToNote = null;
+      await stateRefresh.run();
+    } catch (error) {
+      alert("保存备注失败：" + error);
+    }
   }
 
   function formatDuration(seconds: number) {
@@ -146,19 +162,12 @@
       ? `${hours}:${minutes.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`
       : `${minutes}:${secs.toString().padStart(2, "0")}`;
   }
-
-  const exportLabels: Record<ProjectExportState, { label: string; tone: string }> = {
-    material: { label: "无需导出", tone: "text-fg-muted" },
-    none: { label: "未导出", tone: "text-fg-faint" },
-    stale: { label: "需重新导出", tone: "text-warning-fg" },
-    ready: { label: "已导出", tone: "text-success-fg" },
-  };
 </script>
 
 <PageTitlebar title="切片">
   {#snippet subtitle()}
     <span class="truncate text-[12px] text-fg-muted">
-      切片是由一个或多个素材组成的剪辑工程，可裁剪、分割、添加字幕和压制弹幕，导出后投稿。
+      切片是由一个或多个素材组成的剪辑工程，可裁剪、分割、添加字幕和压制弹幕，完成后导出到文件或在投稿页投稿。
     </span>
   {/snippet}
   <button
@@ -237,9 +246,9 @@
                 <th class="w-80 px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted">切片</th>
                 <th class="w-28 px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted">直播间</th>
                 <th class="w-32 px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted">内容</th>
-                <th class="w-36 px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted">状态</th>
+                <th class="w-36 px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted">投稿</th>
                 <th class="w-40 px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted">最近编辑</th>
-                <th class="w-28 px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted">操作</th>
+                <th class="w-40 px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted">操作</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-line">
@@ -279,22 +288,19 @@
                     </div>
                   </td>
                   <td class="px-4 py-2.5">
-                    <div class="flex flex-col gap-0.5 text-[12px]">
-                      <span class={exportLabels[project.export_state].tone}>
-                        {exportLabels[project.export_state].label}
-                      </span>
-                      {#if project.bvid}
-                        <a
-                          href={`https://www.bilibili.com/video/${project.bvid}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          class="inline-flex items-center gap-1 truncate text-[11px] text-accent-fg hover:underline"
-                        >
-                          <Upload class="h-3 w-3" />
-                          {project.bvid}
-                        </a>
-                      {/if}
-                    </div>
+                    {#if project.bvid}
+                      <a
+                        href={`https://www.bilibili.com/video/${project.bvid}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="inline-flex items-center gap-1 truncate text-[12px] text-accent-fg hover:underline"
+                      >
+                        <Upload class="h-3 w-3" />
+                        {project.bvid}
+                      </a>
+                    {:else}
+                      <span class="text-[12px] text-fg-faint">未投稿</span>
+                    {/if}
                   </td>
                   <td class="px-4 py-2.5">
                     <div class="flex items-center gap-2 text-[12px] text-fg-secondary">
@@ -311,15 +317,20 @@
                       >
                         <Pencil class="h-3.5 w-3.5 text-accent-fg" />
                       </button>
-                      {#if !TAURI_ENV && project.export_state === "ready"}
-                        <button
-                          class="action-button hover:bg-accent-soft"
-                          title="下载导出文件"
-                          onclick={() => downloadExport(project)}
-                        >
-                          <Download class="h-3.5 w-3.5 text-accent-fg" />
-                        </button>
-                      {/if}
+                      <button
+                        class="action-button hover:bg-accent-soft"
+                        title="投稿"
+                        onclick={() => requestUpload("project", project.id)}
+                      >
+                        <Upload class="h-3.5 w-3.5 text-accent-fg" />
+                      </button>
+                      <button
+                        class="action-button hover:bg-success-soft"
+                        title="编辑备注"
+                        onclick={() => openNoteDialog(project)}
+                      >
+                        <Edit class="h-3.5 w-3.5 text-success-fg" />
+                      </button>
                       <button
                         class="action-button hover:bg-danger-soft"
                         title="删除"
@@ -356,6 +367,46 @@
             删除
           </button>
         </div>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if projectToNote}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="ui-modal-backdrop" onclick={() => (projectToNote = null)}>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="ui-modal w-[480px] max-w-full"
+      onclick={(event) => event.stopPropagation()}
+      role="dialog"
+      tabindex="-1"
+      aria-labelledby="project-note-title"
+    >
+      <div class="ui-modal-header">
+        <h3 id="project-note-title" class="min-w-0 truncate">编辑切片备注</h3>
+      </div>
+      <div class="ui-modal-body space-y-2">
+        <label for="project-note-textarea" class="ui-label block">
+          「{projectToNote.title || "未命名切片"}」的备注
+        </label>
+        <textarea
+          id="project-note-textarea"
+          bind:value={editingNote}
+          placeholder="为这个切片添加备注"
+          class="ui-input w-full resize-none"
+          rows="4"
+          onkeydown={(event) => {
+            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void saveNote();
+          }}
+        ></textarea>
+        <div class="ui-hint">按 ⌘+Enter 快速保存</div>
+      </div>
+      <div class="ui-modal-footer">
+        <button class="ui-btn w-20" onclick={() => (projectToNote = null)}>取消</button>
+        <button class="ui-btn ui-btn-primary w-20" onclick={saveNote}>保存</button>
       </div>
     </div>
   </div>

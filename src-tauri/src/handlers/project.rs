@@ -7,24 +7,26 @@ use std::sync::Arc;
 use base64::Engine;
 use chrono::{Local, Utc};
 use recorder::danmu::DanmuEntry;
-use recorder::platforms::bilibili::profile::Profile;
 use serde::Serialize;
 use serde_json::json;
+use tokio::sync::oneshot;
 
 use crate::database::project::ProjectRow;
 use crate::database::task::TaskRow;
+use crate::database::upload::UploadRow;
 use crate::database::video::VideoRow;
 use crate::database::Database;
 use crate::ffmpeg::project::{render_project, ProjectRender, RenderClip};
+use crate::ffmpeg::runner::TempArtifact;
 use crate::handlers::subtitle_fonts::prepare_subtitle_font_directory;
 use crate::handlers::utils::get_disk_info_inner;
 use crate::handlers::video::{
     ass_primary_font_name, auto_subtitle_material, create_material, ensure_material_duration,
-    notify_materials_created, run_queued, upload_video_file, validate_ass_document,
+    notify_materials_created, run_queued, validate_ass_document,
 };
 use crate::material::Peaks;
 use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
-use crate::project::{srt_cues, Timeline};
+use crate::project::{srt_cues, Timeline, TimelineClip};
 use crate::recorder_manager::ClipRangeParams;
 use crate::state::State;
 use crate::state_type;
@@ -38,6 +40,11 @@ fn project_dir(id: i64) -> String {
     format!("projects/{id}")
 }
 
+/// Where web clients' exports wait to be downloaded, relative to the cache.
+fn web_export_dir(id: i64) -> String {
+    format!("exports/{id}")
+}
+
 /// A project with what the lists and the editor show about it.
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectView {
@@ -48,9 +55,9 @@ pub struct ProjectView {
     /// Cover to show, relative to the output directory: the project's own or
     /// the first material's thumbnail.
     pub display_cover: String,
-    /// `material` (one untouched material, nothing to export), `none` (never
-    /// exported), `stale` (edited after the export) or `ready`.
-    pub export_state: &'static str,
+    /// False when the project is one untouched material, which is exported
+    /// and uploaded as is.
+    pub needs_render: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -67,22 +74,26 @@ pub struct GeneratedMaterials {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ExportStarted {
-    /// The queued export, or `None` when nothing needs to be rendered.
-    pub task: Option<TaskRow>,
-    pub message: String,
+    pub task: TaskRow,
+    /// The file being written.
+    pub path: String,
+    /// Where the web client downloads it, relative to the cache directory.
+    pub download: Option<String>,
 }
 
 async fn output_dir(state: &State) -> PathBuf {
     PathBuf::from(&state.config.read().await.output)
 }
 
-/// Identifies what an export of `timeline` contains.
-async fn export_hash(state: &State, timeline: &Timeline) -> String {
-    let extra = if timeline.danmu {
-        serde_json::to_string(&state.config.read().await.danmu_ass_options).unwrap_or_default()
-    } else {
-        String::new()
-    };
+/// Identifies what a render of `timeline` with `subtitle_ass` contains.
+async fn render_hash(state: &State, timeline: &Timeline, subtitle_ass: Option<&str>) -> String {
+    let mut extra = subtitle_ass.unwrap_or_default().to_string();
+    if timeline.danmu {
+        extra.push_str(
+            &serde_json::to_string(&state.config.read().await.danmu_ass_options)
+                .unwrap_or_default(),
+        );
+    }
     timeline.render_hash(&extra)
 }
 
@@ -104,38 +115,20 @@ async fn materials_by_id(state: &State, ids: &[i64]) -> Result<HashMap<i64, Vide
     Ok(materials)
 }
 
-fn export_state(
-    project: &ProjectRow,
+/// The material a project is exported and uploaded as: one untouched material
+/// without subtitles or danmaku, which needs no rendering.
+fn plain_material<'a>(
     timeline: &Timeline,
-    hash: &str,
-    materials: &HashMap<i64, VideoRow>,
-    output: &Path,
-) -> &'static str {
-    let single = timeline
-        .clips
-        .first()
-        .and_then(|clip| materials.get(&clip.material_id))
-        .map(material_duration)
-        .and_then(|duration| timeline.single_full_material(duration));
-    if single.is_some() {
-        "material"
-    } else if project.output.is_empty() {
-        "none"
-    } else if project.output_hash == hash && output.join(&project.output).exists() {
-        "ready"
-    } else {
-        "stale"
-    }
+    materials: &'a HashMap<i64, VideoRow>,
+) -> Option<&'a VideoRow> {
+    let material = materials.get(&timeline.clips.first()?.material_id)?;
+    timeline
+        .single_full_material(material_duration(material))
+        .map(|_| material)
 }
 
-async fn project_view(
-    state: &State,
-    project: ProjectRow,
-    materials: &HashMap<i64, VideoRow>,
-) -> ProjectView {
+fn project_view(project: ProjectRow, materials: &HashMap<i64, VideoRow>) -> ProjectView {
     let timeline = Timeline::parse(&project.timeline).unwrap_or_default();
-    let hash = export_hash(state, &timeline).await;
-    let output = output_dir(state).await;
     let display_cover = if project.cover.is_empty() {
         timeline
             .clips
@@ -147,7 +140,7 @@ async fn project_view(
         project.cover.clone()
     };
     ProjectView {
-        export_state: export_state(&project, &timeline, &hash, materials, &output),
+        needs_render: plain_material(&timeline, materials).is_none(),
         duration: timeline.duration(),
         clip_count: timeline.clips.len(),
         display_cover,
@@ -155,10 +148,13 @@ async fn project_view(
     }
 }
 
-async fn single_project_view(state: &State, project: ProjectRow) -> Result<ProjectView, String> {
+pub(crate) async fn single_project_view(
+    state: &State,
+    project: ProjectRow,
+) -> Result<ProjectView, String> {
     let timeline = Timeline::parse(&project.timeline).unwrap_or_default();
     let materials = materials_by_id(state, &timeline.material_ids()).await?;
-    Ok(project_view(state, project, &materials).await)
+    Ok(project_view(project, &materials))
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -175,7 +171,7 @@ pub async fn get_projects(state: state_type!()) -> Result<Vec<ProjectView>, Stri
         .collect();
     let mut views = Vec::with_capacity(projects.len());
     for project in projects {
-        views.push(project_view(&state, project, &materials).await);
+        views.push(project_view(project, &materials));
     }
     Ok(views)
 }
@@ -211,11 +207,8 @@ async fn import_material_subtitles(
     }
 }
 
-async fn write_project_cover(
-    output: &Path,
-    project_id: i64,
-    cover: &str,
-) -> Result<String, String> {
+/// Save the base64 data URL `cover` as the image file `path`.
+pub(crate) async fn write_cover(path: &Path, cover: &str) -> Result<(), String> {
     let base64 = cover
         .split("base64,")
         .nth(1)
@@ -223,16 +216,23 @@ async fn write_project_cover(
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(base64)
         .map_err(|e| format!("Failed to decode cover: {e}"))?;
-    let relative = format!("{}/cover.jpg", project_dir(project_id));
-    let path = output.join(&relative);
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
             .map_err(|e| e.to_string())?;
     }
-    tokio::fs::write(&path, bytes)
+    tokio::fs::write(path, bytes)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())
+}
+
+async fn write_project_cover(
+    output: &Path,
+    project_id: i64,
+    cover: &str,
+) -> Result<String, String> {
+    let relative = format!("{}/cover.jpg", project_dir(project_id));
+    write_cover(&output.join(&relative), cover).await?;
     Ok(relative)
 }
 
@@ -249,15 +249,7 @@ async fn create_project_inner(state: &State, new: NewProject<'_>) -> Result<Proj
     let title = if !new.title.trim().is_empty() {
         new.title.trim().to_string()
     } else if let Some(first) = first {
-        if first.title.is_empty() {
-            Path::new(&first.file)
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or_default()
-                .to_string()
-        } else {
-            first.title.clone()
-        }
+        material_title(first)
     } else {
         "未命名切片".to_string()
     };
@@ -293,8 +285,6 @@ async fn create_project_inner(state: &State, new: NewProject<'_>) -> Result<Proj
             cover: String::new(),
             timeline: timeline.to_json(),
             profile: String::new(),
-            output: String::new(),
-            output_hash: String::new(),
             status: 0,
             bvid: String::new(),
             created_at: now.clone(),
@@ -310,7 +300,7 @@ async fn create_project_inner(state: &State, new: NewProject<'_>) -> Result<Proj
             Err(e) => log::warn!("Failed to save project cover: {e}"),
         }
     }
-    Ok(project_view(state, project, &materials).await)
+    Ok(project_view(project, &materials))
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -367,35 +357,17 @@ pub async fn update_project_timeline(
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn update_project_profile(
-    state: state_type!(),
-    id: i64,
-    profile: serde_json::Value,
-) -> Result<(), String> {
-    let mut project = state.db.get_project(id).await?;
-    project.profile = profile.to_string();
-    Ok(state.db.update_project(&project).await?)
-}
-
-#[cfg_attr(feature = "gui", tauri::command)]
-pub async fn update_project_cover(
-    state: state_type!(),
-    id: i64,
-    cover: String,
-) -> Result<String, String> {
-    let mut project = state.db.get_project(id).await?;
-    project.cover = write_project_cover(&output_dir(&state).await, id, &cover).await?;
-    state.db.update_project(&project).await?;
-    Ok(project.cover)
-}
-
-#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn delete_project(state: state_type!(), id: i64) -> Result<(), String> {
     state.db.delete_project(id).await?;
-    let directory = output_dir(&state).await.join(project_dir(id));
-    if directory.exists() {
-        if let Err(e) = tokio::fs::remove_dir_all(&directory).await {
-            log::warn!("删除切片目录失败: {} - {e}", directory.display());
+    let cache = PathBuf::from(&state.config.read().await.cache);
+    for directory in [
+        output_dir(&state).await.join(project_dir(id)),
+        cache.join(web_export_dir(id)),
+    ] {
+        if directory.exists() {
+            if let Err(e) = tokio::fs::remove_dir_all(&directory).await {
+                log::warn!("删除切片目录失败: {} - {e}", directory.display());
+            }
         }
     }
     Ok(())
@@ -615,36 +587,156 @@ async fn attach_material_subtitles(
     Ok(state.db.update_project(&project).await?)
 }
 
-/// The file to upload: the export, or the material itself when the project is
-/// one untouched material.
-async fn upload_source(
+/// The video to upload for a project: its plain material, or a render of its
+/// timeline kept in `directory` until the upload succeeds. While that render is
+/// queued, the receiver yields its result.
+pub(crate) async fn project_upload_video(
     state: &State,
-    project: &ProjectRow,
-    timeline: &Timeline,
-) -> Result<PathBuf, String> {
-    let output = output_dir(state).await;
+    event_id: &str,
+    id: i64,
+    subtitle_ass: Option<String>,
+    directory: &Path,
+) -> Result<(PathBuf, Option<oneshot::Receiver<Result<(), String>>>), String> {
+    let project = state.db.get_project(id).await?;
+    let timeline = Timeline::parse(&project.timeline)?;
+    if timeline.clips.is_empty() {
+        return Err("切片没有片段".to_string());
+    }
     let materials = materials_by_id(state, &timeline.material_ids()).await?;
-    let hash = export_hash(state, timeline).await;
-    match export_state(project, timeline, &hash, &materials, &output) {
-        "material" => {
-            let material = &materials[&timeline.clips[0].material_id];
-            Ok(output.join(&material.file))
-        }
-        "ready" => Ok(output.join(&project.output)),
-        "stale" => Err("切片在导出后又被修改过，请重新导出后再投稿".to_string()),
-        _ => Err("切片还没有导出，请先导出".to_string()),
+    timeline.validate(|id| materials.get(&id).map(material_duration))?;
+    if let Some(material) = plain_material(&timeline, &materials) {
+        return Ok((output_dir(state).await.join(&material.file), None));
+    }
+    if timeline.has_visible_subtitles() && subtitle_ass.is_none() {
+        return Err("切片有字幕，但没有提供字幕样式".to_string());
+    }
+    let source = ExportSource {
+        task_type: "export_project",
+        title: project.title.clone(),
+        metadata: json!({ "project_id": project.id, "title": project.title }),
+        subtitle_ass: subtitle_ass.filter(|_| timeline.has_visible_subtitles()),
+        timeline,
+        materials: &materials,
+    };
+    upload_render(state, event_id, source, directory).await
+}
+
+/// The video to upload for a material with its danmaku burned in, rendered as
+/// a project of the whole material and kept in `directory` like a project's.
+pub(crate) async fn material_danmu_video(
+    state: &State,
+    event_id: &str,
+    id: i64,
+    directory: &Path,
+) -> Result<(PathBuf, Option<oneshot::Receiver<Result<(), String>>>), String> {
+    let materials = materials_by_id(state, &[id]).await?;
+    let material = materials
+        .get(&id)
+        .ok_or_else(|| "素材已被删除".to_string())?;
+    let duration = material_duration(material);
+    if duration <= 0.0 {
+        return Err("无法读取素材时长".to_string());
+    }
+    let title = material_title(material);
+    let source = ExportSource {
+        task_type: "render_material_danmu",
+        metadata: json!({ "video_id": id, "title": title }),
+        title,
+        // A fixed clip id keeps the render hash, and so a retry's reuse, stable.
+        timeline: Timeline {
+            clips: vec![TimelineClip {
+                id: "material".to_string(),
+                material_id: id,
+                start: 0.0,
+                end: duration,
+            }],
+            danmu: true,
+            ..Timeline::default()
+        },
+        materials: &materials,
+        subtitle_ass: None,
+    };
+    upload_render(state, event_id, source, directory).await
+}
+
+/// Render `source` into `directory` for an upload. A retry after a failed
+/// upload reuses the render when nothing changed.
+async fn upload_render(
+    state: &State,
+    event_id: &str,
+    source: ExportSource<'_>,
+    directory: &Path,
+) -> Result<(PathBuf, Option<oneshot::Receiver<Result<(), String>>>), String> {
+    let hash = render_hash(state, &source.timeline, source.subtitle_ass.as_deref()).await;
+    let target = directory.join(format!("{UPLOAD_RENDER_PREFIX}{hash}.mp4"));
+    if target.is_file() {
+        return Ok((target, None));
+    }
+    remove_upload_renders(directory).await;
+    let (_, done) = queue_export(
+        state,
+        event_id,
+        source,
+        ExportTarget::Upload(target.clone()),
+    )
+    .await?;
+    Ok((target, Some(done)))
+}
+
+/// Turn burning danmaku into the project's exports and uploads on or off.
+pub(crate) async fn set_project_danmu(state: &State, id: i64, danmu: bool) -> Result<(), String> {
+    let mut project = state.db.get_project(id).await?;
+    let mut timeline = Timeline::parse(&project.timeline)?;
+    if timeline.danmu == danmu {
+        return Ok(());
+    }
+    timeline.danmu = danmu;
+    project.timeline = timeline.to_json();
+    project.updated_at = Local::now().to_rfc3339();
+    Ok(state.db.update_project(&project).await?)
+}
+
+/// A material's title, or its file name without the extension.
+pub(crate) fn material_title(material: &VideoRow) -> String {
+    if material.title.is_empty() {
+        Path::new(&material.file)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default()
+            .to_string()
+    } else {
+        material.title.clone()
     }
 }
 
-async fn upload_cover(
+const UPLOAD_RENDER_PREFIX: &str = "render_";
+
+/// Delete the videos rendered for an upload in `directory`.
+pub(crate) async fn remove_upload_renders(directory: &Path) {
+    let Ok(mut entries) = tokio::fs::read_dir(directory).await else {
+        return;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(UPLOAD_RENDER_PREFIX)
+        {
+            let _ = tokio::fs::remove_file(entry.path()).await;
+        }
+    }
+}
+
+/// The project's cover, or the first material's thumbnail.
+pub(crate) async fn project_cover_file(
     state: &State,
     project: &ProjectRow,
-    timeline: &Timeline,
 ) -> Result<PathBuf, String> {
     let output = output_dir(state).await;
     if !project.cover.is_empty() {
         return Ok(output.join(&project.cover));
     }
+    let timeline = Timeline::parse(&project.timeline)?;
     let first = timeline
         .clips
         .first()
@@ -658,84 +750,51 @@ async fn upload_cover(
     }
 }
 
-#[cfg_attr(feature = "gui", tauri::command)]
-pub async fn upload_project(
-    state: state_type!(),
-    event_id: String,
-    uid: String,
-    id: i64,
-    profile: Profile,
-) -> Result<String, String> {
-    let reporter = ProgressReporter::new(state.db.clone(), &state.events, &event_id).await?;
-    let mut project = state.db.get_project(id).await?;
-    state
-        .db
-        .add_task(&TaskRow {
-            id: event_id.clone(),
-            task_type: "upload_project".to_string(),
-            status: "pending".to_string(),
-            message: String::new(),
-            metadata: json!({
-                "uid": uid,
-                "project_id": id,
-                "profile": { "title": profile.title },
-            })
-            .to_string(),
-            created_at: Utc::now().to_rfc3339(),
-        })
-        .await?;
-    let result = async {
-        let timeline = Timeline::parse(&project.timeline)?;
-        let file = upload_source(&state, &project, &timeline).await?;
-        let cover = upload_cover(&state, &project, &timeline).await?;
-        upload_video_file(
-            &state,
-            &reporter,
-            &uid,
-            &project.room_id,
-            &file,
-            &cover,
-            profile,
-        )
-        .await
-    }
-    .await;
-    match result {
-        Ok(posted) => {
-            project.status = 1;
-            project.bvid = posted.bvid.clone();
-            project.profile = serde_json::to_string(&posted.profile).unwrap_or_default();
-            state.db.update_project(&project).await?;
-            state
-                .db
-                .update_task(&event_id, "success", "投稿成功", None)
-                .await?;
-            Ok(posted.bvid)
-        }
-        Err(e) => {
-            reporter.finish(false, &format!("投稿失败: {e}")).await;
-            state
-                .db
-                .update_task(&event_id, "failed", &format!("投稿失败: {e}"), None)
-                .await?;
-            Err(e)
+/// Where an export is written.
+enum ExportTarget {
+    /// A file the user asked for, who is told when it is done.
+    User(PathBuf),
+    /// A video rendered for an upload, which reports its own result.
+    Upload(PathBuf),
+}
+
+impl ExportTarget {
+    fn path(&self) -> &Path {
+        match self {
+            Self::User(path) | Self::Upload(path) => path,
         }
     }
+}
+
+/// A timeline to export over its materials, and how its task is listed.
+struct ExportSource<'a> {
+    task_type: &'static str,
+    /// Shown in the task list and messages.
+    title: String,
+    /// Task metadata naming what is exported.
+    metadata: serde_json::Value,
+    timeline: Timeline,
+    materials: &'a HashMap<i64, VideoRow>,
+    subtitle_ass: Option<String>,
 }
 
 /// Everything an export needs, fixed when it is queued so that later edits
 /// cannot change a waiting job.
 struct ExportJob {
-    project_id: i64,
+    title: String,
+    /// The material to copy instead of rendering.
+    plain: Option<PathBuf>,
     timeline: Timeline,
-    hash: String,
-    clips: Vec<(PathBuf, f64, f64)>,
+    /// Each material's file, by id.
+    files: HashMap<i64, PathBuf>,
     subtitle_ass: Option<String>,
     font_name: Option<String>,
-    output: PathBuf,
     cache: PathBuf,
+    target: ExportTarget,
 }
 
+/// Export the timeline to `target`, a file the user picked, or without one to
+/// the cache for the web client to download.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn export_project(
     state: state_type!(),
@@ -743,32 +802,82 @@ pub async fn export_project(
     id: i64,
     timeline: Timeline,
     subtitle_ass: Option<String>,
+    target: Option<String>,
 ) -> Result<ExportStarted, String> {
     let mut project = state.db.get_project(id).await?;
+    if timeline.clips.is_empty() {
+        return Err("时间轴上还没有片段".to_string());
+    }
     let materials = materials_by_id(&state, &timeline.material_ids()).await?;
     timeline.validate(|id| materials.get(&id).map(material_duration))?;
     project.timeline = timeline.to_json();
     project.updated_at = Local::now().to_rfc3339();
     state.db.update_project(&project).await?;
 
+    let (path, download) = match target {
+        Some(path) => (mp4_path(PathBuf::from(path)), None),
+        None => {
+            let relative = format!("{}/export.mp4", web_export_dir(id));
+            let cache = PathBuf::from(&state.config.read().await.cache);
+            (cache.join(&relative), Some(relative))
+        }
+    };
     let output = output_dir(&state).await;
-    let hash = export_hash(&state, &timeline).await;
-    match export_state(&project, &timeline, &hash, &materials, &output) {
-        "material" => {
-            return Ok(ExportStarted {
-                task: None,
-                message: "切片只包含一个完整素材，投稿时直接使用素材文件，无需导出".to_string(),
-            })
-        }
-        "ready" => {
-            return Ok(ExportStarted {
-                task: None,
-                message: "导出文件已是最新".to_string(),
-            })
-        }
-        _ => {}
+    if materials
+        .values()
+        .any(|material| output.join(&material.file) == path)
+    {
+        return Err("不能覆盖切片使用的素材文件".to_string());
     }
+    let source = ExportSource {
+        task_type: "export_project",
+        title: project.title.clone(),
+        metadata: json!({ "project_id": project.id, "title": project.title }),
+        timeline,
+        materials: &materials,
+        subtitle_ass,
+    };
+    let (task, _) =
+        queue_export(&state, &event_id, source, ExportTarget::User(path.clone())).await?;
+    Ok(ExportStarted {
+        task,
+        path: path.to_string_lossy().into_owned(),
+        download,
+    })
+}
 
+/// `path` with the `.mp4` extension the encoder writes.
+fn mp4_path(path: PathBuf) -> PathBuf {
+    if path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("mp4"))
+    {
+        path
+    } else {
+        let mut name = path.into_os_string();
+        name.push(".mp4");
+        PathBuf::from(name)
+    }
+}
+
+/// Copy the plain material or render the timeline to `target` on the task
+/// queue. The receiver yields the result, or closes if the export is cancelled.
+async fn queue_export(
+    state: &State,
+    event_id: &str,
+    source: ExportSource<'_>,
+    target: ExportTarget,
+) -> Result<(TaskRow, oneshot::Receiver<Result<(), String>>), String> {
+    let ExportSource {
+        task_type,
+        title,
+        metadata,
+        timeline,
+        materials,
+        subtitle_ass,
+    } = source;
+    let output = output_dir(state).await;
+    let plain = plain_material(&timeline, materials).map(|material| output.join(&material.file));
     let subtitle_ass = subtitle_ass.filter(|_| timeline.has_visible_subtitles());
     if let Some(ass) = &subtitle_ass {
         validate_ass_document(ass)?;
@@ -777,44 +886,35 @@ pub async fn export_project(
         .as_deref()
         .map(ass_primary_font_name)
         .transpose()?;
-    check_free_space(&state).await?;
+    check_free_space(state).await?;
 
     let job = ExportJob {
-        project_id: id,
-        clips: timeline
-            .clips
+        title,
+        plain,
+        files: materials
             .iter()
-            .map(|clip| {
-                (
-                    output.join(&materials[&clip.material_id].file),
-                    clip.start,
-                    clip.duration(),
-                )
-            })
+            .map(|(id, material)| (*id, output.join(&material.file)))
             .collect(),
         timeline,
-        hash,
         subtitle_ass,
         font_name,
-        output,
         cache: PathBuf::from(&state.config.read().await.cache),
+        target,
     };
     let task = TaskRow {
-        id: event_id.clone(),
-        task_type: "export_project".to_string(),
+        id: event_id.to_string(),
+        task_type: task_type.to_string(),
         status: "pending".to_string(),
         message: "等待导出".to_string(),
-        metadata: json!({ "project_id": id, "title": project.title }).to_string(),
+        metadata: metadata.to_string(),
         created_at: Utc::now().to_rfc3339(),
     };
     state.db.add_task(&task).await?;
-    let reporter = ProgressReporter::new(state.db.clone(), &state.events, &event_id).await?;
+    let reporter = ProgressReporter::new(state.db.clone(), &state.events, event_id).await?;
 
-    #[cfg(feature = "gui")]
-    let state_clone = (*state).clone();
-    #[cfg(feature = "headless")]
     let state_clone = state.clone();
-    let task_id = event_id.clone();
+    let task_id = event_id.to_string();
+    let (done_tx, done) = oneshot::channel();
     let enqueue_result = state
         .task_manager
         .add_task(Task::new(
@@ -832,6 +932,7 @@ pub async fn export_project(
                     .update_task(&task_id, status, &message, None)
                     .await?;
                 reporter.finish(result.is_ok(), &message).await;
+                let _ = done_tx.send(result.clone());
                 result
             },
         ))
@@ -840,7 +941,7 @@ pub async fn export_project(
         state
             .db
             .update_task(
-                &event_id,
+                event_id,
                 "failed",
                 &format!("加入导出队列失败: {error}"),
                 None,
@@ -848,10 +949,7 @@ pub async fn export_project(
             .await?;
         return Err(error);
     }
-    Ok(ExportStarted {
-        task: Some(task),
-        message: "已加入导出队列".to_string(),
-    })
+    Ok((task, done))
 }
 
 async fn export_project_inner(
@@ -859,13 +957,60 @@ async fn export_project_inner(
     reporter: &ProgressReporter,
     job: ExportJob,
 ) -> Result<(), String> {
-    let mut clips = Vec::with_capacity(job.clips.len());
-    for (path, start, duration) in &job.clips {
+    let target = job.target.path().to_path_buf();
+    if let Some(parent) = target.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    // Written beside the target and moved over it once complete, so a failed
+    // export never replaces an existing file with a broken one.
+    let stem = target.file_stem().unwrap_or_default().to_string_lossy();
+    let staging = target.with_file_name(format!("{stem}.part.mp4"));
+    match &job.plain {
+        Some(material) => {
+            reporter.update("复制素材文件").await;
+            let guard = TempArtifact::new(&staging);
+            tokio::fs::copy(material, &staging)
+                .await
+                .map_err(|e| format!("复制素材文件失败: {e}"))?;
+            guard.keep();
+        }
+        None => render_timeline(state, reporter, &job, &staging).await?,
+    }
+    if let Err(e) = tokio::fs::rename(&staging, &target).await {
+        let _ = tokio::fs::remove_file(&staging).await;
+        return Err(format!("保存导出文件失败: {e}"));
+    }
+    if let ExportTarget::User(path) = &job.target {
+        state
+            .db
+            .new_message(
+                "切片导出完成",
+                &format!("切片「{}」已导出到 {}", job.title, path.display()),
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+async fn render_timeline(
+    state: &State,
+    reporter: &ProgressReporter,
+    job: &ExportJob,
+    output: &Path,
+) -> Result<(), String> {
+    let mut clips = Vec::with_capacity(job.timeline.clips.len());
+    for clip in &job.timeline.clips {
+        let path = job
+            .files
+            .get(&clip.material_id)
+            .ok_or_else(|| format!("素材 {} 不存在", clip.material_id))?;
         let metadata = ffmpeg_utils::extract_video_metadata(path).await?;
         clips.push(RenderClip {
             path: path.clone(),
-            start: *start,
-            duration: *duration,
+            start: clip.start,
+            duration: clip.duration(),
             has_audio: !metadata.audio_codec.is_empty(),
             fps: metadata.fps,
         });
@@ -873,14 +1018,8 @@ async fn export_project_inner(
 
     let danmus = if job.timeline.danmu {
         let mut by_material = HashMap::new();
-        for clip in &job.timeline.clips {
-            if by_material.contains_key(&clip.material_id) {
-                continue;
-            }
-            if let Ok(material) = state.db.get_video(clip.material_id).await {
-                let danmus = crate::material::load_danmus(&job.output.join(&material.file)).await;
-                by_material.insert(clip.material_id, danmus);
-            }
+        for (id, path) in &job.files {
+            by_material.insert(*id, crate::material::load_danmus(path).await);
         }
         job.timeline
             .map_danmus(|id| by_material.get(&id).map(Vec::as_slice))
@@ -896,39 +1035,18 @@ async fn export_project_inner(
         None => None,
     };
 
-    let relative = format!("{}/export_{}.mp4", project_dir(job.project_id), job.hash);
-    let output_path = job.output.join(&relative);
-    if let Some(parent) = output_path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
     render_project(
         reporter,
         ProjectRender {
             clips,
-            subtitle_ass: job.subtitle_ass,
+            subtitle_ass: job.subtitle_ass.clone(),
             fonts_directory: fonts_directory.as_ref().map(|directory| directory.path()),
             danmus,
             danmu_options: state.config.read().await.danmu_ass_options.clone(),
-            output: &output_path,
+            output,
         },
     )
-    .await?;
-
-    // The project may have been edited while this export ran; the hash tells.
-    let mut project = state.db.get_project(job.project_id).await?;
-    let previous = std::mem::replace(&mut project.output, relative.clone());
-    project.output_hash = job.hash;
-    state.db.update_project(&project).await?;
-    if !previous.is_empty() && previous != relative {
-        let _ = tokio::fs::remove_file(job.output.join(previous)).await;
-    }
-    state
-        .db
-        .new_message("切片导出完成", &format!("切片「{}」已导出", project.title))
-        .await?;
-    Ok(())
+    .await
 }
 
 /// Give every video that existed before projects its own single-material
@@ -958,15 +1076,7 @@ pub async fn create_legacy_projects(db: Arc<Database>, output: PathBuf) {
         let mut timeline = Timeline::from_materials(&[(video.id, material_duration(&video))]);
         let materials = HashMap::from([(video.id, video.clone())]);
         import_material_subtitles(&output, &mut timeline, &materials, None).await;
-        let title = if video.title.is_empty() {
-            Path::new(&video.file)
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or_default()
-                .to_string()
-        } else {
-            video.title.clone()
-        };
+        let title = material_title(&video);
         let posted = !video.bvid.is_empty();
         let profile = if posted {
             json!({
@@ -988,16 +1098,38 @@ pub async fn create_legacy_projects(db: Arc<Database>, output: PathBuf) {
             cover: String::new(),
             timeline: timeline.to_json(),
             profile,
-            output: String::new(),
-            output_hash: String::new(),
             status: i64::from(posted),
             bvid: video.bvid.clone(),
             created_at: video.created_at.clone(),
             updated_at: video.created_at.clone(),
         };
-        if let Err(e) = db.add_project(&project).await {
-            log::error!("Failed to create project for video {}: {e}", video.id);
-            continue;
+        let project = match db.add_project(&project).await {
+            Ok(project) => project,
+            Err(e) => {
+                log::error!("Failed to create project for video {}: {e}", video.id);
+                continue;
+            }
+        };
+        if posted {
+            let upload = UploadRow {
+                id: 0,
+                source: "project".to_string(),
+                source_id: project.id,
+                file: String::new(),
+                room_id: project.room_id.clone(),
+                uid: String::new(),
+                cover: String::new(),
+                profile: project.profile.clone(),
+                danmu: false,
+                status: "posted".to_string(),
+                message: String::new(),
+                bvid: project.bvid.clone(),
+                created_at: project.created_at.clone(),
+                updated_at: project.created_at.clone(),
+            };
+            if let Err(e) = db.add_upload(&upload).await {
+                log::error!("Failed to record the upload of video {}: {e}", video.id);
+            }
         }
         if let Err(e) = db.clear_video_needs_project(video.id).await {
             log::error!("Failed to mark video {} as migrated: {e}", video.id);
@@ -1009,6 +1141,15 @@ pub async fn create_legacy_projects(db: Arc<Database>, output: PathBuf) {
 mod tests {
     use super::*;
     use crate::database::credentials::CredentialCipher;
+
+    #[test]
+    fn exports_keep_the_mp4_extension_the_encoder_writes() {
+        assert_eq!(mp4_path("a/b.mp4".into()), PathBuf::from("a/b.mp4"));
+        assert_eq!(mp4_path("a/b.MP4".into()), PathBuf::from("a/b.MP4"));
+        assert_eq!(mp4_path("a/b".into()), PathBuf::from("a/b.mp4"));
+        // A dot in the name is not an extension to replace.
+        assert_eq!(mp4_path("a/v1.2".into()), PathBuf::from("a/v1.2.mp4"));
+    }
 
     #[tokio::test]
     async fn existing_videos_get_one_project_each_with_their_upload_state_and_subtitles() {
@@ -1058,6 +1199,18 @@ mod tests {
         assert_eq!(
             (posted.bvid.as_str(), posted.note.as_str()),
             ("BV1xx", "note")
+        );
+        // Its submission is listed with the other uploads.
+        let uploads = db.get_uploads().await.unwrap();
+        assert_eq!(uploads.len(), 1);
+        assert_eq!(
+            (
+                uploads[0].source.as_str(),
+                uploads[0].source_id,
+                uploads[0].status.as_str(),
+                uploads[0].bvid.as_str()
+            ),
+            ("project", posted.id, "posted", "BV1xx")
         );
         let timeline = Timeline::parse(&posted.timeline).unwrap();
         assert_eq!(timeline.clips.len(), 1);

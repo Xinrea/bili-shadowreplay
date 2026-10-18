@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   List,
   Settings,
+  Upload,
   Users,
   Video,
 } from "lucide-svelte";
@@ -17,7 +18,8 @@ export const pages = [
   { label: "直播间", icon: Video, keywords: ["rooms", "live", "streamer"] },
   { label: "录播", icon: History, keywords: ["archives", "records", "replay"] },
   { label: "素材", icon: Film, keywords: ["materials", "videos", "footage"] },
-  { label: "切片", icon: Clapperboard, keywords: ["clips", "projects", "edit", "upload"] },
+  { label: "切片", icon: Clapperboard, keywords: ["clips", "projects", "edit"] },
+  { label: "投稿", icon: Upload, keywords: ["uploads", "post", "submit", "bilibili"] },
   { label: "任务", icon: List, keywords: ["tasks", "jobs"] },
   { label: "助手", icon: Brain, keywords: ["assistant", "ai", "agent", "chat"] },
   { label: "账号", icon: Users, keywords: ["accounts", "login", "cookie"] },

@@ -41,6 +41,7 @@ impl RoomTopic {
 pub enum DataChange {
     Videos,
     Projects,
+    Uploads,
     Tasks,
     Recorders,
     Records,
@@ -52,6 +53,7 @@ impl DataChange {
         match self {
             Self::Videos => "videos-changed",
             Self::Projects => "projects-changed",
+            Self::Uploads => "uploads-changed",
             Self::Tasks => "tasks-changed",
             Self::Recorders => "recorders-changed",
             Self::Records => "records-changed",
@@ -80,6 +82,12 @@ pub enum AppEvent {
         entry: DanmuEntry,
     },
     DataChanged(DataChange),
+    /// A preview window asks the main window to start an upload of a
+    /// `material` or `project`.
+    UploadRequested {
+        source: String,
+        id: i64,
+    },
 }
 
 pub struct ClientEvent {
@@ -117,6 +125,10 @@ impl AppEvent {
                 (topic.event_name(), payload)
             }
             Self::DataChanged(change) => (change.event_name().into(), Value::Null),
+            Self::UploadRequested { source, id } => (
+                "upload-requested".into(),
+                json!({ "source": source, "id": id }),
+            ),
         };
         ClientEvent { name, payload }
     }

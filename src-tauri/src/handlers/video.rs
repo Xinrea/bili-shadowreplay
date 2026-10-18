@@ -1,4 +1,5 @@
 use crate::database::task::TaskRow;
+use crate::database::upload::UploadRow;
 use crate::database::video::VideoRow;
 use crate::ffmpeg;
 use crate::handlers::subtitle_fonts::prepare_subtitle_font_directory;
@@ -706,6 +707,30 @@ async fn upload_procedure_inner(
     let cover_path = file.with_extension("jpg");
     let posted =
         upload_video_file(state, reporter, &uid, &room_id, &file, &cover_path, profile).await?;
+    // Posted already; a missing history entry must not report a failure.
+    let now = chrono::Local::now().to_rfc3339();
+    let history = state
+        .db
+        .add_upload(&UploadRow {
+            id: 0,
+            source: "material".to_string(),
+            source_id: video_id,
+            file: String::new(),
+            room_id,
+            uid,
+            cover: String::new(),
+            profile: serde_json::to_string(&posted.profile).unwrap_or_default(),
+            danmu: false,
+            status: "posted".to_string(),
+            message: String::new(),
+            bvid: posted.bvid.clone(),
+            created_at: now.clone(),
+            updated_at: now,
+        })
+        .await;
+    if let Err(e) = history {
+        log::warn!("Failed to record the upload of video {video_id}: {e}");
+    }
     // update video status and details
     // 1 means uploaded
     video_row.status = 1;
@@ -755,13 +780,12 @@ pub(crate) async fn upload_video_file(
             if let Ok(ret) =
                 bilibili::api::submit_video(&client, &account.to_account(), &profile, &video).await
             {
-                state
-                    .db
-                    .new_message(
-                        "投稿成功",
-                        &format!("投稿了房间 {} 的切片：{}", room_id, ret.bvid),
-                    )
-                    .await?;
+                let summary = if room_id.is_empty() {
+                    format!("投稿了视频：{}", ret.bvid)
+                } else {
+                    format!("投稿了房间 {} 的切片：{}", room_id, ret.bvid)
+                };
+                state.db.new_message("投稿成功", &summary).await?;
                 if state.config.read().await.post_notify {
                     #[cfg(feature = "gui")]
                     state
@@ -769,7 +793,7 @@ pub(crate) async fn upload_video_file(
                         .notification()
                         .builder()
                         .title("BiliShadowReplay - 投稿成功")
-                        .body(format!("投稿了房间 {} 的切片: {}", room_id, ret.bvid))
+                        .body(&summary)
                         .show()
                         .unwrap_or_else(|e| log::warn!("Failed to show post notification: {e}"));
                 }

@@ -74,15 +74,17 @@ test("tasks are described from their metadata", async () => {
   assert.equal(describeTask({ metadata: "not json" }), "");
   assert.equal(taskTypeName("clip_range"), "素材生成");
   assert.equal(taskTypeName("export_project"), "切片导出");
+  assert.equal(taskTypeName("upload"), "投稿");
+  assert.equal(taskTypeName("render_material_danmu"), "素材压制弹幕");
   assert.equal(taskTypeName("unknown_kind"), "unknown_kind");
 });
 
 test("only queued task types offer cancellation", async () => {
   const { isCancellableTask } = await loadModule();
-  for (const type of ["clip_range", "generate_materials", "export_project", "clip_video", "encode_video_subtitle", "generate_whole_clip", "generate_archive_summary"]) {
+  for (const type of ["clip_range", "generate_materials", "export_project", "render_material_danmu", "clip_video", "encode_video_subtitle", "generate_whole_clip", "generate_archive_summary"]) {
     assert.equal(isCancellableTask(type), true, type);
   }
-  for (const type of ["generate_video_subtitle", "upload_procedure", "upload_project"]) {
+  for (const type of ["generate_video_subtitle", "upload", "upload_procedure", "upload_project"]) {
     assert.equal(isCancellableTask(type), false, type);
   }
 });

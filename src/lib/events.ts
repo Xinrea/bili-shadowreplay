@@ -19,13 +19,15 @@ function roomEventName({ platform, room }: RoomTopic) {
 }
 export type AppEvent<T> = { payload: T };
 export type StateChangeEvent =
-  | "videos-changed" | "projects-changed" | "tasks-changed" | "recorders-changed" | "records-changed"
+  | "videos-changed" | "projects-changed" | "uploads-changed" | "tasks-changed" | "recorders-changed"
+  | "records-changed"
   | "state-resync";
 export type EventPayload<E extends string> =
   E extends `progress-update:${string}` ? ProgressUpdate :
   E extends `progress-finished:${string}` ? { id: string; success: boolean; message: string } :
   E extends "danmu" ? DanmuEntry & RoomTopic :
-  E extends StateChangeEvent ? null : unknown;
+  E extends StateChangeEvent ? null :
+  E extends "upload-requested" ? { source: "material" | "project"; id: number } : unknown;
 
 /** All event types share one transport, dispatch path and subscription lifecycle. */
 export function createEventClient({ tauri, endpoint }: { tauri: boolean; endpoint: string }) {

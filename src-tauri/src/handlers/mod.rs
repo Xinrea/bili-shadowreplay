@@ -10,6 +10,7 @@ pub mod recorder;
 pub mod subtitle_fonts;
 pub mod summary;
 pub mod task;
+pub mod upload;
 pub mod utils;
 pub mod video;
 pub mod video_editing;

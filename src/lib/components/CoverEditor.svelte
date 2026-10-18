@@ -5,13 +5,15 @@
 
   interface Props {
     video?: any;
+    /** Background to use when there is no video to pick frames from. */
+    image?: string;
     show?: boolean;
     onCoverUpdate?: (cover: { cover: string }) => void;
     /** Store the cover somewhere other than the video, such as a project. */
     onSave?: (cover: string) => Promise<void>;
   }
 
-  let { video = null, show = $bindable(false), onCoverUpdate, onSave }: Props = $props();
+  let { video = null, image = "", show = $bindable(false), onCoverUpdate, onSave }: Props = $props();
 
   // 文本列表
   let texts = $state([
@@ -80,7 +82,8 @@
   }
 
   function loadBackgroundImage() {
-    if (!videoFrame) {
+    const source = videoFrame || image;
+    if (!source) {
       return;
     }
     backgroundImage = new Image();
@@ -91,7 +94,7 @@
     backgroundImage.onerror = (e) => {
       log.error("Failed to load image:", e);
     };
-    backgroundImage.src = videoFrame;
+    backgroundImage.src = source;
   }
 
   function resizeCanvas() {
@@ -393,6 +396,13 @@
 <svelte:window
   onmousemove={handleMouseMove}
   onmouseup={handleMouseUp}
+  onkeydown={(event) => {
+    if (show && event.key === "Escape") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      handleClose();
+    }
+  }}
   onblur={() => (isDragging = false)}
   onvisibilitychange={() => {
     if (document.hidden) {
@@ -401,63 +411,55 @@
   }}
 />
 
-<!-- Modal Backdrop -->
+<!-- Kept mounted while hidden so the canvas and video stay ready. -->
 <div
-  class="fixed inset-0 bg-black/30 backdrop-blur-sm z-[1000] transition-opacity duration-200"
+  class="ui-modal-backdrop z-[1100] transition-opacity duration-200"
   class:opacity-0={!show}
-  class:opacity-100={show}
   class:pointer-events-none={!show}
+  inert={!show}
+  data-hotkey-block
 >
-  <!-- Modal Content -->
   <div
-    class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] bg-[#1c1c1e] rounded-2xl shadow-2xl overflow-hidden transition-all duration-200"
-    class:opacity-0={!show}
-    class:opacity-100={show}
+    class="ui-modal max-h-[92vh] w-[800px] max-w-full transition-transform duration-200"
     class:scale-95={!show}
-    class:scale-100={show}
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="cover-editor-title"
   >
-    <!-- Header -->
-    <div
-      class="flex items-center justify-between px-6 py-4 border-b border-gray-800/50 bg-[#2c2c2e]"
-    >
-      <h3 class="text-base font-medium text-white">编辑封面</h3>
+    <div class="ui-modal-header">
+      <h3 id="cover-editor-title">编辑封面</h3>
       <button
-        class="w-[22px] h-[22px] rounded-full bg-[#ff5f57] hover:bg-[#ff5f57]/90 transition-colors duration-200 flex items-center justify-center group"
+        type="button"
+        class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost -mr-1.5"
+        aria-label="关闭"
         onclick={handleClose}
       >
-        <X
-          class="w-3 h-3 text-[#1c1c1e] opacity-0 group-hover:opacity-100 transition-opacity duration-200"
-        />
+        <X class="h-4 w-4" />
       </button>
     </div>
 
-    <!-- Body -->
-    <div class="p-5 space-y-4">
+    <div class="ui-modal-body custom-scrollbar-light space-y-4">
+      <!-- Hidden Video Element -->
+      <!-- svelte-ignore a11y_media_has_caption -->
+      <video
+        bind:this={videoElement}
+        src={video?.file}
+        class="hidden"
+        crossorigin="anonymous"
+        onloadedmetadata={handleVideoLoaded}
+        ontimeupdate={handleTimeUpdate}
+        onseeked={handleVideoSeeked}
+      ></video>
+
       <!-- Video Frame Selection -->
-      <div class="space-y-2">
-        <div class="text-sm text-gray-400 flex items-center justify-between">
-          <span class="font-medium">选择视频帧</span>
-          <div class="flex items-center space-x-2 text-xs">
-            <span>{formatTime(currentTime)}</span>
-            <span class="opacity-50">/</span>
-            <span>{formatTime(duration)}</span>
+      {#if video?.file}
+        <div class="space-y-2.5">
+          <div class="flex items-center justify-between">
+            <span class="ui-label">选择视频帧</span>
+            <span class="text-[11px] tabular-nums text-fg-muted">
+              {formatTime(currentTime)} / {formatTime(duration)}
+            </span>
           </div>
-        </div>
-
-        <!-- Hidden Video Element -->
-        <!-- svelte-ignore a11y_media_has_caption -->
-        <video
-          bind:this={videoElement}
-          src={video?.file}
-          class="hidden"
-          crossorigin="anonymous"
-          onloadedmetadata={handleVideoLoaded}
-          ontimeupdate={handleTimeUpdate}
-          onseeked={handleVideoSeeked}
-></video>
-
-        <!-- Video Controls -->
-        <div class="flex items-center space-x-2">
           <input
             type="range"
             min="0"
@@ -465,214 +467,191 @@
             step="0.1"
             bind:value={currentTime}
             oninput={handleSeek}
-            class="flex-1"
+            class="w-full"
+            aria-label="视频帧位置"
             disabled={!isVideoLoaded}
           />
         </div>
-      </div>
+      {/if}
 
       <!-- Cover Preview -->
       <div class="space-y-2">
-        <div class="text-sm text-gray-400 flex items-center justify-between">
-          <div class="flex items-center space-x-2">
-            <span class="font-medium">视频封面</span>
-            <span class="text-xs opacity-60">(拖拽文字调整位置)</span>
-          </div>
+        <div class="flex items-baseline gap-2">
+          <span class="ui-label">封面预览</span>
+          <span class="ui-hint">拖拽文字调整位置</span>
         </div>
         <div
           id="cover-container"
-          class="relative rounded-xl overflow-hidden bg-black/20 border border-gray-800/50 aspect-video"
+          class="relative aspect-video overflow-hidden rounded-[10px] border border-line bg-sunken"
         >
           <canvas
             bind:this={canvas}
             onmousedown={handleMouseDown}
-            class="w-full h-full"
-></canvas>
+            class="h-full w-full"
+          ></canvas>
         </div>
       </div>
 
       <!-- Text Controls -->
-      <div class="space-y-3">
-        <div class="flex items-start space-x-4">
-          <!-- Text List and Input -->
-          <div class="flex-1 space-y-3">
-            <!-- Text List -->
-            <div class="flex items-center justify-between">
-              <!-- svelte-ignore a11y_label_has_associated_control -->
-              <label
-                class="flex items-center space-x-2 text-sm font-medium text-gray-300"
+      <div class="flex items-start gap-4">
+        <div class="min-w-0 flex-1 space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="ui-label flex items-center gap-1.5">
+              <Type class="h-3.5 w-3.5 text-fg-muted" />
+              文字列表
+            </span>
+            <button type="button" class="ui-btn ui-btn-sm" onclick={addNewText}>
+              <Plus class="h-3.5 w-3.5" />
+              添加文字
+            </button>
+          </div>
+          <div class="space-y-1.5">
+            {#each texts as text, index (text.id)}
+              <!-- svelte-ignore a11y_click_events_have_key_events -->
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div
+                class="flex items-start gap-2 rounded-[10px] border p-1.5 transition-colors {selectedTextId === text.id
+                  ? 'border-accent/70 bg-accent-soft/40'
+                  : 'border-line bg-control/50 hover:border-line-strong'}"
+                onclick={() => (selectedTextId = text.id)}
               >
-                <Type class="w-4 h-4" />
-                <span>文字列表</span>
-              </label>
-              <button
-                onclick={addNewText}
-                class="p-1.5 rounded-lg bg-[#2c2c2e] hover:bg-[#3c3c3e] transition-colors duration-200 text-white"
-              >
-                <Plus class="w-4 h-4" />
-              </button>
-            </div>
-            <div class="space-y-1.5">
-              {#each texts as text (text.id)}
-                <!-- svelte-ignore a11y_click_events_have_key_events -->
-                <div
-                  class="flex items-center space-x-2 p-2 rounded-lg transition-colors duration-200 cursor-pointer"
-                  role="button"
-                  tabindex="0"
-                  class:bg-[#2c2c2e]={selectedTextId === text.id}
-                  onclick={() => (selectedTextId = text.id)}
+                <span
+                  class="mt-2 w-4 shrink-0 text-right font-mono text-[10px] {selectedTextId === text.id
+                    ? 'text-accent-fg'
+                    : 'text-fg-faint'}">{index + 1}</span
                 >
-                  <textarea
-                    value={text.content}
-                    oninput={(e) => handleTextInput(text, e)}
-                    placeholder="输入文字内容"
-                    class="flex-1 bg-transparent text-white text-sm outline-none resize-none placeholder:text-gray-500"
-></textarea>
-                  {#if texts.length > 1}
-                    <button
-                      onclick={() => deleteText(text.id)}
-                      class="p-1 rounded hover:bg-[#3c3c3e] transition-colors duration-200 text-red-500"
-                    >
-                      <Trash2 class="w-4 h-4" />
-                    </button>
-                  {/if}
-                </div>
-              {/each}
+                <textarea
+                  value={text.content}
+                  oninput={(e) => handleTextInput(text, e)}
+                  onfocus={() => (selectedTextId = text.id)}
+                  placeholder="输入文字内容"
+                  rows="2"
+                  class="ui-input min-w-0 flex-1 resize-none"
+                ></textarea>
+                {#if texts.length > 1}
+                  <button
+                    type="button"
+                    class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost hover:text-danger-fg"
+                    aria-label="删除文字"
+                    title="删除文字"
+                    onclick={(event) => {
+                      event.stopPropagation();
+                      deleteText(text.id);
+                    }}
+                  >
+                    <Trash2 class="h-3.5 w-3.5" />
+                  </button>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        </div>
+
+        <!-- Text Style Controls -->
+        {#if selectedText}
+          <div class="w-56 shrink-0 space-y-2">
+            <span class="ui-label flex h-[26px] items-center gap-1.5">
+              <Palette class="h-3.5 w-3.5 text-fg-muted" />
+              文字样式
+            </span>
+            <div class="ui-card space-y-3 bg-control/50 p-3">
+              <label class="block space-y-2">
+                <span class="flex items-center justify-between text-[11px] text-fg-muted">
+                  字体大小
+                  <span class="tabular-nums text-fg-secondary">{selectedText.fontSize}</span>
+                </span>
+                <input
+                  type="range"
+                  bind:value={selectedText.fontSize}
+                  min="48"
+                  max="160"
+                  class="w-full"
+                />
+              </label>
+              <label class="color-field flex items-center justify-between gap-3">
+                <span class="text-[11px] text-fg-muted">文字颜色</span>
+                <span class="ui-input flex h-[28px] w-[112px] items-center gap-2 px-2">
+                  <input type="color" bind:value={selectedText.color} />
+                  <span class="font-mono text-[11px] text-fg-secondary">{selectedText.color.toUpperCase()}</span>
+                </span>
+              </label>
+              <label class="color-field flex items-center justify-between gap-3">
+                <span class="text-[11px] text-fg-muted">描边颜色</span>
+                <span class="ui-input flex h-[28px] w-[112px] items-center gap-2 px-2">
+                  <input type="color" bind:value={selectedText.strokeColor} />
+                  <span class="font-mono text-[11px] text-fg-secondary">{selectedText.strokeColor.toUpperCase()}</span>
+                </span>
+              </label>
             </div>
           </div>
-
-          <!-- Text Style Controls -->
-          {#if selectedText}
-            <div class="w-48 space-y-2">
-              <!-- svelte-ignore a11y_label_has_associated_control -->
-              <label
-                class="flex items-center space-x-2 text-sm font-medium text-gray-300"
-              >
-                <Palette class="w-4 h-4" />
-                <span>文字样式</span>
-              </label>
-              <div
-                class="space-y-3 p-2.5 rounded-lg bg-[#2c2c2e] border border-gray-800/50"
-              >
-                <!-- Font Size -->
-                <div class="space-y-1">
-                  <label
-                    for="fontSize"
-                    class="text-xs text-gray-400 font-medium">字体大小</label
-                  >
-                  <input
-                    id="fontSize"
-                    type="range"
-                    bind:value={selectedText.fontSize}
-                    min="48"
-                    max="160"
-                    class="w-full"
-                  />
-                </div>
-                <!-- Colors -->
-                <div class="grid grid-cols-2 gap-2">
-                  <!-- Text Color -->
-                  <div class="space-y-1">
-                    <label
-                      for="textColor"
-                      class="text-xs text-gray-400 font-medium">文字颜色</label
-                    >
-                    <input
-                      id="textColor"
-                      type="color"
-                      bind:value={selectedText.color}
-                      class="w-full h-7 rounded-lg cursor-pointer"
-                    />
-                  </div>
-                  <!-- Stroke Color -->
-                  <div class="space-y-1">
-                    <label
-                      for="strokeColor"
-                      class="text-xs text-gray-400 font-medium">描边颜色</label
-                    >
-                    <input
-                      id="strokeColor"
-                      type="color"
-                      bind:value={selectedText.strokeColor}
-                      class="w-full h-7 rounded-lg cursor-pointer"
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-          {/if}
-        </div>
+        {/if}
       </div>
     </div>
 
-    <!-- Footer -->
-    <div
-      class="px-5 py-3 border-t border-gray-800/50 flex justify-end space-x-3"
-    >
-      <button
-        class="px-4 py-1.5 text-gray-400 hover:text-white transition-colors duration-200 text-sm font-medium"
-        onclick={handleClose}
-      >
-        取消
-      </button>
-      <button
-        class="px-4 py-1.5 bg-[#0A84FF] text-white rounded-lg hover:bg-[#0A84FF]/90 transition-colors duration-200 text-sm font-medium"
-        onclick={handleSave}
-      >
-        确定
-      </button>
+    <div class="ui-modal-footer">
+      <button type="button" class="ui-btn" onclick={handleClose}>取消</button>
+      <button type="button" class="ui-btn ui-btn-primary" onclick={handleSave}>保存封面</button>
     </div>
   </div>
 </div>
 
 <style>
+  /* Matches the project editor's sliders. */
   input[type="range"] {
     -webkit-appearance: none;
     appearance: none;
-    background: transparent;
-    height: 24px;
-    margin: -8px 0;
-  }
-
-  input[type="range"]::-webkit-slider-runnable-track {
-    width: 100%;
     height: 4px;
-    background: #4a4a4a;
     border-radius: 2px;
+    background: rgb(var(--c-fg-faint) / 50%);
     cursor: pointer;
   }
 
   input[type="range"]::-webkit-slider-thumb {
     -webkit-appearance: none;
-    height: 16px;
-    width: 16px;
+    appearance: none;
+    width: 12px;
+    height: 12px;
     border-radius: 50%;
-    background: #0a84ff;
-    margin-top: -6px;
-    cursor: pointer;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-    transition: transform 0.2s ease;
+    background: white;
+    box-shadow: 0 1px 3px rgb(0 0 0 / 35%);
   }
 
-  input[type="range"]:hover::-webkit-slider-thumb {
-    transform: scale(1.1);
-  }
-
-  input[type="range"]:active::-webkit-slider-thumb {
-    transform: scale(0.95);
-    background: #0A84FF/90;
+  input[type="range"]::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border: none;
+    border-radius: 50%;
+    background: white;
   }
 
   input[type="range"]:focus {
     outline: none;
   }
 
+  input[type="range"]:focus-visible {
+    outline: 2px solid rgb(var(--c-accent));
+    outline-offset: 4px;
+  }
+
+  input[type="range"]:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  .color-field:focus-within .ui-input {
+    border-color: rgb(var(--c-accent));
+  }
+
   input[type="color"] {
     -webkit-appearance: none;
     appearance: none;
+    width: 20px;
+    height: 16px;
+    flex-shrink: 0;
     border: none;
     padding: 0;
     background: transparent;
+    cursor: pointer;
   }
 
   input[type="color"]::-webkit-color-swatch-wrapper {
@@ -680,16 +659,12 @@
   }
 
   input[type="color"]::-webkit-color-swatch {
-    border: none;
-    border-radius: 6px;
+    border: 1px solid rgb(var(--c-line-strong));
+    border-radius: 4px;
   }
 
-  textarea {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-      Helvetica, Arial, sans-serif;
-  }
-
-  textarea::placeholder {
-    color: rgba(255, 255, 255, 0.3);
+  input[type="color"]::-moz-color-swatch {
+    border: 1px solid rgb(var(--c-line-strong));
+    border-radius: 4px;
   }
 </style>

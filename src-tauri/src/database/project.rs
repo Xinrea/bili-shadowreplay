@@ -111,32 +111,19 @@ impl Database {
     // read would undo a concurrent change to another column, such as the
     // editor saving the timeline while the title is saved.
 
+    /// Save the title, the note or both; `None` keeps a column as it is.
     pub async fn update_project_info(
         &self,
         id: i64,
-        title: &str,
-        note: &str,
+        title: Option<&str>,
+        note: Option<&str>,
         updated_at: &str,
     ) -> Result<(), DatabaseError> {
-        sqlx::query("UPDATE projects SET title = $1, note = $2, updated_at = $3 WHERE id = $4")
+        sqlx::query(
+            "UPDATE projects SET title = COALESCE($1, title), note = COALESCE($2, note), updated_at = $3 WHERE id = $4",
+        )
             .bind(title)
             .bind(note)
-            .bind(updated_at)
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-        self.notify_change(DataChange::Projects);
-        Ok(())
-    }
-
-    pub async fn set_project_timeline(
-        &self,
-        id: i64,
-        timeline: &str,
-        updated_at: &str,
-    ) -> Result<(), DatabaseError> {
-        sqlx::query("UPDATE projects SET timeline = $1, updated_at = $2 WHERE id = $3")
-            .bind(timeline)
             .bind(updated_at)
             .bind(id)
             .execute(&self.pool)
@@ -245,19 +232,27 @@ mod tests {
         let db = database().await;
         let id = db.add_project(&project()).await.unwrap().id;
 
-        // Both saves start from the same stale row, as two windows would.
-        db.set_project_timeline(id, "new timeline", "t1")
+        // The editor saves the timeline and title while the list saves a note.
+        assert!(db
+            .replace_project_timeline(id, "old timeline", "new timeline", "t1")
+            .await
+            .unwrap());
+        db.update_project_info(id, Some("new title"), None, "t2")
             .await
             .unwrap();
-        db.update_project_info(id, "new title", "note", "t2")
+        db.update_project_info(id, None, Some("note"), "t3")
             .await
             .unwrap();
         db.mark_project_posted(id, "BV1xx").await.unwrap();
 
         let saved = db.get_project(id).await.unwrap();
         assert_eq!(
-            (saved.title.as_str(), saved.timeline.as_str()),
-            ("new title", "new timeline")
+            (
+                saved.title.as_str(),
+                saved.note.as_str(),
+                saved.timeline.as_str()
+            ),
+            ("new title", "note", "new timeline")
         );
         assert_eq!((saved.status, saved.bvid.as_str()), (1, "BV1xx"));
     }
@@ -266,9 +261,10 @@ mod tests {
     async fn a_timeline_edit_from_a_stale_read_is_refused() {
         let db = database().await;
         let id = db.add_project(&project()).await.unwrap().id;
-        db.set_project_timeline(id, "saved by the editor", "t1")
+        assert!(db
+            .replace_project_timeline(id, "old timeline", "saved by the editor", "t1")
             .await
-            .unwrap();
+            .unwrap());
 
         assert!(!db
             .replace_project_timeline(id, "old timeline", "edited", "t2")

@@ -1014,6 +1014,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::project::create_project,
         crate::handlers::project::update_project_info,
         crate::handlers::project::update_project_timeline,
+        crate::handlers::project::update_project_danmu,
         crate::handlers::project::delete_project,
         crate::handlers::project::export_project,
         crate::handlers::project::get_material_usage,

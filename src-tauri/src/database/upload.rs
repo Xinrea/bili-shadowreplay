@@ -43,6 +43,11 @@ impl UploadRow {
     }
 }
 
+/// Uploads that can still be edited and posted.
+const EDITABLE: &str = "status IN ('draft', 'failed')";
+/// Uploads being exported or posted.
+const ACTIVE: &str = "status IN ('exporting', 'posting')";
+
 pub(super) fn insert_upload(upload: &UploadRow) -> Query<'_, Sqlite, SqliteArguments<'_>> {
     sqlx::query(
         "INSERT INTO uploads (source, source_id, file, room_id, uid, cover, profile, danmu, status, message, bvid, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
@@ -89,52 +94,159 @@ impl Database {
         })
     }
 
-    /// Save every column except `id`, the source and `created_at`.
-    pub async fn update_upload(&self, upload: &UploadRow) -> Result<(), DatabaseError> {
-        sqlx::query(
-            "UPDATE uploads SET room_id = $1, uid = $2, cover = $3, profile = $4, danmu = $5, status = $6, message = $7, bvid = $8, updated_at = $9 WHERE id = $10",
+    // Each update writes only its own columns. Edits of a draft only apply
+    // while it is still a draft or failed, and its status only moves through
+    // the posting job, so a save in flight cannot undo a claim to post it.
+
+    /// Run `query`, which updates one upload, and tell whether it applied.
+    async fn apply_upload_update<'q>(
+        &self,
+        query: Query<'q, Sqlite, SqliteArguments<'q>>,
+    ) -> Result<bool, DatabaseError> {
+        let applied = query.execute(&self.pool).await?.rows_affected() == 1;
+        if applied {
+            self.notify_change(DataChange::Uploads);
+        }
+        Ok(applied)
+    }
+
+    /// Save a draft's account and form. False when it is no longer editable.
+    pub async fn update_upload_form(
+        &self,
+        id: i64,
+        uid: &str,
+        profile: &str,
+        updated_at: &str,
+    ) -> Result<bool, DatabaseError> {
+        self.apply_upload_update(
+            sqlx::query(&format!(
+                "UPDATE uploads SET uid = $1, profile = $2, updated_at = $3 WHERE id = $4 AND {EDITABLE}"
+            ))
+            .bind(uid)
+            .bind(profile)
+            .bind(updated_at)
+            .bind(id),
         )
-        .bind(&upload.room_id)
-        .bind(&upload.uid)
-        .bind(&upload.cover)
-        .bind(&upload.profile)
-        .bind(upload.danmu)
-        .bind(&upload.status)
-        .bind(&upload.message)
-        .bind(&upload.bvid)
-        .bind(&upload.updated_at)
-        .bind(upload.id)
-        .execute(&self.pool)
+        .await
+    }
+
+    /// False when the upload is no longer editable.
+    pub async fn set_upload_cover(
+        &self,
+        id: i64,
+        cover: &str,
+        updated_at: &str,
+    ) -> Result<bool, DatabaseError> {
+        self.apply_upload_update(
+            sqlx::query(&format!(
+                "UPDATE uploads SET cover = $1, updated_at = $2 WHERE id = $3 AND {EDITABLE}"
+            ))
+            .bind(cover)
+            .bind(updated_at)
+            .bind(id),
+        )
+        .await
+    }
+
+    /// False when the upload is no longer editable.
+    pub async fn set_upload_danmu(
+        &self,
+        id: i64,
+        danmu: bool,
+        updated_at: &str,
+    ) -> Result<bool, DatabaseError> {
+        self.apply_upload_update(
+            sqlx::query(&format!(
+                "UPDATE uploads SET danmu = $1, updated_at = $2 WHERE id = $3 AND {EDITABLE}"
+            ))
+            .bind(danmu)
+            .bind(updated_at)
+            .bind(id),
+        )
+        .await
+    }
+
+    /// Move a running upload between `exporting` and `posting`.
+    pub async fn set_upload_progress(
+        &self,
+        id: i64,
+        status: &str,
+        updated_at: &str,
+    ) -> Result<(), DatabaseError> {
+        self.apply_upload_update(
+            sqlx::query(&format!(
+                "UPDATE uploads SET status = $1, updated_at = $2 WHERE id = $3 AND {ACTIVE}"
+            ))
+            .bind(status)
+            .bind(updated_at)
+            .bind(id),
+        )
         .await?;
-        self.notify_change(DataChange::Uploads);
+        Ok(())
+    }
+
+    /// Record a running upload's submission with the form Bilibili accepted.
+    pub async fn mark_upload_posted(
+        &self,
+        id: i64,
+        bvid: &str,
+        profile: &str,
+        updated_at: &str,
+    ) -> Result<(), DatabaseError> {
+        self.apply_upload_update(
+            sqlx::query(&format!(
+                "UPDATE uploads SET status = 'posted', message = '', bvid = $1, profile = $2, updated_at = $3 WHERE id = $4 AND {ACTIVE}"
+            ))
+            .bind(bvid)
+            .bind(profile)
+            .bind(updated_at)
+            .bind(id),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Leave a running upload failed with `message`, ready to be retried.
+    pub async fn mark_upload_failed(
+        &self,
+        id: i64,
+        message: &str,
+        updated_at: &str,
+    ) -> Result<(), DatabaseError> {
+        self.apply_upload_update(
+            sqlx::query(&format!(
+                "UPDATE uploads SET status = 'failed', message = $1, updated_at = $2 WHERE id = $3 AND {ACTIVE}"
+            ))
+            .bind(message)
+            .bind(updated_at)
+            .bind(id),
+        )
+        .await?;
         Ok(())
     }
 
     /// Mark a draft or failed upload as posting, unless another request did so
     /// first. True when this call claimed it.
     pub async fn claim_upload(&self, id: i64, updated_at: &str) -> Result<bool, DatabaseError> {
-        let claimed = sqlx::query(
-            "UPDATE uploads SET status = 'posting', message = '', updated_at = $1 WHERE id = $2 AND status IN ('draft', 'failed')",
+        self.apply_upload_update(
+            sqlx::query(&format!(
+                "UPDATE uploads SET status = 'posting', message = '', updated_at = $1 WHERE id = $2 AND {EDITABLE}"
+            ))
+            .bind(updated_at)
+            .bind(id),
         )
-        .bind(updated_at)
-        .bind(id)
-        .execute(&self.pool)
-        .await?
-        .rows_affected()
-            == 1;
-        if claimed {
-            self.notify_change(DataChange::Uploads);
-        }
-        Ok(claimed)
+        .await
     }
 
-    pub async fn delete_upload(&self, id: i64) -> Result<(), DatabaseError> {
-        sqlx::query("DELETE FROM uploads WHERE id = $1")
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-        self.notify_change(DataChange::Uploads);
-        Ok(())
+    /// False while the upload is running, when it is kept.
+    pub async fn delete_upload(&self, id: i64) -> Result<bool, DatabaseError> {
+        self.apply_upload_update(
+            sqlx::query(&format!(
+                "DELETE FROM uploads WHERE id = $1 AND NOT {ACTIVE}"
+            ))
+            .bind(id),
+        )
+        .await
     }
 
     /// Uploads cannot survive a restart; leave them failed so they can be retried.
@@ -248,6 +360,46 @@ mod tests {
             (claimed.status.as_str(), claimed.updated_at.as_str()),
             ("posting", "later")
         );
+    }
+
+    #[tokio::test]
+    async fn saves_keep_each_others_columns_and_cannot_undo_a_claim() {
+        let (db, after) = database_before_uploads().await;
+        for sql in after {
+            sqlx::raw_sql(sql).execute(&db.pool).await.unwrap();
+        }
+        let id = db.add_upload(&draft("draft")).await.unwrap().id;
+
+        // A debounced form save landing after the danmaku switch keeps it.
+        assert!(db.set_upload_danmu(id, true, "t1").await.unwrap());
+        assert!(db
+            .update_upload_form(id, "2", "{\"title\":\"t\"}", "t2")
+            .await
+            .unwrap());
+        let saved = db.get_upload(id).await.unwrap();
+        assert_eq!((saved.danmu, saved.uid.as_str()), (true, "2"));
+
+        // Once claimed, late saves and deletion are refused and it stays posting.
+        assert!(db.claim_upload(id, "t3").await.unwrap());
+        assert!(!db.update_upload_form(id, "3", "{}", "t4").await.unwrap());
+        assert!(!db.set_upload_danmu(id, false, "t4").await.unwrap());
+        assert!(!db.set_upload_cover(id, "c.jpg", "t4").await.unwrap());
+        assert!(!db.delete_upload(id).await.unwrap());
+        let running = db.get_upload(id).await.unwrap();
+        assert_eq!(
+            (running.status.as_str(), running.uid.as_str(), running.danmu),
+            ("posting", "2", true)
+        );
+
+        db.mark_upload_posted(id, "BV1xx", "{}", "t5")
+            .await
+            .unwrap();
+        let posted = db.get_upload(id).await.unwrap();
+        assert_eq!(
+            (posted.status.as_str(), posted.bvid.as_str()),
+            ("posted", "BV1xx")
+        );
+        assert!(db.delete_upload(id).await.unwrap());
     }
 
     #[tokio::test]

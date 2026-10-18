@@ -42,6 +42,7 @@
   let profile = $state(initial().profile);
   let uid = $state(initial().uid);
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  let saving: Promise<void> | null = null;
   let saveError = $state("");
   let posting = $state(false);
   let showCoverEditor = $state(false);
@@ -96,11 +97,18 @@
     }
   });
 
+  /** Save the form, after any save already in flight so the newest lands last. */
   async function save() {
     saveTimer = null;
+    while (saving) await saving;
     const snapshot = $state.snapshot(profile);
+    const request = invoke("update_upload", { id: upload.id, uid, profile: snapshot });
+    saving = request.then(
+      () => {},
+      () => {},
+    ).finally(() => (saving = null));
     try {
-      await invoke("update_upload", { id: upload.id, uid, profile: snapshot });
+      await request;
       saveError = "";
     } catch (error) {
       saveError = String(error);
@@ -136,10 +144,11 @@
   }
 
   async function post() {
-    if (!editable || blocker || posting) return;
+    if (!editable || blocker || posting || savingDanmu) return;
     posting = true;
     const eventId = generateEventId();
     try {
+      // Waits for saves in flight: none may land once it is posting.
       if (saveTimer) clearTimeout(saveTimer);
       await save();
       // A project's video is rendered when posting, with its subtitles.
@@ -363,7 +372,7 @@
           <button
             type="button"
             class="ui-btn ui-btn-primary"
-            disabled={Boolean(blocker) || posting}
+            disabled={Boolean(blocker) || posting || savingDanmu}
             title={blocker || undefined}
             onclick={post}
           >

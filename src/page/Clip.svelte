@@ -141,11 +141,8 @@
   async function saveNote() {
     if (!projectToNote) return;
     try {
-      await invoke("update_project_info", {
-        id: projectToNote.id,
-        title: projectToNote.title,
-        note: editingNote.trim(),
-      });
+      // Only the note: the editor may have just renamed the project.
+      await invoke("update_project_info", { id: projectToNote.id, note: editingNote.trim() });
       projectToNote = null;
       await stateRefresh.run();
     } catch (error) {

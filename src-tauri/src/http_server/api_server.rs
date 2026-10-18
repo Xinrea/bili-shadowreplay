@@ -30,8 +30,9 @@ use crate::{
         message::{delete_message, get_messages, read_message},
         project::{
             create_project, delete_project, export_project, generate_materials, get_material_danmu,
-            get_material_peaks, get_material_usage, get_project, get_projects, update_project_info,
-            update_project_timeline, ExportStarted, GeneratedMaterials, ProjectBrief, ProjectView,
+            get_material_peaks, get_material_usage, get_project, get_projects,
+            update_project_danmu, update_project_info, update_project_timeline, ExportStarted,
+            GeneratedMaterials, ProjectBrief, ProjectView,
         },
         recorder::{
             add_recorder, delete_archive, delete_archives, export_danmu, fetch_hls,
@@ -1056,8 +1057,10 @@ async fn handler_create_project(
 #[serde(rename_all = "camelCase")]
 struct UpdateProjectInfoRequest {
     id: i64,
-    title: String,
-    note: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
 }
 
 async fn handler_update_project_info(
@@ -1073,6 +1076,21 @@ async fn handler_update_project_info(
 struct UpdateProjectTimelineRequest {
     id: i64,
     timeline: Timeline,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateProjectDanmuRequest {
+    id: i64,
+    danmu: bool,
+}
+
+async fn handler_update_project_danmu(
+    state: axum::extract::State<State>,
+    Json(param): Json<UpdateProjectDanmuRequest>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    update_project_danmu(state.0, param.id, param.danmu).await?;
+    Ok(Json(ApiResponse::success(())))
 }
 
 async fn handler_update_project_timeline(
@@ -2297,6 +2315,10 @@ pub async fn start_api_server(state: State) {
             .route(
                 "/api/update_project_timeline",
                 post(handler_update_project_timeline),
+            )
+            .route(
+                "/api/update_project_danmu",
+                post(handler_update_project_danmu),
             )
             .route("/api/delete_project", post(handler_delete_project))
             .route("/api/export_project", post(handler_export_project))

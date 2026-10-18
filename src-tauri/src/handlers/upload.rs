@@ -267,8 +267,11 @@ pub async fn create_upload(
     if upload.source == "file" {
         match capture_file_cover(&state, &upload).await {
             Ok(cover) => {
+                state
+                    .db
+                    .set_upload_cover(upload.id, &cover, &upload.updated_at)
+                    .await?;
                 upload.cover = cover;
-                state.db.update_upload(&upload).await?;
             }
             Err(e) => log::warn!("Failed to capture the cover of {}: {e}", upload.file),
         }
@@ -284,12 +287,16 @@ pub async fn update_upload(
     uid: String,
     profile: serde_json::Value,
 ) -> Result<(), String> {
-    let mut upload = state.db.get_upload(id).await?;
-    ensure_editable(&upload)?;
-    upload.uid = uid;
-    upload.profile = profile.to_string();
-    upload.updated_at = Local::now().to_rfc3339();
-    Ok(state.db.update_upload(&upload).await?)
+    let now = Local::now().to_rfc3339();
+    if state
+        .db
+        .update_upload_form(id, &uid, &profile.to_string(), &now)
+        .await?
+    {
+        Ok(())
+    } else {
+        Err(not_editable(&state, id).await)
+    }
 }
 
 /// Replace the cover with the base64 data URL `cover`.
@@ -299,24 +306,22 @@ pub async fn update_upload_cover(
     id: i64,
     cover: String,
 ) -> Result<UploadView, String> {
-    let mut upload = state.db.get_upload(id).await?;
-    ensure_editable(&upload)?;
+    ensure_editable(&state.db.get_upload(id).await?)?;
     let relative = format!("{}/cover.jpg", upload_dir(id));
     write_cover(&output_dir(&state).await.join(&relative), &cover).await?;
-    upload.cover = relative;
-    upload.updated_at = Local::now().to_rfc3339();
-    state.db.update_upload(&upload).await?;
-    Ok(upload_view(&state, upload).await)
+    let now = Local::now().to_rfc3339();
+    if !state.db.set_upload_cover(id, &relative, &now).await? {
+        return Err(not_editable(&state, id).await);
+    }
+    Ok(upload_view(&state, state.db.get_upload(id).await?).await)
 }
 
 /// Remove the record; a posted video stays on Bilibili.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn delete_upload(state: state_type!(), id: i64) -> Result<(), String> {
-    let upload = state.db.get_upload(id).await?;
-    if upload.is_active() {
+    if !state.db.delete_upload(id).await? {
         return Err("投稿进行中，暂时无法删除".to_string());
     }
-    state.db.delete_upload(id).await?;
     let directory = output_dir(&state).await.join(upload_dir(id));
     if directory.exists() {
         if let Err(e) = tokio::fs::remove_dir_all(&directory).await {
@@ -369,9 +374,8 @@ pub async fn post_upload(
         Ok(reporter) => reporter,
         Err(e) => {
             // Never leave it claimed with nothing running.
-            upload.status = "failed".to_string();
-            upload.message = e.clone();
-            state.db.update_upload(&upload).await?;
+            let now = Local::now().to_rfc3339();
+            state.db.mark_upload_failed(id, &e, &now).await?;
             return Err(e);
         }
     };
@@ -438,23 +442,34 @@ pub async fn update_upload_danmu(
     id: i64,
     danmu: bool,
 ) -> Result<UploadView, String> {
-    let mut upload = state.db.get_upload(id).await?;
-    ensure_editable(&upload)?;
-    match upload.source.as_str() {
-        "project" => set_project_danmu(&state, upload.source_id, danmu).await?,
-        "material" => upload.danmu = danmu,
-        _ => return Err("视频文件没有可压制的弹幕".to_string()),
+    let upload = state.db.get_upload(id).await?;
+    if upload.source == "file" {
+        return Err("视频文件没有可压制的弹幕".to_string());
     }
-    upload.updated_at = Local::now().to_rfc3339();
-    state.db.update_upload(&upload).await?;
-    Ok(upload_view(&state, upload).await)
+    // Claims the draft's editability first, so a post cannot start in between.
+    let now = Local::now().to_rfc3339();
+    if !state.db.set_upload_danmu(id, danmu, &now).await? {
+        return Err(not_editable(&state, id).await);
+    }
+    if upload.source == "project" {
+        set_project_danmu(&state, upload.source_id, danmu).await?;
+    }
+    Ok(upload_view(&state, state.db.get_upload(id).await?).await)
+}
+
+/// Why an edit of the upload did not apply.
+async fn not_editable(state: &State, id: i64) -> String {
+    match state.db.get_upload(id).await {
+        Ok(upload) => ensure_editable(&upload)
+            .err()
+            .unwrap_or_else(|| "投稿已被修改，请重试".to_string()),
+        Err(_) => "投稿已被删除".to_string(),
+    }
 }
 
 async fn set_upload_status(state: &State, id: i64, status: &str) -> Result<(), String> {
-    let mut upload = state.db.get_upload(id).await?;
-    upload.status = status.to_string();
-    upload.updated_at = Local::now().to_rfc3339();
-    Ok(state.db.update_upload(&upload).await?)
+    let now = Local::now().to_rfc3339();
+    Ok(state.db.set_upload_progress(id, status, &now).await?)
 }
 
 async fn post_upload_inner(
@@ -543,19 +558,19 @@ async fn finish_upload(
     state: &State,
     reporter: &ProgressReporter,
     event_id: &str,
-    started: &UploadRow,
+    upload: &UploadRow,
     result: Result<PostedVideo, String>,
 ) -> Result<(), String> {
-    let mut upload = state.db.get_upload(started.id).await?;
-    upload.updated_at = Local::now().to_rfc3339();
+    let now = Local::now().to_rfc3339();
     match result {
         Ok(posted) => {
-            upload.status = "posted".to_string();
-            upload.message = String::new();
-            upload.bvid = posted.bvid.clone();
-            upload.profile = serde_json::to_string(&posted.profile).unwrap_or(upload.profile);
-            state.db.update_upload(&upload).await?;
-            mark_source_posted(state, &upload).await;
+            let profile =
+                serde_json::to_string(&posted.profile).unwrap_or_else(|_| upload.profile.clone());
+            state
+                .db
+                .mark_upload_posted(upload.id, &posted.bvid, &profile, &now)
+                .await?;
+            mark_source_posted(state, upload, &posted.bvid).await;
             // A retry needs the rendered video; a posted upload does not.
             remove_upload_renders(&output_dir(state).await.join(upload_dir(upload.id))).await;
             state
@@ -565,9 +580,7 @@ async fn finish_upload(
         }
         Err(e) => {
             reporter.finish(false, &format!("投稿失败: {e}")).await;
-            upload.status = "failed".to_string();
-            upload.message = e.clone();
-            state.db.update_upload(&upload).await?;
+            state.db.mark_upload_failed(upload.id, &e, &now).await?;
             state
                 .db
                 .update_task(event_id, "failed", &format!("投稿失败: {e}"), None)
@@ -578,22 +591,17 @@ async fn finish_upload(
 }
 
 /// Show the BV id on the material or project too.
-async fn mark_source_posted(state: &State, upload: &UploadRow) {
+async fn mark_source_posted(state: &State, upload: &UploadRow, bvid: &str) {
     let result = match upload.source.as_str() {
         "material" => match state.db.get_video(upload.source_id).await {
             Ok(mut material) => {
                 material.status = 1;
-                material.bvid = upload.bvid.clone();
+                material.bvid = bvid.to_string();
                 state.db.update_video(&material).await
             }
             Err(e) => Err(e),
         },
-        "project" => {
-            state
-                .db
-                .mark_project_posted(upload.source_id, &upload.bvid)
-                .await
-        }
+        "project" => state.db.mark_project_posted(upload.source_id, bvid).await,
         _ => Ok(()),
     };
     if let Err(e) = result {

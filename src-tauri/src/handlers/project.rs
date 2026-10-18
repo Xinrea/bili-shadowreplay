@@ -324,16 +324,18 @@ pub async fn create_project(
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
+/// Save the title, the note or both: the editor saves only the title and the
+/// projects list only the note, so neither undoes the other.
 pub async fn update_project_info(
     state: state_type!(),
     id: i64,
-    title: String,
-    note: String,
+    title: Option<String>,
+    note: Option<String>,
 ) -> Result<(), String> {
     let now = Local::now().to_rfc3339();
     Ok(state
         .db
-        .update_project_info(id, &title, &note, &now)
+        .update_project_info(id, title.as_deref(), note.as_deref(), &now)
         .await?)
 }
 
@@ -343,13 +345,41 @@ pub async fn update_project_timeline(
     id: i64,
     timeline: Timeline,
 ) -> Result<ProjectView, String> {
-    let now = Local::now().to_rfc3339();
-    state
-        .db
-        .set_project_timeline(id, &timeline.to_json(), &now)
-        .await?;
+    save_editor_timeline(&state, id, timeline).await?;
     let project = state.db.get_project(id).await?;
     single_project_view(&state, project).await
+}
+
+/// Turn burning danmaku into the project's exports and uploads on or off.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn update_project_danmu(
+    state: state_type!(),
+    id: i64,
+    danmu: bool,
+) -> Result<(), String> {
+    set_project_danmu(&state, id, danmu).await
+}
+
+/// Save the editor's timeline with the project's danmaku setting, which has a
+/// command of its own and may have changed on the uploads page meanwhile.
+async fn save_editor_timeline(
+    state: &State,
+    id: i64,
+    mut timeline: Timeline,
+) -> Result<Timeline, String> {
+    for _ in 0..TIMELINE_EDIT_ATTEMPTS {
+        let saved = state.db.get_project(id).await?.timeline;
+        timeline.danmu = Timeline::parse(&saved)?.danmu;
+        let now = Local::now().to_rfc3339();
+        if state
+            .db
+            .replace_project_timeline(id, &saved, &timeline.to_json(), &now)
+            .await?
+        {
+            return Ok(timeline);
+        }
+    }
+    Err("切片正在被修改，请稍后重试".to_string())
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -856,11 +886,8 @@ pub async fn export_project(
     }
     let materials = materials_by_id(&state, &timeline.material_ids()).await?;
     timeline.validate(|id| materials.get(&id).map(material_duration))?;
-    let now = Local::now().to_rfc3339();
-    state
-        .db
-        .set_project_timeline(id, &timeline.to_json(), &now)
-        .await?;
+    // Rendered with the project's danmaku setting, as saved.
+    let timeline = save_editor_timeline(&state, id, timeline).await?;
 
     let (path, download) = match target {
         Some(path) => (mp4_path(PathBuf::from(path)), None),

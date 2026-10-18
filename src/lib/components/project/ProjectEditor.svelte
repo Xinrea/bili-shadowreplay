@@ -173,10 +173,11 @@
 
   function applyProjectView(view: ProjectItem) {
     project = view;
-    // The uploads page can switch danmaku too; follow it unless an edit here
-    // is still being saved.
+    // Danmaku is saved by its own command and timeline saves keep the saved
+    // value, so the saved one is current even with edits here still unsaved;
+    // the uploads page can switch it too.
     const danmu = parseTimeline(view.timeline).danmu;
-    if (danmu !== timeline.danmu && saveState === "saved") timeline = { ...timeline, danmu };
+    if (danmu !== timeline.danmu) timeline = { ...timeline, danmu };
   }
 
   async function loadProject() {
@@ -345,7 +346,8 @@
     if (!previous) return;
     redoStack = [...redoStack, timeline];
     undoStack = undoStack.slice(0, -1);
-    timeline = previous;
+    // Danmaku is a setting, not an edit, so history leaves it as it is.
+    timeline = { ...previous, danmu: timeline.danmu };
     scheduleSave();
   }
 
@@ -354,8 +356,19 @@
     if (!next) return;
     undoStack = [...undoStack, timeline];
     redoStack = redoStack.slice(0, -1);
-    timeline = next;
+    timeline = { ...next, danmu: timeline.danmu };
     scheduleSave();
+  }
+
+  /** Switch the project's danmaku setting, which has a command of its own. */
+  async function setDanmu(danmu: boolean) {
+    timeline = { ...timeline, danmu };
+    try {
+      await invoke("update_project_danmu", { id: projectId, danmu });
+    } catch (error) {
+      timeline = { ...timeline, danmu: !danmu };
+      alert("修改弹幕设置失败：" + error);
+    }
   }
 
   /** Begin an edit made of several updates, such as typing a subtitle. */
@@ -413,8 +426,8 @@
   async function saveInfo() {
     if (!project || title === project.title) return;
     try {
-      // The note is edited from the projects list; keep its latest value.
-      await invoke("update_project_info", { id: projectId, title, note: project.note });
+      // Only the title: the note is edited from the projects list.
+      await invoke("update_project_info", { id: projectId, title });
       await set_title(title || "切片");
     } catch (error) {
       alert("保存切片信息失败：" + error);
@@ -700,7 +713,8 @@
     if (requestingUpload) return;
     requestingUpload = true;
     try {
-      await flushSave();
+      // The draft takes its title from the saved project.
+      await Promise.all([flushSave(), saveInfo()]);
       await invoke("request_upload", { source: "project", id: projectId });
     } catch (error) {
       alert("打开投稿失败：" + error);
@@ -732,7 +746,7 @@
         KeyZ: () => (event.shiftKey ? redo() : undo()),
         KeyY: redo,
         KeyB: splitAtPlayhead,
-        KeyS: () => void flushSave(),
+        KeyS: () => void Promise.all([flushSave(), saveInfo()]),
         Digit3: () => setSubtitleBoundary("start"),
         Digit4: () => setSubtitleBoundary("end"),
       }[event.code];
@@ -814,7 +828,7 @@
         class="titlebar-toggle"
         aria-pressed={timeline.danmu}
         title="导出和投稿生成视频时{timeline.danmu ? '压制' : '不压制'}弹幕（片段范围内共 {visibleDanmuCount} 条）"
-        onclick={() => commit({ ...timeline, danmu: !timeline.danmu })}
+        onclick={() => void setDanmu(!timeline.danmu)}
       >
         <MessageSquareText class="h-3.5 w-3.5" />
         弹幕{timeline.danmu ? "：开" : "：关"}

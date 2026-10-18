@@ -96,7 +96,8 @@
 | `generate_materials` | 从录播选区生成素材（每个选区一个），可选同时创建工程 |
 | `get_material_usage` / `get_material_peaks` / `get_material_danmu` | 素材被哪些工程使用 / 波形峰值 / 截取的弹幕 |
 | `get_projects` / `get_project` / `create_project` / `delete_project` | 工程增删查 |
-| `update_project_info` / `update_project_timeline` | 工程修改 |
+| `update_project_info` / `update_project_timeline` | 工程修改：标题与备注可分别保存；保存时间轴时保留数据库中的弹幕设置 |
+| `update_project_danmu` | 切换工程的弹幕设置（编辑窗口与投稿页共用） |
 | `export_project` | 把工程导出到指定文件（Web 端导出到缓存供下载），返回导出任务 |
 | `get_uploads` / `get_upload` / `create_upload` / `delete_upload` | 投稿记录增删查，列表附带来源名称、是否需要生成视频与封面 |
 | `update_upload` / `update_upload_cover` | 保存草稿的账号与投稿信息 / 封面 |

@@ -36,6 +36,7 @@
     addSubtitle,
     clipAt,
     insertClips,
+    mergeRemoteTimeline,
     parseSrt,
     parseTimeline,
     placeClips,
@@ -103,6 +104,8 @@
   let saveState: "saved" | "pending" | "saving" | "error" = $state("saved");
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let saving: Promise<void> | null = null;
+  // The saved timeline as last seen, to tell the backend's edits from local ones.
+  let syncedTimeline = "";
   let danmuSaved: Promise<void> = Promise.resolve();
 
   let videoA: HTMLVideoElement = $state();
@@ -172,19 +175,26 @@
     }));
   }
 
-  function applyProjectView(view: ProjectItem) {
+  /**
+   * Take a saved project, merging the backend's own edits of its timeline into
+   * the one edited here: danmaku switched on the uploads page, clips of a
+   * deleted material, recognized subtitles. `base` is what the saved timeline
+   * was made from: the one just sent when saving, or else the last one seen.
+   */
+  function applyProjectView(view: ProjectItem, base?: ProjectTimeline) {
     project = view;
-    // Danmaku is saved by its own command and timeline saves keep the saved
-    // value, so the saved one is current even with edits here still unsaved;
-    // the uploads page can switch it too.
-    const danmu = parseTimeline(view.timeline).danmu;
-    if (danmu !== timeline.danmu) timeline = { ...timeline, danmu };
+    if (!base && view.timeline === syncedTimeline) return;
+    const from = base ?? parseTimeline(syncedTimeline);
+    syncedTimeline = view.timeline;
+    const merged = mergeRemoteTimeline(timeline, from, parseTimeline(view.timeline));
+    if (merged !== timeline) timeline = merged;
   }
 
   async function loadProject() {
     try {
       const view = await invoke<ProjectItem>("get_project", { id: projectId });
       project = view;
+      syncedTimeline = view.timeline;
       title = view.title;
       await set_title(view.title || "切片");
       await loadMaterials();
@@ -216,16 +226,22 @@
     }
   }
 
-  // Keep export and upload state current; never replace local edits.
+  // Keep the project current, merging the backend's edits into local ones.
   const projectRefresh = createStateRefresh(async () => {
     if (!project) return;
+    // A save in flight brings back its own result; read what it left.
+    while (saving) await saving;
     applyProjectView(await invoke<ProjectItem>("get_project", { id: projectId }));
   });
+  // Deleted materials leave the library, and their clips the timeline.
+  const materialRefresh = createStateRefresh(loadMaterials);
 
   onMount(() => {
     void loadProject();
     return watchStateChanges(projectRefresh, ["projects-changed"]);
   });
+
+  onMount(() => watchStateChanges(materialRefresh, ["videos-changed"]));
 
   onMount(() => {
     player = new ProjectPlayer(videoA, videoB);
@@ -314,11 +330,16 @@
     const snapshot = timeline;
     saveState = "saving";
     let saved = false;
+    let editedMeanwhile = false;
     saving = (async () => {
       try {
-        applyProjectView(await invoke<ProjectItem>("update_project_timeline", { id: projectId, timeline: snapshot }));
+        const view = await invoke<ProjectItem>("update_project_timeline", { id: projectId, timeline: snapshot });
+        editedMeanwhile = timeline !== snapshot;
+        // Merged against what was sent: the backend keeps its danmaku setting
+        // and drops clips of materials deleted meanwhile.
+        applyProjectView(view, snapshot);
         saved = true;
-        saveState = timeline === snapshot ? "saved" : "pending";
+        saveState = editedMeanwhile ? "pending" : "saved";
       } catch (error) {
         log.error("Failed to save project timeline:", error);
         saveState = "error";
@@ -326,7 +347,7 @@
     })().finally(() => (saving = null));
     await saving;
     // Edits made during the save.
-    if (saved && timeline !== snapshot) await flushSave();
+    if (saved && editedMeanwhile) await flushSave();
   }
 
   /** Apply an edit as one undo step. */

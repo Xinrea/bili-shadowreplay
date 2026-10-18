@@ -16,7 +16,7 @@ use crate::database::project::ProjectRow;
 use crate::database::task::TaskRow;
 use crate::database::upload::UploadRow;
 use crate::database::video::VideoRow;
-use crate::database::Database;
+use crate::database::{Database, DatabaseError};
 use crate::ffmpeg::project::{render_project, ProjectRender, RenderClip};
 use crate::ffmpeg::runner::TempArtifact;
 use crate::handlers::subtitle_fonts::prepare_subtitle_font_directory;
@@ -367,6 +367,12 @@ async fn save_editor_timeline(
     id: i64,
     mut timeline: Timeline,
 ) -> Result<Timeline, String> {
+    // An editor that has not heard of a deletion yet must not restore its clips.
+    for material_id in timeline.material_ids() {
+        if let Err(DatabaseError::DB(sqlx::Error::RowNotFound)) = db.get_video(material_id).await {
+            timeline.remove_material(material_id);
+        }
+    }
     for _ in 0..TIMELINE_EDIT_ATTEMPTS {
         let saved = db.get_project(id).await?.timeline;
         timeline.danmu = Timeline::parse(&saved)?.danmu;
@@ -1248,6 +1254,13 @@ mod tests {
         for migration in crate::get_migrations() {
             sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
         }
+        sqlx::raw_sql(
+            "INSERT INTO videos (id, room_id, cover, file, note, length, size, status, bvid, title, desc, tags, area, created_at, platform)
+             VALUES (1, '1', '', 'a.mp4', '', 10, 1, 0, '', '', '', '', 0, '', 'bilibili');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         let db = Database::new(
             pool,
             CredentialCipher::new(&[0; 32]).unwrap(),
@@ -1289,6 +1302,55 @@ mod tests {
         assert!(saved.danmu);
         let stored = Timeline::parse(&db.get_project(project.id).await.unwrap().timeline).unwrap();
         assert_eq!((stored.danmu, stored.clips[0].end), (true, 8.0));
+    }
+
+    #[tokio::test]
+    async fn editor_saves_drop_clips_of_deleted_materials() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for migration in crate::get_migrations() {
+            sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
+        }
+        sqlx::raw_sql(
+            "INSERT INTO videos (id, room_id, cover, file, note, length, size, status, bvid, title, desc, tags, area, created_at, platform)
+             VALUES (1, '1', '', 'a.mp4', '', 10, 1, 0, '', '', '', '', 0, '', 'bilibili');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let db = Database::new(
+            pool,
+            CredentialCipher::new(&[0; 32]).unwrap(),
+            crate::events::EventBus::new(),
+        );
+        // Material 2 was deleted while an editor still had a clip of it.
+        let editor = Timeline::from_materials(&[(1, 10.0), (2, 5.0)]);
+        let project = db
+            .add_project(&ProjectRow {
+                id: 0,
+                room_id: "1".into(),
+                platform: "bilibili".into(),
+                title: "t".into(),
+                note: String::new(),
+                cover: String::new(),
+                timeline: Timeline::from_materials(&[(1, 10.0)]).to_json(),
+                profile: String::new(),
+                status: 0,
+                bvid: String::new(),
+                created_at: "2026-10-18".into(),
+                updated_at: "2026-10-18".into(),
+            })
+            .await
+            .unwrap();
+
+        let saved = save_editor_timeline(&db, project.id, editor).await.unwrap();
+
+        assert_eq!(saved.material_ids(), vec![1]);
+        let stored = Timeline::parse(&db.get_project(project.id).await.unwrap().timeline).unwrap();
+        assert_eq!(stored.material_ids(), vec![1]);
     }
 
     #[test]

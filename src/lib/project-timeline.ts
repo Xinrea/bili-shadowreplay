@@ -151,6 +151,40 @@ export function removeClip(timeline: ProjectTimeline, clipId: string): ProjectTi
   };
 }
 
+/**
+ * Bring the backend's own edits of a saved timeline into one being edited.
+ * Between `base`, the saved timeline the editor last knew, and `remote`, the
+ * saved one now, the backend may switch danmaku, remove the clips of a deleted
+ * material and fill clips that had none with recognized subtitles; everything
+ * else stays as edited in `local`. Returns `local` itself when nothing applies.
+ */
+export function mergeRemoteTimeline(
+  local: ProjectTimeline,
+  base: ProjectTimeline,
+  remote: ProjectTimeline,
+): ProjectTimeline {
+  let next = local;
+  if (remote.danmu !== local.danmu) next = { ...next, danmu: remote.danmu };
+
+  const remaining = new Set(remote.clips.map((clip) => clip.material_id));
+  const removed = new Set(base.clips.map((clip) => clip.material_id).filter((id) => !remaining.has(id)));
+  if (next.clips.some((clip) => removed.has(clip.material_id))) {
+    const clips = next.clips.filter((clip) => !removed.has(clip.material_id));
+    const kept = new Set(clips.map((clip) => clip.id));
+    next = { ...next, clips, subtitles: next.subtitles.filter((subtitle) => kept.has(subtitle.clip_id)) };
+  }
+
+  const hadSubtitles = new Set(base.subtitles.map((subtitle) => subtitle.clip_id));
+  const hasSubtitles = new Set(next.subtitles.map((subtitle) => subtitle.clip_id));
+  const clipIds = new Set(next.clips.map((clip) => clip.id));
+  const filled = remote.subtitles.filter(
+    (subtitle) =>
+      clipIds.has(subtitle.clip_id) && !hadSubtitles.has(subtitle.clip_id) && !hasSubtitles.has(subtitle.clip_id),
+  );
+  if (filled.length > 0) next = { ...next, subtitles: [...next.subtitles, ...filled] };
+  return next;
+}
+
 /** Move a clip so that it ends up at `toIndex` of the main track. */
 export function moveClip(timeline: ProjectTimeline, clipId: string, toIndex: number): ProjectTimeline {
   const from = timeline.clips.findIndex((clip) => clip.id === clipId);

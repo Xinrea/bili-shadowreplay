@@ -111,3 +111,27 @@ test("invalid timeline JSON falls back to an empty timeline", () => {
   assert.deepEqual(plain(api.parseTimeline("").clips), []);
   assert.equal(api.parseTimeline('{"clips":[{"id":"a"}],"danmu":1}').danmu, true);
 });
+
+test("the backend's edits of the saved timeline are merged into unsaved local edits", () => {
+  const base = timeline([clip("a", 1, 0, 10), clip("b", 2, 0, 5)], [sub("s1", "a", 1, 2)]);
+  // The backend switched danmaku on, removed deleted material 2 and filled
+  // clip c with recognized subtitles; locally clip a was trimmed and clip c added.
+  const remote = { ...timeline([clip("a", 1, 0, 10), clip("c", 3, 0, 4)], [sub("s1", "a", 1, 2), sub("r1", "c", 0, 1)]), danmu: true };
+  const local = timeline([clip("a", 1, 0, 8), clip("b", 2, 0, 5), clip("c", 3, 0, 4)], [sub("s1", "a", 1, 2), sub("s2", "b", 1, 2)]);
+
+  const merged = plain(api.mergeRemoteTimeline(local, base, remote));
+  assert.equal(merged.danmu, true);
+  assert.deepEqual(merged.clips.map((c) => [c.id, c.end]), [["a", 8], ["c", 4]]);
+  assert.deepEqual(merged.subtitles.map((s) => s.id), ["s1", "r1"]);
+});
+
+test("local subtitle edits win over the backend's and nothing changes without its edits", () => {
+  const base = timeline([clip("a", 1, 0, 10)]);
+  const remote = timeline([clip("a", 1, 0, 10)], [sub("r1", "a", 1, 2)]);
+  // Subtitles typed locally meanwhile are kept rather than mixed with recognized ones.
+  const typed = timeline([clip("a", 1, 0, 10)], [sub("mine", "a", 3, 4)]);
+  assert.deepEqual(plain(api.mergeRemoteTimeline(typed, base, remote).subtitles).map((s) => s.id), ["mine"]);
+  // Subtitles the editor already knew about and deleted stay deleted.
+  const cleared = timeline([clip("a", 1, 0, 10)]);
+  assert.equal(api.mergeRemoteTimeline(cleared, remote, remote), cleared);
+});

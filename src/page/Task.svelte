@@ -16,6 +16,7 @@
   import { taskTypeName } from "../lib/task-progress";
   import PageTitlebar from "../lib/components/PageTitlebar.svelte";
   import { onMount } from "svelte";
+  import { registerCommands } from "../lib/stores/commands";
   import { SvelteSet } from "svelte/reactivity";
 
   let tasks: TaskRow[] = $state([]);
@@ -277,6 +278,21 @@
   }
 
   onMount(() => watchStateChanges(stateRefresh, ["tasks-changed"]));
+
+  onMount(() =>
+    registerCommands([
+      {
+        id: "task:refresh",
+        group: "action",
+        title: "刷新任务列表",
+        detail: "任务",
+        icon: RefreshCw,
+        keywords: ["refresh tasks", "reload"],
+        page: "任务",
+        run: update_tasks,
+      },
+    ]),
+  );
 </script>
 
 <PageTitlebar title="任务列表">

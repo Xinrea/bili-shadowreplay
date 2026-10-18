@@ -6,6 +6,8 @@
   import QRCode from "qrcode";
   import type { AccountItem, AccountInfo } from "../lib/db";
   import { Ellipsis, Plus } from "lucide-svelte";
+  import { onMount } from "svelte";
+  import { registerCommands } from "../lib/stores/commands";
   import PlatformIconTabs from "../lib/components/PlatformIconTabs.svelte";
   import PageTitlebar from "../lib/components/PageTitlebar.svelte";
 
@@ -76,6 +78,28 @@
       addModal = false;
     }
   }
+
+  function openAddModal() {
+    addModal = true;
+    if (activeTab === "qr") {
+      requestAnimationFrame(handle_qr);
+    }
+  }
+
+  onMount(() =>
+    registerCommands([
+      {
+        id: "account:add",
+        group: "action",
+        title: "添加账号",
+        detail: "账号",
+        icon: Plus,
+        keywords: ["add account", "login", "qr code", "cookie"],
+        page: "账号",
+        run: openAddModal,
+      },
+    ]),
+  );
 
   async function handle_qr() {
     if (check_interval) {
@@ -165,12 +189,7 @@
     </span>
   {/snippet}
   <button
-    onclick={() => {
-      addModal = true;
-      if (activeTab === "qr") {
-        requestAnimationFrame(handle_qr);
-      }
-    }}
+    onclick={openAddModal}
     class="ui-btn ui-btn-primary h-7 gap-1 rounded-[7px] px-2.5"
   >
     <Plus class="h-3.5 w-3.5" />
@@ -262,12 +281,7 @@
       <!-- Add Account Card -->
       <button
         class="w-full rounded-[10px] border border-dashed border-line-strong p-4 transition-colors hover:border-accent/60 hover:bg-accent-soft/40"
-        onclick={() => {
-          addModal = true;
-          if (activeTab === "qr") {
-            requestAnimationFrame(handle_qr);
-          }
-        }}
+        onclick={openAddModal}
       >
         <div class="flex flex-col items-center justify-center space-y-2">
           <div

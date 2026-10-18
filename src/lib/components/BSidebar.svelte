@@ -5,17 +5,10 @@
 </script>
 
 <script lang="ts">
-  import {
-    FileVideo,
-    Info,
-    LayoutDashboard,
-    List,
-    Settings,
-    Users,
-    Video,
-    Brain,
-    History,
-  } from "lucide-svelte";
+  import { Command } from "lucide-svelte";
+  import { PALETTE_SHORTCUT } from "../command-palette";
+  import { pages } from "../pages";
+  import { openCommandPalette } from "../stores/commands";
   import { hasNewVersion } from "../stores/version";
   import {
     MAC_TRAFFIC_LIGHTS,
@@ -73,59 +66,35 @@
     {/if}
   </div>
   <!-- The divider starts below the title row, so the traffic lights never sit on it. -->
-  <nav class="min-h-0 flex-1 space-y-0.5 border-r border-line px-2 pb-3 pt-1">
-    <SidebarItem label="总览" {activeUrl} {collapsed} onActiveChange={navigate}>
-      {#snippet icon()}
-        <LayoutDashboard class="h-4 w-4 shrink-0" />
-      {/snippet}
-    </SidebarItem>
-    <SidebarItem label="直播间" {activeUrl} {collapsed} onActiveChange={navigate}>
-      {#snippet icon()}
-        <Video class="h-4 w-4 shrink-0" />
-      {/snippet}
-    </SidebarItem>
-    <SidebarItem label="录播" {activeUrl} {collapsed} onActiveChange={navigate}>
-      {#snippet icon()}
-        <History class="h-4 w-4 shrink-0" />
-      {/snippet}
-    </SidebarItem>
-    <SidebarItem label="切片" {activeUrl} {collapsed} onActiveChange={navigate}>
-      {#snippet icon()}
-        <FileVideo class="h-4 w-4 shrink-0" />
-      {/snippet}
-    </SidebarItem>
-    <SidebarItem label="任务" {activeUrl} {collapsed} onActiveChange={navigate}>
-      {#snippet icon()}
-        <List class="h-4 w-4 shrink-0" />
-      {/snippet}
-    </SidebarItem>
-    <SidebarItem label="助手" {activeUrl} {collapsed} onActiveChange={navigate}>
-      {#snippet icon()}
-        <Brain class="h-4 w-4 shrink-0" />
-      {/snippet}
-    </SidebarItem>
-    <SidebarItem label="账号" {activeUrl} {collapsed} onActiveChange={navigate}>
-      {#snippet icon()}
-        <Users class="h-4 w-4 shrink-0" />
-      {/snippet}
-    </SidebarItem>
-    <SidebarItem label="设置" {activeUrl} {collapsed} onActiveChange={navigate}>
-      {#snippet icon()}
-        <Settings class="h-4 w-4 shrink-0" />
-      {/snippet}
-    </SidebarItem>
-    <SidebarItem
-      label="关于"
-      {activeUrl}
-      {collapsed}
-      onActiveChange={navigate}
-      dot={$hasNewVersion}
+  <div class="flex min-h-0 flex-1 flex-col border-r border-line px-2 pb-3 pt-1">
+    <nav class="space-y-0.5">
+      {#each pages as page (page.label)}
+        <SidebarItem
+          label={page.label}
+          {activeUrl}
+          {collapsed}
+          onActiveChange={navigate}
+          dot={page.label === "关于" && $hasNewVersion}
+        >
+          {#snippet icon()}
+            <page.icon class="h-4 w-4 shrink-0" />
+          {/snippet}
+        </SidebarItem>
+      {/each}
+    </nav>
+
+    <!-- Like a sidebar item, so the rail keeps just its icon. -->
+    <button
+      type="button"
+      class="mt-auto flex h-8 w-full items-center gap-2.5 overflow-hidden whitespace-nowrap rounded-[8px] px-2.5 text-[13px] text-fg-muted transition-colors hover:bg-control-hover hover:text-fg"
+      title="命令面板（{PALETTE_SHORTCUT}）"
+      onclick={openCommandPalette}
     >
-      {#snippet icon()}
-        <Info class="h-4 w-4 shrink-0" />
-      {/snippet}
-    </SidebarItem>
-  </nav>
+      <Command class="h-4 w-4 shrink-0" />
+      <span>命令面板</span>
+      <kbd class="ml-auto font-sans text-[10px] text-fg-faint">{PALETTE_SHORTCUT}</kbd>
+    </button>
+  </div>
 </div>
 
 <style>

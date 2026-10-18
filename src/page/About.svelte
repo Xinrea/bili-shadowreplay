@@ -1,8 +1,13 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { open, TAURI_ENV } from "../lib/invoker";
-  import { BookOpen, MessageCircle, Download, LoaderCircle, Heart } from "lucide-svelte";
+  import { BookOpen, MessageCircle, Download, LoaderCircle, Heart, RefreshCw } from "lucide-svelte";
   import { hasNewVersion, latestVersion, updateStatus, checkForUpdates, installUpdate, isNewerVersion } from "../lib/stores/version";
+  import { registerCommands } from "../lib/stores/commands";
+
+  const DOCS_URL = "https://bsr.xinrea.cn/";
+  const COMMUNITY_URL = "https://qm.qq.com/q/v4lrE6gyum";
+
   let version = `v${__APP_VERSION__}`;
   let showDonateModal = $state(false);
   let releases = $state<{ version: string; date: string; description: string; url: string }[]>([]);
@@ -34,6 +39,50 @@
       if (!signal.aborted) releasesError = `无法加载更新日志：${error}`;
     }
   }
+
+  onMount(() =>
+    registerCommands([
+      {
+        id: "about:check-update",
+        group: "action",
+        title: "检查更新",
+        detail: "关于",
+        icon: RefreshCw,
+        keywords: ["check update", "upgrade", "version"],
+        page: "关于",
+        available: () => TAURI_ENV,
+        run: checkForUpdates,
+      },
+      {
+        id: "about:docs",
+        group: "action",
+        title: "使用说明",
+        detail: "关于",
+        icon: BookOpen,
+        keywords: ["docs", "documentation", "help", "manual"],
+        run: () => open(DOCS_URL),
+      },
+      {
+        id: "about:community",
+        group: "action",
+        title: "反馈交流群",
+        detail: "关于",
+        icon: MessageCircle,
+        keywords: ["feedback", "community", "qq", "group"],
+        run: () => open(COMMUNITY_URL),
+      },
+      {
+        id: "about:donate",
+        group: "action",
+        title: "打赏支持",
+        detail: "关于",
+        icon: Heart,
+        keywords: ["donate", "sponsor", "support"],
+        page: "关于",
+        run: () => (showDonateModal = true),
+      },
+    ]),
+  );
 
   onMount(() => {
     const controller = new AbortController();
@@ -127,10 +176,7 @@
     <div class="grid grid-cols-3 gap-3">
       <button
         class="ui-card p-4 transition-colors hover:border-line-strong hover:bg-control-hover/50"
-        onclick={() => {
-          // tauri open url
-          open("https://bsr.xinrea.cn/");
-        }}
+        onclick={() => open(DOCS_URL)}
       >
         <div class="flex flex-col items-center space-y-2">
           <div
@@ -145,10 +191,7 @@
       </button>
       <button
         class="ui-card p-4 transition-colors hover:border-line-strong hover:bg-control-hover/50"
-        onclick={() => {
-          // tauri open url
-          open("https://qm.qq.com/q/v4lrE6gyum");
-        }}
+        onclick={() => open(COMMUNITY_URL)}
       >
         <div class="flex flex-col items-center space-y-2">
           <div

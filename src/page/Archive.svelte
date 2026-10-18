@@ -3,6 +3,7 @@
   import { invoke, get_static_url } from "../lib/invoker";
   import type { RecordItem, RecordSummaryStatus } from "../lib/db";
   import { onMount } from "svelte";
+  import { registerCommands } from "../lib/stores/commands";
   import {
     Play,
     Trash2,
@@ -84,6 +85,21 @@
 
     return watchStateChanges(stateRefresh, ["records-changed", "recorders-changed"]);
   });
+
+  onMount(() =>
+    registerCommands([
+      {
+        id: "archive:refresh",
+        group: "action",
+        title: "刷新录播列表",
+        detail: "录播",
+        icon: RefreshCw,
+        keywords: ["refresh archives", "reload"],
+        page: "录播",
+        run: loadArchives,
+      },
+    ]),
+  );
 
   /**
    * 初始化加载所有录播数据

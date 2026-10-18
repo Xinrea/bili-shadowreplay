@@ -25,6 +25,7 @@
     Edit,
   } from "lucide-svelte";
   import { SvelteSet } from "svelte/reactivity";
+  import { registerCommands } from "../lib/stores/commands";
   import { AnnotationOutline } from "flowbite-svelte-icons";
   import BilibiliIcon from "../lib/components/BilibiliIcon.svelte";
   import DouyinIcon from "../lib/components/DouyinIcon.svelte";
@@ -54,6 +55,31 @@
   let editingNote = $state("");
 
   onMount(() => watchStateChanges(stateRefresh, ["videos-changed"]));
+
+  onMount(() =>
+    registerCommands([
+      {
+        id: "clip:import",
+        group: "action",
+        title: "导入视频",
+        detail: "切片",
+        icon: Upload,
+        keywords: ["import video", "upload"],
+        page: "切片",
+        run: () => (showImportDialog = true),
+      },
+      {
+        id: "clip:refresh",
+        group: "action",
+        title: "刷新切片列表",
+        detail: "切片",
+        icon: RefreshCw,
+        keywords: ["refresh clips", "reload"],
+        page: "切片",
+        run: loadVideos,
+      },
+    ]),
+  );
 
   onDestroy(() => {
     stopProgressPolling();

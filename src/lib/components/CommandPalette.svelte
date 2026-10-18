@@ -63,7 +63,12 @@
     returnFocus = null;
     closeCommandPalette();
     recent = rememberRecent(recent, command.id);
-    localStorage.setItem(RECENT_KEY, JSON.stringify(recent));
+    try {
+      localStorage.setItem(RECENT_KEY, JSON.stringify(recent));
+    } catch (error) {
+      // Only the history is lost; the command still runs.
+      console.error("保存最近使用的命令失败", error);
+    }
     if (command.page) {
       onNavigate(command.page);
       await tick();
@@ -87,6 +92,8 @@
     if (isPaletteShortcut(event)) {
       event.preventDefault();
       event.stopImmediatePropagation();
+      // Holding the keys repeats them; only the first press toggles.
+      if (event.repeat) return;
       if ($commandPaletteOpen) dismiss();
       else openCommandPalette();
       return;
@@ -121,7 +128,8 @@
     }
   }
 
-  $effect(() => {
+  // Before the DOM update, so the list never renders with the last query.
+  $effect.pre(() => {
     if (!$commandPaletteOpen) return;
     query = "";
     activeIndex = 0;

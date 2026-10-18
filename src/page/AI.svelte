@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
   import { Settings, Send, Sparkles, Trash2, Zap, Bot, Paperclip } from "lucide-svelte";
+  import { registerCommands } from "../lib/stores/commands";
   import { agentChat } from "../lib/agent/agent";
   import { loadConversation, saveConversation } from "../lib/agent/conversation-store";
   import type { LlmConfig } from "../lib/interface";
@@ -395,6 +396,22 @@
     void persistConversation();
     scrollToBottom();
   }
+
+  onMount(() =>
+    registerCommands([
+      {
+        id: "ai:clear",
+        group: "action",
+        title: "清空助手对话",
+        detail: "助手",
+        icon: Trash2,
+        keywords: ["clear conversation", "new chat", "reset"],
+        page: "助手",
+        available: () => agentConfigured && conversationLoaded && !isProcessing,
+        run: clearConversation,
+      },
+    ]),
+  );
 
   function handleKeyPress(e: KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey) {

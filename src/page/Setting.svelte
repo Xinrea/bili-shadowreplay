@@ -17,10 +17,16 @@
     RefreshCw,
     Plug,
     Copy,
+    FolderOpen,
+    UserRound,
+    Sun,
+    Moon,
+    Monitor,
   } from "lucide-svelte";
   import { onMount } from "svelte";
   import PowerLiveAccount from "../lib/components/PowerLiveAccount.svelte";
   import PageTitlebar from "../lib/components/PageTitlebar.svelte";
+  import { registerCommands } from "../lib/stores/commands";
   import {
     themePreference,
     setThemePreference,
@@ -34,6 +40,167 @@
     { value: "light", label: "亮色" },
     { value: "dark", label: "暗色" },
   ];
+
+  // Options the command palette can jump to, by section. Each id matches a
+  // `data-setting` anchor below; titles follow the labels there.
+  const paletteTargets = [
+    {
+      title: "PowerLive",
+      icon: UserRound,
+      options: [{ id: "powerlive", title: "PowerLive 账号", keywords: ["account", "credit"] }],
+    },
+    {
+      title: "基础设置",
+      icon: FileText,
+      options: [
+        { id: "theme", title: "外观主题", keywords: ["theme", "appearance", "dark", "light"] },
+        { id: "launch-at-login", title: "开机自动启动", keywords: ["autostart", "startup", "launch"] },
+        { id: "status-check-interval", title: "直播间状态检查间隔", keywords: ["interval", "status", "polling"] },
+        { id: "webhook", title: "Webhook URL", keywords: ["webhook"] },
+      ],
+    },
+    {
+      title: "API 服务器配置",
+      icon: FileText,
+      options: [{ id: "api-endpoint", title: "API 服务器地址", keywords: ["api", "server", "endpoint"] }],
+    },
+    {
+      title: "MCP Server",
+      icon: Plug,
+      options: [
+        { id: "mcp-enabled", title: "启用 MCP Server", keywords: ["mcp", "agent"] },
+        { id: "mcp-port", title: "MCP 端口", keywords: ["mcp", "port"] },
+        { id: "mcp-url", title: "连接地址（Streamable HTTP）", keywords: ["mcp", "url", "config"] },
+      ],
+    },
+    {
+      title: "存储设置",
+      icon: HardDrive,
+      options: [
+        { id: "cache-path", title: "缓存路径", keywords: ["cache", "storage", "path"] },
+        { id: "output-path", title: "切片保存路径", keywords: ["output", "clip", "path"] },
+        { id: "log-folder", title: "日志文件夹", keywords: ["log", "logs"] },
+      ],
+    },
+    {
+      title: "通知设置",
+      icon: Bell,
+      options: [
+        { id: "notify-live-start", title: "直播开始通知", keywords: ["notification", "live start"] },
+        { id: "notify-live-end", title: "下播通知", keywords: ["notification", "live end"] },
+        { id: "notify-clip", title: "切片完成通知", keywords: ["notification", "clip"] },
+        { id: "notify-post", title: "投稿完成通知", keywords: ["notification", "upload", "post"] },
+      ],
+    },
+    {
+      title: "AI 模型",
+      icon: Bot,
+      options: [
+        { id: "llm-provider", title: "模型提供商", keywords: ["llm", "provider", "openai", "ollama"] },
+        { id: "llm-endpoint", title: "API Endpoint", keywords: ["llm", "endpoint"] },
+        { id: "llm-api-key", title: "API Key", keywords: ["llm", "key", "token"] },
+        { id: "llm-model", title: "模型名称", keywords: ["llm", "model"] },
+      ],
+    },
+    {
+      title: "字幕生成",
+      icon: Captions,
+      options: [
+        { id: "auto-subtitle", title: "自动生成字幕", keywords: ["subtitle", "auto"] },
+        { id: "subtitle-generator", title: "字幕生成器类型", keywords: ["subtitle", "generator", "whisper"] },
+        { id: "whisper-model", title: "Whisper 模型路径", keywords: ["whisper", "model"] },
+        { id: "whisper-endpoint", title: "OpenAI API 端点", keywords: ["whisper", "endpoint"] },
+        { id: "whisper-api-key", title: "OpenAI API 密钥", keywords: ["whisper", "key"] },
+        { id: "whisper-prompt", title: "Whisper 提示词", keywords: ["whisper", "prompt"] },
+        { id: "whisper-language", title: "Whisper 语言", keywords: ["whisper", "language"] },
+      ],
+    },
+    {
+      title: "切片文件名格式",
+      icon: DiscAlbum,
+      options: [{ id: "clip-name-format", title: "文件名格式", keywords: ["clip", "filename", "format"] }],
+    },
+    {
+      title: "弹幕压制样式",
+      icon: Captions,
+      options: [
+        { id: "danmu-font-size", title: "字体大小", keywords: ["danmaku", "font", "size"] },
+        { id: "danmu-opacity", title: "不透明度", keywords: ["danmaku", "opacity"] },
+      ],
+    },
+    {
+      title: "自动切片",
+      icon: SquareBottomDashedScissors,
+      options: [
+        { id: "auto-generate", title: "整场录播生成", keywords: ["auto", "clip", "whole"] },
+        { id: "auto-generate-danmu", title: "自动切片压制弹幕", keywords: ["auto", "clip", "danmaku"] },
+      ],
+    },
+  ];
+
+  const themeIcons = { system: Monitor, light: Sun, dark: Moon };
+
+  let scroller: HTMLElement | null = $state(null);
+
+  /** Scrolls to the option anchored as `data-setting={id}` and highlights it. */
+  export function reveal(id: string) {
+    const target = scroller?.querySelector<HTMLElement>(`[data-setting="${id}"]`);
+    if (!scroller || !target) return;
+    const top =
+      target.getBoundingClientRect().top -
+      scroller.getBoundingClientRect().top +
+      scroller.scrollTop;
+    // Centre the option, but keep the heading above a tall one in view.
+    const offset = Math.max(72, (scroller.clientHeight - target.offsetHeight) / 2);
+    const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    scroller.scrollTo({ top: top - offset, behavior: reduceMotion ? "auto" : "smooth" });
+    // Held until the page has slid in, then fades back to the option's own background.
+    const accentSoft = getComputedStyle(target).getPropertyValue("--c-accent-soft");
+    const highlight = { backgroundColor: `rgb(${accentSoft})` };
+    target.animate([highlight, { ...highlight, offset: 0.4 }], {
+      duration: 2000,
+      easing: "ease-out",
+    });
+  }
+
+  onMount(() =>
+    registerCommands([
+      ...paletteTargets.flatMap((section) =>
+        section.options.map((option) => ({
+          id: `setting:${option.id}`,
+          group: "setting" as const,
+          title: option.title,
+          detail: section.title,
+          keywords: option.keywords,
+          icon: section.icon,
+          page: "设置",
+          // Options the current configuration hides have no anchor.
+          available: () => Boolean(scroller?.querySelector(`[data-setting="${option.id}"]`)),
+          run: () => reveal(option.id),
+        })),
+      ),
+      {
+        id: "open-log-folder",
+        group: "action",
+        title: "打开日志文件夹",
+        detail: "设置",
+        icon: FolderOpen,
+        keywords: ["log", "logs", "folder"],
+        available: () => TAURI_ENV,
+        run: handleLogFolder,
+      },
+      ...themeOptions.map((option) => ({
+        id: `theme:${option.value}`,
+        group: "action" as const,
+        title: `外观主题：${option.label}`,
+        detail: "设置",
+        icon: themeIcons[option.value],
+        keywords: ["theme", "appearance", option.value],
+        available: () => $themePreference !== option.value,
+        run: () => setThemePreference(option.value),
+      })),
+    ]),
+  );
 
   let setting_model: Config = $state({
     cache: "",
@@ -431,11 +598,11 @@
 
 <PageTitlebar title="设置" />
 
-<div class="flex-1 overflow-auto custom-scrollbar-light bg-canvas">
+<div bind:this={scroller} class="flex-1 overflow-auto custom-scrollbar-light bg-canvas">
   <div>
     <div class="p-5 space-y-5">
       <!-- Settings Sections -->
-      <div class="ui-card">
+      <div class="ui-card" data-setting="powerlive">
         <PowerLiveAccount {active} />
       </div>
       <div class="space-y-5 pb-6">
@@ -445,7 +612,7 @@
             <span>基础设置</span>
           </h2>
           <div class="ui-card divide-y divide-line">
-            <div class="px-4 py-3">
+            <div class="px-4 py-3" data-setting="theme">
               <div class="flex items-center justify-between gap-6">
                 <div>
                   <h3 class="ui-label">外观主题</h3>
@@ -470,7 +637,7 @@
               </div>
             </div>
             {#if TAURI_ENV}
-              <div class="px-4 py-3">
+              <div class="px-4 py-3" data-setting="launch-at-login">
                 <div class="flex items-center justify-between gap-6">
                   <div>
                     <h3 class="ui-label">
@@ -491,7 +658,7 @@
                 </div>
               </div>
             {/if}
-            <div class="px-4 py-3">
+            <div class="px-4 py-3" data-setting="status-check-interval">
               <div class="flex items-center justify-between gap-6">
                 <div>
                   <h3 class="ui-label">
@@ -511,7 +678,7 @@
                 </div>
               </div>
             </div>
-            <div class="px-4 py-3">
+            <div class="px-4 py-3" data-setting="webhook">
               <div class="flex items-center justify-between gap-6">
                 <div>
                   <h3 class="ui-label">
@@ -546,7 +713,7 @@
               <span>API 服务器配置</span>
             </h2>
             <div class="ui-card divide-y divide-line">
-              <div class="px-4 py-3">
+              <div class="px-4 py-3" data-setting="api-endpoint">
                 <div class="flex items-center justify-between gap-6">
                   <div>
                     <h3 class="ui-label">
@@ -579,7 +746,7 @@
               <span>MCP Server</span>
             </h2>
             <div class="ui-card divide-y divide-line">
-              <div class="px-4 py-3 space-y-3">
+              <div class="px-4 py-3 space-y-3" data-setting="mcp-enabled">
                 <div class="flex items-center justify-between gap-6">
                   <div>
                     <h3 class="ui-label">
@@ -632,7 +799,7 @@
                   </p>
                 {/if}
               </div>
-              <div class="px-4 py-3 space-y-3">
+              <div class="px-4 py-3 space-y-3" data-setting="mcp-port">
                 <div class="flex flex-wrap items-center justify-between gap-4">
                   <div>
                     <label
@@ -688,7 +855,7 @@
                   </p>
                 {/if}
               </div>
-              <div class="px-4 py-3 space-y-3">
+              <div class="px-4 py-3 space-y-3" data-setting="mcp-url">
                 <div class="flex items-center justify-between gap-3">
                   <h3 class="ui-label">
                     连接地址（Streamable HTTP）
@@ -753,7 +920,7 @@
               </h2>
               <div class="ui-card divide-y divide-line">
                 <!-- Cache Location -->
-                <div class="px-4 py-3">
+                <div class="px-4 py-3" data-setting="cache-path">
                   <div class="flex items-center justify-between gap-6">
                     <div>
                       <h3 class="ui-label">
@@ -768,7 +935,7 @@
                     </button>
                   </div>
                 </div>
-                <div class="px-4 py-3">
+                <div class="px-4 py-3" data-setting="output-path">
                   <div class="flex items-center justify-between gap-6">
                     <div>
                       <h3 class="ui-label">
@@ -783,7 +950,7 @@
                     </button>
                   </div>
                 </div>
-                <div class="px-4 py-3">
+                <div class="px-4 py-3" data-setting="log-folder">
                   <div class="flex items-center justify-between gap-6">
                     <div>
                       <h3 class="ui-label">
@@ -810,7 +977,7 @@
             </h2>
             <div class="ui-card divide-y divide-line">
               <!-- Stream Start -->
-              <div class="px-4 py-3">
+              <div class="px-4 py-3" data-setting="notify-live-start">
                 <div class="flex items-center justify-between gap-6">
                   <div>
                     <h3 class="ui-label">
@@ -830,7 +997,7 @@
                   </label>
                 </div>
               </div>
-              <div class="px-4 py-3">
+              <div class="px-4 py-3" data-setting="notify-live-end">
                 <div class="flex items-center justify-between gap-6">
                   <div>
                     <h3 class="ui-label">
@@ -850,7 +1017,7 @@
                   </label>
                 </div>
               </div>
-              <div class="px-4 py-3">
+              <div class="px-4 py-3" data-setting="notify-clip">
                 <div class="flex items-center justify-between gap-6">
                   <div>
                     <h3 class="ui-label">
@@ -870,7 +1037,7 @@
                   </label>
                 </div>
               </div>
-              <div class="px-4 py-3">
+              <div class="px-4 py-3" data-setting="notify-post">
                 <div class="flex items-center justify-between gap-6">
                   <div>
                     <h3 class="ui-label">
@@ -899,8 +1066,8 @@
               <Bot class="h-4 w-4 text-fg-muted" />
               <span>AI 模型</span>
             </h2>
-            <div class="ui-card divide-y divide-line">
-              <div class="px-4 py-3">
+            <div class="ui-card divide-y divide-line" data-setting="llm">
+              <div class="px-4 py-3" data-setting="llm-provider">
                 <div class="flex items-center justify-between gap-6">
                   <div>
                     <h3 class="ui-label">
@@ -921,7 +1088,7 @@
                 </div>
               </div>
 
-              <div class="px-4 py-3">
+              <div class="px-4 py-3" data-setting="llm-endpoint">
                 <div class="flex items-center justify-between gap-6">
                   <div>
                     <h3 class="ui-label">
@@ -946,7 +1113,7 @@
               </div>
 
               {#if setting_model.llm.provider === "openai"}
-                <div class="px-4 py-3">
+                <div class="px-4 py-3" data-setting="llm-api-key">
                   <div class="flex items-center justify-between gap-6">
                     <div>
                       <h3 class="ui-label">
@@ -967,7 +1134,7 @@
                 </div>
               {/if}
 
-              <div class="px-4 py-3">
+              <div class="px-4 py-3" data-setting="llm-model">
                 <div class="flex items-center justify-between gap-6">
                   <div>
                     <h3 class="ui-label">
@@ -1079,7 +1246,7 @@
             </h2>
             <div class="ui-card divide-y divide-line">
               <!-- Auto Subtitle Generation -->
-              <div class="px-4 py-3">
+              <div class="px-4 py-3" data-setting="auto-subtitle">
                 <div class="flex items-center justify-between gap-6">
                   <div>
                     <h3 class="ui-label">
@@ -1100,7 +1267,7 @@
                 </div>
               </div>
               <!-- Subtitle Generator Type -->
-              <div class="px-4 py-3">
+              <div class="px-4 py-3" data-setting="subtitle-generator">
                 <div class="flex items-center justify-between gap-6">
                   <div>
                     <h3 class="ui-label">
@@ -1140,7 +1307,7 @@
               <!-- Whisper Model Path -->
               {#if setting_model.subtitle_generator_type !== "powerlive"}
                 {#if TAURI_ENV && setting_model.subtitle_generator_type === "whisper"}
-                  <div class="px-4 py-3">
+                  <div class="px-4 py-3" data-setting="whisper-model">
                     <div class="flex items-center justify-between gap-6">
                       <div>
                         <h3 class="ui-label">
@@ -1167,7 +1334,7 @@
                 {/if}
                 <!-- OpenAI API Settings -->
                 {#if setting_model.subtitle_generator_type === "whisper_online"}
-                  <div class="px-4 py-3">
+                  <div class="px-4 py-3" data-setting="whisper-endpoint">
                     <div class="flex items-center justify-between gap-6">
                       <div>
                         <h3 class="ui-label">
@@ -1193,7 +1360,7 @@
                       </div>
                     </div>
                   </div>
-                  <div class="px-4 py-3">
+                  <div class="px-4 py-3" data-setting="whisper-api-key">
                     <div class="flex items-center justify-between gap-6">
                       <div>
                         <h3 class="ui-label">
@@ -1220,7 +1387,7 @@
                   </div>
                 {/if}
                 {#if setting_model.subtitle_generator_type !== "powerlive"}
-                  <div class="px-4 py-3">
+                  <div class="px-4 py-3" data-setting="whisper-prompt">
                     <div class="flex items-center justify-between gap-6">
                       <div>
                         <h3 class="ui-label">
@@ -1246,7 +1413,7 @@
                   </div>
                 {/if}
                 <!-- Whisper Language -->
-                <div class="px-4 py-3">
+                <div class="px-4 py-3" data-setting="whisper-language">
                   <div class="flex items-center justify-between gap-6">
                     <div>
                       <h3 class="ui-label">
@@ -1281,7 +1448,7 @@
               <span>切片文件名格式</span>
             </h2>
             <div class="ui-card divide-y divide-line">
-              <div class="px-4 py-3">
+              <div class="px-4 py-3" data-setting="clip-name-format">
                 <div class="flex items-center justify-between gap-6">
                   <div>
                     <h3 class="ui-label">
@@ -1359,7 +1526,7 @@
             </h2>
             <div class="ui-card divide-y divide-line">
               <!-- Font Size -->
-              <div class="px-4 py-3">
+              <div class="px-4 py-3" data-setting="danmu-font-size">
                 <div class="flex items-center justify-between gap-6">
                   <div>
                     <h3 class="ui-label">
@@ -1383,7 +1550,7 @@
                 </div>
               </div>
               <!-- Opacity -->
-              <div class="px-4 py-3">
+              <div class="px-4 py-3" data-setting="danmu-opacity">
                 <div class="flex items-center justify-between gap-6">
                   <div>
                     <h3 class="ui-label">
@@ -1418,7 +1585,7 @@
             </h2>
             <div class="ui-card divide-y divide-line">
               <!-- Auto Clip Generation -->
-              <div class="px-4 py-3">
+              <div class="px-4 py-3" data-setting="auto-generate">
                 <div class="flex items-center justify-between gap-6">
                   <div>
                     <h3 class="ui-label">
@@ -1444,7 +1611,7 @@
                 </div>
               </div>
               <!-- Auto Clip Encode Danmu -->
-              <div class="px-4 py-3">
+              <div class="px-4 py-3" data-setting="auto-generate-danmu">
                 <div class="flex items-center justify-between gap-6">
                   <div>
                     <h3 class="ui-label">
@@ -1515,3 +1682,16 @@
     </div>
   </div>
 {/if}
+
+<style>
+  /* Option rows sit flush in rounded cards; round their highlight to match. */
+  .divide-y > [data-setting]:first-child {
+    border-top-left-radius: inherit;
+    border-top-right-radius: inherit;
+  }
+
+  .divide-y > [data-setting]:last-child {
+    border-bottom-left-radius: inherit;
+    border-bottom-right-radius: inherit;
+  }
+</style>

@@ -20,7 +20,12 @@
   import TitleBar from "./lib/components/TitleBar.svelte";
   import PageView from "./lib/components/PageView.svelte";
   import type { PageTitlebarContent } from "./lib/page-titlebar";
-  import { onMount } from "svelte";
+  import CommandPalette from "./lib/components/CommandPalette.svelte";
+  import { pages } from "./lib/pages";
+  import { registerCommands } from "./lib/stores/commands";
+  import { openTaskCenter } from "./lib/stores/tasks";
+  import { ListChecks, PanelLeft } from "lucide-svelte";
+  import { onMount, tick } from "svelte";
 
   let active = $state("总览");
   // Filled by each page's `PageTitlebar`, keyed by sidebar label.
@@ -34,6 +39,17 @@
     sidebarCollapsed = !sidebarCollapsed;
     localStorage.setItem("sidebar-collapsed", String(sidebarCollapsed));
   }
+
+  let settingPage: ReturnType<typeof Setting> | undefined = $state();
+
+  /** Shows the settings page, optionally scrolled to one of its options. */
+  async function openSettings(target?: string) {
+    active = "设置";
+    if (!target) return;
+    await tick();
+    settingPage?.reveal(target);
+  }
+
   onMount(async () => {
     await onOpenUrl((urls: string[]) => {
       console.log("Received Deep Link:", urls);
@@ -106,12 +122,45 @@
   log.info("App loaded");
 
   onMount(() => {
-    const onNavSettings = () => (active = "设置");
+    // `detail` optionally names the option to scroll to.
+    const onNavSettings = (event: Event) =>
+      void openSettings((event as CustomEvent<string | undefined>).detail);
     window.addEventListener("navigate-settings", onNavSettings);
     return () => window.removeEventListener("navigate-settings", onNavSettings);
   });
+
+  onMount(() =>
+    registerCommands([
+      ...pages.map((page) => ({
+        id: `page:${page.label}`,
+        group: "page" as const,
+        title: page.label,
+        icon: page.icon,
+        keywords: page.keywords,
+        page: page.label,
+      })),
+      {
+        id: "task-center",
+        group: "action",
+        title: "查看进行中的任务",
+        detail: "任务",
+        icon: ListChecks,
+        keywords: ["task center", "progress", "running"],
+        run: () => openTaskCenter(),
+      },
+      {
+        id: "sidebar:toggle",
+        group: "action",
+        title: "收起 / 展开侧边栏",
+        icon: PanelLeft,
+        keywords: ["sidebar", "collapse", "expand"],
+        run: toggleSidebar,
+      },
+    ]),
+  );
 </script>
 
+<CommandPalette onNavigate={(page) => (active = page)} />
 <TaskCenter />
 
 <main class="wrap">
@@ -160,13 +209,13 @@
         <Task />
       </PageView>
       <PageView visible={active == "助手"} bind:titlebar={titlebars["助手"]}>
-        <AI onNavigateSettings={() => (active = "设置")} />
+        <AI onNavigateSettings={() => openSettings("llm")} />
       </PageView>
       <PageView visible={active == "账号"} bind:titlebar={titlebars["账号"]}>
         <Account />
       </PageView>
       <PageView visible={active == "设置"} bind:titlebar={titlebars["设置"]}>
-        <Setting active={active === "设置"} />
+        <Setting bind:this={settingPage} active={active === "设置"} />
       </PageView>
       <PageView visible={active == "关于"} bind:titlebar={titlebars["关于"]}>
         <About />

@@ -54,7 +54,7 @@
 
   function goToSettings() {
     close();
-    window.dispatchEvent(new CustomEvent("navigate-settings"));
+    window.dispatchEvent(new CustomEvent("navigate-settings", { detail: "llm" }));
   }
 
   async function loadSummary(showLoading = true) {

@@ -31,6 +31,7 @@
   import GenerateWholeClipModal from "../lib/components/GenerateWholeClipModal.svelte";
   import PageTitlebar from "../lib/components/PageTitlebar.svelte";
   import { onMount } from "svelte";
+  import { registerCommands } from "../lib/stores/commands";
 
   interface Props {
     room_count?: number;
@@ -153,6 +154,33 @@
     summary = new_summary;
   }
   onMount(() => watchStateChanges(stateRefresh, ["recorders-changed"]));
+
+  let searchInput: HTMLInputElement | null = $state(null);
+
+  onMount(() =>
+    registerCommands([
+      {
+        id: "room:add",
+        group: "action",
+        title: "添加直播间",
+        detail: "直播间",
+        icon: Plus,
+        keywords: ["add room", "new room", "record"],
+        page: "直播间",
+        run: () => (addModal = true),
+      },
+      {
+        id: "room:search",
+        group: "action",
+        title: "搜索直播间",
+        detail: "直播间",
+        icon: Search,
+        keywords: ["search room", "find", "filter"],
+        page: "直播间",
+        run: () => searchInput?.focus({ preventScroll: true }),
+      },
+    ]),
+  );
 
   // modals
   let deleteModal = $state(false);
@@ -608,6 +636,7 @@
       class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-fg-faint"
     />
     <input
+      bind:this={searchInput}
       type="text"
       bind:value={searchQuery}
       placeholder="搜索直播间..."

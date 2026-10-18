@@ -2,7 +2,7 @@
   "identifier": "migrated",
   "description": "permissions that were migrated from v1",
   "local": true,
-  "windows": ["main", "Live*", "Clip*"],
+  "windows": ["main", "Live*", "Clip*", "Project*"],
   "permissions": [
     "core:default",
     "fs:allow-read-file",
@@ -22,6 +22,7 @@
     "core:window:default",
     "core:window:allow-start-dragging",
     "core:window:allow-close",
+    "core:window:allow-destroy",
     "core:window:allow-minimize",
     "core:window:allow-maximize",
     "core:window:allow-unmaximize",

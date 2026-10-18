@@ -257,12 +257,8 @@
     if (!TAURI_ENV) return;
     const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
     const current = getCurrentWebviewWindow();
-    unlistenClose = await current.onCloseRequested(async (event) => {
-      if (saveState === "saved") return;
-      event.preventDefault();
-      await flushSave();
-      await current.destroy();
-    });
+    // Tauri destroys the window once this settles, so pending edits are kept.
+    unlistenClose = await current.onCloseRequested(() => flushSave());
   });
 
   onDestroy(() => {

@@ -5,8 +5,6 @@
     Eraser,
     Film,
     Loader2,
-    PanelRightClose,
-    PanelRightOpen,
     Pause,
     Play,
     Plus,
@@ -93,7 +91,6 @@
   let selectedClipId: string | null = $state(null);
   let selectedSubtitleId: string | null = $state(null);
   let activeTab: "subtitle" | "clips" | "export" | "upload" = $state("subtitle");
-  let inspectorCollapsed = $state(false);
   let showStyleEditor = $state(false);
   let showShortcutHelp = $state(false);
   let showAiModal = $state(false);
@@ -765,18 +762,20 @@
         <CircleHelp class="h-4 w-4" />
       </button>
       <TaskCenterButton tone="dark" />
+      <span class="mx-1 h-4 w-px bg-[#2b3340]"></span>
       <button
-        class="titlebar-icon-button"
-        class:active={!inspectorCollapsed}
-        title={inspectorCollapsed ? "展开面板" : "收起面板"}
-        aria-label={inspectorCollapsed ? "展开面板" : "收起面板"}
-        aria-pressed={!inspectorCollapsed}
-        onclick={() => (inspectorCollapsed = !inspectorCollapsed)}
+        type="button"
+        class="titlebar-export"
+        title="导出切片"
+        disabled={exporting !== null || timeline.clips.length === 0}
+        onclick={exportProject}
       >
-        {#if inspectorCollapsed}
-          <PanelRightOpen class="h-4 w-4" />
+        {#if exporting}
+          <Loader2 class="h-3.5 w-3.5 animate-spin" />
+          导出中
         {:else}
-          <PanelRightClose class="h-4 w-4" />
+          <Film class="h-3.5 w-3.5" />
+          导出
         {/if}
       </button>
     {/snippet}
@@ -786,16 +785,16 @@
     <div class="flex flex-1 items-center justify-center text-sm text-red-300">加载切片失败：{loadError}</div>
   {/if}
 
-  <div class="relative flex min-h-0 flex-1 overflow-hidden" class:hidden={!!loadError}>
-    <MaterialBin
-      materials={binMaterials}
-      {roomId}
-      onAdd={(material) => void addMaterial(material.id)}
-      onPreview={(material) => void invoke("open_clip", { videoId: material.id })}
-    />
+  <div class="flex min-h-0 flex-1 flex-col" class:hidden={!!loadError}>
+    <div class="relative flex min-h-0 flex-1 overflow-hidden">
+      <MaterialBin
+        materials={binMaterials}
+        {roomId}
+        onAdd={(material) => void addMaterial(material.id)}
+        onPreview={(material) => void invoke("open_clip", { videoId: material.id })}
+      />
 
-    <div class="flex min-w-0 flex-1 flex-col">
-      <div class="relative flex-1 bg-black">
+      <div class="relative min-w-0 flex-1 bg-black">
         <div bind:this={previewContainer} class="absolute inset-0 flex items-center justify-center">
           <div class="relative aspect-video bg-black" style:width="{previewFrameWidth}px">
             <!-- svelte-ignore a11y_media_has_caption -->
@@ -815,256 +814,89 @@
         </div>
       </div>
 
-      <div class="transport">
-        <div class="flex items-center gap-1">
-          <button class="icon-button" title="在播放头处分割 (⌘B)" disabled={!clipAt(timeline, time)} onclick={splitAtPlayhead}>
-            <Scissors class="h-4 w-4" />
-            分割
-          </button>
-          <button class="icon-button" title="删除选中 (Delete)" disabled={!selectedClipId && !selectedSubtitleId} onclick={deleteSelection}>
-            <Trash2 class="h-4 w-4" />
-            删除
-          </button>
-          <button class="icon-button" title="在播放头处添加字幕" disabled={!clipAt(timeline, time)} onclick={addSubtitleAtPlayhead}>
-            <Plus class="h-4 w-4" />
-            字幕
-          </button>
-        </div>
-        <div class="flex items-center gap-3">
-          <button class="play-button" title="播放/暂停 (空格)" onclick={togglePlay} disabled={duration === 0}>
-            {#if playing}
-              <Pause class="h-4 w-4" />
-            {:else}
-              <Play class="h-4 w-4" />
-            {/if}
-          </button>
-          <span class="clock">{formatTime(time)} / {formatTime(duration)}</span>
-        </div>
-        <div class="flex items-center justify-end gap-2">
-          <span class="text-[11px] text-gray-400">缩放</span>
-          <input type="range" min="1" max="60" step="0.5" bind:value={zoom} class="w-28" data-hotkey-block />
-          <button class="icon-button" title={muted ? "取消静音" : "静音"} onclick={() => (muted = !muted)}>
-            {#if muted || volume === 0}
-              <VolumeX class="h-4 w-4" />
-            {:else}
-              <Volume2 class="h-4 w-4" />
-            {/if}
-          </button>
-          <input type="range" min="0" max="1" step="0.05" bind:value={volume} class="w-20" data-hotkey-block />
-        </div>
-      </div>
+      <InspectorPanel
+        title="切片编辑"
+        tabs={[
+          { id: "subtitle", label: "字幕", count: subtitles.length },
+          { id: "clips", label: "片段", count: timeline.clips.length },
+          { id: "export", label: "导出" },
+          { id: "upload", label: "投稿" },
+        ]}
+        bind:activeTab
+        collapsed={false}
+        docked
+      >
 
-      <ProjectTimelineView
-        {timeline}
-        {materials}
-        {peaks}
-        {time}
-        {zoom}
-        {selectedClipId}
-        {selectedSubtitleId}
-        onSeek={seek}
-        onScrub={(active) => (scrubbing = active)}
-        onPreview={(next) => (timeline = next)}
-        onCommit={(next, before) => commit(next, before)}
-        onSelectClip={(id) => (selectedClipId = id)}
-        onSelectSubtitle={(id) => {
-          if (id) selectSubtitle(id);
-          else selectedSubtitleId = null;
-        }}
-        onDropMaterial={(id, index) => void addMaterial(id, index)}
-        onZoom={(value) => (zoom = value)}
-      />
-    </div>
-
-    <InspectorPanel
-      title="切片编辑"
-      tabs={[
-        { id: "subtitle", label: "字幕", count: subtitles.length },
-        { id: "clips", label: "片段", count: timeline.clips.length },
-        { id: "export", label: "导出" },
-        { id: "upload", label: "投稿" },
-      ]}
-      bind:activeTab
-      collapsed={inspectorCollapsed}
-      summary={{ label: "总时长", value: formatTime(duration) }}
-    >
-      {#snippet actions()}
-        <button
-          type="button"
-          class="footer-button primary"
-          disabled={exporting !== null || timeline.clips.length === 0}
-          onclick={exportProject}
-        >
-          {#if exporting}
-            <Loader2 class="h-3.5 w-3.5 animate-spin" />
-            导出中
-          {:else}
-            <Film class="h-3.5 w-3.5" />
-            导出
-          {/if}
-        </button>
-      {/snippet}
-
-      {#if activeTab === "subtitle"}
-        <div class="panel-toolbar">
-          <button type="button" class="tool-button" onclick={() => (showStyleEditor = true)}>
-            <Settings class="h-3.5 w-3.5" />
-            样式
-          </button>
-          <button type="button" class="tool-button" onclick={clearSubtitles} disabled={timeline.subtitles.length === 0}>
-            <Eraser class="h-3.5 w-3.5" />
-            清空
-          </button>
-          <button
-            type="button"
-            class="tool-button"
-            disabled={aiRunning || timeline.clips.length === 0}
-            onclick={() => {
-              aiOverwrite = false;
-              aiRegenerate = false;
-              showAiModal = true;
-            }}
-          >
-            {#if aiRunning}
-              <Loader2 class="h-3.5 w-3.5 animate-spin" />
-              识别中
-            {:else}
-              <BrainCircuit class="h-3.5 w-3.5" />
-              AI 字幕
-            {/if}
-          </button>
-        </div>
-
-        {#if subtitles.length > 0}
-          <div class="row-list">
-            {#each subtitles as entry, index (entry.subtitle.id)}
-              <div
-                class="row"
-                data-subtitle-row={entry.subtitle.id}
-                class:playing={time >= entry.start && time < entry.end}
-                class:selected={selectedSubtitleId === entry.subtitle.id}
-              >
-                <button type="button" class="row-index" title="选中并跳转" onclick={() => selectSubtitle(entry.subtitle.id, true)}>
-                  {index + 1}
-                </button>
-                <input
-                  type="text"
-                  class="row-text"
-                  value={entry.subtitle.text}
-                  placeholder="输入字幕文本"
-                  onfocus={() => {
-                    selectSubtitle(entry.subtitle.id);
-                    beginEdit();
-                  }}
-                  oninput={(event) => (timeline = updateSubtitleText(timeline, entry.subtitle.id, event.currentTarget.value))}
-                  onblur={endEdit}
-                  onkeydown={(event) => {
-                    if (event.isComposing || event.keyCode === 229) return;
-                    if (event.key === "Enter" || event.key === "Escape") {
-                      event.preventDefault();
-                      event.currentTarget.blur();
-                    }
-                  }}
-                />
-                <button type="button" class="row-action" title="在后面添加字幕" onclick={() => insertSubtitleAfter(entry.subtitle.id)}>
-                  <Plus class="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  class="row-action danger"
-                  title="删除字幕"
-                  onclick={() => commit(removeSubtitle(timeline, entry.subtitle.id))}
-                >
-                  <Trash2 class="h-3.5 w-3.5" />
-                </button>
-              </div>
-            {/each}
-          </div>
-        {:else}
-          <div class="empty-state">
-            <strong>还没有字幕</strong>
-            <span>点击「AI 字幕」识别，或在时间轴播放头处添加</span>
-          </div>
-        {/if}
-        {#if hiddenSubtitleCount > 0}
-          <p class="hint mt-2">另有 {hiddenSubtitleCount} 条字幕位于片段裁剪范围之外，已隐藏；拉长片段后会重新显示。</p>
-        {/if}
-      {:else if activeTab === "clips"}
-        <div class="flex flex-col gap-3">
-          <div class="field">
-            <label for="project-note">备注</label>
-            <textarea id="project-note" class="panel-input h-16 resize-none" bind:value={note} onblur={saveInfo} placeholder="为切片添加备注"></textarea>
+        {#if activeTab === "subtitle"}
+          <div class="panel-toolbar">
+            <button type="button" class="tool-button" onclick={() => (showStyleEditor = true)}>
+              <Settings class="h-3.5 w-3.5" />
+              样式
+            </button>
+            <button type="button" class="tool-button" onclick={clearSubtitles} disabled={timeline.subtitles.length === 0}>
+              <Eraser class="h-3.5 w-3.5" />
+              清空
+            </button>
+            <button
+              type="button"
+              class="tool-button"
+              disabled={aiRunning || timeline.clips.length === 0}
+              onclick={() => {
+                aiOverwrite = false;
+                aiRegenerate = false;
+                showAiModal = true;
+              }}
+            >
+              {#if aiRunning}
+                <Loader2 class="h-3.5 w-3.5 animate-spin" />
+                识别中
+              {:else}
+                <BrainCircuit class="h-3.5 w-3.5" />
+                AI 字幕
+              {/if}
+            </button>
           </div>
 
-          {#if selectedClip}
-            {@const material = materials.get(selectedClip.clip.material_id)}
-            <div class="clip-detail">
-              <div class="flex items-center justify-between gap-2">
-                <span class="truncate text-[12px] font-medium" title={material?.name}>{material?.name ?? "素材已删除"}</span>
-                <button type="button" class="link-button" onclick={() => void invoke("open_clip", { videoId: selectedClip.clip.material_id })}>
-                  预览素材
-                </button>
-              </div>
-              <div class="grid grid-cols-2 gap-2">
-                <div class="field">
-                  <label for="clip-start">入点（秒）</label>
-                  <input
-                    id="clip-start"
-                    type="number"
-                    step="0.1"
-                    min="0"
-                    class="panel-input"
-                    value={selectedClip.clip.start.toFixed(2)}
-                    onchange={(event) => setClipEdge(selectedClip.clip.id, "start", Number(event.currentTarget.value))}
-                  />
-                </div>
-                <div class="field">
-                  <label for="clip-end">出点（秒）</label>
-                  <input
-                    id="clip-end"
-                    type="number"
-                    step="0.1"
-                    min="0"
-                    class="panel-input"
-                    value={selectedClip.clip.end.toFixed(2)}
-                    onchange={(event) => setClipEdge(selectedClip.clip.id, "end", Number(event.currentTarget.value))}
-                  />
-                </div>
-              </div>
-              <p class="hint">
-                片段时长 {formatTime(selectedClip.duration)}，素材总长 {formatTime(material?.duration ?? 0)}；也可以拖动时间轴上片段的左右边缘调整。
-              </p>
-            </div>
-          {/if}
-
-          {#if placed.length > 0}
+          {#if subtitles.length > 0}
             <div class="row-list">
-              {#each placed as item (item.clip.id)}
-                <div class="row" class:selected={selectedClipId === item.clip.id} class:playing={currentClip?.clip.id === item.clip.id}>
-                  <button
-                    type="button"
-                    class="row-index"
-                    onclick={() => {
-                      selectedClipId = item.clip.id;
-                      selectedSubtitleId = null;
-                      seek(item.offset);
+              {#each subtitles as entry, index (entry.subtitle.id)}
+                <div
+                  class="row"
+                  data-subtitle-row={entry.subtitle.id}
+                  class:playing={time >= entry.start && time < entry.end}
+                  class:selected={selectedSubtitleId === entry.subtitle.id}
+                >
+                  <button type="button" class="row-index" title="选中并跳转" onclick={() => selectSubtitle(entry.subtitle.id, true)}>
+                    {index + 1}
+                  </button>
+                  <input
+                    type="text"
+                    class="row-text"
+                    value={entry.subtitle.text}
+                    placeholder="输入字幕文本"
+                    onfocus={() => {
+                      selectSubtitle(entry.subtitle.id);
+                      beginEdit();
                     }}
-                  >
-                    {item.index + 1}
+                    oninput={(event) => (timeline = updateSubtitleText(timeline, entry.subtitle.id, event.currentTarget.value))}
+                    onblur={endEdit}
+                    onkeydown={(event) => {
+                      if (event.isComposing || event.keyCode === 229) return;
+                      if (event.key === "Enter" || event.key === "Escape") {
+                        event.preventDefault();
+                        event.currentTarget.blur();
+                      }
+                    }}
+                  />
+                  <button type="button" class="row-action" title="在后面添加字幕" onclick={() => insertSubtitleAfter(entry.subtitle.id)}>
+                    <Plus class="h-3.5 w-3.5" />
                   </button>
                   <button
                     type="button"
-                    class="row-text truncate text-left"
-                    onclick={() => {
-                      selectedClipId = item.clip.id;
-                      selectedSubtitleId = null;
-                      seek(item.offset);
-                    }}
+                    class="row-action danger"
+                    title="删除字幕"
+                    onclick={() => commit(removeSubtitle(timeline, entry.subtitle.id))}
                   >
-                    {materials.get(item.clip.material_id)?.name ?? "素材已删除"}
-                  </button>
-                  <span class="shrink-0 font-mono text-[10px] text-gray-500">{formatTime(item.duration)}</span>
-                  <button type="button" class="row-action danger" title="删除片段" onclick={() => commit(removeClip(timeline, item.clip.id))}>
                     <Trash2 class="h-3.5 w-3.5" />
                   </button>
                 </div>
@@ -1072,69 +904,220 @@
             </div>
           {:else}
             <div class="empty-state">
-              <strong>时间轴是空的</strong>
-              <span>从左侧素材库拖入素材，或点击素材右侧的 ＋</span>
+              <strong>还没有字幕</strong>
+              <span>点击「AI 字幕」识别，或在时间轴播放头处添加</span>
             </div>
           {/if}
-          <p class="hint">片段在主轨道上首尾相接播放：拖动片段可调整顺序，⌘B 在播放头处分割。</p>
-        </div>
-      {:else if activeTab === "export"}
-        <div class="flex flex-col gap-4">
-          <label class="toggle">
-            <input
-              type="checkbox"
-              checked={timeline.danmu}
-              onchange={(event) => commit({ ...timeline, danmu: event.currentTarget.checked })}
-            />
-            <span>
-              压制弹幕
-              <span class="hint block">片段范围内共有 {visibleDanmuCount} 条弹幕（来自素材保存的弹幕）</span>
-            </span>
-          </label>
+          {#if hiddenSubtitleCount > 0}
+            <p class="hint mt-2">另有 {hiddenSubtitleCount} 条字幕位于片段裁剪范围之外，已隐藏；拉长片段后会重新显示。</p>
+          {/if}
+        {:else if activeTab === "clips"}
+          <div class="flex flex-col gap-3">
+            <div class="field">
+              <label for="project-note">备注</label>
+              <textarea id="project-note" class="panel-input h-16 resize-none" bind:value={note} onblur={saveInfo} placeholder="为切片添加备注"></textarea>
+            </div>
 
-          <div class="export-state {exportState}">
-            {exportDescriptions[exportState]}
-          </div>
-
-          <button
-            type="button"
-            class="footer-button primary justify-center"
-            disabled={exporting !== null || timeline.clips.length === 0}
-            onclick={exportProject}
-          >
-            {#if exporting}
-              <Loader2 class="h-3.5 w-3.5 animate-spin" />
-              导出中，可在任务中心查看进度
-            {:else}
-              <Film class="h-3.5 w-3.5" />
-              {exportState === "ready" ? "重新导出" : "导出切片"}
+            {#if selectedClip}
+              {@const material = materials.get(selectedClip.clip.material_id)}
+              <div class="clip-detail">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="truncate text-[12px] font-medium" title={material?.name}>{material?.name ?? "素材已删除"}</span>
+                  <button type="button" class="link-button" onclick={() => void invoke("open_clip", { videoId: selectedClip.clip.material_id })}>
+                    预览素材
+                  </button>
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                  <div class="field">
+                    <label for="clip-start">入点（秒）</label>
+                    <input
+                      id="clip-start"
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      class="panel-input"
+                      value={selectedClip.clip.start.toFixed(2)}
+                      onchange={(event) => setClipEdge(selectedClip.clip.id, "start", Number(event.currentTarget.value))}
+                    />
+                  </div>
+                  <div class="field">
+                    <label for="clip-end">出点（秒）</label>
+                    <input
+                      id="clip-end"
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      class="panel-input"
+                      value={selectedClip.clip.end.toFixed(2)}
+                      onchange={(event) => setClipEdge(selectedClip.clip.id, "end", Number(event.currentTarget.value))}
+                    />
+                  </div>
+                </div>
+                <p class="hint">
+                  片段时长 {formatTime(selectedClip.duration)}，素材总长 {formatTime(material?.duration ?? 0)}；也可以拖动时间轴上片段的左右边缘调整。
+                </p>
+              </div>
             {/if}
-          </button>
 
-          {#if exportState === "ready" && project?.output}
-            <div class="flex flex-col gap-1">
-              <span class="hint">导出文件：{project.output}</span>
-              {#if !TAURI_ENV}
-                <button type="button" class="link-button self-start" onclick={downloadExport}>下载导出文件</button>
-              {/if}
+            {#if placed.length > 0}
+              <div class="row-list">
+                {#each placed as item (item.clip.id)}
+                  <div class="row" class:selected={selectedClipId === item.clip.id} class:playing={currentClip?.clip.id === item.clip.id}>
+                    <button
+                      type="button"
+                      class="row-index"
+                      onclick={() => {
+                        selectedClipId = item.clip.id;
+                        selectedSubtitleId = null;
+                        seek(item.offset);
+                      }}
+                    >
+                      {item.index + 1}
+                    </button>
+                    <button
+                      type="button"
+                      class="row-text truncate text-left"
+                      onclick={() => {
+                        selectedClipId = item.clip.id;
+                        selectedSubtitleId = null;
+                        seek(item.offset);
+                      }}
+                    >
+                      {materials.get(item.clip.material_id)?.name ?? "素材已删除"}
+                    </button>
+                    <span class="shrink-0 font-mono text-[10px] text-gray-500">{formatTime(item.duration)}</span>
+                    <button type="button" class="row-action danger" title="删除片段" onclick={() => commit(removeClip(timeline, item.clip.id))}>
+                      <Trash2 class="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                {/each}
+              </div>
+            {:else}
+              <div class="empty-state">
+                <strong>时间轴是空的</strong>
+                <span>从左侧素材库拖入素材，或点击素材右侧的 ＋</span>
+              </div>
+            {/if}
+            <p class="hint">片段在主轨道上首尾相接播放：拖动片段可调整顺序，⌘B 在播放头处分割。</p>
+          </div>
+        {:else if activeTab === "export"}
+          <div class="flex flex-col gap-4">
+            <label class="toggle">
+              <input
+                type="checkbox"
+                checked={timeline.danmu}
+                onchange={(event) => commit({ ...timeline, danmu: event.currentTarget.checked })}
+              />
+              <span>
+                压制弹幕
+                <span class="hint block">片段范围内共有 {visibleDanmuCount} 条弹幕（来自素材保存的弹幕）</span>
+              </span>
+            </label>
+
+            <div class="export-state {exportState}">
+              {exportDescriptions[exportState]}
             </div>
-          {/if}
 
-          <p class="hint">
-            导出会把各片段统一缩放到 1920×1080 后拼接，并压制当前字幕（与预览一致）。任务在后台队列中执行，可以继续编辑或关闭窗口。
-          </p>
-        </div>
-      {:else if activeTab === "upload" && project}
-        <ProjectUploadPanel
-          {project}
-          {exportState}
-          {coverVideoUrl}
-          exporting={exporting !== null}
-          onExport={exportProject}
-          onChanged={() => void projectRefresh.run()}
-        />
-      {/if}
-    </InspectorPanel>
+            <button
+              type="button"
+              class="footer-button primary justify-center"
+              disabled={exporting !== null || timeline.clips.length === 0}
+              onclick={exportProject}
+            >
+              {#if exporting}
+                <Loader2 class="h-3.5 w-3.5 animate-spin" />
+                导出中，可在任务中心查看进度
+              {:else}
+                <Film class="h-3.5 w-3.5" />
+                {exportState === "ready" ? "重新导出" : "导出切片"}
+              {/if}
+            </button>
+
+            {#if exportState === "ready" && project?.output}
+              <div class="flex flex-col gap-1">
+                <span class="hint">导出文件：{project.output}</span>
+                {#if !TAURI_ENV}
+                  <button type="button" class="link-button self-start" onclick={downloadExport}>下载导出文件</button>
+                {/if}
+              </div>
+            {/if}
+
+            <p class="hint">
+              导出会把各片段统一缩放到 1920×1080 后拼接，并压制当前字幕（与预览一致）。任务在后台队列中执行，可以继续编辑或关闭窗口。
+            </p>
+          </div>
+        {:else if activeTab === "upload" && project}
+          <ProjectUploadPanel
+            {project}
+            {exportState}
+            {coverVideoUrl}
+            exporting={exporting !== null}
+            onExport={exportProject}
+            onChanged={() => void projectRefresh.run()}
+          />
+        {/if}
+      </InspectorPanel>
+    </div>
+
+    <div class="transport">
+      <div class="flex items-center gap-1">
+        <button class="icon-button" title="在播放头处分割 (⌘B)" disabled={!clipAt(timeline, time)} onclick={splitAtPlayhead}>
+          <Scissors class="h-4 w-4" />
+          分割
+        </button>
+        <button class="icon-button" title="删除选中 (Delete)" disabled={!selectedClipId && !selectedSubtitleId} onclick={deleteSelection}>
+          <Trash2 class="h-4 w-4" />
+          删除
+        </button>
+        <button class="icon-button" title="在播放头处添加字幕" disabled={!clipAt(timeline, time)} onclick={addSubtitleAtPlayhead}>
+          <Plus class="h-4 w-4" />
+          字幕
+        </button>
+      </div>
+      <div class="flex items-center gap-3">
+        <button class="play-button" title="播放/暂停 (空格)" onclick={togglePlay} disabled={duration === 0}>
+          {#if playing}
+            <Pause class="h-4 w-4" />
+          {:else}
+            <Play class="h-4 w-4" />
+          {/if}
+        </button>
+        <span class="clock">{formatTime(time)} / {formatTime(duration)}</span>
+      </div>
+      <div class="flex items-center justify-end gap-2">
+        <span class="text-[11px] text-gray-400">缩放</span>
+        <input type="range" min="1" max="60" step="0.5" bind:value={zoom} class="w-28" data-hotkey-block />
+        <button class="icon-button" title={muted ? "取消静音" : "静音"} onclick={() => (muted = !muted)}>
+          {#if muted || volume === 0}
+            <VolumeX class="h-4 w-4" />
+          {:else}
+            <Volume2 class="h-4 w-4" />
+          {/if}
+        </button>
+        <input type="range" min="0" max="1" step="0.05" bind:value={volume} class="w-20" data-hotkey-block />
+      </div>
+    </div>
+
+    <ProjectTimelineView
+      {timeline}
+      {materials}
+      {peaks}
+      {time}
+      {zoom}
+      {selectedClipId}
+      {selectedSubtitleId}
+      onSeek={seek}
+      onScrub={(active) => (scrubbing = active)}
+      onPreview={(next) => (timeline = next)}
+      onCommit={(next, before) => commit(next, before)}
+      onSelectClip={(id) => (selectedClipId = id)}
+      onSelectSubtitle={(id) => {
+        if (id) selectSubtitle(id);
+        else selectedSubtitleId = null;
+      }}
+      onDropMaterial={(id, index) => void addMaterial(id, index)}
+      onZoom={(value) => (zoom = value)}
+    />
   </div>
 </div>
 
@@ -1245,6 +1228,30 @@
     border-top: 1px solid rgb(31 41 55 / 50%);
     background: #1c1c1e;
     padding: 6px 12px;
+  }
+
+  .titlebar-export {
+    display: inline-flex;
+    height: 28px;
+    align-items: center;
+    gap: 6px;
+    border-radius: 7px;
+    background: #0a84ff;
+    padding: 0 12px;
+    color: white;
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+    transition: background-color 150ms ease;
+  }
+
+  .titlebar-export:hover:not(:disabled) {
+    background: rgb(10 132 255 / 88%);
+  }
+
+  .titlebar-export:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
   }
 
   .play-button {

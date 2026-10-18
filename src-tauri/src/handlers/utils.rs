@@ -343,6 +343,7 @@ fn open_or_focus_window(
     url: String,
     title: String,
     size: (f64, f64),
+    min_size: Option<(f64, f64)>,
 ) -> Result<(), String> {
     // 窗口已存在时 build 会直接失败，这里改为聚焦到已有窗口，
     // 否则用户重复点击时没有任何反应。
@@ -355,7 +356,7 @@ fn open_or_focus_window(
             .map_err(|e| format!("聚焦已有窗口失败：{e}"));
     }
 
-    let builder = tauri::WebviewWindowBuilder::new(
+    let mut builder = tauri::WebviewWindowBuilder::new(
         &state.app_handle,
         label,
         tauri::WebviewUrl::App(url.into()),
@@ -371,6 +372,9 @@ fn open_or_focus_window(
         radius: None,
         color: None,
     });
+    if let Some((width, height)) = min_size {
+        builder = builder.min_inner_size(width, height);
+    }
 
     if let Err(e) = with_custom_titlebar(builder).build() {
         log::error!("window build failed: {e}");
@@ -390,6 +394,7 @@ pub async fn open_clip(state: state_type!(), video_id: i64) -> Result<(), String
         format!("index_clip.html?material={video_id}"),
         format!("Material window:{video_id}"),
         (1000.0, 680.0),
+        None,
     )
 }
 
@@ -404,6 +409,8 @@ pub async fn open_project(state: state_type!(), project_id: i64) -> Result<(), S
         format!("index_clip.html?project={project_id}"),
         format!("Project window:{project_id}"),
         (1360.0, 860.0),
+        // Material library, preview and side panel stay side by side.
+        Some((1100.0, 680.0)),
     )
 }
 

@@ -12,6 +12,8 @@
     collapsed: boolean;
     /** Let the active tab manage its own scrolling, e.g. a virtual list. */
     fillContent?: boolean;
+    /** Keep the panel beside the content at every width instead of overlaying it. */
+    docked?: boolean;
     /** Shown at the left of the bottom bar. */
     summary?: { label: string; value: string } | null;
     /** Buttons at the right of the bottom bar. */
@@ -25,13 +27,14 @@
     activeTab = $bindable(),
     collapsed,
     fillContent = false,
+    docked = false,
     summary = null,
     actions,
     children,
   }: Props = $props();
 </script>
 
-<div class="inspector-shell" class:collapsed>
+<div class="inspector-shell" class:collapsed class:docked>
   {#if !collapsed}
     <aside class="inspector" aria-label={title}>
       <div class="inspector-heading">
@@ -105,6 +108,11 @@
       position: relative;
       box-shadow: none;
     }
+  }
+
+  .inspector-shell.docked {
+    position: relative;
+    box-shadow: none;
   }
 
   .inspector {

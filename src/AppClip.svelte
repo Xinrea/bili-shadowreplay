@@ -1,113 +1,24 @@
 <script lang="ts">
-  import { invoke, get_static_url } from "./lib/invoker";
-  import { onMount } from "svelte";
-  import VideoPreview from "./lib/components/VideoPreview.svelte";
+  import MaterialPreview from "./lib/components/MaterialPreview.svelte";
+  import ProjectEditor from "./lib/components/project/ProjectEditor.svelte";
   import TaskCenter from "./lib/components/TaskCenter.svelte";
   import TitleBar from "./lib/components/TitleBar.svelte";
-  import type { Config, VideoItem } from "./lib/interface";
-  import { set_title } from "./lib/invoker";
 
-  let video: VideoItem | null = $state(null);
-  let videos: any[] = $state([]);
-  let showVideoPreview = $state(false);
-  let roomId: string = $state("");
-
-  let config: Config = null;
-
-  invoke("get_config").then((c) => {
-    config = c as Config;
-  });
-
-  onMount(async () => {
-    const videoId = new URLSearchParams(window.location.search).get("id");
-    if (videoId) {
-      try {
-        // 获取视频信息
-        const videoData = await invoke("get_video", { id: parseInt(videoId) });
-        roomId = (videoData as VideoItem).room_id;
-        // update window title to file name
-        set_title((videoData as VideoItem).file);
-        // 获取房间下的所有视频列表
-        if (roomId.length > 0) {
-          const videoList = (await invoke("get_videos", {
-            roomId: roomId,
-          })) as VideoItem[];
-          videos = await Promise.all(
-            videoList.map(async (v) => {
-              return {
-                id: v.id,
-                value: v.id,
-                name: v.file,
-                file: await get_static_url("output", v.file),
-                cover: v.cover,
-              };
-            })
-          );
-        }
-
-        // find video in videos
-        let new_video = videos.find((v) => v.id === parseInt(videoId));
-
-        handleVideoChange(new_video);
-
-        // 显示视频预览
-        showVideoPreview = true;
-      } catch (error) {
-        console.error("Failed to load video:", error);
-      }
-    }
-  });
-
-  async function handleVideoChange(newVideo: VideoItem) {
-    if (newVideo) {
-      if (newVideo.cover && newVideo.cover.trim() !== "") {
-        newVideo.cover = await get_static_url("output", newVideo.cover);
-      } else {
-        newVideo.cover = "";
-      }
-    }
-    video = newVideo;
-  }
-
-  async function handleVideoListUpdate() {
-    if (roomId.length > 0) {
-      const videosData = await invoke("get_videos", { roomId });
-      videos = await Promise.all(
-        (videosData as VideoItem[]).map(async (v) => {
-          return {
-            id: v.id,
-            value: v.id,
-            name: v.file,
-            file: await get_static_url("output", v.file),
-            cover: v.cover,
-          };
-        })
-      );
-    }
-  }
+  const params = new URLSearchParams(window.location.search);
+  const projectId = Number(params.get("project")) || null;
+  // `id` is the material link used before projects existed.
+  const materialId = Number(params.get("material") ?? params.get("id")) || null;
 </script>
 
 <TaskCenter />
 
-{#if showVideoPreview && video && roomId.length > 0}
-  <VideoPreview
-    bind:show={showVideoPreview}
-    {video}
-    {videos}
-    {roomId}
-    onVideoChange={handleVideoChange}
-    onVideoListUpdate={handleVideoListUpdate}
-  />
+{#if projectId}
+  <ProjectEditor {projectId} />
+{:else if materialId}
+  <MaterialPreview {materialId} />
 {:else}
-  <main class="flex flex-col h-screen bg-[#1c1c1e] text-white">
-    <TitleBar tone="dark" title="切片预览" />
-    <div class="flex flex-1 items-center justify-center">
-      <div class="text-center">
-        <div
-          class="animate-spin h-8 w-8 border-2 border-[#0A84FF] border-t-transparent rounded-full mx-auto mb-4"
-        ></div>
-        <p>加载中...</p>
-      </div>
-    </div>
+  <main class="flex h-screen flex-col bg-[#1c1c1e] text-white">
+    <TitleBar tone="dark" title="切片" />
+    <div class="flex flex-1 items-center justify-center text-sm text-gray-400">没有指定要打开的切片或素材</div>
   </main>
 {/if}

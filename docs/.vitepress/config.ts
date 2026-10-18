@@ -56,7 +56,7 @@ export default withMermaid({
             items: [
               { text: "工作流程", link: "/usage/features/workflow" },
               { text: "直播间管理", link: "/usage/features/room" },
-              { text: "切片功能", link: "/usage/features/clip" },
+              { text: "素材与切片", link: "/usage/features/clip" },
               { text: "字幕功能", link: "/usage/features/subtitle" },
               { text: "弹幕功能", link: "/usage/features/danmaku" },
               { text: "Webhook", link: "/usage/features/webhook" },

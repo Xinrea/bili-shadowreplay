@@ -7,9 +7,11 @@
     video?: any;
     show?: boolean;
     onCoverUpdate?: (cover: { cover: string }) => void;
+    /** Store the cover somewhere other than the video, such as a project. */
+    onSave?: (cover: string) => Promise<void>;
   }
 
-  let { video = null, show = $bindable(false), onCoverUpdate }: Props = $props();
+  let { video = null, show = $bindable(false), onCoverUpdate, onSave }: Props = $props();
 
   // 文本列表
   let texts = $state([
@@ -327,10 +329,14 @@
             // 直接使用 canvas 的内容作为新封面
             const newCover = canvas.toDataURL("image/jpeg");
 
-            await invoke("update_video_cover", {
-              id: video.value,
-              cover: newCover,
-            });
+            if (onSave) {
+              await onSave(newCover);
+            } else {
+              await invoke("update_video_cover", {
+                id: video.value,
+                cover: newCover,
+              });
+            }
 
             // 触发自定义事件通知父组件更新封面
             onCoverUpdate?.({ cover: newCover });

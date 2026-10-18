@@ -12,6 +12,7 @@
   import About from "./page/About.svelte";
   import { log, onOpenUrl } from "./lib/invoker";
   import Clip from "./page/Clip.svelte";
+  import Material from "./page/Material.svelte";
   import Task from "./page/Task.svelte";
   import AI from "./page/AI.svelte";
   import Archive from "./page/Archive.svelte";
@@ -201,6 +202,9 @@
       </PageView>
       <PageView visible={active == "录播"} bind:titlebar={titlebars["录播"]}>
         <Archive />
+      </PageView>
+      <PageView visible={active == "素材"} bind:titlebar={titlebars["素材"]}>
+        <Material />
       </PageView>
       <PageView visible={active == "切片"} bind:titlebar={titlebars["切片"]}>
         <Clip />

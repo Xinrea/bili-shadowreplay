@@ -45,6 +45,9 @@ pub struct ProjectView {
     pub project: ProjectRow,
     pub duration: f64,
     pub clip_count: usize,
+    /// Cover to show, relative to the output directory: the project's own or
+    /// the first material's thumbnail.
+    pub display_cover: String,
     /// `material` (one untouched material, nothing to export), `none` (never
     /// exported), `stale` (edited after the export) or `ready`.
     pub export_state: &'static str,
@@ -133,10 +136,21 @@ async fn project_view(
     let timeline = Timeline::parse(&project.timeline).unwrap_or_default();
     let hash = export_hash(state, &timeline).await;
     let output = output_dir(state).await;
+    let display_cover = if project.cover.is_empty() {
+        timeline
+            .clips
+            .first()
+            .and_then(|clip| materials.get(&clip.material_id))
+            .map(|material| material.cover.clone())
+            .unwrap_or_default()
+    } else {
+        project.cover.clone()
+    };
     ProjectView {
         export_state: export_state(&project, &timeline, &hash, materials, &output),
         duration: timeline.duration(),
         clip_count: timeline.clips.len(),
+        display_cover,
         project,
     }
 }

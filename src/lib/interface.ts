@@ -73,6 +73,86 @@ export interface VideoItem {
   area: number;
   created_at: string;
   platform?: string;
+  /** Source recording of a material; empty for imported videos. */
+  live_id?: string;
+  /** JSON `{ ranges, local_offset }` describing where the material was cut from. */
+  source?: string;
+  /** Exact length in seconds; 0 for old rows that were never probed. */
+  duration?: number;
+}
+
+/** A material is one video file; `VideoItem` keeps its historical name. */
+export type MaterialItem = VideoItem;
+
+export interface TimelineClip {
+  id: string;
+  material_id: number;
+  /** In point within the material, in seconds. */
+  start: number;
+  /** Out point within the material, in seconds. */
+  end: number;
+}
+
+/** A subtitle anchored to a clip, timed in that clip's material time. */
+export interface TimelineSubtitle {
+  id: string;
+  clip_id: string;
+  start: number;
+  end: number;
+  text: string;
+}
+
+export interface ProjectTimeline {
+  version: number;
+  /** The main track: clips play back to back. */
+  clips: TimelineClip[];
+  subtitles: TimelineSubtitle[];
+  subtitle_style?: SubtitleStyle | null;
+  /** Burn the materials' danmaku when exporting. */
+  danmu: boolean;
+}
+
+export type ProjectExportState = "material" | "none" | "stale" | "ready";
+
+/** A project (切片) as listed by the backend. */
+export interface ProjectItem {
+  id: number;
+  room_id: string;
+  platform: string;
+  title: string;
+  note: string;
+  /** Relative to the output directory; empty to use the first material's thumbnail. */
+  cover: string;
+  /** `ProjectTimeline` JSON. */
+  timeline: string;
+  /** Upload `Profile` JSON. */
+  profile: string;
+  output: string;
+  output_hash: string;
+  status: number;
+  bvid: string;
+  created_at: string;
+  updated_at: string;
+  duration: number;
+  clip_count: number;
+  /** Cover to show, relative to the output directory. */
+  display_cover: string;
+  export_state: ProjectExportState;
+}
+
+export interface GeneratedMaterials {
+  materials: VideoItem[];
+  project: ProjectItem | null;
+}
+
+export interface ExportStarted {
+  task: { id: string } | null;
+  message: string;
+}
+
+export interface MaterialPeaks {
+  rate: number;
+  peaks: number[];
 }
 
 export interface Profile {
@@ -291,6 +371,15 @@ export function generateEventId() {
 
 export async function clipRange(eventId: string, params: ClipRangeParams) {
   return await invoke("clip_range", { eventId, params });
+}
+
+/** Cut each range into its own material, optionally in a new project. */
+export async function generateMaterials(
+  eventId: string,
+  params: ClipRangeParams,
+  createProject: boolean,
+): Promise<GeneratedMaterials> {
+  return await invoke<GeneratedMaterials>("generate_materials", { eventId, params, createProject });
 }
 
 export interface DanmuEntry {

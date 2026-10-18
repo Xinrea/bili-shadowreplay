@@ -62,7 +62,13 @@ export function mergeActiveTasks(
 export function taskTypeName(taskType: string) {
   switch (taskType.toLowerCase()) {
     case "clip_range":
-      return "切片生成";
+      return "素材生成";
+    case "generate_materials":
+      return "素材生成";
+    case "export_project":
+      return "切片导出";
+    case "upload_project":
+      return "切片投稿";
     case "clip_video":
       return "切片裁剪";
     case "upload_procedure":
@@ -108,13 +114,17 @@ export function describeTask(task: Pick<TaskRow, "metadata">) {
   if (typeof metadata?.profile?.title === "string" && metadata.profile.title) {
     return metadata.profile.title;
   }
-  if (metadata?.video_id !== undefined) return `切片 #${metadata.video_id}`;
+  if (typeof metadata?.title === "string" && metadata.title) return metadata.title;
+  if (metadata?.project_id !== undefined) return `切片 #${metadata.project_id}`;
+  if (metadata?.video_id !== undefined) return `素材 #${metadata.video_id}`;
   return "";
 }
 
 /** Task types the backend runs on its task queue; others cannot be cancelled. */
 const CANCELLABLE_TASK_TYPES = new Set([
   "clip_range",
+  "generate_materials",
+  "export_project",
   "clip_video",
   "encode_video_subtitle",
   "generate_whole_clip",

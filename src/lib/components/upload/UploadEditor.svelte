@@ -48,8 +48,6 @@
   let showCoverEditor = $state(false);
   let coverUrl = $state("");
   let coverFailed = $state(false);
-  // The cover keeps its file name when replaced, so its URL needs a version.
-  let coverVersion = $state(Date.now());
   let videoUrl = $state("");
 
   let editable = $derived(upload.status === "draft" || upload.status === "failed");
@@ -74,13 +72,13 @@
 
   $effect(() => {
     const cover = upload.display_cover;
-    const version = coverVersion;
     coverFailed = false;
     if (!cover) {
       coverUrl = "";
       return;
     }
-    void get_static_url("output", cover).then((url) => (coverUrl = `${url}?v=${version}`));
+    // Each saved cover is a new file, so its URL changes with it.
+    void get_static_url("output", cover).then((url) => (coverUrl = url));
   });
 
   $effect(() => {
@@ -142,7 +140,8 @@
 
   async function saveCover(cover: string) {
     await invoke("update_upload_cover", { id: upload.id, cover });
-    coverVersion = Date.now();
+    // The previous file is gone; show the new one now.
+    await onChanged();
   }
 
   async function post() {

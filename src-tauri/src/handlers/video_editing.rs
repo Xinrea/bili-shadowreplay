@@ -378,18 +378,7 @@ pub async fn merge_videos(
             ));
         }
     } else {
-        // Use xfade filter for transitions
-        let transition_duration = 1.0; // 1 second transition
-
-        // Build complex filter for xfade transitions
-        let mut filter_complex = String::new();
-
-        // Load all videos
-        for (i, _video) in videos.iter().enumerate() {
-            filter_complex.push_str(&format!("[{}:v]", i));
-        }
-
-        // Chain xfade filters
+        // Only pass known xfade transitions into the filter graph
         let xfade_transition = match transition_type {
             "fade" => "fade",
             "dissolve" => "dissolve",
@@ -400,88 +389,16 @@ pub async fn merge_videos(
             _ => "fade",
         };
 
-        for i in 0..(videos.len() - 1) {
-            if i == 0 {
-                filter_complex.push_str(&format!(
-                    "[0:v][1:v]xfade=transition={}:duration={}:offset={}[v{}];",
-                    xfade_transition,
-                    transition_duration,
-                    videos[0].length as f64 - transition_duration,
-                    i + 1
-                ));
-            } else if i < videos.len() - 2 {
-                let offset: f64 = videos
-                    .iter()
-                    .take(i + 1)
-                    .map(|v| v.length as f64)
-                    .sum::<f64>()
-                    - (i as f64 + 1.0) * transition_duration;
-                filter_complex.push_str(&format!(
-                    "[v{}][{}:v]xfade=transition={}:duration={}:offset={}[v{}];",
-                    i,
-                    i + 1,
-                    xfade_transition,
-                    transition_duration,
-                    offset,
-                    i + 1
-                ));
-            } else {
-                let offset: f64 = videos
-                    .iter()
-                    .take(i + 1)
-                    .map(|v| v.length as f64)
-                    .sum::<f64>()
-                    - (i as f64 + 1.0) * transition_duration;
-                filter_complex.push_str(&format!(
-                    "[v{}][{}:v]xfade=transition={}:duration={}:offset={}[outv]",
-                    i,
-                    i + 1,
-                    xfade_transition,
-                    transition_duration,
-                    offset
-                ));
-            }
-        }
-
-        // Build ffmpeg command with multiple inputs
-        let mut cmd = ffmpeg_command();
-
-        // Add all input files
-        for video_path in &video_paths {
-            cmd.arg("-i").arg(video_path);
-        }
-
-        // Add filter complex
-        cmd.args([
-            "-filter_complex",
-            &filter_complex,
-            "-map",
-            "[outv]",
-            "-map",
-            "0:a",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "medium",
-            "-crf",
-            "23",
-            "-c:a",
-            "aac",
-            "-y",
-            path_str(&output_path)?,
-        ]);
-
-        let output = cmd
-            .output()
-            .await
-            .map_err(|e| format!("Failed to run ffmpeg: {}", e))?;
-
-        if !output.status.success() {
-            return Err(format!(
-                "FFmpeg merge with transition failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
+        // Shared with clip export: cross-fades the audio along with the video
+        // and conforms inputs of different size or frame rate for xfade.
+        crate::ffmpeg::general::concat_videos_with_transition(
+            None::<&crate::progress::progress_reporter::ProgressReporter>,
+            &video_paths,
+            &output_path,
+            Some(xfade_transition),
+        )
+        .await
+        .map_err(|e| format!("FFmpeg merge with transition failed: {}", e))?;
     }
 
     // Get file size
@@ -490,15 +407,23 @@ pub async fn merge_videos(
         .map_err(|e| format!("Failed to get file size: {}", e))?
         .len();
 
-    // Calculate total duration
-    let total_duration: i64 = videos.iter().map(|v| v.length).sum();
+    // Transitions overlap neighbouring videos, so the merged length is shorter
+    // than the sum of the inputs; read it from the result instead.
+    let total_duration = match extract_video_metadata(&output_path).await {
+        Ok(metadata) => metadata.duration as i64,
+        Err(e) => {
+            log::warn!("Failed to read merged video length: {e}");
+            videos.iter().map(|v| v.length).sum()
+        }
+    };
 
     // Create new video row
     let new_video = crate::database::video::VideoRow {
         id: 0, // Will be auto-generated
         room_id: videos[0].room_id.clone(),
         cover: String::new(),
-        file: output_path.to_string_lossy().to_string(),
+        // Relative to the output directory, like every other video row
+        file: output_filename,
         note: output_note.clone(),
         length: total_duration,
         size: file_size as i64,

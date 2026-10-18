@@ -340,24 +340,24 @@ pub async fn post_upload(
     id: i64,
     subtitle_ass: Option<String>,
 ) -> Result<(), String> {
-    let mut upload = state.db.get_upload(id).await?;
+    let upload = state.db.get_upload(id).await?;
     ensure_editable(&upload)?;
-    if upload.uid.is_empty() {
-        return Err("请先选择投稿账号".to_string());
-    }
-    let profile: Profile =
-        serde_json::from_str(&upload.profile).map_err(|e| format!("投稿信息无效: {e}"))?;
-    if profile.title.trim().is_empty() {
-        return Err("请填写投稿标题".to_string());
-    }
+    ready_to_post(&upload)?;
     // Concurrent requests can all pass the checks above; only one claims it.
     let now = Local::now().to_rfc3339();
     if !state.db.claim_upload(id, &now).await? {
         return Err("投稿进行中，暂时无法修改".to_string());
     }
-    upload.status = "posting".to_string();
-    upload.message = String::new();
-    upload.updated_at = now;
+    // Post it as claimed: edits saved before the claim are in, later ones are
+    // refused.
+    let upload = state.db.get_upload(id).await?;
+    let profile = match ready_to_post(&upload) {
+        Ok(profile) => profile,
+        Err(e) => {
+            state.db.mark_upload_failed(id, &e, &now).await?;
+            return Err(e);
+        }
+    };
     let task = TaskRow {
         id: event_id.clone(),
         task_type: "upload".to_string(),
@@ -446,7 +446,7 @@ pub async fn update_upload_danmu(
     if upload.source == "file" {
         return Err("视频文件没有可压制的弹幕".to_string());
     }
-    // Claims the draft's editability first, so a post cannot start in between.
+    // Only while it is still editable: once claimed for posting, it is refused.
     let now = Local::now().to_rfc3339();
     if !state.db.set_upload_danmu(id, danmu, &now).await? {
         return Err(not_editable(&state, id).await);
@@ -455,6 +455,19 @@ pub async fn update_upload_danmu(
         set_project_danmu(&state, upload.source_id, danmu).await?;
     }
     Ok(upload_view(&state, state.db.get_upload(id).await?).await)
+}
+
+/// The form to post, if the upload has what posting needs.
+fn ready_to_post(upload: &UploadRow) -> Result<Profile, String> {
+    if upload.uid.is_empty() {
+        return Err("请先选择投稿账号".to_string());
+    }
+    let profile: Profile =
+        serde_json::from_str(&upload.profile).map_err(|e| format!("投稿信息无效: {e}"))?;
+    if profile.title.trim().is_empty() {
+        return Err("请填写投稿标题".to_string());
+    }
+    Ok(profile)
 }
 
 /// Why an edit of the upload did not apply.

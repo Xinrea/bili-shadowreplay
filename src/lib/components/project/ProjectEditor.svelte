@@ -103,6 +103,7 @@
   let saveState: "saved" | "pending" | "saving" | "error" = $state("saved");
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let saving: Promise<void> | null = null;
+  let danmuSaved: Promise<void> = Promise.resolve();
 
   let videoA: HTMLVideoElement = $state();
   let videoB: HTMLVideoElement = $state();
@@ -259,7 +260,7 @@
     // (closing does not blur it) and wait until everything is saved.
     unlistenClose = await current.onCloseRequested(async () => {
       endEdit();
-      await Promise.all([saveInfo(), flushSave()]);
+      await saveAll();
     });
   });
 
@@ -363,12 +364,23 @@
   /** Switch the project's danmaku setting, which has a command of its own. */
   async function setDanmu(danmu: boolean) {
     timeline = { ...timeline, danmu };
+    // Saved in order; exports and uploads wait for it, as they read the saved value.
+    const request = danmuSaved.then(() => invoke("update_project_danmu", { id: projectId, danmu }));
+    danmuSaved = request.then(
+      () => {},
+      () => {},
+    );
     try {
-      await invoke("update_project_danmu", { id: projectId, danmu });
+      await request;
     } catch (error) {
       timeline = { ...timeline, danmu: !danmu };
       alert("修改弹幕设置失败：" + error);
     }
+  }
+
+  /** Save the timeline, the title and the danmaku switch. */
+  async function saveAll() {
+    await Promise.all([flushSave(), saveInfo(), danmuSaved]);
   }
 
   /** Begin an edit made of several updates, such as typing a subtitle. */
@@ -649,7 +661,8 @@
       });
       if (!target) return;
     }
-    await flushSave();
+    // The export renders the saved danmaku setting.
+    await saveAll();
     const eventId = generateEventId();
     exporting = eventId;
     let unlisten: (() => void) | null = null;
@@ -714,7 +727,7 @@
     requestingUpload = true;
     try {
       // The draft takes its title from the saved project.
-      await Promise.all([flushSave(), saveInfo()]);
+      await saveAll();
       await invoke("request_upload", { source: "project", id: projectId });
     } catch (error) {
       alert("打开投稿失败：" + error);
@@ -746,7 +759,7 @@
         KeyZ: () => (event.shiftKey ? redo() : undo()),
         KeyY: redo,
         KeyB: splitAtPlayhead,
-        KeyS: () => void Promise.all([flushSave(), saveInfo()]),
+        KeyS: () => void saveAll(),
         Digit3: () => setSubtitleBoundary("start"),
         Digit4: () => setSubtitleBoundary("end"),
       }[event.code];

@@ -55,7 +55,9 @@
   let editable = $derived(upload.status === "draft" || upload.status === "failed");
   let savingDanmu = $state(false);
   // Turning it off stays possible even when there is nothing to burn.
-  let canToggleDanmu = $derived(editable && (upload.danmu_available || upload.danmu) && !savingDanmu);
+  let canToggleDanmu = $derived(
+    editable && !posting && (upload.danmu_available || upload.danmu) && !savingDanmu,
+  );
   let active = $derived(upload.status === "exporting" || upload.status === "posting");
   let blocker = $derived(
     upload.source_state === "missing"
@@ -318,7 +320,7 @@
 
         <fieldset
           class="min-w-0 space-y-3.5 disabled:opacity-70"
-          disabled={!editable}
+          disabled={!editable || posting}
           oninput={scheduleSave}
           onchange={scheduleSave}
         >

@@ -204,7 +204,7 @@
 
 {#if showModal}
   <div
-    class="fixed inset-0 bg-black/20 dark:bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center"
+    class="ui-modal-backdrop"
     transition:fade={{ duration: 200 }}
     onclick={closeModal}
     onkeydown={(e) => e.key === "Escape" && closeModal()}
@@ -215,83 +215,77 @@
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
-      class="mac-modal w-[900px] bg-white dark:bg-[#323234] rounded-xl shadow-xl overflow-hidden flex flex-col max-h-[90vh]"
+      class="ui-modal max-h-[90vh] w-[900px]"
       transition:scale={{ duration: 150, start: 0.95 }}
       onclick={(event) => event.stopPropagation()}
     >
       <!-- Header -->
-      <div
-        class="flex justify-between items-center px-6 py-4 border-b border-gray-200 dark:border-gray-700/50"
-      >
-        <div class="flex items-center space-x-3">
-          <h2 class="text-base font-medium text-gray-900 dark:text-white">
-            生成完整直播切片
-          </h2>
-          <span class="text-sm text-gray-500 dark:text-gray-400">
+      <div class="ui-modal-header">
+        <div class="flex min-w-0 items-baseline gap-2.5">
+          <h2 class="shrink-0">生成完整直播切片</h2>
+          <span class="truncate text-[12px] font-normal text-fg-muted">
             {archive?.title || "直播片段"}
           </span>
         </div>
         <button
-          class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors"
+          class="ui-btn ui-btn-ghost ui-btn-sm ui-btn-icon -mr-1.5"
           onclick={closeModal}
         >
-          <X class="w-5 h-5 dark:icon-white" />
+          <X class="h-4 w-4" />
         </button>
       </div>
 
       <!-- Content -->
-      <div class="flex-1 flex flex-col min-h-0">
+      <div class="flex min-h-0 flex-1 flex-col">
         <!-- Main Content: Left (List) -->
-        <div class="flex-1 flex min-h-0">
+        <div class="flex min-h-0 flex-1">
           <!-- Left: Scrollable List -->
-          <div class="flex-1 overflow-auto custom-scrollbar-light px-6 py-6 min-h-0">
+          <div class="custom-scrollbar-light min-h-0 flex-1 overflow-auto px-[18px] py-4">
             {#if isLoading}
               <div class="flex items-center justify-center py-8">
-                <div
-                  class="flex items-center space-x-2 text-gray-500 dark:text-gray-400"
-                >
+                <div class="flex items-center space-x-2 text-[12px] text-fg-muted">
                   <div
-                    class="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-500"
+                    class="h-5 w-5 animate-spin rounded-full border-b-2 border-accent"
                   ></div>
                   <span>加载中...</span>
                 </div>
               </div>
             {:else if wholeClipArchives.length === 0}
-              <div class="text-center py-8 text-gray-500 dark:text-gray-400">
+              <div class="py-8 text-center text-[12px] text-fg-muted">
                 未找到相关片段
               </div>
             {:else}
-              <div class="flex items-center justify-between pb-4">
-                <div class="text-sm text-gray-600 dark:text-gray-400">
+              <div class="flex items-center justify-between pb-3">
+                <div class="text-[12px] text-fg-muted">
                   默认全选，按勾选顺序合成
                 </div>
-                <div class="flex items-center space-x-3 text-sm">
+                <div class="flex items-center space-x-3 text-[12px]">
                   <button
-                    class="text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
+                    class="font-medium text-accent-fg transition-opacity hover:opacity-80"
                     onclick={selectAll}
                   >
                     全选
                   </button>
                   <button
-                    class="text-gray-500 hover:text-gray-700 dark:text-gray-300 dark:hover:text-gray-100"
+                    class="text-fg-muted transition-colors hover:text-fg"
                     onclick={clearSelection}
                   >
                     取消全选
                   </button>
                   <div class="relative" use:clickOutside={() => (showSelectionHelp = false)}>
                     <button
-                      class="text-gray-500 hover:text-gray-700 dark:text-gray-300 dark:hover:text-gray-100"
+                      class="flex items-center text-fg-muted transition-colors hover:text-fg"
                       onclick={() =>
                         (showSelectionHelp = !showSelectionHelp)}
                       onmouseenter={() => (showSelectionHelp = true)}
                       onmouseleave={() => (showSelectionHelp = false)}
                       aria-label="选择顺序说明"
                     >
-                      <Info class="w-4 h-4" />
+                      <Info class="h-4 w-4" />
                     </button>
                     {#if showSelectionHelp}
                       <div
-                        class="absolute right-0 top-6 z-20 w-64 rounded-lg border border-gray-200 bg-white p-3 text-xs text-gray-700 shadow-lg dark:border-gray-700 dark:bg-[#2c2c2e] dark:text-gray-200"
+                        class="absolute right-0 top-6 z-20 w-64 rounded-[8px] border border-line bg-surface p-3 text-[11px] leading-relaxed text-fg-secondary shadow-xl"
                       >
                         取消全选后请按需要勾选片段，勾选的先后顺序即合成顺序。
                       </div>
@@ -299,27 +293,31 @@
                   </div>
                 </div>
               </div>
-              <div class="space-y-2 pb-4">
+              <div class="space-y-1.5 pb-4">
                 {#each wholeClipArchives as archiveItem, index (archiveItem.live_id)}
                   <div
-                    class="flex items-center space-x-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-700/30"
+                    class="flex items-center space-x-3 rounded-[10px] border bg-control p-2.5 transition-colors {selectedLiveIds.includes(
+                      archiveItem.live_id
+                    )
+                      ? 'border-accent/50'
+                      : 'border-transparent'}"
                   >
                     <input
                       type="checkbox"
-                      class="h-4 w-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
+                      class="ui-checkbox"
                       checked={selectedLiveIds.includes(archiveItem.live_id)}
                       onchange={(event) =>
                         handleSelectionChange(event, archiveItem.live_id)}
                     />
-                    <div class="flex items-center justify-center w-6">
+                    <div class="flex w-6 items-center justify-center">
                       {#if selectedLiveIds.includes(archiveItem.live_id)}
                         <div
-                          class="w-6 h-6 rounded-full bg-blue-500 flex items-center justify-center text-white text-xs font-bold shadow-sm"
+                          class="flex h-5 w-5 items-center justify-center rounded-full bg-accent text-[10px] font-semibold tabular-nums text-white"
                         >
                           {selectedLiveIds.indexOf(archiveItem.live_id) + 1}
                         </div>
                       {:else}
-                        <span class="text-xs text-gray-400 dark:text-gray-500 font-medium">
+                        <span class="text-[11px] font-medium tabular-nums text-fg-faint">
                           {index + 1}
                         </span>
                       {/if}
@@ -329,20 +327,18 @@
                       <img
                         src={archiveItem.cover}
                         alt="cover"
-                        class="w-14 h-9 rounded object-cover flex-shrink-0"
+                        class="h-9 w-14 flex-shrink-0 rounded-[6px] bg-sunken object-cover"
                       />
                     {/if}
 
-                    <div class="flex-1 min-w-0">
-                      <div
-                        class="text-sm font-medium text-gray-900 dark:text-white truncate"
-                      >
+                    <div class="min-w-0 flex-1">
+                      <div class="truncate text-[12px] font-medium text-fg">
                         {archiveItem.title}
                       </div>
-                      <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      <div class="mt-0.5 text-[11px] tabular-nums text-fg-muted">
                         开始时间 {formatTimestamp(archiveItem.created_at)}
                       </div>
-                      <div class="text-xs text-gray-500 dark:text-gray-400">
+                      <div class="text-[11px] tabular-nums text-fg-muted">
                         时长 {formatDuration(archiveItem.length)} · 大小 {formatSize(
                           archiveItem.size
                         )}
@@ -357,43 +353,33 @@
 
         <!-- Bottom Summary -->
         {#if !isLoading && wholeClipArchives.length > 0}
-          <div class="px-6 pb-4">
-            <div
-              class="p-3 rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 w-full"
-            >
-              <div class="flex items-center justify-between">
+          <div class="px-[18px] pb-4">
+            <div class="w-full rounded-[10px] border border-line bg-control p-3">
+              <div class="flex items-center justify-between gap-3">
                 <div class="flex items-center space-x-2">
-                  <FileVideo class="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                  <span
-                    class="text-sm font-medium text-blue-900 dark:text-blue-100"
-                  >
+                  <FileVideo class="h-4 w-4 text-accent-fg" />
+                  <span class="text-[12px] font-semibold text-fg">
                     合成信息
                   </span>
                 </div>
-                <div class="text-xs text-blue-600 dark:text-blue-300">
+                <div class="text-[11px] tabular-nums text-fg-muted">
                   已选 {selectedArchives.length} 个片段 · 总时长 {formatDuration(totalDuration)} · 总大小 {formatSize(totalSize)}
                 </div>
               </div>
-              <div class="flex items-center gap-4 mt-3">
+              <div class="mt-3 flex items-center gap-4">
                 <div class="flex-1">
                   <input
                     type="text"
-                    class="w-full px-3 py-1.5 text-sm rounded-lg border border-blue-200 dark:border-blue-700 bg-white dark:bg-[#2c2c2e] text-gray-900 dark:text-gray-100"
+                    class="ui-input w-full bg-surface"
                     bind:value={outputName}
                     placeholder="输出文件名"
                   />
                 </div>
                 <div class="flex items-center space-x-2">
-                  <span class="text-xs text-blue-600 dark:text-blue-300">压制弹幕</span>
-                  <label class="relative inline-flex items-center cursor-pointer">
-                    <input
-                      type="checkbox"
-                      bind:checked={encodeDanmu}
-                      class="sr-only peer"
-                    />
-                    <div
-                      class="w-11 h-6 bg-blue-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-blue-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-blue-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-blue-600 peer-checked:bg-blue-600"
-                    ></div>
+                  <span class="text-[12px] text-fg-secondary">压制弹幕</span>
+                  <label class="ui-switch">
+                    <input type="checkbox" bind:checked={encodeDanmu} />
+                    <span></span>
                   </label>
                 </div>
               </div>
@@ -403,17 +389,12 @@
       </div>
 
       <!-- Footer -->
-      <div
-        class="px-6 py-4 border-t border-gray-200 dark:border-gray-700/50 flex justify-end space-x-3"
-      >
-        <button
-          class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg transition-colors"
-          onclick={closeModal}
-        >
+      <div class="ui-modal-footer">
+        <button class="ui-btn" onclick={closeModal}>
           取消
         </button>
         <button
-          class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          class="ui-btn ui-btn-primary"
           disabled={isLoading || selectedArchives.length === 0}
           onclick={generateWholeClip}
         >
@@ -423,18 +404,3 @@
     </div>
   </div>
 {/if}
-
-<style>
-  /* macOS style modal */
-  .mac-modal {
-    box-shadow:
-      0 20px 25px -5px rgba(0, 0, 0, 0.1),
-      0 10px 10px -5px rgba(0, 0, 0, 0.04);
-  }
-
-  :global(.dark) .mac-modal {
-    box-shadow:
-      0 20px 25px -5px rgba(0, 0, 0, 0.3),
-      0 10px 10px -5px rgba(0, 0, 0, 0.1);
-  }
-</style>

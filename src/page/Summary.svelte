@@ -5,6 +5,7 @@
   import type { RecorderList, DiskInfo } from "../lib/interface";
   import type { RecordItem } from "../lib/db";
   import { onMount } from "svelte";
+  import PageTitlebar from "../lib/components/PageTitlebar.svelte";
   import { scale } from "svelte/transition";
   import {
     CalendarCheck,
@@ -234,57 +235,52 @@
 
 <svelte:window onclick={handleClickOutside} />
 
+<PageTitlebar title="总览" />
+
 <div
-  class="flex-1 p-6 overflow-y-auto custom-scrollbar-light bg-gray-50"
+  class="flex-1 overflow-y-auto bg-canvas p-6 custom-scrollbar-light"
   onscroll={handleScroll}
 >
   <div class="space-y-6">
-    <!-- Header -->
-    <div class="flex justify-between items-center">
-      <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">总览</h1>
-    </div>
-
     <!-- Stats Grid -->
-    <div class="grid grid-cols-3 gap-6">
+    <div class="grid grid-cols-3 gap-4">
       <!-- Cache Size -->
-      <div
-        class="p-6 rounded-xl bg-white dark:bg-[#3c3c3e] shadow-sm border border-gray-200 dark:border-gray-700 hover:border-blue-500 dark:hover:border-blue-400 transition-colors"
-      >
-        <div class="flex items-center space-x-3">
-          <div class="p-3 rounded-lg bg-blue-500">
-            <HardDrive class="w-6 h-6 icon-white" />
+      <div class="ui-card p-4 transition-colors hover:border-line-strong">
+        <div class="flex items-center gap-3">
+          <div
+            class="flex h-10 w-10 shrink-0 items-center justify-center rounded-[9px] bg-accent-soft text-accent-fg"
+          >
+            <HardDrive class="h-5 w-5" />
           </div>
-          <div>
-            <p class="text-sm text-gray-600 dark:text-gray-400">缓存占用</p>
-            <p class="text-2xl font-semibold text-gray-900 dark:text-white">
+          <div class="min-w-0">
+            <p class="text-[12px] text-fg-muted">缓存占用</p>
+            <p class="text-[20px] font-semibold leading-tight text-fg tabular-nums">
               {format_size(disk_usage)}
             </p>
           </div>
         </div>
       </div>
 
-      <div
-        class="p-6 rounded-xl bg-white dark:bg-[#3c3c3e] shadow-sm border border-gray-200 dark:border-gray-700 hover:border-blue-500 dark:hover:border-blue-400 transition-colors"
-      >
-        <div class="flex items-center space-x-3">
-          <div class="p-3 rounded-lg bg-orange-500">
-            <Database class="w-6 h-6 icon-white" />
+      <div class="ui-card p-4 transition-colors hover:border-line-strong">
+        <div class="flex items-center gap-3">
+          <div
+            class="flex h-10 w-10 shrink-0 items-center justify-center rounded-[9px] bg-warning-soft text-warning-fg"
+          >
+            <Database class="h-5 w-5" />
           </div>
           <div class="min-w-0 flex-1">
-            <div class="flex items-baseline justify-between">
-              <p class="text-sm text-gray-600 dark:text-gray-400">磁盘使用</p>
-              <p class="text-xs text-gray-500 dark:text-gray-400">
+            <div class="flex items-baseline justify-between gap-2">
+              <p class="text-[12px] text-fg-muted">磁盘使用</p>
+              <p class="text-[11px] text-fg-faint tabular-nums">
                 {format_size(disk_info.free)}剩余
               </p>
             </div>
-            <p class="text-2xl font-semibold text-gray-900 dark:text-white">
+            <p class="text-[20px] font-semibold leading-tight text-fg tabular-nums">
               {format_size(disk_info.total - disk_info.free)}
             </p>
-            <div
-              class="w-full h-1 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden mt-1.5"
-            >
+            <div class="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-sunken">
               <div
-                class="h-full bg-orange-500 rounded-full"
+                class="h-full rounded-full bg-warning"
                 style="width: {((disk_info.total - disk_info.free) /
                   disk_info.total) *
                   100}%"
@@ -295,16 +291,16 @@
       </div>
 
       <!-- Active Rooms -->
-      <div
-        class="p-6 rounded-xl bg-white dark:bg-[#3c3c3e] shadow-sm border border-gray-200 dark:border-gray-700 hover:border-blue-500 dark:hover:border-blue-400 transition-colors"
-      >
-        <div class="flex items-center space-x-3">
-          <div class="p-3 rounded-lg bg-green-500">
-            <Video class="w-6 h-6 icon-white" />
+      <div class="ui-card p-4 transition-colors hover:border-line-strong">
+        <div class="flex items-center gap-3">
+          <div
+            class="flex h-10 w-10 shrink-0 items-center justify-center rounded-[9px] bg-success-soft text-success-fg"
+          >
+            <Video class="h-5 w-5" />
           </div>
-          <div>
-            <p class="text-sm text-gray-600 dark:text-gray-400">直播间</p>
-            <p class="text-2xl font-semibold text-gray-900 dark:text-white">
+          <div class="min-w-0">
+            <p class="text-[12px] text-fg-muted">直播间</p>
+            <p class="text-[20px] font-semibold leading-tight text-fg tabular-nums">
               {online} / {total}
             </p>
           </div>
@@ -312,16 +308,16 @@
       </div>
 
       <!-- Connected Accounts -->
-      <div
-        class="p-6 rounded-xl bg-white dark:bg-[#3c3c3e] shadow-sm border border-gray-200 dark:border-gray-700 hover:border-blue-500 dark:hover:border-blue-400 transition-colors"
-      >
-        <div class="flex items-center space-x-3">
-          <div class="p-3 rounded-lg bg-purple-500">
-            <Users class="w-6 h-6 icon-white" />
+      <div class="ui-card p-4 transition-colors hover:border-line-strong">
+        <div class="flex items-center gap-3">
+          <div
+            class="flex h-10 w-10 shrink-0 items-center justify-center rounded-[9px] bg-violet-500/15 text-violet-500"
+          >
+            <Users class="h-5 w-5" />
           </div>
-          <div>
-            <p class="text-sm text-gray-600 dark:text-gray-400">账号</p>
-            <p class="text-2xl font-semibold text-gray-900 dark:text-white">
+          <div class="min-w-0">
+            <p class="text-[12px] text-fg-muted">账号</p>
+            <p class="text-[20px] font-semibold leading-tight text-fg tabular-nums">
               {account_count}
             </p>
           </div>
@@ -329,16 +325,16 @@
       </div>
 
       <!-- Total Recording Time -->
-      <div
-        class="p-6 rounded-xl bg-white dark:bg-[#3c3c3e] shadow-sm border border-gray-200 dark:border-gray-700 hover:border-blue-500 dark:hover:border-blue-400 transition-colors"
-      >
-        <div class="flex items-center space-x-3">
-          <div class="p-3 rounded-lg bg-indigo-500">
-            <Clock class="w-6 h-6 icon-white" />
+      <div class="ui-card p-4 transition-colors hover:border-line-strong">
+        <div class="flex items-center gap-3">
+          <div
+            class="flex h-10 w-10 shrink-0 items-center justify-center rounded-[9px] bg-indigo-500/15 text-indigo-500"
+          >
+            <Clock class="h-5 w-5" />
           </div>
-          <div>
-            <p class="text-sm text-gray-600 dark:text-gray-400">总缓存时长</p>
-            <p class="text-2xl font-semibold text-gray-900 dark:text-white">
+          <div class="min-w-0">
+            <p class="text-[12px] text-fg-muted">总缓存时长</p>
+            <p class="text-[20px] font-semibold leading-tight text-fg tabular-nums">
               {format_time(total_length)}
             </p>
           </div>
@@ -346,18 +342,18 @@
       </div>
 
       <!-- Today's Recordings -->
-      <div
-        class="p-6 rounded-xl bg-white dark:bg-[#3c3c3e] shadow-sm border border-gray-200 dark:border-gray-700 hover:border-blue-500 dark:hover:border-blue-400 transition-colors"
-      >
-        <div class="flex items-center space-x-3">
-          <div class="p-3 rounded-lg bg-pink-500">
-            <CalendarCheck class="w-6 h-6 icon-white" />
+      <div class="ui-card p-4 transition-colors hover:border-line-strong">
+        <div class="flex items-center gap-3">
+          <div
+            class="flex h-10 w-10 shrink-0 items-center justify-center rounded-[9px] bg-pink-500/15 text-pink-500"
+          >
+            <CalendarCheck class="h-5 w-5" />
           </div>
-          <div>
-            <p class="text-sm text-gray-600 dark:text-gray-400">
+          <div class="min-w-0">
+            <p class="text-[12px] text-fg-muted">
               今日缓存直播数
             </p>
-            <p class="text-2xl font-semibold text-gray-900 dark:text-white">
+            <p class="text-[20px] font-semibold leading-tight text-fg tabular-nums">
               {today_record_count}
             </p>
           </div>
@@ -366,64 +362,64 @@
     </div>
 
     <!-- Recent Recordings -->
-    <div class="space-y-4">
-      <div class="flex justify-between items-center">
-        <div class="flex items-center space-x-3">
-          <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+    <div class="space-y-3">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <h2 class="ui-section-title">
             最近的直播记录
           </h2>
           <button
-            class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors text-gray-500 dark:text-gray-400"
+            class="ui-btn ui-btn-ghost ui-btn-sm ui-btn-icon"
             onclick={refreshRecords}
           >
-            <RefreshCw class="w-5 h-5 dark:icon-white" />
+            <RefreshCw class="h-3.5 w-3.5" />
           </button>
         </div>
         {#if hasNewRecords}
           <button
-            class="px-3 py-1 text-sm text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-500/10 rounded-full hover:bg-blue-100 dark:hover:bg-blue-500/20 transition-colors"
+            class="inline-flex h-6 items-center rounded-full border border-accent/30 bg-accent-soft px-2.5 text-[11px] font-medium text-accent-fg transition-colors hover:border-accent/60"
             onclick={loadMoreRecords}
           >
             记录有更新 • 点击刷新
           </button>
         {/if}
       </div>
-      <div class="space-y-3">
+      <div class="space-y-2">
         <!-- Recording Items -->
         {#each recent_records as record}
           <div
-            class="p-4 rounded-lg bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 flex items-center justify-between hover:border-blue-500 dark:hover:border-blue-400 transition-colors"
+            class="ui-card flex items-center justify-between gap-3 p-3 transition-colors hover:border-line-strong"
           >
-            <div class="flex items-center space-x-4">
+            <div class="flex min-w-0 items-center gap-3">
               {#if record.cover}
                 <img
                   src={record.cover}
-                  class="w-32 h-18 rounded-lg object-cover"
+                  class="h-[72px] w-32 shrink-0 rounded-[8px] border border-line object-cover"
                   alt="Gaming stream thumbnail"
                   onerror={(e) =>
                     console.error("Image error in template:", record.cover, e)}
                 />
               {:else}
                 <div
-                  class="w-32 h-20 rounded-lg bg-gray-200 dark:bg-gray-700 flex items-center justify-center"
+                  class="flex h-[72px] w-32 shrink-0 items-center justify-center rounded-[8px] bg-sunken"
                 >
-                  <Video class="w-8 h-8 text-gray-400 dark:text-gray-500" />
+                  <Video class="h-7 w-7 text-fg-faint" />
                 </div>
               {/if}
-              <div>
-                <h3 class="font-medium text-gray-900 dark:text-white">
+              <div class="min-w-0">
+                <h3 class="text-[13px] font-medium text-fg">
                   {record.title}
                 </h3>
-                <p class="text-sm text-gray-600 dark:text-gray-400">
+                <p class="mt-1 text-[11px] text-fg-muted">
                   {record.platform} • {record.room_id} • {format_date(
                     record.created_at,
                   )} • {format_size(record.size)}
                 </p>
               </div>
             </div>
-            <div class="flex items-center space-x-2">
+            <div class="flex shrink-0 items-center gap-1">
               <button
-                class="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
+                class="ui-btn ui-btn-ghost ui-btn-icon"
                 onclick={() => {
                   invoke("open_live", {
                     platform: record.platform,
@@ -432,40 +428,36 @@
                   });
                 }}
               >
-                <Play class="w-5 h-5 dark:icon-white" />
+                <Play class="h-4 w-4" />
               </button>
               <div class="relative dropdown-container">
                 <button
-                  class="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-red-600 dark:text-red-400"
+                  class="ui-btn ui-btn-ghost ui-btn-icon"
                   onclick={(event) => {
                     event.stopPropagation();
                     toggleDropdown(record.live_id);
                   }}
                 >
-                  <Trash2 class="w-5 h-5 icon-danger" />
+                  <Trash2 class="h-4 w-4 icon-danger" />
                 </button>
                 {#if activeDropdown === record.live_id}
                   <div
-                    class="absolute right-0 mt-2 w-48 rounded-lg shadow-lg bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 backdrop-blur-xl bg-opacity-90 dark:bg-opacity-90 z-50"
+                    class="ui-menu absolute right-0 z-50 mt-1 w-48"
                     style="transform-origin: top right;"
                     in:scale={{ duration: 100, start: 0.95 }}
                     out:scale={{ duration: 100, start: 0.95 }}
                   >
-                    <div
-                      class="px-4 py-3 border-b border-gray-200 dark:border-gray-700"
-                    >
-                      <h3
-                        class="text-sm font-medium text-gray-900 dark:text-white"
-                      >
+                    <div class="border-b border-line px-2 pb-2 pt-1.5">
+                      <h3 class="text-[12px] font-medium text-fg">
                         确认删除
                       </h3>
-                      <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      <p class="ui-hint mt-0.5">
                         此操作无法撤销
                       </p>
                     </div>
-                    <div class="p-2 flex space-x-2">
+                    <div class="flex gap-1.5 p-1 pt-1.5">
                       <button
-                        class="flex-1 px-3 py-1.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700/50 rounded-md transition-colors"
+                        class="ui-btn ui-btn-sm flex-1"
                         onclick={() => {
                           activeDropdown = null;
                         }}
@@ -473,7 +465,7 @@
                         取消
                       </button>
                       <button
-                        class="flex-1 px-3 py-1.5 text-sm text-white bg-red-600 hover:bg-red-700 rounded-md transition-colors"
+                        class="ui-btn ui-btn-sm ui-btn-danger flex-1"
                         onclick={() => {
                           deleteRecord(record);
                           activeDropdown = null;
@@ -492,13 +484,13 @@
         {#if loading}
           <div class="flex justify-center py-4">
             <div
-              class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"
+              class="h-6 w-6 animate-spin rounded-full border-b-2 border-accent"
             ></div>
           </div>
         {/if}
 
         {#if !hasMore && recent_records.length > 0}
-          <div class="text-center py-4 text-gray-500 dark:text-gray-400">
+          <div class="py-4 text-center text-[12px] text-fg-faint">
             没有更多记录了
           </div>
         {/if}

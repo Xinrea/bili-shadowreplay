@@ -15,7 +15,9 @@
         "height": 600,
         "transparent": false,
         "decorations": true,
-        "theme": "Light"
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 16, "y": 22 }
       }
     ]
   }

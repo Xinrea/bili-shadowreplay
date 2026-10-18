@@ -435,7 +435,7 @@
 </script>
 
 <div
-  class="flex h-full bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-950 dark:to-gray-900 relative"
+  class="relative flex h-full bg-canvas"
   role="region"
   aria-label="AI 助手"
   ondragover={handleDragOver}
@@ -443,37 +443,37 @@
   ondrop={handleDrop}
 >
   <!-- Main Content -->
-  <div class="flex-1 flex flex-col relative">
+  <div class="relative flex flex-1 flex-col">
     <!-- Messages Area -->
     <div class="flex-1 overflow-y-auto" bind:this={messageContainer}>
-      <div class="max-w-4xl mx-auto px-6 py-8" style="padding-bottom: {inputAreaHeight + 16}px;">
+      <div class="mx-auto max-w-4xl px-6 py-6" style="padding-bottom: {inputAreaHeight + 16}px;">
         {#if !agentConfigured}
           <!-- Welcome State -->
-          <div class="flex items-center justify-center min-h-[500px]">
-            <div class="max-w-md text-center space-y-6">
-              <div class="inline-flex items-center justify-center w-20 h-20 rounded-3xl bg-gradient-to-br from-amber-400 to-orange-500 shadow-xl">
-                <span class="text-4xl">🍊</span>
+          <div class="flex min-h-[500px] items-center justify-center">
+            <div class="max-w-md space-y-5 text-center">
+              <div class="inline-flex h-16 w-16 items-center justify-center rounded-[16px] bg-gradient-to-br from-amber-400 to-orange-500">
+                <span class="text-[32px] leading-none">🍊</span>
               </div>
-              <div class="space-y-3">
-                <h2 class="text-2xl font-semibold text-gray-900 dark:text-gray-100">欢迎使用 AI 助手</h2>
-                <p class="text-gray-600 dark:text-gray-400 leading-relaxed">
+              <div class="space-y-2">
+                <h2 class="text-[18px] font-semibold text-fg">欢迎使用 AI 助手</h2>
+                <p class="text-[13px] leading-relaxed text-fg-secondary">
                   配置您的 AI 模型以开始智能对话。支持 OpenAI 兼容 API 和本地 Ollama 模型。
                 </p>
               </div>
               <button
                 onclick={openSettings}
-                class="inline-flex items-center space-x-2 px-6 py-3 bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 rounded-xl hover:bg-gray-800 dark:hover:bg-gray-200 transition-colors font-medium shadow-lg"
+                class="ui-btn ui-btn-primary px-4"
               >
-                <Settings class="w-4 h-4" />
+                <Settings class="h-3.5 w-3.5" />
                 <span>开始配置</span>
               </button>
-              <div class="flex items-center justify-center space-x-6 text-sm text-gray-500 pt-4">
-                <div class="flex items-center space-x-1.5">
-                  <Zap class="w-4 h-4" />
+              <div class="flex items-center justify-center gap-5 pt-3 text-[12px] text-fg-muted">
+                <div class="flex items-center gap-1.5">
+                  <Zap class="h-3.5 w-3.5" />
                   <span>快速响应</span>
                 </div>
-                <div class="flex items-center space-x-1.5">
-                  <Sparkles class="w-4 h-4" />
+                <div class="flex items-center gap-1.5">
+                  <Sparkles class="h-3.5 w-3.5" />
                   <span>智能分析</span>
                 </div>
               </div>
@@ -481,29 +481,29 @@
           </div>
         {:else if messages.length === 0}
           <!-- Empty State with Prompts -->
-          <div class="space-y-8">
-            <div class="text-center space-y-3">
-              <div class="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-amber-400 to-orange-500">
-                <span class="text-2xl">🍊</span>
+          <div class="space-y-7">
+            <div class="space-y-3 text-center">
+              <div class="inline-flex h-12 w-12 items-center justify-center rounded-[12px] bg-gradient-to-br from-amber-400 to-orange-500">
+                <span class="text-[24px] leading-none">🍊</span>
               </div>
               <div>
-                <h2 class="text-xl font-semibold text-gray-900 dark:text-gray-100">你好！我是小轴</h2>
-                <p class="text-sm text-gray-600 dark:text-gray-400 mt-2">
+                <h2 class="text-[16px] font-semibold text-fg">你好！我是小轴</h2>
+                <p class="mt-1.5 text-[12px] text-fg-muted">
                   我可以帮你管理直播录制、生成精彩切片、分析弹幕内容等。点击下方卡片快速开始。
                 </p>
               </div>
             </div>
-            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
               {#each presetPrompts as prompt}
                 <button
                   onclick={() => handlePresetPrompt(prompt.prompt)}
-                  class="group p-4 text-left bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-md transition-all"
+                  class="ui-card group p-3 text-left transition-colors hover:border-line-strong hover:bg-control/60"
                 >
-                  <div class="flex items-start space-x-3">
-                    <span class="text-2xl flex-shrink-0">{prompt.icon}</span>
-                    <div class="flex-1 min-w-0">
-                      <div class="text-sm font-medium text-gray-900 dark:text-gray-100 mb-1">{prompt.title}</div>
-                      <p class="text-xs text-gray-500 dark:text-gray-500 leading-relaxed">{prompt.description}</p>
+                  <div class="flex items-start gap-3">
+                    <span class="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-[8px] bg-control text-[17px] leading-none transition-colors group-hover:bg-control-hover">{prompt.icon}</span>
+                    <div class="min-w-0 flex-1">
+                      <div class="mb-0.5 text-[13px] font-medium text-fg">{prompt.title}</div>
+                      <p class="text-[11px] leading-relaxed text-fg-muted">{prompt.description}</p>
                     </div>
                   </div>
                 </button>
@@ -512,7 +512,7 @@
           </div>
         {:else}
           <!-- Messages -->
-          <div class="space-y-6">
+          <div class="space-y-5">
             {#each messages as message, index (index)}
               {#if message.kind === 'human'}
                 <HumanMessageComponent {message} {formatTime} />
@@ -533,7 +533,7 @@
         {/if}
 
         {#if isProcessing}
-          <div class="mt-6">
+          <div class="mt-5">
             <ProcessingMessageComponent />
           </div>
         {/if}
@@ -541,11 +541,11 @@
     </div>
 
     <!-- Floating Input Area -->
-    <div bind:offsetHeight={inputAreaHeight} class="absolute bottom-0 left-0 right-0 px-6 pb-4 pt-8 bg-gradient-to-t from-gray-50 via-gray-50 to-transparent dark:from-gray-950 dark:via-gray-950">
-      <div class="max-w-4xl mx-auto">
-        <div class="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 shadow-lg overflow-hidden">
+    <div bind:offsetHeight={inputAreaHeight} class="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-canvas via-canvas to-canvas/0 px-6 pb-4 pt-8">
+      <div class="mx-auto max-w-4xl">
+        <div class="overflow-hidden rounded-[12px] border border-line bg-surface shadow-lg shadow-black/5 transition-colors focus-within:border-accent">
           {#if attachments.length > 0}
-            <div class="px-4 pt-3">
+            <div class="px-3.5 pt-3">
               <AgentAttachmentList
                 {attachments}
                 removable
@@ -560,23 +560,23 @@
               bind:value={inputMessage}
               onkeypress={handleKeyPress}
               placeholder={!agentConfigured ? "请先配置 AI 模型..." : hasPendingToolCalls ? "请先确认或拒绝待执行的工具调用..." : "输入消息，或拖入 / 粘贴图片和文本文件..."}
-              class="w-full px-4 pt-3 pb-3 border-0 bg-transparent text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-0 resize-none min-h-[52px] max-h-[200px] text-[15px] leading-relaxed disabled:opacity-50 disabled:cursor-not-allowed"
+              class="block max-h-[200px] min-h-[48px] w-full resize-none border-0 bg-transparent px-3.5 py-3 text-[13px] leading-relaxed text-fg shadow-none placeholder:text-fg-faint focus:border-0 focus:outline-none focus:ring-0 disabled:cursor-not-allowed disabled:opacity-50"
               rows="1"
               disabled={isProcessing || hasPendingToolCalls || !agentConfigured || !conversationLoaded}
             ></textarea>
           </div>
 
           {#if attachmentError}
-            <div class="px-4 pb-2 text-xs text-red-500 dark:text-red-400">
+            <div class="px-3.5 pb-2 text-[11px] text-danger-fg">
               {attachmentError}
             </div>
           {/if}
 
           {#if storageError}
-            <div class="px-4 pb-2 text-xs text-red-500 dark:text-red-400" role="alert">
+            <div class="px-3.5 pb-2 text-[11px] text-danger-fg" role="alert">
               {storageError}
               <button
-                class="ml-2 underline"
+                class="ml-2 font-medium underline underline-offset-2 hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-50"
                 disabled={isRestoringConversation}
                 onclick={() => conversationLoaded ? persistConversation() : restoreConversation()}
               >重试</button>
@@ -584,34 +584,34 @@
           {/if}
 
           <!-- Bottom bar: model info + actions -->
-          <div class="flex items-center justify-between px-4 py-2 border-t border-gray-100 dark:border-gray-800/50">
-            <div class="flex items-center space-x-3">
+          <div class="flex items-center justify-between gap-3 border-t border-line px-2 py-1.5">
+            <div class="flex min-w-0 items-center gap-1">
               <!-- Model info -->
               <button
                 onclick={openSettings}
-                class="flex items-center space-x-1.5 px-2 py-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
+                class="ui-btn ui-btn-sm ui-btn-ghost min-w-0 shrink font-normal text-fg-muted"
                 title="点击配置模型"
               >
-                <Bot class="w-3.5 h-3.5" />
+                <Bot class="h-3.5 w-3.5 flex-shrink-0" />
                 {#if agentConfigured}
-                  <span>{settings.provider === 'ollama' ? 'Ollama' : 'OpenAI'} · {settings.model || '未设置模型'}</span>
+                  <span class="truncate">{settings.provider === 'ollama' ? 'Ollama' : 'OpenAI'} · {settings.model || '未设置模型'}</span>
                 {:else}
-                  <span>未配置模型</span>
+                  <span class="truncate">未配置模型</span>
                 {/if}
               </button>
 
               <button
-                class="flex items-center space-x-1 px-2 py-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                class="ui-btn ui-btn-sm ui-btn-ghost font-normal text-fg-muted"
                 onclick={clearConversation}
                 disabled={!agentConfigured || !conversationLoaded || isProcessing}
                 title="清空对话"
               >
-                <Trash2 class="w-3.5 h-3.5" />
+                <Trash2 class="h-3.5 w-3.5" />
                 <span>清空</span>
               </button>
             </div>
 
-            <div class="flex items-center space-x-2">
+            <div class="flex flex-shrink-0 items-center gap-1.5">
               <input
                 bind:this={fileInput}
                 type="file"
@@ -622,22 +622,22 @@
               />
               <button
                 type="button"
-                class="flex items-center justify-center w-8 h-8 text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                class="ui-btn ui-btn-icon ui-btn-ghost text-fg-muted"
                 onclick={openFilePicker}
                 disabled={isProcessing || hasPendingToolCalls}
                 title="添加图片或文本文件"
               >
-                <Paperclip class="w-4 h-4" />
+                <Paperclip class="h-4 w-4" />
               </button>
               {#if inputMessage.trim()}
-                <span class="text-xs text-gray-400 dark:text-gray-600">{inputMessage.length}</span>
+                <span class="text-[11px] tabular-nums text-fg-faint">{inputMessage.length}</span>
               {/if}
               <button
-                class="px-3 py-1.5 bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 rounded-lg hover:bg-gray-800 dark:hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center space-x-1.5 text-sm font-medium"
+                class="ui-btn ui-btn-primary"
                 disabled={!canSend}
                 onclick={sendMessage}
               >
-                <Send class="w-3.5 h-3.5" />
+                <Send class="h-3.5 w-3.5" />
                 <span>发送</span>
               </button>
             </div>
@@ -648,10 +648,10 @@
   </div>
 
   {#if isDraggingFiles}
-    <div class="absolute inset-0 z-20 flex items-center justify-center bg-gray-950/40 backdrop-blur-[2px] pointer-events-none">
-      <div class="px-6 py-4 rounded-2xl bg-white/95 dark:bg-gray-900/95 border border-gray-200 dark:border-gray-700 shadow-xl text-center">
-        <p class="text-sm font-medium text-gray-900 dark:text-gray-100">松开以添加图片或文本文件</p>
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">最多 8 个附件，不支持视频</p>
+    <div class="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-canvas/60 backdrop-blur-[2px]">
+      <div class="rounded-[12px] border border-dashed border-accent/70 bg-surface px-6 py-4 text-center shadow-xl">
+        <p class="text-[13px] font-medium text-fg">松开以添加图片或文本文件</p>
+        <p class="mt-1 text-[11px] text-fg-muted">最多 8 个附件，不支持视频</p>
       </div>
     </div>
   {/if}
@@ -661,10 +661,7 @@
 <style>
   :global(.overflow-y-auto) {
     scrollbar-width: thin;
-    scrollbar-color: rgb(209 213 219) transparent;
-  }
-  :global(.dark .overflow-y-auto) {
-    scrollbar-color: rgb(55 65 81) transparent;
+    scrollbar-color: rgb(var(--c-scrollbar)) transparent;
   }
   :global(.overflow-y-auto::-webkit-scrollbar) {
     width: 6px;
@@ -673,10 +670,10 @@
     background: transparent;
   }
   :global(.overflow-y-auto::-webkit-scrollbar-thumb) {
-    background: rgb(209 213 219);
+    background: rgb(var(--c-scrollbar));
     border-radius: 3px;
   }
-  :global(.dark .overflow-y-auto::-webkit-scrollbar-thumb) {
-    background: rgb(55 65 81);
+  :global(.overflow-y-auto::-webkit-scrollbar-thumb:hover) {
+    background: rgb(var(--c-scrollbar-hover));
   }
 </style>

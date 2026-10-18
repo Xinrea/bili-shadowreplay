@@ -14,6 +14,8 @@
     Scissors,
     CircleHelp,
     Loader2,
+    PanelRightClose,
+    PanelRightOpen,
   } from "lucide-svelte";
   import {
     generateEventId,
@@ -30,6 +32,8 @@
   import CoverEditor from "./CoverEditor.svelte";
   import TypeSelect from "./TypeSelect.svelte";
   import InspectorPanel from "./InspectorPanel.svelte";
+  import TaskCenterButton from "./TaskCenterButton.svelte";
+  import TitleBar from "./TitleBar.svelte";
   import { announceTask, openTaskCenter, settleTask, wasCancelled } from "../stores/tasks";
   import {
     invoke,
@@ -1671,63 +1675,86 @@
 
 {#if show}
   <div
-    class="fixed inset-0 bg-[#1c1c1e] z-[1000] transition-opacity duration-200"
+    class="fixed inset-0 bg-[#1c1c1e] z-[1000] flex flex-col transition-opacity duration-200"
     class:opacity-0={!show}
     class:opacity-100={show}
   >
-    <!-- 顶部导航栏 -->
-    <div
-      class="h-14 border-b border-gray-800/50 bg-[#2c2c2e] flex items-center px-4 justify-between"
-    >
-      <div class="flex items-center space-x-4">
-        <!-- 视频选择器 -->
-        <div class="relative flex items-center space-x-2">
-          <select
-            class="bg-[#1c1c1e] text-gray-300 text-sm rounded-md px-3 py-1.5 border border-gray-700 focus:border-[#0A84FF] outline-none appearance-none cursor-pointer hover:bg-[#2c2c2e] transition-colors duration-200"
-            value={video.id}
-            onchange={handleVideoSelect}
-          >
-            {#each videos as v}
-              <option value={v.id}>{v.name}</option>
-            {/each}
-          </select>
-          <!-- 保存按钮 -->
-          {#if !TAURI_ENV}
-            <button
-              class="text-blue-500 hover:text-blue-400 transition-colors duration-200 px-2 py-1.5 rounded-md hover:bg-blue-500/10"
-              onclick={saveVideo}
-            >
-              <Download class="w-4 h-4" />
-            </button>
+    <TitleBar tone="dark">
+      <!-- 视频选择器 -->
+      <select
+        class="h-7 min-w-0 max-w-[420px] cursor-pointer truncate rounded-[7px] border border-[#2b3340] bg-[#0f131a] py-0 pl-2.5 pr-8 text-[12px] text-[#dce5f3] outline-none transition-colors hover:border-[#3a4556] focus:border-[#0A84FF] focus:ring-0"
+        title="切换切片"
+        value={video.id}
+        onchange={handleVideoSelect}
+      >
+        {#each videos as v}
+          <option value={v.id}>{v.name}</option>
+        {/each}
+      </select>
+      <!-- 保存按钮 -->
+      {#if !TAURI_ENV}
+        <button
+          class="titlebar-icon-button"
+          title="下载切片"
+          aria-label="下载切片"
+          onclick={saveVideo}
+        >
+          <Download class="w-4 h-4" />
+        </button>
+      {/if}
+      <!-- 删除按钮 -->
+      <button
+        class="titlebar-icon-button danger"
+        title="删除切片"
+        aria-label="删除切片"
+        onclick={async () => {
+          if (!video) return;
+          try {
+            await invoke("delete_video", { id: video.id });
+            // 更新视频列表
+            await onVideoListUpdate?.();
+            // 如果列表不为空，选择新的视频
+            if (videos.length > 0) {
+              const newVideo = videos[0];
+              onVideoChange?.(newVideo);
+            } else {
+              // 如果列表为空，关闭窗口
+              close_window();
+            }
+          } catch (error) {
+            console.error(error);
+            alert("删除失败：" + error);
+          }
+        }}
+      >
+        <Trash2 class="w-4 h-4" />
+      </button>
+      {#snippet actions()}
+        <button
+          class="titlebar-icon-button"
+          title="快捷键说明"
+          aria-label="快捷键说明"
+          onclick={() => (showShortcutHelp = true)}
+        >
+          <CircleHelp class="w-4 h-4" />
+        </button>
+        <TaskCenterButton tone="dark" />
+        <button
+          class="titlebar-icon-button"
+          class:active={!inspectorCollapsed}
+          title={inspectorCollapsed ? "展开切片编辑" : "收起切片编辑"}
+          aria-label={inspectorCollapsed ? "展开切片编辑" : "收起切片编辑"}
+          aria-pressed={!inspectorCollapsed}
+          onclick={() => (inspectorCollapsed = !inspectorCollapsed)}
+        >
+          {#if inspectorCollapsed}
+            <PanelRightOpen class="w-4 h-4" />
+          {:else}
+            <PanelRightClose class="w-4 h-4" />
           {/if}
-          <!-- 删除按钮 -->
-          <button
-            class="text-red-500 hover:text-red-400 transition-colors duration-200 px-2 py-1.5 rounded-md hover:bg-red-500/10"
-            onclick={async () => {
-              if (!video) return;
-              try {
-                await invoke("delete_video", { id: video.id });
-                // 更新视频列表
-                await onVideoListUpdate?.();
-                // 如果列表不为空，选择新的视频
-                if (videos.length > 0) {
-                  const newVideo = videos[0];
-                  onVideoChange?.(newVideo);
-                } else {
-                  // 如果列表为空，关闭窗口
-                  close_window();
-                }
-              } catch (error) {
-                console.error(error);
-                alert("删除失败：" + error);
-              }
-            }}
-          >
-            <Trash2 class="w-4 h-4" />
-          </button>
-        </div>
-      </div>
-    </div>
+        </button>
+      {/snippet}
+    </TitleBar>
 
     <!-- 编码确认 Modal -->
     {#if showEncodeModal}
@@ -1790,7 +1817,7 @@
       </div>
     {/if}
 
-    <div class="relative flex h-[calc(100vh-3.5rem)] overflow-hidden">
+    <div class="relative flex min-h-0 flex-1 overflow-hidden">
       <!-- 视频区域 -->
       <div class="flex-1 flex flex-col min-w-0">
         <!-- 切片控制信息条 -->
@@ -1925,15 +1952,6 @@
                 oninput={handleVolumeChange}
                 class="w-20 h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
               />
-              <span class="h-4 w-px bg-gray-700/70"></span>
-              <button
-                class="text-gray-400 hover:text-white transition-colors duration-200"
-                title="快捷键说明"
-                aria-label="快捷键说明"
-                onclick={() => (showShortcutHelp = true)}
-              >
-                <CircleHelp class="w-4 h-4" />
-              </button>
             </div>
           </div>
         </div>
@@ -2175,7 +2193,7 @@
           { id: "upload", label: "投稿" },
         ]}
         bind:activeTab
-        bind:collapsed={inspectorCollapsed}
+        collapsed={inspectorCollapsed}
         summary={canBeClipped(video)
           ? { label: "切片范围", value: clipEndTime > clipStartTime ? `${formatTime(clipStartTime)} – ${formatTime(clipEndTime)}` : "未选择" }
           : { label: "字幕", value: `${subtitles.length} 条` }}

@@ -100,6 +100,8 @@ gui = [
     "tauri-plugin-process",
     "fix-path-env",
     "tauri-build",
+    "objc2-app-kit",
+    "objc2-foundation",
 ]
 
 [dependencies.tauri]
@@ -168,6 +170,20 @@ optional = true
 [build-dependencies.tauri-build]
 version = "2"
 features = []
+optional = true
+
+# Set the window title without losing the custom traffic light position; see
+# `set_window_title`. Same versions as the ones wry and tao already pull in.
+[target.'cfg(target_os = "macos")'.dependencies.objc2-app-kit]
+version = "0.3"
+default-features = false
+features = ["std", "NSResponder", "NSView", "NSWindow"]
+optional = true
+
+[target.'cfg(target_os = "macos")'.dependencies.objc2-foundation]
+version = "0.3"
+default-features = false
+features = ["std", "NSString"]
 optional = true
 
 

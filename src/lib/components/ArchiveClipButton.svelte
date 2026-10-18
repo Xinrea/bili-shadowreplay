@@ -178,8 +178,8 @@
   onclick={openConfirm}
   disabled={disabled || !archive}
   class={variant === "compact"
-    ? "inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-violet-200 bg-white px-2.5 py-1.5 text-xs font-medium text-violet-700 transition-colors hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-violet-700 dark:bg-gray-900 dark:text-violet-300 dark:hover:bg-violet-950/60"
-    : "inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-lg bg-[#0A84FF] px-4 py-1.5 text-sm text-white transition-all duration-200 hover:bg-[#0A84FF]/90 disabled:cursor-not-allowed disabled:opacity-50"}
+    ? "ui-btn ui-btn-sm bg-surface text-accent-fg"
+    : "ui-btn ui-btn-primary"}
 >
   {#if variant === "compact"}
     <Scissors class="h-3.5 w-3.5" />
@@ -190,7 +190,7 @@
 {#if showConfirm}
   <div class="fixed inset-0 z-[100] flex items-center justify-center">
     <div
-      class="absolute inset-0 bg-black/60 backdrop-blur-md"
+      class="absolute inset-0 bg-black/50 backdrop-blur-sm"
       role="button"
       tabindex="0"
       aria-label="关闭对话框"
@@ -206,38 +206,38 @@
     <div
       role="dialog"
       aria-modal="true"
-      class="relative mx-4 w-full max-w-md rounded-2xl border border-white/10 bg-[#1c1c1e] shadow-2xl ring-1 ring-black/5"
+      class="ui-modal relative mx-4 w-full max-w-md text-left"
     >
-      <div class="p-5">
-        <h3 class="text-[17px] font-semibold text-white">确认生成切片</h3>
-        <p class="mt-1 text-[13px] text-white/70">请确认以下设置后继续</p>
+      <div class="ui-modal-body custom-scrollbar-light">
+        <h3 class="text-[15px] font-semibold text-fg">确认生成切片</h3>
+        <p class="mt-1 text-[12px] text-fg-muted">请确认以下设置后继续</p>
 
-        <div class="mt-3 space-y-3">
-          <div class="text-[13px] font-medium text-white/90">待合并选区列表</div>
-          <div class="max-h-48 space-y-2 overflow-y-auto custom-scrollbar-light">
+        <div class="mt-4 space-y-2">
+          <div class="ui-label">待合并选区列表</div>
+          <div class="max-h-48 space-y-1.5 overflow-y-auto custom-scrollbar-light">
             {#each activeRanges as range, index}
-              <div class="flex items-center justify-between rounded-lg border border-white/5 bg-[#2c2c2e] px-3 py-2 transition-colors hover:border-white/10">
+              <div class="flex items-center justify-between rounded-[8px] border border-line bg-control px-3 py-2 transition-colors hover:border-line-strong">
                 <div class="flex items-center space-x-3">
-                  <div class="flex h-6 w-6 items-center justify-center rounded-full bg-[#0A84FF]/20 text-[11px] font-semibold text-[#0A84FF]">
+                  <div class="flex h-6 w-6 items-center justify-center rounded-full bg-accent-soft text-[11px] font-semibold tabular-nums text-accent-fg">
                     {index + 1}
                   </div>
                   <div class="flex flex-col space-y-0.5">
-                    <div class="text-[12px] text-white/90">
+                    <div class="text-[12px] tabular-nums text-fg">
                       {formatTime(range.start)} → {formatTime(range.end)}
                     </div>
-                    <div class="text-[11px] text-white/60">
+                    <div class="text-[11px] text-fg-muted">
                       时长: {formatDuration(range.end - range.start)}
                     </div>
                   </div>
                 </div>
               </div>
             {:else}
-              <div class="py-4 text-center text-[13px] text-white/60">
+              <div class="py-4 text-center text-[12px] text-fg-muted">
                 没有已激活的选区，请选择或添加选区。
               </div>
             {/each}
           </div>
-          <div class="mt-2 border-t border-white/10 pt-2 text-[15px] font-semibold text-white">
+          <div class="border-t border-line pt-2.5 text-[14px] font-semibold text-fg">
             总时长: {formatDuration(
               activeRanges.reduce(
                 (total, range) => total + range.end - range.start,
@@ -247,48 +247,48 @@
           </div>
         </div>
 
-        <div class="mt-3 space-y-3">
-          <label for="archive-clip-note" class="mt-1 block text-[13px] text-white/80">
+        <div class="mt-4 space-y-1.5">
+          <label for="archive-clip-note" class="block text-[13px] text-fg-secondary">
             切片备注（可选）
           </label>
           <input
             id="archive-clip-note"
             type="text"
             bind:value={clipNote}
-            class="w-full rounded-lg border border-gray-800/50 bg-[#2c2c2e] px-3 py-2 text-white outline-none transition duration-200 placeholder-gray-500 focus:border-[#0A84FF]"
+            class="ui-input w-full"
           />
         </div>
 
-        <div class="mt-3 space-y-3">
-          <label class="flex items-center gap-2.5">
+        <div class="mt-4 space-y-2.5">
+          <label class="flex cursor-pointer items-center gap-2.5">
             <input
               type="checkbox"
               bind:checked={danmuEnabled}
-              class="h-4 w-4 rounded border-white/30 bg-[#2c2c2e] text-[#0A84FF] accent-[#0A84FF] focus:outline-none focus:ring-2 focus:ring-[#0A84FF]/40"
+              class="ui-checkbox"
             />
-            <span class="text-[13px] text-white/80">压制弹幕</span>
+            <span class="text-[13px] text-fg-secondary">压制弹幕</span>
           </label>
 
-          <label class="flex items-center gap-2.5">
+          <label class="flex cursor-pointer items-center gap-2.5">
             <input
               type="checkbox"
               bind:checked={fixEncoding}
-              class="h-4 w-4 rounded border-white/30 bg-[#2c2c2e] text-[#0A84FF] accent-[#0A84FF] focus:outline-none focus:ring-2 focus:ring-[#0A84FF]/40"
+              class="ui-checkbox"
             />
-            <span class="text-[13px] text-white/80">修复编码（切片异常时使用）</span>
+            <span class="text-[13px] text-fg-secondary">修复编码（切片异常时使用）</span>
           </label>
         </div>
 
         {#if activeRanges.length > 1}
-          <div class="mt-3 space-y-2">
-            <div class="text-[13px] font-medium text-white/90">转场效果</div>
+          <div class="mt-4 space-y-2">
+            <div class="ui-label">转场效果</div>
             <div class="grid grid-cols-4 gap-1.5">
               {#each transitionOptions as option}
                 <button
                   type="button"
-                  class="rounded-lg border px-2 py-1.5 text-[12px] transition-colors {transition === option.value
-                    ? 'border-[#0A84FF] bg-[#0A84FF]/20 text-[#0A84FF]'
-                    : 'border-white/5 bg-[#2c2c2e] text-white/70 hover:border-white/20'}"
+                  class="ui-btn ui-btn-sm {transition === option.value
+                    ? 'ui-btn-active'
+                    : ''}"
                   onclick={() => (transition = option.value)}
                 >
                   {option.label}
@@ -299,11 +299,11 @@
         {/if}
       </div>
 
-      <div class="flex items-center justify-end gap-2 rounded-b-2xl border-t border-white/10 bg-[#111113] px-5 py-3">
+      <div class="ui-modal-footer">
         <button
           type="button"
           onclick={closeConfirm}
-          class="rounded-lg border border-white/20 px-3.5 py-2 text-[13px] text-white/90 transition-colors hover:bg-white/10"
+          class="ui-btn"
         >
           取消
         </button>
@@ -311,7 +311,7 @@
           type="button"
           onclick={generateClip}
           disabled={activeRanges.length === 0}
-          class="rounded-lg bg-[#0A84FF] px-3.5 py-2 text-[13px] text-white shadow-[inset_0_1px_0_rgba(255,255,255,.15)] transition-colors hover:bg-[#0A84FF]/90 disabled:cursor-not-allowed disabled:opacity-50"
+          class="ui-btn ui-btn-primary"
         >
           确认生成
         </button>

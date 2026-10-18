@@ -4,6 +4,8 @@
     // acitveUrl is shared between project
     activeUrl?: string;
     label?: string;
+    /** Icon only; the label is clipped and shown as a tooltip. */
+    collapsed?: boolean;
     dot?: boolean;
     icon?: import('svelte').Snippet<[any]>;
     onActiveChange?: (label: string) => void;
@@ -12,24 +14,29 @@
   let {
     activeUrl = "总览",
     label = "",
+    collapsed = false,
     dot = false,
     icon,
     onActiveChange
   }: Props = $props();
 </script>
 
+<!-- The icon keeps its position in both widths; collapsing only clips the label. -->
 <button
   onclick={() => onActiveChange?.(label)}
-  class="flex w-full items-center space-x-2 px-3 py-2 rounded-lg {activeUrl ===
+  title={collapsed ? label : undefined}
+  class="relative flex h-8 w-full items-center gap-2.5 overflow-hidden whitespace-nowrap rounded-[8px] px-2.5 text-[13px] transition-colors {activeUrl ===
   label
-    ? 'bg-blue-500/10 text-[#0A84FF] dark:bg-transparent dark:text-white'
-    : 'text-gray-700 dark:text-white'} hover:bg-[#e5e5e5] dark:hover:bg-transparent"
+    ? 'bg-accent-soft font-medium text-accent-fg'
+    : 'text-fg-secondary hover:bg-control-hover hover:text-fg'}"
 >
-  {@render icon?.({ class: activeUrl === label
-      ? "text-[#0A84FF] dark:text-white"
-      : "text-gray-700 dark:text-white", })}
+  {@render icon?.({})}
   <span>{label}</span>
   {#if dot}
-    <div class="absolute right-6 w-2 h-2 bg-red-500 rounded-full"></div>
+    <span
+      class="h-1.5 w-1.5 shrink-0 rounded-full bg-danger {collapsed
+        ? 'absolute left-[23px] top-[7px]'
+        : 'ml-auto'}"
+    ></span>
   {/if}
 </button>

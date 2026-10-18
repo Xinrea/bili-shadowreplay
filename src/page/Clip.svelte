@@ -3,6 +3,7 @@
   import { invoke, TAURI_ENV, get_static_url } from "../lib/invoker";
   import type { VideoItem } from "../lib/interface";
   import ImportVideoDialog from "../lib/components/ImportVideoDialog.svelte";
+  import PageTitlebar from "../lib/components/PageTitlebar.svelte";
   import { onMount, onDestroy, tick } from "svelte";
   import {
     Play,
@@ -429,7 +430,7 @@
     target.style.display = "none";
     if (target.parentElement) {
       target.parentElement.innerHTML =
-        '<svg class="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>';
+        '<svg class="w-5 h-5 text-fg-faint" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>';
     }
   }
 
@@ -499,50 +500,40 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50 dark:bg-black">
-  <div class="space-y-6">
-    <!-- Header -->
-    <div class="flex justify-between items-center">
-      <div class="space-y-1">
-        <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">
-          切片
-        </h1>
-        <p class="text-sm text-gray-500 dark:text-gray-400">
-          管理所有录播产生的切片；如需生成切片，请从直播间列表进入录播预览页面操作。
-        </p>
-      </div>
+<PageTitlebar title="切片">
+  {#snippet subtitle()}
+    <span class="truncate text-[12px] text-fg-muted">
+      管理所有录播产生的切片；如需生成切片，请从直播间列表进入录播预览页面操作。
+    </span>
+  {/snippet}
+  <button
+    class="titlebar-icon-button"
+    title="刷新"
+    aria-label="刷新"
+    onclick={loadVideos}
+    disabled={loading}
+  >
+    <RefreshCw class="h-4 w-4 {loading ? 'animate-spin' : ''}" />
+  </button>
+  <button
+    class="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-[7px] bg-success px-2.5 text-[12px] font-medium text-white transition-colors hover:bg-success/90"
+    onclick={() => (showImportDialog = true)}
+  >
+    <Upload class="h-3.5 w-3.5" />
+    导入视频
+  </button>
+</PageTitlebar>
 
-      <div class="flex items-center space-x-3">
-        <button
-          class="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors flex items-center space-x-2"
-          onclick={() => (showImportDialog = true)}
-        >
-          <Upload class="w-4 h-4 text-white" />
-          <span>导入视频</span>
-        </button>
-        <button
-          class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
-          onclick={loadVideos}
-          disabled={loading}
-        >
-          <RefreshCw
-            class="w-4 h-4 text-white {loading ? 'animate-spin' : ''}"
-          />
-          <span>刷新</span>
-        </button>
-      </div>
-    </div>
-
+<div class="flex-1 overflow-auto bg-canvas p-5 custom-scrollbar-light">
+  <div class="space-y-4">
     <!-- Filters -->
-    <div
-      class="p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 space-y-4"
-    >
-      <div class="flex justify-between items-center flex-wrap gap-4">
-        <div class="flex space-x-3">
+    <div class="ui-card px-3 py-2.5">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div class="flex items-center gap-2">
           <select
             bind:value={selectedRoomId}
             onchange={applyFilters}
-            class="px-3 py-2 bg-gray-100 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 cursor-pointer"
+            class="ui-input min-w-[160px]"
           >
             <option value={null}>所有直播间</option>
             {#each roomIds as roomId}
@@ -551,101 +542,83 @@
           </select>
         </div>
 
-        <div class="flex items-center space-x-2">
-          <span class="text-sm text-gray-600 dark:text-gray-400">排序:</span>
+        <div class="flex flex-wrap items-center gap-1.5">
+          <span class="mr-0.5 text-[12px] text-fg-muted">排序:</span>
           <button
-            class="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors {sortBy ===
-            'room_id'
-              ? 'bg-blue-500 text-white'
-              : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
+            class="ui-btn ui-btn-sm {sortBy === 'room_id' ? 'ui-btn-active' : ''}"
             onclick={() => toggleSort("room_id")}
           >
             直播间号
             {#if sortBy === "room_id"}
               {#if sortOrder === "asc"}
-                <ChevronUp class="w-3 h-3 inline ml-1" />
+                <ChevronUp class="h-3 w-3" />
               {:else}
-                <ChevronDown class="w-3 h-3 inline ml-1" />
+                <ChevronDown class="h-3 w-3" />
               {/if}
             {/if}
           </button>
           <button
-            class="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors {sortBy ===
-            'title'
-              ? 'bg-blue-500 text-white'
-              : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
+            class="ui-btn ui-btn-sm {sortBy === 'title' ? 'ui-btn-active' : ''}"
             onclick={() => toggleSort("title")}
           >
             文件名
             {#if sortBy === "title"}
               {#if sortOrder === "asc"}
-                <ChevronUp class="w-3 h-3 inline ml-1" />
+                <ChevronUp class="h-3 w-3" />
               {:else}
-                <ChevronDown class="w-3 h-3 inline ml-1" />
+                <ChevronDown class="h-3 w-3" />
               {/if}
             {/if}
           </button>
           <button
-            class="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors {sortBy ===
-            'note'
-              ? 'bg-blue-500 text-white'
-              : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
+            class="ui-btn ui-btn-sm {sortBy === 'note' ? 'ui-btn-active' : ''}"
             onclick={() => toggleSort("note")}
           >
             备注
             {#if sortBy === "note"}
               {#if sortOrder === "asc"}
-                <ChevronUp class="w-3 h-3 inline ml-1" />
+                <ChevronUp class="h-3 w-3" />
               {:else}
-                <ChevronDown class="w-3 h-3 inline ml-1" />
+                <ChevronDown class="h-3 w-3" />
               {/if}
             {/if}
           </button>
           <button
-            class="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors {sortBy ===
-            'length'
-              ? 'bg-blue-500 text-white'
-              : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
+            class="ui-btn ui-btn-sm {sortBy === 'length' ? 'ui-btn-active' : ''}"
             onclick={() => toggleSort("length")}
           >
             时长
             {#if sortBy === "length"}
               {#if sortOrder === "asc"}
-                <ChevronUp class="w-3 h-3 inline ml-1" />
+                <ChevronUp class="h-3 w-3" />
               {:else}
-                <ChevronDown class="w-3 h-3 inline ml-1" />
+                <ChevronDown class="h-3 w-3" />
               {/if}
             {/if}
           </button>
           <button
-            class="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors {sortBy ===
-            'size'
-              ? 'bg-blue-500 text-white'
-              : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
+            class="ui-btn ui-btn-sm {sortBy === 'size' ? 'ui-btn-active' : ''}"
             onclick={() => toggleSort("size")}
           >
             大小
             {#if sortBy === "size"}
               {#if sortOrder === "asc"}
-                <ChevronUp class="w-3 h-3 inline ml-1" />
+                <ChevronUp class="h-3 w-3" />
               {:else}
-                <ChevronDown class="w-3 h-3 inline ml-1" />
+                <ChevronDown class="h-3 w-3" />
               {/if}
             {/if}
           </button>
           <button
-            class="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors {sortBy ===
-            'created_at'
-              ? 'bg-blue-500 text-white'
-              : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
+            class="ui-btn ui-btn-sm {sortBy === 'created_at' ? 'ui-btn-active' : ''}"
             onclick={() => toggleSort("created_at")}
           >
             创建时间
             {#if sortBy === "created_at"}
               {#if sortOrder === "asc"}
-                <ChevronUp class="w-3 h-3 inline ml-1" />
+                <ChevronUp class="h-3 w-3" />
               {:else}
-                <ChevronDown class="w-3 h-3 inline ml-1" />
+                <ChevronDown class="h-3 w-3" />
               {/if}
             {/if}
           </button>
@@ -655,52 +628,42 @@
 
     <!-- Bulk Actions -->
     {#if selectedVideos.size > 0}
-      <div
-        class="flex justify-between items-center p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700"
-      >
-        <span class="text-sm text-gray-600 dark:text-gray-400">
+      <div class="ui-card flex items-center justify-between px-4 py-2.5">
+        <span class="text-[12px] text-fg-secondary">
           已选择 {selectedVideos.size} 个视频
         </span>
         <button
-          class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors flex items-center space-x-2"
+          class="ui-btn ui-btn-danger"
           onclick={() => {
             showDeleteConfirm = true;
             videoToDelete = null;
           }}
         >
-          <Trash2 class="w-4 h-4 icon-white" />
+          <Trash2 class="h-3.5 w-3.5" />
           <span>删除选中</span>
         </button>
       </div>
     {/if}
 
     <!-- Video List -->
-    <div
-      class="bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden"
-    >
+    <div class="ui-card overflow-hidden">
       {#if loading}
         <div
-          class="flex flex-col items-center justify-center p-12 space-y-4 text-gray-500 dark:text-gray-400"
+          class="flex flex-col items-center justify-center space-y-3 p-12 text-[12px] text-fg-muted"
         >
           {#if importProgressInfo}
             <!-- 优化的转换进度显示 -->
-            <div class="text-center space-y-3 max-w-md">
+            <div class="max-w-md space-y-2 text-center">
               <!-- 主要信息：醒目的转换状态 -->
-              <div class="flex items-center justify-center space-x-3">
-                <RotateCw
-                  class="w-7 h-7 text-blue-600 dark:text-blue-400 animate-spin"
-                />
-                <span
-                  class="text-xl font-semibold text-blue-600 dark:text-blue-400"
-                >
+              <div class="flex items-center justify-center gap-2.5">
+                <RotateCw class="h-5 w-5 animate-spin text-accent-fg" />
+                <span class="text-[15px] font-semibold text-accent-fg">
                   正在转换视频
                 </span>
               </div>
 
               <!-- 副信息：文件名显示在小字部分 -->
-              <div
-                class="text-sm text-gray-500 dark:text-gray-400 break-all px-4"
-              >
+              <div class="break-all px-4 text-[12px] text-fg-muted">
                 {importProgressInfo.fileName ||
                   importProgressInfo.file_name ||
                   "正在准备..."}
@@ -708,19 +671,19 @@
             </div>
           {:else}
             <!-- 普通加载状态 -->
-            <RefreshCw class="w-8 h-8 animate-spin" />
+            <RefreshCw class="h-6 w-6 animate-spin text-fg-faint" />
             <span>加载中...</span>
           {/if}
         </div>
       {:else if filteredVideos.length === 0}
         <div
-          class="flex flex-col items-center justify-center p-12 space-y-4 text-gray-500 dark:text-gray-400"
+          class="flex flex-col items-center justify-center space-y-2 p-12 text-fg-muted"
         >
-          <Video class="w-12 h-12" />
-          <h3 class="text-lg font-medium text-gray-900 dark:text-white">
+          <Video class="h-10 w-10 text-fg-faint" />
+          <h3 class="text-[14px] font-semibold text-fg">
             暂无视频
           </h3>
-          <p class="text-sm">
+          <p class="text-[12px]">
             {selectedRoomId !== null
               ? "没有找到匹配的视频"
               : "还没有录制任何视频切片"}
@@ -730,74 +693,78 @@
         <div class="overflow-x-auto custom-scrollbar-light">
           <table class="w-full table-fixed whitespace-nowrap">
             <thead>
-              <tr class="border-b border-gray-200 dark:border-gray-700/50">
-                <th class="px-4 py-3 text-left w-12">
+              <tr class="border-b border-line bg-control/60">
+                <th class="w-12 px-4 py-2.5 text-left">
                   <input
                     type="checkbox"
                     checked={selectedVideos.size === filteredVideos.length &&
                       filteredVideos.length > 0}
                     onchange={selectAllVideos}
-                    class="rounded border-gray-300 dark:border-gray-600"
+                    class="ui-checkbox"
                   />
                 </th>
                 <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-28"
+                  class="px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted w-28"
                   >直播间</th
                 >
                 <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-64"
+                  class="px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted w-64"
                   >视频</th
                 >
                 <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-20"
+                  class="px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted w-20"
                   >备注</th
                 >
                 <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-20"
+                  class="px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted w-20"
                   >时长</th
                 >
                 <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-24"
+                  class="px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted w-24"
                   >大小</th
                 >
                 <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-28"
+                  class="px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted w-28"
                   >创建时间</th
                 >
                 <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-28"
+                  class="px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted w-28"
                   >投稿状态</th
                 >
                 <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-28"
+                  class="px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted w-28"
                   >操作</th
                 >
               </tr>
             </thead>
-            <tbody class="divide-y divide-gray-200 dark:divide-gray-700/50">
+            <tbody class="divide-y divide-line">
               {#each filteredVideos as video (video.id)}
                 <tr
-                  class="group hover:bg-[#f5f5f7] dark:hover:bg-[#3a3a3c] transition-colors"
+                  class="group transition-colors hover:bg-control-hover/50 {selectedVideos.has(
+                    video.id
+                  )
+                    ? 'bg-accent-soft/40'
+                    : ''}"
                 >
-                  <td class="px-4 py-3 w-12">
+                  <td class="w-12 px-4 py-2.5">
                     <input
                       type="checkbox"
                       checked={selectedVideos.has(video.id)}
                       onchange={() => toggleVideoSelection(video.id)}
-                      class="rounded border-gray-300 dark:border-gray-600"
+                      class="ui-checkbox"
                     />
                   </td>
 
-                  <td class="px-4 py-3 w-28">
+                  <td class="px-4 py-2.5 w-28">
                     <div class="flex items-center space-x-2">
                       {#if video.platform === "imported"}
-                        <FileVideo class="table-icon text-gray-400" />
-                        <span class="text-sm text-gray-800 dark:text-gray-200"
+                        <FileVideo class="table-icon text-fg-faint" />
+                        <span class="text-[12px] text-fg-secondary"
                           >外部视频</span
                         >
                       {:else if video.platform === "clip"}
-                        <Scissors class="table-icon text-gray-400" />
-                        <span class="text-sm text-gray-800 dark:text-gray-200"
+                        <Scissors class="table-icon text-fg-faint" />
+                        <span class="text-[12px] text-fg-secondary"
                           >视频切片</span
                         >
                       {:else if video.platform === "bilibili"}
@@ -807,15 +774,13 @@
                             href={getRoomUrl(video.platform, video.room_id)}
                             target="_blank"
                             rel="noopener noreferrer"
-                            class="text-blue-500 hover:text-blue-700 text-sm"
+                            class="text-[12px] text-accent-fg hover:underline"
                             title={`打开 ${formatPlatform(video.platform)} 直播间`}
                           >
                             {video.room_id}
                           </a>
                         {:else}
-                          <span class="text-sm text-gray-900 dark:text-white"
-                            >{video.room_id}</span
-                          >
+                          <span class="text-[12px] text-fg">{video.room_id}</span>
                         {/if}
                       {:else if video.platform === "douyin"}
                         <DouyinIcon class="w-4 h-4 flex-shrink-0" />
@@ -824,15 +789,13 @@
                             href={getRoomUrl(video.platform, video.room_id)}
                             target="_blank"
                             rel="noopener noreferrer"
-                            class="text-blue-500 hover:text-blue-700 text-sm"
+                            class="text-[12px] text-accent-fg hover:underline"
                             title={`打开 ${formatPlatform(video.platform)} 直播间`}
                           >
                             {video.room_id}
                           </a>
                         {:else}
-                          <span class="text-sm text-gray-900 dark:text-white"
-                            >{video.room_id}</span
-                          >
+                          <span class="text-[12px] text-fg">{video.room_id}</span>
                         {/if}
                       {:else if video.platform === "douyu"}
                         <DouyuIcon class="w-4 h-4 flex-shrink-0" />
@@ -841,15 +804,13 @@
                             href={getRoomUrl(video.platform, video.room_id)}
                             target="_blank"
                             rel="noopener noreferrer"
-                            class="text-blue-500 hover:text-blue-700 text-sm"
+                            class="text-[12px] text-accent-fg hover:underline"
                             title={`打开 ${formatPlatform(video.platform)} 直播间`}
                           >
                             {video.room_id}
                           </a>
                         {:else}
-                          <span class="text-sm text-gray-900 dark:text-white"
-                            >{video.room_id}</span
-                          >
+                          <span class="text-[12px] text-fg">{video.room_id}</span>
                         {/if}
                       {:else if video.platform === "kuaishou"}
                         <KuaishouIcon class="w-4 h-4 flex-shrink-0" />
@@ -858,15 +819,13 @@
                             href={getRoomUrl(video.platform, video.room_id)}
                             target="_blank"
                             rel="noopener noreferrer"
-                            class="text-blue-500 hover:text-blue-700 text-sm"
+                            class="text-[12px] text-accent-fg hover:underline"
                             title={`打开 ${formatPlatform(video.platform)} 直播间`}
                           >
                             {video.room_id}
                           </a>
                         {:else}
-                          <span class="text-sm text-gray-900 dark:text-white"
-                            >{video.room_id}</span
-                          >
+                          <span class="text-[12px] text-fg">{video.room_id}</span>
                         {/if}
                       {:else if video.platform === "huya"}
                         <HuyaIcon class="w-4 h-4 flex-shrink-0" />
@@ -875,15 +834,13 @@
                             href={getRoomUrl(video.platform, video.room_id)}
                             target="_blank"
                             rel="noopener noreferrer"
-                            class="text-blue-500 hover:text-blue-700 text-sm"
+                            class="text-[12px] text-accent-fg hover:underline"
                             title={`打开 ${formatPlatform(video.platform)} 直播间`}
                           >
                             {video.room_id}
                           </a>
                         {:else}
-                          <span class="text-sm text-gray-900 dark:text-white"
-                            >{video.room_id}</span
-                          >
+                          <span class="text-[12px] text-fg">{video.room_id}</span>
                         {/if}
                       {:else if video.platform === "tiktok"}
                         <TikTokIcon class="w-5 h-5 flex-shrink-0" />
@@ -892,15 +849,13 @@
                             href={getRoomUrl(video.platform, video.room_id)}
                             target="_blank"
                             rel="noopener noreferrer"
-                            class="text-blue-500 hover:text-blue-700 text-sm"
+                            class="text-[12px] text-accent-fg hover:underline"
                             title={`打开 ${formatPlatform(video.platform)} 直播间`}
                           >
                             {video.room_id}
                           </a>
                         {:else}
-                          <span class="text-sm text-gray-900 dark:text-white"
-                            >{video.room_id}</span
-                          >
+                          <span class="text-[12px] text-fg">{video.room_id}</span>
                         {/if}
                       {:else if video.platform === "twitch"}
                         <TwitchIcon class="w-5 h-5 flex-shrink-0 text-purple-600" />
@@ -909,15 +864,13 @@
                             href={getRoomUrl(video.platform, video.room_id)}
                             target="_blank"
                             rel="noopener noreferrer"
-                            class="text-blue-500 hover:text-blue-700 text-sm"
+                            class="text-[12px] text-accent-fg hover:underline"
                             title={`打开 ${formatPlatform(video.platform)} 直播间`}
                           >
                             {video.room_id}
                           </a>
                         {:else}
-                          <span class="text-sm text-gray-900 dark:text-white"
-                            >{video.room_id}</span
-                          >
+                          <span class="text-[12px] text-fg">{video.room_id}</span>
                         {/if}
                       {:else if video.platform === "youtube"}
                         <YouTubeIcon class="w-4 h-4 flex-shrink-0" />
@@ -926,41 +879,37 @@
                             href={getRoomUrl(video.platform, video.room_id)}
                             target="_blank"
                             rel="noopener noreferrer"
-                            class="text-blue-500 hover:text-blue-700 text-sm"
+                            class="text-[12px] text-accent-fg hover:underline"
                             title={`打开 ${formatPlatform(video.platform)} 直播间`}
                           >
                             {video.room_id}
                           </a>
                         {:else}
-                          <span class="text-sm text-gray-900 dark:text-white"
-                            >{video.room_id}</span
-                          >
+                          <span class="text-[12px] text-fg">{video.room_id}</span>
                         {/if}
                       {:else}
-                        <Globe class="table-icon text-gray-400" />
+                        <Globe class="table-icon text-fg-faint" />
                         {#if getRoomUrl(video.platform, video.room_id)}
                           <a
                             href={getRoomUrl(video.platform, video.room_id)}
                             target="_blank"
                             rel="noopener noreferrer"
-                            class="text-blue-500 hover:text-blue-700 text-sm"
+                            class="text-[12px] text-accent-fg hover:underline"
                             title={`打开 ${formatPlatform(video.platform)} 直播间`}
                           >
                             {video.room_id}
                           </a>
                         {:else}
-                          <span class="text-sm text-gray-900 dark:text-white"
-                            >{video.room_id}</span
-                          >
+                          <span class="text-[12px] text-fg">{video.room_id}</span>
                         {/if}
                       {/if}
                     </div>
                   </td>
 
-                  <td class="px-4 py-3 w-64">
+                  <td class="px-4 py-2.5 w-64">
                     <div class="flex items-center space-x-3 w-full">
                       <div
-                        class="w-12 h-8 rounded-lg overflow-hidden bg-gray-100 dark:bg-gray-700 flex items-center justify-center flex-shrink-0"
+                        class="flex h-8 w-12 flex-shrink-0 items-center justify-center overflow-hidden rounded-[6px] border border-line bg-sunken"
                       >
                         {#if video.cover && video.cover.trim() !== ""}
                           <img
@@ -972,7 +921,7 @@
                         {:else}
                           <!-- 默认视频图标 -->
                           <svg
-                            class="w-6 h-6 text-gray-400"
+                            class="h-5 w-5 text-fg-faint"
                             fill="none"
                             stroke="currentColor"
                             viewBox="0 0 24 24"
@@ -988,13 +937,13 @@
                       </div>
                       <div class="min-w-0 flex-1 w-64">
                         <p
-                          class="text-sm font-medium text-gray-900 dark:text-white truncate w-full"
+                          class="w-full truncate text-[12px] font-medium text-fg"
                           title={video.title || video.file}
                         >
                           {video.title || video.file}
                         </p>
                         <p
-                          class="text-xs text-gray-500 dark:text-gray-400 truncate w-full"
+                          class="w-full truncate text-[11px] text-fg-muted"
                           title={video.file}
                         >
                           {video.file}
@@ -1003,97 +952,97 @@
                     </div>
                   </td>
 
-                  <td class="px-4 py-3 w-20">
+                  <td class="px-4 py-2.5 w-20">
                     <div class="flex items-center space-x-2">
-                      <AnnotationOutline class="table-icon text-gray-400" />
-                      <span class="text-sm text-gray-800 truncate"
+                      <AnnotationOutline class="table-icon text-fg-faint" />
+                      <span class="truncate text-[12px] text-fg-secondary"
                         >{video.note}</span
                       >
                     </div>
                   </td>
 
-                  <td class="px-4 py-3 w-20">
+                  <td class="px-4 py-2.5 w-20">
                     <div class="flex items-center space-x-2">
-                      <Clock class="table-icon text-gray-400" />
-                      <span class="text-sm text-gray-800"
+                      <Clock class="table-icon text-fg-faint" />
+                      <span class="text-[12px] tabular-nums text-fg-secondary"
                         >{formatDuration(video.length)}</span
                       >
                     </div>
                   </td>
 
-                  <td class="px-4 py-3 w-24">
+                  <td class="px-4 py-2.5 w-24">
                     <div class="flex items-center space-x-2">
-                      <HardDrive class="table-icon text-gray-400" />
-                      <span class="text-sm text-gray-800"
+                      <HardDrive class="table-icon text-fg-faint" />
+                      <span class="text-[12px] tabular-nums text-fg-secondary"
                         >{formatSize(video.size)}</span
                       >
                     </div>
                   </td>
 
-                  <td class="px-4 py-3 w-28">
+                  <td class="px-4 py-2.5 w-28">
                     <div class="flex items-center space-x-2">
-                      <Calendar class="table-icon text-gray-400" />
-                      <span class="text-sm text-gray-800 truncate"
+                      <Calendar class="table-icon text-fg-faint" />
+                      <span class="truncate text-[12px] text-fg-secondary"
                         >{formatDate(video.created_at)}</span
                       >
                     </div>
                   </td>
 
-                  <td class="px-4 py-3 w-28">
+                  <td class="px-4 py-2.5 w-28">
                     <div class="flex items-center space-x-2">
-                      <Upload class="table-icon text-gray-400" />
+                      <Upload class="table-icon text-fg-faint" />
                       {#if video.bvid}
                         <a
                           href={`https://www.bilibili.com/video/${video.bvid}`}
                           target="_blank"
                           rel="noopener noreferrer"
-                          class="text-blue-500 hover:text-blue-700 text-sm truncate"
+                          class="truncate text-[12px] text-accent-fg hover:underline"
                           title={video.bvid}
                         >
                           {video.bvid}
                         </a>
                       {:else}
-                        <span class="text-gray-500 dark:text-gray-400 text-sm"
+                        <span class="text-[12px] text-fg-faint"
                           >未投稿</span
                         >
                       {/if}
                     </div>
                   </td>
 
-                  <td class="px-4 py-3 w-28">
-                    <div class="flex items-center space-x-2">
+                  <td class="px-4 py-2.5 w-28">
+                    <div class="flex items-center gap-1">
                       <button
-                        class="p-1.5 rounded-lg hover:bg-blue-500/10 transition-colors"
+                        class="action-button hover:bg-accent-soft"
                         title="播放"
                         onclick={() => playVideo(video)}
                       >
-                        <Play class="w-4 h-4 text-blue-500" />
+                        <Play class="h-3.5 w-3.5 text-accent-fg" />
                       </button>
                       <button
-                        class="p-1.5 rounded-lg hover:bg-green-500/10 transition-colors"
+                        class="action-button hover:bg-success-soft"
                         title="编辑备注"
                         onclick={() => openEditNoteDialog(video)}
                       >
-                        <Edit class="w-4 h-4 text-green-500" />
+                        <Edit class="h-3.5 w-3.5 text-success-fg" />
                       </button>
                       {#if !TAURI_ENV}
                         <button
-                          class="p-1.5 rounded-lg hover:bg-blue-500/10 transition-colors"
+                          class="action-button hover:bg-accent-soft"
                           title="导出"
                           onclick={async () => await exportVideo(video)}
                         >
-                          <Download class="w-4 h-4 text-blue-500" />
+                          <Download class="h-3.5 w-3.5 text-accent-fg" />
                         </button>
                       {/if}
                       <button
-                        class="p-1.5 rounded-lg hover:bg-red-500/10 transition-colors"
+                        class="action-button hover:bg-danger-soft"
                         title="删除"
                         onclick={() => {
                           videoToDelete = video;
                           showDeleteConfirm = true;
                         }}
                       >
-                        <Trash2 class="w-4 h-4 text-red-500" />
+                        <Trash2 class="h-3.5 w-3.5 text-danger-fg" />
                       </button>
                     </div>
                   </td>
@@ -1109,29 +1058,25 @@
 
 <!-- Delete Confirmation Modal -->
 {#if showDeleteConfirm}
-  <div
-    class="fixed inset-0 bg-black/20 dark:bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center"
-  >
-    <div
-      class="mac-modal w-[400px] bg-white dark:bg-[#323234] rounded-xl shadow-xl overflow-hidden"
-    >
-      <div class="p-6 space-y-4">
-        <div class="text-center space-y-2">
-          <h3 class="text-base font-medium text-gray-900 dark:text-white">
+  <div class="ui-modal-backdrop">
+    <div class="ui-modal w-[400px] max-w-full">
+      <div class="space-y-4 p-6">
+        <div class="space-y-2 text-center">
+          <h3 class="text-[14px] font-semibold text-fg">
             确认删除
           </h3>
-          <p class="text-sm text-gray-500 dark:text-gray-400">
+          <p class="text-[12px] text-fg-muted">
             {#if videoToDelete}
               确定要删除视频 "{videoToDelete.title || videoToDelete.file}" 吗？
             {:else}
               确定要删除选中的 {selectedVideos.size} 个视频吗？
             {/if}
           </p>
-          <p class="text-xs text-red-600 dark:text-red-500">此操作无法撤销。</p>
+          <p class="text-[11px] text-danger-fg">此操作无法撤销。</p>
         </div>
-        <div class="flex justify-center space-x-3">
+        <div class="flex justify-center gap-2">
           <button
-            class="w-24 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg transition-colors"
+            class="ui-btn w-24"
             onclick={() => {
               showDeleteConfirm = false;
               videoToDelete = null;
@@ -1140,7 +1085,7 @@
             取消
           </button>
           <button
-            class="w-24 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors"
+            class="ui-btn ui-btn-danger w-24"
             onclick={() => {
               if (videoToDelete) {
                 deleteVideo(videoToDelete);
@@ -1161,14 +1106,11 @@
 {#if showEditNoteDialog && videoToEditNote}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    class="fixed inset-0 bg-black/30 dark:bg-black/50 z-50 flex items-center justify-center p-4"
-    onclick={closeEditNoteDialog}
-  >
+  <div class="ui-modal-backdrop" onclick={closeEditNoteDialog}>
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
-      class="mac-modal w-[480px] max-w-full bg-white dark:bg-[#2d2d30] rounded-xl shadow-xl border border-gray-200 dark:border-gray-600 overflow-hidden"
+      class="ui-modal w-[480px] max-w-full"
       onclick={(event) => event.stopPropagation()}
       role="dialog"
       tabindex="-1"
@@ -1176,25 +1118,20 @@
       aria-describedby="edit-note-description"
     >
       <!-- Header -->
-      <div
-        class="px-6 pt-6 pb-4 border-b border-gray-100 dark:border-gray-700/50"
-      >
-        <div class="flex items-center space-x-3">
+      <div class="shrink-0 border-b border-line px-[18px] py-3">
+        <div class="flex items-center gap-3">
           <div
-            class="w-8 h-8 rounded-full bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center"
+            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] bg-accent-soft"
           >
-            <Edit class="w-4 h-4 text-blue-600 dark:text-blue-400" />
+            <Edit class="h-4 w-4 text-accent-fg" />
           </div>
           <div class="min-w-0 flex-1">
-            <h3
-              id="edit-note-title"
-              class="text-base font-semibold text-gray-900 dark:text-white"
-            >
+            <h3 id="edit-note-title" class="text-[14px] font-semibold text-fg">
               编辑切片备注
             </h3>
             <p
               id="edit-note-description"
-              class="text-sm text-gray-500 dark:text-gray-400 truncate mt-0.5"
+              class="mt-0.5 truncate text-[12px] text-fg-muted"
             >
               {videoToEditNote.title || videoToEditNote.file}
             </p>
@@ -1203,12 +1140,9 @@
       </div>
 
       <!-- Content -->
-      <div class="px-6 py-5">
-        <div class="space-y-3">
-          <label
-            for="edit-note-textarea"
-            class="block text-sm font-medium text-gray-700 dark:text-gray-300"
-          >
+      <div class="ui-modal-body">
+        <div class="space-y-2">
+          <label for="edit-note-textarea" class="ui-label block">
             备注内容
           </label>
           <div class="relative">
@@ -1216,12 +1150,7 @@
               id="edit-note-textarea"
               bind:value={editingNote}
               placeholder="为这个切片添加备注信息，如高光时刻、重要内容等..."
-              class="w-full px-3 py-2 text-sm
-                     bg-white dark:bg-gray-800
-                     border border-gray-300 dark:border-gray-500 rounded-md
-                     text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400
-                     focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500
-                     transition-colors duration-150 resize-none"
+              class="ui-input w-full resize-none"
               rows="5"
               onkeydown={(e) => {
                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
@@ -1230,7 +1159,7 @@
               }}
             ></textarea>
             <!-- Helper text -->
-            <div class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+            <div class="ui-hint mt-1.5">
               按 ⌘+Enter 快速保存
             </div>
           </div>
@@ -1238,23 +1167,13 @@
       </div>
 
       <!-- Footer -->
-      <div
-        class="px-6 py-4 bg-gray-50 dark:bg-gray-800 border-t border-gray-200 dark:border-gray-600"
-      >
-        <div class="flex justify-end space-x-3">
-          <button
-            class="w-24 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg transition-colors"
-            onclick={closeEditNoteDialog}
-          >
-            取消
-          </button>
-          <button
-            class="w-24 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
-            onclick={saveNote}
-          >
-            保存
-          </button>
-        </div>
+      <div class="ui-modal-footer">
+        <button class="ui-btn w-20" onclick={closeEditNoteDialog}>
+          取消
+        </button>
+        <button class="ui-btn ui-btn-primary w-20" onclick={saveNote}>
+          保存
+        </button>
       </div>
     </div>
   </div>
@@ -1268,33 +1187,26 @@
 />
 
 <style>
-  /* macOS style modal */
-  .mac-modal {
-    box-shadow:
-      0 20px 25px -5px rgba(0, 0, 0, 0.1),
-      0 10px 10px -5px rgba(0, 0, 0, 0.04);
-  }
-
-  :global(.dark) .mac-modal {
-    box-shadow:
-      0 20px 25px -5px rgba(0, 0, 0, 0.3),
-      0 10px 10px -5px rgba(0, 0, 0, 0.1);
-  }
-
   /* fixed icon size in tables */
   :global(.table-icon) {
-    width: 1rem; /* 16px, same as Tailwind w-4 */
-    height: 1rem; /* 16px, same as Tailwind h-4 */
+    width: 14px;
+    height: 14px;
     flex: 0 0 auto;
   }
 
-  /* macOS style textarea */
-  .mac-modal textarea {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-      sans-serif;
+  /* Row action icon buttons; the hover tint comes from a utility class. */
+  .action-button {
+    display: inline-flex;
+    width: 26px;
+    height: 26px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 7px;
+    transition: background-color 120ms ease;
   }
 
-  .mac-modal textarea:focus {
-    box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.3);
+  .action-button:focus-visible {
+    outline: 2px solid rgb(var(--c-accent));
+    outline-offset: 1px;
   }
 </style>

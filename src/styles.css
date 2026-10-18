@@ -2,12 +2,326 @@
 @tailwind components;
 @tailwind utilities;
 
-html,
-body {
-  height: 100%;
-  width: 100%;
-  user-select: none;
-  cursor: default;
+/*
+ * Theme tokens, as RGB channels so Tailwind can add alpha (`bg-surface/80`).
+ * The palette follows the preview windows; `.dark` on <html> switches it.
+ * Only the main window switches theme (stores/theme.ts); preview windows are
+ * always dark.
+ */
+@layer base {
+  :root {
+    color-scheme: light;
+    --c-canvas: 243 245 248;
+    --c-chrome: 236 239 243;
+    --c-surface: 255 255 255;
+    --c-control: 244 246 249;
+    --c-control-hover: 233 237 242;
+    --c-sunken: 233 236 241;
+    --c-selected: 255 255 255;
+    --c-line: 225 229 236;
+    --c-line-strong: 208 214 223;
+    --c-fg: 23 28 38;
+    --c-fg-secondary: 71 82 99;
+    --c-fg-muted: 107 118 135;
+    --c-fg-faint: 150 160 175;
+    --c-accent: 10 132 255;
+    --c-accent-soft: 230 242 255;
+    --c-accent-fg: 0 102 214;
+    --c-success: 31 170 80;
+    --c-success-soft: 228 247 235;
+    --c-success-fg: 21 128 61;
+    --c-warning: 230 140 0;
+    --c-warning-soft: 255 244 224;
+    --c-warning-fg: 180 100 0;
+    --c-danger: 229 57 77;
+    --c-danger-soft: 253 236 238;
+    --c-danger-fg: 200 35 56;
+    --c-scrollbar: 203 210 220;
+    --c-scrollbar-hover: 160 170 185;
+  }
+
+  .dark {
+    color-scheme: dark;
+    --c-canvas: 14 18 25;
+    --c-chrome: 20 25 34;
+    --c-surface: 23 28 37;
+    --c-control: 32 39 51;
+    --c-control-hover: 41 51 65;
+    --c-sunken: 15 19 26;
+    --c-selected: 41 51 65;
+    --c-line: 43 51 64;
+    --c-line-strong: 52 64 82;
+    --c-fg: 233 238 248;
+    --c-fg-secondary: 182 192 207;
+    --c-fg-muted: 140 152 170;
+    --c-fg-faint: 104 117 137;
+    --c-accent: 10 132 255;
+    --c-accent-soft: 21 59 92;
+    --c-accent-fg: 101 194 255;
+    --c-success: 48 209 88;
+    --c-success-soft: 22 58 40;
+    --c-success-fg: 104 224 138;
+    --c-warning: 255 159 10;
+    --c-warning-soft: 61 45 18;
+    --c-warning-fg: 255 196 102;
+    --c-danger: 239 86 104;
+    --c-danger-soft: 59 32 40;
+    --c-danger-fg: 255 133 145;
+    --c-scrollbar: 52 64 82;
+    --c-scrollbar-hover: 74 90 112;
+  }
+
+  html,
+  body {
+    height: 100%;
+    width: 100%;
+    user-select: none;
+    cursor: default;
+  }
+
+  body {
+    background-color: rgb(var(--c-canvas));
+    color: rgb(var(--c-fg));
+  }
+}
+
+/*
+ * Shared controls in the preview-window style. Combine with Tailwind
+ * utilities for layout; colors come from the theme tokens.
+ */
+@layer components {
+  .ui-card {
+    @apply rounded-[10px] border border-line bg-surface;
+  }
+
+  .ui-btn {
+    @apply inline-flex h-[30px] shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-[8px] border border-line-strong bg-control px-[11px] text-[12px] font-medium text-fg transition-colors;
+  }
+
+  /* States sit in :where() so Tailwind utilities can still override them. */
+  .ui-btn:where(:hover:not(:disabled)) {
+    @apply border-fg-faint/70 bg-control-hover;
+  }
+
+  .ui-btn:where(:disabled) {
+    @apply cursor-not-allowed opacity-50;
+  }
+
+  .ui-btn:focus-visible,
+  .ui-tab:focus-visible,
+  .ui-menu-item:focus-visible {
+    outline: 2px solid rgb(var(--c-accent));
+    outline-offset: 2px;
+  }
+
+  .ui-btn-primary {
+    @apply border-transparent bg-accent text-white;
+  }
+
+  .ui-btn-primary:where(:hover:not(:disabled)) {
+    @apply border-transparent bg-accent/90;
+  }
+
+  .ui-btn-danger {
+    @apply border-danger/40 bg-danger-soft text-danger-fg;
+  }
+
+  .ui-btn-danger:where(:hover:not(:disabled)) {
+    @apply border-danger/70 bg-danger-soft;
+  }
+
+  .ui-btn-ghost {
+    @apply border-transparent bg-transparent text-fg-secondary;
+  }
+
+  .ui-btn-ghost:where(:hover:not(:disabled)) {
+    @apply border-transparent bg-control-hover text-fg;
+  }
+
+  /* A toggle button that is on, like the timeline's danmaku button. */
+  .ui-btn-active {
+    @apply border-accent/70 bg-accent-soft text-accent-fg;
+  }
+
+  .ui-btn-sm {
+    @apply h-[26px] gap-1 rounded-[7px] px-2 text-[11px];
+  }
+
+  .ui-btn-icon {
+    @apply w-[30px] px-0;
+  }
+
+  .ui-btn-sm.ui-btn-icon {
+    @apply w-[26px];
+  }
+
+  .ui-input {
+    @apply h-[30px] rounded-[8px] border border-line-strong bg-control px-2.5 py-0 text-[12px] text-fg shadow-none outline-none transition-colors placeholder:text-fg-faint;
+  }
+
+  .ui-input:focus {
+    @apply border-accent shadow-none outline-none;
+  }
+
+  .ui-input:disabled {
+    @apply cursor-not-allowed opacity-60;
+  }
+
+  textarea.ui-input {
+    @apply h-auto py-2 leading-relaxed;
+  }
+
+  select.ui-input {
+    @apply cursor-pointer pr-7;
+    background-position: right 0.5rem center;
+  }
+
+  .ui-checkbox {
+    @apply h-[14px] w-[14px] cursor-pointer rounded-[4px] border border-line-strong bg-control text-accent shadow-none;
+  }
+
+  .ui-checkbox:focus {
+    @apply shadow-none outline-none;
+  }
+
+  .ui-checkbox:focus-visible {
+    outline: 2px solid rgb(var(--c-accent));
+    outline-offset: 2px;
+  }
+
+  /* <label class="ui-switch"><input type="checkbox" /><span></span></label> */
+  .ui-switch {
+    @apply relative inline-flex h-5 w-[34px] shrink-0 cursor-pointer;
+  }
+
+  .ui-switch input {
+    @apply absolute h-0 w-0 opacity-0;
+  }
+
+  .ui-switch span {
+    @apply absolute inset-0 rounded-full bg-line-strong transition-colors;
+  }
+
+  .ui-switch span::before {
+    @apply absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform content-[''];
+  }
+
+  .ui-switch input:checked + span {
+    @apply bg-accent;
+  }
+
+  .ui-switch input:checked + span::before {
+    @apply translate-x-[14px];
+  }
+
+  .ui-switch input:focus-visible + span {
+    outline: 2px solid rgb(var(--c-accent));
+    outline-offset: 2px;
+  }
+
+  .ui-switch input:disabled + span {
+    @apply cursor-not-allowed opacity-50;
+  }
+
+  /* Segmented control: a sunken track of `.ui-tab`s. */
+  .ui-tabs {
+    @apply inline-flex items-center gap-0.5 rounded-[9px] bg-sunken p-[3px];
+  }
+
+  .ui-tab {
+    @apply inline-flex h-7 items-center justify-center gap-1.5 whitespace-nowrap rounded-[7px] px-3 text-[12px] text-fg-muted transition-colors;
+  }
+
+  .ui-tab:where(:hover) {
+    @apply text-fg-secondary;
+  }
+
+  .ui-tab.active,
+  .ui-tab[aria-selected="true"] {
+    @apply bg-selected text-fg shadow-sm;
+  }
+
+  .ui-badge {
+    @apply inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-[5px] bg-control px-1.5 py-px text-[10px] font-medium leading-4 text-fg-muted;
+  }
+
+  .ui-badge-accent {
+    @apply bg-accent-soft text-accent-fg;
+  }
+
+  .ui-badge-success {
+    @apply bg-success-soft text-success-fg;
+  }
+
+  .ui-badge-warning {
+    @apply bg-warning-soft text-warning-fg;
+  }
+
+  .ui-badge-danger {
+    @apply bg-danger-soft text-danger-fg;
+  }
+
+  /* Small count bubble, as on the inspector tabs. */
+  .ui-count {
+    @apply inline-flex min-w-4 items-center justify-center rounded-full bg-accent px-[5px] text-[9px] font-medium leading-4 text-white;
+  }
+
+  .ui-modal-backdrop {
+    @apply fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm;
+  }
+
+  .ui-modal {
+    @apply flex max-h-[85vh] flex-col overflow-hidden rounded-[12px] border border-line bg-surface text-fg shadow-2xl;
+  }
+
+  .ui-modal-header {
+    @apply flex h-[46px] shrink-0 items-center justify-between gap-3 border-b border-line px-[18px] text-[14px] font-semibold;
+  }
+
+  .ui-modal-body {
+    @apply min-h-0 flex-1 overflow-y-auto p-[18px];
+  }
+
+  .ui-modal-footer {
+    @apply flex shrink-0 items-center justify-end gap-2 border-t border-line bg-chrome px-4 py-3;
+  }
+
+  .ui-menu {
+    @apply rounded-[10px] border border-line bg-surface p-1 text-fg shadow-xl;
+  }
+
+  .ui-menu-item {
+    @apply flex w-full items-center gap-2 whitespace-nowrap rounded-[6px] px-2.5 py-1.5 text-left text-[12px] text-fg-secondary transition-colors;
+  }
+
+  .ui-menu-item:where(:hover:not(:disabled)) {
+    @apply bg-control-hover text-fg;
+  }
+
+  .ui-menu-item.danger {
+    @apply text-danger-fg;
+  }
+
+  .ui-menu-item.danger:where(:hover:not(:disabled)) {
+    @apply bg-danger-soft text-danger-fg;
+  }
+
+  .ui-menu-item:where(:disabled) {
+    @apply cursor-not-allowed opacity-50;
+  }
+
+  /* Form copy: a field name and its explanation. */
+  .ui-label {
+    @apply text-[13px] font-medium text-fg;
+  }
+
+  .ui-hint {
+    @apply text-[11px] leading-relaxed text-fg-muted;
+  }
+
+  .ui-section-title {
+    @apply text-[13px] font-semibold text-fg;
+  }
 }
 
 /* Hide Safari AirPlay button on video elements */
@@ -27,11 +341,11 @@ video::-webkit-media-controls-start-playback-button {
 }
 
 .icon-primary {
-  color: #007bff;
+  color: rgb(var(--c-accent));
 }
 
 .icon-danger {
-  color: #dc3545;
+  color: rgb(var(--c-danger));
 }
 
 /* 自定义滚动条样式 */
@@ -40,115 +354,31 @@ video::-webkit-media-controls-start-playback-button {
   height: 8px;
 }
 
-::-webkit-scrollbar-track {
-  background: #1c1c1e;
-  border-radius: 4px;
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #3c3c3e;
+  background: rgb(var(--c-scrollbar));
   border-radius: 4px;
   transition: background-color 0.2s ease;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #4c4c4e;
+  background: rgb(var(--c-scrollbar-hover));
 }
 
-::-webkit-scrollbar-corner {
-  background: #1c1c1e;
-}
-
-/* 针对侧边栏的特殊滚动条样式 */
-.sidebar-scrollbar::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-
-.sidebar-scrollbar::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.sidebar-scrollbar::-webkit-scrollbar-thumb {
-  background: #4c4c4e;
-  border-radius: 3px;
-  transition: background-color 0.2s ease;
-}
-
-.sidebar-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: #5c5c5e;
-}
-
-.sidebar-scrollbar::-webkit-scrollbar-corner {
-  background: transparent;
-}
-
-/* 针对表格的水平滚动条样式 */
-.sidebar-scrollbar::-webkit-scrollbar:horizontal {
-  height: 6px;
-}
-
-.sidebar-scrollbar::-webkit-scrollbar-thumb:horizontal {
-  background: #4c4c4e;
-  border-radius: 3px;
-}
-
-.sidebar-scrollbar::-webkit-scrollbar-thumb:horizontal:hover {
-  background: #5c5c5e;
-}
-
-/* 针对深色主题的滚动条样式 */
-.dark .sidebar-scrollbar::-webkit-scrollbar-thumb {
-  background: #4c4c4e;
-}
-
-.dark .sidebar-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: #5c5c5e;
-}
-
-.dark .sidebar-scrollbar::-webkit-scrollbar-thumb:horizontal {
-  background: #4c4c4e;
-}
-
-.dark .sidebar-scrollbar::-webkit-scrollbar-thumb:horizontal:hover {
-  background: #5c5c5e;
-}
-
-/* 针对 Summary 页面的浅色滚动条样式 */
+/* Thinner variants used by sidebars and pages. */
+.sidebar-scrollbar::-webkit-scrollbar,
 .custom-scrollbar-light::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 
-.custom-scrollbar-light::-webkit-scrollbar-track {
-  background: transparent;
-}
-
+.sidebar-scrollbar::-webkit-scrollbar-thumb,
 .custom-scrollbar-light::-webkit-scrollbar-thumb {
-  background: #d1d5db;
   border-radius: 3px;
-  transition: background-color 0.2s ease;
-}
-
-.custom-scrollbar-light::-webkit-scrollbar-thumb:hover {
-  background: #9ca3af;
-}
-
-.custom-scrollbar-light::-webkit-scrollbar-corner {
-  background: transparent;
-}
-
-.custom-scrollbar-light::-webkit-scrollbar:horizontal {
-  height: 6px;
-}
-
-.custom-scrollbar-light::-webkit-scrollbar-thumb:horizontal {
-  background: #d1d5db;
-  border-radius: 3px;
-}
-
-.custom-scrollbar-light::-webkit-scrollbar-thumb:horizontal:hover {
-  background: #9ca3af;
 }
 
 /* Marked 表格样式 */
@@ -164,7 +394,7 @@ video::-webkit-media-controls-start-playback-button {
 
 .prose table th,
 .prose table td {
-  border: 1px solid #e5e7eb;
+  border: 1px solid rgb(var(--c-line));
   padding: 0.5rem 0.75rem;
   text-align: left;
   word-wrap: break-word; /* 允许长单词换行 */
@@ -174,43 +404,24 @@ video::-webkit-media-controls-start-playback-button {
 }
 
 .prose table th {
-  background-color: #f9fafb;
+  background-color: rgb(var(--c-control));
   font-weight: 600;
-  color: #374151;
+  color: rgb(var(--c-fg));
   white-space: nowrap; /* 表头不换行 */
 }
 
 .prose table tr:nth-child(even) {
-  background-color: #f9fafb;
+  background-color: rgb(var(--c-control) / 0.5);
 }
 
 .prose table tr:hover {
-  background-color: #f3f4f6;
+  background-color: rgb(var(--c-control-hover) / 0.6);
 }
 
 /* 表格容器样式，支持水平滚动 */
 .prose {
   overflow-x: auto;
   max-width: 100%;
-}
-
-/* 深色主题下的表格样式 */
-.dark .prose table th,
-.dark .prose table td {
-  border-color: #4b5563;
-}
-
-.dark .prose table th {
-  background-color: #374151;
-  color: #f9fafb;
-}
-
-.dark .prose table tr:nth-child(even) {
-  background-color: #374151;
-}
-
-.dark .prose table tr:hover {
-  background-color: #4b5563;
 }
 
 /* 表格容器样式 */
@@ -235,16 +446,11 @@ video::-webkit-media-controls-start-playback-button {
 /* 消息中表格的特殊样式 */
 .table-container {
   scrollbar-width: thin;
-  scrollbar-color: #cbd5e1 #f1f5f9;
+  scrollbar-color: rgb(var(--c-scrollbar)) transparent;
   border-radius: 0.5rem;
-  background: #f8fafc;
+  background: rgb(var(--c-sunken));
   padding: 0.5rem;
   margin: 0.5rem 0;
-}
-
-.dark .table-container {
-  scrollbar-color: #475569 #1e293b;
-  background: #1e293b;
 }
 
 /* 确保表格内容不会溢出容器 */
@@ -277,25 +483,4 @@ video::-webkit-media-controls-start-playback-button {
 /* 表格容器的滚动条样式 */
 .table-container::-webkit-scrollbar {
   height: 6px;
-}
-
-.table-container::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.table-container::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
-  border-radius: 3px;
-}
-
-.table-container::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
-}
-
-.dark .table-container::-webkit-scrollbar-thumb {
-  background: #475569;
-}
-
-.dark .table-container::-webkit-scrollbar-thumb:hover {
-  background: #64748b;
 }

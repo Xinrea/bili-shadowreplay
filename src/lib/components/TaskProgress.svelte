@@ -57,22 +57,22 @@
   title={[stage, position, remaining].filter(Boolean).join(" · ")}
 >
   <!-- Fixed side columns keep bars aligned when several tasks are listed. -->
-  <span class="w-[5.5rem] shrink-0 truncate text-white/75">{stage}</span>
-  <div class="h-1 min-w-[3rem] flex-1 overflow-hidden rounded-full bg-white/10">
+  <span class="w-[5.5rem] shrink-0 truncate text-fg-secondary">{stage}</span>
+  <div class="h-1 min-w-[3rem] flex-1 overflow-hidden rounded-full bg-fg/10">
     {#key barKey}
       {#if percent !== null}
         <div
-          class="h-full rounded-full bg-[#0A84FF] transition-[width] duration-500 ease-linear"
+          class="h-full rounded-full bg-accent transition-[width] duration-500 ease-linear"
           style:width="{percent}%"
         ></div>
       {:else}
-        <div class="indeterminate h-full w-1/3 rounded-full bg-[#0A84FF]/80"></div>
+        <div class="indeterminate h-full w-1/3 rounded-full bg-accent/80"></div>
       {/if}
     {/key}
   </div>
-  <span class="w-[8.5rem] shrink-0 truncate text-right tabular-nums text-white/45">
+  <span class="w-[8.5rem] shrink-0 truncate text-right tabular-nums text-fg-muted">
     {#if percent !== null}
-      <span class="font-medium text-[#4da3ff]">{percent}%</span>{remaining ? ` · ${remaining}` : ""}
+      <span class="font-medium text-accent-fg">{percent}%</span>{remaining ? ` · ${remaining}` : ""}
     {:else}
       {position}
     {/if}

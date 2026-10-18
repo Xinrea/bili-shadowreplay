@@ -39,10 +39,10 @@
   }
 </script>
 
-<div class="space-y-2">
-  <span class="block text-sm font-medium text-gray-700 dark:text-gray-300">平台</span>
+<div class="space-y-1.5">
+  <span class="ui-label block">平台</span>
   <div
-    class="grid grid-cols-[repeat(auto-fit,minmax(4.25rem,1fr))] gap-1 p-1 bg-[#f5f5f7] dark:bg-[#1c1c1e] rounded-lg"
+    class="grid grid-cols-[repeat(auto-fit,minmax(4.25rem,1fr))] gap-0.5 rounded-[9px] bg-sunken p-[3px]"
     role="radiogroup"
     aria-label="平台"
   >
@@ -50,16 +50,16 @@
       {@const Icon = icons[platform.id]}
       <button
         type="button"
-        class="flex flex-col items-center justify-center gap-1 min-w-0 px-1 py-2 rounded-md transition-colors {value ===
+        class="flex min-w-0 flex-col items-center justify-center gap-1 rounded-[7px] px-1 py-2 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent {value ===
         platform.id
-          ? 'bg-white dark:bg-[#3a3a3c] shadow-sm text-gray-900 dark:text-white'
-          : 'text-gray-500 dark:text-gray-400 hover:bg-white/70 dark:hover:bg-white/5 hover:text-gray-900 dark:hover:text-white'}"
+          ? 'bg-selected text-fg shadow-sm'
+          : 'text-fg-muted hover:bg-selected/60 hover:text-fg-secondary'}"
         aria-label={platform.label}
         aria-checked={value === platform.id}
         role="radio"
         onclick={() => select(platform.id)}
       >
-        <span class="text-gray-900 dark:text-white">
+        <span class="text-fg">
           {#if Icon}
             <Icon class="w-5 h-5 object-contain" />
           {/if}

@@ -20,8 +20,20 @@
   } from "lucide-svelte";
   import { onMount } from "svelte";
   import PowerLiveAccount from "../lib/components/PowerLiveAccount.svelte";
+  import PageTitlebar from "../lib/components/PageTitlebar.svelte";
+  import {
+    themePreference,
+    setThemePreference,
+    type ThemePreference,
+  } from "../lib/stores/theme";
 
   let { active = true }: { active?: boolean } = $props();
+
+  const themeOptions: { value: ThemePreference; label: string }[] = [
+    { value: "system", label: "跟随系统" },
+    { value: "light", label: "亮色" },
+    { value: "dark", label: "暗色" },
+  ];
 
   let setting_model: Config = $state({
     cache: "",
@@ -417,90 +429,98 @@
   });
 </script>
 
-<div class="flex-1 overflow-auto custom-scrollbar-light bg-gray-50">
-  <div class="h-screen">
-    <div class="p-6 space-y-6">
-      <!-- Header -->
-      <div
-        class="flex items-center justify-between dark:bg-[#1c1c1e] py-2 -mt-2 z-10"
-      >
-        <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">
-          Settings
-        </h1>
-      </div>
+<PageTitlebar title="设置" />
 
+<div class="flex-1 overflow-auto custom-scrollbar-light bg-canvas">
+  <div class="h-screen">
+    <div class="p-5 space-y-5">
       <!-- Settings Sections -->
-      <div class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700">
+      <div class="ui-card">
         <PowerLiveAccount {active} />
       </div>
-      <div class="space-y-6 pb-6">
-        <div class="space-y-4">
-          <h2
-            class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
-          >
-            <FileText class="w-5 h-5 dark:icon-white" />
+      <div class="space-y-5 pb-6">
+        <div class="space-y-3">
+          <h2 class="flex items-center gap-2 text-[14px] font-semibold text-fg">
+            <FileText class="h-4 w-4 text-fg-muted" />
             <span>基础设置</span>
           </h2>
-          <div
-            class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700"
-          >
-            {#if TAURI_ENV}
-              <div class="p-4">
-                <div class="flex items-center justify-between">
-                  <div>
-                    <h3
-                      class="text-sm font-medium text-gray-900 dark:text-white"
+          <div class="ui-card divide-y divide-line">
+            <div class="px-4 py-3">
+              <div class="flex items-center justify-between gap-6">
+                <div>
+                  <h3 class="ui-label">外观主题</h3>
+                  <p class="ui-hint mt-0.5">
+                    选择主窗口的外观；录播与切片预览窗口始终使用暗色。
+                  </p>
+                </div>
+                <div class="ui-tabs shrink-0" role="radiogroup" aria-label="外观主题">
+                  {#each themeOptions as option (option.value)}
+                    <button
+                      type="button"
+                      role="radio"
+                      class="ui-tab"
+                      class:active={$themePreference === option.value}
+                      aria-checked={$themePreference === option.value}
+                      onclick={() => setThemePreference(option.value)}
                     >
+                      {option.label}
+                    </button>
+                  {/each}
+                </div>
+              </div>
+            </div>
+            {#if TAURI_ENV}
+              <div class="px-4 py-3">
+                <div class="flex items-center justify-between gap-6">
+                  <div>
+                    <h3 class="ui-label">
                       开机自动启动
                     </h3>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                    <p class="ui-hint mt-0.5">
                       登录系统后自动打开应用
                     </p>
                   </div>
-                  <label class="relative inline-block w-11 h-6">
+                  <label class="ui-switch">
                     <input
                       type="checkbox"
-                      class="peer opacity-0 w-0 h-0"
                       bind:checked={launchAtLogin}
                       onchange={updateLaunchAtLogin}
                     />
-                    <span
-                      class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
-                    ></span>
+                    <span></span>
                   </label>
                 </div>
               </div>
             {/if}
-            <div class="p-4">
-              <div class="flex items-center justify-between">
+            <div class="px-4 py-3">
+              <div class="flex items-center justify-between gap-6">
                 <div>
-                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                  <h3 class="ui-label">
                     直播间状态检查间隔
                   </h3>
-                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                  <p class="ui-hint mt-0.5">
                     设置直播间状态检查的时间间隔，单位为秒，过于频繁可能会触发风控
                   </p>
                 </div>
                 <div class="flex items-center space-x-2">
                   <input
                     type="number"
-                    class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-24"
+                    class="ui-input w-24"
                     bind:value={setting_model.status_check_interval}
                     onblur={update_status_check_interval}
                   />
                 </div>
               </div>
             </div>
-            <div class="p-4">
-              <div class="flex items-center justify-between">
+            <div class="px-4 py-3">
+              <div class="flex items-center justify-between gap-6">
                 <div>
-                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                  <h3 class="ui-label">
                     Webhook URL
                   </h3>
-                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                  <p class="ui-hint mt-0.5">
                     设置 Webhook URL，用于接收事件通知，见<a
                       href="https://bsr.xinrea.cn/usage/features/webhook.html"
-                      class="text-blue-500 hover:text-blue-700"
+                      class="text-accent-fg hover:underline"
                       target="_blank">Webhook 文档</a
                     >
                   </p>
@@ -508,7 +528,7 @@
                 <div class="flex items-center space-x-2">
                   <input
                     type="text"
-                    class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
+                    class="ui-input w-96"
                     bind:value={setting_model.webhook_url}
                     onchange={update_webhook_url}
                     placeholder="https://example.com/webhook"
@@ -520,32 +540,26 @@
         </div>
         <!-- API Server Settings -->
         {#if !TAURI_ENV}
-          <div class="space-y-4">
-            <h2
-              class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
-            >
-              <FileText class="w-5 h-5 dark:icon-white" />
+          <div class="space-y-3">
+            <h2 class="flex items-center gap-2 text-[14px] font-semibold text-fg">
+              <FileText class="h-4 w-4 text-fg-muted" />
               <span>API 服务器配置</span>
             </h2>
-            <div
-              class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700"
-            >
-              <div class="p-4">
-                <div class="flex items-center justify-between">
+            <div class="ui-card divide-y divide-line">
+              <div class="px-4 py-3">
+                <div class="flex items-center justify-between gap-6">
                   <div>
-                    <h3
-                      class="text-sm font-medium text-gray-900 dark:text-white"
-                    >
+                    <h3 class="ui-label">
                       API 服务器地址
                     </h3>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                    <p class="ui-hint mt-0.5">
                       设置 API 服务器的地址
                     </p>
                   </div>
                   <div class="flex items-center space-x-2">
                     <input
                       type="text"
-                      class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
+                      class="ui-input w-96"
                       bind:value={endpointValue}
                       onblur={handleEndpointChange}
                       placeholder="http://localhost:3000"
@@ -559,45 +573,38 @@
 
         {#if TAURI_ENV || endpoint != ""}
           <!-- MCP Server Settings -->
-          <div class="space-y-4">
-            <h2
-              class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
-            >
-              <Plug class="w-5 h-5 dark:icon-white" />
+          <div class="space-y-3">
+            <h2 class="flex items-center gap-2 text-[14px] font-semibold text-fg">
+              <Plug class="h-4 w-4 text-fg-muted" />
               <span>MCP Server</span>
             </h2>
-            <div
-              class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700"
-            >
-              <div class="p-4 space-y-3">
+            <div class="ui-card divide-y divide-line">
+              <div class="px-4 py-3 space-y-3">
                 <div class="flex items-center justify-between gap-6">
                   <div>
-                    <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                    <h3 class="ui-label">
                       启用 MCP Server
                     </h3>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                    <p class="ui-hint mt-0.5">
                       允许本机外部 Agent 查询录播、管理录制及执行切片等操作，修改立即生效并自动保存
                     </p>
                   </div>
-                  <label class="relative inline-block w-11 h-6 shrink-0">
+                  <label class="ui-switch">
                     <input
                       type="checkbox"
-                      class="peer opacity-0 w-0 h-0"
                       aria-label="启用 MCP Server"
                       bind:checked={setting_model.mcp_enabled}
                       onchange={updateMcpServer}
                       disabled={mcpLoading || !mcpStatus}
                     />
-                    <span
-                      class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5 peer-disabled:opacity-50 peer-disabled:cursor-wait peer-focus-visible:ring-2 peer-focus-visible:ring-blue-500 peer-focus-visible:ring-offset-2"
-                    ></span>
+                    <span></span>
                   </label>
                 </div>
-                <div class="flex items-center gap-3 text-sm" aria-live="polite">
+                <div class="flex items-center gap-2" aria-live="polite">
                   <span
                     class={mcpStatus?.running
-                      ? "text-green-600 dark:text-green-400"
-                      : "text-gray-500 dark:text-gray-400"}
+                      ? "ui-badge ui-badge-success"
+                      : "ui-badge"}
                   >
                     {mcpLoading
                       ? "正在更新状态…"
@@ -611,7 +618,7 @@
                   </span>
                   <button
                     type="button"
-                    class="inline-flex items-center gap-1 text-blue-500 hover:text-blue-700 disabled:opacity-50"
+                    class="ui-btn ui-btn-sm ui-btn-ghost"
                     onclick={loadMcpServerStatus}
                     disabled={mcpLoading}
                   >
@@ -620,21 +627,21 @@
                   </button>
                 </div>
                 {#if mcpError}
-                  <p class="text-sm text-red-500 whitespace-pre-wrap" role="alert">
+                  <p class="text-[12px] text-danger-fg whitespace-pre-wrap" role="alert">
                     {mcpError}
                   </p>
                 {/if}
               </div>
-              <div class="p-4 space-y-3">
+              <div class="px-4 py-3 space-y-3">
                 <div class="flex flex-wrap items-center justify-between gap-4">
                   <div>
                     <label
                       for="mcp-server-port"
-                      class="text-sm font-medium text-gray-900 dark:text-white"
+                      class="ui-label"
                     >
                       MCP 端口
                     </label>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                    <p class="ui-hint mt-0.5">
                       默认 18763，可使用 1024–65535；保存后立即生效，服务关闭时也会保存
                     </p>
                   </div>
@@ -645,7 +652,7 @@
                       min="1024"
                       max="65535"
                       step="1"
-                      class="w-28 px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white disabled:opacity-50"
+                      class="ui-input w-28"
                       bind:value={mcpPortDraft}
                       disabled={mcpLoading || !mcpStatus}
                       aria-invalid={mcpPortError ? "true" : "false"}
@@ -657,7 +664,7 @@
                     />
                     <button
                       type="button"
-                      class="px-3 py-2 rounded-lg bg-blue-500 text-sm text-white hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                      class="ui-btn ui-btn-primary"
                       onclick={updateMcpPort}
                       disabled={mcpLoading || !mcpStatus}
                     >
@@ -666,29 +673,29 @@
                   </div>
                 </div>
                 {#if mcpPortChanged}
-                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                  <p class="text-[12px] text-fg-muted">
                     端口更改尚未保存，开关仍使用已保存的端口 {mcpStatus?.port}。
                   </p>
                 {/if}
                 {#if mcpPortError}
-                  <p id="mcp-port-error" class="text-sm text-red-500" role="alert">
+                  <p id="mcp-port-error" class="text-[12px] text-danger-fg" role="alert">
                     {mcpPortError}
                   </p>
                 {/if}
                 {#if mcpSaveMessage}
-                  <p class="text-sm text-green-600 dark:text-green-400 break-all" role="status">
+                  <p class="text-[12px] text-success-fg break-all" role="status">
                     {mcpSaveMessage}
                   </p>
                 {/if}
               </div>
-              <div class="p-4 space-y-3">
+              <div class="px-4 py-3 space-y-3">
                 <div class="flex items-center justify-between gap-3">
-                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                  <h3 class="ui-label">
                     连接地址（Streamable HTTP）
                   </h3>
                   <button
                     type="button"
-                    class="inline-flex items-center gap-1 text-sm text-blue-500 hover:text-blue-700"
+                    class="ui-btn ui-btn-sm"
                     onclick={() => copyMcpConnection(mcpUrl, "地址")}
                   >
                     <Copy class="w-3.5 h-3.5" />
@@ -696,31 +703,31 @@
                   </button>
                 </div>
                 <code
-                  class="block select-text break-all rounded-lg bg-gray-100 dark:bg-gray-700 p-3 text-sm text-gray-900 dark:text-white"
+                  class="block select-text break-all rounded-[8px] border border-line bg-sunken px-3 py-2 text-[12px] text-fg"
                 >{mcpUrl}</code>
-                <p class="text-sm text-gray-500 dark:text-gray-400">
+                <p class="ui-hint">
                   服务仅监听 BSR 所在机器的 127.0.0.1。外部客户端负责操作确认；BSR 只读模式下仅提供查询工具。见<a
                     href="https://bsr.xinrea.cn/usage/features/mcp.html"
-                    class="text-blue-500 hover:text-blue-700"
+                    class="text-accent-fg hover:underline"
                     target="_blank"
                     rel="noreferrer">MCP 使用文档</a
                   >。
                 </p>
                 <details>
-                  <summary class="cursor-pointer text-sm text-gray-600 dark:text-gray-300">
+                  <summary class="cursor-pointer text-[12px] text-fg-secondary hover:text-fg">
                     客户端配置示例
                   </summary>
                   <div class="mt-3 space-y-2">
                     <pre
-                      class="overflow-auto select-text rounded-lg bg-gray-100 dark:bg-gray-700 p-3 text-xs text-gray-900 dark:text-white"
+                      class="overflow-auto select-text rounded-[8px] border border-line bg-sunken p-3 text-[11px] text-fg"
                     ><code>{mcpClientConfig}</code></pre>
                     <div class="flex flex-wrap items-center justify-between gap-2">
-                      <p class="text-xs text-gray-500 dark:text-gray-400">
+                      <p class="ui-hint">
                         配置格式因客户端而异，请选择 HTTP 传输并使用上方 URL
                       </p>
                       <button
                         type="button"
-                        class="inline-flex items-center gap-1 text-sm text-blue-500 hover:text-blue-700"
+                        class="ui-btn ui-btn-sm"
                         onclick={() => copyMcpConnection(mcpClientConfig, "配置")}
                       >
                         <Copy class="w-3.5 h-3.5" />
@@ -730,7 +737,7 @@
                   </div>
                 </details>
                 {#if mcpCopyMessage}
-                  <p class="text-sm text-gray-500 dark:text-gray-400" aria-live="polite">
+                  <p class="text-[12px] text-fg-muted" aria-live="polite">
                     {mcpCopyMessage}
                   </p>
                 {/if}
@@ -739,73 +746,54 @@
           </div>
           <!-- Storage Settings -->
           {#if TAURI_ENV}
-            <div class="space-y-4">
-              <h2
-                class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
-              >
-                <HardDrive class="w-5 h-5 dark:icon-white" />
+            <div class="space-y-3">
+              <h2 class="flex items-center gap-2 text-[14px] font-semibold text-fg">
+                <HardDrive class="h-4 w-4 text-fg-muted" />
                 <span>存储设置</span>
               </h2>
-              <div
-                class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700"
-              >
+              <div class="ui-card divide-y divide-line">
                 <!-- Cache Location -->
-                <div class="p-4">
-                  <div class="flex items-center justify-between">
+                <div class="px-4 py-3">
+                  <div class="flex items-center justify-between gap-6">
                     <div>
-                      <h3
-                        class="text-sm font-medium text-gray-900 dark:text-white"
-                      >
+                      <h3 class="ui-label">
                         缓存路径
                       </h3>
-                      <p class="text-sm text-gray-500 dark:text-gray-400">
+                      <p class="ui-hint mt-0.5 break-all">
                         {setting_model.cache}
                       </p>
                     </div>
-                    <button
-                      class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
-                      onclick={handleCacheChange}
-                    >
+                    <button class="ui-btn" onclick={handleCacheChange}>
                       变更
                     </button>
                   </div>
                 </div>
-                <div class="p-4">
-                  <div class="flex items-center justify-between">
+                <div class="px-4 py-3">
+                  <div class="flex items-center justify-between gap-6">
                     <div>
-                      <h3
-                        class="text-sm font-medium text-gray-900 dark:text-white"
-                      >
+                      <h3 class="ui-label">
                         切片保存路径
                       </h3>
-                      <p class="text-sm text-gray-500 dark:text-gray-400">
+                      <p class="ui-hint mt-0.5 break-all">
                         {setting_model.output}
                       </p>
                     </div>
-                    <button
-                      class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
-                      onclick={handleOutputChange}
-                    >
+                    <button class="ui-btn" onclick={handleOutputChange}>
                       变更
                     </button>
                   </div>
                 </div>
-                <div class="p-4">
-                  <div class="flex items-center justify-between">
+                <div class="px-4 py-3">
+                  <div class="flex items-center justify-between gap-6">
                     <div>
-                      <h3
-                        class="text-sm font-medium text-gray-900 dark:text-white"
-                      >
+                      <h3 class="ui-label">
                         日志文件夹
                       </h3>
-                      <p class="text-sm text-gray-500 dark:text-gray-400">
+                      <p class="ui-hint mt-0.5">
                         查看应用程序日志文件
                       </p>
                     </div>
-                    <button
-                      class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
-                      onclick={handleLogFolder}
-                    >
+                    <button class="ui-btn" onclick={handleLogFolder}>
                       打开
                     </button>
                   </div>
@@ -815,114 +803,90 @@
           {/if}
 
           <!-- Notification Settings -->
-          <div class="space-y-4">
-            <h2
-              class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
-            >
-              <Bell class="w-5 h-5 dark:icon-white" />
+          <div class="space-y-3">
+            <h2 class="flex items-center gap-2 text-[14px] font-semibold text-fg">
+              <Bell class="h-4 w-4 text-fg-muted" />
               <span>通知设置</span>
             </h2>
-            <div
-              class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700"
-            >
+            <div class="ui-card divide-y divide-line">
               <!-- Stream Start -->
-              <div class="p-4">
-                <div class="flex items-center justify-between">
+              <div class="px-4 py-3">
+                <div class="flex items-center justify-between gap-6">
                   <div>
-                    <h3
-                      class="text-sm font-medium text-gray-900 dark:text-white"
-                    >
+                    <h3 class="ui-label">
                       直播开始通知
                     </h3>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                    <p class="ui-hint mt-0.5">
                       当直播间开始直播时，会收到通知
                     </p>
                   </div>
-                  <label class="relative inline-block w-11 h-6">
+                  <label class="ui-switch">
                     <input
                       type="checkbox"
-                      class="peer opacity-0 w-0 h-0"
                       bind:checked={setting_model.live_start_notify}
                       onchange={update_notify}
                     />
-                    <span
-                      class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
-                    ></span>
+                    <span></span>
                   </label>
                 </div>
               </div>
-              <div class="p-4">
-                <div class="flex items-center justify-between">
+              <div class="px-4 py-3">
+                <div class="flex items-center justify-between gap-6">
                   <div>
-                    <h3
-                      class="text-sm font-medium text-gray-900 dark:text-white"
-                    >
+                    <h3 class="ui-label">
                       下播通知
                     </h3>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                    <p class="ui-hint mt-0.5">
                       当直播间结束直播时，会收到通知
                     </p>
                   </div>
-                  <label class="relative inline-block w-11 h-6">
+                  <label class="ui-switch">
                     <input
                       type="checkbox"
-                      class="peer opacity-0 w-0 h-0"
                       bind:checked={setting_model.live_end_notify}
                       onchange={update_notify}
                     />
-                    <span
-                      class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
-                    ></span>
+                    <span></span>
                   </label>
                 </div>
               </div>
-              <div class="p-4">
-                <div class="flex items-center justify-between">
+              <div class="px-4 py-3">
+                <div class="flex items-center justify-between gap-6">
                   <div>
-                    <h3
-                      class="text-sm font-medium text-gray-900 dark:text-white"
-                    >
+                    <h3 class="ui-label">
                       切片完成通知
                     </h3>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                    <p class="ui-hint mt-0.5">
                       当切片完成时，会收到通知
                     </p>
                   </div>
-                  <label class="relative inline-block w-11 h-6">
+                  <label class="ui-switch">
                     <input
                       type="checkbox"
-                      class="peer opacity-0 w-0 h-0"
                       bind:checked={setting_model.clip_notify}
                       onchange={update_notify}
                     />
-                    <span
-                      class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
-                    ></span>
+                    <span></span>
                   </label>
                 </div>
               </div>
-              <div class="p-4">
-                <div class="flex items-center justify-between">
+              <div class="px-4 py-3">
+                <div class="flex items-center justify-between gap-6">
                   <div>
-                    <h3
-                      class="text-sm font-medium text-gray-900 dark:text-white"
-                    >
+                    <h3 class="ui-label">
                       投稿完成通知
                     </h3>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                    <p class="ui-hint mt-0.5">
                       当投稿完成时，会收到通知
                     </p>
                   </div>
-                  <label class="relative inline-block w-11 h-6">
+                  <label class="ui-switch">
                     <input
                       type="checkbox"
-                      class="peer opacity-0 w-0 h-0"
                       bind:checked={setting_model.post_notify}
                       onchange={update_notify}
                     />
-                    <span
-                      class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
-                    ></span>
+                    <span></span>
                   </label>
                 </div>
               </div>
@@ -930,30 +894,24 @@
           </div>
 
           <!-- Shared LLM Settings -->
-          <div class="space-y-4">
-            <h2
-              class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
-            >
-              <Bot class="w-5 h-5 dark:icon-white" />
+          <div class="space-y-3">
+            <h2 class="flex items-center gap-2 text-[14px] font-semibold text-fg">
+              <Bot class="h-4 w-4 text-fg-muted" />
               <span>AI 模型</span>
             </h2>
-            <div
-              class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700"
-            >
-              <div class="p-4">
+            <div class="ui-card divide-y divide-line">
+              <div class="px-4 py-3">
                 <div class="flex items-center justify-between gap-6">
                   <div>
-                    <h3
-                      class="text-sm font-medium text-gray-900 dark:text-white"
-                    >
+                    <h3 class="ui-label">
                       模型提供商
                     </h3>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                    <p class="ui-hint mt-0.5">
                       此模型配置由 AI 助手和录播 Summary 共用
                     </p>
                   </div>
                   <select
-                    class="w-96 px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white"
+                    class="ui-input w-96"
                     bind:value={setting_model.llm.provider}
                     onchange={handleLlmProviderChange}
                   >
@@ -963,15 +921,13 @@
                 </div>
               </div>
 
-              <div class="p-4">
+              <div class="px-4 py-3">
                 <div class="flex items-center justify-between gap-6">
                   <div>
-                    <h3
-                      class="text-sm font-medium text-gray-900 dark:text-white"
-                    >
+                    <h3 class="ui-label">
                       API Endpoint
                     </h3>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                    <p class="ui-hint mt-0.5">
                       {setting_model.llm.provider === "ollama"
                         ? "Ollama 服务地址"
                         : "兼容 OpenAI Chat Completions 的 API 地址"}
@@ -979,7 +935,7 @@
                   </div>
                   <input
                     type="text"
-                    class="w-96 px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white"
+                    class="ui-input w-96"
                     bind:value={setting_model.llm.endpoint}
                     onblur={saveLlmConfig}
                     placeholder={setting_model.llm.provider === "ollama"
@@ -990,21 +946,19 @@
               </div>
 
               {#if setting_model.llm.provider === "openai"}
-                <div class="p-4">
+                <div class="px-4 py-3">
                   <div class="flex items-center justify-between gap-6">
                     <div>
-                      <h3
-                        class="text-sm font-medium text-gray-900 dark:text-white"
-                      >
+                      <h3 class="ui-label">
                         API Key
                       </h3>
-                      <p class="text-sm text-gray-500 dark:text-gray-400">
+                      <p class="ui-hint mt-0.5">
                         密钥保存在 BSR 本地配置文件中
                       </p>
                     </div>
                     <input
                       type="password"
-                      class="w-96 px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white"
+                      class="ui-input w-96"
                       bind:value={setting_model.llm.api_key}
                       onblur={saveLlmConfig}
                       placeholder="sk-..."
@@ -1013,15 +967,13 @@
                 </div>
               {/if}
 
-              <div class="p-4">
+              <div class="px-4 py-3">
                 <div class="flex items-center justify-between gap-6">
                   <div>
-                    <h3
-                      class="text-sm font-medium text-gray-900 dark:text-white"
-                    >
+                    <h3 class="ui-label">
                       模型名称
                     </h3>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                    <p class="ui-hint mt-0.5">
                       可以刷新模型列表或直接输入模型名称
                     </p>
                   </div>
@@ -1029,7 +981,7 @@
                     <div class="flex items-center gap-2">
                       <input
                         type="text"
-                        class="min-w-0 flex-1 px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white"
+                        class="ui-input min-w-0 flex-1"
                         bind:value={setting_model.llm.model}
                         onblur={saveLlmConfig}
                         list="llm-model-options"
@@ -1043,7 +995,7 @@
                         {/each}
                       </datalist>
                       <button
-                        class="px-3 py-3 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+                        class="ui-btn ui-btn-icon"
                         onclick={toggleModelList}
                         disabled={llmModelsLoading ||
                           !setting_model.llm.endpoint.trim() ||
@@ -1062,28 +1014,28 @@
                       <div
                         use:clickOutside={() => (showModelList = false)}
                         role="listbox"
-                        class="absolute right-0 top-9 z-20 mt-1 w-96 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-600 dark:bg-[#2c2c2e]"
+                        class="ui-menu absolute right-0 top-full z-20 mt-1 w-96 overflow-hidden"
                       >
                         {#if llmModelsLoading}
                           <div
-                            class="flex items-center justify-center gap-2 px-3 py-3 text-sm text-gray-500 dark:text-gray-400"
+                            class="flex items-center justify-center gap-2 px-2.5 py-2.5 text-[12px] text-fg-muted"
                           >
-                            <RefreshCw class="h-4 w-4 animate-spin" />
+                            <RefreshCw class="h-3.5 w-3.5 animate-spin" />
                             获取中...
                           </div>
                         {:else if llmModels.length === 0}
                           <div
-                            class="px-3 py-3 text-sm text-gray-500 dark:text-gray-400"
+                            class="px-2.5 py-2.5 text-[12px] text-fg-muted"
                           >
                             未获取到可用模型，也可以手动输入模型名称
                           </div>
                         {:else}
-                          <ul class="max-h-60 overflow-auto p-1">
+                          <ul class="max-h-60 overflow-auto">
                             {#each llmModels as model}
                               <li role="presentation">
                                 <button
                                   type="button"
-                                  class="w-full rounded-md px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
+                                  class="ui-menu-item whitespace-normal break-all"
                                   onclick={() => selectModel(model)}
                                 >
                                   {model}
@@ -1098,19 +1050,19 @@
                 </div>
                 {#if llmError}
                   <div class="mt-2 min-h-[1.25rem] text-right">
-                    <span class="text-xs text-red-600 dark:text-red-400">
+                    <span class="text-[11px] text-danger-fg">
                       {llmError}
                     </span>
                   </div>
                 {:else if llmSaving}
                   <div class="mt-2 min-h-[1.25rem] text-right">
-                    <span class="text-xs text-gray-500 dark:text-gray-400">
+                    <span class="text-[11px] text-fg-muted">
                       保存中...
                     </span>
                   </div>
                 {:else if llmSaveMessage}
                   <div class="mt-2 min-h-[1.25rem] text-right">
-                    <span class="text-xs text-green-600 dark:text-green-400">
+                    <span class="text-[11px] text-success-fg">
                       {llmSaveMessage}
                     </span>
                   </div>
@@ -1120,55 +1072,44 @@
           </div>
 
           <!-- Subtitle Generation Settings -->
-          <div class="space-y-4">
-            <h2
-              class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
-            >
-              <Captions class="w-5 h-5 dark:icon-white" />
+          <div class="space-y-3">
+            <h2 class="flex items-center gap-2 text-[14px] font-semibold text-fg">
+              <Captions class="h-4 w-4 text-fg-muted" />
               <span>字幕生成</span>
             </h2>
-            <div
-              class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700"
-            >
+            <div class="ui-card divide-y divide-line">
               <!-- Auto Subtitle Generation -->
-              <div class="p-4">
-                <div class="flex items-center justify-between">
+              <div class="px-4 py-3">
+                <div class="flex items-center justify-between gap-6">
                   <div>
-                    <h3
-                      class="text-sm font-medium text-gray-900 dark:text-white"
-                    >
+                    <h3 class="ui-label">
                       自动生成字幕
                     </h3>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                    <p class="ui-hint mt-0.5">
                       启用后，切片完成后会自动生成字幕
                     </p>
                   </div>
-                  <label class="relative inline-block w-11 h-6">
+                  <label class="ui-switch">
                     <input
                       type="checkbox"
-                      class="peer opacity-0 w-0 h-0"
                       bind:checked={setting_model.auto_subtitle}
                       onchange={update_subtitle_setting}
                     />
-                    <span
-                      class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
-                    ></span>
+                    <span></span>
                   </label>
                 </div>
               </div>
               <!-- Subtitle Generator Type -->
-              <div class="p-4">
-                <div class="flex items-center justify-between">
+              <div class="px-4 py-3">
+                <div class="flex items-center justify-between gap-6">
                   <div>
-                    <h3
-                      class="text-sm font-medium text-gray-900 dark:text-white"
-                    >
+                    <h3 class="ui-label">
                       字幕生成器类型
                     </h3>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                    <p class="ui-hint mt-0.5">
                       选择字幕生成的方式：本地模型，OpenAI 服务或 <a
                         href="https://www.powerlive.io/"
-                        class="text-blue-500 hover:underline"
+                        class="text-accent-fg hover:underline"
                         target="_blank"
                         rel="noopener noreferrer">PowerLive</a
                       > 服务（按量付费）
@@ -1176,7 +1117,7 @@
                   </div>
                   <div class="flex items-center space-x-2">
                     <select
-                      class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white"
+                      class="ui-input"
                       bind:value={setting_model.subtitle_generator_type}
                       onchange={async () => {
                         try {
@@ -1199,20 +1140,18 @@
               <!-- Whisper Model Path -->
               {#if setting_model.subtitle_generator_type !== "powerlive"}
                 {#if TAURI_ENV && setting_model.subtitle_generator_type === "whisper"}
-                  <div class="p-4">
-                    <div class="flex items-center justify-between">
+                  <div class="px-4 py-3">
+                    <div class="flex items-center justify-between gap-6">
                       <div>
-                        <h3
-                          class="text-sm font-medium text-gray-900 dark:text-white"
-                        >
+                        <h3 class="ui-label">
                           Whisper 模型路径
                         </h3>
-                        <p class="text-sm text-gray-500 dark:text-gray-400">
+                        <p class="ui-hint mt-0.5 break-all">
                           {setting_model.whisper_model || "未设置"}
-                          <span class="block mt-1 text-xs"
+                          <span class="block mt-1"
                             >可前往 <a
                               href="https://huggingface.co/ggerganov/whisper.cpp/tree/main"
-                              class="text-blue-500 hover:underline"
+                              class="text-accent-fg hover:underline"
                               target="_blank"
                               rel="noopener noreferrer">ggerganov/whisper.cpp</a
                             > 下载模型文件</span
@@ -1220,7 +1159,7 @@
                         </p>
                       </div>
                       <button
-                        class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+                        class="ui-btn"
                         onclick={handleWhisperModelPathChange}>变更</button
                       >
                     </div>
@@ -1228,22 +1167,20 @@
                 {/if}
                 <!-- OpenAI API Settings -->
                 {#if setting_model.subtitle_generator_type === "whisper_online"}
-                  <div class="p-4">
-                    <div class="flex items-center justify-between">
+                  <div class="px-4 py-3">
+                    <div class="flex items-center justify-between gap-6">
                       <div>
-                        <h3
-                          class="text-sm font-medium text-gray-900 dark:text-white"
-                        >
+                        <h3 class="ui-label">
                           OpenAI API 端点
                         </h3>
-                        <p class="text-sm text-gray-500 dark:text-gray-400">
+                        <p class="ui-hint mt-0.5">
                           设置 OpenAI API 的端点地址，默认为官方地址
                         </p>
                       </div>
                       <div class="flex items-center space-x-2">
                         <input
                           type="text"
-                          class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
+                          class="ui-input w-96"
                           bind:value={setting_model.openai_api_endpoint}
                           onchange={async () => {
                             await invoke("update_openai_api_endpoint", {
@@ -1256,22 +1193,20 @@
                       </div>
                     </div>
                   </div>
-                  <div class="p-4">
-                    <div class="flex items-center justify-between">
+                  <div class="px-4 py-3">
+                    <div class="flex items-center justify-between gap-6">
                       <div>
-                        <h3
-                          class="text-sm font-medium text-gray-900 dark:text-white"
-                        >
+                        <h3 class="ui-label">
                           OpenAI API 密钥
                         </h3>
-                        <p class="text-sm text-gray-500 dark:text-gray-400">
+                        <p class="ui-hint mt-0.5">
                           设置 OpenAI API 的访问密钥
                         </p>
                       </div>
                       <div class="flex items-center space-x-2">
                         <input
                           type="password"
-                          class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
+                          class="ui-input w-96"
                           bind:value={setting_model.openai_api_key}
                           onchange={async () => {
                             await invoke("update_openai_api_key", {
@@ -1285,22 +1220,20 @@
                   </div>
                 {/if}
                 {#if setting_model.subtitle_generator_type !== "powerlive"}
-                  <div class="p-4">
-                    <div class="flex items-center justify-between">
+                  <div class="px-4 py-3">
+                    <div class="flex items-center justify-between gap-6">
                       <div>
-                        <h3
-                          class="text-sm font-medium text-gray-900 dark:text-white"
-                        >
+                        <h3 class="ui-label">
                           Whisper 提示词
                         </h3>
-                        <p class="text-sm text-gray-500 dark:text-gray-400">
+                        <p class="ui-hint mt-0.5">
                           生成字幕时使用的提示词，尽量简洁明了，提示音频内容偏向的领域以及字幕的风格
                         </p>
                       </div>
                       <div class="flex items-center space-x-2">
                         <input
                           type="text"
-                          class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
+                          class="ui-input w-96"
                           bind:value={setting_model.whisper_prompt}
                           onchange={async () => {
                             await invoke("update_whisper_prompt", {
@@ -1313,22 +1246,20 @@
                   </div>
                 {/if}
                 <!-- Whisper Language -->
-                <div class="p-4">
-                  <div class="flex items-center justify-between">
+                <div class="px-4 py-3">
+                  <div class="flex items-center justify-between gap-6">
                     <div>
-                      <h3
-                        class="text-sm font-medium text-gray-900 dark:text-white"
-                      >
+                      <h3 class="ui-label">
                         Whisper 语言
                       </h3>
-                      <p class="text-sm text-gray-500 dark:text-gray-400">
+                      <p class="ui-hint mt-0.5">
                         生成字幕时使用的语言，默认自动识别
                       </p>
                     </div>
                     <div class="flex items-center space-x-2">
                       <input
                         type="text"
-                        class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
+                        class="ui-input w-96"
                         bind:value={setting_model.whisper_language}
                         onchange={async () => {
                           await invoke("update_whisper_language", {
@@ -1344,26 +1275,20 @@
           </div>
 
           <!-- Clip Name Format Settings -->
-          <div class="space-y-4">
-            <h2
-              class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
-            >
-              <DiscAlbum class="w-5 h-5 dark:icon-white" />
+          <div class="space-y-3">
+            <h2 class="flex items-center gap-2 text-[14px] font-semibold text-fg">
+              <DiscAlbum class="h-4 w-4 text-fg-muted" />
               <span>切片文件名格式</span>
             </h2>
-            <div
-              class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700"
-            >
-              <div class="p-4">
-                <div class="flex items-center justify-between">
+            <div class="ui-card divide-y divide-line">
+              <div class="px-4 py-3">
+                <div class="flex items-center justify-between gap-6">
                   <div>
-                    <h3
-                      class="text-sm font-medium text-gray-900 dark:text-white"
-                    >
+                    <h3 class="ui-label">
                       文件名格式
                     </h3>
-                    <div class="flex items-center space-x-2">
-                      <p class="text-sm text-gray-500 dark:text-gray-400">
+                    <div class="mt-0.5 flex items-center space-x-2">
+                      <p class="ui-hint">
                         可用标签：{"{title}"}
                         {"{platform}"}
                         {"{room_id}"}
@@ -1383,7 +1308,7 @@
                       >
                         <button
                           type="button"
-                          class="text-xs text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300"
+                          class="text-[11px] text-accent-fg hover:underline"
                           onclick={() =>
                             (show_clip_name_help = !show_clip_name_help)}
                         >
@@ -1391,7 +1316,7 @@
                         </button>
                         {#if show_clip_name_help}
                           <div
-                            class="absolute left-0 top-6 z-20 w-96 rounded-lg border border-gray-200 bg-white p-3 text-xs text-gray-700 shadow-lg dark:border-gray-700 dark:bg-[#2c2c2e] dark:text-gray-200"
+                            class="ui-menu absolute left-0 top-6 z-20 w-96 p-3 text-[11px] text-fg-secondary"
                           >
                             <div class="space-y-1">
                               <div>{"{title}"}: 直播标题</div>
@@ -1412,7 +1337,7 @@
                   <div class="flex items-center space-x-2">
                     <input
                       type="text"
-                      class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
+                      class="ui-input w-96"
                       bind:value={setting_model.clip_name_format}
                       onchange={async () => {
                         await invoke("update_clip_name_format", {
@@ -1427,33 +1352,27 @@
           </div>
 
           <!-- Danmu Style Settings -->
-          <div class="space-y-4">
-            <h2
-              class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
-            >
-              <Captions class="w-5 h-5 dark:icon-white" />
+          <div class="space-y-3">
+            <h2 class="flex items-center gap-2 text-[14px] font-semibold text-fg">
+              <Captions class="h-4 w-4 text-fg-muted" />
               <span>弹幕压制样式</span>
             </h2>
-            <div
-              class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700"
-            >
+            <div class="ui-card divide-y divide-line">
               <!-- Font Size -->
-              <div class="p-4">
-                <div class="flex items-center justify-between">
+              <div class="px-4 py-3">
+                <div class="flex items-center justify-between gap-6">
                   <div>
-                    <h3
-                      class="text-sm font-medium text-gray-900 dark:text-white"
-                    >
+                    <h3 class="ui-label">
                       字体大小
                     </h3>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                    <p class="ui-hint mt-0.5">
                       设置弹幕字体大小
                     </p>
                   </div>
                   <div class="flex items-center space-x-2">
                     <input
                       type="number"
-                      class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-24"
+                      class="ui-input w-24"
                       bind:value={setting_model.danmu_ass_options.font_size}
                       onblur={update_danmu_ass_options}
                       min="12"
@@ -1464,15 +1383,13 @@
                 </div>
               </div>
               <!-- Opacity -->
-              <div class="p-4">
-                <div class="flex items-center justify-between">
+              <div class="px-4 py-3">
+                <div class="flex items-center justify-between gap-6">
                   <div>
-                    <h3
-                      class="text-sm font-medium text-gray-900 dark:text-white"
-                    >
+                    <h3 class="ui-label">
                       不透明度
                     </h3>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                    <p class="ui-hint mt-0.5">
                       设置弹幕不透明度，范围
                       0.0-1.0，0.0为完全透明，1.0为完全不透明
                     </p>
@@ -1480,7 +1397,7 @@
                   <div class="flex items-center space-x-2">
                     <input
                       type="number"
-                      class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-24"
+                      class="ui-input w-24"
                       bind:value={setting_model.danmu_ass_options.opacity}
                       onblur={update_danmu_ass_options}
                       min="0.0"
@@ -1494,33 +1411,26 @@
           </div>
 
           <!-- Auto Clip Settings -->
-          <div class="space-y-4">
-            <h2
-              class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
-            >
-              <SquareBottomDashedScissors class="w-5 h-5 dark:icon-white" />
+          <div class="space-y-3">
+            <h2 class="flex items-center gap-2 text-[14px] font-semibold text-fg">
+              <SquareBottomDashedScissors class="h-4 w-4 text-fg-muted" />
               <span>自动切片</span>
             </h2>
-            <div
-              class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700"
-            >
+            <div class="ui-card divide-y divide-line">
               <!-- Auto Clip Generation -->
-              <div class="p-4">
-                <div class="flex items-center justify-between">
+              <div class="px-4 py-3">
+                <div class="flex items-center justify-between gap-6">
                   <div>
-                    <h3
-                      class="text-sm font-medium text-gray-900 dark:text-white"
-                    >
+                    <h3 class="ui-label">
                       整场录播生成
                     </h3>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                    <p class="ui-hint mt-0.5">
                       启用后，直播结束后会自动整场录播进入切片列表
                     </p>
                   </div>
-                  <label class="relative inline-block w-11 h-6">
+                  <label class="ui-switch">
                     <input
                       type="checkbox"
-                      class="peer opacity-0 w-0 h-0"
                       bind:checked={setting_model.auto_generate.enabled}
                       onchange={async () => {
                         await invoke("update_auto_generate", {
@@ -1529,29 +1439,24 @@
                         });
                       }}
                     />
-                    <span
-                      class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
-                    ></span>
+                    <span></span>
                   </label>
                 </div>
               </div>
               <!-- Auto Clip Encode Danmu -->
-              <div class="p-4">
-                <div class="flex items-center justify-between">
+              <div class="px-4 py-3">
+                <div class="flex items-center justify-between gap-6">
                   <div>
-                    <h3
-                      class="text-sm font-medium text-gray-900 dark:text-white"
-                    >
+                    <h3 class="ui-label">
                       自动切片压制弹幕
                     </h3>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                    <p class="ui-hint mt-0.5">
                       启用后，自动切片时会同时压制弹幕，会显著增加生成时间
                     </p>
                   </div>
-                  <label class="relative inline-block w-11 h-6">
+                  <label class="ui-switch">
                     <input
                       type="checkbox"
-                      class="peer opacity-0 w-0 h-0"
                       bind:checked={setting_model.auto_generate.encode_danmu}
                       onchange={async () => {
                         await invoke("update_auto_generate", {
@@ -1560,9 +1465,7 @@
                         });
                       }}
                     />
-                    <span
-                      class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
-                    ></span>
+                    <span></span>
                   </label>
                 </div>
               </div>
@@ -1576,36 +1479,34 @@
 
 <!-- Modal -->
 {#if showModal}
-  <div
-    class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
-  >
-    <div class="bg-white dark:bg-[#2c2c2e] rounded-xl p-6 max-w-md w-full mx-4">
-      <div class="flex items-start space-x-3 mb-4">
-        <AlertTriangle class="w-6 h-6 text-yellow-500 flex-shrink-0" />
-        <div>
-          <h3 class="text-lg font-medium text-gray-900 dark:text-white">
-            确认变更
-          </h3>
-          <p class="text-gray-600 dark:text-gray-400 mt-2">
-            根据文件大小，可能需要耗时较长时间，迁移期间直播间会暂时移除，迁移完成后直播间会自动恢复。
-          </p>
-          <p class="text-gray-600 dark:text-gray-400 mt-2 font-bold">
-            迁移期间请不要关闭程序，且不要在迁移期间再次更改目录！
-          </p>
-          <p class="text-gray-600 dark:text-gray-400 mt-2">
-            确认要进行变更吗？
-          </p>
-        </div>
+  <div class="ui-modal-backdrop">
+    <div class="ui-modal w-full max-w-md">
+      <div class="ui-modal-header">
+        <h3 class="flex items-center gap-2">
+          <AlertTriangle class="h-4 w-4 shrink-0 text-warning" />
+          确认变更
+        </h3>
       </div>
-      <div class="flex justify-end space-x-4">
+      <div class="ui-modal-body space-y-2 text-[13px] leading-relaxed text-fg-secondary">
+        <p>
+          根据文件大小，可能需要耗时较长时间，迁移期间直播间会暂时移除，迁移完成后直播间会自动恢复。
+        </p>
+        <p class="font-semibold text-fg">
+          迁移期间请不要关闭程序，且不要在迁移期间再次更改目录！
+        </p>
+        <p>
+          确认要进行变更吗？
+        </p>
+      </div>
+      <div class="ui-modal-footer">
         <button
-          class="px-4 py-2 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+          class="ui-btn ui-btn-ghost"
           onclick={() => (showModal = false)}
         >
           取消
         </button>
         <button
-          class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+          class="ui-btn ui-btn-primary"
           onclick={confirmChange}
         >
           确认

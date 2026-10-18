@@ -243,13 +243,21 @@ fn with_custom_titlebar<'a, R: tauri::Runtime, M: Manager<R>>(
 pub fn set_window_title(window: tauri::WebviewWindow, title: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
+        // Not `with_webview`: on macOS it hands out the WKWebView and NSWindow
+        // with references that are never released, so a window whose title was
+        // set kept its page running, and its media playing, after it closed.
+        let target = window.clone();
         window
-            .with_webview(move |webview| {
-                let ns_window = webview.ns_window().cast::<objc2_app_kit::NSWindow>();
+            .run_on_main_thread(move || {
+                let Ok(ns_window) = target.ns_window() else {
+                    return;
+                };
+                let ns_window = ns_window.cast::<objc2_app_kit::NSWindow>();
                 if ns_window.is_null() {
                     return;
                 }
-                // SAFETY: `with_webview` runs on the main thread while the window is alive.
+                // SAFETY: an autoreleased pointer used on the main thread while
+                // the window is still open.
                 let ns_window = unsafe { &*ns_window };
                 ns_window.setTitle(&objc2_foundation::NSString::from_str(&title));
                 if let Some(view) = ns_window.contentView() {

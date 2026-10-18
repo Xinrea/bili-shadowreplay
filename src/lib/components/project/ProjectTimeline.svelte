@@ -17,6 +17,7 @@
   import {
     moveClip,
     moveSubtitle,
+    withSubtitleFrom,
     placeClips,
     resizeSubtitle,
     timelineDuration,
@@ -324,8 +325,13 @@
       return;
     }
     if (Math.abs(state.deltaPx) < 0.5) return;
-    const next = trimmed(state);
-    onCommit(next, state.base);
+    // Applied to the timeline as it is now, which may have gained recognized
+    // subtitles while dragging; the drag start only places the edge.
+    const result = trimSource(state);
+    if (!result) return;
+    const material = materials.get(result.clip.clip.material_id);
+    const next = trimClip(timeline, state.clipId, state.edge, result.source, material?.duration ?? 0);
+    onCommit(next, timeline);
     // Show the frame at the edit point.
     const item = placeClips(next).find((p) => p.clip.id === state.clipId);
     if (item) onSeek(state.edge === "start" ? item.offset : Math.max(item.offset, item.offset + item.duration - 0.04));
@@ -396,10 +402,11 @@
     if (drag.mode === "move") {
       const length = drag.end - drag.start;
       const start = Math.max(0, snapSpan(Math.max(0, drag.start + delta), length, targets, enabled));
-      onPreview(moveSubtitle(drag.base, drag.id, start, start + length));
+      // Positions are absolute, so they apply to the timeline as it is now.
+      onPreview(moveSubtitle(timeline, drag.id, start, start + length));
     } else {
       const edgeTime = snap((drag.mode === "start" ? drag.start : drag.end) + delta, targets, enabled);
-      onPreview(resizeSubtitle(drag.base, drag.id, drag.mode, edgeTime));
+      onPreview(resizeSubtitle(timeline, drag.id, drag.mode, edgeTime));
     }
   }
 
@@ -410,7 +417,7 @@
     drag = null;
     snapTime = null;
     if (state?.kind !== "subtitle") return;
-    if (state.moved) onCommit(timeline, state.base);
+    if (state.moved) onCommit(timeline, withSubtitleFrom(timeline, state.base, state.id));
     else onSeek(state.start);
   }
 

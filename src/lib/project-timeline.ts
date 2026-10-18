@@ -185,6 +185,16 @@ export function mergeRemoteTimeline(
   return next;
 }
 
+/**
+ * `current` with subtitle `id` as it is in `base`: how the timeline was before
+ * a drag of that subtitle, keeping changes merged in while dragging.
+ */
+export function withSubtitleFrom(current: ProjectTimeline, base: ProjectTimeline, id: string): ProjectTimeline {
+  const original = base.subtitles.find((subtitle) => subtitle.id === id);
+  if (!original) return current;
+  return { ...current, subtitles: current.subtitles.map((subtitle) => (subtitle.id === id ? original : subtitle)) };
+}
+
 /** Move a clip so that it ends up at `toIndex` of the main track. */
 export function moveClip(timeline: ProjectTimeline, clipId: string, toIndex: number): ProjectTimeline {
   const from = timeline.clips.findIndex((clip) => clip.id === clipId);

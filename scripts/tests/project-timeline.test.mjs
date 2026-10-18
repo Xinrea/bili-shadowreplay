@@ -135,3 +135,15 @@ test("local subtitle edits win over the backend's and nothing changes without it
   const cleared = timeline([clip("a", 1, 0, 10)]);
   assert.equal(api.mergeRemoteTimeline(cleared, remote, remote), cleared);
 });
+
+test("a subtitle drag keeps subtitles merged in while dragging, also when undone", () => {
+  const atDragStart = timeline([clip("a", 1, 0, 10), clip("b", 2, 0, 10)], [sub("s1", "a", 1, 2)]);
+  // Recognition fills clip b mid-drag; the editor merges it into the live timeline.
+  const merged = api.mergeRemoteTimeline(atDragStart, atDragStart, timeline(atDragStart.clips, [sub("s1", "a", 1, 2), sub("r1", "b", 0, 1)]));
+  // Previews apply to the live timeline, so the release commits it with both.
+  const released = api.moveSubtitle(merged, "s1", 3, 4);
+  assert.deepEqual(plain(released.subtitles).map((s) => [s.id, s.start]), [["s1", 3], ["r1", 0]]);
+  // The undo step is the live timeline with only the dragged subtitle put back.
+  const before = plain(api.withSubtitleFrom(released, atDragStart, "s1"));
+  assert.deepEqual(before.subtitles.map((s) => [s.id, s.start]), [["s1", 1], ["r1", 0]]);
+});

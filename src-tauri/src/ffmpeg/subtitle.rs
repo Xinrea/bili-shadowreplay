@@ -39,7 +39,7 @@ fn escape_filter_option(value: &str) -> String {
     graph
 }
 
-fn subtitle_filter_path(path: &Path) -> Result<String, String> {
+pub(super) fn subtitle_filter_path(path: &Path) -> Result<String, String> {
     Ok(escape_filter_option(ffmpeg_utils::path_str(path)?))
 }
 

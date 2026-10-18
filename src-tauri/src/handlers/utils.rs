@@ -327,30 +327,33 @@ pub async fn open_live(
     Ok(())
 }
 
+/// Focus the window `label`, or open `url` in a new one.
 #[cfg(feature = "gui")]
-#[tauri::command]
-pub async fn open_clip(state: state_type!(), video_id: i64) -> Result<(), String> {
-    log::info!("Open clip window: {video_id}");
-    let label = format!("Clip:{video_id}");
-
+fn open_or_focus_window(
+    state: &State,
+    label: String,
+    url: String,
+    title: String,
+    size: (f64, f64),
+) -> Result<(), String> {
     // 窗口已存在时 build 会直接失败，这里改为聚焦到已有窗口，
-    // 否则用户重复点击切片时没有任何反应。
+    // 否则用户重复点击时没有任何反应。
     if let Some(window) = state.app_handle.get_webview_window(&label) {
-        log::info!("Clip window already exists, focusing: {label}");
+        log::info!("Window already exists, focusing: {label}");
         let _ = window.unminimize();
         let _ = window.show();
         return window
             .set_focus()
-            .map_err(|e| format!("聚焦已有切片窗口失败：{e}"));
+            .map_err(|e| format!("聚焦已有窗口失败：{e}"));
     }
 
     let builder = tauri::WebviewWindowBuilder::new(
         &state.app_handle,
-        label.clone(),
-        tauri::WebviewUrl::App(format!("index_clip.html?id={video_id}").into()),
+        label,
+        tauri::WebviewUrl::App(url.into()),
     )
-    .title(format!("Clip window:{video_id}"))
-    .inner_size(1200.0, 800.0)
+    .title(title)
+    .inner_size(size.0, size.1)
     .effects(WindowEffectsConfig {
         effects: vec![
             tauri_utils::WindowEffect::Tabbed,
@@ -362,11 +365,38 @@ pub async fn open_clip(state: state_type!(), video_id: i64) -> Result<(), String
     });
 
     if let Err(e) = with_custom_titlebar(builder).build() {
-        log::error!("clip window build failed: {e}");
-        return Err(format!("打开切片窗口失败：{e}"));
+        log::error!("window build failed: {e}");
+        return Err(format!("打开窗口失败：{e}"));
     }
-
     Ok(())
+}
+
+/// Preview a material.
+#[cfg(feature = "gui")]
+#[tauri::command]
+pub async fn open_clip(state: state_type!(), video_id: i64) -> Result<(), String> {
+    log::info!("Open material window: {video_id}");
+    open_or_focus_window(
+        &state,
+        format!("Clip:{video_id}"),
+        format!("index_clip.html?material={video_id}"),
+        format!("Material window:{video_id}"),
+        (1000.0, 680.0),
+    )
+}
+
+/// Edit a project.
+#[cfg(feature = "gui")]
+#[tauri::command]
+pub async fn open_project(state: state_type!(), project_id: i64) -> Result<(), String> {
+    log::info!("Open project window: {project_id}");
+    open_or_focus_window(
+        &state,
+        format!("Project:{project_id}"),
+        format!("index_clip.html?project={project_id}"),
+        format!("Project window:{project_id}"),
+        (1360.0, 860.0),
+    )
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]

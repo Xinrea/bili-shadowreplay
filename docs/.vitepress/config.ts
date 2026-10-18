@@ -73,6 +73,7 @@ export default withMermaid({
             text: "架构设计",
             items: [
               { text: "架构概览", link: "/development/architecture/overview" },
+              { text: "素材与切片工程", link: "/development/architecture/material-project" },
             ],
           },
           {

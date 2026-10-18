@@ -10,6 +10,7 @@ pub mod bilibili_user;
 )]
 pub mod credentials;
 pub mod message;
+pub mod project;
 pub mod record;
 pub mod recorder;
 pub mod summary;

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use danmu_stream::LiveEvent;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 use tokio::{
@@ -14,7 +14,7 @@ use tokio::{
 /// New displayable event kinds are added here and picked up end to end.
 pub const PREVIEW_EVENT_TYPES: &[&str] = &["danmu", "super_chat"];
 
-#[derive(Clone, Serialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct DanmuEntry {
     pub ts: i64,
     /// Event type, aligned with the recorded `LiveEvent` "type" field

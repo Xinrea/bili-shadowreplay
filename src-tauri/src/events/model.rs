@@ -40,6 +40,7 @@ impl RoomTopic {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DataChange {
     Videos,
+    Projects,
     Tasks,
     Recorders,
     Records,
@@ -50,6 +51,7 @@ impl DataChange {
     fn event_name(self) -> &'static str {
         match self {
             Self::Videos => "videos-changed",
+            Self::Projects => "projects-changed",
             Self::Tasks => "tasks-changed",
             Self::Recorders => "recorders-changed",
             Self::Records => "records-changed",

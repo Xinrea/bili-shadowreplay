@@ -19,7 +19,8 @@ function roomEventName({ platform, room }: RoomTopic) {
 }
 export type AppEvent<T> = { payload: T };
 export type StateChangeEvent =
-  | "videos-changed" | "tasks-changed" | "recorders-changed" | "records-changed" | "state-resync";
+  | "videos-changed" | "projects-changed" | "tasks-changed" | "recorders-changed" | "records-changed"
+  | "state-resync";
 export type EventPayload<E extends string> =
   E extends `progress-update:${string}` ? ProgressUpdate :
   E extends `progress-finished:${string}` ? { id: string; success: boolean; message: string } :

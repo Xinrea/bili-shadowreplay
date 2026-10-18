@@ -28,6 +28,13 @@ use crate::{
             update_whisper_model, update_whisper_prompt,
         },
         message::{delete_message, get_messages, read_message},
+        project::{
+            create_project, delete_project, export_project, generate_materials, get_material_danmu,
+            get_material_peaks, get_material_usage, get_project, get_projects,
+            update_project_cover, update_project_info, update_project_profile,
+            update_project_timeline, upload_project, ExportStarted, GeneratedMaterials,
+            ProjectBrief, ProjectView,
+        },
         recorder::{
             add_recorder, delete_archive, delete_archives, export_danmu, fetch_hls,
             generate_archive_subtitle, generate_whole_clip, get_archive, get_archive_disk_usage,
@@ -56,6 +63,8 @@ use crate::{
         AccountInfo,
     },
     http_server::websocket,
+    material::Peaks,
+    project::Timeline,
     recorder_manager::{ClipRangeParams, GenerateWholeClipParams, RecorderList},
     state::State,
 };
@@ -994,6 +1003,207 @@ async fn handler_update_video_cover(
         .await
         .map_err(|_| ApiError::from("Failed to update video cover"))?;
     Ok(Json(ApiResponse::success(())))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IdRequest {
+    id: i64,
+}
+
+async fn handler_get_projects(
+    state: axum::extract::State<State>,
+) -> Result<Json<ApiResponse<Vec<ProjectView>>>, ApiError> {
+    Ok(Json(ApiResponse::success(get_projects(state.0).await?)))
+}
+
+async fn handler_get_project(
+    state: axum::extract::State<State>,
+    Json(param): Json<IdRequest>,
+) -> Result<Json<ApiResponse<ProjectView>>, ApiError> {
+    Ok(Json(ApiResponse::success(
+        get_project(state.0, param.id).await?,
+    )))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateProjectRequest {
+    title: String,
+    room_id: String,
+    platform: String,
+    material_ids: Vec<i64>,
+}
+
+async fn handler_create_project(
+    state: axum::extract::State<State>,
+    Json(param): Json<CreateProjectRequest>,
+) -> Result<Json<ApiResponse<ProjectView>>, ApiError> {
+    let project = create_project(
+        state.0,
+        param.title,
+        param.room_id,
+        param.platform,
+        param.material_ids,
+    )
+    .await?;
+    Ok(Json(ApiResponse::success(project)))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateProjectInfoRequest {
+    id: i64,
+    title: String,
+    note: String,
+}
+
+async fn handler_update_project_info(
+    state: axum::extract::State<State>,
+    Json(param): Json<UpdateProjectInfoRequest>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    update_project_info(state.0, param.id, param.title, param.note).await?;
+    Ok(Json(ApiResponse::success(())))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateProjectTimelineRequest {
+    id: i64,
+    timeline: Timeline,
+}
+
+async fn handler_update_project_timeline(
+    state: axum::extract::State<State>,
+    Json(param): Json<UpdateProjectTimelineRequest>,
+) -> Result<Json<ApiResponse<ProjectView>>, ApiError> {
+    let project = update_project_timeline(state.0, param.id, param.timeline).await?;
+    Ok(Json(ApiResponse::success(project)))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateProjectProfileRequest {
+    id: i64,
+    profile: serde_json::Value,
+}
+
+async fn handler_update_project_profile(
+    state: axum::extract::State<State>,
+    Json(param): Json<UpdateProjectProfileRequest>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    update_project_profile(state.0, param.id, param.profile).await?;
+    Ok(Json(ApiResponse::success(())))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateProjectCoverRequest {
+    id: i64,
+    cover: String,
+}
+
+async fn handler_update_project_cover(
+    state: axum::extract::State<State>,
+    Json(param): Json<UpdateProjectCoverRequest>,
+) -> Result<Json<ApiResponse<String>>, ApiError> {
+    let cover = update_project_cover(state.0, param.id, param.cover).await?;
+    Ok(Json(ApiResponse::success(cover)))
+}
+
+async fn handler_delete_project(
+    state: axum::extract::State<State>,
+    Json(param): Json<IdRequest>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    delete_project(state.0, param.id).await?;
+    Ok(Json(ApiResponse::success(())))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportProjectRequest {
+    event_id: String,
+    id: i64,
+    timeline: Timeline,
+    #[serde(default)]
+    subtitle_ass: Option<String>,
+}
+
+async fn handler_export_project(
+    state: axum::extract::State<State>,
+    Json(param): Json<ExportProjectRequest>,
+) -> Result<Json<ApiResponse<ExportStarted>>, ApiError> {
+    let started = export_project(
+        state.0,
+        param.event_id,
+        param.id,
+        param.timeline,
+        param.subtitle_ass,
+    )
+    .await?;
+    Ok(Json(ApiResponse::success(started)))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UploadProjectRequest {
+    event_id: String,
+    uid: String,
+    id: i64,
+    profile: Profile,
+}
+
+async fn handler_upload_project(
+    state: axum::extract::State<State>,
+    Json(param): Json<UploadProjectRequest>,
+) -> Result<Json<ApiResponse<String>>, ApiError> {
+    let bvid = upload_project(state.0, param.event_id, param.uid, param.id, param.profile).await?;
+    Ok(Json(ApiResponse::success(bvid)))
+}
+
+async fn handler_get_material_usage(
+    state: axum::extract::State<State>,
+    Json(param): Json<IdRequest>,
+) -> Result<Json<ApiResponse<Vec<ProjectBrief>>>, ApiError> {
+    Ok(Json(ApiResponse::success(
+        get_material_usage(state.0, param.id).await?,
+    )))
+}
+
+async fn handler_get_material_peaks(
+    state: axum::extract::State<State>,
+    Json(param): Json<IdRequest>,
+) -> Result<Json<ApiResponse<Peaks>>, ApiError> {
+    Ok(Json(ApiResponse::success(
+        get_material_peaks(state.0, param.id).await?,
+    )))
+}
+
+async fn handler_get_material_danmu(
+    state: axum::extract::State<State>,
+    Json(param): Json<IdRequest>,
+) -> Result<Json<ApiResponse<Vec<DanmuEntry>>>, ApiError> {
+    Ok(Json(ApiResponse::success(
+        get_material_danmu(state.0, param.id).await?,
+    )))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerateMaterialsRequest {
+    event_id: String,
+    params: ClipRangeParams,
+    #[serde(default)]
+    create_project: bool,
+}
+
+async fn handler_generate_materials(
+    state: axum::extract::State<State>,
+    Json(param): Json<GenerateMaterialsRequest>,
+) -> Result<Json<ApiResponse<GeneratedMaterials>>, ApiError> {
+    let generated =
+        generate_materials(state.0, param.event_id, param.params, param.create_project).await?;
+    Ok(Json(ApiResponse::success(generated)))
 }
 
 // 处理base64图片数据的API
@@ -1994,6 +2204,27 @@ pub async fn start_api_server(state: State) {
                 post(handler_get_import_progress),
             )
             .route("/api/upload_files", post(handler_upload_files))
+            .route("/api/create_project", post(handler_create_project))
+            .route(
+                "/api/update_project_info",
+                post(handler_update_project_info),
+            )
+            .route(
+                "/api/update_project_timeline",
+                post(handler_update_project_timeline),
+            )
+            .route(
+                "/api/update_project_profile",
+                post(handler_update_project_profile),
+            )
+            .route(
+                "/api/update_project_cover",
+                post(handler_update_project_cover),
+            )
+            .route("/api/delete_project", post(handler_delete_project))
+            .route("/api/export_project", post(handler_export_project))
+            .route("/api/upload_project", post(handler_upload_project))
+            .route("/api/generate_materials", post(handler_generate_materials))
             .route(
                 "/api/upload_and_import_files",
                 post(handler_upload_and_import_files),
@@ -2058,6 +2289,11 @@ pub async fn start_api_server(state: State) {
         .route("/api/get_videos", post(handler_get_videos))
         .route("/api/get_video_cover", post(handler_get_video_cover))
         .route("/api/get_all_videos", post(handler_get_all_videos))
+        .route("/api/get_projects", post(handler_get_projects))
+        .route("/api/get_project", post(handler_get_project))
+        .route("/api/get_material_usage", post(handler_get_material_usage))
+        .route("/api/get_material_peaks", post(handler_get_material_peaks))
+        .route("/api/get_material_danmu", post(handler_get_material_danmu))
         .route("/api/get_video_typelist", post(handler_get_video_typelist))
         .route("/api/get_video_subtitle", post(handler_get_video_subtitle))
         .route(

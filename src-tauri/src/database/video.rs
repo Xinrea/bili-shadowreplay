@@ -2,7 +2,9 @@ use super::Database;
 use super::DatabaseError;
 use crate::events::DataChange;
 
-// CREATE TABLE videos (id INTEGER PRIMARY KEY, room_id TEXT, cover TEXT, file TEXT, length INTEGER, size INTEGER, status INTEGER, bvid TEXT, title TEXT, desc TEXT, tags TEXT, area INTEGER, created_at TEXT);
+/// A material (素材): one video file in the output directory, usually cut from
+/// a recording. Projects (切片) arrange materials; the upload columns remain for
+/// materials posted directly by the assistant and MCP tools.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, sqlx::FromRow)]
 pub struct VideoRow {
     pub id: i64,
@@ -20,6 +22,26 @@ pub struct VideoRow {
     pub area: i64,
     pub created_at: String,
     pub platform: String,
+    /// Source recording; empty for imported and derived videos.
+    #[sqlx(default)]
+    #[serde(default)]
+    pub live_id: String,
+    /// [`MaterialSource`] JSON, empty when unknown.
+    #[sqlx(default)]
+    #[serde(default)]
+    pub source: String,
+    /// Exact length in seconds, `0.0` for rows created before materials existed.
+    #[sqlx(default)]
+    #[serde(default)]
+    pub duration: f64,
+}
+
+/// Where a material was cut from, in seconds from the recording's playlist start.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct MaterialSource {
+    pub ranges: Vec<crate::ffmpeg::Range>,
+    #[serde(default)]
+    pub local_offset: i64,
 }
 
 impl Database {
@@ -66,7 +88,7 @@ impl Database {
     }
 
     pub async fn add_video(&self, video: &VideoRow) -> Result<VideoRow, DatabaseError> {
-        let sql = sqlx::query("INSERT INTO videos (room_id, cover, file, note, length, size, status, bvid, title, desc, tags, area, created_at, platform) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)")
+        let sql = sqlx::query("INSERT INTO videos (room_id, cover, file, note, length, size, status, bvid, title, desc, tags, area, created_at, platform, live_id, source, duration) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)")
             .bind(&video.room_id)
             .bind(&video.cover)
             .bind(&video.file)
@@ -81,6 +103,9 @@ impl Database {
             .bind(video.area)
             .bind(&video.created_at)
             .bind(&video.platform)
+            .bind(&video.live_id)
+            .bind(&video.source)
+            .bind(video.duration)
             .execute(&self.pool)
             .await?;
         let video = VideoRow {
@@ -107,6 +132,32 @@ impl Database {
                 .fetch_all(&self.pool)
                 .await?;
         Ok(videos)
+    }
+
+    pub async fn update_video_duration(&self, id: i64, duration: f64) -> Result<(), DatabaseError> {
+        sqlx::query("UPDATE videos SET duration = $1 WHERE id = $2")
+            .bind(duration)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Videos that existed before materials and still need their own project.
+    pub async fn get_videos_needing_project(&self) -> Result<Vec<VideoRow>, DatabaseError> {
+        Ok(sqlx::query_as::<_, VideoRow>(
+            "SELECT * FROM videos WHERE needs_project = 1 ORDER BY id;",
+        )
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn clear_video_needs_project(&self, id: i64) -> Result<(), DatabaseError> {
+        sqlx::query("UPDATE videos SET needs_project = 0 WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     pub async fn get_video_cover(&self, id: i64) -> Result<String, DatabaseError> {

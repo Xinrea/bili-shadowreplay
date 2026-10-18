@@ -11,7 +11,8 @@ async fn database() -> Database {
         "CREATE TABLE videos (
             id INTEGER PRIMARY KEY, room_id TEXT, cover TEXT, file TEXT,
             note TEXT, length INTEGER, size INTEGER, status INTEGER, bvid TEXT,
-            title TEXT, desc TEXT, tags TEXT, area INTEGER, created_at TEXT, platform TEXT
+            title TEXT, desc TEXT, tags TEXT, area INTEGER, created_at TEXT, platform TEXT,
+            live_id TEXT, source TEXT, duration REAL, needs_project INTEGER DEFAULT 0
         );
         CREATE TABLE tasks (
             id TEXT PRIMARY KEY, type TEXT, status TEXT, message TEXT,
@@ -53,6 +54,9 @@ async fn video_notifications_follow_committed_mutations() {
             area: 0,
             created_at: "2026-10-11".into(),
             platform: "bilibili".into(),
+            live_id: "".into(),
+            source: "".into(),
+            duration: 10.0,
         })
         .await
         .unwrap();

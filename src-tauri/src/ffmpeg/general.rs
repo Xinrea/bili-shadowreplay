@@ -129,13 +129,48 @@ fn build_hardcut_concat_filter_complex(n: usize, normalize: bool) -> String {
     parts.join(";")
 }
 
+/// Video filter applied to every input before `xfade`, which refuses inputs
+/// whose size, frame rate or time base differ. Inputs that already share a
+/// frame rate only get a common time base, so their frames are left alone;
+/// otherwise they are resampled to the first clip's rate. Clips of different
+/// sizes are put on the canvas the hard-cut path uses.
+fn transition_conform_filter(inputs: &[ffmpeg_utils::VideoMetadata]) -> String {
+    let same_size = inputs
+        .windows(2)
+        .all(|pair| pair[0].width == pair[1].width && pair[0].height == pair[1].height);
+    let same_frame_rate = inputs.windows(2).all(|pair| pair[0].fps == pair[1].fps);
+
+    let timing = if same_frame_rate {
+        "settb=AVTB".to_string()
+    } else {
+        // `r_frame_rate` of a variable frame rate recording can be far above
+        // the real rate, and resampling to it would duplicate most frames.
+        let frame_rate = inputs
+            .first()
+            .map(|input| input.fps)
+            .filter(|fps| (1.0..=120.0).contains(fps))
+            .unwrap_or(30.0);
+        format!("fps={frame_rate}")
+    };
+    if same_size {
+        timing
+    } else {
+        format!("{},{timing}", hwaccel::H264_SCALE_PAD_FILTER)
+    }
+}
+
 fn build_transition_filter_complex(
     durations: &[f64],
     transition_type: &str,
     transition_duration: f64,
+    conform: &str,
 ) -> String {
     let n = durations.len();
-    let mut parts = Vec::with_capacity((n.saturating_sub(1)) * 2);
+    let mut parts = Vec::with_capacity(n + (n.saturating_sub(1)) * 2);
+
+    for i in 0..n {
+        parts.push(format!("[{i}:v]{conform}[c{i}]"));
+    }
 
     for i in 0..(n.saturating_sub(1)) {
         let is_last = i + 2 == n;
@@ -145,7 +180,7 @@ fn build_transition_filter_complex(
             durations.iter().take(i + 1).sum::<f64>() - (i as f64 + 1.0) * transition_duration
         };
         let input_left = if i == 0 {
-            "[0:v]".to_string()
+            "[c0]".to_string()
         } else {
             format!("[v{i}]")
         };
@@ -155,7 +190,7 @@ fn build_transition_filter_complex(
             format!("[v{}]", i + 1)
         };
         parts.push(format!(
-            "{input_left}[{}:v]xfade=transition={transition_type}:duration={transition_duration}:offset={offset}{output_label}",
+            "{input_left}[c{}]xfade=transition={transition_type}:duration={transition_duration}:offset={offset}{output_label}",
             i + 1
         ));
     }
@@ -361,14 +396,18 @@ pub async fn concat_videos_with_transition(
     let transition_duration = super::TRANSITION_DURATION_SECS;
     let transition_type = transition.unwrap_or("fade");
 
-    let mut durations = Vec::new();
+    let mut inputs = Vec::with_capacity(videos.len());
     for video in videos {
-        let metadata = ffmpeg_utils::extract_video_metadata(video).await?;
-        durations.push(metadata.duration);
+        inputs.push(ffmpeg_utils::extract_video_metadata(video).await?);
     }
+    let durations: Vec<f64> = inputs.iter().map(|input| input.duration).collect();
 
-    let filter_complex =
-        build_transition_filter_complex(&durations, transition_type, transition_duration);
+    let filter_complex = build_transition_filter_complex(
+        &durations,
+        transition_type,
+        transition_duration,
+        &transition_conform_filter(&inputs),
+    );
     // Each transition overlaps the neighbouring clips by its duration.
     let output_duration =
         durations.iter().sum::<f64>() - transition_duration * (durations.len() - 1) as f64;
@@ -384,7 +423,24 @@ pub async fn concat_videos_with_transition(
 
 #[cfg(test)]
 mod transition_filter_tests {
-    use super::{build_hardcut_concat_filter_complex, build_transition_filter_complex};
+    use super::{
+        build_hardcut_concat_filter_complex, build_transition_filter_complex,
+        transition_conform_filter,
+    };
+    use ffmpeg_utils::VideoMetadata;
+
+    fn input(width: u32, height: u32, fps: f64) -> VideoMetadata {
+        VideoMetadata {
+            duration: 3.0,
+            width,
+            height,
+            video_codec: "h264".into(),
+            audio_codec: "aac".into(),
+            bitrate: 0,
+            fps,
+            file_size: 0,
+        }
+    }
 
     #[test]
     fn hardcut_concat_maps_all_streams_in_order() {
@@ -421,9 +477,9 @@ mod transition_filter_tests {
 
     #[test]
     fn two_clips_use_matching_xfade_and_acrossfade() {
-        let filter = build_transition_filter_complex(&[8.0, 6.0], "dissolve", 1.0);
+        let filter = build_transition_filter_complex(&[8.0, 6.0], "dissolve", 1.0, "fps=30");
         assert!(
-            filter.contains("[0:v][1:v]xfade=transition=dissolve:duration=1:offset=7[outv]"),
+            filter.contains("[c0][c1]xfade=transition=dissolve:duration=1:offset=7[outv]"),
             "unexpected video filter: {filter}"
         );
         assert!(
@@ -438,13 +494,13 @@ mod transition_filter_tests {
 
     #[test]
     fn three_clips_accumulate_overlap_on_video_and_audio() {
-        let filter = build_transition_filter_complex(&[10.0, 10.0, 10.0], "fade", 1.0);
+        let filter = build_transition_filter_complex(&[10.0, 10.0, 10.0], "fade", 1.0, "fps=30");
         assert!(
-            filter.contains("[0:v][1:v]xfade=transition=fade:duration=1:offset=9[v1]"),
+            filter.contains("[c0][c1]xfade=transition=fade:duration=1:offset=9[v1]"),
             "unexpected first xfade: {filter}"
         );
         assert!(
-            filter.contains("[v1][2:v]xfade=transition=fade:duration=1:offset=18[outv]"),
+            filter.contains("[v1][c2]xfade=transition=fade:duration=1:offset=18[outv]"),
             "unexpected second xfade: {filter}"
         );
         assert!(
@@ -454,6 +510,51 @@ mod transition_filter_tests {
         assert!(
             filter.contains("[a1][2:a]acrossfade=d=1[outa]"),
             "unexpected second acrossfade: {filter}"
+        );
+    }
+
+    #[test]
+    fn every_xfade_input_is_conformed_first() {
+        let filter = build_transition_filter_complex(&[4.0, 4.0], "fade", 1.0, "fps=25");
+        assert!(
+            filter.starts_with("[0:v]fps=25[c0];[1:v]fps=25[c1];"),
+            "inputs should be conformed before xfade: {filter}"
+        );
+    }
+
+    #[test]
+    fn matching_frame_rates_only_share_a_time_base() {
+        assert_eq!(
+            transition_conform_filter(&[input(1280, 720, 60.0), input(1280, 720, 60.0)]),
+            "settb=AVTB"
+        );
+    }
+
+    #[test]
+    fn mismatched_frame_rates_follow_the_first_clip() {
+        assert_eq!(
+            transition_conform_filter(&[input(1280, 720, 60.0), input(1280, 720, 30.0)]),
+            "fps=60"
+        );
+    }
+
+    #[test]
+    fn mismatched_sizes_are_put_on_the_hardcut_canvas() {
+        assert_eq!(
+            transition_conform_filter(&[input(1280, 720, 30.0), input(1920, 1080, 30.0)]),
+            "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,settb=AVTB"
+        );
+    }
+
+    #[test]
+    fn implausible_frame_rates_fall_back_to_thirty() {
+        assert_eq!(
+            transition_conform_filter(&[input(1280, 720, 0.0), input(1280, 720, 25.0)]),
+            "fps=30"
+        );
+        assert_eq!(
+            transition_conform_filter(&[input(1280, 720, 1000.0), input(1280, 720, 25.0)]),
+            "fps=30"
         );
     }
 }
@@ -474,6 +575,15 @@ mod concat_videos_tests {
         duration_secs: u32,
         size: &str,
     ) -> Result<(), String> {
+        create_test_video_with_format(path, duration_secs, size, 25).await
+    }
+
+    async fn create_test_video_with_format(
+        path: &Path,
+        duration_secs: u32,
+        size: &str,
+        frame_rate: u32,
+    ) -> Result<(), String> {
         // Create parent directory if it doesn't exist
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
@@ -488,7 +598,7 @@ mod concat_videos_tests {
             "-f",
             "lavfi",
             "-i",
-            &format!("color=c=blue:s={size}:d={duration_secs}"),
+            &format!("color=c=blue:s={size}:r={frame_rate}:d={duration_secs}"),
             "-f",
             "lavfi",
             "-i",
@@ -846,5 +956,56 @@ mod concat_videos_tests {
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
         assert_eq!(metadata.width, 1920);
         assert_eq!(metadata.height, 1080);
+    }
+
+    #[tokio::test]
+    async fn transition_conforms_mismatched_sizes_and_frame_rates() {
+        let temp_dir = std::env::temp_dir().join(format!("bili_test_{}", random_filename().await));
+        tokio::fs::create_dir_all(&temp_dir).await.unwrap();
+
+        let video1_path = temp_dir.join("small.mp4");
+        let video2_path = temp_dir.join("large.mp4");
+        let output_path = temp_dir.join("out.mp4");
+
+        // Different frame rates also give the inputs different time bases,
+        // which xfade rejects just like a size mismatch.
+        create_test_video_with_format(&video1_path, 2, "640x360", 25)
+            .await
+            .unwrap();
+        create_test_video_with_format(&video2_path, 2, "1280x720", 30)
+            .await
+            .unwrap();
+
+        let result = concat_videos_with_transition(
+            None::<&crate::progress::progress_reporter::ProgressReporter>,
+            &[video1_path, video2_path],
+            &output_path,
+            Some("fade"),
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "mismatched transition concat should succeed: {:?}",
+            result
+        );
+
+        let metadata = ffmpeg_utils::extract_video_metadata(&output_path)
+            .await
+            .expect("output metadata");
+        let video_duration = probe_stream_duration(&output_path, "v:0").await;
+        let audio_duration = probe_stream_duration(&output_path, "a:0").await;
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+
+        assert_eq!(metadata.width, 1920);
+        assert_eq!(metadata.height, 1080);
+        assert_eq!(metadata.fps, 25.0);
+        assert!(
+            (video_duration - 3.0).abs() < 0.3,
+            "video duration {video_duration} should match xfade timeline"
+        );
+        assert!(
+            (audio_duration - video_duration).abs() < 0.3,
+            "audio duration {audio_duration} drifted from video {video_duration}"
+        );
     }
 }

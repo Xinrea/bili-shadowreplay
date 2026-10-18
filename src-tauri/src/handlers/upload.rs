@@ -131,7 +131,15 @@ async fn upload_view(state: &State, upload: UploadRow) -> UploadView {
             }
             let timeline = Timeline::parse(&project.project.timeline).unwrap_or_default();
             view.danmu = timeline.danmu;
-            view.danmu_available = true;
+            let output = output_dir(state).await;
+            for id in timeline.material_ids() {
+                if let Ok(material) = state.db.get_video(id).await {
+                    if crate::material::danmu_path(&output.join(&material.file)).is_file() {
+                        view.danmu_available = true;
+                        break;
+                    }
+                }
+            }
             // Cover frames come from the first clip's material.
             if let Some(clip) = timeline.clips.first() {
                 view.video = state
@@ -337,22 +345,36 @@ pub async fn post_upload(
     if profile.title.trim().is_empty() {
         return Err("请填写投稿标题".to_string());
     }
-    state
-        .db
-        .add_task(&TaskRow {
-            id: event_id.clone(),
-            task_type: "upload".to_string(),
-            status: "pending".to_string(),
-            message: String::new(),
-            metadata: json!({ "upload_id": id, "title": profile.title }).to_string(),
-            created_at: Utc::now().to_rfc3339(),
-        })
-        .await?;
-    let reporter = ProgressReporter::new(state.db.clone(), &state.events, &event_id).await?;
+    // Concurrent requests can all pass the checks above; only one claims it.
+    let now = Local::now().to_rfc3339();
+    if !state.db.claim_upload(id, &now).await? {
+        return Err("投稿进行中，暂时无法修改".to_string());
+    }
     upload.status = "posting".to_string();
     upload.message = String::new();
-    upload.updated_at = Local::now().to_rfc3339();
-    state.db.update_upload(&upload).await?;
+    upload.updated_at = now;
+    let task = TaskRow {
+        id: event_id.clone(),
+        task_type: "upload".to_string(),
+        status: "pending".to_string(),
+        message: String::new(),
+        metadata: json!({ "upload_id": id, "title": profile.title }).to_string(),
+        created_at: Utc::now().to_rfc3339(),
+    };
+    let reporter = match state.db.add_task(&task).await {
+        Ok(()) => ProgressReporter::new(state.db.clone(), &state.events, &event_id).await,
+        Err(e) => Err(e.to_string()),
+    };
+    let reporter = match reporter {
+        Ok(reporter) => reporter,
+        Err(e) => {
+            // Never leave it claimed with nothing running.
+            upload.status = "failed".to_string();
+            upload.message = e.clone();
+            state.db.update_upload(&upload).await?;
+            return Err(e);
+        }
+    };
 
     #[cfg(feature = "gui")]
     let state = (*state).clone();

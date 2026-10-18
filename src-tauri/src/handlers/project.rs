@@ -11,6 +11,7 @@ use serde::Serialize;
 use serde_json::json;
 use tokio::sync::oneshot;
 
+use crate::danmu2ass::Danmu2AssOptions;
 use crate::database::project::ProjectRow;
 use crate::database::task::TaskRow;
 use crate::database::upload::UploadRow;
@@ -85,16 +86,9 @@ async fn output_dir(state: &State) -> PathBuf {
     PathBuf::from(&state.config.read().await.output)
 }
 
-/// Identifies what a render of `timeline` with `subtitle_ass` contains.
-async fn render_hash(state: &State, timeline: &Timeline, subtitle_ass: Option<&str>) -> String {
-    let mut extra = subtitle_ass.unwrap_or_default().to_string();
-    if timeline.danmu {
-        extra.push_str(
-            &serde_json::to_string(&state.config.read().await.danmu_ass_options)
-                .unwrap_or_default(),
-        );
-    }
-    timeline.render_hash(&extra)
+/// The danmaku style now, kept with an export so its render matches its hash.
+async fn danmu_options(state: &State) -> Danmu2AssOptions {
+    state.config.read().await.danmu_ass_options.clone()
 }
 
 fn material_duration(video: &VideoRow) -> f64 {
@@ -617,6 +611,7 @@ pub(crate) async fn project_upload_video(
         subtitle_ass: subtitle_ass.filter(|_| timeline.has_visible_subtitles()),
         timeline,
         materials: &materials,
+        danmu_options: danmu_options(state).await,
     };
     upload_render(state, event_id, source, directory).await
 }
@@ -655,6 +650,7 @@ pub(crate) async fn material_danmu_video(
         },
         materials: &materials,
         subtitle_ass: None,
+        danmu_options: danmu_options(state).await,
     };
     upload_render(state, event_id, source, directory).await
 }
@@ -667,7 +663,7 @@ async fn upload_render(
     source: ExportSource<'_>,
     directory: &Path,
 ) -> Result<(PathBuf, Option<oneshot::Receiver<Result<(), String>>>), String> {
-    let hash = render_hash(state, &source.timeline, source.subtitle_ass.as_deref()).await;
+    let hash = source.render_hash();
     let target = directory.join(format!("{UPLOAD_RENDER_PREFIX}{hash}.mp4"));
     if target.is_file() {
         return Ok((target, None));
@@ -776,6 +772,18 @@ struct ExportSource<'a> {
     timeline: Timeline,
     materials: &'a HashMap<i64, VideoRow>,
     subtitle_ass: Option<String>,
+    danmu_options: Danmu2AssOptions,
+}
+
+impl ExportSource<'_> {
+    /// Identifies what rendering this source contains.
+    fn render_hash(&self) -> String {
+        let mut extra = self.subtitle_ass.clone().unwrap_or_default();
+        if self.timeline.danmu {
+            extra.push_str(&serde_json::to_string(&self.danmu_options).unwrap_or_default());
+        }
+        self.timeline.render_hash(&extra)
+    }
 }
 
 /// Everything an export needs, fixed when it is queued so that later edits
@@ -789,6 +797,7 @@ struct ExportJob {
     files: HashMap<i64, PathBuf>,
     subtitle_ass: Option<String>,
     font_name: Option<String>,
+    danmu_options: Danmu2AssOptions,
     cache: PathBuf,
     target: ExportTarget,
 }
@@ -836,6 +845,7 @@ pub async fn export_project(
         timeline,
         materials: &materials,
         subtitle_ass,
+        danmu_options: danmu_options(&state).await,
     };
     let (task, _) =
         queue_export(&state, &event_id, source, ExportTarget::User(path.clone())).await?;
@@ -875,6 +885,7 @@ async fn queue_export(
         timeline,
         materials,
         subtitle_ass,
+        danmu_options,
     } = source;
     let output = output_dir(state).await;
     let plain = plain_material(&timeline, materials).map(|material| output.join(&material.file));
@@ -898,6 +909,7 @@ async fn queue_export(
         timeline,
         subtitle_ass,
         font_name,
+        danmu_options,
         cache: PathBuf::from(&state.config.read().await.cache),
         target,
     };
@@ -976,7 +988,7 @@ async fn export_project_inner(
                 .map_err(|e| format!("复制素材文件失败: {e}"))?;
             guard.keep();
         }
-        None => render_timeline(state, reporter, &job, &staging).await?,
+        None => render_timeline(reporter, &job, &staging).await?,
     }
     if let Err(e) = tokio::fs::rename(&staging, &target).await {
         let _ = tokio::fs::remove_file(&staging).await;
@@ -995,7 +1007,6 @@ async fn export_project_inner(
 }
 
 async fn render_timeline(
-    state: &State,
     reporter: &ProgressReporter,
     job: &ExportJob,
     output: &Path,
@@ -1042,7 +1053,7 @@ async fn render_timeline(
             subtitle_ass: job.subtitle_ass.clone(),
             fonts_directory: fonts_directory.as_ref().map(|directory| directory.path()),
             danmus,
-            danmu_options: state.config.read().await.danmu_ass_options.clone(),
+            danmu_options: job.danmu_options.clone(),
             output,
         },
     )
@@ -1103,36 +1114,25 @@ pub async fn create_legacy_projects(db: Arc<Database>, output: PathBuf) {
             created_at: video.created_at.clone(),
             updated_at: video.created_at.clone(),
         };
-        let project = match db.add_project(&project).await {
-            Ok(project) => project,
-            Err(e) => {
-                log::error!("Failed to create project for video {}: {e}", video.id);
-                continue;
-            }
-        };
-        if posted {
-            let upload = UploadRow {
-                id: 0,
-                source: "project".to_string(),
-                source_id: project.id,
-                file: String::new(),
-                room_id: project.room_id.clone(),
-                uid: String::new(),
-                cover: String::new(),
-                profile: project.profile.clone(),
-                danmu: false,
-                status: "posted".to_string(),
-                message: String::new(),
-                bvid: project.bvid.clone(),
-                created_at: project.created_at.clone(),
-                updated_at: project.created_at.clone(),
-            };
-            if let Err(e) = db.add_upload(&upload).await {
-                log::error!("Failed to record the upload of video {}: {e}", video.id);
-            }
-        }
-        if let Err(e) = db.clear_video_needs_project(video.id).await {
-            log::error!("Failed to mark video {} as migrated: {e}", video.id);
+        let upload = posted.then(|| UploadRow {
+            id: 0,
+            source: "project".to_string(),
+            // Set to the new project's id.
+            source_id: 0,
+            file: String::new(),
+            room_id: project.room_id.clone(),
+            uid: String::new(),
+            cover: String::new(),
+            profile: project.profile.clone(),
+            danmu: false,
+            status: "posted".to_string(),
+            message: String::new(),
+            bvid: project.bvid.clone(),
+            created_at: project.created_at.clone(),
+            updated_at: project.created_at.clone(),
+        });
+        if let Err(e) = db.add_legacy_project(video.id, &project, upload).await {
+            log::error!("Failed to create project for video {}: {e}", video.id);
         }
     }
 }
@@ -1141,6 +1141,38 @@ pub async fn create_legacy_projects(db: Arc<Database>, output: PathBuf) {
 mod tests {
     use super::*;
     use crate::database::credentials::CredentialCipher;
+
+    #[tokio::test]
+    async fn a_video_whose_migration_fails_is_left_for_the_next_start() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for migration in crate::get_migrations() {
+            sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
+        }
+        sqlx::raw_sql(
+            "INSERT INTO videos (room_id, cover, file, note, length, size, status, bvid, title, desc, tags, area, created_at, platform, needs_project)
+             VALUES ('1', 'a.jpg', 'a.mp4', '', 30, 1, 1, 'BV1xx', 'Posted', '', '', 21, '2026-01-01T00:00:00+08:00', 'bilibili', 1);
+             DROP TABLE uploads;",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let db = Arc::new(Database::new(
+            pool,
+            CredentialCipher::new(&[0; 32]).unwrap(),
+            crate::events::EventBus::new(),
+        ));
+        let output = tempfile::tempdir().unwrap();
+
+        // Recording its upload fails, so its project must not be kept either.
+        create_legacy_projects(db.clone(), output.path().to_path_buf()).await;
+
+        assert!(db.get_projects().await.unwrap().is_empty());
+        assert_eq!(db.get_videos_needing_project().await.unwrap().len(), 1);
+    }
 
     #[test]
     fn exports_keep_the_mp4_extension_the_encoder_writes() {

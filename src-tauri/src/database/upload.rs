@@ -1,3 +1,7 @@
+use sqlx::query::Query;
+use sqlx::sqlite::SqliteArguments;
+use sqlx::Sqlite;
+
 use super::Database;
 use super::DatabaseError;
 use crate::events::DataChange;
@@ -39,6 +43,25 @@ impl UploadRow {
     }
 }
 
+pub(super) fn insert_upload(upload: &UploadRow) -> Query<'_, Sqlite, SqliteArguments<'_>> {
+    sqlx::query(
+        "INSERT INTO uploads (source, source_id, file, room_id, uid, cover, profile, danmu, status, message, bvid, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+    )
+    .bind(&upload.source)
+    .bind(upload.source_id)
+    .bind(&upload.file)
+    .bind(&upload.room_id)
+    .bind(&upload.uid)
+    .bind(&upload.cover)
+    .bind(&upload.profile)
+    .bind(upload.danmu)
+    .bind(&upload.status)
+    .bind(&upload.message)
+    .bind(&upload.bvid)
+    .bind(&upload.created_at)
+    .bind(&upload.updated_at)
+}
+
 impl Database {
     pub async fn get_uploads(&self) -> Result<Vec<UploadRow>, DatabaseError> {
         Ok(
@@ -58,24 +81,7 @@ impl Database {
     }
 
     pub async fn add_upload(&self, upload: &UploadRow) -> Result<UploadRow, DatabaseError> {
-        let result = sqlx::query(
-            "INSERT INTO uploads (source, source_id, file, room_id, uid, cover, profile, danmu, status, message, bvid, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
-        )
-        .bind(&upload.source)
-        .bind(upload.source_id)
-        .bind(&upload.file)
-        .bind(&upload.room_id)
-        .bind(&upload.uid)
-        .bind(&upload.cover)
-        .bind(&upload.profile)
-        .bind(upload.danmu)
-        .bind(&upload.status)
-        .bind(&upload.message)
-        .bind(&upload.bvid)
-        .bind(&upload.created_at)
-        .bind(&upload.updated_at)
-        .execute(&self.pool)
-        .await?;
+        let result = insert_upload(upload).execute(&self.pool).await?;
         self.notify_change(DataChange::Uploads);
         Ok(UploadRow {
             id: result.last_insert_rowid(),
@@ -102,6 +108,24 @@ impl Database {
         .await?;
         self.notify_change(DataChange::Uploads);
         Ok(())
+    }
+
+    /// Mark a draft or failed upload as posting, unless another request did so
+    /// first. True when this call claimed it.
+    pub async fn claim_upload(&self, id: i64, updated_at: &str) -> Result<bool, DatabaseError> {
+        let claimed = sqlx::query(
+            "UPDATE uploads SET status = 'posting', message = '', updated_at = $1 WHERE id = $2 AND status IN ('draft', 'failed')",
+        )
+        .bind(updated_at)
+        .bind(id)
+        .execute(&self.pool)
+        .await?
+        .rows_affected()
+            == 1;
+        if claimed {
+            self.notify_change(DataChange::Uploads);
+        }
+        Ok(claimed)
     }
 
     pub async fn delete_upload(&self, id: i64) -> Result<(), DatabaseError> {
@@ -204,6 +228,25 @@ mod tests {
                 upload.room_id.as_str()
             ),
             ("BV1xx", "{\"title\":\"Posted\"}", "1")
+        );
+    }
+
+    #[tokio::test]
+    async fn only_one_request_claims_an_upload_for_posting() {
+        let (db, after) = database_before_uploads().await;
+        for sql in after {
+            sqlx::raw_sql(sql).execute(&db.pool).await.unwrap();
+        }
+        let unposted = db.add_upload(&draft("draft")).await.unwrap();
+        let posted = db.add_upload(&draft("posted")).await.unwrap();
+
+        assert!(db.claim_upload(unposted.id, "later").await.unwrap());
+        assert!(!db.claim_upload(unposted.id, "later").await.unwrap());
+        assert!(!db.claim_upload(posted.id, "later").await.unwrap());
+        let claimed = db.get_upload(unposted.id).await.unwrap();
+        assert_eq!(
+            (claimed.status.as_str(), claimed.updated_at.as_str()),
+            ("posting", "later")
         );
     }
 

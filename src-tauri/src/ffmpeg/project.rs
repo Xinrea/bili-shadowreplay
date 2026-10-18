@@ -64,18 +64,25 @@ fn output_fps(clips: &[RenderClip], danmu: bool) -> f64 {
 }
 
 /// Filter graph joining the clips into `[joined]` (video) and `[outa]` (audio).
+///
+/// Each clip is padded and cut to exactly its timeline length, so a file a
+/// little shorter than its clip cannot shift the subtitles and danmaku of the
+/// clips after it.
 fn concat_filter(clips: &[RenderClip], fps: f64) -> String {
     let mut filter = String::new();
     let mut inputs = String::new();
     for (index, clip) in clips.iter().enumerate() {
+        let duration = clip.duration;
         filter.push_str(&format!(
-            "[{index}:v]{},setsar=1,fps={fps},format=yuv420p,setpts=PTS-STARTPTS[pv{index}];\n",
+            "[{index}:v]{},setsar=1,fps={fps},format=yuv420p,setpts=PTS-STARTPTS,\
+             tpad=stop_mode=clone:stop_duration={duration:.6},trim=duration={duration:.6}[pv{index}];\n",
             hwaccel::H264_SCALE_PAD_FILTER,
         ));
         if clip.has_audio {
             filter.push_str(&format!(
                 "[{index}:a]aresample=48000:async=1:first_pts=0,\
-                 aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS[pa{index}];\n"
+                 aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS,\
+                 apad,atrim=duration={duration:.6}[pa{index}];\n"
             ));
         } else {
             filter.push_str(&format!(
@@ -215,8 +222,13 @@ mod tests {
     fn clips_are_normalized_and_joined_in_order() {
         let filter = concat_filter(&[clip(true, 30.0), clip(false, 60.0)], 60.0);
         assert!(filter.contains("[0:v]scale=1920:1080"));
-        assert!(filter.contains("fps=60,format=yuv420p,setpts=PTS-STARTPTS[pv0]"));
+        // Both streams of a clip last exactly its timeline duration.
+        assert!(filter.contains(
+            "fps=60,format=yuv420p,setpts=PTS-STARTPTS,\
+             tpad=stop_mode=clone:stop_duration=2.500000,trim=duration=2.500000[pv0]"
+        ));
         assert!(filter.contains("[0:a]aresample=48000"));
+        assert!(filter.contains("apad,atrim=duration=2.500000[pa0]"));
         // A clip without audio gets silence of the same length.
         assert!(filter.contains("anullsrc=r=48000:cl=stereo,atrim=duration=2.500000"));
         assert!(!filter.contains("[1:a]"));
@@ -279,6 +291,81 @@ mod tests {
             .unwrap();
         assert!(result.status.success());
         [result.stdout[0], result.stdout[1], result.stdout[2]]
+    }
+
+    #[tokio::test]
+    #[ignore = "requires FFmpeg with libx264"]
+    async fn a_clip_longer_than_its_file_keeps_its_timeline_length() {
+        let directory = tempfile::tempdir().unwrap();
+        let red = directory.path().join("red.mp4");
+        run_ffmpeg(
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red:s=320x180:r=30:d=2",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=2",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-c:a",
+                "aac",
+            ],
+            &red,
+        )
+        .await;
+        let blue = directory.path().join("blue.mp4");
+        run_ffmpeg(
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=blue:s=320x180:r=30:d=2",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+            ],
+            &blue,
+        )
+        .await;
+        let output = directory.path().join("out.mp4");
+        let clip = |path: &Path, duration: f64, has_audio: bool| RenderClip {
+            path: path.to_path_buf(),
+            start: 0.0,
+            duration,
+            has_audio,
+            fps: 30.0,
+        };
+        // The timeline allows a clip to end a little after its file.
+        render_project(
+            &NoopReporter,
+            ProjectRender {
+                clips: vec![clip(&red, 2.4, true), clip(&blue, 2.0, false)],
+                subtitle_ass: None,
+                fonts_directory: None,
+                danmus: Vec::new(),
+                danmu_options: Danmu2AssOptions::default(),
+                output: &output,
+            },
+        )
+        .await
+        .unwrap();
+        let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
+        assert!(
+            (metadata.duration - 4.4).abs() < 0.1,
+            "{}",
+            metadata.duration
+        );
+        // The second clip starts where the timeline puts it, not early.
+        let padded = average_color(&output, 2.2).await;
+        assert!(padded[0] > 150 && padded[2] < 80, "{padded:?}");
+        let second = average_color(&output, 2.6).await;
+        assert!(second[2] > 150 && second[0] < 80, "{second:?}");
     }
 
     fn text_danmu(ts: i64) -> DanmuEntry {

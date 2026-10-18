@@ -102,6 +102,7 @@
   let requestingUpload = $state(false);
   let saveState: "saved" | "pending" | "saving" | "error" = $state("saved");
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  let saving: Promise<void> | null = null;
 
   let videoA: HTMLVideoElement = $state();
   let videoB: HTMLVideoElement = $state();
@@ -253,8 +254,12 @@
     if (!TAURI_ENV) return;
     const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
     const current = getCurrentWebviewWindow();
-    // Tauri destroys the window once this settles, so pending edits are kept.
-    unlistenClose = await current.onCloseRequested(() => flushSave());
+    // Tauri destroys the window once this settles: finish the edit in progress
+    // (closing does not blur it) and wait until everything is saved.
+    unlistenClose = await current.onCloseRequested(async () => {
+      endEdit();
+      await Promise.all([saveInfo(), flushSave()]);
+    });
   });
 
   onDestroy(() => {
@@ -298,20 +303,28 @@
     saveTimer = setTimeout(() => void flushSave(), SAVE_DELAY_MS);
   }
 
+  /** Save the timeline now, after any save already running, until it is saved. */
   async function flushSave() {
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = null;
-    if (saveState === "saved" || saveState === "saving") return;
+    while (saving) await saving;
+    if (saveState === "saved") return;
     const snapshot = timeline;
     saveState = "saving";
-    try {
-      applyProjectView(await invoke<ProjectItem>("update_project_timeline", { id: projectId, timeline: snapshot }));
-      saveState = timeline === snapshot ? "saved" : "pending";
-      if (saveState === "pending") scheduleSave();
-    } catch (error) {
-      log.error("Failed to save project timeline:", error);
-      saveState = "error";
-    }
+    let saved = false;
+    saving = (async () => {
+      try {
+        applyProjectView(await invoke<ProjectItem>("update_project_timeline", { id: projectId, timeline: snapshot }));
+        saved = true;
+        saveState = timeline === snapshot ? "saved" : "pending";
+      } catch (error) {
+        log.error("Failed to save project timeline:", error);
+        saveState = "error";
+      }
+    })().finally(() => (saving = null));
+    await saving;
+    // Edits made during the save.
+    if (saved && timeline !== snapshot) await flushSave();
   }
 
   /** Apply an edit as one undo step. */
@@ -364,15 +377,18 @@
       info = { ...info, duration: video.duration || video.length };
       materials = new Map(materials).set(materialId, info);
     }
-    let next = insertClips(timeline, [{ material_id: materialId, start: 0, end: info.duration }], index);
     // Bring along subtitles already recognized for the material.
-    const added = next.clips[Math.min(index, next.clips.length - 1)];
+    let srt = "";
     try {
-      const srt = await invoke<string>("get_video_subtitle", { id: materialId });
-      if (srt && added) next = setClipSubtitles(next, added.id, parseSrt(srt));
+      srt = await invoke<string>("get_video_subtitle", { id: materialId });
     } catch (error) {
       console.warn("Failed to load material subtitles:", error);
     }
+    // Insert into the timeline as it is after the wait, which other edits may have changed.
+    const at = Math.min(index, timeline.clips.length);
+    let next = insertClips(timeline, [{ material_id: materialId, start: 0, end: info.duration }], at);
+    const added = next.clips.length > timeline.clips.length ? next.clips[at] : undefined;
+    if (srt && added) next = setClipSubtitles(next, added.id, parseSrt(srt));
     commit(next);
     selectedClipId = added?.id ?? null;
   }
@@ -556,16 +572,15 @@
     showAiModal = false;
     if (aiRunning) return;
     aiRunning = true;
-    const before = timeline;
-    let next = timeline;
+    const overwrite = aiOverwrite;
+    const regenerate = aiRegenerate;
+    const wanted = (clipId: string) =>
+      overwrite || !timeline.subtitles.some((subtitle) => subtitle.clip_id === clipId);
+    const cuesByMaterial = new Map<number, ReturnType<typeof parseSrt>>();
     try {
       for (const materialId of new Set(timeline.clips.map((clip) => clip.material_id))) {
-        const clips = next.clips.filter((clip) => clip.material_id === materialId);
-        const pending = clips.filter(
-          (clip) => aiOverwrite || !next.subtitles.some((subtitle) => subtitle.clip_id === clip.id),
-        );
-        if (pending.length === 0) continue;
-        let srt = aiRegenerate ? "" : await invoke<string>("get_video_subtitle", { id: materialId });
+        if (!timeline.clips.some((clip) => clip.material_id === materialId && wanted(clip.id))) continue;
+        let srt = regenerate ? "" : await invoke<string>("get_video_subtitle", { id: materialId });
         if (!srt) {
           const eventId = generateEventId();
           announceTask({
@@ -580,17 +595,21 @@
             settleTask(eventId);
           }
         }
-        const cues = parseSrt(srt);
-        for (const clip of pending) {
-          next = setClipSubtitles(
-            next,
-            clip.id,
-            cues.filter((cue) => cue.end > clip.start && cue.start < clip.end),
-          );
-        }
+        cuesByMaterial.set(materialId, parseSrt(srt));
       }
-      // Other edits may have happened while recognizing; keep only subtitles from them.
-      commit({ ...timeline, subtitles: next.subtitles }, before);
+      // Recognizing can take minutes of other edits: fill the clips as they
+      // are now, as one undo step, keeping subtitles typed in the meantime.
+      let next = timeline;
+      for (const clip of timeline.clips) {
+        const cues = cuesByMaterial.get(clip.material_id);
+        if (!cues || !wanted(clip.id)) continue;
+        next = setClipSubtitles(
+          next,
+          clip.id,
+          cues.filter((cue) => cue.end > clip.start && cue.start < clip.end),
+        );
+      }
+      commit(next);
     } catch (error) {
       alert("生成字幕失败：" + error);
     } finally {
@@ -918,7 +937,11 @@
                     selectSubtitle(entry.subtitle.id);
                     beginEdit();
                   }}
-                  oninput={(event) => (timeline = updateSubtitleText(timeline, entry.subtitle.id, event.currentTarget.value))}
+                  oninput={(event) => {
+                    // One undo step per edit, but saved while typing.
+                    timeline = updateSubtitleText(timeline, entry.subtitle.id, event.currentTarget.value);
+                    scheduleSave();
+                  }}
                   onblur={endEdit}
                   onkeydown={(event) => {
                     if (event.isComposing || event.keyCode === 229) return;

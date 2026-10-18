@@ -191,7 +191,7 @@ export interface UploadItem {
   source_state: "material" | "render" | "file" | "missing";
   /** Burn danmaku into the posted video; a project's setting is its own. */
   danmu: boolean;
-  /** The source has danmaku that could be burned. */
+  /** The material, or one of the project's materials, has saved danmaku. */
   danmu_available: boolean;
   /** Relative to output. */
   display_cover: string;

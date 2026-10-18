@@ -53,7 +53,8 @@
 
   let editable = $derived(upload.status === "draft" || upload.status === "failed");
   let savingDanmu = $state(false);
-  let canToggleDanmu = $derived(editable && upload.danmu_available && !savingDanmu);
+  // Turning it off stays possible even when there is nothing to burn.
+  let canToggleDanmu = $derived(editable && (upload.danmu_available || upload.danmu) && !savingDanmu);
   let active = $derived(upload.status === "exporting" || upload.status === "posting");
   let blocker = $derived(
     upload.source_state === "missing"
@@ -282,11 +283,13 @@
                   <span class="min-w-0">
                     <span class="block text-[12px] font-medium text-fg">压制弹幕</span>
                     <span class="ui-hint block">
-                      {upload.source === "project"
-                        ? "与切片编辑窗口的弹幕设置相同"
-                        : upload.danmu_available
-                          ? "开启后投稿压制了弹幕的视频"
-                          : "这个素材没有保存弹幕"}
+                      {!upload.danmu_available
+                        ? upload.source === "project"
+                          ? "切片使用的素材都没有保存弹幕"
+                          : "这个素材没有保存弹幕"
+                        : upload.source === "project"
+                          ? "与切片编辑窗口的弹幕设置相同"
+                          : "开启后投稿压制了弹幕的视频"}
                     </span>
                   </span>
                   <span class="ui-switch mt-0.5">

@@ -152,14 +152,6 @@ impl Database {
         .await?)
     }
 
-    pub async fn clear_video_needs_project(&self, id: i64) -> Result<(), DatabaseError> {
-        sqlx::query("UPDATE videos SET needs_project = 0 WHERE id = $1")
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
     pub async fn get_video_cover(&self, id: i64) -> Result<String, DatabaseError> {
         let video = sqlx::query_as::<_, VideoRow>("SELECT * FROM videos WHERE id = $1")
             .bind(id)

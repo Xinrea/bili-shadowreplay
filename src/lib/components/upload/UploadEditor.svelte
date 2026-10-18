@@ -254,7 +254,7 @@
             <div class="flex items-center justify-between">
               <span class="ui-label">视频封面</span>
               {#if editable}
-                <button type="button" class="ui-btn ui-btn-sm" onclick={() => (showCoverEditor = true)}>
+                <button type="button" class="ui-btn ui-btn-sm" disabled={posting} onclick={() => (showCoverEditor = true)}>
                   <Pen class="h-3 w-3" />
                   编辑封面
                 </button>

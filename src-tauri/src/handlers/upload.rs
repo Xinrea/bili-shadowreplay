@@ -306,12 +306,26 @@ pub async fn update_upload_cover(
     id: i64,
     cover: String,
 ) -> Result<UploadView, String> {
-    ensure_editable(&state.db.get_upload(id).await?)?;
-    let relative = format!("{}/cover.jpg", upload_dir(id));
-    write_cover(&output_dir(&state).await.join(&relative), &cover).await?;
+    let previous = state.db.get_upload(id).await?;
+    ensure_editable(&previous)?;
+    // A new file each time: an upload claimed for posting meanwhile keeps
+    // the cover it was claimed with.
+    let output = output_dir(&state).await;
+    let relative = format!(
+        "{}/cover_{}.jpg",
+        upload_dir(id),
+        Utc::now().timestamp_millis()
+    );
+    write_cover(&output.join(&relative), &cover).await?;
     let now = Local::now().to_rfc3339();
     if !state.db.set_upload_cover(id, &relative, &now).await? {
+        let _ = tokio::fs::remove_file(output.join(&relative)).await;
         return Err(not_editable(&state, id).await);
+    }
+    // Only a cover of its own, never a source's thumbnail.
+    let own = previous.cover.starts_with(&format!("{}/", upload_dir(id)));
+    if own && previous.cover != relative {
+        let _ = tokio::fs::remove_file(output.join(&previous.cover)).await;
     }
     Ok(upload_view(&state, state.db.get_upload(id).await?).await)
 }

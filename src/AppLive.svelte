@@ -30,7 +30,6 @@
   import TaskCenterButton from "./lib/components/TaskCenterButton.svelte";
   import TitleBar from "./lib/components/TitleBar.svelte";
   import { onDestroy, onMount } from "svelte";
-  import { onWindowClose, releaseMedia } from "./lib/window-chrome";
   import {
     createThrottledRunner,
     PEAK_DETECT_INTERVAL_MS,
@@ -380,9 +379,6 @@
     player?.seek(seconds);
     current_time = seconds;
   }
-
-  // A closed window's webview stays alive in Tauri; silence it first.
-  onMount(() => onWindowClose(releaseMedia));
 
   // Initialize video element when component is mounted
   onMount(() => {

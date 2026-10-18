@@ -20,7 +20,6 @@
   } from "lucide-svelte";
   import { onDestroy, onMount, tick, untrack } from "svelte";
   import { get_static_url, invoke, listen, log, set_title, TAURI_ENV } from "../../invoker";
-  import { onWindowClose, releaseMedia } from "../../window-chrome";
   import {
     generateEventId,
     type ExportStarted,
@@ -114,6 +113,7 @@
   let frame = 0;
   let stopRange: (() => void) | null = null;
   let editBefore: ProjectTimeline | null = null;
+  let unlistenClose: (() => void) | null = null;
 
   let roomId = $derived(project?.room_id ?? "");
   let duration = $derived(timelineDuration(timeline));
@@ -253,19 +253,23 @@
     player.addEventListener("ended", stop);
   });
 
-  // The window closes once pending edits are saved and the preview is silent.
-  onMount(() =>
-    onWindowClose(async () => {
-      player?.dispose();
-      releaseMedia();
+  onMount(async () => {
+    if (!TAURI_ENV) return;
+    const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+    const current = getCurrentWebviewWindow();
+    unlistenClose = await current.onCloseRequested(async (event) => {
+      if (saveState === "saved") return;
+      event.preventDefault();
       await flushSave();
-    }),
-  );
+      await current.destroy();
+    });
+  });
 
   onDestroy(() => {
     cancelAnimationFrame(frame);
     stopRange?.();
     player?.dispose();
+    unlistenClose?.();
     if (saveTimer) void flushSave();
   });
 

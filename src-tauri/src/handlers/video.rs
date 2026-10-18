@@ -460,6 +460,19 @@ fn unused_output_path(path: PathBuf) -> PathBuf {
         .unwrap_or(path)
 }
 
+/// The recording ranges a material really covers. Stream copy starts a cut at
+/// the keyframe before the requested start while the end stays where it was
+/// asked, so a single-range material begins `duration - requested` earlier.
+fn actual_material_ranges(ranges: &[ffmpeg::Range], duration: f64) -> Vec<ffmpeg::Range> {
+    match ranges {
+        [range] if duration - range.duration() > 0.05 => vec![ffmpeg::Range {
+            start: (range.end - duration).max(0.0),
+            end: range.end,
+        }],
+        _ => ranges.to_vec(),
+    }
+}
+
 /// Cut `params.ranges` of a recording into a new material, together with the
 /// danmaku shown during those ranges.
 pub(crate) async fn create_material(
@@ -483,10 +496,6 @@ pub(crate) async fn create_material(
         .await?;
     log::info!("Clip range done, doing post processing");
     reporter.update("正在保存素材").await;
-    match state.recorder_manager.material_danmus(params).await {
-        Ok(danmus) => crate::material::save_danmus(&file, &danmus).await?,
-        Err(e) => log::warn!("Failed to cut danmaku for material {}: {e}", file.display()),
-    }
     // get file metadata from fs
     let metadata = std::fs::metadata(&file).map_err(|e| {
         log::error!("Get file metadata error: {} {}", e, file.display());
@@ -496,6 +505,15 @@ pub(crate) async fn create_material(
         Ok(video) if video.duration > 0.0 => video.duration,
         _ => params.ranges.iter().map(|r| r.duration()).sum::<f64>(),
     };
+    let ranges = actual_material_ranges(&params.ranges, duration);
+    let source_params = ClipRangeParams {
+        ranges: ranges.clone(),
+        ..params.clone()
+    };
+    match state.recorder_manager.material_danmus(&source_params).await {
+        Ok(danmus) => crate::material::save_danmus(&file, &danmus).await?,
+        Err(e) => log::warn!("Failed to cut danmaku for material {}: {e}", file.display()),
+    }
     let mut cover_generate_ffmpeg = true;
     let cover_file = file.with_extension("jpg");
     if !params.cover.is_empty() {
@@ -539,7 +557,7 @@ pub(crate) async fn create_material(
         .ok_or_else(|| format!("Invalid cover path: {}", cover_file.display()))?
         .to_string();
     let source = crate::database::video::MaterialSource {
-        ranges: params.ranges.clone(),
+        ranges,
         local_offset: params.local_offset,
     };
     let video = state
@@ -1897,6 +1915,29 @@ pub async fn generate_audio_sample(state: state_type!(), video_id: i64) -> Resul
         let _ = crate::ffmpeg::extract_audio_sample(&video_path).await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod material_range_tests {
+    use super::*;
+
+    #[test]
+    fn stream_copied_materials_start_at_the_keyframe_before_the_range() {
+        let range = |start, end| ffmpeg::Range { start, end };
+        let actual = actual_material_ranges(&[range(5.0, 15.0)], 10.983);
+        assert!((actual[0].start - 4.017).abs() < 1e-9 && actual[0].end == 15.0);
+        // A cut on a keyframe, or a re-encoded concatenation, is used as asked.
+        assert_eq!(
+            actual_material_ranges(&[range(30.0, 42.0)], 12.0)[0].start,
+            30.0
+        );
+        let two = actual_material_ranges(&[range(1.0, 2.0), range(5.0, 7.0)], 4.0);
+        assert_eq!((two[0].start, two[1].start), (1.0, 5.0));
+        assert_eq!(
+            actual_material_ranges(&[range(0.5, 3.0)], 4.0)[0].start,
+            0.0
+        );
+    }
 }
 
 #[cfg(test)]

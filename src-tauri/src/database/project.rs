@@ -107,24 +107,86 @@ impl Database {
         })
     }
 
-    /// Save every column except `id` and `created_at`.
-    pub async fn update_project(&self, project: &ProjectRow) -> Result<(), DatabaseError> {
-        sqlx::query(
-            "UPDATE projects SET room_id = $1, platform = $2, title = $3, note = $4, cover = $5, timeline = $6, profile = $7, status = $8, bvid = $9, updated_at = $10 WHERE id = $11",
+    // Each update writes only its own columns: a whole-row write from a stale
+    // read would undo a concurrent change to another column, such as the
+    // editor saving the timeline while the title is saved.
+
+    pub async fn update_project_info(
+        &self,
+        id: i64,
+        title: &str,
+        note: &str,
+        updated_at: &str,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query("UPDATE projects SET title = $1, note = $2, updated_at = $3 WHERE id = $4")
+            .bind(title)
+            .bind(note)
+            .bind(updated_at)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        self.notify_change(DataChange::Projects);
+        Ok(())
+    }
+
+    pub async fn set_project_timeline(
+        &self,
+        id: i64,
+        timeline: &str,
+        updated_at: &str,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query("UPDATE projects SET timeline = $1, updated_at = $2 WHERE id = $3")
+            .bind(timeline)
+            .bind(updated_at)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        self.notify_change(DataChange::Projects);
+        Ok(())
+    }
+
+    /// Replace the timeline only if it is still `expected`. False when it
+    /// changed since it was read.
+    pub async fn replace_project_timeline(
+        &self,
+        id: i64,
+        expected: &str,
+        timeline: &str,
+        updated_at: &str,
+    ) -> Result<bool, DatabaseError> {
+        let replaced = sqlx::query(
+            "UPDATE projects SET timeline = $1, updated_at = $2 WHERE id = $3 AND timeline = $4",
         )
-        .bind(&project.room_id)
-        .bind(&project.platform)
-        .bind(&project.title)
-        .bind(&project.note)
-        .bind(&project.cover)
-        .bind(&project.timeline)
-        .bind(&project.profile)
-        .bind(project.status)
-        .bind(&project.bvid)
-        .bind(&project.updated_at)
-        .bind(project.id)
+        .bind(timeline)
+        .bind(updated_at)
+        .bind(id)
+        .bind(expected)
         .execute(&self.pool)
-        .await?;
+        .await?
+        .rows_affected()
+            == 1;
+        if replaced {
+            self.notify_change(DataChange::Projects);
+        }
+        Ok(replaced)
+    }
+
+    pub async fn set_project_cover(&self, id: i64, cover: &str) -> Result<(), DatabaseError> {
+        sqlx::query("UPDATE projects SET cover = $1 WHERE id = $2")
+            .bind(cover)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        self.notify_change(DataChange::Projects);
+        Ok(())
+    }
+
+    pub async fn mark_project_posted(&self, id: i64, bvid: &str) -> Result<(), DatabaseError> {
+        sqlx::query("UPDATE projects SET status = 1, bvid = $1 WHERE id = $2")
+            .bind(bvid)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
         self.notify_change(DataChange::Projects);
         Ok(())
     }
@@ -136,5 +198,86 @@ impl Database {
             .await?;
         self.notify_change(DataChange::Projects);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::credentials::CredentialCipher;
+    use crate::events::EventBus;
+
+    async fn database() -> Database {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for migration in crate::get_migrations() {
+            sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
+        }
+        Database::new(
+            pool,
+            CredentialCipher::new(&[0; 32]).unwrap(),
+            EventBus::new(),
+        )
+    }
+
+    fn project() -> ProjectRow {
+        ProjectRow {
+            id: 0,
+            room_id: "1".into(),
+            platform: "bilibili".into(),
+            title: "old title".into(),
+            note: String::new(),
+            cover: String::new(),
+            timeline: "old timeline".into(),
+            profile: String::new(),
+            status: 0,
+            bvid: String::new(),
+            created_at: "2026-10-18".into(),
+            updated_at: "2026-10-18".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn saving_one_part_of_a_project_keeps_the_others() {
+        let db = database().await;
+        let id = db.add_project(&project()).await.unwrap().id;
+
+        // Both saves start from the same stale row, as two windows would.
+        db.set_project_timeline(id, "new timeline", "t1")
+            .await
+            .unwrap();
+        db.update_project_info(id, "new title", "note", "t2")
+            .await
+            .unwrap();
+        db.mark_project_posted(id, "BV1xx").await.unwrap();
+
+        let saved = db.get_project(id).await.unwrap();
+        assert_eq!(
+            (saved.title.as_str(), saved.timeline.as_str()),
+            ("new title", "new timeline")
+        );
+        assert_eq!((saved.status, saved.bvid.as_str()), (1, "BV1xx"));
+    }
+
+    #[tokio::test]
+    async fn a_timeline_edit_from_a_stale_read_is_refused() {
+        let db = database().await;
+        let id = db.add_project(&project()).await.unwrap().id;
+        db.set_project_timeline(id, "saved by the editor", "t1")
+            .await
+            .unwrap();
+
+        assert!(!db
+            .replace_project_timeline(id, "old timeline", "edited", "t2")
+            .await
+            .unwrap());
+        assert!(db
+            .replace_project_timeline(id, "saved by the editor", "edited", "t2")
+            .await
+            .unwrap());
+        assert_eq!(db.get_project(id).await.unwrap().timeline, "edited");
     }
 }

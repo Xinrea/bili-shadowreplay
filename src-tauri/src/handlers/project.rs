@@ -288,8 +288,8 @@ async fn create_project_inner(state: &State, new: NewProject<'_>) -> Result<Proj
     if let Some(cover) = new.cover.filter(|cover| !cover.is_empty()) {
         match write_project_cover(&output, project.id, cover).await {
             Ok(relative) => {
+                state.db.set_project_cover(project.id, &relative).await?;
                 project.cover = relative;
-                state.db.update_project(&project).await?;
             }
             Err(e) => log::warn!("Failed to save project cover: {e}"),
         }
@@ -330,11 +330,11 @@ pub async fn update_project_info(
     title: String,
     note: String,
 ) -> Result<(), String> {
-    let mut project = state.db.get_project(id).await?;
-    project.title = title;
-    project.note = note;
-    project.updated_at = Local::now().to_rfc3339();
-    Ok(state.db.update_project(&project).await?)
+    let now = Local::now().to_rfc3339();
+    Ok(state
+        .db
+        .update_project_info(id, &title, &note, &now)
+        .await?)
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -343,10 +343,12 @@ pub async fn update_project_timeline(
     id: i64,
     timeline: Timeline,
 ) -> Result<ProjectView, String> {
-    let mut project = state.db.get_project(id).await?;
-    project.timeline = timeline.to_json();
-    project.updated_at = Local::now().to_rfc3339();
-    state.db.update_project(&project).await?;
+    let now = Local::now().to_rfc3339();
+    state
+        .db
+        .set_project_timeline(id, &timeline.to_json(), &now)
+        .await?;
+    let project = state.db.get_project(id).await?;
     single_project_view(&state, project).await
 }
 
@@ -399,14 +401,42 @@ pub(crate) async fn remove_material_from_projects(
     state: &State,
     material_id: i64,
 ) -> Result<(), String> {
-    for mut project in projects_using(&state.db, material_id).await? {
-        let mut timeline = Timeline::parse(&project.timeline)?;
-        timeline.remove_material(material_id);
-        project.timeline = timeline.to_json();
-        project.updated_at = Local::now().to_rfc3339();
-        state.db.update_project(&project).await?;
+    for project in projects_using(&state.db, material_id).await? {
+        edit_project_timeline(state, project.id, |timeline| {
+            timeline.remove_material(material_id)
+        })
+        .await?;
     }
     Ok(())
+}
+
+/// Attempts at an edit before giving up on a timeline that keeps changing.
+const TIMELINE_EDIT_ATTEMPTS: usize = 5;
+
+/// Apply `edit`, which tells whether it changed anything, to the project's
+/// saved timeline. The write only replaces the timeline it was made from, so
+/// a save from the editor in between is edited again instead of overwritten.
+async fn edit_project_timeline(
+    state: &State,
+    id: i64,
+    mut edit: impl FnMut(&mut Timeline) -> bool,
+) -> Result<(), String> {
+    for _ in 0..TIMELINE_EDIT_ATTEMPTS {
+        let saved = state.db.get_project(id).await?.timeline;
+        let mut timeline = Timeline::parse(&saved)?;
+        if !edit(&mut timeline) {
+            return Ok(());
+        }
+        let now = Local::now().to_rfc3339();
+        if state
+            .db
+            .replace_project_timeline(id, &saved, &timeline.to_json(), &now)
+            .await?
+        {
+            return Ok(());
+        }
+    }
+    Err("切片正在被修改，请稍后重试".to_string())
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -567,18 +597,28 @@ async fn attach_material_subtitles(
     project_id: i64,
     material: &VideoRow,
 ) -> Result<(), String> {
-    let mut project = state.db.get_project(project_id).await?;
-    let mut timeline = Timeline::parse(&project.timeline)?;
-    let materials = HashMap::from([(material.id, material.clone())]);
-    import_material_subtitles(
-        &output_dir(state).await,
-        &mut timeline,
-        &materials,
-        Some(material.id),
-    )
-    .await;
-    project.timeline = timeline.to_json();
-    Ok(state.db.update_project(&project).await?)
+    let srt = output_dir(state)
+        .await
+        .join(&material.file)
+        .with_extension("srt");
+    let Ok(content) = tokio::fs::read_to_string(&srt).await else {
+        return Ok(());
+    };
+    let cues = srt_cues(&content);
+    edit_project_timeline(state, project_id, |timeline| {
+        let clips: Vec<String> = timeline
+            .clips
+            .iter()
+            .filter(|clip| clip.material_id == material.id)
+            .filter(|clip| !timeline.subtitles.iter().any(|s| s.clip_id == clip.id))
+            .map(|clip| clip.id.clone())
+            .collect();
+        for clip_id in &clips {
+            timeline.set_clip_subtitles(clip_id, cues.clone());
+        }
+        !clips.is_empty()
+    })
+    .await
 }
 
 /// The video to upload for a project: its plain material, or a render of its
@@ -681,15 +721,12 @@ async fn upload_render(
 
 /// Turn burning danmaku into the project's exports and uploads on or off.
 pub(crate) async fn set_project_danmu(state: &State, id: i64, danmu: bool) -> Result<(), String> {
-    let mut project = state.db.get_project(id).await?;
-    let mut timeline = Timeline::parse(&project.timeline)?;
-    if timeline.danmu == danmu {
-        return Ok(());
-    }
-    timeline.danmu = danmu;
-    project.timeline = timeline.to_json();
-    project.updated_at = Local::now().to_rfc3339();
-    Ok(state.db.update_project(&project).await?)
+    edit_project_timeline(state, id, |timeline| {
+        let changed = timeline.danmu != danmu;
+        timeline.danmu = danmu;
+        changed
+    })
+    .await
 }
 
 /// A material's title, or its file name without the extension.
@@ -813,15 +850,17 @@ pub async fn export_project(
     subtitle_ass: Option<String>,
     target: Option<String>,
 ) -> Result<ExportStarted, String> {
-    let mut project = state.db.get_project(id).await?;
+    let project = state.db.get_project(id).await?;
     if timeline.clips.is_empty() {
         return Err("时间轴上还没有片段".to_string());
     }
     let materials = materials_by_id(&state, &timeline.material_ids()).await?;
     timeline.validate(|id| materials.get(&id).map(material_duration))?;
-    project.timeline = timeline.to_json();
-    project.updated_at = Local::now().to_rfc3339();
-    state.db.update_project(&project).await?;
+    let now = Local::now().to_rfc3339();
+    state
+        .db
+        .set_project_timeline(id, &timeline.to_json(), &now)
+        .await?;
 
     let (path, download) = match target {
         Some(path) => (mp4_path(PathBuf::from(path)), None),

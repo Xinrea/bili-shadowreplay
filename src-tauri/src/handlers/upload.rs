@@ -588,14 +588,12 @@ async fn mark_source_posted(state: &State, upload: &UploadRow) {
             }
             Err(e) => Err(e),
         },
-        "project" => match state.db.get_project(upload.source_id).await {
-            Ok(mut project) => {
-                project.status = 1;
-                project.bvid = upload.bvid.clone();
-                state.db.update_project(&project).await
-            }
-            Err(e) => Err(e),
-        },
+        "project" => {
+            state
+                .db
+                .mark_project_posted(upload.source_id, &upload.bvid)
+                .await
+        }
         _ => Ok(()),
     };
     if let Err(e) = result {

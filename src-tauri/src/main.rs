@@ -586,6 +586,12 @@ fn get_migrations() -> Vec<Migration> {
             sql: "ALTER TABLE uploads ADD COLUMN danmu INTEGER NOT NULL DEFAULT 0;",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 22,
+            description: "add_upload_cover43",
+            sql: "ALTER TABLE uploads ADD COLUMN cover43 TEXT NOT NULL DEFAULT '';",
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -1021,6 +1027,9 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::project::get_material_peaks,
         crate::handlers::project::get_material_danmu,
         crate::handlers::project::generate_materials,
+        crate::handlers::sticker::get_cover_stickers,
+        crate::handlers::sticker::add_cover_sticker,
+        crate::handlers::sticker::delete_cover_sticker,
         crate::handlers::upload::get_uploads,
         crate::handlers::upload::get_upload,
         crate::handlers::upload::create_upload,

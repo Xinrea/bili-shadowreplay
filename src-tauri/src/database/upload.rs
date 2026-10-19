@@ -22,6 +22,9 @@ pub struct UploadRow {
     pub uid: String,
     /// Cover relative to the output directory; empty to use the source's.
     pub cover: String,
+    /// 4:3 cover for the homepage feed, relative to the output directory;
+    /// empty to let Bilibili crop `cover`.
+    pub cover43: String,
     /// Bilibili `Profile` JSON.
     pub profile: String,
     /// Burn a material's danmaku into the posted video. A project keeps this
@@ -50,7 +53,7 @@ const ACTIVE: &str = "status IN ('exporting', 'posting')";
 
 pub(super) fn insert_upload(upload: &UploadRow) -> Query<'_, Sqlite, SqliteArguments<'_>> {
     sqlx::query(
-        "INSERT INTO uploads (source, source_id, file, room_id, uid, cover, profile, danmu, status, message, bvid, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+        "INSERT INTO uploads (source, source_id, file, room_id, uid, cover, cover43, profile, danmu, status, message, bvid, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
     )
     .bind(&upload.source)
     .bind(upload.source_id)
@@ -58,6 +61,7 @@ pub(super) fn insert_upload(upload: &UploadRow) -> Query<'_, Sqlite, SqliteArgum
     .bind(&upload.room_id)
     .bind(&upload.uid)
     .bind(&upload.cover)
+    .bind(&upload.cover43)
     .bind(&upload.profile)
     .bind(upload.danmu)
     .bind(&upload.status)
@@ -135,13 +139,15 @@ impl Database {
         &self,
         id: i64,
         cover: &str,
+        cover43: &str,
         updated_at: &str,
     ) -> Result<bool, DatabaseError> {
         self.apply_upload_update(
             sqlx::query(&format!(
-                "UPDATE uploads SET cover = $1, updated_at = $2 WHERE id = $3 AND {EDITABLE}"
+                "UPDATE uploads SET cover = $1, cover43 = $2, updated_at = $3 WHERE id = $4 AND {EDITABLE}"
             ))
             .bind(cover)
+            .bind(cover43)
             .bind(updated_at)
             .bind(id),
         )
@@ -297,6 +303,7 @@ mod tests {
             room_id: String::new(),
             uid: "1".into(),
             cover: String::new(),
+            cover43: String::new(),
             profile: "{}".into(),
             danmu: false,
             status: status.into(),
@@ -379,11 +386,29 @@ mod tests {
         let saved = db.get_upload(id).await.unwrap();
         assert_eq!((saved.danmu, saved.uid.as_str()), (true, "2"));
 
+        // Both covers are saved together, without touching the form.
+        assert!(db
+            .set_upload_cover(id, "uploads/1/c.jpg", "uploads/1/c43.jpg", "t2")
+            .await
+            .unwrap());
+        let saved = db.get_upload(id).await.unwrap();
+        assert_eq!(
+            (
+                saved.cover.as_str(),
+                saved.cover43.as_str(),
+                saved.uid.as_str()
+            ),
+            ("uploads/1/c.jpg", "uploads/1/c43.jpg", "2")
+        );
+
         // Once claimed, late saves and deletion are refused and it stays posting.
         assert!(db.claim_upload(id, "t3").await.unwrap());
         assert!(!db.update_upload_form(id, "3", "{}", "t4").await.unwrap());
         assert!(!db.set_upload_danmu(id, false, "t4").await.unwrap());
-        assert!(!db.set_upload_cover(id, "c.jpg", "t4").await.unwrap());
+        assert!(!db
+            .set_upload_cover(id, "c.jpg", "c43.jpg", "t4")
+            .await
+            .unwrap());
         assert!(!db.delete_upload(id).await.unwrap());
         let running = db.get_upload(id).await.unwrap();
         assert_eq!(

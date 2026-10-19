@@ -260,6 +260,7 @@ pub async fn create_upload(
             room_id,
             uid: String::new(),
             cover: String::new(),
+            cover43: String::new(),
             profile: profile.to_string(),
             danmu: false,
             status: "draft".to_string(),
@@ -274,7 +275,7 @@ pub async fn create_upload(
             Ok(cover) => {
                 state
                     .db
-                    .set_upload_cover(upload.id, &cover, &upload.updated_at)
+                    .set_upload_cover(upload.id, &cover, "", &upload.updated_at)
                     .await?;
                 upload.cover = cover;
             }
@@ -304,33 +305,62 @@ pub async fn update_upload(
     }
 }
 
-/// Replace the cover with the base64 data URL `cover`.
+/// Replace the cover with the base64 data URL `cover`, and the homepage's
+/// 4:3 cover with `cover43`. Without one, an earlier 4:3 cover is dropped
+/// as it would no longer match, and Bilibili crops `cover` instead.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_upload_cover(
     state: state_type!(),
     id: i64,
     cover: String,
+    cover43: Option<String>,
 ) -> Result<UploadView, String> {
     let previous = state.db.get_upload(id).await?;
     ensure_editable(&previous)?;
-    // A new file each time: an upload claimed for posting meanwhile keeps
-    // the cover it was claimed with.
+    // New files each time: an upload claimed for posting meanwhile keeps
+    // the covers it was claimed with.
     let output = output_dir(&state).await;
-    let relative = format!(
-        "{}/cover_{}.jpg",
-        upload_dir(id),
-        Utc::now().timestamp_millis()
-    );
-    write_cover(&output.join(&relative), &cover).await?;
-    let now = Local::now().to_rfc3339();
-    if !state.db.set_upload_cover(id, &relative, &now).await? {
-        let _ = tokio::fs::remove_file(output.join(&relative)).await;
-        return Err(not_editable(&state, id).await);
+    let time = Utc::now().timestamp_millis();
+    let relative = format!("{}/cover_{time}.jpg", upload_dir(id));
+    let relative43 = cover43
+        .as_ref()
+        .map(|_| format!("{}/cover43_{time}.jpg", upload_dir(id)))
+        .unwrap_or_default();
+    let written = async {
+        write_cover(&output.join(&relative), &cover).await?;
+        if let Some(cover43) = &cover43 {
+            write_cover(&output.join(&relative43), cover43).await?;
+        }
+        Ok::<_, String>(())
     }
-    // Only a cover of its own, never a source's thumbnail.
-    let own = previous.cover.starts_with(&format!("{}/", upload_dir(id)));
-    if own && previous.cover != relative {
-        let _ = tokio::fs::remove_file(output.join(&previous.cover)).await;
+    .await;
+    let now = Local::now().to_rfc3339();
+    let saved = match written {
+        Ok(()) => state
+            .db
+            .set_upload_cover(id, &relative, &relative43, &now)
+            .await
+            .map_err(|e| e.to_string()),
+        Err(e) => Err(e),
+    };
+    if !matches!(saved, Ok(true)) {
+        for file in [&relative, &relative43]
+            .into_iter()
+            .filter(|f| !f.is_empty())
+        {
+            let _ = tokio::fs::remove_file(output.join(file)).await;
+        }
+        return match saved {
+            Err(e) => Err(e),
+            _ => Err(not_editable(&state, id).await),
+        };
+    }
+    // Only covers of its own, never a source's thumbnail.
+    let own = format!("{}/", upload_dir(id));
+    for old in [&previous.cover, &previous.cover43] {
+        if old.starts_with(&own) && *old != relative && *old != relative43 {
+            let _ = tokio::fs::remove_file(output.join(old)).await;
+        }
     }
     Ok(upload_view(&state, state.db.get_upload(id).await?).await)
 }
@@ -574,6 +604,8 @@ async fn post_upload_inner(
     if !cover.is_file() {
         return Err("没有可用的封面，请先设置封面".to_string());
     }
+    let cover43 = Some(output.join(&upload.cover43))
+        .filter(|path| !upload.cover43.is_empty() && path.is_file());
     upload_video_file(
         state,
         reporter,
@@ -581,6 +613,7 @@ async fn post_upload_inner(
         &upload.room_id,
         &file,
         &cover,
+        cover43.as_deref(),
         profile,
     )
     .await

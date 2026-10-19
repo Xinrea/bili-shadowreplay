@@ -201,15 +201,20 @@ async fn import_material_subtitles(
     }
 }
 
-/// Save the base64 data URL `cover` as the image file `path`.
-pub(crate) async fn write_cover(path: &Path, cover: &str) -> Result<(), String> {
-    let base64 = cover
+/// The bytes of the base64 data URL `data`.
+pub(crate) fn decode_data_url(data: &str) -> Result<Vec<u8>, String> {
+    let base64 = data
         .split("base64,")
         .nth(1)
-        .ok_or_else(|| "Cover is not a base64 data URL".to_string())?;
-    let bytes = base64::engine::general_purpose::STANDARD
+        .ok_or_else(|| "Image is not a base64 data URL".to_string())?;
+    base64::engine::general_purpose::STANDARD
         .decode(base64)
-        .map_err(|e| format!("Failed to decode cover: {e}"))?;
+        .map_err(|e| format!("Failed to decode image: {e}"))
+}
+
+/// Save the base64 data URL `cover` as the image file `path`.
+pub(crate) async fn write_cover(path: &Path, cover: &str) -> Result<(), String> {
+    let bytes = decode_data_url(cover)?;
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
@@ -1208,6 +1213,7 @@ pub async fn create_legacy_projects(db: Arc<Database>, output: PathBuf) {
             room_id: project.room_id.clone(),
             uid: String::new(),
             cover: String::new(),
+            cover43: String::new(),
             profile: project.profile.clone(),
             danmu: false,
             status: "posted".to_string(),

@@ -23,7 +23,7 @@
     sourceDescription,
     sourceLabels,
   } from "../../uploads";
-  import CoverEditor from "../CoverEditor.svelte";
+  import CoverEditor from "../cover/CoverEditor.svelte";
   import TypeSelect from "../TypeSelect.svelte";
 
   interface Props {
@@ -138,8 +138,8 @@
     }
   }
 
-  async function saveCover(cover: string) {
-    await invoke("update_upload_cover", { id: upload.id, cover });
+  async function saveCover(covers: { cover: string; cover43: string }) {
+    await invoke("update_upload_cover", { id: upload.id, ...covers });
     // The previous file is gone; show the new one now.
     await onChanged();
   }
@@ -394,5 +394,6 @@
   bind:show={showCoverEditor}
   video={videoUrl ? { file: videoUrl } : null}
   image={coverUrl}
+  title={profile.title}
   onSave={saveCover}
 />

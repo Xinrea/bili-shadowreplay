@@ -2,12 +2,15 @@
 // flat style of Windows 11's Segoe UI Emoji, without the gradients of the
 // newer "Color" designs.
 //
-//   node scripts/fetch-fluent-emoji.mjs [commit]
+//   node scripts/fetch-fluent-emoji.mjs [ref]
+//
+// Without a ref it fetches the commit stickers.json was made from again; pass
+// "main" to update to the latest designs.
 //
 // Writes public/stickers/*.svg with the license beside them, and the manifest
 // the editor reads, src/lib/components/cover/stickers.json. Edit GROUPS to
 // change the selection; the default skin tone is used for people.
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -87,8 +90,11 @@ function optimize(svg) {
     .trim();
 }
 
-const commit =
-  process.argv[2] ?? (await (await get(`https://api.github.com/repos/${REPO}/commits/main`)).json()).sha;
+const pinned = existsSync(manifest)
+  ? JSON.parse(readFileSync(manifest, 'utf8')).source.split('/tree/')[1]
+  : undefined;
+const ref = process.argv[2] ?? pinned ?? 'main';
+const commit = (await (await get(`https://api.github.com/repos/${REPO}/commits/${ref}`)).json()).sha;
 const tree = await (await get(`https://api.github.com/repos/${REPO}/git/trees/${commit}?recursive=1`)).json();
 if (tree.truncated) throw new Error('The repository tree is truncated');
 const raw = (path) =>

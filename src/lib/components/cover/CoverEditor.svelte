@@ -48,7 +48,7 @@
   import { invoke, log } from "../../invoker";
   import ColorPicker from "./ColorPicker.svelte";
   import CoverFontSelect from "./CoverFontSelect.svelte";
-  import { drawBackground, drawElements, loadSticker, measure, STICKER_GROUPS } from "./render";
+  import { drawBackground, drawElements, isCrossOrigin, loadSticker, measure, STICKER_GROUPS } from "./render";
   import StickerPanel from "./StickerPanel.svelte";
   import TextPanel from "./TextPanel.svelte";
 
@@ -108,6 +108,8 @@
   // Bumped by each background change so a slower image load cannot win.
   let backgroundToken = 0;
   let followVideo = false;
+  // Picked by the user rather than a frame shown while the cover loads.
+  let backgroundChosen = false;
 
   let videoElement: HTMLVideoElement = $state();
   let opened = $state(false);
@@ -143,7 +145,7 @@
       opened = true;
       if (cover && !originalCover) {
         originalCover = cover;
-        if (!hasBackground && !followVideo) void useImage(cover, "cover");
+        if (!backgroundChosen) void useImage(cover, "cover");
       }
     });
   });
@@ -197,7 +199,7 @@
   function loadImage(src: string): Promise<HTMLImageElement> {
     return new Promise((resolve, reject) => {
       const image = new Image();
-      image.crossOrigin = "anonymous";
+      if (isCrossOrigin(src)) image.crossOrigin = "anonymous";
       image.onload = () => resolve(image);
       image.onerror = () => reject(new Error(`Failed to load ${src}`));
       image.src = src;
@@ -220,6 +222,7 @@
     const file = event.currentTarget.files?.[0];
     event.currentTarget.value = "";
     if (!file) return;
+    backgroundChosen = true;
     const url = URL.createObjectURL(file);
     await useImage(url, "upload");
     URL.revokeObjectURL(url);
@@ -379,6 +382,12 @@
     editingId = id;
     await tick();
     if (!editField) return;
+    try {
+      editField.contentEditable = "plaintext-only";
+    } catch {
+      // Older engines reject it; innerText still reads plain text.
+      editField.contentEditable = "true";
+    }
     editField.textContent = element.content;
     editField.focus();
     const range = document.createRange();
@@ -547,10 +556,15 @@
     }
   }
 
-  function handleClose() {
+  function close() {
     finishEditing();
     selectedId = null;
     show = false;
+  }
+
+  // A save in flight writes the cover anyway, so it cannot be cancelled.
+  function handleClose() {
+    if (!saving) close();
   }
 
   async function handleSave() {
@@ -558,9 +572,13 @@
     finishEditing();
     saving = true;
     try {
-      await Promise.allSettled(
+      const loads = await Promise.allSettled(
         elements.flatMap((element) => (element.kind === "sticker" ? [loadSticker(element.src)] : [])),
       );
+      if (loads.some((load) => load.status === "rejected")) {
+        alert("有贴纸没有加载出来，请删除后再保存封面");
+        return;
+      }
       redraw();
       const cover = canvas.toDataURL("image/jpeg", 0.92);
       if (onSave) {
@@ -569,7 +587,7 @@
         await invoke("update_video_cover", { id: video.value, cover });
       }
       onCoverUpdate?.({ cover });
-      handleClose();
+      close();
     } catch (e) {
       alert("更新封面失败: " + e);
     } finally {
@@ -604,6 +622,7 @@
         type="button"
         class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost -mr-1.5"
         aria-label="关闭"
+        disabled={saving}
         onclick={handleClose}
       >
         <X class="h-4 w-4" />
@@ -954,7 +973,10 @@
               class="min-w-0 flex-1"
               aria-label="视频帧位置"
               disabled={!videoReady}
-              oninput={(event) => seekFrame(Number(event.currentTarget.value))}
+              oninput={(event) => {
+                backgroundChosen = true;
+                seekFrame(Number(event.currentTarget.value));
+              }}
             />
             <span class="shrink-0 text-[11px] tabular-nums text-fg-muted">
               {formatTime(frameTime)} / {formatTime(duration)}
@@ -967,7 +989,10 @@
               <button
                 type="button"
                 class="ui-btn ui-btn-sm {backgroundKind === 'cover' ? 'ui-btn-active' : ''}"
-                onclick={() => useImage(originalCover, "cover")}
+                onclick={() => {
+                  backgroundChosen = true;
+                  void useImage(originalCover, "cover");
+                }}
               >
                 原封面
               </button>
@@ -1024,7 +1049,7 @@
     <div class="ui-modal-footer justify-between">
       <span class="text-[11px] text-fg-muted">保存为 1920×1080 的 JPG 封面</span>
       <div class="flex gap-2">
-        <button type="button" class="ui-btn" onclick={handleClose}>取消</button>
+        <button type="button" class="ui-btn" disabled={saving} onclick={handleClose}>取消</button>
         <button type="button" class="ui-btn ui-btn-primary" disabled={saving} onclick={handleSave}>
           {#if saving}<Loader2 class="h-3.5 w-3.5 animate-spin" />{/if}
           完成

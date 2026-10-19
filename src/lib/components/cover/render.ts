@@ -31,6 +31,15 @@ export function stickerUrl(id: string): string {
   return `${import.meta.env.BASE_URL}stickers/${id}.svg`;
 }
 
+/**
+ * Whether `src` needs CORS to keep a canvas exportable. Same-origin files,
+ * like the built-in stickers, are loaded without it: some webviews fail
+ * CORS requests to their own custom protocol.
+ */
+export function isCrossOrigin(src: string): boolean {
+  return new URL(src, location.href).origin !== location.origin;
+}
+
 const stickerRequests = new Map<string, Promise<HTMLImageElement>>();
 const stickerImages = new Map<string, HTMLImageElement>();
 
@@ -40,8 +49,7 @@ export function loadSticker(src: string): Promise<HTMLImageElement> {
   if (!request) {
     request = new Promise((resolve, reject) => {
       const image = new Image();
-      // Imported stickers come from the static server; keep the cover exportable.
-      image.crossOrigin = "anonymous";
+      if (isCrossOrigin(src)) image.crossOrigin = "anonymous";
       image.onload = () => {
         stickerImages.set(src, image);
         resolve(image);

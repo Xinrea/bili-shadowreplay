@@ -125,12 +125,19 @@ test("a synced move keeps the twin on the covers", () => {
   assert.deepEqual(plain(api.twinChanges(sticker({ x: 960, y: 540 }), { x: 1060, y: 440 }, twin)), { x: 1920, y: 0 });
 });
 
-test("a synced edit matches only what it changes on a twin styled apart", () => {
-  const element = text({ fill: "#FFFFFF", stroke: "#1A1A1A", font: "" });
-  const twin = text({ fill: "#FF3B30", stroke: "#000000", font: "Kaiti SC" });
-  const changes = { ...api.styleOf(element), fill: "#FFE14D" };
-  assert.deepEqual(plain(api.twinChanges(element, changes, twin)), { fill: "#FFE14D" });
+test("a synced style carries over whole, so a twin styled apart ends up the same", () => {
+  const element = text({ ...api.styleOf(api.TEXT_STYLES[0]), content: "标题" });
+  const twin = text({ ...api.styleOf(api.TEXT_STYLES[2]), content: "另一个标题", font: "Kaiti SC" });
+  const preset = api.styleOf(api.TEXT_STYLES[1]);
+  assert.deepEqual(plain(api.twinChanges(element, preset, twin)), plain(preset));
   assert.deepEqual(plain(api.twinChanges(element, { content: "新标题" }, twin)), { content: "新标题" });
+});
+
+test("a synced edit that changes nothing leaves a twin edited apart alone", () => {
+  const element = text({ content: "标题", fill: "#FFFFFF" });
+  const twin = text({ content: "另一个标题", fill: "#FF3B30" });
+  assert.deepEqual(plain(api.twinChanges(element, { content: "标题" }, twin)), {});
+  assert.deepEqual(plain(api.twinChanges(element, { fill: "#FFFFFF", content: "标题" }, twin)), {});
 });
 
 test("new elements land where asked, stepping past ones already there", () => {

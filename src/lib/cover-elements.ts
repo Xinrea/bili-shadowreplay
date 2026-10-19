@@ -239,12 +239,15 @@ export type ElementChanges = Partial<TextElement> | Partial<StickerElement>;
 
 /**
  * `changes` to `element` as they apply to its twin on the other cover, which
- * may have been placed apart: moved, turned and resized by as much, and
- * otherwise matched where they change something.
+ * may have been placed apart: moved, turned and resized by as much. The rest
+ * carries over as a whole, so a picked style looks the same on both, but
+ * only when it changes `element`: leaving text unchanged keeps the twin's.
  */
 export function twinChanges(element: CoverElement, changes: ElementChanges, twin: CoverElement): ElementChanges {
   const before = element as unknown as Record<string, unknown>;
   const result: Record<string, unknown> = {};
+  const matched: Record<string, unknown> = {};
+  let changed = false;
   for (const [key, value] of Object.entries(changes)) {
     if (key === "x" || key === "y") {
       const extent = key === "x" ? ELEMENT_SPACE.width : ELEMENT_SPACE.height;
@@ -253,11 +256,12 @@ export function twinChanges(element: CoverElement, changes: ElementChanges, twin
       result.rotation = normalizeAngle(twin.rotation + (value as number) - element.rotation);
     } else if (key === "fontSize" || key === "size") {
       Object.assign(result, scaledSize(twin, (value as number) / (before[key] as number)));
-    } else if (value !== before[key]) {
-      result[key] = value;
+    } else {
+      matched[key] = value;
+      changed ||= value !== before[key];
     }
   }
-  return result as ElementChanges;
+  return (changed ? { ...result, ...matched } : result) as ElementChanges;
 }
 
 /** `at`, moved down-right past elements already placed there. */

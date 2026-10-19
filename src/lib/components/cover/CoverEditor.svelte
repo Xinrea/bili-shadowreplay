@@ -807,13 +807,17 @@
         alert("封面画面还没有加载出来，请稍后再保存，或上传一张图片作为背景");
         return;
       }
-      const loads = await Promise.allSettled(
-        [...covers.home, ...covers.wide].flatMap((element) =>
-          element.kind === "sticker" ? [loadSticker(element.src)] : [],
-        ),
+      const stickers = RATIOS.flatMap(({ id }) =>
+        covers[id].flatMap((element) => (element.kind === "sticker" ? [{ ratio: id, element }] : [])),
       );
-      if (loads.some((load) => load.status === "rejected")) {
-        alert("有贴纸没有加载出来，请删除后再保存封面");
+      const loads = await Promise.allSettled(stickers.map(({ element }) => loadSticker(element.src)));
+      const broken = stickers.find((_, index) => loads[index].status === "rejected");
+      if (broken) {
+        // It may be on the other cover only: show it there, selected.
+        ratio = broken.ratio;
+        selectedId = broken.element.id;
+        pictureSelected = false;
+        alert("有贴纸没有加载出来，已选中它，请删除后再保存封面");
         return;
       }
       const cover = exportCover("wide");

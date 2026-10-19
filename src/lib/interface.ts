@@ -73,6 +73,135 @@ export interface VideoItem {
   area: number;
   created_at: string;
   platform?: string;
+  /** Source recording of a material; empty for imported videos. */
+  live_id?: string;
+  /** JSON `{ ranges, local_offset }` describing where the material was cut from. */
+  source?: string;
+  /** Exact length in seconds; 0 for old rows that were never probed. */
+  duration?: number;
+}
+
+/** A material is one video file; `VideoItem` keeps its historical name. */
+export type MaterialItem = VideoItem;
+
+export interface TimelineClip {
+  id: string;
+  material_id: number;
+  /** In point within the material, in seconds. */
+  start: number;
+  /** Out point within the material, in seconds. */
+  end: number;
+}
+
+/** A subtitle anchored to a clip, timed in that clip's material time. */
+export interface TimelineSubtitle {
+  id: string;
+  clip_id: string;
+  start: number;
+  end: number;
+  text: string;
+}
+
+export interface ProjectTimeline {
+  version: number;
+  /** The main track: clips play back to back. */
+  clips: TimelineClip[];
+  subtitles: TimelineSubtitle[];
+  subtitle_style?: SubtitleStyle | null;
+  /** Burn the materials' danmaku when exporting. */
+  danmu: boolean;
+}
+
+/** A project (切片) as listed by the backend. */
+export interface ProjectItem {
+  id: number;
+  room_id: string;
+  platform: string;
+  title: string;
+  note: string;
+  /** Relative to the output directory; empty to use the first material's thumbnail. */
+  cover: string;
+  /** `ProjectTimeline` JSON. */
+  timeline: string;
+  /** Upload `Profile` JSON carried over from before uploads existed. */
+  profile: string;
+  status: number;
+  bvid: string;
+  created_at: string;
+  updated_at: string;
+  duration: number;
+  clip_count: number;
+  /** Cover to show, relative to the output directory. */
+  display_cover: string;
+  /** False when the project is one untouched material, exported and uploaded as is. */
+  needs_render: boolean;
+}
+
+export interface GeneratedMaterials {
+  materials: VideoItem[];
+  project: ProjectItem | null;
+}
+
+export interface ExportStarted {
+  task: { id: string };
+  /** The file being written. */
+  path: string;
+  /** Where the web client downloads it, relative to the cache directory. */
+  download: string | null;
+}
+
+export type UploadSource = "material" | "project" | "file";
+export type UploadStatus = "draft" | "exporting" | "posting" | "posted" | "failed";
+
+/** A file the static server serves under `base`. */
+export interface StaticFile {
+  base: "output" | "cache";
+  path: string;
+}
+
+/** An upload (投稿) as listed by the backend. */
+export interface UploadItem {
+  id: number;
+  source: UploadSource;
+  /** Material or project id; 0 for files. */
+  source_id: number;
+  /** Absolute path of a `file` source. */
+  file: string;
+  room_id: string;
+  /** Bilibili account that posts it. */
+  uid: string;
+  /** Relative to output; empty to use the source's cover. */
+  cover: string;
+  /** Profile JSON; may be partial for uploads from before this page. */
+  profile: string;
+  status: UploadStatus;
+  /** Why the last attempt failed. */
+  message: string;
+  bvid: string;
+  created_at: string;
+  updated_at: string;
+  /** Name of the source; empty when it no longer exists. */
+  source_title: string;
+  /**
+   * `material` when the material is uploaded as is (also a project of one
+   * untouched material), `render` when the video is rendered when posting (a
+   * project, or a material burning its danmaku), `file`, or `missing` when the
+   * source is gone.
+   */
+  source_state: "material" | "render" | "file" | "missing";
+  /** Burn danmaku into the posted video; a project's setting is its own. */
+  danmu: boolean;
+  /** The material, or one of the project's materials, has saved danmaku. */
+  danmu_available: boolean;
+  /** Relative to output. */
+  display_cover: string;
+  /** Video to pick cover frames from, when it can be served. */
+  video: StaticFile | null;
+}
+
+export interface MaterialPeaks {
+  rate: number;
+  peaks: number[];
 }
 
 export interface Profile {
@@ -291,6 +420,15 @@ export function generateEventId() {
 
 export async function clipRange(eventId: string, params: ClipRangeParams) {
   return await invoke("clip_range", { eventId, params });
+}
+
+/** Cut each range into its own material, optionally in a new project. */
+export async function generateMaterials(
+  eventId: string,
+  params: ClipRangeParams,
+  createProject: boolean,
+): Promise<GeneratedMaterials> {
+  return await invoke<GeneratedMaterials>("generate_materials", { eventId, params, createProject });
 }
 
 export interface DanmuEntry {

@@ -17,6 +17,7 @@
     PanelRightOpen,
   } from "lucide-svelte";
   import {
+    type GeneratedMaterials,
     type VideoItem,
     type Marker,
     type DanmuEntry,
@@ -453,13 +454,18 @@
     selected_video = videos.find((video) => video.value === id) || null;
   }
 
-  async function handleClipGenerated(newVideo: VideoItem) {
+  async function handleClipGenerated(result: GeneratedMaterials) {
     await get_video_list();
-    newVideo.cover = await get_static_url("output", newVideo.cover);
-    selected_video =
-      videos.find((video) => video.value === newVideo.id) || null;
-    if (selected_video) {
-      selected_video.cover = newVideo.cover;
+    const newVideo = result.materials[result.materials.length - 1];
+    selected_video = newVideo
+      ? videos.find((video) => video.value === newVideo.id) || null
+      : null;
+    // Tauri's dialog plugin makes confirm() asynchronous.
+    if (
+      result.project &&
+      (await confirm(`已生成 ${result.materials.length} 个素材并创建切片「${result.project.title}」，是否打开切片进行编辑？`))
+    ) {
+      await invoke("open_project", { projectId: result.project.id });
     }
   }
 

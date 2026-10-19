@@ -63,7 +63,12 @@ async function invoke<T>(
     }
 
     if (command === "open_clip") {
-      window.open(`index_clip.html?id=${args.videoId}`, "_blank");
+      window.open(`index_clip.html?material=${args.videoId}`, "_blank");
+      return;
+    }
+
+    if (command === "open_project") {
+      window.open(`index_clip.html?project=${args.projectId}`, "_blank");
       return;
     }
 

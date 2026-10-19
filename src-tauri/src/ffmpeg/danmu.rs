@@ -42,7 +42,7 @@ fn select_filter_complex_file_option(help: &str) -> &'static str {
     }
 }
 
-async fn filter_complex_file_option() -> &'static str {
+pub(super) async fn filter_complex_file_option() -> &'static str {
     static OPTION: OnceLock<&'static str> = OnceLock::new();
     if let Some(option) = OPTION.get() {
         return option;
@@ -73,7 +73,7 @@ const IMAGE_TIMEOUT: Duration = Duration::from_secs(10);
 // arbitrary services or let an allowed CDN redirect to a local/network URL.
 const EMOJI_CDN_DOMAINS: &[&str] = &["hdslb.com", "biliimg.com"];
 
-fn danmu_output_fps(source_fps: f64) -> f64 {
+pub(super) fn danmu_output_fps(source_fps: f64) -> f64 {
     if source_fps.is_finite() && source_fps > 0.0 {
         source_fps.max(MIN_DANMU_FPS)
     } else {
@@ -334,12 +334,19 @@ fn position_expression(events: &[&ImageDanmu], horizontal: bool) -> String {
     }
 }
 
-struct OverlayGraph {
-    inputs: Vec<PathBuf>,
-    filter: String,
+pub(super) struct OverlayGraph {
+    pub(super) inputs: Vec<PathBuf>,
+    pub(super) filter: String,
 }
 
-fn overlay_graph(images: &[ImageDanmu], opacity: f64, fps: f64, vaapi: bool) -> OverlayGraph {
+/// Composite image danmaku onto `[{prefix}0]`, ending at `[{prefix}N]` where
+/// `N` is `slots`. Image inputs are numbered from `first_input`.
+pub(super) fn image_overlay_chain(
+    images: &[ImageDanmu],
+    opacity: f64,
+    first_input: usize,
+    prefix: &str,
+) -> (OverlayGraph, usize) {
     let slots = overlay_slots(images);
     let mut inputs = Vec::new();
     let mut groups: Vec<Vec<usize>> = Vec::new();
@@ -354,16 +361,11 @@ fn overlay_graph(images: &[ImageDanmu], opacity: f64, fps: f64, vaapi: bool) -> 
             });
         groups[input].push(index);
     }
-    // Change FPS before compositing, not only at the encoder, so motion is
-    // actually evaluated at 60+ FPS rather than duplicating already-drawn frames.
-    let mut filter = format!(
-        "[0:v]{},fps={fps},ass=danmu.ass[base0];\n",
-        hwaccel::H264_SCALE_PAD_FILTER,
-    );
+    let mut filter = String::new();
     for (input, group) in groups.iter().enumerate() {
         filter.push_str(&format!(
             "[{}:v]format=rgba,split={}",
-            input + 1,
+            input + first_input,
             group.len()
         ));
         for index in group {
@@ -380,26 +382,36 @@ fn overlay_graph(images: &[ImageDanmu], opacity: f64, fps: f64, vaapi: bool) -> 
             "[source{index}]scale={width}:{height}:force_original_aspect_ratio=decrease,\
              pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black@0,\
              setsar=1,colorchannelmixer=aa={opacity}[image{index}];\n\
-             [base{index}][image{index}]overlay=x='{x}':y='{y}':eval=frame:\
-             format=auto:eof_action=repeat:repeatlast=1[base{}];\n",
+             [{prefix}{index}][image{index}]overlay=x='{x}':y='{y}':eval=frame:\
+             format=auto:eof_action=repeat:repeatlast=1[{prefix}{}];\n",
             index + 1,
         ));
     }
+    (OverlayGraph { inputs, filter }, slots.len())
+}
+
+fn overlay_graph(images: &[ImageDanmu], opacity: f64, fps: f64, vaapi: bool) -> OverlayGraph {
+    // Change FPS before compositing, not only at the encoder, so motion is
+    // actually evaluated at 60+ FPS rather than duplicating already-drawn frames.
+    let mut filter = format!(
+        "[0:v]{},fps={fps},ass=danmu.ass[base0];\n",
+        hwaccel::H264_SCALE_PAD_FILTER,
+    );
+    let (chain, slots) = image_overlay_chain(images, opacity, 1, "base");
+    filter.push_str(&chain.filter);
     let format = if vaapi {
         hwaccel::vaapi_filter_suffix()
     } else {
         "format=yuv420p"
     };
-    filter.push_str(&format!("[base{}]{format}[outv]\n", slots.len()));
-    OverlayGraph { inputs, filter }
+    filter.push_str(&format!("[base{slots}]{format}[outv]\n"));
+    OverlayGraph {
+        inputs: chain.inputs,
+        filter,
+    }
 }
 
-pub async fn encode_video_danmu<R: ProgressReporterTrait>(
-    reporter: Option<&R>,
-    file: &Path,
-    danmus: &[DanmuEntry],
-    options: &Danmu2AssOptions,
-) -> Result<PathBuf, String> {
+fn validate_options(options: &Danmu2AssOptions) -> Result<(), String> {
     if !options.font_size.is_finite()
         || options.font_size <= 0.0
         || options.font_size > PLAY_RES_Y / 1.5
@@ -408,6 +420,54 @@ pub async fn encode_video_danmu<R: ProgressReporterTrait>(
     {
         return Err("Invalid danmaku font size or opacity".into());
     }
+    Ok(())
+}
+
+/// Download image danmaku and lay out the track with them.
+async fn danmu_plan(
+    danmus: &[DanmuEntry],
+    options: &Danmu2AssOptions,
+    directory: &Path,
+) -> Result<DanmuRenderPlan, String> {
+    validate_options(options)?;
+    let assets = prepare_images(danmus, directory).await;
+    Ok(danmu_render_plan(danmus, options, |entry| {
+        let emoji = entry.emoji_content.as_ref()?;
+        let path = assets.get(&image_url(emoji)?)?.clone();
+        let (width, height) = image_size(emoji, options.font_size);
+        Some(DanmuImage {
+            path,
+            width,
+            height,
+        })
+    }))
+}
+
+/// Lay out the danmaku track into `danmu.ass` in `directory` and return the
+/// image danmaku to overlay. Filters must run with `directory` as the working
+/// directory.
+pub(super) async fn prepare_danmu_layers<R: ProgressReporterTrait>(
+    reporter: Option<&R>,
+    danmus: &[DanmuEntry],
+    options: &Danmu2AssOptions,
+    directory: &Path,
+) -> Result<Vec<ImageDanmu>, String> {
+    if let Some(reporter) = reporter {
+        reporter.update("准备弹幕和表情图片中").await;
+    }
+    let plan = danmu_plan(danmus, options, directory).await?;
+    tokio::fs::write(directory.join("danmu.ass"), plan.ass)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(plan.images)
+}
+
+pub async fn encode_video_danmu<R: ProgressReporterTrait>(
+    reporter: Option<&R>,
+    file: &Path,
+    danmus: &[DanmuEntry],
+    options: &Danmu2AssOptions,
+) -> Result<PathBuf, String> {
     // Use fixed relative names inside a private job directory. No user/CDN path
     // is interpolated into filter syntax (including Windows drive letters).
     let directory = tempfile::Builder::new()
@@ -417,17 +477,7 @@ pub async fn encode_video_danmu<R: ProgressReporterTrait>(
     if let Some(reporter) = reporter {
         reporter.update("准备弹幕和表情图片中").await;
     }
-    let assets = prepare_images(danmus, directory.path()).await;
-    let plan = danmu_render_plan(danmus, options, |entry| {
-        let emoji = entry.emoji_content.as_ref()?;
-        let path = assets.get(&image_url(emoji)?)?.clone();
-        let (width, height) = image_size(emoji, options.font_size);
-        Some(DanmuImage {
-            path,
-            width,
-            height,
-        })
-    });
+    let plan = danmu_plan(danmus, options, directory.path()).await?;
     encode_danmu_plan(reporter, file, plan, options, directory.path()).await
 }
 

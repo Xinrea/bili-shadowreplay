@@ -68,18 +68,23 @@ test("tasks are described from their metadata", async () => {
     "高光 · 01:05",
   );
   assert.equal(describeTask({ metadata: JSON.stringify({ video_id: 7, profile: { title: "投稿标题" } }) }), "投稿标题");
-  assert.equal(describeTask({ metadata: JSON.stringify({ video_id: 7 }) }), "切片 #7");
+  assert.equal(describeTask({ metadata: JSON.stringify({ video_id: 7 }) }), "素材 #7");
+  assert.equal(describeTask({ metadata: JSON.stringify({ project_id: 3, title: "精彩集锦" }) }), "精彩集锦");
+  assert.equal(describeTask({ metadata: JSON.stringify({ project_id: 3 }) }), "切片 #3");
   assert.equal(describeTask({ metadata: "not json" }), "");
-  assert.equal(taskTypeName("clip_range"), "切片生成");
+  assert.equal(taskTypeName("clip_range"), "素材生成");
+  assert.equal(taskTypeName("export_project"), "切片导出");
+  assert.equal(taskTypeName("upload"), "投稿");
+  assert.equal(taskTypeName("render_material_danmu"), "素材压制弹幕");
   assert.equal(taskTypeName("unknown_kind"), "unknown_kind");
 });
 
 test("only queued task types offer cancellation", async () => {
   const { isCancellableTask } = await loadModule();
-  for (const type of ["clip_range", "clip_video", "encode_video_subtitle", "generate_whole_clip", "generate_archive_summary"]) {
+  for (const type of ["clip_range", "generate_materials", "export_project", "render_material_danmu", "clip_video", "encode_video_subtitle", "generate_whole_clip", "generate_archive_summary"]) {
     assert.equal(isCancellableTask(type), true, type);
   }
-  for (const type of ["generate_video_subtitle", "upload_procedure"]) {
+  for (const type of ["generate_video_subtitle", "upload", "upload_procedure", "upload_project"]) {
     assert.equal(isCancellableTask(type), false, type);
   }
 });

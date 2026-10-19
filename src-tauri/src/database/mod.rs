@@ -10,10 +10,12 @@ pub mod bilibili_user;
 )]
 pub mod credentials;
 pub mod message;
+pub mod project;
 pub mod record;
 pub mod recorder;
 pub mod summary;
 pub mod task;
+pub mod upload;
 pub mod video;
 
 pub struct Database {

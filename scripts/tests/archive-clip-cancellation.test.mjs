@@ -34,7 +34,7 @@ async function fixture({ variant = "primary" } = {}) {
     "lucide-svelte": { Scissors() {} },
     "../interface": {
       generateEventId: () => `clip-${++nextId}`,
-      clipRange: (eventId, params) => {
+      generateMaterials: (eventId, params) => {
         const result = deferred();
         requests.push({ eventId, params, ...result });
         return result.promise;
@@ -85,7 +85,7 @@ test("a started clip is announced, highlighted, and settled with its result", as
   const { completion, request } = await startClip(f);
   assert.equal(f.announced.length, 1);
   assert.equal(f.announced[0].id, request.eventId);
-  assert.equal(f.announced[0].task_type, "clip_range");
+  assert.equal(f.announced[0].task_type, "generate_materials");
   // The cover is a data URL the task list never needs.
   assert.equal(JSON.parse(f.announced[0].metadata).params.cover, "");
   assert.deepEqual(f.opened, [request.eventId]);
@@ -117,7 +117,7 @@ test("a clip cancelled from the task center fails silently whatever the backend 
   const f = await fixture();
   const { completion, request } = await startClip(f);
   f.cancelled.add(request.eventId);
-  request.reject("切片任务失败");
+  request.reject("生成素材任务失败");
   await completion;
   assert.deepEqual(f.alerts, []);
   assert.deepEqual(f.failures, []);
@@ -129,9 +129,9 @@ for (const variant of ["primary", "compact"]) {
     // Raw backend rejection and the desktop/web invoke wrappers carry the same
     // terminal cancellation message, with different Error prefixes.
     for (const error of [
-      "切片任务已取消",
-      new Error("Failed to invoke clip_range:\n切片任务已取消"),
-      new Error("Failed to invoke clip_range:\nError: 切片任务已取消"),
+      "生成素材任务已取消",
+      new Error("Failed to invoke generate_materials:\n生成素材任务已取消"),
+      new Error("Failed to invoke generate_materials:\nError: 生成素材任务已取消"),
     ]) {
       const f = await fixture({ variant });
       const { completion, request } = await startClip(f);
@@ -149,7 +149,7 @@ test("a real failure alerts and reports once", async () => {
   const { completion, request } = await startClip(f);
   request.reject("encoder unavailable");
   await completion;
-  assert.deepEqual(f.alerts, ["切片生成失败：encoder unavailable"]);
+  assert.deepEqual(f.alerts, ["素材生成失败：encoder unavailable"]);
   assert.deepEqual(f.failures, ["encoder unavailable"]);
   assert.deepEqual(f.settled, [request.eventId]);
 });

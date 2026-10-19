@@ -10,8 +10,10 @@
   import Setting from "./page/Setting.svelte";
   import Account from "./page/Account.svelte";
   import About from "./page/About.svelte";
-  import { log, onOpenUrl } from "./lib/invoker";
+  import { listen, log, onOpenUrl } from "./lib/invoker";
   import Clip from "./page/Clip.svelte";
+  import Material from "./page/Material.svelte";
+  import Upload from "./page/Upload.svelte";
   import Task from "./page/Task.svelte";
   import AI from "./page/AI.svelte";
   import Archive from "./page/Archive.svelte";
@@ -24,6 +26,7 @@
   import { pages } from "./lib/pages";
   import { registerCommands } from "./lib/stores/commands";
   import { openTaskCenter } from "./lib/stores/tasks";
+  import { requestUpload, uploadRequest } from "./lib/uploads";
   import { ListChecks, PanelLeft } from "lucide-svelte";
   import { onMount, tick } from "svelte";
 
@@ -129,6 +132,26 @@
     return () => window.removeEventListener("navigate-settings", onNavSettings);
   });
 
+  // Posting from the material or project lists, or from a project editor
+  // window, continues on the uploads page.
+  onMount(() =>
+    uploadRequest.subscribe((request) => {
+      if (request) active = "投稿";
+    }),
+  );
+
+  onMount(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void listen("upload-requested", (event) => requestUpload(event.payload.source, event.payload.id)).then(
+      (stop) => (disposed ? stop() : (unlisten = stop)),
+    );
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  });
+
   onMount(() =>
     registerCommands([
       ...pages.map((page) => ({
@@ -202,8 +225,14 @@
       <PageView visible={active == "录播"} bind:titlebar={titlebars["录播"]}>
         <Archive />
       </PageView>
+      <PageView visible={active == "素材"} bind:titlebar={titlebars["素材"]}>
+        <Material />
+      </PageView>
       <PageView visible={active == "切片"} bind:titlebar={titlebars["切片"]}>
         <Clip />
+      </PageView>
+      <PageView visible={active == "投稿"} bind:titlebar={titlebars["投稿"]}>
+        <Upload />
       </PageView>
       <PageView visible={active == "任务"} bind:titlebar={titlebars["任务"]}>
         <Task />

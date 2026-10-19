@@ -3,10 +3,9 @@
 
   interface Props {
     show?: boolean;
-    showClipShortcuts?: boolean;
   }
 
-  let { show = $bindable(false), showClipShortcuts = true }: Props = $props();
+  let { show = $bindable(false) }: Props = $props();
 
   interface Shortcut {
     // 每一项是一组同时按下的键，多组之间是“或”的关系
@@ -28,19 +27,15 @@
   const playbackShortcuts: Shortcut[] = [
     { keys: [["Space"]], description: "播放 / 暂停" },
     { keys: [["←"], ["→"]], description: "后退 / 前进 5 秒" },
+    { keys: [["Shift", "←"], ["Shift", "→"]], description: "后退 / 前进一帧" },
   ];
 
-  const clipShortcuts: Shortcut[] = [
-    { keys: [["["], ["]"]], description: "设定选区开始 / 结束" },
-    {
-      keys: [
-        ["Shift", "["],
-        ["Shift", "]"],
-      ],
-      description: "跳转到选区开始 / 结束",
-    },
-    { keys: [["G"]], description: "生成切片" },
-    { keys: [["C"]], description: "清除选区" },
+  const editShortcuts: Shortcut[] = [
+    { keys: [["Ctrl/⌘", "B"]], description: "在播放头处分割片段" },
+    { keys: [["Delete"], ["Backspace"]], description: "删除选中的片段或字幕" },
+    { keys: [["Ctrl/⌘", "Z"]], description: "撤销" },
+    { keys: [["Ctrl/⌘", "Shift", "Z"], ["Ctrl", "Y"]], description: "重做" },
+    { keys: [["Ctrl/⌘", "S"]], description: "立即保存" },
   ];
 </script>
 
@@ -124,9 +119,7 @@
           {@render shortcutGroup("字幕打轴", timingShortcuts, "与 Aegisub 默认键位一致")}
           <div class="space-y-5">
             {@render shortcutGroup("播放", playbackShortcuts)}
-            {#if showClipShortcuts}
-              {@render shortcutGroup("切片", clipShortcuts)}
-            {/if}
+            {@render shortcutGroup("剪辑", editShortcuts)}
           </div>
         </div>
 
@@ -137,8 +130,9 @@
             点击时间轴上的字幕块或列表序号选中字幕；未选中时，打轴快捷键作用于播放位置所在的字幕。
           </li>
           <li>
-            拖动字幕时会吸附到其它字幕的边界和播放头，按住 Shift 拖动可暂时关闭吸附。
+            拖动字幕或片段边缘时会吸附到其它字幕、片段边界和播放头，按住 Shift 拖动可暂时关闭吸附。
           </li>
+          <li>字幕跟随所在片段：移动、裁剪片段时字幕随画面移动，超出片段范围的部分会被隐藏。</li>
           <li>在输入框中编辑时快捷键不生效，按 Enter 或 Esc 退出编辑。</li>
         </ul>
       </div>

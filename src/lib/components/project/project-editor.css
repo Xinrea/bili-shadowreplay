@@ -1,0 +1,238 @@
+/* Controls shared by the project editor's panels; matches the inspector palette. */
+.project-editor .footer-button {
+  display: inline-flex;
+  height: 30px;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  border: 1px solid #344052;
+  border-radius: 8px;
+  background: #202733;
+  padding: 0 11px;
+  color: #dce5f3;
+  font-size: 12px;
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+
+.project-editor .footer-button:hover:not(:disabled) {
+  border-color: #4a5a70;
+}
+
+.project-editor .footer-button.primary {
+  border-color: transparent;
+  background: #0a84ff;
+  color: white;
+}
+
+.project-editor .footer-button.primary:hover:not(:disabled) {
+  background: rgb(10 132 255 / 90%);
+}
+
+.project-editor .footer-button:disabled,
+.project-editor .tool-button:disabled,
+.project-editor .icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.project-editor .tool-button {
+  display: inline-flex;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  white-space: nowrap;
+  border: 1px solid #293442;
+  border-radius: 8px;
+  background: #202733;
+  padding: 0 8px;
+  color: #c4cfdd;
+  font-size: 11px;
+}
+
+.project-editor .tool-button:hover:not(:disabled) {
+  border-color: #3a4658;
+  color: #edf4ff;
+}
+
+.project-editor .tool-button.active {
+  border-color: rgb(10 132 255 / 70%);
+  color: #55b9ff;
+}
+
+.project-editor .icon-button {
+  display: inline-flex;
+  height: 28px;
+  min-width: 28px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border-radius: 7px;
+  padding: 0 6px;
+  color: #c4cfdd;
+  font-size: 11px;
+}
+
+.project-editor .icon-button:hover:not(:disabled) {
+  background: #2c2c2e;
+  color: white;
+}
+
+.project-editor .panel-input {
+  width: 100%;
+  border: 1px solid #293442;
+  border-radius: 8px;
+  background: #0f131a;
+  padding: 7px 10px;
+  color: #e9eef8;
+  font-size: 12px;
+  outline: none;
+  transition: border-color 150ms ease;
+}
+
+.project-editor .panel-input:hover {
+  border-color: #3a4658;
+}
+
+.project-editor .panel-input:focus {
+  border-color: #0a84ff;
+  box-shadow: none;
+}
+
+.project-editor .panel-input::placeholder {
+  color: #5d6878;
+}
+
+.project-editor .row-list {
+  overflow: hidden;
+  border: 1px solid #293442;
+  border-radius: 10px;
+  background: #202733;
+}
+
+.project-editor .row {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 4px;
+  border-bottom: 1px solid #293442;
+  border-left: 2px solid transparent;
+  padding: 0 6px 0 4px;
+}
+
+.project-editor .row:last-child {
+  border-bottom: 0;
+}
+
+.project-editor .row:hover {
+  background: rgb(255 255 255 / 3%);
+}
+
+.project-editor .row.playing {
+  border-left-color: #35a7ff;
+  background: rgb(53 167 255 / 10%);
+}
+
+.project-editor .row.selected {
+  box-shadow: inset 0 0 0 1px rgb(53 167 255 / 60%);
+}
+
+.project-editor .row-index {
+  width: 22px;
+  flex-shrink: 0;
+  color: #6f7b8d;
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  text-align: right;
+}
+
+.project-editor .row-index:hover,
+.project-editor .row.selected .row-index {
+  color: #55b9ff;
+}
+
+.project-editor .row-text {
+  min-width: 0;
+  flex: 1;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  padding: 3px 5px;
+  color: #dce5f3;
+  font-size: 12px;
+  outline: none;
+}
+
+.project-editor .row-text:focus {
+  border-color: rgb(10 132 255 / 70%);
+  background: #0f131a;
+  box-shadow: none;
+}
+
+.project-editor .row-action {
+  display: inline-flex;
+  flex-shrink: 0;
+  padding: 4px;
+  color: #6f7b8d;
+  opacity: 0.7;
+}
+
+.project-editor .row-action:hover {
+  color: #55b9ff;
+  opacity: 1;
+}
+
+.project-editor .row-action.danger:hover {
+  color: #ff6b6b;
+}
+
+.project-editor .empty-state {
+  display: flex;
+  min-height: 120px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 5px;
+  color: #718095;
+  font-size: 10px;
+  text-align: center;
+}
+
+.project-editor .empty-state strong {
+  color: #a8b3c3;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.project-editor .hint {
+  color: #718095;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.project-editor input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: #4a5568;
+}
+
+.project-editor input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: white;
+  cursor: pointer;
+}
+
+.project-editor input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: none;
+  border-radius: 50%;
+  background: white;
+  cursor: pointer;
+}

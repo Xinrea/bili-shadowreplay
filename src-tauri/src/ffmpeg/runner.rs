@@ -346,7 +346,11 @@ impl FfmpegJob {
             source,
         })?;
         if !status.success() {
-            return Err(FfmpegError::NonZeroExit { context, status });
+            return Err(FfmpegError::NonZeroExit {
+                context,
+                status,
+                detail: failure_detail(&logs),
+            });
         }
 
         Ok(JobOutput {
@@ -355,6 +359,30 @@ impl FfmpegJob {
             logs,
         })
     }
+}
+
+/// The last lines ffmpeg wrote before failing, as "：line / line", or "".
+/// `-progress` key/value lines and the stats line say nothing about the cause.
+fn failure_detail(logs: &[String]) -> String {
+    let is_progress = |line: &str| {
+        line.split_once('=').is_some_and(|(key, _)| {
+            !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }) || line.starts_with("frame=")
+            || line.starts_with("size=")
+    };
+    let mut lines: Vec<&str> = logs
+        .iter()
+        .rev()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty() && !is_progress(line))
+        .take(2)
+        .collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+    lines.reverse();
+    let detail: String = lines.join(" / ").chars().take(300).collect();
+    format!("：{detail}")
 }
 
 /// Run a command that has already been assembled by a feature-specific module.
@@ -404,8 +432,13 @@ pub enum FfmpegError {
         #[source]
         source: io::Error,
     },
-    #[error("{context}: ffmpeg 异常退出（{status}）")]
-    NonZeroExit { context: String, status: ExitStatus },
+    #[error("{context}: ffmpeg 异常退出（{status}）{detail}")]
+    NonZeroExit {
+        context: String,
+        status: ExitStatus,
+        /// The last lines ffmpeg logged, which usually name the cause.
+        detail: String,
+    },
 }
 
 /// The successful result of an ffmpeg job.
@@ -621,12 +654,31 @@ mod tests {
             .await;
 
         match result {
-            Err(FfmpegError::NonZeroExit { context, status }) => {
+            Err(FfmpegError::NonZeroExit {
+                context, status, ..
+            }) => {
                 assert_eq!(context, "non-zero test");
                 assert!(!status.success());
             }
             other => panic!("expected non-zero exit error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn failure_detail_names_the_last_logged_problem() {
+        let logs = [
+            "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'a.mp4':",
+            "[AVFilterGraph @ 0x1] No such filter: 'ass'",
+            "Error opening output files: Filter not found",
+            "out_time=00:00:00.000000",
+            "progress=end",
+        ]
+        .map(String::from);
+        assert_eq!(
+            failure_detail(&logs),
+            "：[AVFilterGraph @ 0x1] No such filter: 'ass' / Error opening output files: Filter not found"
+        );
+        assert_eq!(failure_detail(&["speed=1x".to_string()]), "");
     }
 
     #[tokio::test]

@@ -4,7 +4,7 @@ use crate::database::recorder::RecorderRow;
 use crate::database::video::VideoRow;
 use crate::database::{Database, DatabaseError};
 use crate::events::{DataChange, EventBus};
-use crate::ffmpeg::{clip_timeline_anchors, encode_video_danmu, transcode, Range};
+use crate::ffmpeg::{clip_timeline_anchors, transcode, Range};
 use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
 use crate::subtitle_generator::{item_to_srt, SubtitleGeneratorType};
 use crate::task::{Task, TaskManager, TaskPriority};
@@ -40,7 +40,7 @@ use std::sync::Arc;
 #[cfg(feature = "gui")]
 use tauri_plugin_notification::NotificationExt;
 use thiserror::Error;
-use tokio::fs::{remove_file, File};
+use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::RwLock;
 
@@ -62,7 +62,9 @@ pub struct ClipRangeParams {
     pub room_id: String,
     pub live_id: String,
     pub ranges: Vec<Range>,
-    /// Encode danmu after clip
+    /// Ignored: materials keep their danmaku in a sidecar file instead, and
+    /// projects burn it on export. Still accepted from older clients.
+    #[serde(default)]
     pub danmu: bool,
     pub local_offset: i64,
     /// Fix encoding after clip
@@ -1050,7 +1052,7 @@ impl RecorderManager {
             .map_err(|e| RecorderManagerError::ClipError { err: e.to_string() })?;
         }
 
-        if params.fix_encoding && !params.danmu {
+        if params.fix_encoding {
             // transcode clip_file
             let tmp_clip_file = clip_file.with_extension("tmp.mp4");
             let fixing = reporter.map(|reporter| reporter.stage("修复编码"));
@@ -1066,11 +1068,16 @@ impl RecorderManager {
             let _ = tokio::fs::rename(tmp_clip_file, &clip_file).await;
         }
 
-        if !params.danmu {
-            log::info!("Skip danmu encoding");
-            return Ok(clip_file);
-        }
+        Ok(clip_file)
+    }
 
+    /// Danmaku shown during the clipped ranges, with `ts` in milliseconds from
+    /// the start of the resulting material. Materials keep this copy so that it
+    /// survives the recording being cleaned up.
+    pub async fn material_danmus(
+        &self,
+        params: &ClipRangeParams,
+    ) -> Result<Vec<DanmuEntry>, RecorderManagerError> {
         let Ok(platform) = PlatformType::from_str(&params.platform) else {
             return Err(RecorderManagerError::InvalidPlatformType {
                 platform: params.platform.clone(),
@@ -1079,19 +1086,9 @@ impl RecorderManager {
         let stream_start_timestamp_milis = self
             .first_segment_timestamp(platform, &params.room_id, &params.live_id)
             .await?;
-
-        let mut danmus = match self
+        let mut danmus = self
             .load_danmus(platform, &params.room_id, &params.live_id)
-            .await
-        {
-            Ok(danmus) => danmus,
-            Err(e) => {
-                log::error!("Failed to get danmus, skip danmu encoding: {e}");
-                return Ok(clip_file);
-            }
-        };
-        log::debug!("First danmu entry: {:?}", danmus.first());
-        log::debug!("Last danmu entry: {:?}", danmus.last());
+            .await?;
         log::debug!("Stream start timestamp: {}", stream_start_timestamp_milis);
         log::debug!("Local offset: {}", params.local_offset);
         log::debug!("Range: {:?}", params.ranges);
@@ -1101,31 +1098,18 @@ impl RecorderManager {
             d.ts -= stream_start_timestamp_milis + params.local_offset * 1000;
         }
 
+        if params.ranges.is_empty() {
+            danmus.retain(|d| d.ts >= 0);
+            return Ok(danmus);
+        }
+
         let range_anchors = clip_timeline_anchors(&params.ranges, params.transition.as_deref());
-
         log::debug!("Range anchors: {:?}", range_anchors);
-
-        let filtered_danmus = if params.ranges.is_empty() {
-            danmus
-        } else {
-            let mut filtered = Vec::new();
-            for (i, range) in params.ranges.iter().enumerate() {
-                filtered.extend(self.filter_danmus_in_range(
-                    danmus.clone(),
-                    range,
-                    range_anchors[i],
-                ));
-            }
-            filtered
-        };
-        let options = self.config.read().await.danmu_ass_options.clone();
-        let output = encode_video_danmu(reporter, &clip_file, &filtered_danmus, &options)
-            .await
-            .map_err(|err| RecorderManagerError::ClipError { err })?;
-        // Keep the original clip if preparation/encoding fails. The encoder
-        // owns the temporary ASS and downloaded images, including cancellation.
-        let _ = remove_file(clip_file).await;
-        Ok(output)
+        let mut filtered = Vec::new();
+        for (i, range) in params.ranges.iter().enumerate() {
+            filtered.extend(self.filter_danmus_in_range(danmus.clone(), range, range_anchors[i]));
+        }
+        Ok(filtered)
     }
 
     fn filter_danmus_in_range(
@@ -1696,9 +1680,9 @@ impl RecorderManager {
             })?
             .len() as i64;
 
-        let mut length = 0;
+        let mut duration = 0.0;
         match ffmpeg_utils::extract_video_metadata(Path::new(&output_path)).await {
-            Ok(video_metadata) => length = video_metadata.duration as i64,
+            Ok(video_metadata) => duration = video_metadata.duration,
             Err(e) => log::error!("Failed to get video metadata: {e}"),
         }
 
@@ -1715,7 +1699,7 @@ impl RecorderManager {
                 cover: cover_filename.to_string_lossy().to_string(),
                 file: output_filename.to_string_lossy().to_string(),
                 note: "".into(),
-                length,
+                length: duration as i64,
                 size,
                 bvid: String::new(),
                 title: String::new(),
@@ -1723,6 +1707,9 @@ impl RecorderManager {
                 tags: String::new(),
                 area: 0,
                 platform: platform.as_str().to_string(),
+                live_id: String::new(),
+                source: String::new(),
+                duration,
             })
             .await?;
 

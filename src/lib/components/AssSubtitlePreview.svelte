@@ -2,10 +2,12 @@
   import { untrack } from "svelte";
   import type SubtitlesOctopus from "libass-wasm";
   import { loadSubtitleFonts } from "../subtitle-fonts";
+  import type { MediaClock } from "../project-player";
 
   interface Props {
     assContent: string;
-    video?: HTMLVideoElement;
+    /** A <video>, or a clock that behaves like one, such as a project preview. */
+    video?: HTMLVideoElement | MediaClock;
     fontName?: string;
   }
 

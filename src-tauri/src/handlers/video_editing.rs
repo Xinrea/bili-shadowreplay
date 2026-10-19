@@ -435,6 +435,9 @@ pub async fn merge_videos(
         area: 0,
         created_at: chrono::Utc::now().to_rfc3339(),
         platform: videos[0].platform.clone(),
+        live_id: String::new(),
+        source: String::new(),
+        duration: 0.0,
     };
 
     // Insert into database

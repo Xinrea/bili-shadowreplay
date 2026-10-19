@@ -8,7 +8,7 @@
     Trash2,
   } from "lucide-svelte";
   import type { RecordItem } from "../db";
-  import type { DanmuEntry, Marker, Range, VideoItem } from "../interface";
+  import type { DanmuEntry, GeneratedMaterials, Marker, Range } from "../interface";
   import { onDestroy } from "svelte";
   import ArchiveClipButton from "./ArchiveClipButton.svelte";
   import InspectorPanel from "./InspectorPanel.svelte";
@@ -56,7 +56,7 @@
     onDeleteVideo?: (id: number) => void;
     onDownloadVideo?: (id: number) => void;
     onOpenVideo?: (id: number) => void;
-    onGenerated?: (video: VideoItem) => void;
+    onGenerated?: (result: GeneratedMaterials) => void;
   }
 
   let {
@@ -209,7 +209,7 @@
     { id: "ranges", label: "选区", count: activeRanges.length },
     { id: "danmu", label: "弹幕" },
     { id: "markers", label: "标记", count: markers.length },
-    { id: "clips", label: "切片" },
+    { id: "clips", label: "素材" },
   ]);
 
   function formatTime(seconds: number) {
@@ -633,8 +633,8 @@
     <section class="clips-panel">
       <div class="section-heading">
         <div>
-          <h3>已生成切片</h3>
-          <span>当前直播间下共 {videos.length} 个切片</span>
+          <h3>已生成素材</h3>
+          <span>当前直播间下共 {videos.length} 个素材</span>
         </div>
       </div>
       <div class="clip-list">
@@ -668,7 +668,7 @@
               >
                 <button
                   type="button"
-                  title="打开切片"
+                  title="预览素材"
                   onclick={() => onOpenVideo?.(item.id)}
                 >
                   <ExternalLink size={13} />
@@ -676,7 +676,7 @@
                 {#if !TAURI_ENV}
                   <button
                     type="button"
-                    title="下载切片"
+                    title="下载素材"
                     onclick={() => onDownloadVideo?.(item.id)}
                   >
                     <Download size={13} />
@@ -684,7 +684,7 @@
                 {/if}
                 <button
                   type="button"
-                  title="删除切片"
+                  title="删除素材"
                   class="danger"
                   onclick={() => onDeleteVideo?.(item.id)}
                 >
@@ -695,8 +695,8 @@
           </article>
         {:else}
           <div class="empty-state">
-            <strong>还没有生成切片</strong>
-            <span>启用选区后可在下方合成为一个切片</span>
+            <strong>还没有生成素材</strong>
+            <span>启用选区后可在下方为每个选区生成素材</span>
           </div>
         {/each}
       </div>

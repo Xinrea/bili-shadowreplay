@@ -12,6 +12,8 @@
     collapsed: boolean;
     /** Let the active tab manage its own scrolling, e.g. a virtual list. */
     fillContent?: boolean;
+    /** Keep the panel beside the content at every width instead of overlaying it. */
+    docked?: boolean;
     /** Shown at the left of the bottom bar. */
     summary?: { label: string; value: string } | null;
     /** Buttons at the right of the bottom bar. */
@@ -25,40 +27,44 @@
     activeTab = $bindable(),
     collapsed,
     fillContent = false,
+    docked = false,
     summary = null,
     actions,
     children,
   }: Props = $props();
 </script>
 
-<div class="inspector-shell" class:collapsed>
+<div class="inspector-shell" class:collapsed class:docked>
   {#if !collapsed}
     <aside class="inspector" aria-label={title}>
       <div class="inspector-heading">
         <h2>{title}</h2>
       </div>
 
-      <div
-        class="tabs"
-        role="tablist"
-        aria-label={title}
-        style:grid-template-columns="repeat({tabs.length}, 1fr)"
-      >
-        {#each tabs as tab (tab.id)}
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === tab.id}
-            class:active={activeTab === tab.id}
-            onclick={() => (activeTab = tab.id)}
-          >
-            {tab.label}
-            {#if tab.count}
-              <span>{tab.count}</span>
-            {/if}
-          </button>
-        {/each}
-      </div>
+      <!-- A single tab needs no switcher; the title names the panel. -->
+      {#if tabs.length > 1}
+        <div
+          class="tabs"
+          role="tablist"
+          aria-label={title}
+          style:grid-template-columns="repeat({tabs.length}, 1fr)"
+        >
+          {#each tabs as tab (tab.id)}
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === tab.id}
+              class:active={activeTab === tab.id}
+              onclick={() => (activeTab = tab.id)}
+            >
+              {tab.label}
+              {#if tab.count}
+                <span>{tab.count}</span>
+              {/if}
+            </button>
+          {/each}
+        </div>
+      {/if}
 
       <div class="inspector-content" class:panel-fill={fillContent}>
         {@render children()}
@@ -105,6 +111,11 @@
       position: relative;
       box-shadow: none;
     }
+  }
+
+  .inspector-shell.docked {
+    position: relative;
+    box-shadow: none;
   }
 
   .inspector {

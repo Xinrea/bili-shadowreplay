@@ -27,9 +27,11 @@
     onClose: () => void;
     onSave?: (style: SubtitleStyle) => void;
     roomId: string;
+    /** Edit this style instead of the room's saved one, e.g. a project's. */
+    initialStyle?: SubtitleStyle | null;
   }
 
-  let { show = $bindable(false), onClose, onSave, roomId }: Props = $props();
+  let { show = $bindable(false), onClose, onSave, roomId, initialStyle = null }: Props = $props();
   let activeTab = $state<"basic" | "code">("basic");
   let sourceCode = $state(serializeAssStyle(DEFAULT_SUBTITLE_STYLE));
   let saveError = $state("");
@@ -39,7 +41,7 @@
   // All edits stay in this draft until the user explicitly applies them.
   $effect(() => {
     if (show) {
-      sourceCode = serializeAssStyle(loadSubtitleStyle(roomId));
+      sourceCode = serializeAssStyle(initialStyle ?? loadSubtitleStyle(roomId));
       activeTab = "basic";
       saveError = "";
       fieldErrors = {};

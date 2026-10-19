@@ -3,11 +3,11 @@
   import { Scissors } from "lucide-svelte";
   import type { RecordItem } from "../db";
   import {
-    clipRange,
     generateEventId,
+    generateMaterials,
     type ClipRangeParams,
+    type GeneratedMaterials,
     type Range,
-    type VideoItem,
   } from "../interface";
   import { announceTask, openTaskCenter, settleTask, wasCancelled } from "../stores/tasks";
 
@@ -21,7 +21,7 @@
     captureCover?: boolean;
     variant?: "primary" | "compact";
     disabled?: boolean;
-    onGenerated?: (video: VideoItem) => void;
+    onGenerated?: (result: GeneratedMaterials) => void;
     onFailed?: (message: string) => void;
   }
 
@@ -37,22 +37,11 @@
     onFailed
   }: Props = $props();
 
-  const transitionOptions = [
-    { value: "none", label: "无" },
-    { value: "fade", label: "淡入淡出" },
-    { value: "dissolve", label: "溶解" },
-    { value: "wipeleft", label: "向左擦除" },
-    { value: "wiperight", label: "向右擦除" },
-    { value: "slideup", label: "向上滑动" },
-    { value: "slidedown", label: "向下滑动" },
-  ];
-
   let showConfirm = $state(false);
   let clipNote = $state("");
-  let danmuEnabled = $state(false);
   let fixEncoding = $state(false);
-  let transition = $state("none");
-  /** Clip requests still awaiting a result; several may run at once. */
+  let createProject = $state(true);
+  /** Requests still awaiting a result; several may run at once. */
   let inFlight = 0;
 
   let activeRanges = $derived(ranges.filter((range) => range.activated !== false));
@@ -124,7 +113,8 @@
       cover: getCover(),
       live_id: archive.live_id,
       ranges: activeRanges,
-      danmu: danmuEnabled,
+      // Materials keep their danmaku; projects burn it when exporting.
+      danmu: false,
       local_offset:
         localOffset ??
         (parseInt(
@@ -132,27 +122,23 @@
           10,
         ) || 0),
       fix_encoding: fixEncoding,
-      transition: transition !== "none" ? transition : undefined,
     };
-    // The form now belongs to the next clip.
-    transition = "none";
     announceTask({
       id: eventId,
-      task_type: "clip_range",
-      metadata: JSON.stringify({ params: { ...params, cover: "" } }),
+      task_type: "generate_materials",
+      metadata: JSON.stringify({ params: { ...params, cover: "" }, create_project: createProject }),
     });
     openTaskCenter(eventId);
 
     inFlight += 1;
     try {
-      const video = await clipRange(eventId, params);
-      onGenerated?.(video as VideoItem);
+      onGenerated?.(await generateMaterials(eventId, params, createProject));
     } catch (error) {
       const message = String(error);
       // Cancelled from the task center, or elsewhere such as the task page.
       // Desktop and web invoke wrappers prepend context to the backend error.
-      if (!wasCancelled(eventId) && !message.endsWith("切片任务已取消")) {
-        alert("切片生成失败：" + message);
+      if (!wasCancelled(eventId) && !message.endsWith("任务已取消")) {
+        alert("素材生成失败：" + message);
         onFailed?.(message);
       }
     } finally {
@@ -163,7 +149,7 @@
 
   function handleBeforeUnload(event: BeforeUnloadEvent) {
     if (inFlight === 0) return;
-    const message = "切片任务将在后台继续运行，可前往任务页面管理后台任务。";
+    const message = "素材生成任务将在后台继续运行，可前往任务页面管理后台任务。";
     event.preventDefault();
     event.returnValue = message;
     return message;
@@ -184,7 +170,7 @@
   {#if variant === "compact"}
     <Scissors class="h-3.5 w-3.5" />
   {/if}
-  <span>生成切片</span>
+  <span>生成素材</span>
 </button>
 
 {#if showConfirm}
@@ -209,11 +195,13 @@
       class="ui-modal relative mx-4 w-full max-w-md text-left"
     >
       <div class="ui-modal-body custom-scrollbar-light">
-        <h3 class="text-[15px] font-semibold text-fg">确认生成切片</h3>
-        <p class="mt-1 text-[12px] text-fg-muted">请确认以下设置后继续</p>
+        <h3 class="text-[15px] font-semibold text-fg">确认生成素材</h3>
+        <p class="mt-1 text-[12px] text-fg-muted">
+          每个选区生成一个素材，选区内的弹幕会一并保存，导出切片时可选择压制
+        </p>
 
         <div class="mt-4 space-y-2">
-          <div class="ui-label">待合并选区列表</div>
+          <div class="ui-label">选区列表</div>
           <div class="max-h-48 space-y-1.5 overflow-y-auto custom-scrollbar-light">
             {#each activeRanges as range, index}
               <div class="flex items-center justify-between rounded-[8px] border border-line bg-control px-3 py-2 transition-colors hover:border-line-strong">
@@ -249,7 +237,7 @@
 
         <div class="mt-4 space-y-1.5">
           <label for="archive-clip-note" class="block text-[13px] text-fg-secondary">
-            切片备注（可选）
+            素材备注（可选）
           </label>
           <input
             id="archive-clip-note"
@@ -260,13 +248,16 @@
         </div>
 
         <div class="mt-4 space-y-2.5">
-          <label class="flex cursor-pointer items-center gap-2.5">
+          <label class="flex cursor-pointer items-start gap-2.5">
             <input
               type="checkbox"
-              bind:checked={danmuEnabled}
-              class="ui-checkbox"
+              bind:checked={createProject}
+              class="ui-checkbox mt-0.5"
             />
-            <span class="text-[13px] text-fg-secondary">压制弹幕</span>
+            <span class="text-[13px] text-fg-secondary">
+              同时新建切片
+              <span class="block text-[11px] text-fg-muted">按选区顺序把生成的素材放入一个新切片，便于直接剪辑和投稿</span>
+            </span>
           </label>
 
           <label class="flex cursor-pointer items-center gap-2.5">
@@ -275,28 +266,9 @@
               bind:checked={fixEncoding}
               class="ui-checkbox"
             />
-            <span class="text-[13px] text-fg-secondary">修复编码（切片异常时使用）</span>
+            <span class="text-[13px] text-fg-secondary">修复编码（素材异常时使用）</span>
           </label>
         </div>
-
-        {#if activeRanges.length > 1}
-          <div class="mt-4 space-y-2">
-            <div class="ui-label">转场效果</div>
-            <div class="grid grid-cols-4 gap-1.5">
-              {#each transitionOptions as option}
-                <button
-                  type="button"
-                  class="ui-btn ui-btn-sm {transition === option.value
-                    ? 'ui-btn-active'
-                    : ''}"
-                  onclick={() => (transition = option.value)}
-                >
-                  {option.label}
-                </button>
-              {/each}
-            </div>
-          </div>
-        {/if}
       </div>
 
       <div class="ui-modal-footer">

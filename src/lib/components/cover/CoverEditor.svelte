@@ -105,6 +105,8 @@
   let hasBackground = $state(false);
   let backgroundKind: "cover" | "frame" | "upload" | null = $state(null);
   let originalCover = $state("");
+  // Kept once loaded: saving can delete the file it came from.
+  let originalImage: HTMLImageElement | null = null;
   // Bumped by each background change so a slower image load cannot win.
   let backgroundToken = 0;
   let followVideo = false;
@@ -210,7 +212,8 @@
     const token = ++backgroundToken;
     followVideo = false;
     try {
-      const image = await loadImage(src);
+      const image = src === originalCover && originalImage ? originalImage : await loadImage(src);
+      if (src === originalCover) originalImage = image;
       if (token === backgroundToken) setBackground(image, image.naturalWidth, image.naturalHeight, kind);
     } catch (error) {
       log.error("Failed to load the cover background:", String(error));
@@ -517,7 +520,7 @@
   }
 
   function handleKeydown(event: KeyboardEvent) {
-    if (!show || event.defaultPrevented) return;
+    if (!show || saving || event.defaultPrevented) return;
     const target = event.target as HTMLElement | null;
     const typing = Boolean(target?.closest?.("input, textarea, select, [contenteditable]"));
     if (event.key === "Escape") {
@@ -629,7 +632,8 @@
       </button>
     </div>
 
-    <div class="flex min-h-0 flex-1">
+    <!-- Changes after the canvas is captured would be lost. -->
+    <div class="flex min-h-0 flex-1" inert={saving}>
       <!-- Element kinds -->
       <nav class="flex w-[60px] shrink-0 flex-col items-center gap-1 border-r border-line bg-chrome/50 py-3" aria-label="元素">
         {#each PANELS as item (item.id)}

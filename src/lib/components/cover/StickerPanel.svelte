@@ -33,7 +33,10 @@
   async function refresh() {
     loadError = "";
     try {
-      custom = await loadCustomStickers();
+      const listed = await loadCustomStickers();
+      // Keep stickers imported while the list was loading.
+      const imported = (custom ?? []).filter((sticker) => !listed.some((s) => s.id === sticker.id));
+      custom = [...listed, ...imported];
     } catch (error) {
       loadError = String(error);
     }

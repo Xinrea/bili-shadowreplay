@@ -35,14 +35,13 @@ export function deleteCustomSticker(id: string): Promise<void> {
   return invoke("delete_cover_sticker", { id });
 }
 
-function decode(file: Blob): Promise<HTMLImageElement> {
-  const url = URL.createObjectURL(file);
+function decode(url: string): Promise<HTMLImageElement> {
   return new Promise<HTMLImageElement>((resolve, reject) => {
     const image = new Image();
     image.onload = () => resolve(image);
     image.onerror = () => reject(new Error("无法读取这张图片"));
     image.src = url;
-  }).finally(() => URL.revokeObjectURL(url));
+  });
 }
 
 /** The opaque part of the canvas, or null when it is all transparent. */
@@ -70,7 +69,16 @@ function opaqueBounds(ctx: CanvasRenderingContext2D, width: number, height: numb
  * box hugs the picture, and at most MAX_SIDE across.
  */
 async function stickerPng(file: Blob): Promise<string> {
-  const image = await decode(file);
+  // Revoked only after drawing: some WebKit builds draw a revoked image blank.
+  const url = URL.createObjectURL(file);
+  try {
+    return trimmedPng(await decode(url));
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function trimmedPng(image: HTMLImageElement): string {
   // SVGs without a size report zero.
   const naturalWidth = image.naturalWidth || 512;
   const naturalHeight = image.naturalHeight || 512;

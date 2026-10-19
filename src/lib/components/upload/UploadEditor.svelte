@@ -138,8 +138,8 @@
     }
   }
 
-  async function saveCover(cover: string) {
-    await invoke("update_upload_cover", { id: upload.id, cover });
+  async function saveCover(covers: { cover: string; cover43: string }) {
+    await invoke("update_upload_cover", { id: upload.id, ...covers });
     // The previous file is gone; show the new one now.
     await onChanged();
   }

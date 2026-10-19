@@ -19,28 +19,40 @@
     Type,
     Undo2,
     X,
+    ZoomIn,
+    ZoomOut,
   } from "lucide-svelte";
   import { onMount, tick, untrack } from "svelte";
   import {
+    aspectOf,
     clamp,
-    COVER_HEIGHT,
-    COVER_WIDTH,
+    clampFrame,
+    COVER_SIZES,
+    defaultFrame,
+    ELEMENT_SPACE,
+    elementArea,
     elementAt,
     elementSize,
     fontFamily,
-    HOMEPAGE_CROP,
+    frameRect,
     layoutText,
     LINE_HEIGHT,
+    MAX_ZOOM,
+    minZoom,
     newSticker,
     newText,
     nextId,
     reorder,
     scaledSize,
+    sceneOf,
     snapRotation,
     snapToCenter,
     styleOf,
     TEXT_STYLES,
+    zoomFrame,
     type CoverElement,
+    type Frame,
+    type Ratio,
     type StickerElement,
     type TextElement,
     type TextStyle,
@@ -48,7 +60,15 @@
   import { invoke, log } from "../../invoker";
   import ColorPicker from "./ColorPicker.svelte";
   import CoverFontSelect from "./CoverFontSelect.svelte";
-  import { drawBackground, drawElements, isCrossOrigin, loadSticker, measure, STICKER_GROUPS } from "./render";
+  import {
+    isCrossOrigin,
+    loadSticker,
+    measure,
+    prepareBackground,
+    renderCover,
+    STICKER_GROUPS,
+    type Background,
+  } from "./render";
   import StickerPanel from "./StickerPanel.svelte";
   import TextPanel from "./TextPanel.svelte";
 
@@ -57,28 +77,44 @@
     video?: { file?: string; value?: number } | null;
     /** The current cover, used as the background at first. */
     image?: string;
-    /** Shown under the homepage preview. */
+    /** Shown under the previews. */
     title?: string;
     show?: boolean;
     onCoverUpdate?: (cover: { cover: string }) => void;
-    /** Store the cover somewhere other than the video, such as an upload. */
-    onSave?: (cover: string) => Promise<void>;
+    /** Store the covers somewhere other than the video, such as an upload. */
+    onSave?: (covers: { cover: string; cover43: string }) => Promise<void>;
   }
 
   let { video = null, image = "", title = "", show = $bindable(false), onCoverUpdate, onSave }: Props = $props();
 
-  // Elements, front last. Kept while the editor is hidden, so reopening
-  // after saving edits them again over the same background.
+  const RATIOS: { id: Ratio; label: string; hint: string }[] = [
+    { id: "home", label: "首页推荐", hint: "4:3" },
+    { id: "wide", label: "个人空间", hint: "16:9" },
+  ];
+
+  // Elements, front last, in element space. Kept while the editor is hidden,
+  // so reopening after saving edits them again over the same background.
   let elements: CoverElement[] = $state([]);
   let selectedId: number | null = $state(null);
   let editingId: number | null = $state(null);
+  // The picture of the cover being edited is selected: zoom and move it.
+  let pictureSelected = $state(false);
   let panel: "text" | "sticker" = $state("text");
   let stickerGroup = $state(STICKER_GROUPS[0].name);
-  let showCrop = $state(true);
   let saving = $state(false);
   let guides = $state({ x: false, y: false });
   let lastStyle: TextStyle = styleOf(TEXT_STYLES[0]);
   let lastFont = "";
+
+  // The cover being edited, and how each cover frames the scene.
+  let ratio: Ratio = $state("wide");
+  let scene = $state(sceneOf());
+  let frames: Record<Ratio, Frame> = $state({
+    home: defaultFrame(sceneOf(), aspectOf("home")),
+    wide: defaultFrame(sceneOf(), aspectOf("wide")),
+  });
+  // Zoom and move both covers together, as Bilibili does by default.
+  let syncFrames = $state(true);
 
   let selected = $derived(elements.find((element) => element.id === selectedId) ?? null);
   let selectedText = $derived(selected?.kind === "text" ? selected : null);
@@ -91,22 +127,28 @@
   let stageArea: HTMLDivElement = $state();
   let surface: HTMLDivElement = $state();
   let editField: HTMLDivElement = $state();
-  let previewHome: HTMLCanvasElement = $state();
-  let previewWide: HTMLCanvasElement = $state();
+  let previews: Partial<Record<Ratio, HTMLCanvasElement>> = $state({});
   let fileInput: HTMLInputElement = $state();
-  let stageWidth = $state(0);
-  let scale = $derived(stageWidth / COVER_WIDTH);
+  let stageSize = $state({ width: 0, height: 0 });
   let frameRequest: number | null = null;
 
-  // The background, already fitted to the cover.
-  const backgroundCanvas = document.createElement("canvas");
-  backgroundCanvas.width = COVER_WIDTH;
-  backgroundCanvas.height = COVER_HEIGHT;
+  let size = $derived(COVER_SIZES[ratio]);
+  let view = $derived(frameRect(scene, aspectOf(ratio), frames[ratio]));
+  let area = $derived(elementArea(ratio));
+  let stageWidth = $derived(
+    Math.floor(Math.max(0, Math.min(stageSize.width, (stageSize.height * size.width) / size.height))),
+  );
+  // CSS pixels on the stage per element-space pixel.
+  let unit = $derived(stageWidth / area.width);
+  let zoomRange = $derived({ min: minZoom(scene, aspectOf(ratio)), max: MAX_ZOOM });
+
+  let background: Background | null = null;
   let hasBackground = $state(false);
   let backgroundKind: "cover" | "frame" | "upload" | null = $state(null);
   let originalCover = $state("");
   // Kept once loaded: saving can delete the file it came from.
   let originalImage: HTMLImageElement | null = null;
+  let originalFailed = false;
   // Bumped by each background change so a slower image load cannot win.
   let backgroundToken = 0;
   let followVideo = false;
@@ -122,8 +164,7 @@
   onMount(() => {
     ctx = canvas.getContext("2d");
     const observer = new ResizeObserver(([entry]) => {
-      const { width, height } = entry.contentRect;
-      stageWidth = Math.floor(Math.max(0, Math.min(width, (height * COVER_WIDTH) / COVER_HEIGHT)));
+      stageSize = { width: entry.contentRect.width, height: entry.contentRect.height };
     });
     observer.observe(stageArea);
     scheduleRedraw();
@@ -136,7 +177,10 @@
 
   $effect(() => {
     $state.snapshot(elements);
+    $state.snapshot(frames);
     editingId;
+    // The canvas is cleared when switching covers resizes it.
+    size;
     scheduleRedraw();
   });
 
@@ -160,39 +204,59 @@
     });
   }
 
+  function viewOf(r: Ratio) {
+    return frameRect(scene, aspectOf(r), frames[r]);
+  }
+
   function redraw() {
     if (!ctx) return;
-    ctx.clearRect(0, 0, COVER_WIDTH, COVER_HEIGHT);
-    if (hasBackground) {
-      ctx.drawImage(backgroundCanvas, 0, 0);
-    } else {
-      ctx.fillStyle = "#2A2F3A";
-      ctx.fillRect(0, 0, COVER_WIDTH, COVER_HEIGHT);
+    const pending = renderCover(ctx, scene, view, background, area, elements, editingId);
+    for (const r of ["home", "wide"] as const) {
+      const preview = previews[r]?.getContext("2d");
+      if (preview) pending.push(...renderCover(preview, scene, viewOf(r), background, elementArea(r), elements));
     }
-    const pending = drawElements(ctx, elements, editingId);
     if (pending.length) {
       // Only redraw for stickers that arrived, or a failed one would loop.
       void Promise.all(pending.map((request) => request.then(() => true, () => false))).then(
         (loaded) => loaded.some(Boolean) && scheduleRedraw(),
       );
     }
-    drawPreview(previewHome, HOMEPAGE_CROP);
-    drawPreview(previewWide, { x: 0, y: 0, width: COVER_WIDTH, height: COVER_HEIGHT });
   }
 
-  function drawPreview(target: HTMLCanvasElement | undefined, crop: typeof HOMEPAGE_CROP) {
-    const preview = target?.getContext("2d");
-    if (!preview) return;
-    preview.imageSmoothingQuality = "high";
-    preview.drawImage(canvas, crop.x, crop.y, crop.width, crop.height, 0, 0, target.width, target.height);
+  // Framing
+
+  function setFrame(next: Frame) {
+    const aspect = aspectOf(ratio);
+    frames[ratio] = clampFrame(scene, aspect, next);
+    if (syncFrames) {
+      const other: Ratio = ratio === "home" ? "wide" : "home";
+      frames[other] = clampFrame(scene, aspectOf(other), { ...frames[ratio] });
+    }
+  }
+
+  function zoomTo(zoom: number, anchor?: { x: number; y: number }) {
+    setFrame(zoomFrame(scene, aspectOf(ratio), frames[ratio], zoom, anchor));
+  }
+
+  function resetFrames() {
+    frames = { home: defaultFrame(scene, aspectOf("home")), wide: defaultFrame(scene, aspectOf("wide")) };
+    commit();
+  }
+
+  function switchRatio(next: Ratio) {
+    finishEditing();
+    ratio = next;
   }
 
   // Background
 
   function setBackground(source: CanvasImageSource, width: number, height: number, kind: typeof backgroundKind) {
-    const context = backgroundCanvas.getContext("2d");
-    context.clearRect(0, 0, COVER_WIDTH, COVER_HEIGHT);
-    drawBackground(context, source, width, height);
+    background = prepareBackground(source, width, height);
+    const next = sceneOf(width, height);
+    if (Math.abs(next.width - scene.width) > 0.5) {
+      scene = next;
+      frames = { home: defaultFrame(next, aspectOf("home")), wide: defaultFrame(next, aspectOf("wide")) };
+    }
     hasBackground = true;
     backgroundKind = kind;
     scheduleRedraw();
@@ -237,6 +301,8 @@
       if (token === backgroundToken) setBackground(image, image.naturalWidth, image.naturalHeight, kind);
     } catch (error) {
       log.error("Failed to load the cover background:", String(error));
+      if (src === originalCover) originalFailed = true;
+      // Fall back to a frame; a video still loading picks one when ready.
       if (token === backgroundToken && !hasBackground && videoReady) seekFrame(defaultFrameTime());
     }
   }
@@ -257,7 +323,8 @@
   function handleVideoLoaded() {
     videoReady = true;
     duration = videoElement.duration;
-    if (!hasBackground && !originalCover) seekFrame(defaultFrameTime());
+    // Not while the cover is still loading: it would cancel that load.
+    if (!hasBackground && (!originalCover || originalFailed)) seekFrame(defaultFrameTime());
   }
 
   function seekFrame(time: number) {
@@ -283,9 +350,10 @@
     return `${mins}:${secs.toString().padStart(2, "0")}`;
   }
 
-  // History
+  // History of elements and framing
 
-  let history = [JSON.stringify([])];
+  const snapshot = () => JSON.stringify({ elements: $state.snapshot(elements), frames: $state.snapshot(frames) });
+  let history = [snapshot()];
   let historyIndex = $state(0);
   let historyLength = $state(1);
   let commitTimer: ReturnType<typeof setTimeout> | undefined;
@@ -293,9 +361,9 @@
   function commit() {
     clearTimeout(commitTimer);
     commitTimer = undefined;
-    const snapshot = JSON.stringify($state.snapshot(elements));
-    if (snapshot === history[historyIndex]) return;
-    history = [...history.slice(0, historyIndex + 1), snapshot].slice(-100);
+    const current = snapshot();
+    if (current === history[historyIndex]) return;
+    history = [...history.slice(0, historyIndex + 1), current].slice(-100);
     historyIndex = history.length - 1;
     historyLength = history.length;
   }
@@ -310,7 +378,13 @@
     if (commitTimer) commit();
     if (index < 0 || index >= history.length) return;
     historyIndex = index;
-    elements = JSON.parse(history[index]);
+    const state = JSON.parse(history[index]);
+    elements = state.elements;
+    // Framing saved for another picture would not fit this one.
+    frames = {
+      home: clampFrame(scene, aspectOf("home"), state.frames.home),
+      wide: clampFrame(scene, aspectOf("wide"), state.frames.wide),
+    };
     if (!elements.some((element) => element.id === selectedId)) selectedId = null;
   }
 
@@ -319,8 +393,12 @@
 
   // Elements
 
+  /** The middle of both covers, where new elements go. */
+  const MIDDLE = { x: ELEMENT_SPACE.width / 2, y: ELEMENT_SPACE.height / 2 };
+
   function addText(style: TextStyle = lastStyle, font = lastFont) {
-    const text = newText(elements, style, font);
+    pictureSelected = false;
+    const text = newText(elements, MIDDLE, style, font);
     elements.push(text);
     // Committed when its first edit finishes.
     void startEditing(text.id, true);
@@ -334,9 +412,10 @@
       alert("贴纸加载失败，可能已被删除");
       return;
     }
-    const element = newSticker(elements, src, image.naturalWidth / image.naturalHeight || 1, size);
+    const element = newSticker(elements, MIDDLE, src, image.naturalWidth / image.naturalHeight || 1, size);
     elements.push(element);
     selectedId = element.id;
+    pictureSelected = false;
     commit();
   }
 
@@ -366,12 +445,16 @@
     commit();
   }
 
+  /** `point` kept on the covers. */
+  function placeable(point: { x: number; y: number }) {
+    return { x: clamp(point.x, 0, ELEMENT_SPACE.width), y: clamp(point.y, 0, ELEMENT_SPACE.height) };
+  }
+
   function duplicate(element: CoverElement) {
     const copy = {
       ...$state.snapshot(element),
       id: nextId(elements),
-      x: clamp(element.x + 40, 0, COVER_WIDTH),
-      y: clamp(element.y + 40, 0, COVER_HEIGHT),
+      ...placeable({ x: element.x + 40, y: element.y + 40 }),
     } as CoverElement;
     elements.push(copy);
     selectedId = copy.id;
@@ -452,7 +535,7 @@
 
   // Pointer interaction
 
-  interface Drag {
+  interface ElementDrag {
     mode: "move" | "rotate" | "scale";
     id: number;
     start: { x: number; y: number };
@@ -460,24 +543,44 @@
     moved: boolean;
   }
 
-  let drag: Drag | null = null;
+  // Moves the picture under the frame; tracked on screen, as the frame moves.
+  interface PictureDrag {
+    mode: "picture";
+    client: { x: number; y: number };
+    origin: Frame;
+    /** CSS pixels per scene unit. */
+    scale: number;
+    moved: boolean;
+  }
 
-  function toCover(event: MouseEvent) {
+  let drag: ElementDrag | PictureDrag | null = null;
+
+  /** Where the pointer is on the stage, as fractions of it. */
+  function stagePoint(event: MouseEvent) {
     const rect = surface.getBoundingClientRect();
-    return {
-      x: ((event.clientX - rect.left) / rect.width) * COVER_WIDTH,
-      y: ((event.clientY - rect.top) / rect.height) * COVER_HEIGHT,
-    };
+    return { x: (event.clientX - rect.left) / rect.width, y: (event.clientY - rect.top) / rect.height };
+  }
+
+  /** The element-space point under the pointer. */
+  function toCover(event: MouseEvent) {
+    const p = stagePoint(event);
+    return { x: area.x + p.x * area.width, y: area.y + p.y * area.height };
+  }
+
+  /** The picture's scene point under the pointer. */
+  function toScene(event: MouseEvent) {
+    const p = stagePoint(event);
+    return { x: view.x + p.x * view.width, y: view.y + p.y * view.height };
   }
 
   function hitTest(event: MouseEvent) {
     const point = toCover(event);
-    return elementAt(elements, point.x, point.y, measure, 4 / scale);
+    return elementAt(elements, point.x, point.y, measure, 4 / unit);
   }
 
-  function beginDrag(event: PointerEvent, mode: Drag["mode"], element: CoverElement) {
+  function beginDrag(event: PointerEvent, mode: ElementDrag["mode"], element: CoverElement) {
     event.stopPropagation();
-    if (event.button !== 0) return;
+    if (event.button !== 0 || saving) return;
     surface.setPointerCapture(event.pointerId);
     drag = { mode, id: element.id, start: toCover(event), origin: $state.snapshot(element) as CoverElement, moved: false };
   }
@@ -489,15 +592,39 @@
     surface.focus({ preventScroll: true });
     const hit = hitTest(event);
     selectedId = hit?.id ?? null;
-    if (hit) beginDrag(event, "move", hit);
+    // Clicking the picture selects it, to zoom and move it.
+    pictureSelected = !hit;
+    if (hit) {
+      beginDrag(event, "move", hit);
+    } else {
+      surface.setPointerCapture(event.pointerId);
+      drag = {
+        mode: "picture",
+        client: { x: event.clientX, y: event.clientY },
+        origin: { ...frames[ratio] },
+        scale: stageWidth / view.width,
+        moved: false,
+      };
+    }
   }
 
   function handlePointerMove(event: PointerEvent) {
     if (!drag) {
-      surface.style.cursor = hitTest(event) ? "move" : "";
+      surface.style.cursor = hitTest(event) ? "move" : pictureSelected ? "grab" : "";
       return;
     }
-    const element = elements.find((e) => e.id === drag.id);
+    if (drag.mode === "picture") {
+      const dx = event.clientX - drag.client.x;
+      const dy = event.clientY - drag.client.y;
+      if (!drag.moved && Math.hypot(dx, dy) < 3) return;
+      drag.moved = true;
+      surface.style.cursor = "grabbing";
+      // The picture follows the pointer, so the frame moves the other way.
+      setFrame({ ...drag.origin, x: drag.origin.x - dx / drag.scale, y: drag.origin.y - dy / drag.scale });
+      return;
+    }
+    const current = drag;
+    const element = elements.find((e) => e.id === current.id);
     if (!element) return;
     const point = toCover(event);
     const origin = drag.origin;
@@ -505,12 +632,9 @@
       const dx = point.x - drag.start.x;
       const dy = point.y - drag.start.y;
       // A click selects without nudging.
-      if (!drag.moved && Math.hypot(dx, dy) * scale < 3) return;
-      const snapped = snapToCenter(
-        clamp(origin.x + dx, 0, COVER_WIDTH),
-        clamp(origin.y + dy, 0, COVER_HEIGHT),
-        8 / scale,
-      );
+      if (!drag.moved && Math.hypot(dx, dy) * unit < 3) return;
+      const to = placeable({ x: origin.x + dx, y: origin.y + dy });
+      const snapped = snapToCenter(to.x, to.y, MIDDLE, 8 / unit);
       element.x = Math.round(snapped.x);
       element.y = Math.round(snapped.y);
       guides = { x: snapped.snapX, y: snapped.snapY };
@@ -532,7 +656,15 @@
     const moved = drag.moved;
     drag = null;
     guides = { x: false, y: false };
+    surface.style.cursor = "";
     if (moved) commit();
+  }
+
+  function handleWheel(event: WheelEvent) {
+    if (!pictureSelected || saving) return;
+    event.preventDefault();
+    zoomTo(frames[ratio].zoom * Math.exp(-event.deltaY * 0.0015), toScene(event));
+    commitSoon();
   }
 
   function handleDoubleClick(event: MouseEvent) {
@@ -548,8 +680,10 @@
       event.preventDefault();
       event.stopImmediatePropagation();
       if (typing) target.blur();
-      else if (selectedId !== null) selectedId = null;
-      else handleClose();
+      else if (selectedId !== null || pictureSelected) {
+        selectedId = null;
+        pictureSelected = false;
+      } else handleClose();
       return;
     }
     if (typing || editingId !== null) return;
@@ -576,14 +710,24 @@
       const step = event.shiftKey ? 20 : 2;
       const dx = key === "arrowleft" ? -step : key === "arrowright" ? step : 0;
       const dy = key === "arrowup" ? -step : key === "arrowdown" ? step : 0;
-      update({ x: clamp(selected.x + dx, 0, COVER_WIDTH), y: clamp(selected.y + dy, 0, COVER_HEIGHT) });
+      update(placeable({ x: selected.x + dx, y: selected.y + dy }));
     }
   }
 
   function close() {
     finishEditing();
     selectedId = null;
+    pictureSelected = false;
     show = false;
+  }
+
+  /** The cover of `r` as a JPEG data URL, at its full size. */
+  function exportCover(r: Ratio): string {
+    const output = document.createElement("canvas");
+    output.width = COVER_SIZES[r].width;
+    output.height = COVER_SIZES[r].height;
+    renderCover(output.getContext("2d"), scene, viewOf(r), background, elementArea(r), elements);
+    return output.toDataURL("image/jpeg", 0.92);
   }
 
   // A save in flight writes the cover anyway, so it cannot be cancelled.
@@ -598,6 +742,11 @@
     try {
       await backgroundLoad;
       await waitForFirstBackground(5000);
+      // Never replace a cover with the grey placeholder.
+      if (!hasBackground && (video?.file || originalCover)) {
+        alert("封面画面还没有加载出来，请稍后再保存，或上传一张图片作为背景");
+        return;
+      }
       const loads = await Promise.allSettled(
         elements.flatMap((element) => (element.kind === "sticker" ? [loadSticker(element.src)] : [])),
       );
@@ -605,10 +754,9 @@
         alert("有贴纸没有加载出来，请删除后再保存封面");
         return;
       }
-      redraw();
-      const cover = canvas.toDataURL("image/jpeg", 0.92);
+      const cover = exportCover("wide");
       if (onSave) {
-        await onSave(cover);
+        await onSave({ cover, cover43: exportCover("home") });
       } else {
         await invoke("update_video_cover", { id: video.value, cover });
       }
@@ -783,8 +931,53 @@
               <FlipHorizontal2 class="h-3.5 w-3.5" />
               水平翻转
             </button>
+          {:else if pictureSelected}
+            <button
+              type="button"
+              class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost"
+              title="缩小"
+              aria-label="缩小"
+              disabled={frames[ratio].zoom <= zoomRange.min + 1e-6}
+              onclick={() => {
+                zoomTo(frames[ratio].zoom / 1.25);
+                commit();
+              }}
+            >
+              <ZoomOut class="h-3.5 w-3.5" />
+            </button>
+            <input
+              type="range"
+              min={zoomRange.min}
+              max={zoomRange.max}
+              step="0.01"
+              value={frames[ratio].zoom}
+              class="w-36"
+              aria-label="缩放"
+              oninput={(event) => zoomTo(Number(event.currentTarget.value))}
+              onchange={commit}
+            />
+            <button
+              type="button"
+              class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost"
+              title="放大"
+              aria-label="放大"
+              disabled={frames[ratio].zoom >= zoomRange.max - 1e-6}
+              onclick={() => {
+                zoomTo(frames[ratio].zoom * 1.25);
+                commit();
+              }}
+            >
+              <ZoomIn class="h-3.5 w-3.5" />
+            </button>
+            <span class="w-10 text-right text-[11px] tabular-nums text-fg-muted">{Math.round(frames[ratio].zoom * 100)}%</span>
+            <span class="toolbar-separator"></span>
+            <label class="flex cursor-pointer items-center gap-1.5 text-[12px] text-fg-secondary">
+              <input type="checkbox" class="ui-checkbox" bind:checked={syncFrames} />
+              双比例同步改动
+            </label>
+            <button type="button" class="ui-btn ui-btn-sm ui-btn-ghost" onclick={resetFrames}>重置</button>
           {:else}
-            <span class="text-[12px] text-fg-muted">从左侧添加文字或贴纸，双击文字可直接修改。</span>
+            <span class="text-[12px] text-fg-muted">点击画面可缩放、拖动；从左侧添加文字或贴纸，双击文字可直接修改。</span>
           {/if}
 
           <div class="ml-auto flex items-center gap-1">
@@ -853,13 +1046,32 @@
           </div>
         </div>
 
-        <div bind:this={stageArea} class="relative m-5 flex min-h-0 flex-1 items-center justify-center">
+        <div class="flex shrink-0 justify-center pt-3">
+          <div class="ui-tabs" role="tablist" aria-label="封面比例">
+            {#each RATIOS as item (item.id)}
+              <button
+                type="button"
+                role="tab"
+                class="ui-tab"
+                aria-selected={ratio === item.id}
+                onclick={() => switchRatio(item.id)}
+              >
+                {item.label}封面
+                <span class="text-[11px] text-fg-faint">{item.hint}</span>
+              </button>
+            {/each}
+          </div>
+        </div>
+
+        <div bind:this={stageArea} class="relative mx-5 mb-5 mt-3 flex min-h-0 flex-1 items-center justify-center">
           <div
-            class="relative overflow-hidden rounded-[4px] shadow-lg"
+            class="relative overflow-hidden rounded-[4px] shadow-lg outline outline-2 outline-offset-2 transition-[outline-color] {pictureSelected
+              ? 'outline-accent'
+              : 'outline-transparent'}"
             style:width="{stageWidth}px"
-            style:height="{(stageWidth * COVER_HEIGHT) / COVER_WIDTH}px"
+            style:height="{(stageWidth * size.height) / size.width}px"
           >
-            <canvas bind:this={canvas} width={COVER_WIDTH} height={COVER_HEIGHT} class="absolute inset-0 h-full w-full"
+            <canvas bind:this={canvas} width={size.width} height={size.height} class="absolute inset-0 h-full w-full"
             ></canvas>
             <!-- Focusable so Delete and the arrow keys reach the selected element. -->
             <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
@@ -867,27 +1079,15 @@
               bind:this={surface}
               class="absolute inset-0 touch-none outline-none"
               role="application"
-              aria-label="封面画布：拖动移动元素，双击编辑文字"
+              aria-label="封面画布：拖动移动元素或画面，双击编辑文字"
               tabindex="0"
+              onwheel={handleWheel}
               onpointerdown={handlePointerDown}
               onpointermove={handlePointerMove}
               onpointerup={handlePointerUp}
               onpointercancel={handlePointerUp}
               ondblclick={handleDoubleClick}
             >
-              {#if showCrop}
-                <div class="pointer-events-none absolute inset-0">
-                  <div class="crop-shade left-0" style:width="{HOMEPAGE_CROP.x * scale}px"></div>
-                  <div class="crop-shade right-0" style:width="{HOMEPAGE_CROP.x * scale}px"></div>
-                  <div
-                    class="absolute inset-y-0 border-x border-dashed border-white/80"
-                    style:left="{HOMEPAGE_CROP.x * scale}px"
-                    style:width="{HOMEPAGE_CROP.width * scale}px"
-                  >
-                    <span class="absolute left-1.5 top-1.5 rounded bg-black/50 px-1.5 py-px text-[10px] text-white/90">4:3</span>
-                  </div>
-                </div>
-              {/if}
               {#if guides.x}
                 <div class="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-[#FF2D7A]"></div>
               {/if}
@@ -898,10 +1098,10 @@
               {#if selected && selectedBox && editingId === null}
                 <div
                   class="pointer-events-none absolute border-[1.5px] border-accent"
-                  style:left="{selected.x * scale}px"
-                  style:top="{selected.y * scale}px"
-                  style:width="{selectedBox.width * scale}px"
-                  style:height="{selectedBox.height * scale}px"
+                  style:left="{(selected.x - area.x) * unit}px"
+                  style:top="{(selected.y - area.y) * unit}px"
+                  style:width="{selectedBox.width * unit}px"
+                  style:height="{selectedBox.height * unit}px"
                   style:transform="translate(-50%, -50%) rotate({selected.rotation}deg)"
                 >
                   <button
@@ -950,8 +1150,8 @@
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
                   class="absolute"
-                  style:left="{editing.x * scale}px"
-                  style:top="{editing.y * scale}px"
+                  style:left="{(editing.x - area.x) * unit}px"
+                  style:top="{(editing.y - area.y) * unit}px"
                   style:transform="translate(-50%, -50%) rotate({editing.rotation}deg)"
                   onpointerdown={(event) => event.stopPropagation()}
                   ondblclick={(event) => event.stopPropagation()}
@@ -966,17 +1166,17 @@
                     spellcheck="false"
                     class="edit-field"
                     style="-webkit-text-stroke: {editing.stroke
-                      ? `${editing.strokeWidth * editing.fontSize * 2 * scale}px ${editing.stroke}`
+                      ? `${editing.strokeWidth * editing.fontSize * 2 * unit}px ${editing.stroke}`
                       : '0'}"
                     style:font-family={fontFamily(editing.font)}
                     style:font-weight={editing.bold ? "bold" : "normal"}
-                    style:font-size="{editing.fontSize * scale}px"
+                    style:font-size="{editing.fontSize * unit}px"
                     style:line-height={LINE_HEIGHT}
                     style:color={editing.fill}
                     style:text-align={editing.align}
-                    style:padding="{layout.padY * scale}px {layout.padX * scale}px"
+                    style:padding="{layout.padY * unit}px {layout.padX * unit}px"
                     style:background={editing.background ?? "transparent"}
-                    style:border-radius="{editing.fontSize * 0.18 * scale}px"
+                    style:border-radius="{editing.fontSize * 0.18 * unit}px"
                     onkeydown={handleEditKeydown}
                     onblur={finishEditing}
                   ></div>
@@ -1050,33 +1250,40 @@
       </div>
 
       <!-- Preview -->
-      <aside class="custom-scrollbar-light flex w-[220px] shrink-0 flex-col gap-5 overflow-y-auto border-l border-line p-4 max-[1279px]:hidden">
-        <section class="space-y-2">
-          <div class="flex items-center justify-between">
-            <h4 class="text-[12px] font-medium text-fg-secondary">首页推荐 · 4:3</h4>
-            <label class="flex cursor-pointer items-center gap-1.5 text-[11px] text-fg-muted">
-              <input type="checkbox" class="ui-checkbox" bind:checked={showCrop} />
-              参考框
-            </label>
-          </div>
-          <div class="ui-card overflow-hidden">
-            <canvas bind:this={previewHome} width="376" height="282" class="block aspect-[4/3] w-full"></canvas>
-            <p class="line-clamp-2 px-2 py-1.5 text-[11px] leading-snug text-fg">{title || "视频标题"}</p>
-          </div>
-        </section>
-        <section class="space-y-2">
-          <h4 class="text-[12px] font-medium text-fg-secondary">个人空间 · 16:9</h4>
-          <div class="ui-card overflow-hidden">
-            <canvas bind:this={previewWide} width="376" height="212" class="block aspect-video w-full"></canvas>
-            <p class="line-clamp-2 px-2 py-1.5 text-[11px] leading-snug text-fg">{title || "视频标题"}</p>
-          </div>
-        </section>
-        <p class="ui-hint">首页推荐只展示封面中间的 4:3 区域，重要的文字和贴纸请放在参考框内。</p>
+      <aside class="custom-scrollbar-light flex w-[220px] shrink-0 flex-col gap-4 overflow-y-auto border-l border-line p-4 max-[1279px]:hidden">
+        {#each RATIOS as item (item.id)}
+          <button
+            type="button"
+            class="block w-full space-y-2 text-left"
+            aria-pressed={ratio === item.id}
+            title="编辑{item.label}封面"
+            onclick={() => switchRatio(item.id)}
+          >
+            <span class="block text-[12px] font-medium {ratio === item.id ? 'text-accent-fg' : 'text-fg-secondary'}">
+              {item.label} · {item.hint}
+            </span>
+            <span
+              class="ui-card block overflow-hidden transition-shadow {ratio === item.id
+                ? 'ring-2 ring-accent'
+                : 'hover:ring-1 hover:ring-line-strong'}"
+            >
+              <canvas
+                bind:this={previews[item.id]}
+                width="376"
+                height={Math.round((376 * COVER_SIZES[item.id].height) / COVER_SIZES[item.id].width)}
+                class="block w-full"
+                style:aspect-ratio="{COVER_SIZES[item.id].width} / {COVER_SIZES[item.id].height}"
+              ></canvas>
+              <span class="line-clamp-2 px-2 py-1.5 text-[11px] leading-snug text-fg">{title || "视频标题"}</span>
+            </span>
+          </button>
+        {/each}
+        <p class="ui-hint">两张封面都会展示给观众：首页推荐用 4:3，个人空间等处用 16:9。每张可以单独缩放、移动画面，文字和贴纸在两张封面上同步。</p>
       </aside>
     </div>
 
     <div class="ui-modal-footer justify-between">
-      <span class="text-[11px] text-fg-muted">保存为 1920×1080 的 JPG 封面</span>
+      <span class="text-[11px] text-fg-muted">保存 16:9（1920×1080）和 4:3（1440×1080）两张封面</span>
       <div class="flex gap-2">
         <button type="button" class="ui-btn" disabled={saving} onclick={handleClose}>取消</button>
         <button type="button" class="ui-btn ui-btn-primary" disabled={saving} onclick={handleSave}>
@@ -1100,12 +1307,6 @@
     text-shadow: 1.5px 1.5px 1px rgb(var(--c-fg-faint));
   }
 
-  .crop-shade {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    background: rgb(0 0 0 / 35%);
-  }
 
   .handle {
     pointer-events: auto;

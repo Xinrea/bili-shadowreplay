@@ -1,16 +1,43 @@
-// The cover editor's text and sticker elements and their geometry, in cover
-// pixels. Free of DOM access so tests can load it; callers measure text.
+// The cover editor's model, free of DOM access so tests can load it; callers
+// measure text.
+//
+// Bilibili shows two covers: 4:3 in the homepage feed and 16:9 elsewhere.
+// Each frames the background picture, the scene, with its own zoom and
+// position; scene units are the picture scaled to SCENE_HEIGHT tall. Text
+// and stickers sit on the covers instead, in the 16:9 cover's pixels with
+// the 4:3 cover showing the middle of them, so they keep their place and
+// size in both whatever each picture's framing.
 
-export const COVER_WIDTH = 1920;
-export const COVER_HEIGHT = 1080;
-/** The homepage feed shows the middle 4:3 of the cover. */
-export const HOMEPAGE_CROP = {
-  x: (COVER_WIDTH - (COVER_HEIGHT * 4) / 3) / 2,
-  y: 0,
-  width: (COVER_HEIGHT * 4) / 3,
-  height: COVER_HEIGHT,
-};
+export const SCENE_HEIGHT = 1080;
+export const MAX_ZOOM = 4;
 export const LINE_HEIGHT = 1.25;
+
+export type Ratio = "home" | "wide";
+
+/** Pixel size of each saved cover. */
+export const COVER_SIZES: Record<Ratio, { width: number; height: number }> = {
+  home: { width: 1440, height: 1080 },
+  wide: { width: 1920, height: 1080 },
+};
+
+export const aspectOf = (ratio: Ratio) => COVER_SIZES[ratio].width / COVER_SIZES[ratio].height;
+
+export interface Size {
+  width: number;
+  height: number;
+}
+
+export interface Rect extends Size {
+  x: number;
+  y: number;
+}
+
+/** A cover's view of the scene: its center and its zoom over covering it. */
+export interface Frame {
+  x: number;
+  y: number;
+  zoom: number;
+}
 
 export interface TextStyle {
   fill: string;
@@ -174,11 +201,11 @@ export function elementAt(
   return null;
 }
 
-/** Pulls a center within `threshold` of the cover's middle lines onto them. */
-export function snapToCenter(x: number, y: number, threshold: number) {
-  const snapX = Math.abs(x - COVER_WIDTH / 2) <= threshold;
-  const snapY = Math.abs(y - COVER_HEIGHT / 2) <= threshold;
-  return { x: snapX ? COVER_WIDTH / 2 : x, y: snapY ? COVER_HEIGHT / 2 : y, snapX, snapY };
+/** Pulls a point within `threshold` of the lines through `center` onto them. */
+export function snapToCenter(x: number, y: number, center: { x: number; y: number }, threshold: number) {
+  const snapX = Math.abs(x - center.x) <= threshold;
+  const snapY = Math.abs(y - center.y) <= threshold;
+  return { x: snapX ? center.x : x, y: snapY ? center.y : y, snapX, snapY };
 }
 
 /** Normalized to [-180, 180]: to multiples of `step`, or else near right angles. */
@@ -201,10 +228,9 @@ export function scaledSize(origin: CoverElement, ratio: number): Partial<TextEle
     : { size: clamp(Math.round(origin.size * ratio), 24, 1600) };
 }
 
-/** The cover's middle, moved down-right past elements already placed there. */
-export function freePosition(elements: CoverElement[]): { x: number; y: number } {
-  let x = COVER_WIDTH / 2;
-  let y = COVER_HEIGHT / 2;
+/** `at`, moved down-right past elements already placed there. */
+export function freePosition(elements: CoverElement[], at: { x: number; y: number }): { x: number; y: number } {
+  let { x, y } = at;
   for (let step = 0; step < 8 && elements.some((e) => Math.abs(e.x - x) < 1 && Math.abs(e.y - y) < 1); step++) {
     x += 60;
     y += 60;
@@ -216,11 +242,16 @@ export function nextId(elements: CoverElement[]): number {
   return Math.max(0, ...elements.map((element) => element.id)) + 1;
 }
 
-export function newText(elements: CoverElement[], style: TextStyle, font = ""): TextElement {
+export function newText(
+  elements: CoverElement[],
+  at: { x: number; y: number },
+  style: TextStyle,
+  font = "",
+): TextElement {
   return {
     kind: "text",
     id: nextId(elements),
-    ...freePosition(elements),
+    ...freePosition(elements, at),
     rotation: 0,
     content: "请输入文字",
     font,
@@ -231,19 +262,89 @@ export function newText(elements: CoverElement[], style: TextStyle, font = ""): 
   };
 }
 
-export function newSticker(elements: CoverElement[], src: string, aspect = 1, size = 280): StickerElement {
-  return { kind: "sticker", id: nextId(elements), ...freePosition(elements), rotation: 0, src, size, aspect, flip: false };
+export function newSticker(
+  elements: CoverElement[],
+  at: { x: number; y: number },
+  src: string,
+  aspect = 1,
+  size = 280,
+): StickerElement {
+  return { kind: "sticker", id: nextId(elements), ...freePosition(elements, at), rotation: 0, src, size, aspect, flip: false };
 }
 
-/** Where `width`×`height` lands when it covers or fits inside the cover, centered. */
-export function fitRect(width: number, height: number, mode: "cover" | "contain") {
-  const scale = (mode === "cover" ? Math.max : Math.min)(COVER_WIDTH / width, COVER_HEIGHT / height);
+/** Where `width`×`height` lands when it covers or fits inside `target`, centered. */
+export function fitRect(width: number, height: number, target: Size, mode: "cover" | "contain"): Rect {
+  const scale = (mode === "cover" ? Math.max : Math.min)(target.width / width, target.height / height);
   return {
-    x: (COVER_WIDTH - width * scale) / 2,
-    y: (COVER_HEIGHT - height * scale) / 2,
+    x: (target.width - width * scale) / 2,
+    y: (target.height - height * scale) / 2,
     width: width * scale,
     height: height * scale,
   };
+}
+
+/** The scene of a `width`×`height` picture; 16:9 without one. */
+export function sceneOf(width = 16, height = 9): Size {
+  return { width: (SCENE_HEIGHT * width) / height, height: SCENE_HEIGHT };
+}
+
+/** Width of a frame of `aspect` that just covers the scene. */
+function coverWidth(scene: Size, aspect: number): number {
+  return Math.min(scene.width, scene.height * aspect);
+}
+
+/** Zooming out until the whole picture shows, on a blurred fill. */
+export function minZoom(scene: Size, aspect: number): number {
+  return coverWidth(scene, aspect) / Math.max(scene.width, scene.height * aspect);
+}
+
+/** The part of the scene a frame shows. */
+export function frameRect(scene: Size, aspect: number, frame: Frame): Rect {
+  const width = coverWidth(scene, aspect) / frame.zoom;
+  const height = width / aspect;
+  return { x: frame.x - width / 2, y: frame.y - height / 2, width, height };
+}
+
+/** `frame` with its zoom in range and the picture kept under it where it fits. */
+export function clampFrame(scene: Size, aspect: number, frame: Frame): Frame {
+  const zoom = clamp(frame.zoom, minZoom(scene, aspect), MAX_ZOOM);
+  const width = coverWidth(scene, aspect) / zoom;
+  const along = (center: number, size: number, extent: number) =>
+    size <= extent ? clamp(center, size / 2, extent - size / 2) : extent / 2;
+  return { zoom, x: along(frame.x, width, scene.width), y: along(frame.y, width / aspect, scene.height) };
+}
+
+/** Centered, covering the scene unless that crops away more than half of it. */
+export function defaultFrame(scene: Size, aspect: number): Frame {
+  const width = coverWidth(scene, aspect);
+  const kept = (width * (width / aspect)) / (scene.width * scene.height);
+  return { x: scene.width / 2, y: scene.height / 2, zoom: kept < 0.5 ? minZoom(scene, aspect) : 1 };
+}
+
+/** Zoomed to `zoom` with the scene point `anchor` staying put in the frame. */
+export function zoomFrame(
+  scene: Size,
+  aspect: number,
+  frame: Frame,
+  zoom: number,
+  anchor: { x: number; y: number } = frame,
+): Frame {
+  const next = clamp(zoom, minZoom(scene, aspect), MAX_ZOOM);
+  const ratio = frame.zoom / next;
+  return clampFrame(scene, aspect, {
+    zoom: next,
+    x: anchor.x + (frame.x - anchor.x) * ratio,
+    y: anchor.y + (frame.y - anchor.y) * ratio,
+  });
+}
+
+/** Elements are placed in the pixels of the 16:9 cover. */
+export const ELEMENT_SPACE: Size = COVER_SIZES.wide;
+
+/** The part of element space a cover shows: all of it, or its middle 4:3. */
+export function elementArea(ratio: Ratio): Rect {
+  const { width, height } = COVER_SIZES[ratio];
+  return { x: (ELEMENT_SPACE.width - width) / 2, y: (ELEMENT_SPACE.height - height) / 2, width, height };
 }
 
 /** Moves the element at `index` to `target`, clamped to the stack. */

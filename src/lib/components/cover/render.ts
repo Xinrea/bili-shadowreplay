@@ -1,12 +1,12 @@
 // Draws cover elements onto a canvas; the editor and the saved cover share it.
 import {
-  COVER_HEIGHT,
-  COVER_WIDTH,
   fitRect,
   layoutText,
   stickerSize,
   type CoverElement,
   type Measure,
+  type Rect,
+  type Size,
   type StickerElement,
   type TextElement,
 } from "../../cover-elements";
@@ -76,12 +76,15 @@ function roundedRect(ctx: CanvasRenderingContext2D, x: number, y: number, width:
   ctx.closePath();
 }
 
-// Shadows ignore the transform, so they fall the same way at any rotation.
+// Shadows ignore the transform, so they fall the same way at any rotation,
+// but they must follow its scale.
 function setShadow(ctx: CanvasRenderingContext2D, fontSize: number) {
+  const { a, b } = ctx.getTransform();
+  const size = fontSize * Math.hypot(a, b);
   ctx.shadowColor = "rgba(0, 0, 0, 0.55)";
-  ctx.shadowBlur = fontSize * 0.15;
-  ctx.shadowOffsetX = fontSize * 0.03;
-  ctx.shadowOffsetY = fontSize * 0.05;
+  ctx.shadowBlur = size * 0.15;
+  ctx.shadowOffsetX = size * 0.03;
+  ctx.shadowOffsetY = size * 0.05;
 }
 
 function clearShadow(ctx: CanvasRenderingContext2D) {
@@ -153,42 +156,74 @@ export function drawElements(ctx: CanvasRenderingContext2D, elements: CoverEleme
 
 function resample(source: CanvasImageSource, width: number, height: number): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
+  canvas.width = Math.max(1, Math.round(width));
+  canvas.height = Math.max(1, Math.round(height));
   const ctx = canvas.getContext("2d");
   ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(source, 0, 0, width, height);
+  ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
   return canvas;
 }
 
-/**
- * Draws `source` over the whole cover. Another aspect ratio is fitted inside
- * a blurred, darkened copy of itself instead of being stretched.
- */
-export function drawBackground(ctx: CanvasRenderingContext2D, source: CanvasImageSource, width: number, height: number) {
-  if (Math.abs(width / height - COVER_WIDTH / COVER_HEIGHT) < 0.02) {
-    ctx.drawImage(source, 0, 0, COVER_WIDTH, COVER_HEIGHT);
-    return;
-  }
+/** The background picture, copied so later video seeks leave it alone. */
+export interface Background {
+  image: HTMLCanvasElement;
+  /** Fills what a zoomed-out cover shows around the picture. */
+  blur: HTMLCanvasElement;
+}
+
+const MAX_BACKGROUND_SIDE = 3840;
+
+export function prepareBackground(source: CanvasImageSource, width: number, height: number): Background {
+  const fit = Math.min(1, MAX_BACKGROUND_SIDE / Math.max(width, height));
+  const image = resample(source, width * fit, height * fit);
   // Blur by halving down to a few pixels and scaling back up in steps;
   // canvas filters are missing in WebKit.
-  const cover = fitRect(width, height, "cover");
-  const k = 480 / COVER_WIDTH;
-  let blur = document.createElement("canvas");
-  blur.width = 480;
-  blur.height = 270;
-  const first = blur.getContext("2d");
-  first.imageSmoothingQuality = "high";
-  first.drawImage(source, cover.x * k, cover.y * k, cover.width * k, cover.height * k);
-  for (const [w, h] of [[240, 135], [120, 68], [60, 34], [30, 17], [120, 68], [480, 270]]) {
-    blur = resample(blur, w, h);
+  const small = Math.min(1, 480 / Math.max(width, height));
+  let blur = resample(image, width * small, height * small);
+  for (const factor of [0.5, 0.5, 0.5, 0.5, 4, 4]) {
+    blur = resample(blur, blur.width * factor, blur.height * factor);
   }
+  return { image, blur };
+}
+
+/**
+ * Draws onto the whole canvas a cover showing `view` of the picture's
+ * `scene` and `area` of element space. Returns stickers that are still
+ * loading; draw again once they have.
+ */
+export function renderCover(
+  ctx: CanvasRenderingContext2D,
+  scene: Size,
+  view: Rect,
+  background: Background | null,
+  area: Rect,
+  elements: CoverElement[],
+  skip: number | null = null,
+) {
+  const { width, height } = ctx.canvas;
+  const k = width / view.width;
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(blur, 0, 0, COVER_WIDTH, COVER_HEIGHT);
-  ctx.fillStyle = "rgba(0, 0, 0, 0.3)";
-  ctx.fillRect(0, 0, COVER_WIDTH, COVER_HEIGHT);
-  const contain = fitRect(width, height, "contain");
-  ctx.drawImage(source, contain.x, contain.y, contain.width, contain.height);
+  if (!background) {
+    ctx.fillStyle = "#2A2F3A";
+    ctx.fillRect(0, 0, width, height);
+  } else {
+    const outside =
+      view.x < -0.5 || view.y < -0.5 || view.x + view.width > scene.width + 0.5 || view.y + view.height > scene.height + 0.5;
+    if (outside) {
+      const fill = fitRect(background.blur.width, background.blur.height, { width, height }, "cover");
+      ctx.drawImage(background.blur, fill.x, fill.y, fill.width, fill.height);
+      ctx.fillStyle = "rgba(0, 0, 0, 0.3)";
+      ctx.fillRect(0, 0, width, height);
+    }
+    ctx.drawImage(background.image, -view.x * k, -view.y * k, scene.width * k, scene.height * k);
+  }
+  const e = width / area.width;
+  ctx.setTransform(e, 0, 0, e, -area.x * e, -area.y * e);
+  const pending = drawElements(ctx, elements, skip);
+  ctx.restore();
+  return pending;
 }
 
 const fontChecks = new Map<string, boolean>();

@@ -586,6 +586,12 @@ fn get_migrations() -> Vec<Migration> {
             sql: "ALTER TABLE uploads ADD COLUMN danmu INTEGER NOT NULL DEFAULT 0;",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 22,
+            description: "add_upload_cover43",
+            sql: "ALTER TABLE uploads ADD COLUMN cover43 TEXT NOT NULL DEFAULT '';",
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

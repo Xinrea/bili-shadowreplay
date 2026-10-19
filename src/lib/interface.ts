@@ -172,6 +172,8 @@ export interface UploadItem {
   uid: string;
   /** Relative to output; empty to use the source's cover. */
   cover: string;
+  /** 4:3 homepage cover, relative to output; empty to let Bilibili crop `cover`. */
+  cover43: string;
   /** Profile JSON; may be partial for uploads from before this page. */
   profile: string;
   status: UploadStatus;

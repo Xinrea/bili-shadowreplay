@@ -1213,6 +1213,7 @@ pub async fn create_legacy_projects(db: Arc<Database>, output: PathBuf) {
             room_id: project.room_id.clone(),
             uid: String::new(),
             cover: String::new(),
+            cover43: String::new(),
             profile: project.profile.clone(),
             danmu: false,
             status: "posted".to_string(),

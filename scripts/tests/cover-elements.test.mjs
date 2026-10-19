@@ -21,8 +21,9 @@ const plain = (value) => JSON.parse(JSON.stringify(value));
 const measure = (text, font) => text.length * Number(/(\d+)px/.exec(font)[1]) * 0.5;
 const close = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} ≈ ${expected}`);
 
-const text = (overrides = {}) => ({ ...api.newText([], api.TEXT_STYLES[0]), ...overrides });
-const sticker = (overrides = {}) => ({ ...api.newSticker([], "/stickers/1f600.svg"), ...overrides });
+const middle = { x: 960, y: 540 };
+const text = (overrides = {}) => ({ ...api.newText([], middle, api.TEXT_STYLES[0]), ...overrides });
+const sticker = (overrides = {}) => ({ ...api.newSticker([], middle, "/stickers/1f600.svg"), ...overrides });
 
 test("text is as wide as its widest line plus the outline", () => {
   const t = text({ content: "ab\nabcd", fontSize: 100, stroke: "#000", strokeWidth: 0.1, background: null });
@@ -71,7 +72,7 @@ test("a sticker's size is its longer side", () => {
   assert.deepEqual(plain(api.stickerSize({ size: 400, aspect: 2 })), { width: 400, height: 200 });
   assert.deepEqual(plain(api.stickerSize({ size: 400, aspect: 0.5 })), { width: 200, height: 400 });
   // A tall picture is hit only within its own width.
-  const tall = { ...api.newSticker([], "/a.png", 0.5, 400), x: 500, y: 500 };
+  const tall = { ...api.newSticker([], middle, "/a.png", 0.5, 400), x: 500, y: 500 };
   assert.equal(api.elementAt([tall], 500, 690, measure)?.id, tall.id);
   assert.equal(api.elementAt([tall], 650, 500, measure), null);
 });
@@ -83,9 +84,11 @@ test("toLocal undoes the element's rotation", () => {
 });
 
 test("centers snap to the middle lines within the threshold", () => {
-  assert.deepEqual(plain(api.snapToCenter(965, 300, 8)), { x: 960, y: 300, snapX: true, snapY: false });
-  assert.deepEqual(plain(api.snapToCenter(100, 546, 8)), { x: 100, y: 540, snapX: false, snapY: true });
-  assert.deepEqual(plain(api.snapToCenter(970, 530, 8)), { x: 970, y: 530, snapX: false, snapY: false });
+  assert.deepEqual(plain(api.snapToCenter(965, 300, middle, 8)), { x: 960, y: 300, snapX: true, snapY: false });
+  assert.deepEqual(plain(api.snapToCenter(100, 546, middle, 8)), { x: 100, y: 540, snapX: false, snapY: true });
+  assert.deepEqual(plain(api.snapToCenter(970, 530, middle, 8)), { x: 970, y: 530, snapX: false, snapY: false });
+  // The middle of a cover that is zoomed and moved.
+  assert.deepEqual(plain(api.snapToCenter(1203, 402, { x: 1200, y: 400 }, 8)), { x: 1200, y: 400, snapX: true, snapY: true });
 });
 
 test("rotation wraps, sticks to right angles and follows a step", () => {
@@ -105,10 +108,10 @@ test("scaling keeps sizes within limits", () => {
   assert.deepEqual(plain(api.scaledSize(sticker({ size: 280 }), 100)), { size: 1600 });
 });
 
-test("new elements land in the middle, stepping past ones already there", () => {
-  const first = api.newSticker([], "/stickers/1f600.svg");
+test("new elements land where asked, stepping past ones already there", () => {
+  const first = api.newSticker([], middle, "/stickers/1f600.svg");
   assert.deepEqual([first.id, first.x, first.y, first.size, first.aspect], [1, 960, 540, 280, 1]);
-  const second = api.newText([first], api.TEXT_STYLES[1], "Kaiti SC");
+  const second = api.newText([first], middle, api.TEXT_STYLES[1], "Kaiti SC");
   assert.deepEqual([second.id, second.x, second.y, second.font], [2, 1020, 600, "Kaiti SC"]);
   assert.equal(second.fill, api.TEXT_STYLES[1].fill);
   assert.equal("label" in second, false);
@@ -122,13 +125,14 @@ test("styles compare by look, ignoring the width of a missing outline", () => {
   assert.ok(!api.sameStyle({ ...outlined, strokeWidth: 0.2 }, outlined));
 });
 
-test("backgrounds fit by covering or containing, centered", () => {
-  assert.deepEqual(plain(api.fitRect(1080, 1920, "contain")), { x: 656.25, y: 0, width: 607.5, height: 1080 });
-  const cover = api.fitRect(1080, 1920, "cover");
+test("pictures fit by covering or containing a target, centered", () => {
+  const target = { width: 1920, height: 1080 };
+  assert.deepEqual(plain(api.fitRect(1080, 1920, target, "contain")), { x: 656.25, y: 0, width: 607.5, height: 1080 });
+  const cover = api.fitRect(1080, 1920, target, "cover");
   assert.equal(cover.width, 1920);
   close(cover.height, (1920 * 1920) / 1080);
   close(cover.y, (1080 - cover.height) / 2);
-  assert.deepEqual(plain(api.fitRect(1280, 720, "cover")), { x: 0, y: 0, width: 1920, height: 1080 });
+  assert.deepEqual(plain(api.fitRect(1280, 720, target, "cover")), { x: 0, y: 0, width: 1920, height: 1080 });
 });
 
 test("reordering moves one element and clamps to the stack", () => {
@@ -137,6 +141,57 @@ test("reordering moves one element and clamps to the stack", () => {
   assert.deepEqual(plain(api.reorder(["a", "b", "c"], 1, -1)), ["b", "a", "c"]);
 });
 
-test("the homepage crop is the middle 4:3", () => {
-  assert.deepEqual(plain(api.HOMEPAGE_CROP), { x: 240, y: 0, width: 1440, height: 1080 });
+const home = api.aspectOf("home");
+const wide = api.aspectOf("wide");
+
+test("covers are saved at Bilibili's 4:3 and 16:9 sizes", () => {
+  assert.deepEqual(plain(api.COVER_SIZES), { home: { width: 1440, height: 1080 }, wide: { width: 1920, height: 1080 } });
+  assert.deepEqual(plain(api.sceneOf()), { width: 1920, height: 1080 });
+  assert.deepEqual(plain(api.sceneOf(640, 480)), { width: 1440, height: 1080 });
+});
+
+test("by default each cover covers the picture, centered", () => {
+  const scene = api.sceneOf(1920, 1080);
+  assert.deepEqual(plain(api.defaultFrame(scene, wide)), { x: 960, y: 540, zoom: 1 });
+  assert.deepEqual(plain(api.frameRect(scene, wide, api.defaultFrame(scene, wide))), { x: 0, y: 0, width: 1920, height: 1080 });
+  // The homepage shows the middle 4:3, as Bilibili crops it.
+  assert.deepEqual(plain(api.frameRect(scene, home, api.defaultFrame(scene, home))), { x: 240, y: 0, width: 1440, height: 1080 });
+});
+
+test("a portrait picture is shown whole on a fill rather than cropped to a strip", () => {
+  const scene = api.sceneOf(1080, 1920);
+  const frame = api.defaultFrame(scene, wide);
+  assert.equal(frame.zoom, api.minZoom(scene, wide));
+  const rect = api.frameRect(scene, wide, frame);
+  close(rect.height, 1080);
+  close(rect.x + rect.width / 2, scene.width / 2);
+});
+
+test("frames stay over the picture and within the zoom range", () => {
+  const scene = api.sceneOf(1920, 1080);
+  // Zoomed in, the frame cannot leave the picture.
+  const moved = api.clampFrame(scene, wide, { x: 5000, y: -100, zoom: 2 });
+  assert.deepEqual(plain(api.frameRect(scene, wide, moved)), { x: 960, y: 0, width: 960, height: 540 });
+  // Zoomed out past covering, it stays centered on the picture.
+  const out = api.clampFrame(scene, home, { x: 0, y: 0, zoom: 0.1 });
+  assert.equal(out.zoom, api.minZoom(scene, home));
+  assert.deepEqual([out.x, out.y], [960, 540]);
+  assert.equal(api.clampFrame(scene, wide, { x: 960, y: 540, zoom: 99 }).zoom, api.MAX_ZOOM);
+});
+
+test("zooming keeps the point under the pointer in place", () => {
+  const scene = api.sceneOf(1920, 1080);
+  const start = api.defaultFrame(scene, wide);
+  const anchor = { x: 480, y: 270 };
+  const before = api.frameRect(scene, wide, start);
+  const zoomed = api.zoomFrame(scene, wide, start, 2, anchor);
+  const after = api.frameRect(scene, wide, zoomed);
+  close((anchor.x - before.x) / before.width, (anchor.x - after.x) / after.width);
+  close((anchor.y - before.y) / before.height, (anchor.y - after.y) / after.height);
+  assert.equal(zoomed.zoom, 2);
+});
+
+test("elements sit on the covers: the 4:3 cover shows the middle of the 16:9 one", () => {
+  assert.deepEqual(plain(api.elementArea("wide")), { x: 0, y: 0, width: 1920, height: 1080 });
+  assert.deepEqual(plain(api.elementArea("home")), { x: 240, y: 0, width: 1440, height: 1080 });
 });

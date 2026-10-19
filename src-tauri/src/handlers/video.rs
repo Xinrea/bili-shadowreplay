@@ -695,8 +695,17 @@ async fn upload_procedure_inner(
     let output = state.config.read().await.output.clone();
     let file = Path::new(&output).join(&video_row.file);
     let cover_path = file.with_extension("jpg");
-    let posted =
-        upload_video_file(state, reporter, &uid, &room_id, &file, &cover_path, profile).await?;
+    let posted = upload_video_file(
+        state,
+        reporter,
+        &uid,
+        &room_id,
+        &file,
+        &cover_path,
+        None,
+        profile,
+    )
+    .await?;
     // Posted already; a missing history entry must not report a failure.
     let now = chrono::Local::now().to_rfc3339();
     let history = state
@@ -709,6 +718,7 @@ async fn upload_procedure_inner(
             room_id,
             uid,
             cover: String::new(),
+            cover43: String::new(),
             profile: serde_json::to_string(&posted.profile).unwrap_or_default(),
             danmu: false,
             status: "posted".to_string(),
@@ -738,7 +748,21 @@ pub(crate) struct PostedVideo {
     pub profile: Profile,
 }
 
-/// Upload `file` with `cover_path` to Bilibili as a new submission.
+/// The JPEG at `path` as a base64 data URL, as Bilibili takes covers.
+async fn cover_data_url(path: &Path) -> Result<String, String> {
+    let bytes = tokio::fs::read(path).await.map_err(|e| {
+        log::error!("Read cover file error: {} {}", e, path.display());
+        e.to_string()
+    })?;
+    Ok(format!(
+        "data:image/jpeg;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
+/// Upload `file` with `cover_path`, and `cover43_path` for the homepage
+/// feed if given, to Bilibili as a new submission.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn upload_video_file(
     state: &State,
     reporter: &ProgressReporter,
@@ -746,21 +770,25 @@ pub(crate) async fn upload_video_file(
     room_id: &str,
     file: &Path,
     cover_path: &Path,
+    cover43_path: Option<&Path>,
     mut profile: Profile,
 ) -> Result<PostedVideo, String> {
     let account = state.db.get_account("bilibili", uid).await?;
     let client = reqwest::Client::new();
 
-    let cover_bytes = tokio::fs::read(cover_path).await.map_err(|e| {
-        log::error!("Read cover file error: {} {}", e, cover_path.display());
-        e.to_string()
-    })?;
-    let cover_base64 = format!(
-        "data:image/jpeg;base64,{}",
-        base64::engine::general_purpose::STANDARD.encode(cover_bytes)
-    );
+    let cover_base64 = cover_data_url(cover_path).await?;
     let cover_url =
         bilibili::api::upload_cover(&client, &account.to_account(), &cover_base64).await;
+    // Without it Bilibili crops the 16:9 cover, so a failure is not fatal.
+    if let Some(path) = cover43_path {
+        profile.cover43 = match cover_data_url(path).await {
+            Ok(data) => bilibili::api::upload_cover(&client, &account.to_account(), &data)
+                .await
+                .inspect_err(|e| log::warn!("Failed to upload the 4:3 cover: {e}"))
+                .ok(),
+            Err(_) => None,
+        };
+    }
 
     reporter.update("投稿预处理中").await;
 

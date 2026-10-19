@@ -1205,13 +1205,14 @@ async fn handler_update_upload(
 struct UpdateUploadCoverRequest {
     id: i64,
     cover: String,
+    cover43: Option<String>,
 }
 
 async fn handler_update_upload_cover(
     state: axum::extract::State<State>,
     Json(param): Json<UpdateUploadCoverRequest>,
 ) -> Result<Json<ApiResponse<UploadView>>, ApiError> {
-    let upload = update_upload_cover(state.0, param.id, param.cover).await?;
+    let upload = update_upload_cover(state.0, param.id, param.cover, param.cover43).await?;
     Ok(Json(ApiResponse::success(upload)))
 }
 

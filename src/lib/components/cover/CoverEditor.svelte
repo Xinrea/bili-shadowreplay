@@ -196,6 +196,18 @@
     hasBackground = true;
     backgroundKind = kind;
     scheduleRedraw();
+    for (const resolve of firstBackground.splice(0)) resolve();
+  }
+
+  // Saves waiting for the video's first frame when there is no cover.
+  const firstBackground: (() => void)[] = [];
+
+  function waitForFirstBackground(timeout: number): Promise<void> {
+    if (hasBackground || !video?.file) return Promise.resolve();
+    return new Promise((resolve) => {
+      firstBackground.push(resolve);
+      setTimeout(resolve, timeout);
+    });
   }
 
   function loadImage(src: string): Promise<HTMLImageElement> {
@@ -471,7 +483,8 @@
   }
 
   function handlePointerDown(event: PointerEvent) {
-    if (event.button !== 0) return;
+    // Also where `inert` is missing.
+    if (event.button !== 0 || saving) return;
     finishEditing();
     surface.focus({ preventScroll: true });
     const hit = hitTest(event);
@@ -584,6 +597,7 @@
     saving = true;
     try {
       await backgroundLoad;
+      await waitForFirstBackground(5000);
       const loads = await Promise.allSettled(
         elements.flatMap((element) => (element.kind === "sticker" ? [loadSticker(element.src)] : [])),
       );

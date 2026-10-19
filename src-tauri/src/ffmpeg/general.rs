@@ -103,21 +103,35 @@ mod tests {
 /// and audio is resampled first. Concat requires matching resolution; sample
 /// rate and layout are converted automatically, but `aresample` also absorbs
 /// leftover timestamp gaps on mismatched clips.
-fn build_hardcut_concat_filter_complex(n: usize, normalize: bool) -> String {
-    if !normalize {
-        let mut inputs = String::new();
-        for i in 0..n {
-            inputs.push_str(&format!("[{i}:v][{i}:a]"));
-        }
-        return format!("{inputs}concat=n={n}:v=1:a=1[outv][outa]");
-    }
-
+///
+/// `silence[i]` is the duration of input `i` when it has no audio stream; that
+/// input contributes generated silence so later audio stays aligned. Inputs
+/// without an entry (or with `None`) use their own audio.
+fn build_hardcut_concat_filter_complex(
+    n: usize,
+    normalize: bool,
+    silence: &[Option<f64>],
+) -> String {
     let mut parts = Vec::with_capacity(n * 2 + 1);
     let mut concat_inputs = String::new();
     for i in 0..n {
-        parts.push(format!("[{i}:v]{}[v{i}]", hwaccel::H264_SCALE_PAD_FILTER));
-        parts.push(format!("[{i}:a]aresample=async=1:first_pts=0[a{i}]"));
-        concat_inputs.push_str(&format!("[v{i}][a{i}]"));
+        if normalize {
+            parts.push(format!("[{i}:v]{}[v{i}]", hwaccel::H264_SCALE_PAD_FILTER));
+            concat_inputs.push_str(&format!("[v{i}]"));
+        } else {
+            concat_inputs.push_str(&format!("[{i}:v]"));
+        }
+        match silence.get(i).copied().flatten() {
+            Some(duration) => {
+                parts.push(format!("anullsrc=r=48000:cl=stereo:d={duration:.3}[a{i}]"));
+                concat_inputs.push_str(&format!("[a{i}]"));
+            }
+            None if normalize => {
+                parts.push(format!("[{i}:a]aresample=async=1:first_pts=0[a{i}]"));
+                concat_inputs.push_str(&format!("[a{i}]"));
+            }
+            None => concat_inputs.push_str(&format!("[{i}:a]")),
+        }
     }
     parts.push(format!("{concat_inputs}concat=n={n}:v=1:a=1[outv][outa]"));
     parts.join(";")
@@ -193,7 +207,8 @@ fn ensure_output_folder(output_path: &Path) -> Result<&Path, String> {
     Ok(output_folder)
 }
 
-/// Concatenate full recordings with stream copy when codecs match.
+/// Concatenate full recordings with stream copy when codecs match, otherwise
+/// re-encode them through the concat filter.
 ///
 /// This path is for already-muxed files (e.g. whole playlists), not copy-trimmed
 /// clip ranges. Copy-trimmed MP4s must go through [`concat_videos_with_transition`]
@@ -206,11 +221,35 @@ pub async fn concat_videos(
     concat_videos_with_demuxer(reporter, videos, output_path).await
 }
 
+/// Join recordings whose streams differ. The concat demuxer feeds every file
+/// through the first file's streams, which drops the audio of a recording that
+/// has none (shifting later audio) and hands mismatched packets to decoders.
+/// The concat filter decodes each input on its own.
+async fn concat_mismatched_videos(
+    reporter: Option<&impl ProgressReporterTrait>,
+    videos: &[PathBuf],
+    output_path: &Path,
+) -> Result<(), String> {
+    let mut silence = Vec::with_capacity(videos.len());
+    for video in videos {
+        let metadata = ffmpeg_utils::extract_video_metadata(video).await?;
+        silence.push(metadata.audio_codec.is_empty().then_some(metadata.duration));
+    }
+    let filter_complex = build_hardcut_concat_filter_complex(videos.len(), true, &silence);
+    encode_filter_concat(reporter, videos, output_path, filter_complex).await
+}
+
 async fn concat_videos_with_demuxer(
     reporter: Option<&impl ProgressReporterTrait>,
     videos: &[PathBuf],
     output_path: &Path,
 ) -> Result<(), String> {
+    let video_refs: Vec<&Path> = videos.iter().map(|p| p.as_path()).collect();
+    let should_encode = !super::check_videos(&video_refs).await;
+    if should_encode && videos.len() > 1 {
+        return concat_mismatched_videos(reporter, videos, output_path).await;
+    }
+
     let mut ffmpeg_process = ffmpeg_command();
 
     let output_folder = ensure_output_folder(output_path)?;
@@ -239,9 +278,6 @@ async fn concat_videos_with_demuxer(
         .flush()
         .await
         .map_err(|e| format!("Failed to flush filelist: {e}"))?;
-
-    let video_refs: Vec<&Path> = videos.iter().map(|p| p.as_path()).collect();
-    let should_encode = !super::check_videos(&video_refs).await;
 
     ffmpeg_process.args([
         "-f",
@@ -340,7 +376,7 @@ pub async fn concat_videos_with_transition(
     if transition.is_none() || transition == Some("none") {
         let video_refs: Vec<&Path> = videos.iter().map(|p| p.as_path()).collect();
         let normalize = !super::check_videos(&video_refs).await;
-        let filter_complex = build_hardcut_concat_filter_complex(videos.len(), normalize);
+        let filter_complex = build_hardcut_concat_filter_complex(videos.len(), normalize, &[]);
         return encode_filter_concat(reporter, videos, output_path, filter_complex).await;
     }
 
@@ -365,18 +401,18 @@ mod transition_filter_tests {
     #[test]
     fn hardcut_concat_maps_all_streams_in_order() {
         assert_eq!(
-            build_hardcut_concat_filter_complex(2, false),
+            build_hardcut_concat_filter_complex(2, false, &[]),
             "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[outv][outa]"
         );
         assert_eq!(
-            build_hardcut_concat_filter_complex(3, false),
+            build_hardcut_concat_filter_complex(3, false, &[]),
             "[0:v][0:a][1:v][1:a][2:v][2:a]concat=n=3:v=1:a=1[outv][outa]"
         );
     }
 
     #[test]
     fn hardcut_concat_normalizes_mismatched_inputs() {
-        let filter = build_hardcut_concat_filter_complex(2, true);
+        let filter = build_hardcut_concat_filter_complex(2, true, &[]);
         assert!(
             filter.contains("[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2[v0]"),
             "video 0 should scale/pad: {filter}"
@@ -392,6 +428,27 @@ mod transition_filter_tests {
         assert!(
             filter.contains("[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]"),
             "normalized streams should concat: {filter}"
+        );
+    }
+
+    #[test]
+    fn hardcut_concat_fills_inputs_without_audio_with_silence() {
+        let filter = build_hardcut_concat_filter_complex(3, true, &[None, Some(12.5), None]);
+        assert!(
+            filter.contains("anullsrc=r=48000:cl=stereo:d=12.500[a1]"),
+            "silent input should get silence of its duration: {filter}"
+        );
+        assert!(
+            !filter.contains("[1:a]"),
+            "an input without audio has no audio stream to map: {filter}"
+        );
+        assert!(
+            filter.contains("[2:a]aresample=async=1:first_pts=0[a2]"),
+            "inputs with audio keep it: {filter}"
+        );
+        assert!(
+            filter.contains("[v0][a0][v1][a1][v2][a2]concat=n=3:v=1:a=1[outv][outa]"),
+            "every input should contribute audio: {filter}"
         );
     }
 
@@ -822,5 +879,62 @@ mod concat_videos_tests {
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
         assert_eq!(metadata.width, 1920);
         assert_eq!(metadata.height, 1080);
+    }
+
+    #[tokio::test]
+    async fn concat_videos_keeps_audio_aligned_across_a_recording_without_audio() {
+        let temp_dir = std::env::temp_dir().join(format!("bili_test_{}", random_filename().await));
+        tokio::fs::create_dir_all(&temp_dir).await.unwrap();
+
+        let video1_path = temp_dir.join("playlist-0.mp4");
+        let silent_path = temp_dir.join("playlist-1.mp4");
+        let video3_path = temp_dir.join("playlist-2.mp4");
+        let output_path = temp_dir.join("out.mp4");
+
+        create_test_video(&video1_path, 2).await.unwrap();
+        let output = ffmpeg_command()
+            .args([
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red:s=1280x720:d=2",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-an",
+                "-y",
+                silent_path.to_str().unwrap(),
+            ])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        create_test_video(&video3_path, 2).await.unwrap();
+
+        let result = concat_videos(
+            None::<&crate::progress::progress_reporter::ProgressReporter>,
+            &[video1_path, silent_path, video3_path],
+            &output_path,
+        )
+        .await;
+        assert!(result.is_ok(), "concat should succeed: {:?}", result);
+
+        let video_duration = probe_stream_duration(&output_path, "v:0").await;
+        let audio_duration = probe_stream_duration(&output_path, "a:0").await;
+        let decoded_duration = decoded_audio_duration(&output_path).await;
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+        assert!(
+            (video_duration - 6.0).abs() < 0.2,
+            "video should cover all recordings: {video_duration}s"
+        );
+        assert!(
+            (audio_duration - video_duration).abs() < 0.2,
+            "audio {audio_duration}s must stay aligned with video {video_duration}s"
+        );
+        assert!(
+            (decoded_duration - video_duration).abs() < 0.2,
+            "decoded audio {decoded_duration}s must fill the silent recording, not skip it"
+        );
     }
 }

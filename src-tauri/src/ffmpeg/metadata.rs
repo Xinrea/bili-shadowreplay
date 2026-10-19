@@ -9,10 +9,27 @@ use tokio::io::BufReader;
 use super::runner::FfmpegJob;
 use ffmpeg_utils::{extract_video_metadata, ffmpeg_command};
 
-/// Generate thumbnail file from video, capturing a frame at the specified timestamp.
+/// Pick a random point in the video's middle 80% to avoid intros and outros.
+pub fn get_random_thumbnail_timestamp(duration: f64) -> f64 {
+    if !duration.is_finite() || duration <= 0.0 {
+        return 0.0;
+    }
+    duration * rand::random_range(0.1..0.9)
+}
+
+/// Generate a JPEG thumbnail, retrying at the start if the requested seek fails.
 pub async fn generate_thumbnail(video_full_path: &Path, timestamp: f64) -> Result<PathBuf, String> {
     let thumbnail_full_path = video_full_path.with_extension("jpg");
-    extract_frame(video_full_path, timestamp, &thumbnail_full_path).await?;
+    if let Err(error) = extract_frame(video_full_path, timestamp, &thumbnail_full_path).await {
+        if timestamp == 0.0 {
+            return Err(error);
+        }
+        log::warn!(
+            "Failed to capture thumbnail at {timestamp}s for {}: {error}; retrying at the start",
+            video_full_path.display()
+        );
+        extract_frame(video_full_path, 0.0, &thumbnail_full_path).await?;
+    }
     Ok(thumbnail_full_path)
 }
 
@@ -25,10 +42,10 @@ pub async fn extract_frame(
     let thumbnail_full_path = target.to_path_buf();
     FfmpegJob::new()
         .args([
-            "-i".to_string(),
-            video_full_path.to_string_lossy().into_owned(),
             "-ss".to_string(),
             timestamp.to_string(),
+            "-i".to_string(),
+            video_full_path.to_string_lossy().into_owned(),
             "-vframes".to_string(),
             "1".to_string(),
             "-y".to_string(),
@@ -39,15 +56,18 @@ pub async fn extract_frame(
         .await
         .map_err(|error| format!("ffmpeg生成缩略图失败: {error}"))?;
 
-    if let Ok(metadata) = std::fs::metadata(&thumbnail_full_path) {
-        log::info!(
-            "生成缩略图完成: {} (文件大小: {} bytes)",
-            thumbnail_full_path.display(),
-            metadata.len()
-        );
-    } else {
-        log::info!("生成缩略图完成: {}", thumbnail_full_path.display());
+    // FFmpeg may exit successfully after seeking past EOF without writing a frame.
+    let metadata = tokio::fs::metadata(&thumbnail_full_path)
+        .await
+        .map_err(|e| format!("缩略图文件未生成: {} ({e})", thumbnail_full_path.display()))?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err(format!("缩略图文件为空: {}", thumbnail_full_path.display()));
     }
+    log::info!(
+        "生成缩略图完成: {} (文件大小: {} bytes)",
+        thumbnail_full_path.display(),
+        metadata.len()
+    );
     Ok(())
 }
 
@@ -140,4 +160,47 @@ pub async fn check_videos(video_paths: &[&Path]) -> bool {
     }
 
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires FFmpeg with libx264"]
+    async fn thumbnail_recovers_from_a_seek_past_eof_and_reports_missing_frames() {
+        let directory = tempfile::tempdir().unwrap();
+        let video = directory.path().join("short.mp4");
+        let output = ffmpeg_command()
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red:s=64x64:r=25:d=0.5",
+                "-c:v",
+                "libx264",
+                "-y",
+            ])
+            .arg(&video)
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+
+        let missing_frame = directory.path().join("missing-frame.jpg");
+        assert!(extract_frame(&video, 60.0, &missing_frame).await.is_err());
+
+        let thumbnail = generate_thumbnail(&video, 60.0).await.unwrap();
+        assert!(std::fs::metadata(thumbnail).unwrap().len() > 0);
+
+        // Neither the random position nor the first frame can read a missing video.
+        assert!(
+            generate_thumbnail(&directory.path().join("missing.mp4"), 60.0)
+                .await
+                .is_err()
+        );
+    }
 }

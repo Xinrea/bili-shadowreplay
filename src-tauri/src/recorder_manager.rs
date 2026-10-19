@@ -1686,7 +1686,11 @@ impl RecorderManager {
             Err(e) => log::error!("Failed to get video metadata: {e}"),
         }
 
-        let _ = crate::ffmpeg::generate_thumbnail(Path::new(&output_path), 0.0).await;
+        let _ = crate::ffmpeg::generate_thumbnail(
+            &output_path,
+            crate::ffmpeg::get_random_thumbnail_timestamp(duration),
+        )
+        .await;
         let _ = crate::ffmpeg::extract_audio_sample(Path::new(&output_path)).await;
 
         let video = self

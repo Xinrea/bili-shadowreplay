@@ -50,10 +50,11 @@
     styleOf,
     TEXT_STYLES,
     zoomFrame,
+    twinChanges,
     type CoverElement,
+    type ElementChanges,
     type Frame,
     type Ratio,
-    type StickerElement,
     type TextElement,
     type TextStyle,
   } from "../../cover-elements";
@@ -92,9 +93,10 @@
     { id: "wide", label: "个人空间", hint: "16:9" },
   ];
 
-  // Elements, front last, in element space. Kept while the editor is hidden,
+  // Each cover's elements, front last, in element space; an element and its
+  // twin on the other cover share an id. Kept while the editor is hidden,
   // so reopening after saving edits them again over the same background.
-  let elements: CoverElement[] = $state([]);
+  let covers: Record<Ratio, CoverElement[]> = $state({ home: [], wide: [] });
   let selectedId: number | null = $state(null);
   let editingId: number | null = $state(null);
   // The picture of the cover being edited is selected: zoom and move it.
@@ -113,9 +115,12 @@
     home: defaultFrame(sceneOf(), aspectOf("home")),
     wide: defaultFrame(sceneOf(), aspectOf("wide")),
   });
-  // Zoom and move both covers together, as Bilibili does by default.
-  let syncFrames = $state(true);
+  // Edit text and stickers on both covers together, as Bilibili does by
+  // default; each cover always frames the picture on its own.
+  let syncCovers = $state(true);
 
+  /** The elements of the cover being edited. */
+  let elements = $derived(covers[ratio]);
   let selected = $derived(elements.find((element) => element.id === selectedId) ?? null);
   let selectedText = $derived(selected?.kind === "text" ? selected : null);
   let selectedSticker = $derived(selected?.kind === "sticker" ? selected : null);
@@ -176,7 +181,7 @@
   });
 
   $effect(() => {
-    $state.snapshot(elements);
+    $state.snapshot(covers);
     $state.snapshot(frames);
     editingId;
     // The canvas is cleared when switching covers resizes it.
@@ -213,7 +218,7 @@
     const pending = renderCover(ctx, scene, view, background, area, elements, editingId);
     for (const r of ["home", "wide"] as const) {
       const preview = previews[r]?.getContext("2d");
-      if (preview) pending.push(...renderCover(preview, scene, viewOf(r), background, elementArea(r), elements));
+      if (preview) pending.push(...renderCover(preview, scene, viewOf(r), background, elementArea(r), covers[r]));
     }
     if (pending.length) {
       // Only redraw for stickers that arrived, or a failed one would loop.
@@ -223,23 +228,23 @@
     }
   }
 
+  const otherRatio = (r: Ratio): Ratio => (r === "home" ? "wide" : "home");
+
+  /** The covers an edit to the current one goes to. */
+  const editedRatios = (): Ratio[] => (syncCovers ? [ratio, otherRatio(ratio)] : [ratio]);
+
   // Framing
 
   function setFrame(next: Frame) {
-    const aspect = aspectOf(ratio);
-    frames[ratio] = clampFrame(scene, aspect, next);
-    if (syncFrames) {
-      const other: Ratio = ratio === "home" ? "wide" : "home";
-      frames[other] = clampFrame(scene, aspectOf(other), { ...frames[ratio] });
-    }
+    frames[ratio] = clampFrame(scene, aspectOf(ratio), next);
   }
 
   function zoomTo(zoom: number, anchor?: { x: number; y: number }) {
     setFrame(zoomFrame(scene, aspectOf(ratio), frames[ratio], zoom, anchor));
   }
 
-  function resetFrames() {
-    frames = { home: defaultFrame(scene, aspectOf("home")), wide: defaultFrame(scene, aspectOf("wide")) };
+  function resetFrame() {
+    frames[ratio] = defaultFrame(scene, aspectOf(ratio));
     commit();
   }
 
@@ -366,7 +371,7 @@
 
   // History of elements and framing
 
-  const snapshot = () => JSON.stringify({ elements: $state.snapshot(elements), frames: $state.snapshot(frames) });
+  const snapshot = () => JSON.stringify({ covers: $state.snapshot(covers), frames: $state.snapshot(frames) });
   let history = [snapshot()];
   let historyIndex = $state(0);
   let historyLength = $state(1);
@@ -393,7 +398,7 @@
     if (index < 0 || index >= history.length) return;
     historyIndex = index;
     const state = JSON.parse(history[index]);
-    elements = state.elements;
+    covers = state.covers;
     // Framing saved for another picture would not fit this one.
     frames = {
       home: clampFrame(scene, aspectOf("home"), state.frames.home),
@@ -410,10 +415,29 @@
   /** The middle of both covers, where new elements go. */
   const MIDDLE = { x: ELEMENT_SPACE.width / 2, y: ELEMENT_SPACE.height / 2 };
 
+  /** Unique across both covers, so only twins share an id. */
+  const newId = () => nextId([...covers.home, ...covers.wide]);
+
+  /** The twin of element `id` on the other cover, while edits carry over to it. */
+  function twinOf(id: number): CoverElement | null {
+    return syncCovers ? (covers[otherRatio(ratio)].find((element) => element.id === id) ?? null) : null;
+  }
+
+  function add(element: CoverElement) {
+    for (const r of editedRatios()) covers[r].push({ ...element });
+  }
+
+  /** Applies `changes` to `element` and, while synced, to its twin. */
+  function change(element: CoverElement, changes: ElementChanges) {
+    const twin = twinOf(element.id);
+    if (twin) Object.assign(twin, twinChanges(element, changes, twin));
+    Object.assign(element, changes);
+  }
+
   function addText(style: TextStyle = lastStyle, font = lastFont) {
     pictureSelected = false;
-    const text = newText(elements, MIDDLE, style, font);
-    elements.push(text);
+    const text = { ...newText(elements, MIDDLE, style, font), id: newId() };
+    add(text);
     // Committed when its first edit finishes.
     void startEditing(text.id, true);
   }
@@ -426,8 +450,11 @@
       alert("贴纸加载失败，可能已被删除");
       return;
     }
-    const element = newSticker(elements, MIDDLE, src, image.naturalWidth / image.naturalHeight || 1, size);
-    elements.push(element);
+    const element = {
+      ...newSticker(elements, MIDDLE, src, image.naturalWidth / image.naturalHeight || 1, size),
+      id: newId(),
+    };
+    add(element);
     selectedId = element.id;
     pictureSelected = false;
     commit();
@@ -436,25 +463,25 @@
   function pickStyle(style: TextStyle) {
     lastStyle = styleOf(style);
     if (!selectedText) return addText(style);
-    Object.assign(selectedText, styleOf(style));
+    change(selectedText, styleOf(style));
     commit();
   }
 
   function pickFont(family: string) {
     lastFont = family;
     if (!selectedText) return addText(lastStyle, family);
-    selectedText.font = family;
+    change(selectedText, { font: family });
     commit();
   }
 
-  function update(changes: Partial<TextElement> | Partial<StickerElement>) {
+  function update(changes: ElementChanges) {
     if (!selected) return;
-    Object.assign(selected, changes);
+    change(selected, changes);
     commitSoon();
   }
 
   function remove(id: number) {
-    elements = elements.filter((element) => element.id !== id);
+    for (const r of editedRatios()) covers[r] = covers[r].filter((element) => element.id !== id);
     if (selectedId === id) selectedId = null;
     commit();
   }
@@ -465,19 +492,25 @@
   }
 
   function duplicate(element: CoverElement) {
-    const copy = {
-      ...$state.snapshot(element),
-      id: nextId(elements),
-      ...placeable({ x: element.x + 40, y: element.y + 40 }),
-    } as CoverElement;
-    elements.push(copy);
-    selectedId = copy.id;
+    const id = newId();
+    for (const r of editedRatios()) {
+      const source = covers[r].find((e) => e.id === element.id);
+      if (!source) continue;
+      covers[r].push({
+        ...$state.snapshot(source),
+        id,
+        ...placeable({ x: source.x + 40, y: source.y + 40 }),
+      } as CoverElement);
+    }
+    selectedId = id;
     commit();
   }
 
   function shift(element: CoverElement, step: 1 | -1) {
-    const index = elements.findIndex((e) => e.id === element.id);
-    elements = reorder(elements, index, index + step);
+    for (const r of editedRatios()) {
+      const index = covers[r].findIndex((e) => e.id === element.id);
+      if (index >= 0) covers[r] = reorder(covers[r], index, index + step);
+    }
     commit();
   }
 
@@ -526,12 +559,8 @@
     const element = elements.find((e) => e.id === id);
     if (element?.kind === "text" && field) {
       const content = field.innerText.replace(/\r/g, "").replace(/\n$/, "");
-      if (content.trim()) {
-        element.content = content;
-      } else {
-        elements = elements.filter((e) => e.id !== id);
-        selectedId = null;
-      }
+      if (content.trim()) change(element, { content });
+      else remove(id);
     }
     commit();
   }
@@ -554,6 +583,8 @@
     id: number;
     start: { x: number; y: number };
     origin: CoverElement;
+    /** The twin as the drag began, while edits carry over to it. */
+    twin: CoverElement | null;
     moved: boolean;
   }
 
@@ -596,7 +627,15 @@
     event.stopPropagation();
     if (event.button !== 0 || saving) return;
     surface.setPointerCapture(event.pointerId);
-    drag = { mode, id: element.id, start: toCover(event), origin: $state.snapshot(element) as CoverElement, moved: false };
+    const twin = twinOf(element.id);
+    drag = {
+      mode,
+      id: element.id,
+      start: toCover(event),
+      origin: $state.snapshot(element) as CoverElement,
+      twin: twin && ($state.snapshot(twin) as CoverElement),
+      moved: false,
+    };
   }
 
   function handlePointerDown(event: PointerEvent) {
@@ -642,6 +681,7 @@
     if (!element) return;
     const point = toCover(event);
     const origin = drag.origin;
+    let changes: ElementChanges;
     if (drag.mode === "move") {
       const dx = point.x - drag.start.x;
       const dy = point.y - drag.start.y;
@@ -649,19 +689,24 @@
       if (!drag.moved && Math.hypot(dx, dy) * unit < 3) return;
       const to = placeable({ x: origin.x + dx, y: origin.y + dy });
       const snapped = snapToCenter(to.x, to.y, MIDDLE, 8 / unit);
-      element.x = Math.round(snapped.x);
-      element.y = Math.round(snapped.y);
+      changes = { x: Math.round(snapped.x), y: Math.round(snapped.y) };
       guides = { x: snapped.snapX, y: snapped.snapY };
     } else if (drag.mode === "rotate") {
       const from = Math.atan2(drag.start.y - origin.y, drag.start.x - origin.x);
       const to = Math.atan2(point.y - origin.y, point.x - origin.x);
-      element.rotation = snapRotation(origin.rotation + ((to - from) * 180) / Math.PI, event.shiftKey ? 15 : undefined);
+      changes = {
+        rotation: snapRotation(origin.rotation + ((to - from) * 180) / Math.PI, event.shiftKey ? 15 : undefined),
+      };
     } else {
-      const ratio =
+      const factor =
         Math.hypot(point.x - origin.x, point.y - origin.y) /
         Math.max(1, Math.hypot(drag.start.x - origin.x, drag.start.y - origin.y));
-      Object.assign(element, scaledSize(origin, ratio));
+      changes = scaledSize(origin, factor);
     }
+    Object.assign(element, changes);
+    // From where both started, so the twin does not drift.
+    const twin = drag.twin && covers[otherRatio(ratio)].find((e) => e.id === current.id);
+    if (twin) Object.assign(twin, twinChanges(origin, changes, drag.twin));
     drag.moved = true;
   }
 
@@ -740,7 +785,7 @@
     const output = document.createElement("canvas");
     output.width = COVER_SIZES[r].width;
     output.height = COVER_SIZES[r].height;
-    renderCover(output.getContext("2d"), scene, viewOf(r), background, elementArea(r), elements);
+    renderCover(output.getContext("2d"), scene, viewOf(r), background, elementArea(r), covers[r]);
     return output.toDataURL("image/jpeg", 0.92);
   }
 
@@ -763,7 +808,9 @@
         return;
       }
       const loads = await Promise.allSettled(
-        elements.flatMap((element) => (element.kind === "sticker" ? [loadSticker(element.src)] : [])),
+        [...covers.home, ...covers.wide].flatMap((element) =>
+          element.kind === "sticker" ? [loadSticker(element.src)] : [],
+        ),
       );
       if (loads.some((load) => load.status === "rejected")) {
         alert("有贴纸没有加载出来，请删除后再保存封面");
@@ -855,7 +902,7 @@
               value={selectedText.font}
               onSelect={(font) => {
                 lastFont = font;
-                selectedText.font = font;
+                change(selectedText, { font });
                 commit();
               }}
             />
@@ -986,11 +1033,7 @@
             </button>
             <span class="w-10 text-right text-[11px] tabular-nums text-fg-muted">{Math.round(frames[ratio].zoom * 100)}%</span>
             <span class="toolbar-separator"></span>
-            <label class="flex cursor-pointer items-center gap-1.5 text-[12px] text-fg-secondary">
-              <input type="checkbox" class="ui-checkbox" bind:checked={syncFrames} />
-              双比例同步改动
-            </label>
-            <button type="button" class="ui-btn ui-btn-sm ui-btn-ghost" onclick={resetFrames}>重置</button>
+            <button type="button" class="ui-btn ui-btn-sm ui-btn-ghost" onclick={resetFrame}>重置</button>
           {:else}
             <span class="text-[12px] text-fg-muted">点击画面可缩放、拖动；从左侧添加文字或贴纸，双击文字可直接修改。</span>
           {/if}
@@ -1061,7 +1104,7 @@
           </div>
         </div>
 
-        <div class="flex shrink-0 justify-center pt-3">
+        <div class="flex shrink-0 items-center justify-center gap-4 pt-3">
           <div class="ui-tabs" role="tablist" aria-label="封面比例">
             {#each RATIOS as item (item.id)}
               <button
@@ -1076,6 +1119,13 @@
               </button>
             {/each}
           </div>
+          <label
+            class="flex cursor-pointer items-center gap-1.5 text-[12px] text-fg-secondary"
+            title="取消后，文字和贴纸的改动只作用于当前封面"
+          >
+            <input type="checkbox" class="ui-checkbox" bind:checked={syncCovers} />
+            双比例同步改动
+          </label>
         </div>
 
         <div bind:this={stageArea} class="relative mx-5 mb-5 mt-3 flex min-h-0 flex-1 items-center justify-center">
@@ -1294,7 +1344,7 @@
             </span>
           </button>
         {/each}
-        <p class="ui-hint">两张封面都会展示给观众：首页推荐用 4:3，个人空间等处用 16:9。每张可以单独缩放、移动画面，文字和贴纸在两张封面上同步。</p>
+        <p class="ui-hint">两张封面都会展示给观众：首页推荐用 4:3，个人空间等处用 16:9。每张可以单独缩放、移动画面；取消「双比例同步改动」后，文字和贴纸的改动只作用于当前封面。</p>
       </aside>
     </div>
 

@@ -99,6 +99,8 @@ test("rotation wraps, sticks to right angles and follows a step", () => {
   assert.equal(api.snapRotation(370), 10);
   assert.equal(api.snapRotation(52, 15), 45);
   assert.equal(api.snapRotation(-179), -180);
+  assert.equal(api.normalizeAngle(190), -170);
+  assert.equal(api.normalizeAngle(-540), -180);
 });
 
 test("scaling keeps sizes within limits", () => {
@@ -106,6 +108,29 @@ test("scaling keeps sizes within limits", () => {
   assert.deepEqual(plain(api.scaledSize(text({ fontSize: 100 }), 0.01)), { fontSize: 12 });
   assert.deepEqual(plain(api.scaledSize(sticker({ size: 280 }), 0.5)), { size: 140 });
   assert.deepEqual(plain(api.scaledSize(sticker({ size: 280 }), 100)), { size: 1600 });
+});
+
+test("a synced edit moves, turns and resizes a twin placed apart by as much", () => {
+  const element = text({ x: 960, y: 540, rotation: 0, fontSize: 100 });
+  const twin = text({ x: 900, y: 500, rotation: 170, fontSize: 80 });
+  assert.deepEqual(plain(api.twinChanges(element, { x: 1000, y: 520 }, twin)), { x: 940, y: 480 });
+  assert.deepEqual(plain(api.twinChanges(element, { rotation: 30 }, twin)), { rotation: -160 });
+  assert.deepEqual(plain(api.twinChanges(element, { fontSize: 150 }, twin)), { fontSize: 120 });
+  const sized = api.twinChanges(sticker({ size: 200 }), { size: 100 }, sticker({ size: 300 }));
+  assert.deepEqual(plain(sized), { size: 150 });
+});
+
+test("a synced move keeps the twin on the covers", () => {
+  const twin = sticker({ x: 1900, y: 20 });
+  assert.deepEqual(plain(api.twinChanges(sticker({ x: 960, y: 540 }), { x: 1060, y: 440 }, twin)), { x: 1920, y: 0 });
+});
+
+test("a synced edit matches only what it changes on a twin styled apart", () => {
+  const element = text({ fill: "#FFFFFF", stroke: "#1A1A1A", font: "" });
+  const twin = text({ fill: "#FF3B30", stroke: "#000000", font: "Kaiti SC" });
+  const changes = { ...api.styleOf(element), fill: "#FFE14D" };
+  assert.deepEqual(plain(api.twinChanges(element, changes, twin)), { fill: "#FFE14D" });
+  assert.deepEqual(plain(api.twinChanges(element, { content: "新标题" }, twin)), { content: "新标题" });
 });
 
 test("new elements land where asked, stepping past ones already there", () => {

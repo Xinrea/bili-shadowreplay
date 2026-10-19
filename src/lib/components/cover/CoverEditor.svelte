@@ -295,6 +295,7 @@
   async function loadBackground(src: string, kind: "cover" | "upload") {
     const token = ++backgroundToken;
     followVideo = false;
+    settleSeek();
     try {
       const image = src === originalCover && originalImage ? originalImage : await loadImage(src);
       if (src === originalCover) originalImage = image;
@@ -327,20 +328,33 @@
     if (!hasBackground && (!originalCover || originalFailed)) seekFrame(defaultFrameTime());
   }
 
+  // Resolves the seek a save may be waiting for.
+  let seekDone: (() => void) | null = null;
+
+  function settleSeek() {
+    seekDone?.();
+    seekDone = null;
+  }
+
   function seekFrame(time: number) {
     if (!videoElement) return;
     ++backgroundToken;
     followVideo = true;
     frameTime = time;
+    settleSeek();
+    backgroundLoad = new Promise((resolve) => (seekDone = resolve));
     videoElement.currentTime = time;
   }
 
   function handleSeeked() {
-    if (!followVideo || !videoElement.videoWidth) return;
     try {
-      setBackground(videoElement, videoElement.videoWidth, videoElement.videoHeight, "frame");
+      if (followVideo && videoElement.videoWidth) {
+        setBackground(videoElement, videoElement.videoWidth, videoElement.videoHeight, "frame");
+      }
     } catch (error) {
       log.error("Failed to capture video frame:", String(error));
+    } finally {
+      settleSeek();
     }
   }
 
@@ -740,7 +754,8 @@
     finishEditing();
     saving = true;
     try {
-      await backgroundLoad;
+      // A seek that never finishes must not hold the save forever.
+      await Promise.race([backgroundLoad, new Promise((resolve) => setTimeout(resolve, 5000))]);
       await waitForFirstBackground(5000);
       // Never replace a cover with the grey placeholder.
       if (!hasBackground) {
@@ -1245,6 +1260,7 @@
             preload="auto"
             onloadedmetadata={handleVideoLoaded}
             onseeked={handleSeeked}
+            onerror={settleSeek}
           ></video>
         </div>
       </div>

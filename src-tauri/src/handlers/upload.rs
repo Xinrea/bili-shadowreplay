@@ -306,7 +306,8 @@ pub async fn update_upload(
 }
 
 /// Replace the cover with the base64 data URL `cover`, and the homepage's
-/// 4:3 cover with `cover43`; without it Bilibili crops `cover`.
+/// 4:3 cover with `cover43`. Without one, an earlier 4:3 cover is dropped
+/// as it would no longer match, and Bilibili crops `cover` instead.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_upload_cover(
     state: state_type!(),

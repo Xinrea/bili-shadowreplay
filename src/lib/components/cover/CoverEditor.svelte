@@ -743,7 +743,7 @@
       await backgroundLoad;
       await waitForFirstBackground(5000);
       // Never replace a cover with the grey placeholder.
-      if (!hasBackground && (video?.file || originalCover)) {
+      if (!hasBackground) {
         alert("封面画面还没有加载出来，请稍后再保存，或上传一张图片作为背景");
         return;
       }

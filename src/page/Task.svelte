@@ -9,7 +9,7 @@
     AlertCircle,
     Loader2,
     RefreshCw,
-    ChevronDown,
+    ChevronRight,
     X,
   } from "lucide-svelte";
   import type { TaskRow } from "../lib/db";
@@ -399,11 +399,11 @@
                         : "展开任务详情"}
                       aria-expanded={expandedTasks.has(task.id)}
                     >
-                      <ChevronDown
+                      <ChevronRight
                         class="w-3.5 h-3.5 transition-transform {expandedTasks.has(
                           task.id,
                         )
-                          ? 'rotate-180'
+                          ? 'rotate-90'
                           : ''}"
                       />
                     </button>

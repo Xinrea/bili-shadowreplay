@@ -59,25 +59,6 @@ fn should_convert_video_format(extension: &str) -> bool {
     matches!(extension.to_lowercase().as_str(), "flv")
 }
 
-/// 获取视频的最佳缩略图截取时间点
-/// 根据视频长度选择最佳时间点，避开开头可能的黑屏
-pub(crate) fn get_optimal_thumbnail_timestamp(duration: f64) -> f64 {
-    // 根据视频长度选择最佳时间点
-    if duration <= 10.0 {
-        // 短视频（10秒以内）：选择1/3位置，避免开头黑屏
-        duration / 3.0
-    } else if duration <= 60.0 {
-        // 1分钟以内：选择第3秒
-        3.0
-    } else if duration <= 300.0 {
-        // 5分钟以内：选择第5秒
-        5.0
-    } else {
-        // 长视频：选择第10秒，确保跳过开头可能的黑屏/logo
-        10.0
-    }
-}
-
 use crate::state::State;
 use crate::state_type;
 
@@ -535,7 +516,7 @@ pub(crate) async fn create_material(
     }
     // generate cover file from video as fallback
     if cover_generate_ffmpeg {
-        ffmpeg::generate_thumbnail(&file, get_optimal_thumbnail_timestamp(duration)).await?;
+        ffmpeg::generate_thumbnail(&file, ffmpeg::get_random_thumbnail_timestamp(duration)).await?;
     }
     let _ = crate::ffmpeg::extract_audio_sample(&file).await?;
     // get filename from path
@@ -1504,8 +1485,8 @@ pub async fn import_external_video(
     // 步骤3: 生成缩略图
     reporter.update("正在生成视频缩略图...").await;
 
-    // 生成缩略图，使用智能时间点选择
-    let thumbnail_timestamp = get_optimal_thumbnail_timestamp(metadata.duration);
+    // 从视频中随机截取缩略图
+    let thumbnail_timestamp = ffmpeg::get_random_thumbnail_timestamp(metadata.duration);
     let cover_path =
         match ffmpeg::generate_thumbnail(&final_target_full_path, thumbnail_timestamp).await {
             Ok(path) => path
@@ -1710,9 +1691,9 @@ async fn clip_video_inner(
     // 生成缩略图文件名，确保路径安全
     let thumbnail_full_path = output_full_path.with_extension("jpg");
 
-    // 生成缩略图，选择切片开头的合理位置
+    // 从切片中随机截取缩略图
     let clip_duration = end_time - start_time;
-    let clip_thumbnail_timestamp = get_optimal_thumbnail_timestamp(clip_duration);
+    let clip_thumbnail_timestamp = ffmpeg::get_random_thumbnail_timestamp(clip_duration);
     let clip_cover_path =
         match ffmpeg::generate_thumbnail(&output_full_path, clip_thumbnail_timestamp).await {
             Ok(_) => thumbnail_full_path

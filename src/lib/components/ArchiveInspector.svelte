@@ -318,7 +318,6 @@
     <ArchiveClipButton
       {archive}
       ranges={activeRanges}
-      captureCover
       onGenerated={onGenerated}
     />
   {/snippet}

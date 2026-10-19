@@ -16,7 +16,7 @@ use crate::handlers::project::{
     material_danmu_video, material_title, project_cover_file, project_upload_video,
     remove_upload_renders, set_project_danmu, single_project_view, write_cover,
 };
-use crate::handlers::video::{get_optimal_thumbnail_timestamp, upload_video_file, PostedVideo};
+use crate::handlers::video::{upload_video_file, PostedVideo};
 use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
 use crate::project::Timeline;
 use crate::state::State;
@@ -179,7 +179,12 @@ async fn capture_file_cover(state: &State, upload: &UploadRow) -> Result<String,
             .await
             .map_err(|e| e.to_string())?;
     }
-    crate::ffmpeg::extract_frame(file, get_optimal_thumbnail_timestamp(duration), &target).await?;
+    crate::ffmpeg::extract_frame(
+        file,
+        crate::ffmpeg::get_random_thumbnail_timestamp(duration),
+        &target,
+    )
+    .await?;
     Ok(relative)
 }
 

@@ -18,7 +18,6 @@
     ranges?: Range[];
     initialNote?: string;
     localOffset?: number | null;
-    captureCover?: boolean;
     variant?: "primary" | "compact";
     disabled?: boolean;
     onGenerated?: (result: GeneratedMaterials) => void;
@@ -30,7 +29,6 @@
     ranges = [],
     initialNote = "",
     localOffset = null,
-    captureCover = false,
     variant = "primary",
     disabled = false,
     onGenerated,
@@ -78,29 +76,6 @@
     return parts.join(" ");
   }
 
-  function getCover() {
-    if (!captureCover) return "";
-    const video = document.getElementById("video") as HTMLVideoElement | null;
-    if (!video || !video.videoWidth || !video.videoHeight) return "";
-    const canvas = document.createElement("canvas");
-    canvas.width = 1280;
-    canvas.height = 720;
-    const context = canvas.getContext("2d");
-    if (!context) return "";
-    context.drawImage(
-      video,
-      0,
-      0,
-      video.videoWidth,
-      video.videoHeight,
-      0,
-      0,
-      canvas.width,
-      canvas.height,
-    );
-    return canvas.toDataURL();
-  }
-
   async function generateClip() {
     if (!archive || activeRanges.length === 0) return;
     showConfirm = false;
@@ -110,7 +85,8 @@
       note: clipNote,
       room_id: archive.room_id,
       platform: archive.platform,
-      cover: getCover(),
+      // Generate a random cover from each material after the video is saved.
+      cover: "",
       live_id: archive.live_id,
       ranges: activeRanges,
       // Materials keep their danmaku; projects burn it when exporting.

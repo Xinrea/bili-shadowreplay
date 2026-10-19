@@ -9,6 +9,14 @@ use tokio::io::BufReader;
 use super::runner::FfmpegJob;
 use ffmpeg_utils::{extract_video_metadata, ffmpeg_command};
 
+/// Pick a random point in the video's middle 80% to avoid intros and outros.
+pub fn get_random_thumbnail_timestamp(duration: f64) -> f64 {
+    if !duration.is_finite() || duration <= 0.0 {
+        return 0.0;
+    }
+    duration * rand::random_range(0.1..0.9)
+}
+
 /// Generate thumbnail file from video, capturing a frame at the specified timestamp.
 pub async fn generate_thumbnail(video_full_path: &Path, timestamp: f64) -> Result<PathBuf, String> {
     let thumbnail_full_path = video_full_path.with_extension("jpg");
@@ -25,10 +33,10 @@ pub async fn extract_frame(
     let thumbnail_full_path = target.to_path_buf();
     FfmpegJob::new()
         .args([
-            "-i".to_string(),
-            video_full_path.to_string_lossy().into_owned(),
             "-ss".to_string(),
             timestamp.to_string(),
+            "-i".to_string(),
+            video_full_path.to_string_lossy().into_owned(),
             "-vframes".to_string(),
             "1".to_string(),
             "-y".to_string(),

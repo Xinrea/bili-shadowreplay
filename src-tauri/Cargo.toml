@@ -198,6 +198,3 @@ pct-str = "2.0"
 rand = "0.10"
 m3u8-rs = "6.0"
 async-ffmpeg-sidecar = "0.0.3"
-
-[profile.release]
-debug = 1

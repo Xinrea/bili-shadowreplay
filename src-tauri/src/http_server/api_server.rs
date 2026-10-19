@@ -41,6 +41,7 @@ use crate::{
             get_recent_record, get_recorder_list, get_room_info, get_today_record_count,
             get_total_length, remove_recorder, send_danmaku, set_enable, ExportDanmuOptions,
         },
+        sticker::{add_cover_sticker, delete_cover_sticker, get_cover_stickers, CoverSticker},
         subtitle_fonts::{
             get_subtitle_font_families, get_subtitle_preview_fonts, SubtitleFontFamily,
             SubtitlePreviewFont,
@@ -1214,6 +1215,41 @@ async fn handler_update_upload_cover(
     Ok(Json(ApiResponse::success(upload)))
 }
 
+async fn handler_get_cover_stickers(
+    state: axum::extract::State<State>,
+) -> Result<Json<ApiResponse<Vec<CoverSticker>>>, ApiError> {
+    let stickers = get_cover_stickers(state.0).await?;
+    Ok(Json(ApiResponse::success(stickers)))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddCoverStickerRequest {
+    image: String,
+}
+
+async fn handler_add_cover_sticker(
+    state: axum::extract::State<State>,
+    Json(param): Json<AddCoverStickerRequest>,
+) -> Result<Json<ApiResponse<CoverSticker>>, ApiError> {
+    let sticker = add_cover_sticker(state.0, param.image).await?;
+    Ok(Json(ApiResponse::success(sticker)))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteCoverStickerRequest {
+    id: String,
+}
+
+async fn handler_delete_cover_sticker(
+    state: axum::extract::State<State>,
+    Json(param): Json<DeleteCoverStickerRequest>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    delete_cover_sticker(state.0, param.id).await?;
+    Ok(Json(ApiResponse::success(())))
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UpdateUploadDanmuRequest {
@@ -2338,6 +2374,11 @@ pub async fn start_api_server(state: State) {
                 post(handler_update_upload_danmu),
             )
             .route("/api/delete_upload", post(handler_delete_upload))
+            .route("/api/add_cover_sticker", post(handler_add_cover_sticker))
+            .route(
+                "/api/delete_cover_sticker",
+                post(handler_delete_cover_sticker),
+            )
             .route("/api/post_upload", post(handler_post_upload))
             .route("/api/request_upload", post(handler_request_upload))
             .route("/api/generate_materials", post(handler_generate_materials))
@@ -2409,6 +2450,7 @@ pub async fn start_api_server(state: State) {
         .route("/api/get_project", post(handler_get_project))
         .route("/api/get_uploads", post(handler_get_uploads))
         .route("/api/get_upload", post(handler_get_upload))
+        .route("/api/get_cover_stickers", post(handler_get_cover_stickers))
         .route("/api/get_material_usage", post(handler_get_material_usage))
         .route("/api/get_material_peaks", post(handler_get_material_peaks))
         .route("/api/get_material_danmu", post(handler_get_material_danmu))

@@ -23,7 +23,7 @@
     sourceDescription,
     sourceLabels,
   } from "../../uploads";
-  import CoverEditor from "../CoverEditor.svelte";
+  import CoverEditor from "../cover/CoverEditor.svelte";
   import TypeSelect from "../TypeSelect.svelte";
 
   interface Props {
@@ -394,5 +394,6 @@
   bind:show={showCoverEditor}
   video={videoUrl ? { file: videoUrl } : null}
   image={coverUrl}
+  title={profile.title}
   onSave={saveCover}
 />

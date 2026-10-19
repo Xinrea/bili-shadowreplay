@@ -7,6 +7,7 @@ pub mod message;
 pub mod migrate;
 pub mod project;
 pub mod recorder;
+pub mod sticker;
 pub mod subtitle_fonts;
 pub mod summary;
 pub mod task;

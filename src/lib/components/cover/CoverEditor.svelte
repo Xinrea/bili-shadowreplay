@@ -208,7 +208,15 @@
     });
   }
 
-  async function useImage(src: string, kind: "cover" | "upload") {
+  // Awaited before saving, so a quick save does not miss the background.
+  let backgroundLoad: Promise<void> = Promise.resolve();
+
+  function useImage(src: string, kind: "cover" | "upload") {
+    backgroundLoad = loadBackground(src, kind);
+    return backgroundLoad;
+  }
+
+  async function loadBackground(src: string, kind: "cover" | "upload") {
     const token = ++backgroundToken;
     followVideo = false;
     try {
@@ -575,6 +583,7 @@
     finishEditing();
     saving = true;
     try {
+      await backgroundLoad;
       const loads = await Promise.allSettled(
         elements.flatMap((element) => (element.kind === "sticker" ? [loadSticker(element.src)] : [])),
       );
@@ -652,11 +661,13 @@
       </nav>
 
       <div class="custom-scrollbar-light w-[252px] shrink-0 overflow-y-auto border-r border-line p-3">
-        {#if panel === "text"}
+        <!-- Both stay mounted so an import keeps running while the other is shown. -->
+        <div class:hidden={panel !== "text"}>
           <TextPanel selected={selectedText} onAdd={() => addText()} onStyle={pickStyle} onFont={pickFont} />
-        {:else}
-          <StickerPanel active={show} bind:group={stickerGroup} onPick={addSticker} />
-        {/if}
+        </div>
+        <div class="min-h-full" class:hidden={panel !== "sticker"}>
+          <StickerPanel active={show && panel === "sticker"} bind:group={stickerGroup} onPick={addSticker} />
+        </div>
       </div>
 
       <!-- Canvas -->

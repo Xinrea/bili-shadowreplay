@@ -25,6 +25,8 @@
   let importing = $state(0);
   let dragging = $state(false);
   let fileInput: HTMLInputElement = $state();
+  // Deleted while the first list was loading, which may still name them.
+  const deleted = new Set<string>();
 
   $effect(() => {
     if (group === MINE && custom === null) void refresh();
@@ -33,7 +35,7 @@
   async function refresh() {
     loadError = "";
     try {
-      const listed = await loadCustomStickers();
+      const listed = (await loadCustomStickers()).filter((sticker) => !deleted.has(sticker.id));
       // Keep stickers imported while the list was loading.
       const imported = (custom ?? []).filter((sticker) => !listed.some((s) => s.id === sticker.id));
       custom = [...listed, ...imported];
@@ -66,6 +68,7 @@
     if (!(await confirm("删除这个贴纸吗？已经添加到封面上的不受影响。"))) return;
     try {
       await deleteCustomSticker(sticker.id);
+      deleted.add(sticker.id);
       custom = custom.filter((s) => s.id !== sticker.id);
     } catch (error) {
       alert("删除贴纸失败：" + error);

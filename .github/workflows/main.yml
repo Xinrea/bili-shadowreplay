@@ -182,48 +182,6 @@ jobs:
           path: updater-${{ matrix.updater-target }}.json
           if-no-files-found: error
 
-      - name: Generate dSYM for Sentry (macOS only)
-        if: matrix.platform == 'macos-latest'
-        shell: bash
-        env:
-          RUST_TARGET: ${{ matrix.target }}
-        run: |
-          set -euo pipefail
-          # Rust on macOS keeps DWARF in the object files; run dsymutil to
-          # produce a .dSYM bundle next to the binary so Sentry can symbolicate.
-          BIN="src-tauri/target/$RUST_TARGET/release/bili-shadowreplay"
-          if [ -f "$BIN" ]; then
-            echo "Running dsymutil on $BIN"
-            dsymutil "$BIN"
-          else
-            echo "Binary not found, skipping dsymutil: $BIN"
-          fi
-
-      - name: Upload debug symbols to Sentry
-        # Requires repository secrets: SENTRY_URL, SENTRY_AUTH_TOKEN, SENTRY_ORG, SENTRY_PROJECT
-        continue-on-error: true
-        shell: bash
-        env:
-          SENTRY_URL: ${{ secrets.SENTRY_URL }}
-          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
-          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          RUST_TARGET: ${{ matrix.target }}
-        run: |
-          set -euo pipefail
-          if [ -z "${SENTRY_AUTH_TOKEN:-}" ]; then
-            echo "SENTRY_AUTH_TOKEN not set, skipping debug symbol upload."
-            exit 0
-          fi
-          # Use the explicit target triple from the matrix to locate the build output.
-          if [ -n "$RUST_TARGET" ]; then
-            DEBUG_DIR="src-tauri/target/$RUST_TARGET/release"
-          else
-            DEBUG_DIR="src-tauri/target/release"
-          fi
-          echo "Uploading debug files from: $DEBUG_DIR"
-          npx --yes @sentry/cli@2 debug-files upload --include-sources "$DEBUG_DIR"
-
   publish-updater:
     needs: publish-tauri
     if: needs.publish-tauri.outputs.prerelease == 'false'

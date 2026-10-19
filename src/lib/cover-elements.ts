@@ -6,7 +6,9 @@
 // position; scene units are the picture scaled to SCENE_HEIGHT tall. Text
 // and stickers sit on the covers instead, in the 16:9 cover's pixels with
 // the 4:3 cover showing the middle of them, so they keep their place and
-// size in both whatever each picture's framing.
+// size in both whatever each picture's framing. Each cover has its own
+// elements; edits made while the covers are synced carry over to the twin,
+// the element with the same id on the other cover.
 
 export const SCENE_HEIGHT = 1080;
 export const MAX_ZOOM = 4;
@@ -208,9 +210,14 @@ export function snapToCenter(x: number, y: number, center: { x: number; y: numbe
   return { x: snapX ? center.x : x, y: snapY ? center.y : y, snapX, snapY };
 }
 
+/** `degrees` within [-180, 180). */
+export function normalizeAngle(degrees: number): number {
+  return ((((degrees + 180) % 360) + 360) % 360) - 180;
+}
+
 /** Normalized to [-180, 180]: to multiples of `step`, or else near right angles. */
 export function snapRotation(degrees: number, step?: number): number {
-  let angle = ((((degrees + 180) % 360) + 360) % 360) - 180;
+  let angle = normalizeAngle(degrees);
   const target = step ? step : 90;
   const nearest = Math.round(angle / target) * target;
   if (step || Math.abs(angle - nearest) <= 4) angle = nearest;
@@ -226,6 +233,35 @@ export function scaledSize(origin: CoverElement, ratio: number): Partial<TextEle
   return origin.kind === "text"
     ? { fontSize: clamp(Math.round(origin.fontSize * ratio), 12, 800) }
     : { size: clamp(Math.round(origin.size * ratio), 24, 1600) };
+}
+
+export type ElementChanges = Partial<TextElement> | Partial<StickerElement>;
+
+/**
+ * `changes` to `element` as they apply to its twin on the other cover, which
+ * may have been placed apart: moved, turned and resized by as much. The rest
+ * carries over as a whole, so a picked style looks the same on both, but
+ * only when it changes `element`: leaving text unchanged keeps the twin's.
+ */
+export function twinChanges(element: CoverElement, changes: ElementChanges, twin: CoverElement): ElementChanges {
+  const before = element as unknown as Record<string, unknown>;
+  const result: Record<string, unknown> = {};
+  const matched: Record<string, unknown> = {};
+  let changed = false;
+  for (const [key, value] of Object.entries(changes)) {
+    if (key === "x" || key === "y") {
+      const extent = key === "x" ? ELEMENT_SPACE.width : ELEMENT_SPACE.height;
+      result[key] = clamp(twin[key] + (value as number) - element[key], 0, extent);
+    } else if (key === "rotation") {
+      result.rotation = normalizeAngle(twin.rotation + (value as number) - element.rotation);
+    } else if (key === "fontSize" || key === "size") {
+      Object.assign(result, scaledSize(twin, (value as number) / (before[key] as number)));
+    } else {
+      matched[key] = value;
+      changed ||= value !== before[key];
+    }
+  }
+  return (changed ? { ...result, ...matched } : result) as ElementChanges;
 }
 
 /** `at`, moved down-right past elements already placed there. */

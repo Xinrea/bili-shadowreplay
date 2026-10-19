@@ -514,9 +514,23 @@ pub(crate) async fn create_material(
             log::error!("Invalid cover base64: {}", params.cover);
         }
     }
-    // generate cover file from video as fallback
+    let mut cover_name = cover_file
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("Invalid cover path: {}", cover_file.display()))?
+        .to_string();
+    // A failed thumbnail must not discard an otherwise completed material.
     if cover_generate_ffmpeg {
-        ffmpeg::generate_thumbnail(&file, ffmpeg::get_random_thumbnail_timestamp(duration)).await?;
+        if let Err(e) =
+            ffmpeg::generate_thumbnail(&file, ffmpeg::get_random_thumbnail_timestamp(duration))
+                .await
+        {
+            log::warn!(
+                "Failed to generate material thumbnail {}: {e}",
+                file.display()
+            );
+            cover_name.clear();
+        }
     }
     let _ = crate::ffmpeg::extract_audio_sample(&file).await?;
     // get filename from path
@@ -533,11 +547,6 @@ pub(crate) async fn create_material(
         );
         return Err("Failed to convert metadata length to i64".to_string());
     };
-    let cover_name = cover_file
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| format!("Invalid cover path: {}", cover_file.display()))?
-        .to_string();
     let source = crate::database::video::MaterialSource {
         ranges,
         local_offset: params.local_offset,
@@ -1692,7 +1701,12 @@ async fn clip_video_inner(
     let thumbnail_full_path = output_full_path.with_extension("jpg");
 
     // 从切片中随机截取缩略图
-    let clip_duration = end_time - start_time;
+    let clip_duration = match ffmpeg_utils::extract_video_metadata(&output_full_path).await {
+        Ok(metadata) if metadata.duration.is_finite() && metadata.duration > 0.0 => {
+            metadata.duration
+        }
+        _ => end_time - start_time,
+    };
     let clip_thumbnail_timestamp = ffmpeg::get_random_thumbnail_timestamp(clip_duration);
     let clip_cover_path =
         match ffmpeg::generate_thumbnail(&output_full_path, clip_thumbnail_timestamp).await {
@@ -1718,7 +1732,7 @@ async fn clip_video_inner(
         title: clip_title,
         file: output_filename,
         note: String::new(),
-        length: (end_time - start_time) as i64,
+        length: clip_duration as i64,
         size: i64::try_from(file_metadata.len()).map_err(|e| e.to_string())?,
         status: 1,
         cover: clip_cover_path,
@@ -1729,7 +1743,7 @@ async fn clip_video_inner(
         created_at: Local::now().to_rfc3339(),
         live_id: String::new(),
         source: String::new(),
-        duration: end_time - start_time,
+        duration: clip_duration,
     };
 
     let result = state.db.add_video(&clip_video).await?;

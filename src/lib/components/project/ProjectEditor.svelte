@@ -248,26 +248,33 @@
    * the one edited here: danmaku switched on the uploads page, clips of a
    * deleted material, recognized subtitles. `base` is what the saved timeline
    * was made from: the one just sent when saving, or else the last one seen.
+   * Returns whether the result has an edit of its own still to save.
    */
-  function applyProjectView(view: ProjectItem, base?: ProjectTimeline) {
+  function applyProjectView(view: ProjectItem, base?: ProjectTimeline): boolean {
     project = view;
-    if (!base && view.timeline === syncedTimeline) return;
+    if (!base && view.timeline === syncedTimeline) return false;
     const from = base ?? parseTimeline(syncedTimeline);
     syncedTimeline = view.timeline;
-    // Clips that left can leave overlays running on into each other.
-    const merged = settleOverlays(mergeRemoteTimeline(timeline, from, parseTimeline(view.timeline)));
-    if (merged !== timeline) timeline = merged;
+    const merged = mergeRemoteTimeline(timeline, from, parseTimeline(view.timeline));
+    // Clips that left can leave overlays on a track running into each other;
+    // lifting them apart is saved like any edit.
+    const settled = settleOverlays(merged);
+    if (settled !== timeline) timeline = settled;
+    return settled !== merged;
   }
 
   async function loadProject() {
     try {
       const view = await invoke<ProjectItem>("get_project", { id: projectId });
       // Together, so a refresh during the loads below merges into this timeline.
-      let loaded = parseTimeline(view.timeline);
+      const parsed = parseTimeline(view.timeline);
+      let loaded = settleOverlays(parsed);
       if (!loaded.subtitle_style) loaded = { ...loaded, subtitle_style: loadSubtitleStyle(view.room_id) };
       timeline = loaded;
       syncedTimeline = view.timeline;
       project = view;
+      // Overlays a material deleted meanwhile left overlapping were lifted apart.
+      if (loaded.tracks !== parsed.tracks) scheduleSave();
       title = view.title;
       await set_title(view.title || "切片");
       await loadMaterials();
@@ -301,7 +308,7 @@
     if (!project) return;
     // A save in flight brings back its own result; read what it left.
     while (saving) await saving;
-    applyProjectView(await invoke<ProjectItem>("get_project", { id: projectId }));
+    if (applyProjectView(await invoke<ProjectItem>("get_project", { id: projectId }))) scheduleSave();
   });
   // Deleted materials leave the library, and their clips the timeline.
   const materialRefresh = createStateRefresh(loadMaterials);
@@ -404,6 +411,7 @@
     saveState = "saving";
     let saved = false;
     let editedMeanwhile = false;
+    let unsaved = false;
     saving = (async () => {
       try {
         const view = await invoke<ProjectItem>("update_project_timeline", {
@@ -414,17 +422,17 @@
         editedMeanwhile = timeline !== snapshot;
         // Merged against what was sent: the backend keeps its danmaku setting
         // and drops clips of materials deleted meanwhile.
-        applyProjectView(view, snapshot);
+        unsaved = applyProjectView(view, snapshot);
         saved = true;
-        saveState = editedMeanwhile ? "pending" : "saved";
+        saveState = editedMeanwhile || unsaved ? "pending" : "saved";
       } catch (error) {
         log.error("Failed to save project timeline:", error);
         saveState = "error";
       }
     })().finally(() => (saving = null));
     await saving;
-    // Edits made during the save.
-    if (saved && editedMeanwhile) await flushSave();
+    // Edits made during the save, or by merging its result.
+    if (saved && (editedMeanwhile || unsaved)) await flushSave();
   }
 
   /** Apply an edit as one undo step. */
@@ -794,6 +802,15 @@
     if (placed && (time < placed.start || time >= placed.end)) seek(placed.start);
   }
 
+  /** Saved as it is typed, like a subtitle; one undo step when editing ends. */
+  function typeOverlayText(content: string) {
+    editContent = content;
+    const item = findOverlay(timeline, editingOverlayId);
+    if (item?.kind !== "text" || item.element.content === content) return;
+    timeline = editOverlay(timeline, item.id, withElement({ content }));
+    scheduleSave();
+  }
+
   /** Apply what was typed, removing a text left empty, as one undo step with its start. */
   function finishEditing() {
     const id = editingOverlayId;
@@ -811,21 +828,24 @@
     commit(next, before);
   }
 
-  // Resolve the URLs of the stickers used, once each.
+  // Sticker references being resolved now.
+  const resolvingStickers = new Set<string>();
+
+  // Resolve the URLs of the stickers used. One that fails is tried again with
+  // the next edit rather than kept as missing.
   $effect(() => {
     const refs = new Set<string>();
     for (const track of timeline.tracks) {
       for (const item of track.items) if (item.kind === "sticker") refs.add(item.element.src);
     }
-    const missing = [...refs].filter((ref) => !untrack(() => stickerUrls.has(ref)));
-    if (missing.length === 0) return;
-    void Promise.all(missing.map(async (ref) => [ref, await stickerRefUrl(ref).catch(() => "")] as const)).then(
-      (resolved) => {
-        const next = new Map(stickerUrls);
-        for (const [ref, url] of resolved) next.set(ref, url);
-        stickerUrls = next;
-      },
-    );
+    for (const ref of refs) {
+      if (untrack(() => stickerUrls.has(ref)) || resolvingStickers.has(ref)) continue;
+      resolvingStickers.add(ref);
+      stickerRefUrl(ref)
+        .then((url) => (stickerUrls = new Map(stickerUrls).set(ref, url)))
+        .catch((error) => console.warn("Failed to resolve sticker:", error))
+        .finally(() => resolvingStickers.delete(ref));
+    }
   });
 
   // ---- Playback ------------------------------------------------------------
@@ -1458,7 +1478,7 @@
                 onDragEnd={settleOverlayEdit}
                 onDelete={deleteOverlay}
                 onStartEditing={(id) => startEditing(id, true)}
-                onEditInput={(content) => (editContent = content)}
+                onEditInput={typeOverlayText}
                 onEditDone={() => finishEditing()}
                 onNudge={nudgeOverlay}
                 onAspect={setAspect}

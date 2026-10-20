@@ -197,7 +197,7 @@ fn overlay_filter(
                          atrim=duration={:.6},volume={:.3},adelay={delay}|{delay},\
                          apad,atrim=duration={total:.6}[oa{index}];\n",
                         end - start,
-                        layer.volume.min(1.0),
+                        layer.volume.clamp(0.0, 1.0),
                     ));
                     audio.push(format!("oa{index}"));
                 }

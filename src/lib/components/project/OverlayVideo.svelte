@@ -26,6 +26,8 @@
   // Within this much a playing overlay is left alone; seeking it stutters.
   const PLAYING_DRIFT = 0.3;
   const PAUSED_DRIFT = 0.02;
+  /** How far before the end of the file its last frame is held. */
+  const LAST_FRAME = 0.05;
 
   let video: HTMLVideoElement = $state();
   let item = $derived(placed.item as VideoOverlay);
@@ -41,9 +43,12 @@
 
   function sync() {
     if (!video || video.readyState < 1) return;
-    const to = target();
+    // A material's stored length can run a little past what its file plays.
+    // There the last frame is held: playing an ended video restarts it.
+    const last = Number.isFinite(video.duration) && video.duration > 0 ? video.duration - LAST_FRAME : Infinity;
+    const to = Math.min(target(), last);
     const drift = Math.abs(video.currentTime - to);
-    if (active && playing) {
+    if (active && playing && to < last) {
       if (video.paused) {
         if (drift > PAUSED_DRIFT) video.currentTime = to;
         video.play().catch(() => {});

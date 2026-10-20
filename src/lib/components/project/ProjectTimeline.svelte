@@ -20,7 +20,7 @@
     moveSubtitle,
     overlayCount,
     placeOverlays,
-    withOverlaysFrom,
+    withOverlayFrom,
     withSubtitleFrom,
     placeClips,
     resizeSubtitle,
@@ -547,8 +547,8 @@
     const edgeTime = snap((state.mode === "start" ? state.start : state.end) + delta, targets, enabled);
     const item = overlays.find((entry) => entry.item.id === state.id)?.item;
     const material = item?.kind === "video" ? materials.get(item.material_id) : undefined;
-    // From the overlays as the drag began, so the preview does not add up.
-    const from = withOverlaysFrom(timeline, state.base);
+    // From the overlay as the drag began, so the preview does not add up.
+    const from = withOverlayFrom(timeline, state.base, state.id);
     onPreview(trimOverlayEdge(from, state.id, state.mode, edgeTime, material?.duration ?? 0));
     drag = { ...state, moved: true };
   }
@@ -565,7 +565,7 @@
       if (time < state.start || time >= state.end) onSeek(state.start);
       return;
     }
-    const before = withOverlaysFrom(timeline, state.base);
+    const before = withOverlayFrom(timeline, state.base, state.id);
     if (state.mode !== "move") {
       onCommit(timeline, before);
       return;

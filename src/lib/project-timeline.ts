@@ -717,11 +717,12 @@ export function settleOverlays(timeline: ProjectTimeline): ProjectTimeline {
 }
 
 /**
- * `current` with the overlays of `base`: how the timeline was before a drag of
- * an overlay, keeping other changes merged in while dragging.
+ * `current` with overlay `id` as it is in `base`: how the timeline was before
+ * a drag of that overlay, keeping changes merged in while dragging.
  */
-export function withOverlaysFrom(current: ProjectTimeline, base: ProjectTimeline): ProjectTimeline {
-  return current.tracks === base.tracks ? current : { ...current, tracks: base.tracks };
+export function withOverlayFrom(current: ProjectTimeline, base: ProjectTimeline, id: string): ProjectTimeline {
+  const original = findOverlay(base, id);
+  return original ? editOverlay(current, id, () => original) : current;
 }
 
 function parseSrtTime(value: string): number {

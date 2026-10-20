@@ -289,3 +289,26 @@ test("overlays of a material the backend deleted are dropped when merging", () =
   // Old timelines without tracks parse to none.
   assert.deepEqual(plain(api.parseTimeline('{"clips":[]}').tracks), []);
 });
+
+test("deleting a middle material brings overlays together, and settling lifts them apart", () => {
+  // x on clip a runs on over b; once b goes, it meets y on clip c.
+  const clips = [clip("a", 1, 0, 4), clip("b", 2, 0, 3), clip("c", 3, 0, 10)];
+  const local = withTracks(timeline(clips), track("t1", text("x", "a", 2, 4), text("y", "c", 1, 2)));
+  const merged = api.mergeRemoteTimeline(local, local, timeline([clips[0], clips[2]]));
+  assert.deepEqual(spans(merged), [["x", 0, 2, 6, 0], ["y", 0, 5, 7, 0]]);
+  const settled = api.settleOverlays(merged);
+  assert.deepEqual(plain(settled.tracks.map((tr) => tr.items.map((i) => i.id))), [["x"], ["y"]]);
+});
+
+test("an overlay drag keeps changes merged in while dragging, also when undone", () => {
+  const clips = [clip("a", 1, 0, 10), clip("b", 2, 0, 10)];
+  const atDragStart = withTracks(timeline(clips), track("t1", text("x", "a", 1, 2)), track("t2", pip("v", "b", 0, 3, 2)));
+  // Material 2 is deleted mid-drag; the editor merges that into the live timeline.
+  const merged = api.mergeRemoteTimeline(atDragStart, atDragStart, timeline([clips[0]]));
+  const trimmed = api.trimOverlay(api.withOverlayFrom(merged, atDragStart, "x"), "x", "end", 5);
+  assert.deepEqual(plain(trimmed.tracks.map((tr) => tr.items.map((i) => [i.id, i.duration]))), [[["x", 4]]]);
+  // The undo step puts back only the dragged overlay, not the deleted video.
+  const before = plain(api.withOverlayFrom(trimmed, atDragStart, "x"));
+  assert.deepEqual(before.tracks.map((tr) => tr.items.map((i) => [i.id, i.duration])), [[["x", 2]]]);
+  assert.equal(api.withOverlayFrom(merged, atDragStart, "v"), merged);
+});

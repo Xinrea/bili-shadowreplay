@@ -379,7 +379,11 @@
           top={editing.item.element.y * unit}
           selectAll={editSelectAll}
           onInput={onEditInput}
-          onDone={onEditDone}
+          onDone={(byKey) => {
+            onEditDone(byKey);
+            // So the arrow keys go on nudging it.
+            if (byKey) surface.focus({ preventScroll: true });
+          }}
         />
       {/key}
     {/if}

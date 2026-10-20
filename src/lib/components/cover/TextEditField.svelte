@@ -42,13 +42,19 @@
     selection?.addRange(range);
   });
 
+  /** Report what the field reads as editing ends, should an input event have gone missing. */
+  function done(byKey: boolean) {
+    onInput(read());
+    onDone(byKey);
+  }
+
   function handleKeydown(event: KeyboardEvent) {
     if (event.isComposing) return;
     if (event.key === "Escape" || (event.key === "Enter" && (event.metaKey || event.ctrlKey))) {
       // Leave editing, not the editor.
       event.preventDefault();
       event.stopPropagation();
-      onDone(true);
+      done(true);
     }
   }
 </script>
@@ -83,8 +89,9 @@
     style:background={text.background ?? "transparent"}
     style:border-radius="{text.fontSize * 0.18 * unit}px"
     oninput={() => onInput(read())}
+    oncompositionend={() => onInput(read())}
     onkeydown={handleKeydown}
-    onblur={() => onDone(false)}
+    onblur={() => done(false)}
   ></div>
 </div>
 

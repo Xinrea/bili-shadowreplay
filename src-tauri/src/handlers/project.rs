@@ -1635,6 +1635,43 @@ mod tests {
     }
 
     #[test]
+    fn a_render_is_identified_by_its_overlay_pictures_too() {
+        let materials = HashMap::new();
+        let timeline = Timeline::from_materials(&[(1, 10.0)]);
+        let source = |images: Vec<OverlayImage>| ExportSource {
+            task_type: "export_project",
+            title: String::new(),
+            metadata: json!({}),
+            timeline: timeline.clone(),
+            materials: &materials,
+            subtitle_ass: None,
+            overlay_images: images,
+            danmu_options: Danmu2AssOptions::default(),
+        };
+        let image = |data: &str, x: f64| OverlayImage {
+            id: "text".into(),
+            image: data.into(),
+            x,
+            y: 0.0,
+        };
+        let drawn = source(vec![image("data:image/png;base64,AAAA", 10.0)]).render_hash();
+        assert_eq!(
+            drawn,
+            source(vec![image("data:image/png;base64,AAAA", 10.0)]).render_hash()
+        );
+        // Drawn differently, as with another font, or placed elsewhere.
+        assert_ne!(
+            drawn,
+            source(vec![image("data:image/png;base64,AAAB", 10.0)]).render_hash()
+        );
+        assert_ne!(
+            drawn,
+            source(vec![image("data:image/png;base64,AAAA", 11.0)]).render_hash()
+        );
+        assert_ne!(drawn, source(Vec::new()).render_hash());
+    }
+
+    #[test]
     fn exports_keep_the_mp4_extension_the_encoder_writes() {
         assert_eq!(mp4_path("a/b.mp4".into()), PathBuf::from("a/b.mp4"));
         assert_eq!(mp4_path("a/b.MP4".into()), PathBuf::from("a/b.MP4"));

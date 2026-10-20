@@ -1027,6 +1027,33 @@ async fn generate_video_subtitle_inner(
     event_id: String,
     id: i64,
 ) -> Result<String, String> {
+    // Copy the settings out so no config guard is held across the subtitle
+    // job, and resolve them before the task row exists so a bad setting or
+    // missing video does not leave the task pending.
+    let (
+        generator_type,
+        whisper_model,
+        whisper_prompt,
+        openai_api_key,
+        openai_api_endpoint,
+        language_hint,
+        output,
+    ) = {
+        let config = state.config.read().await;
+        (
+            SubtitleGeneratorType::parse(&config.subtitle_generator_type)?,
+            config.whisper_model.clone(),
+            config.whisper_prompt.clone(),
+            config.openai_api_key.clone(),
+            config.openai_api_endpoint.clone(),
+            config.whisper_language.clone(),
+            config.output.clone(),
+        )
+    };
+    let video = state.db.get_video(id).await?;
+    let filepath = Path::new(&output).join(&video.file);
+    let file = Path::new(&filepath);
+
     let reporter = ProgressReporter::new(state.db.clone(), &state.events, &event_id).await?;
     let task = TaskRow {
         id: event_id.clone(),
@@ -1041,18 +1068,6 @@ async fn generate_video_subtitle_inner(
     };
     state.db.add_task(&task).await?;
     log::info!("Create task: {task:?}");
-    let config = state.config.read().await;
-    let generator_type = SubtitleGeneratorType::parse(&config.subtitle_generator_type)?;
-    let whisper_model = config.whisper_model.clone();
-    let whisper_prompt = config.whisper_prompt.clone();
-    let openai_api_key = config.openai_api_key.clone();
-    let openai_api_endpoint = config.openai_api_endpoint.clone();
-    let language_hint = state.config.read().await.whisper_language.clone();
-    let language_hint = language_hint.as_str();
-
-    let video = state.db.get_video(id).await?;
-    let filepath = Path::new(state.config.read().await.output.as_str()).join(&video.file);
-    let file = Path::new(&filepath);
 
     match ffmpeg::generate_video_subtitle(
         Some(&reporter),
@@ -1063,7 +1078,7 @@ async fn generate_video_subtitle_inner(
         &whisper_prompt,
         &openai_api_key,
         &openai_api_endpoint,
-        language_hint,
+        &language_hint,
         Some(&state.db),
     )
     .await
@@ -1666,17 +1681,18 @@ async fn clip_video_inner(
     end_time: f64,
     clip_title: String,
 ) -> Result<VideoRow, String> {
-    let config = state.config.read().await;
+    // Copy the path out so no config guard is held across ffmpeg.
+    let output = state.config.read().await.output.clone();
 
     // 构建输入文件路径
-    let input_path = Path::new(&config.output).join(&parent_video.file);
+    let input_path = Path::new(&output).join(&parent_video.file);
 
     if !input_path.exists() {
         return Err("原视频文件不存在".to_string());
     }
 
     // 统一的输出目录：clips
-    let output_dir = Path::new(&config.output).join("clips");
+    let output_dir = Path::new(&output).join("clips");
     if !output_dir.exists() {
         std::fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
     }
@@ -2183,6 +2199,22 @@ mod queued_subtitle_tests {
         assert_eq!(state.task_manager.queue_size().await, 1);
         assert_eq!(state.db.get_task("first").await.unwrap().status, "pending");
         cancel(state, "first".into()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn subtitle_generation_rejected_upfront_leaves_no_pending_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = fixture(dir.path(), 1, false).await;
+        // A missing video fails before the task row exists.
+        assert!(generate_video_subtitle_inner(&state, "missing".into(), 404)
+            .await
+            .is_err());
+        // So does an unknown subtitle generator.
+        state.config.write().await.subtitle_generator_type = "unknown".into();
+        assert!(generate_video_subtitle_inner(&state, "unknown".into(), 1)
+            .await
+            .is_err());
+        assert!(state.db.get_tasks().await.unwrap().is_empty());
     }
 
     #[tokio::test]

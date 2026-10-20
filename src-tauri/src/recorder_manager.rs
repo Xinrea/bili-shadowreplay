@@ -1320,10 +1320,27 @@ impl RecorderManager {
         }
         log::info!("[{}]Temp clip file generated: {}", room_id, clip_file_path);
 
-        // Read config to determine generator type
-        let config = self.config.read().await;
-        let generator_type = SubtitleGeneratorType::parse(&config.subtitle_generator_type)
-            .map_err(|error| RecorderManagerError::SubtitleGenerationFailed { error })?;
+        // Copy the settings out so no config guard is held across the ffmpeg
+        // and subtitle jobs below.
+        let (
+            generator_type,
+            whisper_model,
+            whisper_prompt,
+            openai_api_key,
+            openai_api_endpoint,
+            whisper_language,
+        ) = {
+            let config = self.config.read().await;
+            (
+                SubtitleGeneratorType::parse(&config.subtitle_generator_type)
+                    .map_err(|error| RecorderManagerError::SubtitleGenerationFailed { error })?,
+                config.whisper_model.clone(),
+                config.whisper_prompt.clone(),
+                config.openai_api_key.clone(),
+                config.openai_api_endpoint.clone(),
+                config.whisper_language.clone(),
+            )
+        };
 
         // For third-party services (powerlive), extract opus audio from mp4
         let media_file_path = if generator_type.is_powerlive() {
@@ -1368,11 +1385,11 @@ impl RecorderManager {
             Path::new(&media_file_path.full_path()),
             generator_type,
             &resource_dir,
-            &config.whisper_model,
-            &config.whisper_prompt,
-            &config.openai_api_key,
-            &config.openai_api_endpoint,
-            &config.whisper_language,
+            &whisper_model,
+            &whisper_prompt,
+            &openai_api_key,
+            &openai_api_endpoint,
+            &whisper_language,
             Some(&self.db),
         )
         .await;

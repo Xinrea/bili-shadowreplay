@@ -55,7 +55,10 @@ use crate::{
             create_upload, delete_upload, get_upload, get_uploads, post_upload, request_upload,
             update_upload, update_upload_cover, update_upload_danmu, UploadView,
         },
-        utils::{console_log, get_disk_info, list_folder, sanitize_filename_advanced, DiskInfo},
+        utils::{
+            console_log, decode_data_url, get_disk_info, list_folder, sanitize_filename_advanced,
+            DiskInfo,
+        },
         video::{
             batch_import_external_videos, cancel, clip_range, clip_video, delete_video,
             encode_video_subtitle, generate_audio_sample, generate_video_subtitle,
@@ -1376,39 +1379,32 @@ async fn handler_image_base64(
 
     // 检查是否是base64数据URL
     if cover.starts_with("data:image/") {
-        if let Some(base64_start) = cover.find("base64,") {
-            let base64_data = &cover[base64_start + 7..]; // 跳过 "base64,"
+        if let Ok(image_data) = decode_data_url(&cover) {
+            // 确定MIME类型
+            let content_type = if cover.contains("data:image/png") {
+                "image/png"
+            } else if cover.contains("data:image/jpeg") || cover.contains("data:image/jpg") {
+                "image/jpeg"
+            } else if cover.contains("data:image/gif") {
+                "image/gif"
+            } else if cover.contains("data:image/webp") {
+                "image/webp"
+            } else {
+                "image/png" // 默认
+            };
 
-            // 解码base64数据
-            use base64::{engine::general_purpose, Engine as _};
-            if let Ok(image_data) = general_purpose::STANDARD.decode(base64_data) {
-                // 确定MIME类型
-                let content_type = if cover.contains("data:image/png") {
-                    "image/png"
-                } else if cover.contains("data:image/jpeg") || cover.contains("data:image/jpg") {
-                    "image/jpeg"
-                } else if cover.contains("data:image/gif") {
-                    "image/gif"
-                } else if cover.contains("data:image/webp") {
-                    "image/webp"
-                } else {
-                    "image/png" // 默认
-                };
+            let mut response = axum::response::Response::new(axum::body::Body::from(image_data));
+            let headers = response.headers_mut();
+            headers.insert(
+                axum::http::header::CONTENT_TYPE,
+                axum::http::HeaderValue::from_static(content_type),
+            );
+            headers.insert(
+                axum::http::header::CACHE_CONTROL,
+                axum::http::HeaderValue::from_static("public, max-age=3600"),
+            );
 
-                let mut response =
-                    axum::response::Response::new(axum::body::Body::from(image_data));
-                let headers = response.headers_mut();
-                headers.insert(
-                    axum::http::header::CONTENT_TYPE,
-                    axum::http::HeaderValue::from_static(content_type),
-                );
-                headers.insert(
-                    axum::http::header::CACHE_CONTROL,
-                    axum::http::HeaderValue::from_static("public, max-age=3600"),
-                );
-
-                return Ok(response);
-            }
+            return Ok(response);
         }
     }
 

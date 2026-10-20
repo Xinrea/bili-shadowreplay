@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use chrono::Utc;
 use serde::Serialize;
 
-use crate::handlers::project::decode_data_url;
+use crate::handlers::utils::decode_data_url;
 use crate::state::State;
 use crate::state_type;
 

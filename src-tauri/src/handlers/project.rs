@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use base64::Engine;
 use chrono::{Local, Utc};
 use recorder::danmu::DanmuEntry;
 use serde::{Deserialize, Serialize};
@@ -23,7 +22,7 @@ use crate::ffmpeg::project::{
 };
 use crate::ffmpeg::runner::TempArtifact;
 use crate::handlers::subtitle_fonts::prepare_subtitle_font_directory;
-use crate::handlers::utils::get_disk_info_inner;
+use crate::handlers::utils::{decode_data_url, get_disk_info_inner};
 use crate::handlers::video::{
     ass_primary_font_name, auto_subtitle_material, create_material, ensure_material_duration,
     notify_materials_created, run_queued, validate_ass_document,
@@ -258,17 +257,6 @@ async fn import_material_subtitles(
             timeline.set_clip_subtitles(&clip_id, srt_cues(&content));
         }
     }
-}
-
-/// The bytes of the base64 data URL `data`.
-pub(crate) fn decode_data_url(data: &str) -> Result<Vec<u8>, String> {
-    let base64 = data
-        .split("base64,")
-        .nth(1)
-        .ok_or_else(|| "Image is not a base64 data URL".to_string())?;
-    base64::engine::general_purpose::STANDARD
-        .decode(base64)
-        .map_err(|e| format!("Failed to decode image: {e}"))
 }
 
 /// Save the base64 data URL `cover` as the image file `path`.
@@ -1370,6 +1358,7 @@ pub async fn create_legacy_projects(db: Arc<Database>, output: PathBuf) {
 mod tests {
     use super::*;
     use crate::database::credentials::CredentialCipher;
+    use base64::Engine;
 
     #[tokio::test]
     async fn a_video_whose_migration_fails_is_left_for_the_next_start() {

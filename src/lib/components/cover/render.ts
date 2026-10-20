@@ -78,6 +78,7 @@ export function frameScheduler(draw: () => void): { schedule: () => void; cancel
     },
     cancel() {
       if (request !== null) cancelAnimationFrame(request);
+      request = null;
     },
   };
 }

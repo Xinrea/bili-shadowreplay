@@ -261,7 +261,9 @@
           aValue = a.title.toLowerCase();
           bValue = b.title.toLowerCase();
           break;
-          bValue = b.note;
+        case "note":
+          aValue = (a.note || "").toLowerCase();
+          bValue = (b.note || "").toLowerCase();
           break;
         case "length":
           aValue = a.duration || a.length;

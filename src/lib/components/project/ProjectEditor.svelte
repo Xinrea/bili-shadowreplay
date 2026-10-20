@@ -816,13 +816,14 @@
   function finishEditing() {
     const id = editingOverlayId;
     if (id === null) return;
+    // As on screen, also when ended by a click elsewhere mid-composition;
+    // read while the field is still there.
+    const content = stage?.editedText() ?? editContent;
     editingOverlayId = null;
     if (overlayEditTimer) clearTimeout(overlayEditTimer);
     overlayEditTimer = null;
     const before = overlayEditBefore ?? timeline;
     overlayEditBefore = null;
-    // As on screen, also when ended by a click elsewhere mid-composition.
-    const content = stage?.editedText() ?? editContent;
     const next = content.trim()
       ? editOverlay(timeline, id, withElement({ content }))
       : removeOverlay(timeline, id);

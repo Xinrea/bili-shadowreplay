@@ -177,6 +177,7 @@
   let player: ProjectPlayer | null = $state(null);
   let activeVideo = $state(0);
   let previewContainer: HTMLElement = $state();
+  let stage: ReturnType<typeof OverlayStage> | undefined = $state();
   let previewFrameWidth = $state(0);
   let frame = 0;
   let stopRange: (() => void) | null = null;
@@ -820,7 +821,8 @@
     overlayEditTimer = null;
     const before = overlayEditBefore ?? timeline;
     overlayEditBefore = null;
-    const content = editContent;
+    // As on screen, also when ended by a click elsewhere mid-composition.
+    const content = stage?.editedText() ?? editContent;
     const next = content.trim()
       ? editOverlay(timeline, id, withElement({ content }))
       : removeOverlay(timeline, id);
@@ -1458,6 +1460,7 @@
               <!-- svelte-ignore a11y_media_has_caption -->
               <video bind:this={videoB} class="preview-video" class:visible={activeVideo === 1}></video>
               <OverlayStage
+                bind:this={stage}
                 placed={overlays}
                 trackCount={timeline.tracks.length}
                 {time}

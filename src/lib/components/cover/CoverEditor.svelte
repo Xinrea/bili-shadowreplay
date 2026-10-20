@@ -511,9 +511,10 @@
 
   // Text editing on the canvas
 
-  // What the edited text reads now, applied when editing ends.
+  // What the edited text read at its last input; the field is read again when editing ends.
   let editContent = "";
   let editSelectAll = $state(false);
+  let editField: ReturnType<typeof TextEditField> | undefined = $state();
 
   function startEditing(id: number, selectAll = false) {
     finishEditing();
@@ -528,10 +529,12 @@
   function finishEditing() {
     const id = editingId;
     if (id === null) return;
+    // As on screen, also when ended by a click elsewhere mid-composition.
+    const content = editField?.content() ?? editContent;
     editingId = null;
     const element = elements.find((e) => e.id === id);
     if (element?.kind === "text") {
-      if (editContent.trim()) change(element, { content: editContent });
+      if (content.trim()) change(element, { content });
       else remove(id);
     }
     commit();
@@ -1065,6 +1068,7 @@
               {#if editing}
                 {#key editing.id}
                   <TextEditField
+                    bind:this={editField}
                     text={editing}
                     {unit}
                     left={(editing.x - area.x) * unit}

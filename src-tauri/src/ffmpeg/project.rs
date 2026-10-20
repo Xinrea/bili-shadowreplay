@@ -181,12 +181,13 @@ fn overlay_filter(
                     String::new()
                 };
                 // Shifted to its place on the timeline; the joined clips show
-                // through before it starts and after its file ends.
+                // through before it starts. A file ending early holds its last
+                // frame until the overlay ends, as the preview does.
                 filter.push_str(&format!(
                     "[{input}:v]setpts=PTS-STARTPTS,fps={fps},scale={width}:-2,setsar=1,\
                      format=yuva420p{rotate},setpts=PTS+{start:.6}/TB[ov{index}];\n\
                      [{current}][ov{index}]overlay=x={:.3}-overlay_w/2:y={:.3}-overlay_h/2:\
-                     eof_action=pass:{enable}[layer{index}];\n",
+                     eof_action=repeat:{enable}[layer{index}];\n",
                     layer.x, layer.y,
                 ));
                 if layer.has_audio && layer.volume > 0.0 {
@@ -443,7 +444,7 @@ mod tests {
             "[2:v]setpts=PTS-STARTPTS,fps=30,scale=642:-2,setsar=1,format=yuva420p,setpts=PTS+1.000000/TB[ov0]"
         ));
         assert!(filter.contains(
-            "[joined][ov0]overlay=x=1500.000-overlay_w/2:y=800.000-overlay_h/2:eof_action=pass:\
+            "[joined][ov0]overlay=x=1500.000-overlay_w/2:y=800.000-overlay_h/2:eof_action=repeat:\
              enable='gte(t,1.000000)*lt(t,4.000000)'[layer0]"
         ));
         // Its sound starts with it and lasts the whole project.
@@ -798,13 +799,13 @@ mod tests {
             &green,
         )
         .await;
-        let video =
-            |start: f64, end: f64, x: f64, y: f64, width: f64, rotation: f64| RenderOverlay {
+        let video = |start: f64, end: f64, source_start: f64, [x, y, width, rotation]: [f64; 4]| {
+            RenderOverlay {
                 start,
                 end,
                 layer: OverlayLayer::Video(VideoLayer {
                     path: blue.clone(),
-                    source_start: 2.0,
+                    source_start,
                     has_audio: true,
                     x,
                     y,
@@ -812,7 +813,8 @@ mod tests {
                     rotation,
                     volume: 1.0,
                 }),
-            };
+            }
+        };
         let output = directory.path().join("out.mp4");
         render_project(
             &NoopReporter,
@@ -826,7 +828,7 @@ mod tests {
                 }],
                 overlays: vec![
                     // The top left quarter from 1 s to 3 s.
-                    video(1.0, 3.0, 480.0, 270.0, 960.0, 0.0),
+                    video(1.0, 3.0, 2.0, [480.0, 270.0, 960.0, 0.0]),
                     RenderOverlay {
                         start: 2.0,
                         end: 3.5,
@@ -837,7 +839,10 @@ mod tests {
                         },
                     },
                     // Turned on its side, still centered where it was placed.
-                    video(0.0, 1.0, 1440.0, 540.0, 400.0, 90.0),
+                    video(0.0, 1.0, 2.0, [1440.0, 540.0, 400.0, 90.0]),
+                    // The bottom left quarter from 2 s to 3.5 s, though the
+                    // file has only 1 s left from its in point.
+                    video(2.0, 3.5, 5.0, [480.0, 810.0, 960.0, 0.0]),
                 ],
                 subtitle_ass: None,
                 fonts_directory: None,
@@ -870,6 +875,10 @@ mod tests {
             (0.5, [1360, 330, 160, 420], blue),
             (0.5, [1560, 330, 60, 420], red),
             (1.5, [1360, 330, 160, 420], red),
+            // Its last frame stays until the overlay ends.
+            (2.5, [100, 640, 760, 340], blue),
+            (3.3, [100, 640, 760, 340], blue),
+            (3.8, [100, 640, 760, 340], red),
         ] {
             let color = area_color(&output, seconds, area).await;
             assert!(is(color, expected), "{seconds} s {area:?}: {color:?}");

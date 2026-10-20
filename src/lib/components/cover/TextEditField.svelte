@@ -25,6 +25,14 @@
 
   const read = () => field.innerText.replace(/\r/g, "").replace(/\n$/, "");
 
+  /**
+   * What the field reads now, with any IME composition in progress, for an
+   * edit ended from outside the field before an input event reports it.
+   */
+  export function content(): string {
+    return read();
+  }
+
   onMount(() => {
     try {
       field.contentEditable = "plaintext-only";

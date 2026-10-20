@@ -96,6 +96,7 @@
   const MIDDLE = { x: ELEMENT_SPACE.width / 2, y: ELEMENT_SPACE.height / 2 };
 
   let surface: HTMLDivElement = $state();
+  let editField: ReturnType<typeof TextEditField> | undefined = $state();
   let canvases: HTMLCanvasElement[] = $state([]);
   let guides = $state({ x: false, y: false });
   let frameRequest: number | null = null;
@@ -110,6 +111,11 @@
   let editing = $derived(placed.find((p) => p.item.id === editingId && p.item.kind === "text") ?? null);
 
   const aspectOf = (materialId: number) => aspects.get(materialId) ?? DEFAULT_ASPECT;
+
+  /** What the text being edited reads now, or null without one. */
+  export function editedText(): string | null {
+    return editField?.content() ?? null;
+  }
 
   /** The overlay's box on the frame, before it is turned. */
   function boxOf(p: PlacedOverlay) {
@@ -373,6 +379,7 @@
     {#if editing && editing.item.kind === "text"}
       {#key editing.item.id}
         <TextEditField
+          bind:this={editField}
           text={editing.item.element}
           {unit}
           left={editing.item.element.x * unit}

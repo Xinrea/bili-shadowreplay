@@ -13,6 +13,7 @@
 <script lang="ts">
   import { Film, PictureInPicture2, Plus, Search } from "lucide-svelte";
   import { MATERIAL_DRAG_TYPE } from "./ProjectTimeline.svelte";
+  import { formatTimecode } from "../../time-format";
 
   interface Props {
     materials: BinMaterial[];
@@ -41,16 +42,6 @@
       )
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   });
-
-  function formatDuration(seconds: number) {
-    const total = Math.round(seconds);
-    const hours = Math.floor(total / 3600);
-    const minutes = Math.floor((total % 3600) / 60);
-    const secs = total % 60;
-    return hours > 0
-      ? `${hours}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`
-      : `${minutes}:${String(secs).padStart(2, "0")}`;
-  }
 
   function dragStart(event: DragEvent, material: BinMaterial) {
     event.dataTransfer?.setData(MATERIAL_DRAG_TYPE, String(material.id));
@@ -88,7 +79,7 @@
           {:else}
             <Film class="h-4 w-4 text-[#6f7b8d]" />
           {/if}
-          <span class="length">{formatDuration(material.duration)}</span>
+          <span class="length">{formatTimecode(material.duration, 0)}</span>
         </button>
         <div class="meta">
           <span class="name" title={material.name}>{material.name}</span>

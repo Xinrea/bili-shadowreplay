@@ -84,6 +84,7 @@
   } from "../../project-timeline";
   import { ProjectPlayer, type PlayerSegment } from "../../project-player";
   import { buildSubtitleAss, loadSubtitleStyle } from "../../subtitle-ass";
+  import { formatTimecode } from "../../time-format";
   import { createStateRefresh, watchStateChanges } from "../../state-refresh";
   import { announceTask, openTaskCenter, settleTask, wasCancelled } from "../../stores/tasks";
   import AssSubtitlePreview from "../AssSubtitlePreview.svelte";
@@ -1228,14 +1229,6 @@
       handled();
     }
   }
-
-  function formatTime(seconds: number) {
-    const total = Math.max(0, seconds);
-    const hours = Math.floor(total / 3600);
-    const minutes = Math.floor((total % 3600) / 60);
-    const secs = (total % 60).toFixed(1).padStart(4, "0");
-    return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${secs}` : `${minutes}:${secs}`;
-  }
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -1410,7 +1403,7 @@
             <div class="ml-auto flex shrink-0 items-center gap-1">
               {#if selectedPlaced}
                 <span class="mr-1 text-[11px] tabular-nums text-fg-muted">
-                  {formatTime(selectedPlaced.start)} – {formatTime(selectedPlaced.end)}
+                  {formatTimecode(selectedPlaced.start)} – {formatTimecode(selectedPlaced.end)}
                 </span>
               {/if}
               <button
@@ -1636,7 +1629,7 @@
             <Play class="h-4 w-4" />
           {/if}
         </button>
-        <span class="clock">{formatTime(time)} / {formatTime(duration)}</span>
+        <span class="clock">{formatTimecode(time)} / {formatTimecode(duration)}</span>
       </div>
       <div class="flex items-center justify-end gap-2">
         <span class="text-[11px] text-gray-400">缩放</span>

@@ -173,14 +173,23 @@ async fn live_end_parent_id(
 ///
 /// Every `/`-separated segment must be a single plain file name: `..`, `.`, empty
 /// segments, absolute paths and Windows prefixes or `\` separators are rejected,
-/// so the result can never escape `cache_dir`.
+/// so the result can never escape `cache_dir`. Names made only of dots and spaces
+/// (`.. `, `...`) are rejected too, since Windows trims trailing dots and spaces
+/// and could read them as `..`.
 fn resolve_hls_path(cache_dir: &Path, path: &str) -> Option<PathBuf> {
     let path = path.replace("%7C", "|");
     let mut resolved = cache_dir.to_path_buf();
     for segment in path.split('/') {
         let mut components = Path::new(segment).components();
         match (components.next(), components.next()) {
-            (Some(Component::Normal(name)), None) => resolved.push(name),
+            (Some(Component::Normal(name)), None)
+                if !name
+                    .to_string_lossy()
+                    .trim_end_matches([' ', '.'])
+                    .is_empty() =>
+            {
+                resolved.push(name)
+            }
             _ => return None,
         }
     }
@@ -1933,6 +1942,10 @@ mod hls_path_tests {
             "bilibili/../../secret.txt".to_string(),
             "bilibili/1/2/./segment.ts".to_string(),
             "bilibili/1/2//segment.ts".to_string(),
+            // Windows trims trailing dots and spaces, so these could act as `..`.
+            "bilibili/1/2/.. /.. /.. /.. /secret.txt".to_string(),
+            "bilibili/1/2/.. ./secret.txt".to_string(),
+            "bilibili/1/2/.../secret.txt".to_string(),
             absolute.clone(),
             format!("bilibili/1/2/{absolute}"),
         ] {
@@ -1955,6 +1968,7 @@ mod hls_path_tests {
             "bilibili\\..\\..\\secret.txt",
             "bilibili/1/2/C:",
             "bilibili/1/2/C:\\secret.txt",
+            "bilibili/1/2/.. \\/.. \\/secret.txt",
         ] {
             assert_eq!(
                 resolve_hls_path(&cache, path),

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { createStateRefresh, watchStateChanges } from "../lib/state-refresh";
+  import { formatSize } from "../lib/size-format";
   import { invoke, open, onOpenUrl, get_static_url, get } from "../lib/invoker";
   import { message } from "@tauri-apps/plugin-dialog";
   import { fade, scale } from "svelte/transition";
@@ -296,18 +297,6 @@
     const seconds = (duration % 60).toString().padStart(2, "0");
 
     return `${hours}:${minutes}:${seconds}`;
-  }
-
-  function format_size(size: number) {
-    if (size < 1024) {
-      return `${size} B`;
-    } else if (size < 1024 * 1024) {
-      return `${(size / 1024).toFixed(2)} KiB`;
-    } else if (size < 1024 * 1024 * 1024) {
-      return `${(size / 1024 / 1024).toFixed(2)} MiB`;
-    } else {
-      return `${(size / 1024 / 1024 / 1024).toFixed(2)} GiB`;
-    }
   }
 
   function calc_bitrate(size: number, duration: number) {
@@ -1025,7 +1014,7 @@
                       >{format_duration(archive.length)}</td
                     >
                     <td class="px-3 py-2.5 text-[12px] tabular-nums text-fg"
-                      >{format_size(archive.size)}</td
+                      >{formatSize(archive.size)}</td
                     >
                     <td
                       class="px-3 py-2.5 text-[12px] tabular-nums text-fg-muted"

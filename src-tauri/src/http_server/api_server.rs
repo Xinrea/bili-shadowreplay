@@ -2079,8 +2079,9 @@ async fn handler_upload_file(
                 file_name = field.file_name().unwrap_or("unknown").to_string();
 
                 // 创建上传目录
-                let config = state.config.read().await;
-                let upload_dir = std::path::Path::new(&config.cache).join("uploads");
+                // Copy the path out so no config guard is held while streaming the upload.
+                let cache = state.config.read().await.cache.clone();
+                let upload_dir = std::path::Path::new(&cache).join("uploads");
                 if !upload_dir.exists() {
                     std::fs::create_dir_all(&upload_dir).map_err(|e| e.to_string())?;
                 }

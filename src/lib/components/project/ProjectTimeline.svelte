@@ -35,6 +35,7 @@
     type PlacedOverlay,
     type PlacedSubtitle,
   } from "../../project-timeline";
+  import { formatTimecode } from "../../time-format";
 
   interface Props {
     timeline: ProjectTimeline;
@@ -202,17 +203,7 @@
   }
 
   function formatTick(seconds: number) {
-    const total = Math.round(seconds * 10) / 10;
-    const hours = Math.floor(total / 3600);
-    const minutes = Math.floor((total % 3600) / 60);
-    const secs = total % 60;
-    const secText = tickStep < 1 ? secs.toFixed(1).padStart(4, "0") : String(Math.floor(secs)).padStart(2, "0");
-    return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${secText}` : `${minutes}:${secText}`;
-  }
-
-  function formatDuration(seconds: number) {
-    const minutes = Math.floor(seconds / 60);
-    return `${minutes}:${(seconds % 60).toFixed(1).padStart(4, "0")}`;
+    return formatTimecode(seconds, tickStep < 1 ? 1 : 0);
   }
 
   function timeAt(clientX: number) {
@@ -758,7 +749,7 @@
                 tabindex="-1"
                 style:left="{item.start * pxPerSecond}px"
                 style:width="{Math.max(3, width)}px"
-                title="{overlayLabel(overlay)}（{formatDuration(item.end - item.start)}）"
+                title="{overlayLabel(overlay)}（{formatTimecode(item.end - item.start)}）"
                 onpointerdown={(event) => startOverlayDrag(event, item)}
               >
                 {#if width > 26}
@@ -846,7 +837,7 @@
                 <Film class="h-3 w-3 shrink-0 text-violet-300" />
               {/if}
               <span class="clip-name">{material?.name ?? "素材已删除"}</span>
-              <span class="clip-length">{formatDuration(item.duration)}</span>
+              <span class="clip-length">{formatTimecode(item.duration)}</span>
             </div>
             <canvas
               class="clip-wave"
@@ -862,7 +853,7 @@
                 style:width="{overlay.width}px"
               ></div>
               <div class="trim-tip" style:left="{overlay.tip}px">
-                {overlay.label} {formatDuration(overlay.source)}
+                {overlay.label} {formatTimecode(overlay.source)}
               </div>
             {/if}
           </div>

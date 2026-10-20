@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatTimecode } from "../../time-format";
   import { open } from "@tauri-apps/plugin-dialog";
   import { Clapperboard, FileVideo, Film, FolderOpen, Loader2, RefreshCw, Search, X } from "lucide-svelte";
   import { onMount } from "svelte";
@@ -146,14 +147,6 @@
     }
   }
 
-  function formatDuration(seconds: number) {
-    const total = Math.max(0, Math.round(seconds));
-    const hours = Math.floor(total / 3600);
-    const minutes = Math.floor((total % 3600) / 60);
-    const secs = String(total % 60).padStart(2, "0");
-    return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${secs}` : `${minutes}:${secs}`;
-  }
-
   function formatSize(bytes: number) {
     if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
     if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
@@ -298,7 +291,7 @@
                 () => (selectedMaterial = material.id),
                 material.coverUrl,
                 material.title || fileName(material.file),
-                [material.room_id, formatDuration(material.duration || material.length), material.note].filter(Boolean).join(" · "),
+                [material.room_id, formatTimecode(material.duration || material.length, 0), material.note].filter(Boolean).join(" · "),
                 "",
                 material.bvid,
               )}
@@ -317,7 +310,7 @@
               () => (selectedProject = project.id),
               project.coverUrl,
               project.title || "未命名切片",
-              [project.room_id, formatDuration(project.duration), `${project.clip_count} 段`].filter(Boolean).join(" · "),
+              [project.room_id, formatTimecode(project.duration, 0), `${project.clip_count} 段`].filter(Boolean).join(" · "),
               project.needs_render ? "投稿时生成视频" : "使用素材文件",
               project.bvid,
             )}

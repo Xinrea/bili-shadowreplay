@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatTimecode } from "../lib/time-format";
   import { createStateRefresh, watchStateChanges } from "../lib/state-refresh";
   import { invoke, get_static_url } from "../lib/invoker";
   import type { RecordItem, RecordSummaryStatus } from "../lib/db";
@@ -379,19 +380,6 @@
       return `${(size / 1024 / 1024).toFixed(2)} MiB`;
     } else {
       return `${(size / 1024 / 1024 / 1024).toFixed(2)} GiB`;
-    }
-  }
-
-  function formatDuration(seconds: number) {
-    seconds = Math.round(seconds);
-    const hours = Math.floor(seconds / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    const secs = seconds % 60;
-
-    if (hours > 0) {
-      return `${hours}:${minutes.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
-    } else {
-      return `${minutes}:${secs.toString().padStart(2, "0")}`;
     }
   }
 
@@ -927,7 +915,7 @@
                     <div class="flex items-center gap-1.5">
                       <Clock class="h-3.5 w-3.5 text-fg-faint" />
                       <span class="text-[13px] tabular-nums text-fg"
-                        >{formatDuration(archive.length)}</span
+                        >{formatTimecode(archive.length, 0)}</span
                       >
                     </div>
                   </td>

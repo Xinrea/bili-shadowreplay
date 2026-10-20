@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatTimecode } from "../lib/time-format";
   import { createStateRefresh, watchStateChanges } from "../lib/state-refresh";
   import { invoke, TAURI_ENV, get_static_url } from "../lib/invoker";
   import type { VideoItem } from "../lib/interface";
@@ -305,18 +306,6 @@
       return `${(size / 1024 / 1024).toFixed(2)} MiB`;
     } else {
       return `${(size / 1024 / 1024 / 1024).toFixed(2)} GiB`;
-    }
-  }
-
-  function formatDuration(seconds: number) {
-    const hours = Math.floor(seconds / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    const secs = seconds % 60;
-
-    if (hours > 0) {
-      return `${hours}:${minutes.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
-    } else {
-      return `${minutes}:${secs.toString().padStart(2, "0")}`;
     }
   }
 
@@ -1034,7 +1023,7 @@
                     <div class="flex items-center space-x-2">
                       <Clock class="table-icon text-fg-faint" />
                       <span class="text-[12px] tabular-nums text-fg-secondary"
-                        >{formatDuration(Math.round(video.duration || video.length))}</span
+                        >{formatTimecode(video.duration || video.length, 0)}</span
                       >
                     </div>
                   </td>

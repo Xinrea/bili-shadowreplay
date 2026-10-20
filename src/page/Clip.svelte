@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatTimecode } from "../lib/time-format";
   import { createStateRefresh, watchStateChanges } from "../lib/state-refresh";
   import { invoke, get_static_url } from "../lib/invoker";
   import type { ProjectItem } from "../lib/interface";
@@ -149,16 +150,6 @@
       alert("保存备注失败：" + error);
     }
   }
-
-  function formatDuration(seconds: number) {
-    const total = Math.max(0, Math.round(seconds));
-    const hours = Math.floor(total / 3600);
-    const minutes = Math.floor((total % 3600) / 60);
-    const secs = total % 60;
-    return hours > 0
-      ? `${hours}:${minutes.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`
-      : `${minutes}:${secs.toString().padStart(2, "0")}`;
-  }
 </script>
 
 <PageTitlebar title="切片">
@@ -280,7 +271,7 @@
                   <td class="px-4 py-2.5">
                     <div class="flex items-center gap-2 text-[12px] text-fg-secondary">
                       <Clock class="table-icon text-fg-faint" />
-                      <span class="tabular-nums">{formatDuration(project.duration)}</span>
+                      <span class="tabular-nums">{formatTimecode(project.duration, 0)}</span>
                       <span class="text-fg-faint">· {project.clip_count} 段</span>
                     </div>
                   </td>

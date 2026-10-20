@@ -263,15 +263,6 @@
   }
 
   /**
-   * 跳转到指定页面
-   */
-  function goToPage(page: number) {
-    if (page < 1 || page > totalPages || page === currentPage) return;
-    currentPage = page;
-    applyFilters();
-  }
-
-  /**
    * 上一页
    */
   function prevPage() {

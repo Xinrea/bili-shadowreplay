@@ -1,10 +1,8 @@
 import { invoke as tauri_invoke } from "@tauri-apps/api/core";
-import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { fetch as tauri_fetch } from "@tauri-apps/plugin-http";
 import { open as tauri_open } from "@tauri-apps/plugin-shell";
 import { onOpenUrl as tauri_onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { createEventClient } from "./events";
-import type { Config } from "./interface";
 
 declare global {
   interface Window {
@@ -134,12 +132,8 @@ async function set_title(title: string) {
 }
 
 let STATIC_PORT = 0;
-let config: Config | null = null;
 
 async function get_static_url(base: string, path: string) {
-  if (config === null) {
-    config = (await invoke("get_config")) as any;
-  }
   let staticUrl;
   if (TAURI_ENV) {
     if (STATIC_PORT === 0) {
@@ -166,13 +160,6 @@ async function open(url: string) {
   window.open(url, "_blank");
 }
 
-async function close_window() {
-  if (TAURI_ENV) {
-    return await getCurrentWebviewWindow().close();
-  }
-  window.close();
-}
-
 async function onOpenUrl(func: (urls: string[]) => void) {
   if (TAURI_ENV) {
     return await tauri_onOpenUrl(func);
@@ -188,7 +175,6 @@ export {
   listen,
   open,
   log,
-  close_window,
   onOpenUrl,
   get_static_url,
   normalizeEndpoint,

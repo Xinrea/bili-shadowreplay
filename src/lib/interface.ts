@@ -489,10 +489,6 @@ export function generateEventId() {
   return Math.random().toString(36).substring(2, 15);
 }
 
-export async function clipRange(eventId: string, params: ClipRangeParams) {
-  return await invoke("clip_range", { eventId, params });
-}
-
 /** Cut each range into its own material, optionally in a new project. */
 export async function generateMaterials(
   eventId: string,

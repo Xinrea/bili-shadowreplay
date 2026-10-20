@@ -168,25 +168,6 @@
   }
 
   /**
-   * 格式化毫秒转换为可读的时间长度
-   * @param milliseconds 毫秒数
-   * @returns 格式化的时间字符串（如：1小时30分20秒）
-   */
-  function formatProgressDuration(milliseconds: number): string {
-    const seconds = Math.floor(milliseconds / 1000);
-    const minutes = Math.floor(seconds / 60);
-    const hours = Math.floor(minutes / 60);
-
-    if (hours > 0) {
-      return `${hours}小时${minutes % 60}分${seconds % 60}秒`;
-    } else if (minutes > 0) {
-      return `${minutes}分${seconds % 60}秒`;
-    } else {
-      return `${seconds}秒`;
-    }
-  }
-
-  /**
    * 加载视频列表
    * 1. 扫描导入目录中的新视频文件并自动导入
    * 2. 检查是否有正在进行的转换任务

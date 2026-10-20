@@ -1,9 +1,3 @@
-export interface RecorderItem {
-  platform: string;
-  room_id: string;
-  created_at: string;
-}
-
 export interface AccountItem {
   platform: string;
   uid: string;
@@ -11,14 +5,6 @@ export interface AccountItem {
   avatar: string;
   csrf: string;
   cookies: string;
-  created_at: string;
-}
-
-export interface MessageItem {
-  id: number;
-  title: string;
-  content: string;
-  read: number;
   created_at: string;
 }
 

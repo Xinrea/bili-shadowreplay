@@ -24,7 +24,6 @@
   let dragOver = $state(false);
   let fileInput: HTMLInputElement = $state();
   let importProgress = $state("");
-  let currentImportEventId: string | null = null;
 
   // 批量导入状态
   let selectedFiles: string[] = $state([]);
@@ -57,24 +56,6 @@
     const decimals = unitIndex >= 3 ? 2 : unitIndex >= 2 ? 2 : 1;
 
     return size.toFixed(decimals) + " " + units[unitIndex];
-  }
-
-  // 连接恢复时检查任务状态
-  async function checkTaskStatus() {
-    if (!currentImportEventId || !importing) return;
-
-    try {
-      const progress = await invoke("get_import_progress");
-      if (!progress) {
-        importing = false;
-        currentImportEventId = null;
-        importProgress = "";
-        resetBatchImportState();
-        onImported?.();
-      }
-    } catch (error) {
-      console.error(`[ImportDialog] Failed to check task status:`, error);
-    }
   }
 
   async function handleFileSelect() {
@@ -352,7 +333,6 @@
 
     try {
       const eventId = "batch_import_" + Date.now();
-      currentImportEventId = eventId;
 
       const clear_update_listener = await listen(
         `progress-update:${eventId}`,
@@ -384,7 +364,6 @@
           }
           // 无论成功失败都要重置状态
           importing = false;
-          currentImportEventId = null;
           importProgress = "";
 
           clear_update_listener();
@@ -410,7 +389,6 @@
   function resetBatchImportState() {
     batchImporting = false;
     importing = false;
-    currentImportEventId = null;
     importProgress = "";
     selectedFiles = [];
     totalFiles = 0;
@@ -425,7 +403,6 @@
 
     try {
       const eventId = "import_" + Date.now();
-      currentImportEventId = eventId;
 
       const clear_update_listener = await listen(
         `progress-update:${eventId}`,
@@ -457,7 +434,6 @@
           }
           // 无论成功失败都要重置状态
           importing = false;
-          currentImportEventId = null;
           importProgress = "";
 
           clear_update_listener();
@@ -477,7 +453,6 @@
       console.error("导入失败:", error);
       alert("导入失败: " + error);
       importing = false;
-      currentImportEventId = null;
       importProgress = "";
     }
   }
@@ -495,7 +470,6 @@
     uploading = false;
     uploadProgress = 0;
     importing = false;
-    currentImportEventId = null;
     importProgress = "";
     // 重置批量导入状态
     resetBatchImportState();

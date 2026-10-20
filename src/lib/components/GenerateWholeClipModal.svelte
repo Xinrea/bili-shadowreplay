@@ -124,10 +124,6 @@
     selectedLiveIds = [];
   }
 
-  function selectionIndex(liveId: string) {
-    return selectedLiveIds.indexOf(liveId);
-  }
-
   function toggleArchiveSelection(liveId: string, checked: boolean) {
     if (checked) {
       if (!selectedLiveIds.includes(liveId)) {

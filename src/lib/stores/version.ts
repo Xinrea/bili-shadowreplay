@@ -4,7 +4,6 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { TAURI_ENV } from "../invoker";
 
 export const hasNewVersion = writable(false);
-export const currentVersion = writable(__APP_VERSION__);
 export const latestVersion = writable("");
 
 type UpdatePhase = "idle" | "checking" | "check-error" | "available" | "downloading" | "installing" | "restarting" | "restart-required" | "error";

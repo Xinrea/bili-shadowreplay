@@ -65,18 +65,20 @@ export function loadSticker(src: string): Promise<HTMLImageElement> {
   return request;
 }
 
-/** Runs `draw` once per animation frame however often it is scheduled. */
+/** Runs `draw` once per animation frame however often it is scheduled, until `cancel` stops it for good. */
 export function frameScheduler(draw: () => void): { schedule: () => void; cancel: () => void } {
   let request: number | null = null;
+  let stopped = false;
   return {
     schedule() {
-      if (request !== null) return;
+      if (stopped || request !== null) return;
       request = requestAnimationFrame(() => {
         request = null;
         draw();
       });
     },
     cancel() {
+      stopped = true;
       if (request !== null) cancelAnimationFrame(request);
       request = null;
     },

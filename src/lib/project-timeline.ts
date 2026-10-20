@@ -14,6 +14,10 @@ import type {
 // stickers and videos) sit on tracks above the main one and are anchored the
 // same way, by where they start. Every edit returns a new timeline so the
 // editor can keep an undo history of snapshots.
+//
+// With the project's frame rate, as export renders it, clips last whole
+// frames: trims and splits land on frames, so an edit moves the clips after
+// it by whole frames, and export finds their segments rendered before.
 
 export const TIMELINE_VERSION = 1;
 export const MIN_CLIP_DURATION = 0.1;
@@ -135,26 +139,68 @@ export function visibleSubtitles(timeline: ProjectTimeline): PlacedSubtitle[] {
   return result.sort((a, b) => a.start - b.start || a.clip.index - b.clip.index);
 }
 
-/** Cues in project time for `buildSubtitleAss`. */
-export function projectCues(timeline: ProjectTimeline) {
+/**
+ * `time` moved into the middle of the frame before the first frame at or
+ * after it, at `fps`: it shows on the same frames, and rounded to the
+ * centisecond of an ASS document it cannot move onto another one, so moved by
+ * whole frames it shows on as many frames later. Without a frame rate, `time`.
+ */
+export function midFrame(time: number, fps: number): number {
+  if (!(fps > 0)) return time;
+  return Math.max(0, (Math.ceil(time * fps - EPSILON) - 0.5) / fps);
+}
+
+/** Cues in project time for `buildSubtitleAss`, put between the frames at `fps`. */
+export function projectCues(timeline: ProjectTimeline, fps = 0) {
   return visibleSubtitles(timeline).map(({ start, end, subtitle }, index) => ({
-    startTime: start,
-    endTime: end,
+    startTime: midFrame(start, fps),
+    endTime: midFrame(end, fps),
     text: subtitle.text,
     layerOrder: index,
   }));
+}
+
+/**
+ * A length this close to whole frames is them: material lengths are rounded,
+ * as is the frame rate, so a file of 360 frames at 30000/1001 FPS lasts
+ * 359.9996 frames at 29.97.
+ */
+const FRAME_TOLERANCE = 0.01;
+
+/** Frames at `fps` of `duration`, short of what does not make a whole frame. */
+function wholeFrames(duration: number, fps: number): number {
+  return Math.floor(duration * fps + FRAME_TOLERANCE);
+}
+
+/**
+ * `timeline` with every clip shortened to whole frames at `fps`, by less than
+ * one; `timeline` itself when they all are, or without a frame rate.
+ */
+export function snapClips(timeline: ProjectTimeline, fps: number): ProjectTimeline {
+  if (!(fps > 0)) return timeline;
+  let changed = false;
+  const clips = timeline.clips.map((clip) => {
+    const frames = wholeFrames(clipDuration(clip), fps);
+    if (Math.abs(clipDuration(clip) * fps - frames) < EPSILON || frames < 1) return clip;
+    changed = true;
+    return { ...clip, end: clip.start + frames / fps };
+  });
+  return changed ? { ...timeline, clips } : timeline;
 }
 
 function replaceClip(timeline: ProjectTimeline, clip: TimelineClip): ProjectTimeline {
   return { ...timeline, clips: timeline.clips.map((item) => (item.id === clip.id ? clip : item)) };
 }
 
+/** Insert `clips` at `index`, each shortened to whole frames at `fps`. */
 export function insertClips(
   timeline: ProjectTimeline,
   clips: Omit<TimelineClip, "id">[],
   index = timeline.clips.length,
+  fps = 0,
 ): ProjectTimeline {
   const added = clips
+    .map((clip) => (fps > 0 ? { ...clip, end: clip.start + wholeFrames(clip.end - clip.start, fps) / fps } : clip))
     .filter((clip) => clip.end - clip.start >= MIN_CLIP_DURATION)
     .map((clip) => ({ ...clip, id: newId() }));
   const next = [...timeline.clips];
@@ -236,19 +282,23 @@ export function moveClip(timeline: ProjectTimeline, clipId: string, toIndex: num
 }
 
 /**
- * Split the clip under project time `time`. Subtitles after the cut move to the
- * new clip; one crossing the cut is kept on both sides so it still reads as one.
- * Overlays starting after the cut are anchored to the new clip.
+ * Split the clip under project time `time`, at the frame nearest to it at
+ * `fps`. Subtitles after the cut move to the new clip; one crossing the cut is
+ * kept on both sides so it still reads as one. Overlays starting after the cut
+ * are anchored to the new clip.
  */
 export function splitClip(
   timeline: ProjectTimeline,
   time: number,
+  fps = 0,
 ): { timeline: ProjectTimeline; clipId: string | null } {
   const placed = placeClips(timeline).find(
     (item) => time - item.offset >= MIN_CLIP_DURATION && item.offset + item.duration - time >= MIN_CLIP_DURATION,
   );
   if (!placed) return { timeline, clipId: null };
-  const cut = toSourceTime(placed, time);
+  const into = fps > 0 ? Math.round((time - placed.offset) * fps) / fps : time - placed.offset;
+  if (into < MIN_CLIP_DURATION || placed.duration - into < MIN_CLIP_DURATION) return { timeline, clipId: null };
+  const cut = placed.clip.start + into;
   const left = { ...placed.clip, end: cut };
   const right = { id: newId(), material_id: placed.clip.material_id, start: cut, end: placed.clip.end };
   const clips = [...timeline.clips];
@@ -273,23 +323,31 @@ export function splitClip(
   return { timeline: { ...timeline, clips, subtitles, tracks }, clipId: right.id };
 }
 
-/** Move one edge of a clip to `sourceTime`, keeping it within the material. */
+/**
+ * Move one edge of a clip to `sourceTime`, keeping it within the material.
+ * With a frame rate `fps`, the clip then lasts the whole frames nearest.
+ */
 export function trimClip(
   timeline: ProjectTimeline,
   clipId: string,
   edge: "start" | "end",
   sourceTime: number,
   materialDuration: number,
+  fps = 0,
 ): ProjectTimeline {
   const clip = timeline.clips.find((item) => item.id === clipId);
   if (!clip) return timeline;
+  const shortest = fps > 0 ? Math.ceil(MIN_CLIP_DURATION * fps - EPSILON) / fps : MIN_CLIP_DURATION;
+  // The length in whole frames nearest to `length`, but no more than `longest`.
+  const frames = (length: number, longest: number) =>
+    fps > 0 ? Math.min(Math.round(length * fps), wholeFrames(longest, fps)) / fps : Math.min(length, longest);
   if (edge === "start") {
-    const start = Math.max(0, Math.min(sourceTime, clip.end - MIN_CLIP_DURATION));
-    return replaceClip(timeline, { ...clip, start });
+    const length = frames(Math.max(clip.end - sourceTime, shortest), clip.end);
+    return replaceClip(timeline, { ...clip, start: Math.max(0, clip.end - length) });
   }
   const limit = materialDuration > 0 ? materialDuration : Number.POSITIVE_INFINITY;
-  const end = Math.min(limit, Math.max(sourceTime, clip.start + MIN_CLIP_DURATION));
-  return replaceClip(timeline, { ...clip, end });
+  const length = frames(Math.max(sourceTime - clip.start, shortest), limit - clip.start);
+  return replaceClip(timeline, { ...clip, end: clip.start + length });
 }
 
 /** Replace a clip's subtitles with material-time cues. */

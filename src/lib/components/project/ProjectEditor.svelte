@@ -71,6 +71,7 @@
     setClipSubtitles,
     settleOverlays,
     shiftOverlay,
+    snapClips,
     splitClip,
     splitOverlay,
     timelineDuration,
@@ -132,6 +133,8 @@
   let binMaterials: BinMaterial[] = $state.raw([]);
   let peaks: Map<number, MaterialPeaks> = $state.raw(new Map());
   let danmuCounts: Map<number, number[]> = $state.raw(new Map());
+  /** The frame rate export renders the project at, which edits land on; 0 until known. */
+  let frameRate = $state(0);
 
   let time = $state(0);
   let playing = $state(false);
@@ -192,7 +195,7 @@
   let subtitleStyle: SubtitleStyle = $derived(
     (timeline.subtitle_style as SubtitleStyle | null) ?? loadSubtitleStyle(roomId),
   );
-  let subtitleAss = $derived(buildSubtitleAss(projectCues(timeline), subtitleStyle));
+  let subtitleAss = $derived(buildSubtitleAss(projectCues(timeline, frameRate), subtitleStyle));
   let overlays = $derived(placeOverlays(timeline));
   let selectedOverlay = $derived(findOverlay(timeline, selectedOverlayId));
   let selectedPlaced = $derived(overlays.find((entry) => entry.item.id === selectedOverlayId) ?? null);
@@ -218,6 +221,40 @@
   let segmentKey = $derived(segments.map((s) => `${s.clipId}:${s.url}:${s.start}:${s.end}`).join("|"));
 
   // ---- Loading -------------------------------------------------------------
+
+  // What the frame rate depends on: the main track's materials and burning danmaku.
+  let frameRateSource = $derived.by(() => {
+    const ids = [...new Set(timeline.clips.map((clip) => clip.material_id))].sort((a, b) => a - b);
+    return { ids, danmu: timeline.danmu, key: `${ids.join(",")}|${timeline.danmu}` };
+  });
+  let frameRateKey = "";
+
+  $effect(() => {
+    const source = frameRateSource;
+    untrack(() => void loadFrameRate(source));
+  });
+
+  /**
+   * Learn the project's frame rate, and shorten its clips to whole frames at
+   * it: clips the backend made, or of a rate since changed.
+   */
+  async function loadFrameRate(source: { ids: number[]; danmu: boolean; key: string }) {
+    if (source.ids.length === 0 || source.key === frameRateKey) return;
+    frameRateKey = source.key;
+    try {
+      const rate = await invoke<number>("get_project_frame_rate", { materialIds: source.ids, danmu: source.danmu });
+      if (frameRateKey !== source.key) return;
+      frameRate = rate;
+      const snapped = snapClips(timeline, rate);
+      if (snapped !== timeline) {
+        timeline = snapped;
+        scheduleSave();
+      }
+    } catch (error) {
+      if (frameRateKey === source.key) frameRateKey = "";
+      console.warn("Failed to load the project's frame rate:", error);
+    }
+  }
 
   async function materialInfo(video: VideoItem): Promise<MaterialInfo> {
     return {
@@ -526,7 +563,7 @@
     }
     // Insert into the timeline as it is after the wait, which other edits may have changed.
     const at = Math.min(index, timeline.clips.length);
-    let next = insertClips(timeline, [{ material_id: materialId, start: 0, end: info.duration }], at);
+    let next = insertClips(timeline, [{ material_id: materialId, start: 0, end: info.duration }], at, frameRate);
     const added = next.clips.length > timeline.clips.length ? next.clips[at] : undefined;
     if (srt && added) next = setClipSubtitles(next, added.id, parseSrt(srt));
     commit(next);
@@ -543,7 +580,7 @@
       }
       return;
     }
-    const result = splitClip(timeline, time);
+    const result = splitClip(timeline, time, frameRate);
     if (!result.clipId) return;
     commit(result.timeline);
     selectedClipId = result.clipId;
@@ -1093,7 +1130,7 @@
       return;
     }
     const exportedSubtitles = visibleSubtitles(exported).length > 0;
-    const exportedAss = buildSubtitleAss(projectCues(exported), subtitleStyle);
+    const exportedAss = buildSubtitleAss(projectCues(exported, frameRate), subtitleStyle);
     const eventId = generateEventId();
     exporting = eventId;
     let unlisten: (() => void) | null = null;
@@ -1649,6 +1686,7 @@
       {timeline}
       {materials}
       {peaks}
+      {frameRate}
       {time}
       {zoom}
       {selectedClipId}

@@ -30,9 +30,9 @@ use crate::{
         message::{delete_message, get_messages, read_message},
         project::{
             create_project, delete_project, export_project, generate_materials, get_material_danmu,
-            get_material_peaks, get_material_usage, get_project, get_projects,
-            update_project_danmu, update_project_info, update_project_timeline, ExportStarted,
-            GeneratedMaterials, OverlayImage, ProjectBrief, ProjectView,
+            get_material_peaks, get_material_usage, get_project, get_project_frame_rate,
+            get_projects, update_project_danmu, update_project_info, update_project_timeline,
+            ExportStarted, GeneratedMaterials, OverlayImage, ProjectBrief, ProjectView,
         },
         recorder::{
             add_recorder, delete_archive, delete_archives, export_danmu, fetch_hls,
@@ -1339,6 +1339,23 @@ async fn handler_get_material_peaks(
     )))
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectFrameRateRequest {
+    material_ids: Vec<i64>,
+    #[serde(default)]
+    danmu: bool,
+}
+
+async fn handler_get_project_frame_rate(
+    state: axum::extract::State<State>,
+    Json(param): Json<ProjectFrameRateRequest>,
+) -> Result<Json<ApiResponse<f64>>, ApiError> {
+    Ok(Json(ApiResponse::success(
+        get_project_frame_rate(state.0, param.material_ids, param.danmu).await?,
+    )))
+}
+
 async fn handler_get_material_danmu(
     state: axum::extract::State<State>,
     Json(param): Json<IdRequest>,
@@ -2463,6 +2480,10 @@ pub async fn start_api_server(state: State) {
         .route("/api/get_cover_stickers", post(handler_get_cover_stickers))
         .route("/api/get_material_usage", post(handler_get_material_usage))
         .route("/api/get_material_peaks", post(handler_get_material_peaks))
+        .route(
+            "/api/get_project_frame_rate",
+            post(handler_get_project_frame_rate),
+        )
         .route("/api/get_material_danmu", post(handler_get_material_danmu))
         .route("/api/get_video_typelist", post(handler_get_video_typelist))
         .route("/api/get_video_subtitle", post(handler_get_video_subtitle))

@@ -438,9 +438,15 @@ impl Timeline {
     }
 
     /// Map each clip's visible material danmaku (`ts` in ms from the material
-    /// start) onto the project timeline.
+    /// start) onto the project timeline at `fps`.
+    ///
+    /// Each lands in the middle of the frame before the first one showing it,
+    /// counted from its clip's first frame on the project's frame grid. Moved
+    /// by whole frames with its clip, a danmaku then moves by as many frames,
+    /// however its time is rounded on the way to an ASS document.
     pub fn map_danmus<'a>(
         &self,
+        fps: f64,
         material_danmus: impl Fn(i64) -> Option<&'a [DanmuEntry]>,
     ) -> Vec<DanmuEntry> {
         let mut mapped = Vec::new();
@@ -450,14 +456,18 @@ impl Timeline {
             };
             let start = (placed.clip.start * 1000.0).round() as i64;
             let end = (placed.clip.end * 1000.0).round() as i64;
-            let offset = (placed.offset * 1000.0).round() as i64;
+            let first_frame = (placed.offset * fps).round();
             mapped.extend(
                 danmus
                     .iter()
                     .filter(|danmu| danmu.ts >= start && danmu.ts < end)
-                    .map(|danmu| DanmuEntry {
-                        ts: danmu.ts - start + offset,
-                        ..danmu.clone()
+                    .map(|danmu| {
+                        let into = danmu.ts as f64 / 1000.0 - placed.clip.start;
+                        let frame = first_frame + (into * fps - EPSILON).ceil();
+                        DanmuEntry {
+                            ts: ((frame - 0.5) / fps * 1000.0).round().max(0.0) as i64,
+                            ..danmu.clone()
+                        }
                     }),
             );
         }
@@ -566,13 +576,50 @@ mod tests {
         let timeline = timeline();
         let first = [danmu(9_000), danmu(10_000), danmu(19_999), danmu(20_000)];
         let second = [danmu(1_000)];
-        let mapped = timeline.map_danmus(|id| match id {
+        let mapped = timeline.map_danmus(30.0, |id| match id {
             1 => Some(&first[..]),
             2 => Some(&second[..]),
             _ => None,
         });
+        // Each half a frame before the first frame showing it: frames 0,
+        // 300 and 330.
         let times: Vec<i64> = mapped.iter().map(|d| d.ts).collect();
-        assert_eq!(times, vec![0, 9_999, 11_000]);
+        assert_eq!(times, vec![0, 9_983, 10_983]);
+    }
+
+    #[test]
+    fn danmaku_moved_by_whole_frames_move_by_as_many_frames() {
+        let first = [danmu(0)];
+        let second = [danmu(1_234), danmu(2_000)];
+        let frames = |lead: f64| {
+            let timeline = Timeline {
+                clips: vec![clip("a", 1, 0.0, lead), clip("b", 2, 0.0, 5.0)],
+                ..Timeline::default()
+            };
+            let mapped = timeline.map_danmus(60.0, |id| match id {
+                1 => Some(&first[..]),
+                2 => Some(&second[..]),
+                _ => None,
+            });
+            // The frame showing each first, as an ASS document has it, to the
+            // centisecond.
+            mapped[1..]
+                .iter()
+                .map(|danmu| {
+                    let centiseconds = (danmu.ts as f64 / 10.0).round();
+                    (centiseconds / 100.0 * 60.0).ceil() as i64
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = frames(1.0);
+        for moved in 1..=12 {
+            let after = frames(1.0 + f64::from(moved) / 60.0);
+            let shifted: Vec<_> = before
+                .iter()
+                .map(|frame| frame + i64::from(moved))
+                .collect();
+            assert_eq!(after, shifted, "moved by {moved} frames");
+        }
     }
 
     #[test]

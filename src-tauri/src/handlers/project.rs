@@ -58,7 +58,7 @@ fn segment_cache_dir(id: i64) -> String {
 }
 
 /// The most the segment caches of all projects may take together; the least
-/// recently rendered go first.
+/// recently used go first.
 const SEGMENT_CACHE_LIMIT: u64 = 10 * 1024 * 1024 * 1024;
 
 /// A project with what the lists and the editor show about it.

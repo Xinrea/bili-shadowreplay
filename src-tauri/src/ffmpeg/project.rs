@@ -1188,7 +1188,14 @@ async fn render_with_encoder<R: ProgressReporterTrait>(
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let name = entry.file_name();
                 let key = name.to_str().and_then(|name| name.split('.').next());
-                if is_segment_file(&name) && !key.is_some_and(|key| used.contains(key)) {
+                if !is_segment_file(&name) {
+                    continue;
+                }
+                if key.is_some_and(|key| used.contains(key)) {
+                    // Used now, though maybe rendered long ago: the cache
+                    // limit goes by when segments were last used.
+                    mark_used(&entry.path());
+                } else {
                     let _ = tokio::fs::remove_file(entry.path()).await;
                 }
             }
@@ -1197,8 +1204,19 @@ async fn render_with_encoder<R: ProgressReporterTrait>(
     Ok(stats)
 }
 
+/// Set the time `path` last changed to now.
+fn mark_used(path: &Path) {
+    let marked = std::fs::File::options()
+        .write(true)
+        .open(path)
+        .and_then(|file| file.set_modified(std::time::SystemTime::now()));
+    if let Err(error) = marked {
+        log::warn!("Cannot mark segment {} used: {error}", path.display());
+    }
+}
+
 /// Remove the segment caches in `root` other than `current`, the least
-/// recently rendered first, until all of them take at most `limit` bytes.
+/// recently used first, until all of them take at most `limit` bytes.
 pub async fn limit_segment_caches(root: &Path, current: &Path, limit: u64) {
     let Ok(mut projects) = tokio::fs::read_dir(root).await else {
         return;
@@ -1719,7 +1737,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn segment_caches_beyond_the_limit_go_least_recently_rendered_first() {
+    async fn segment_caches_beyond_the_limit_go_least_recently_used_first() {
         let root = tempfile::tempdir().unwrap();
         let now = std::time::SystemTime::now();
         for (name, age) in [("old", 300), ("newer", 100), ("current", 400)] {
@@ -1743,8 +1761,13 @@ mod tests {
             names.sort();
             names
         };
+        // Rendered long ago, used now: it is the most recently used.
+        let reused = root.path().join("old").join("segment.mp4");
+        mark_used(&reused);
+        let age = std::fs::metadata(&reused).unwrap().modified().unwrap();
+        assert!(now.duration_since(age).unwrap_or_default().as_secs() < 5);
         limit_segment_caches(root.path(), &current, 700).await;
-        assert_eq!(left(), ["current", "newer"]);
+        assert_eq!(left(), ["current", "old"]);
         // The current project's stays, even over the limit.
         limit_segment_caches(root.path(), &current, 100).await;
         assert_eq!(left(), ["current"]);

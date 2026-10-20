@@ -1166,16 +1166,20 @@ async fn export_project_inner(
     Ok(())
 }
 
-/// Whether the file has sound, and its frame rate.
+/// Whether the file has sound, its frame rate and the length of its video.
 async fn probe_material(
-    probed: &mut HashMap<PathBuf, (bool, f64)>,
+    probed: &mut HashMap<PathBuf, (bool, f64, f64)>,
     path: &Path,
-) -> Result<(bool, f64), String> {
+) -> Result<(bool, f64, f64), String> {
     if let Some(found) = probed.get(path) {
         return Ok(*found);
     }
     let metadata = ffmpeg_utils::extract_video_metadata(path).await?;
-    let found = (!metadata.audio_codec.is_empty(), metadata.fps);
+    let found = (
+        !metadata.audio_codec.is_empty(),
+        metadata.fps,
+        metadata.duration,
+    );
     probed.insert(path.to_path_buf(), found);
     Ok(found)
 }
@@ -1194,7 +1198,7 @@ async fn render_timeline(
     let mut probed = HashMap::new();
     let mut clips = Vec::with_capacity(job.timeline.clips.len());
     for clip in &job.timeline.clips {
-        let (has_audio, fps) = probe_material(&mut probed, file(clip.material_id)?).await?;
+        let (has_audio, fps, _) = probe_material(&mut probed, file(clip.material_id)?).await?;
         clips.push(RenderClip {
             path: file(clip.material_id)?.clone(),
             start: clip.start,
@@ -1208,10 +1212,12 @@ async fn render_timeline(
     for placed in job.timeline.placed_overlays() {
         let layer = match &placed.overlay.content {
             OverlayContent::Video(video) => {
-                let (has_audio, _) = probe_material(&mut probed, file(video.material_id)?).await?;
+                let (has_audio, _, duration) =
+                    probe_material(&mut probed, file(video.material_id)?).await?;
                 OverlayLayer::Video(VideoLayer {
                     path: file(video.material_id)?.clone(),
                     source_start: video.source_start + placed.skip,
+                    duration,
                     has_audio,
                     x: video.element.x,
                     y: video.element.y,

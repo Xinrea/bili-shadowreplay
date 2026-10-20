@@ -1,30 +1,55 @@
 //! Render a project (切片) timeline into one video.
 //!
-//! Every clip is a separate input seeked with `-ss/-t`, so FFmpeg only decodes
-//! the parts that are used even when the material is hours long. Clips are
-//! normalized to one canvas, frame rate and audio format, joined with `concat`,
-//! and then overlays, subtitles and danmaku are drawn on the joined timeline,
-//! in that order. Video overlays are inputs of their own like clips, and
-//! their sound is mixed into the joined clips'.
+//! The timeline is rendered in segments of up to a minute (see
+//! `project_plan`), each by its own FFmpeg run, a few at a time, into a video
+//! file and a WAV file of its sound. The videos are then joined without
+//! encoding them again, and the sound is encoded once for the whole project.
+//!
+//! In a segment, every part of a clip is a separate input seeked with
+//! `-ss/-t`, so FFmpeg only decodes what is used even when the material is
+//! hours long. Parts are normalized to one canvas, frame rate and audio
+//! format, joined with `concat`, and then overlays, subtitles and danmaku are
+//! drawn on them, in that order. Video overlays are inputs of their own like
+//! clips, and their sound is mixed into the clips'. The frames carry project
+//! time while they are drawn on, so the overlays' spans, the subtitles and the
+//! danmaku apply unchanged in every segment.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 
+use async_trait::async_trait;
 use ffmpeg_utils::ffmpeg_command;
+use futures::{stream, TryStreamExt};
 use recorder::danmu::DanmuEntry;
 
-use crate::danmu2ass::Danmu2AssOptions;
-use crate::progress::progress_reporter::ProgressReporterTrait;
+use crate::danmu2ass::{Danmu2AssOptions, ImageDanmu, R2L_TIME};
+use crate::progress::progress_reporter::{ProgressReporterTrait, StageProgress};
 
 use super::{
     danmu, hwaccel,
+    project_plan::{plan_segments, Segment, SegmentLimits, SAMPLE_RATE},
     runner::{run_command, ProgressMode, ProgressTotal, TempArtifact},
 };
 
 /// Output frame rate when no clip reports one.
 const DEFAULT_FPS: f64 = 30.0;
 const MAX_FPS: f64 = 60.0;
-/// The rate every clip's sound is resampled to.
-const SAMPLE_RATE: f64 = 48000.0;
+const SEGMENT_LIMITS: SegmentLimits = SegmentLimits {
+    seconds: 60.0,
+    parts: 16,
+};
+/// Segments rendering at once. Encoders use several threads already, but the
+/// filters drawing on the picture mostly one, and consumer GPUs allow only a
+/// few encoding sessions.
+const PARALLEL_SEGMENTS: usize = 2;
+/// Inputs are read from this long before their in point: a decoder starting
+/// there, as an AAC one does, first needs what comes before.
+const PREROLL: f64 = 1.0;
+/// A video overlay is read from at least this long before the end of its
+/// file, so that its last frame is there to hold after the file ends.
+const LAST_FRAME_MARGIN: f64 = 1.0;
+/// Overlaps this short, from rounding, do not count.
+const EPSILON: f64 = 1e-6;
 
 pub struct RenderClip {
     pub path: PathBuf,
@@ -57,6 +82,8 @@ pub struct VideoLayer {
     pub path: PathBuf,
     /// In point within the file, in seconds.
     pub source_start: f64,
+    /// Length of the file's video, `0.0` when unknown.
+    pub duration: f64,
     pub has_audio: bool,
     /// Center on the 1920×1080 picture.
     pub x: f64,
@@ -102,52 +129,45 @@ fn output_fps(clips: &[RenderClip], danmu: bool) -> f64 {
     }
 }
 
-/// How many frames at `fps` and samples each clip lasts.
-///
-/// Each cut goes to the frame and the sample nearest to where it falls in the
-/// project, so rounding never adds up over the clips: frame `n` of the joined
-/// clips is always at `n / fps` in project time, where the subtitles, danmaku
-/// and overlays are laid out.
-fn clip_lengths(clips: &[RenderClip], fps: f64) -> Vec<(u64, u64)> {
-    let at = |time: f64, rate: f64| (time * rate).round() as u64;
-    let mut start = 0.0;
-    clips
-        .iter()
-        .map(|clip| {
-            let end = start + clip.duration;
-            let length = (
-                at(end, fps) - at(start, fps),
-                at(end, SAMPLE_RATE) - at(start, SAMPLE_RATE),
-            );
-            start = end;
-            length
-        })
-        .collect()
+/// Where the input of a part of `clip` starting `skip` seconds into it is
+/// seeked to in its file, and how long before the part that is.
+fn part_input(clip: &RenderClip, skip: f64) -> (f64, f64) {
+    let start = clip.start + skip;
+    let seek = (start - PREROLL).max(0.0);
+    (seek, start - seek)
 }
 
-/// Filter graph joining the clips into `[joined]` (video) and `[{audio}]`.
+/// Filter graph joining the parts of `segment` into `[joined]` (video) and
+/// `[{audio}]`.
 ///
-/// Each clip is padded and cut to its length from [`clip_lengths`], so a file a
-/// little shorter than its clip cannot shift the subtitles and danmaku of the
-/// clips after it. Pictures and sound are joined apart: one concat would
-/// stretch every clip to its longer stream, and those differences add up.
-fn concat_filter(clips: &[RenderClip], fps: f64, audio: &str) -> String {
+/// Each part is padded and cut to its length in the plan, so a file a little
+/// shorter than its clip cannot shift the subtitles and danmaku of the clips
+/// after it. Frame `n` of a part shows its file `n / fps` past the part's in
+/// point, however the part was cut from its clip, so the parts of one clip
+/// play on without a seam. Pictures and sound are joined apart: one concat
+/// would stretch every part to its longer stream, and those differences add up.
+fn concat_filter(clips: &[RenderClip], segment: &Segment, fps: f64, audio: &str) -> String {
     let mut filter = String::new();
     let mut pictures = String::new();
     let mut sounds = String::new();
-    let lengths = clip_lengths(clips, fps);
-    for (index, (clip, (frames, samples))) in clips.iter().zip(lengths).enumerate() {
+    for (index, part) in segment.parts.iter().enumerate() {
+        let clip = &clips[part.clip];
+        let (_, preroll) = part_input(clip, part.skip);
+        let (frames, samples) = (part.frames, part.samples);
         let padding = frames as f64 / fps;
+        // Frames before the in point are dropped by `fps`.
         filter.push_str(&format!(
-            "[{index}:v]{},setsar=1,fps={fps},format=yuv420p,setpts=PTS-STARTPTS,\
-             tpad=stop_mode=clone:stop_duration={padding:.6},trim=end_frame={frames}[pv{index}];\n",
+            "[{index}:v]setpts=PTS-{preroll:.6}/TB,fps={fps}:start_time=0,{},setsar=1,\
+             format=yuv420p,tpad=stop_mode=clone:stop_duration={padding:.6},\
+             trim=end_frame={frames}[pv{index}];\n",
             hwaccel::H264_SCALE_PAD_FILTER,
         ));
         if clip.has_audio {
             filter.push_str(&format!(
-                "[{index}:a]aresample=48000:async=1:first_pts=0,\
+                "[{index}:a]aresample=48000:async=1:first_pts=0,atrim=start_sample={},\
                  aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS,\
-                 apad,atrim=end_sample={samples}[pa{index}];\n"
+                 apad,atrim=end_sample={samples}[pa{index}];\n",
+                (preroll * SAMPLE_RATE).round() as u64,
             ));
         } else {
             filter.push_str(&format!(
@@ -158,14 +178,67 @@ fn concat_filter(clips: &[RenderClip], fps: f64, audio: &str) -> String {
         pictures.push_str(&format!("[pv{index}]"));
         sounds.push_str(&format!("[pa{index}]"));
     }
-    // Concat times a clip of one frame as lasting none; numbering the frames
-    // keeps each on the frame grid.
-    let count = clips.len();
+    // Numbered from the segment's first frame, the frames carry project time,
+    // which the overlays, subtitles and danmaku are laid out in. Concat would
+    // also time a part of one frame as lasting none.
+    let (count, first) = (segment.parts.len(), segment.first_frame);
     filter.push_str(&format!(
-        "{pictures}concat=n={count}:v=1:a=0,setpts=N/{fps}/TB[joined];\n\
+        "{pictures}concat=n={count}:v=1:a=0,setpts=(N+{first})/{fps}/TB[joined];\n\
          {sounds}concat=n={count}:v=0:a=1[{audio}];\n"
     ));
     filter
+}
+
+/// The part of an overlay within a segment.
+struct SegmentOverlay<'a> {
+    /// Index among the project's overlays.
+    index: usize,
+    overlay: &'a RenderOverlay,
+    /// Where it is shown within the segment, project time.
+    start: f64,
+    end: f64,
+}
+
+impl SegmentOverlay<'_> {
+    /// Where the input of a video overlay is seeked to in its file, and how
+    /// much of the input comes before what is shown. Near the end of the file
+    /// that is read from its last frames, to hold the last one.
+    fn seek(&self, layer: &VideoLayer) -> (f64, f64) {
+        let offset = layer.source_start + self.start - self.overlay.start;
+        let from = if layer.duration > 0.0 {
+            offset.min(layer.duration - LAST_FRAME_MARGIN)
+        } else {
+            offset
+        };
+        let seek = (from - PREROLL).max(0.0);
+        (seek, offset - seek)
+    }
+}
+
+/// The overlays shown during project time `start..end`, in order.
+fn segment_overlays(overlays: &[RenderOverlay], start: f64, end: f64) -> Vec<SegmentOverlay<'_>> {
+    overlays
+        .iter()
+        .enumerate()
+        .filter_map(|(index, overlay)| {
+            let (from, to) = (overlay.start.max(start), overlay.end.min(end));
+            (to - from > EPSILON).then_some(SegmentOverlay {
+                index,
+                overlay,
+                start: from,
+                end: to,
+            })
+        })
+        .collect()
+}
+
+/// Image danmaku on screen during project time `start..end`.
+fn segment_danmaku(images: &[ImageDanmu], start: f64, end: f64) -> Vec<ImageDanmu> {
+    images
+        .iter()
+        .filter(|image| image.start < end && image.start + R2L_TIME > start)
+        .cloned()
+        .collect()
 }
 
 /// An overlay graph laid over `[{video}]`, with the inputs of `overlays`
@@ -174,25 +247,28 @@ struct OverlayGraph {
     filter: String,
     /// The video with every overlay on it.
     video: String,
-    /// The sound of each video overlay, `total` long with silence around it.
+    /// The sound of each video overlay, as long as the segment with silence
+    /// around it.
     audio: Vec<String>,
 }
 
+/// Lay `overlays` over a segment starting at project time `start` and
+/// `samples` long.
 fn overlay_filter(
-    overlays: &[RenderOverlay],
+    overlays: &[SegmentOverlay],
     first_input: usize,
     fps: f64,
-    total: f64,
+    (start, samples): (f64, u64),
     video: &str,
 ) -> OverlayGraph {
     let mut filter = String::new();
     let mut current = video.to_string();
     let mut audio = Vec::new();
-    for (index, overlay) in overlays.iter().enumerate() {
+    for (index, shown) in overlays.iter().enumerate() {
         let input = first_input + index;
-        let (start, end) = (overlay.start, overlay.end);
-        let enable = format!("enable='gte(t,{start:.6})*lt(t,{end:.6})'");
-        match &overlay.layer {
+        let (from, to) = (shown.start, shown.end);
+        let enable = format!("enable='gte(t,{from:.6})*lt(t,{to:.6})'");
+        match &shown.overlay.layer {
             OverlayLayer::Image { x, y, .. } => {
                 filter.push_str(&format!(
                     "[{input}:v]format=rgba[ov{index}];\n\
@@ -202,6 +278,8 @@ fn overlay_filter(
                 ));
             }
             OverlayLayer::Video(layer) => {
+                let (_, skip) = shown.seek(layer);
+                let length = to - from;
                 // Even, as the encoder's chroma planes need.
                 let width = ((layer.width / 2.0).round() * 2.0).max(2.0) as i64;
                 let rotate = if layer.rotation.abs() > 0.01 {
@@ -211,24 +289,28 @@ fn overlay_filter(
                 } else {
                     String::new()
                 };
-                // Shifted to its place on the timeline; the joined clips show
-                // through before it starts. A file ending early holds its last
-                // frame until the overlay ends, as the preview does.
+                // Shifted to its place on the timeline; the clips show through
+                // before it starts. A file ending early holds its last frame
+                // until the overlay ends, as the preview does.
                 filter.push_str(&format!(
-                    "[{input}:v]setpts=PTS-STARTPTS,fps={fps},scale={width}:-2,setsar=1,\
-                     format=yuva420p{rotate},setpts=PTS+{start:.6}/TB[ov{index}];\n\
+                    "[{input}:v]fps={fps}:start_time=0,\
+                     tpad=stop_mode=clone:stop_duration={:.6},trim=start={skip:.6}:duration={length:.6},\
+                     setpts=PTS-STARTPTS,scale={width}:-2,setsar=1,\
+                     format=yuva420p{rotate},setpts=PTS+{from:.6}/TB[ov{index}];\n\
                      [{current}][ov{index}]overlay=x={:.3}-overlay_w/2:y={:.3}-overlay_h/2:\
                      eof_action=repeat:{enable}[layer{index}];\n",
-                    layer.x, layer.y,
+                    skip + length,
+                    layer.x,
+                    layer.y,
                 ));
                 if layer.has_audio && layer.volume > 0.0 {
-                    let delay = (start * 1000.0).round() as i64;
+                    let delay = ((from - start) * 1000.0).round() as i64;
                     filter.push_str(&format!(
-                        "[{input}:a]aresample=48000:async=1:first_pts=0,\
+                        "[{input}:a]aresample=48000:async=1:first_pts=0,atrim=start_sample={},\
                          aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS,\
-                         atrim=duration={:.6},volume={:.3},adelay={delay}|{delay},\
-                         apad,atrim=duration={total:.6}[oa{index}];\n",
-                        end - start,
+                         atrim=duration={length:.6},volume={:.3},adelay={delay}|{delay},\
+                         apad,atrim=end_sample={samples}[oa{index}];\n",
+                        (skip * SAMPLE_RATE).round() as u64,
                         layer.volume.clamp(0.0, 1.0),
                     ));
                     audio.push(format!("oa{index}"));
@@ -245,7 +327,7 @@ fn overlay_filter(
 }
 
 /// Mix `[main]` with the overlays' sound into `[outa]`. Every input lasts the
-/// whole project, so amix scales each by as much and the volume filter
+/// whole segment, so amix scales each by as much and the volume filter
 /// restores them: overlays add to the clips' sound instead of lowering it.
 fn mix_filter(main: &str, overlays: &[String]) -> String {
     let inputs: String = std::iter::once(main)
@@ -263,34 +345,328 @@ fn overlay_image_name(index: usize) -> String {
     format!("overlay{index}.png")
 }
 
+fn segment_video_name(index: usize) -> String {
+    format!("segment{index}.mp4")
+}
+
+fn segment_sound_name(index: usize) -> String {
+    format!("segment{index}.wav")
+}
+
+/// How far a segment has rendered, and how fast while it renders.
+#[derive(Clone, Copy, Default)]
+struct Rendered {
+    seconds: f64,
+    speed: Option<f64>,
+}
+
+/// Reports the segments rendering at once as one stage of the whole project.
+#[derive(Clone)]
+struct SegmentProgress<'a, R> {
+    reporter: &'a R,
+    segments: Arc<Mutex<Vec<Rendered>>>,
+    total: f64,
+    /// The segment this reports, and its length.
+    index: usize,
+    length: f64,
+}
+
+impl<'a, R: ProgressReporterTrait> SegmentProgress<'a, R> {
+    fn new(reporter: &'a R, segments: usize, total: f64) -> Self {
+        Self {
+            reporter,
+            segments: Arc::new(Mutex::new(vec![Rendered::default(); segments])),
+            total,
+            index: 0,
+            length: 0.0,
+        }
+    }
+
+    fn segment(&self, index: usize, length: f64) -> Self {
+        Self {
+            index,
+            length,
+            ..self.clone()
+        }
+    }
+
+    /// Note how far this segment is, and return how far all are together
+    /// and how fast those rendering go.
+    fn record(&self, seconds: f64, speed: Option<f64>) -> Rendered {
+        let mut segments = self.segments.lock().unwrap_or_else(PoisonError::into_inner);
+        segments[self.index] = Rendered {
+            seconds: seconds.min(self.length),
+            speed,
+        };
+        let speeds: Vec<f64> = segments
+            .iter()
+            .filter_map(|segment| segment.speed)
+            .collect();
+        Rendered {
+            seconds: segments.iter().map(|segment| segment.seconds).sum(),
+            speed: (!speeds.is_empty()).then(|| speeds.iter().sum()),
+        }
+    }
+
+    fn finished(&self) {
+        self.record(self.length, None);
+    }
+}
+
+#[async_trait]
+impl<R: ProgressReporterTrait> ProgressReporterTrait for SegmentProgress<'_, R> {
+    async fn update(&self, content: &str) {
+        self.reporter.update(content).await;
+    }
+
+    async fn progress(&self, progress: StageProgress) {
+        let all = self.record(progress.processed, progress.speed);
+        self.reporter
+            .progress(StageProgress {
+                stage: progress.stage,
+                processed: all.seconds,
+                total: Some(self.total),
+                speed: all.speed,
+            })
+            .await;
+    }
+
+    // The export reports its end, not each segment.
+    async fn finish(&self, _success: bool, _message: &str) {}
+}
+
+/// What the segments of one render share.
+struct Render<'a> {
+    job: &'a ProjectRender<'a>,
+    /// FFmpeg's working directory, with the files the graphs read.
+    directory: &'a Path,
+    fps: f64,
+    encoder: &'static str,
+    /// Options of the subtitles' `ass` filter.
+    subtitles: Option<String>,
+    /// Image danmaku of the whole project, when danmaku are burned.
+    danmaku: Option<Vec<ImageDanmu>>,
+}
+
+impl Render<'_> {
+    /// Render segment `index` into its video and sound files.
+    async fn segment<R: ProgressReporterTrait>(
+        &self,
+        index: usize,
+        segment: &Segment,
+        reporter: &R,
+    ) -> Result<(), String> {
+        let (job, fps) = (self.job, self.fps);
+        let (start, end) = (segment.start(fps), segment.end(fps));
+        let overlays = segment_overlays(&job.overlays, start, end);
+        let graph = overlay_filter(
+            &overlays,
+            segment.parts.len(),
+            fps,
+            (start, segment.samples),
+            "joined",
+        );
+        let joined_audio = if graph.audio.is_empty() {
+            "outa"
+        } else {
+            "maina"
+        };
+        let mut filter = concat_filter(&job.clips, segment, fps, joined_audio);
+        filter.push_str(&graph.filter);
+        if !graph.audio.is_empty() {
+            filter.push_str(&mix_filter(joined_audio, &graph.audio));
+        }
+        let mut current = graph.video;
+        if let Some(subtitles) = &self.subtitles {
+            filter.push_str(&format!("[{current}]ass={subtitles}[subtitled];\n"));
+            current = "subtitled".to_string();
+        }
+        let mut image_inputs = Vec::new();
+        if let Some(images) = &self.danmaku {
+            filter.push_str(&format!("[{current}]ass=danmu.ass[danmu0];\n"));
+            let (chain, slots) = danmu::image_overlay_chain(
+                &segment_danmaku(images, start, end),
+                job.danmu_options.opacity,
+                segment.parts.len() + overlays.len(),
+                "danmu",
+            );
+            filter.push_str(&chain.filter);
+            image_inputs = chain.inputs;
+            current = format!("danmu{slots}");
+        }
+        let format = if hwaccel::is_vaapi_encoder(self.encoder) {
+            hwaccel::vaapi_filter_suffix()
+        } else {
+            "format=yuv420p"
+        };
+        // Exactly as many frames as planned: `overlay` goes on as long as any
+        // of its inputs does. Then back to the segment's own time.
+        filter.push_str(&format!(
+            "[{current}]trim=end_frame={},setpts=PTS-STARTPTS,{format}[outv]\n",
+            segment.frames
+        ));
+        let filter_name = format!("segment{index}.txt");
+        tokio::fs::write(self.directory.join(&filter_name), &filter)
+            .await
+            .map_err(|error| error.to_string())?;
+
+        let mut command = ffmpeg_command();
+        command.current_dir(self.directory).args(["-nostdin", "-y"]);
+        for part in &segment.parts {
+            let clip = &job.clips[part.clip];
+            let (seek, preroll) = part_input(clip, part.skip);
+            let length = (part.frames as f64 / fps).max(part.samples as f64 / SAMPLE_RATE);
+            let input = std::path::absolute(&clip.path).map_err(|error| error.to_string())?;
+            command
+                .args(["-ss", &format!("{seek:.6}")])
+                .args(["-t", &format!("{:.6}", preroll + length)])
+                .arg("-i")
+                .arg(input);
+        }
+        for shown in &overlays {
+            match &shown.overlay.layer {
+                OverlayLayer::Image { .. } => {
+                    command
+                        .args(["-threads", "1", "-i"])
+                        .arg(overlay_image_name(shown.index));
+                }
+                OverlayLayer::Video(layer) => {
+                    let (seek, skip) = shown.seek(layer);
+                    let input =
+                        std::path::absolute(&layer.path).map_err(|error| error.to_string())?;
+                    command
+                        .args(["-ss", &format!("{seek:.6}")])
+                        .args(["-t", &format!("{:.6}", skip + shown.end - shown.start)])
+                        .arg("-i")
+                        .arg(input);
+                }
+            }
+        }
+        for image in image_inputs {
+            // A single PNG frame is repeated by overlay framesync.
+            command.args(["-threads", "1", "-i"]).arg(image);
+        }
+        command
+            .arg(danmu::filter_complex_file_option().await)
+            .arg(&filter_name)
+            .args(["-map", "[outv]"]);
+        hwaccel::apply_x264_encoder_only(&mut command, self.encoder);
+        hwaccel::apply_x264_quality_args(&mut command, self.encoder);
+        command
+            .args(["-r", &fps.to_string()])
+            .arg(segment_video_name(index))
+            .args(["-map", "[outa]", "-c:a", "pcm_s16le"])
+            .arg(segment_sound_name(index));
+        log::info!("Render project segment {index}: {command:?}");
+        log::debug!("Project segment {index} filter graph:\n{filter}");
+        run_command(
+            command,
+            ProgressMode::stage("导出切片", ProgressTotal::Known(end - start)),
+            "Render project segment",
+            Some(reporter),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+}
+
+/// Join the rendered segments into `output`, encoding their sound as one.
+async fn join_segments<R: ProgressReporterTrait>(
+    reporter: &R,
+    directory: &Path,
+    segments: &[Segment],
+    fps: f64,
+    output: &Path,
+) -> Result<(), String> {
+    // Durations in the microseconds the demuxer reads, from the frames'
+    // times, so that they add up to them.
+    let micros = |frame: u64| (frame as f64 / fps * 1e6).round() as u64;
+    let mut videos = String::new();
+    let mut sounds = String::new();
+    for (index, segment) in segments.iter().enumerate() {
+        let duration = micros(segment.first_frame + segment.frames) - micros(segment.first_frame);
+        videos.push_str(&format!(
+            "file '{}'\nduration {}.{:06}\n",
+            segment_video_name(index),
+            duration / 1_000_000,
+            duration % 1_000_000,
+        ));
+        sounds.push_str(&format!("file '{}'\n", segment_sound_name(index)));
+    }
+    for (name, list) in [("videos.txt", videos), ("sounds.txt", sounds)] {
+        tokio::fs::write(directory.join(name), list)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    let total = segments.iter().map(|segment| segment.frames).sum::<u64>() as f64 / fps;
+    let mut command = ffmpeg_command();
+    command
+        .current_dir(directory)
+        .args(["-nostdin", "-y"])
+        .args([
+            "-f",
+            "concat",
+            "-i",
+            "videos.txt",
+            "-f",
+            "concat",
+            "-i",
+            "sounds.txt",
+        ])
+        .args(["-map", "0:v", "-map", "1:a", "-c:v", "copy"])
+        .args(["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"])
+        .arg(output);
+    log::info!("Join project segments: {command:?}");
+    run_command(
+        command,
+        ProgressMode::stage("合并片段", ProgressTotal::Known(total)),
+        "Join project segments",
+        Some(reporter),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 pub async fn render_project<R: ProgressReporterTrait>(
     reporter: &R,
     job: ProjectRender<'_>,
 ) -> Result<(), String> {
+    render_in_segments(reporter, &job, SEGMENT_LIMITS).await
+}
+
+async fn render_in_segments<R: ProgressReporterTrait>(
+    reporter: &R,
+    job: &ProjectRender<'_>,
+    limits: SegmentLimits,
+) -> Result<(), String> {
+    let encoder = hwaccel::get_x264_encoder().await;
+    render_with_encoder(reporter, job, limits, encoder).await
+}
+
+async fn render_with_encoder<R: ProgressReporterTrait>(
+    reporter: &R,
+    job: &ProjectRender<'_>,
+    limits: SegmentLimits,
+    encoder: &'static str,
+) -> Result<(), String> {
     if job.clips.is_empty() {
         return Err("时间轴上没有片段".to_string());
     }
+    let output = std::path::absolute(job.output).map_err(|error| error.to_string())?;
     // Generated files use fixed names in a private directory that is FFmpeg's
-    // working directory, so no user path is interpolated into the graph.
+    // working directory, so no user path is interpolated into the graphs. It
+    // is beside the output, on a disk with room for the video.
     let directory = tempfile::Builder::new()
-        .prefix("bili-project-")
-        .tempdir()
+        .prefix(".bili-project-")
+        .tempdir_in(output.parent().ok_or("导出路径无效")?)
         .map_err(|error| error.to_string())?;
     let burn_danmu = !job.danmus.is_empty();
     let fps = output_fps(&job.clips, burn_danmu);
-    let total: f64 = job.clips.iter().map(|clip| clip.duration).sum();
+    let durations: Vec<f64> = job.clips.iter().map(|clip| clip.duration).collect();
+    let segments = plan_segments(&durations, fps, limits);
 
-    let overlays = overlay_filter(&job.overlays, job.clips.len(), fps, total, "joined");
-    let joined_audio = if overlays.audio.is_empty() {
-        "outa"
-    } else {
-        "maina"
-    };
-    let mut filter = concat_filter(&job.clips, fps, joined_audio);
-    filter.push_str(&overlays.filter);
-    if !overlays.audio.is_empty() {
-        filter.push_str(&mix_filter(joined_audio, &overlays.audio));
-    }
     for (index, overlay) in job.overlays.iter().enumerate() {
         if let OverlayLayer::Image { png, .. } = &overlay.layer {
             tokio::fs::write(directory.path().join(overlay_image_name(index)), png)
@@ -298,105 +674,63 @@ pub async fn render_project<R: ProgressReporterTrait>(
                 .map_err(|error| error.to_string())?;
         }
     }
-    let mut current = overlays.video;
-    if let Some(ass) = &job.subtitle_ass {
-        tokio::fs::write(directory.path().join("subtitle.ass"), ass)
-            .await
-            .map_err(|error| error.to_string())?;
-        filter.push_str(&format!("[{current}]ass=filename=subtitle.ass"));
-        if let Some(fonts) = job.fonts_directory {
-            filter.push_str(&format!(
-                ":fontsdir={}",
-                super::subtitle::subtitle_filter_path(fonts)?
-            ));
+    let subtitles = match &job.subtitle_ass {
+        Some(ass) => {
+            tokio::fs::write(directory.path().join("subtitle.ass"), ass)
+                .await
+                .map_err(|error| error.to_string())?;
+            let mut options = "filename=subtitle.ass".to_string();
+            if let Some(fonts) = job.fonts_directory {
+                options.push_str(&format!(
+                    ":fontsdir={}",
+                    super::subtitle::subtitle_filter_path(fonts)?
+                ));
+            }
+            Some(options)
         }
-        filter.push_str("[subtitled];\n");
-        current = "subtitled".to_string();
-    }
-    let mut image_inputs = Vec::new();
-    if burn_danmu {
-        let images = danmu::prepare_danmu_layers(
-            Some(reporter),
-            &job.danmus,
-            &job.danmu_options,
-            directory.path(),
-        )
-        .await?;
-        filter.push_str(&format!("[{current}]ass=danmu.ass[danmu0];\n"));
-        let (chain, slots) = danmu::image_overlay_chain(
-            &images,
-            job.danmu_options.opacity,
-            job.clips.len() + job.overlays.len(),
-            "danmu",
-        );
-        filter.push_str(&chain.filter);
-        image_inputs = chain.inputs;
-        current = format!("danmu{slots}");
-    }
-    let encoder = hwaccel::get_x264_encoder().await;
-    let format = if hwaccel::is_vaapi_encoder(encoder) {
-        hwaccel::vaapi_filter_suffix()
-    } else {
-        "format=yuv420p"
+        None => None,
     };
-    filter.push_str(&format!("[{current}]{format}[outv]\n"));
-    tokio::fs::write(directory.path().join("filter.txt"), &filter)
-        .await
-        .map_err(|error| error.to_string())?;
+    let danmaku = if burn_danmu {
+        Some(
+            danmu::prepare_danmu_layers(
+                Some(reporter),
+                &job.danmus,
+                &job.danmu_options,
+                directory.path(),
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    let render = Render {
+        job,
+        directory: directory.path(),
+        fps,
+        encoder,
+        subtitles,
+        danmaku,
+    };
 
-    let output = std::path::absolute(job.output).map_err(|error| error.to_string())?;
+    log::info!("Render project in {} segments", segments.len());
+    let total = segments.iter().map(|segment| segment.frames).sum::<u64>() as f64 / fps;
+    let progress = SegmentProgress::new(reporter, segments.len(), total);
+    stream::iter(segments.iter().enumerate().map(Ok::<_, String>))
+        .try_for_each_concurrent(PARALLEL_SEGMENTS, |(index, segment)| {
+            let (render, progress) = (
+                &render,
+                progress.segment(index, segment.frames as f64 / fps),
+            );
+            async move {
+                render.segment(index, segment, &progress).await?;
+                progress.finished();
+                Ok(())
+            }
+        })
+        .await?;
+
     let output_guard = TempArtifact::new(&output);
-    let mut command = ffmpeg_command();
-    command.current_dir(directory.path()).arg("-nostdin");
-    for clip in &job.clips {
-        let input = std::path::absolute(&clip.path).map_err(|error| error.to_string())?;
-        command
-            .args(["-ss", &format!("{:.6}", clip.start)])
-            .args(["-t", &format!("{:.6}", clip.duration)])
-            .arg("-i")
-            .arg(input);
-    }
-    for (index, overlay) in job.overlays.iter().enumerate() {
-        match &overlay.layer {
-            OverlayLayer::Image { .. } => {
-                command
-                    .args(["-threads", "1", "-i"])
-                    .arg(overlay_image_name(index));
-            }
-            OverlayLayer::Video(layer) => {
-                let input = std::path::absolute(&layer.path).map_err(|error| error.to_string())?;
-                command
-                    .args(["-ss", &format!("{:.6}", layer.source_start)])
-                    .args(["-t", &format!("{:.6}", overlay.end - overlay.start)])
-                    .arg("-i")
-                    .arg(input);
-            }
-        }
-    }
-    for image in image_inputs {
-        // A single PNG frame is repeated by overlay framesync.
-        command.args(["-threads", "1", "-i"]).arg(image);
-    }
-    command
-        .arg(danmu::filter_complex_file_option().await)
-        .arg("filter.txt")
-        .args(["-map", "[outv]", "-map", "[outa]"]);
-    hwaccel::apply_x264_encoder_only(&mut command, encoder);
-    hwaccel::apply_x264_quality_args(&mut command, encoder);
-    command
-        .args(["-c:a", "aac", "-b:a", "192k", "-r", &fps.to_string()])
-        .args(["-movflags", "+faststart", "-y"])
-        .arg(&output);
-    log::info!("Render project: {command:?}");
-    log::debug!("Project filter graph:\n{filter}");
-    run_command(
-        command,
-        ProgressMode::stage("导出切片", ProgressTotal::Known(total)),
-        "Render project",
-        Some(reporter),
-    )
-    .await
-    .map_err(|error| error.to_string())?;
+    join_segments(reporter, directory.path(), &segments, fps, &output).await?;
     output_guard.keep();
     Ok(())
 }
@@ -415,42 +749,64 @@ mod tests {
         }
     }
 
+    fn one_segment(durations: &[f64], fps: f64) -> Segment {
+        let mut segments = plan_segments(durations, fps, SEGMENT_LIMITS);
+        assert_eq!(segments.len(), 1);
+        segments.remove(0)
+    }
+
     #[test]
     fn clips_are_normalized_and_joined_in_order() {
-        let filter = concat_filter(&[clip(true, 30.0), clip(false, 60.0)], 60.0, "outa");
-        assert!(filter.contains("[0:v]scale=1920:1080"));
+        let segment = one_segment(&[2.5, 2.5], 60.0);
+        let filter = concat_filter(
+            &[clip(true, 30.0), clip(false, 60.0)],
+            &segment,
+            60.0,
+            "outa",
+        );
+        // Read from a second before the in point, which is dropped.
+        assert!(filter.contains("[0:v]setpts=PTS-1.000000/TB,fps=60:start_time=0,scale=1920:1080"));
         // Both streams of a clip last exactly its timeline duration.
         assert!(filter.contains(
-            "fps=60,format=yuv420p,setpts=PTS-STARTPTS,\
-             tpad=stop_mode=clone:stop_duration=2.500000,trim=end_frame=150[pv0]"
+            "setsar=1,format=yuv420p,tpad=stop_mode=clone:stop_duration=2.500000,\
+             trim=end_frame=150[pv0]"
         ));
-        assert!(filter.contains("[0:a]aresample=48000"));
+        assert!(
+            filter.contains("[0:a]aresample=48000:async=1:first_pts=0,atrim=start_sample=48000,")
+        );
         assert!(filter.contains("apad,atrim=end_sample=120000[pa0]"));
         // A clip without audio gets silence of the same length.
         assert!(filter.contains("anullsrc=r=48000:cl=stereo,atrim=end_sample=120000"));
         assert!(!filter.contains("[1:a]"));
-        assert!(filter.contains("[pv0][pv1]concat=n=2:v=1:a=0,setpts=N/60/TB[joined]"));
+        assert!(filter.contains("[pv0][pv1]concat=n=2:v=1:a=0,setpts=(N+0)/60/TB[joined]"));
         assert!(filter.contains("[pa0][pa1]concat=n=2:v=0:a=1[outa]"));
     }
 
     #[test]
-    fn cuts_between_frames_do_not_add_up() {
-        let mut clips: Vec<_> = (0..20).map(|_| clip(true, 30.0)).collect();
-        for clip in &mut clips {
-            clip.duration = 1.02;
-        }
-        let lengths = clip_lengths(&clips, 30.0);
-        // 30.6 frames each: some clips get 31 and some 30, as their cuts fall.
-        assert_eq!(&lengths[..3], &[(31, 48960), (30, 48960), (31, 48960)]);
-        let frames: u64 = lengths.iter().map(|(frames, _)| frames).sum();
-        let samples: u64 = lengths.iter().map(|(_, samples)| samples).sum();
-        assert_eq!((frames, samples), (612, 979_200));
+    fn a_part_cut_within_a_clip_goes_on_in_project_time() {
+        let mut long = clip(true, 30.0);
+        long.duration = 100.0;
+        let segments = plan_segments(&[100.0], 30.0, SEGMENT_LIMITS);
+        assert_eq!(segments.len(), 2);
+        let second = &segments[1];
+        assert_eq!(second.parts[0].skip, 50.0);
+        // 51 s into the file, read from a second before.
+        assert_eq!(part_input(&long, second.parts[0].skip), (50.0, 1.0));
+        let filter = concat_filter(&[long], second, 30.0, "outa");
+        assert!(filter.contains("[0:v]setpts=PTS-1.000000/TB,fps=30:start_time=0,"));
+        assert!(filter.contains("trim=end_frame=1500[pv0]"));
+        assert!(filter.contains("concat=n=1:v=1:a=0,setpts=(N+1500)/30/TB[joined]"));
+        // Near the start of a file, only what there is before the in point.
+        let mut early = clip(true, 30.0);
+        early.start = 0.4;
+        assert_eq!(part_input(&early, 0.0), (0.0, 0.4));
     }
 
     fn video_layer(has_audio: bool, rotation: f64) -> OverlayLayer {
         OverlayLayer::Video(VideoLayer {
             path: PathBuf::from("pip.mp4"),
             source_start: 3.0,
+            duration: 0.0,
             has_audio,
             x: 1500.0,
             y: 800.0,
@@ -483,18 +839,27 @@ mod tests {
                 layer: video_layer(false, 90.0),
             },
         ];
-        let graph = overlay_filter(&overlays, 2, 30.0, 10.0, "joined");
+        let shown = segment_overlays(&overlays, 0.0, 10.0);
+        let graph = overlay_filter(&shown, 2, 30.0, (0.0, 480_000), "joined");
         let filter = &graph.filter;
-        // The video is scaled to an even width and moved to its place in time.
+        // The video is read from a second before its in point, scaled to an
+        // even width and moved to its place in time.
         assert!(filter.contains(
-            "[2:v]setpts=PTS-STARTPTS,fps=30,scale=642:-2,setsar=1,format=yuva420p,setpts=PTS+1.000000/TB[ov0]"
+            "[2:v]fps=30:start_time=0,tpad=stop_mode=clone:stop_duration=4.000000,\
+             trim=start=1.000000:duration=3.000000,setpts=PTS-STARTPTS,scale=642:-2,setsar=1,format=yuva420p,\
+             setpts=PTS+1.000000/TB[ov0]"
         ));
         assert!(filter.contains(
             "[joined][ov0]overlay=x=1500.000-overlay_w/2:y=800.000-overlay_h/2:eof_action=repeat:\
              enable='gte(t,1.000000)*lt(t,4.000000)'[layer0]"
         ));
-        // Its sound starts with it and lasts the whole project.
-        assert!(filter.contains("atrim=duration=3.000000,volume=0.500,adelay=1000|1000,apad,atrim=duration=10.000000[oa0]"));
+        // Its sound starts with it and lasts the whole segment.
+        assert!(
+            filter.contains("[2:a]aresample=48000:async=1:first_pts=0,atrim=start_sample=48000,")
+        );
+        assert!(filter.contains(
+            "atrim=duration=3.000000,volume=0.500,adelay=1000|1000,apad,atrim=end_sample=480000[oa0]"
+        ));
         // Pictures are placed by their top left, each over the layer before.
         assert!(filter.contains("[3:v]format=rgba[ov1]"));
         assert!(filter.contains(
@@ -511,8 +876,139 @@ mod tests {
             "[maina][oa0]amix=inputs=2:duration=first:dropout_transition=0,volume=2[outa];\n"
         );
         // Without overlays the joined clips are used as they are.
-        let none = overlay_filter(&[], 2, 30.0, 10.0, "joined");
+        let none = overlay_filter(&[], 2, 30.0, (0.0, 480_000), "joined");
         assert_eq!((none.filter.as_str(), none.video.as_str()), ("", "joined"));
+    }
+
+    #[test]
+    fn overlays_go_on_in_the_segments_after_the_one_they_start_in() {
+        let mut held = video_layer(true, 0.0);
+        if let OverlayLayer::Video(layer) = &mut held {
+            layer.duration = 5.0;
+        }
+        let overlays = [
+            RenderOverlay {
+                start: 0.0,
+                end: 2.5,
+                layer: video_layer(true, 0.0),
+            },
+            RenderOverlay {
+                start: 1.0,
+                end: 4.0,
+                layer: video_layer(true, 0.0),
+            },
+            RenderOverlay {
+                start: 1.0,
+                end: 9.0,
+                layer: held,
+            },
+        ];
+        // The first ends where the segment starts.
+        let shown = segment_overlays(&overlays, 2.5, 10.0);
+        let spans: Vec<_> = shown
+            .iter()
+            .map(|item| (item.index, item.start, item.end))
+            .collect();
+        assert_eq!(spans, [(1, 2.5, 4.0), (2, 2.5, 9.0)]);
+        let OverlayLayer::Video(layer) = &overlays[1].layer else {
+            unreachable!()
+        };
+        // 1.5 s past its in point at 3 s, read from a second before.
+        assert_eq!(shown[0].seek(layer), (3.5, 1.0));
+        let graph = overlay_filter(&shown, 1, 30.0, (2.5, 360_000), "joined");
+        assert!(graph.filter.contains(
+            "[1:v]fps=30:start_time=0,tpad=stop_mode=clone:stop_duration=2.500000,trim=start=1.000000:duration=1.500000,"
+        ));
+        assert!(graph.filter.contains("setpts=PTS+2.500000/TB[ov0]"));
+        assert!(graph
+            .filter
+            .contains("enable='gte(t,2.500000)*lt(t,4.000000)'[layer0]"));
+        // Its sound goes on at the start of the segment.
+        assert!(graph.filter.contains(
+            "atrim=duration=1.500000,volume=0.500,adelay=0|0,apad,atrim=end_sample=360000[oa0]"
+        ));
+        // 4.5 s into a file of 5 s: read from its last two seconds, so that
+        // its last frame is there to hold.
+        let OverlayLayer::Video(layer) = &overlays[2].layer else {
+            unreachable!()
+        };
+        let (seek, skip) = shown[1].seek(layer);
+        assert_eq!(seek, 3.0);
+        assert!((skip - 1.5).abs() < 1e-9);
+        assert!(graph.filter.contains(
+            "tpad=stop_mode=clone:stop_duration=8.000000,trim=start=1.500000:duration=6.500000,"
+        ));
+    }
+
+    /// Keeps the progress it is given.
+    #[derive(Clone, Default)]
+    struct Recorder(Arc<Mutex<Vec<StageProgress>>>);
+
+    #[async_trait::async_trait]
+    impl ProgressReporterTrait for Recorder {
+        async fn update(&self, _content: &str) {}
+        async fn progress(&self, progress: StageProgress) {
+            self.0.lock().unwrap().push(progress);
+        }
+        async fn finish(&self, _success: bool, _message: &str) {}
+    }
+
+    #[tokio::test]
+    async fn segments_rendering_at_once_report_one_progress() {
+        let recorder = Recorder::default();
+        let progress = SegmentProgress::new(&recorder, 2, 10.0);
+        let (first, second) = (progress.segment(0, 4.0), progress.segment(1, 6.0));
+        let at = |processed: f64, speed: f64| StageProgress {
+            stage: "导出切片".to_string(),
+            processed,
+            total: Some(6.0),
+            speed: Some(speed),
+        };
+        first.progress(at(2.0, 1.5)).await;
+        second.progress(at(3.0, 2.0)).await;
+        first.finished();
+        // Past its end, as FFmpeg can report, it counts as done.
+        second.progress(at(7.0, 2.5)).await;
+        let reported: Vec<_> = recorder
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|progress| (progress.processed, progress.total, progress.speed))
+            .collect();
+        assert_eq!(
+            reported,
+            [
+                (2.0, Some(10.0), Some(1.5)),
+                (5.0, Some(10.0), Some(3.5)),
+                // The first, done, no longer adds its speed.
+                (10.0, Some(10.0), Some(2.5)),
+            ]
+        );
+    }
+
+    #[test]
+    fn segments_take_the_image_danmaku_on_screen_during_them() {
+        let image = |start: f64| ImageDanmu {
+            image: crate::danmu2ass::DanmuImage {
+                path: PathBuf::from("emoji.png"),
+                width: 40.0,
+                height: 40.0,
+            },
+            start,
+            top: 0.0,
+        };
+        let images = [image(0.0), image(5.0), image(20.0)];
+        let starts = |from: f64, to: f64| -> Vec<f64> {
+            segment_danmaku(&images, from, to)
+                .iter()
+                .map(|image| image.start)
+                .collect()
+        };
+        // Scrolling for R2L_TIME seconds from its start.
+        assert_eq!(starts(10.0, 20.0), [5.0]);
+        assert_eq!(starts(19.0, 21.0), [20.0]);
+        assert_eq!(starts(0.0, 30.0), [0.0, 5.0, 20.0]);
     }
 
     #[test]
@@ -741,7 +1237,7 @@ mod tests {
 
     /// Render 1-3 s of a red 30 FPS clip and 0.5-2.5 s of a larger blue
     /// 60 FPS clip without audio, then check the joined result.
-    async fn render_two_clips(subtitles: bool, danmaku: bool) {
+    async fn render_two_clips(subtitles: bool, danmaku: bool, limits: SegmentLimits) {
         let directory = tempfile::Builder::new()
             .prefix("project [it's]")
             .tempdir()
@@ -788,9 +1284,9 @@ mod tests {
             Style: Default,Arial,48,&H00FFFFFF\n\n[Events]\n\
             Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
             Dialogue: 0,0:00:00.50,0:00:03.50,Default,,0,0,0,,hello\n";
-        render_project(
+        render_in_segments(
             &NoopReporter,
-            ProjectRender {
+            &ProjectRender {
                 clips: vec![
                     RenderClip {
                         path: red.clone(),
@@ -818,6 +1314,7 @@ mod tests {
                 danmu_options: Danmu2AssOptions::default(),
                 output: &output,
             },
+            limits,
         )
         .await
         .unwrap();
@@ -875,9 +1372,7 @@ mod tests {
             .unwrap_or_else(|| panic!("no volume in {log}"))
     }
 
-    #[tokio::test]
-    #[ignore = "requires FFmpeg with libx264"]
-    async fn ffmpeg_lays_videos_and_pictures_over_the_clips() {
+    async fn lay_videos_and_pictures(limits: SegmentLimits) {
         let directory = tempfile::tempdir().unwrap();
         // A silent red clip under a blue video with a tone and a green picture.
         let red = directory.path().join("red.mp4");
@@ -930,6 +1425,7 @@ mod tests {
                 layer: OverlayLayer::Video(VideoLayer {
                     path: blue.clone(),
                     source_start,
+                    duration: 6.0,
                     has_audio: true,
                     x,
                     y,
@@ -940,9 +1436,9 @@ mod tests {
             }
         };
         let output = directory.path().join("out.mp4");
-        render_project(
+        render_in_segments(
             &NoopReporter,
-            ProjectRender {
+            &ProjectRender {
                 clips: vec![RenderClip {
                     path: red.clone(),
                     start: 0.0,
@@ -974,10 +1470,18 @@ mod tests {
                 danmu_options: Danmu2AssOptions::default(),
                 output: &output,
             },
+            limits,
         )
         .await
         .unwrap();
 
+        // Overlays reaching past their span do not make the video longer.
+        let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
+        assert!(
+            (metadata.duration - 4.0).abs() < 0.05,
+            "{}",
+            metadata.duration
+        );
         let quarter = [100, 100, 760, 340];
         let is = |color: [u8; 3], [r, g, b]: [bool; 3]| {
             let high = |value: u8, on: bool| if on { value > 150 } else { value < 80 };
@@ -1014,13 +1518,154 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires FFmpeg with libx264"]
+    async fn ffmpeg_lays_videos_and_pictures_over_the_clips() {
+        lay_videos_and_pictures(SEGMENT_LIMITS).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires FFmpeg with libx264"]
+    async fn ffmpeg_lays_overlays_across_segments() {
+        // Seams at 4/3 s and 8/3 s, within the overlays: the video from 1 s
+        // to 3 s, the picture, and the video whose file ends at 3 s.
+        lay_videos_and_pictures(SegmentLimits {
+            seconds: 1.5,
+            parts: 16,
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires FFmpeg with libx264"]
     async fn ffmpeg_renders_trimmed_clips_on_one_canvas() {
-        render_two_clips(false, false).await;
+        render_two_clips(false, false, SEGMENT_LIMITS).await;
     }
 
     #[tokio::test]
     #[ignore = "requires FFmpeg with libass and libx264"]
     async fn ffmpeg_renders_subtitles_and_danmaku_on_the_joined_timeline() {
-        render_two_clips(true, true).await;
+        render_two_clips(true, true, SEGMENT_LIMITS).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires FFmpeg with libass and libx264"]
+    async fn ffmpeg_renders_subtitles_and_danmaku_across_segments() {
+        // Each clip in three segments, under the subtitle and the danmaku.
+        render_two_clips(
+            true,
+            true,
+            SegmentLimits {
+                seconds: 0.75,
+                parts: 16,
+            },
+        )
+        .await;
+    }
+
+    /// The grey of every frame of `file`, its luma averaged.
+    async fn frame_greys(file: &Path) -> Vec<u8> {
+        let result = ffmpeg_command()
+            .args(["-v", "error", "-i"])
+            .arg(file)
+            .args(["-vf", "extractplanes=y,scale=1:1", "-f", "rawvideo", "-"])
+            .output()
+            .await
+            .unwrap();
+        assert!(result.status.success());
+        result.stdout
+    }
+
+    /// The sound of `file`, mono.
+    async fn mono_samples(file: &Path) -> Vec<u8> {
+        let result = ffmpeg_command()
+            .args(["-v", "error", "-i"])
+            .arg(file)
+            .args(["-map", "0:a", "-ac", "1", "-f", "s16le", "-"])
+            .output()
+            .await
+            .unwrap();
+        assert!(result.status.success());
+        result.stdout
+    }
+
+    #[tokio::test]
+    #[ignore = "requires FFmpeg with libx264"]
+    async fn segments_cut_within_a_clip_join_without_a_seam() {
+        let directory = tempfile::tempdir().unwrap();
+        // Every frame a grey of its own, and a steady tone.
+        let source = directory.path().join("frames.mp4");
+        run_ffmpeg(
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=320x180:r=25:d=6,geq=lum='16+mod(N*7,210)':cb=128:cr=128",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=48000:duration=6",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-qp",
+                "0",
+                "-c:a",
+                "aac",
+            ],
+            &source,
+        )
+        .await;
+        // With the encoder exports use here, and with the one they fall back to.
+        for encoder in [hwaccel::get_x264_encoder().await, "libx264"] {
+            assert_seamless(&directory.path().join(encoder), &source, encoder).await;
+        }
+    }
+
+    async fn assert_seamless(directory: &Path, source: &Path, encoder: &'static str) {
+        std::fs::create_dir(directory).unwrap();
+        let whole = directory.join("whole.mp4");
+        let cut = directory.join("cut.mp4");
+        // 4 s from 0.51 s, between the file's frames: in one segment, and in
+        // four cut at 1, 2 and 3 s.
+        for (output, seconds) in [(&whole, 60.0), (&cut, 1.3)] {
+            render_with_encoder(
+                &NoopReporter,
+                &ProjectRender {
+                    clips: vec![RenderClip {
+                        path: source.to_path_buf(),
+                        start: 0.51,
+                        duration: 4.0,
+                        has_audio: true,
+                        fps: 25.0,
+                    }],
+                    overlays: Vec::new(),
+                    subtitle_ass: None,
+                    fonts_directory: None,
+                    danmus: Vec::new(),
+                    danmu_options: Danmu2AssOptions::default(),
+                    output,
+                },
+                SegmentLimits { seconds, parts: 16 },
+                encoder,
+            )
+            .await
+            .unwrap();
+        }
+        // Frame n shows the file's frame nearest 0.51 s + n / 25, its 13 + n,
+        // with none repeated or skipped at the seams. Its grey is read in
+        // full range.
+        let greys = frame_greys(&cut).await;
+        assert_eq!(greys.len(), 100);
+        for (n, grey) in greys.into_iter().enumerate() {
+            let expected = ((13 + n as i64) * 7 % 210) * 255 / 219;
+            assert!(
+                (i64::from(grey) - expected).abs() <= 3,
+                "{encoder} frame {n}: {grey}, not {expected}"
+            );
+        }
+        // The sound is the same as rendered in one piece, sample for sample.
+        let sound = mono_samples(&cut).await;
+        assert_eq!(sound.len(), 2 * 4 * 48000);
+        assert!(sound == mono_samples(&whole).await);
     }
 }

@@ -560,6 +560,8 @@ async fn check_free_space(mut directory: PathBuf) -> Result<(), String> {
             std::env::current_dir().map_err(|e| format!("Failed to get current directory: {e}"))?;
         directory = cwd.join(directory);
     }
+    // An export creates its folder; `df` needs one that exists.
+    let directory = existing_ancestor(&directory).await.to_path_buf();
     if let Ok(disk_info) = get_disk_info_inner(directory).await {
         // Preserve 1GB for other usage.
         if disk_info.free < 1024 * 1024 * 1024 {
@@ -567,6 +569,18 @@ async fn check_free_space(mut directory: PathBuf) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// `path`, or the nearest folder above it that exists.
+async fn existing_ancestor(path: &Path) -> &Path {
+    let mut existing = path;
+    while !tokio::fs::try_exists(existing).await.unwrap_or(false) {
+        match existing.parent() {
+            Some(parent) => existing = parent,
+            None => break,
+        }
+    }
+    existing
 }
 
 /// Cut each range of a recording into its own material, optionally creating
@@ -1367,6 +1381,14 @@ pub async fn create_legacy_projects(db: Arc<Database>, output: PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn free_space_is_checked_on_the_nearest_folder_that_exists() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("export").join("project");
+        assert_eq!(existing_ancestor(&missing).await, directory.path());
+        assert_eq!(existing_ancestor(directory.path()).await, directory.path());
+    }
     use crate::database::credentials::CredentialCipher;
     use base64::Engine;
 

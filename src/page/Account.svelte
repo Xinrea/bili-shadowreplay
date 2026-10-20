@@ -10,6 +10,7 @@
   import { registerCommands } from "../lib/stores/commands";
   import PlatformIconTabs from "../lib/components/PlatformIconTabs.svelte";
   import PageTitlebar from "../lib/components/PageTitlebar.svelte";
+  import { platformLabel } from "../lib/platform";
 
   let account_info: AccountInfo = $state({
     accounts: [],
@@ -152,18 +153,6 @@
     }
   }
 
-  function platform_display(platform: string) {
-    const platformMap = {
-      bilibili: "B站",
-      douyin: "抖音",
-      huya: "虎牙",
-      kuaishou: "快手",
-      tiktok: "TikTok",
-      youtube: "YouTube",
-    };
-    return platformMap[platform] || platform;
-  }
-
   function platform_avatar(platform: string) {
     const avatarMap = {
       bilibili: "/imgs/bilibili_avatar.png",
@@ -228,7 +217,7 @@
                       ? "background-color: #ff9600"
                       : ""}
                   >
-                    {platform_display(account.platform)}
+                    {platformLabel(account.platform)}
                   </span>
                   <h3 class="text-[13px] font-medium text-fg">
                     {account.name || account.uid}

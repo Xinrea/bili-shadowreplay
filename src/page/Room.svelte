@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createStateRefresh, watchStateChanges } from "../lib/state-refresh";
   import { formatSize } from "../lib/size-format";
+  import { liveRoomUrl } from "../lib/platform";
   import { invoke, open, onOpenUrl, get_static_url, get } from "../lib/invoker";
   import { message } from "@tauri-apps/plugin-dialog";
   import { fade, scale } from "svelte/transition";
@@ -410,47 +411,8 @@
   }
 
   function openLiveUrl(room: RecorderInfo) {
-    switch (room.room_info.platform) {
-      case "bilibili":
-        open("https://live.bilibili.com/" + room.room_info.room_id);
-        break;
-      case "douyin":
-        open("https://live.douyin.com/" + room.room_info.room_id);
-        break;
-      case "douyu":
-        open("https://www.douyu.com/" + room.room_info.room_id);
-        break;
-      case "huya":
-        open("https://www.huya.com/" + room.room_info.room_id);
-        break;
-      case "kuaishou":
-        open("https://live.kuaishou.com/u/" + room.room_info.room_id);
-        break;
-      case "tiktok":
-        open(`https://www.tiktok.com/${room.room_info.room_id}/live`);
-        break;
-      case "twitch":
-        open(`https://www.twitch.tv/${room.room_info.room_id}`);
-        break;
-      case "youtube":
-        if (room.room_info.room_id.startsWith("http")) {
-          open(room.room_info.room_id);
-        } else if (room.room_info.room_id.startsWith("legacy-c-")) {
-          open(`https://www.youtube.com/c/${room.room_info.room_id.slice(9)}/live`);
-        } else if (room.room_info.room_id.startsWith("legacy-user-")) {
-          open(`https://www.youtube.com/user/${room.room_info.room_id.slice(12)}/live`);
-        } else if (/^[A-Za-z0-9_-]{11}$/.test(room.room_info.room_id)) {
-          open(`https://www.youtube.com/watch?v=${room.room_info.room_id}`);
-        } else if (room.room_info.room_id.startsWith("UC")) {
-          open(`https://www.youtube.com/channel/${room.room_info.room_id}/live`);
-        } else {
-          const handle = room.room_info.room_id.startsWith("@")
-            ? room.room_info.room_id
-            : `@${room.room_info.room_id}`;
-          open(`https://www.youtube.com/${handle}/live`);
-        }
-        break;
-    }
+    const url = liveRoomUrl(room.room_info.platform, room.room_info.room_id);
+    if (url) open(url);
   }
 
   function addNewRecorder(room_id: string, platform: string) {

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { formatTimecode } from "../lib/time-format";
   import { formatSize } from "../lib/size-format";
+  import { liveRoomUrl, platformLabel } from "../lib/platform";
   import { createStateRefresh, watchStateChanges } from "../lib/state-refresh";
   import { invoke, TAURI_ENV, get_static_url } from "../lib/invoker";
   import type { VideoItem } from "../lib/interface";
@@ -302,72 +303,6 @@
 
   function formatDate(dateString: string) {
     return new Date(dateString).toLocaleString();
-  }
-
-  function formatPlatform(platform: string | undefined) {
-    if (!platform) return "未知";
-    switch (platform.toLowerCase()) {
-      case "bilibili":
-        return "B站";
-      case "douyin":
-        return "抖音";
-      case "douyu":
-        return "斗鱼";
-      case "huya":
-        return "虎牙";
-      case "kuaishou":
-        return "快手";
-      case "tiktok":
-        return "TikTok";
-      case "twitch":
-        return "Twitch";
-      case "youtube":
-        return "YouTube";
-      case "imported":
-        return "导入视频";
-      case "clip":
-        return "切片";
-      default:
-        return platform;
-    }
-  }
-
-  function getRoomUrl(platform: string | undefined, roomId: string) {
-    if (!platform) return null;
-    if (roomId.startsWith("http")) return roomId;
-    switch (platform.toLowerCase()) {
-      case "bilibili":
-        return `https://live.bilibili.com/${roomId}`;
-      case "douyin":
-        return `https://live.douyin.com/${roomId}`;
-      case "douyu":
-        return `https://www.douyu.com/${roomId}`;
-      case "huya":
-        return `https://www.huya.com/${roomId}`;
-      case "kuaishou":
-        return `https://live.kuaishou.com/u/${roomId}`;
-      case "tiktok":
-        return `https://www.tiktok.com/${roomId}/live`;
-      case "twitch":
-        return `https://www.twitch.tv/${roomId}`;
-      case "youtube":
-        if (roomId.startsWith("legacy-c-")) {
-          return `https://www.youtube.com/c/${roomId.slice(9)}/live`;
-        }
-        if (roomId.startsWith("legacy-user-")) {
-          return `https://www.youtube.com/user/${roomId.slice(12)}/live`;
-        }
-        if (/^[A-Za-z0-9_-]{11}$/.test(roomId)) {
-          return `https://www.youtube.com/watch?v=${roomId}`;
-        }
-        if (roomId.startsWith("UC")) {
-          return `https://www.youtube.com/channel/${roomId}/live`;
-        }
-        const handle = roomId.startsWith("@") ? roomId : `@${roomId}`;
-        return `https://www.youtube.com/${handle}/live`;
-      default:
-        return null;
-    }
   }
 
   function toggleSort(field: string) {
@@ -816,135 +751,34 @@
                         <span class="text-[12px] text-fg-secondary"
                           >视频切片</span
                         >
-                      {:else if video.platform === "bilibili"}
-                        <BilibiliIcon class="w-4 h-4 flex-shrink-0" />
-                        {#if getRoomUrl(video.platform, video.room_id)}
-                          <a
-                            href={getRoomUrl(video.platform, video.room_id)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            class="text-[12px] text-accent-fg hover:underline"
-                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
-                          >
-                            {video.room_id}
-                          </a>
-                        {:else}
-                          <span class="text-[12px] text-fg">{video.room_id}</span>
-                        {/if}
-                      {:else if video.platform === "douyin"}
-                        <DouyinIcon class="w-4 h-4 flex-shrink-0" />
-                        {#if getRoomUrl(video.platform, video.room_id)}
-                          <a
-                            href={getRoomUrl(video.platform, video.room_id)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            class="text-[12px] text-accent-fg hover:underline"
-                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
-                          >
-                            {video.room_id}
-                          </a>
-                        {:else}
-                          <span class="text-[12px] text-fg">{video.room_id}</span>
-                        {/if}
-                      {:else if video.platform === "douyu"}
-                        <DouyuIcon class="w-4 h-4 flex-shrink-0" />
-                        {#if getRoomUrl(video.platform, video.room_id)}
-                          <a
-                            href={getRoomUrl(video.platform, video.room_id)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            class="text-[12px] text-accent-fg hover:underline"
-                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
-                          >
-                            {video.room_id}
-                          </a>
-                        {:else}
-                          <span class="text-[12px] text-fg">{video.room_id}</span>
-                        {/if}
-                      {:else if video.platform === "kuaishou"}
-                        <KuaishouIcon class="w-4 h-4 flex-shrink-0" />
-                        {#if getRoomUrl(video.platform, video.room_id)}
-                          <a
-                            href={getRoomUrl(video.platform, video.room_id)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            class="text-[12px] text-accent-fg hover:underline"
-                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
-                          >
-                            {video.room_id}
-                          </a>
-                        {:else}
-                          <span class="text-[12px] text-fg">{video.room_id}</span>
-                        {/if}
-                      {:else if video.platform === "huya"}
-                        <HuyaIcon class="w-4 h-4 flex-shrink-0" />
-                        {#if getRoomUrl(video.platform, video.room_id)}
-                          <a
-                            href={getRoomUrl(video.platform, video.room_id)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            class="text-[12px] text-accent-fg hover:underline"
-                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
-                          >
-                            {video.room_id}
-                          </a>
-                        {:else}
-                          <span class="text-[12px] text-fg">{video.room_id}</span>
-                        {/if}
-                      {:else if video.platform === "tiktok"}
-                        <TikTokIcon class="w-5 h-5 flex-shrink-0" />
-                        {#if getRoomUrl(video.platform, video.room_id)}
-                          <a
-                            href={getRoomUrl(video.platform, video.room_id)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            class="text-[12px] text-accent-fg hover:underline"
-                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
-                          >
-                            {video.room_id}
-                          </a>
-                        {:else}
-                          <span class="text-[12px] text-fg">{video.room_id}</span>
-                        {/if}
-                      {:else if video.platform === "twitch"}
-                        <TwitchIcon class="w-5 h-5 flex-shrink-0 text-purple-600" />
-                        {#if getRoomUrl(video.platform, video.room_id)}
-                          <a
-                            href={getRoomUrl(video.platform, video.room_id)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            class="text-[12px] text-accent-fg hover:underline"
-                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
-                          >
-                            {video.room_id}
-                          </a>
-                        {:else}
-                          <span class="text-[12px] text-fg">{video.room_id}</span>
-                        {/if}
-                      {:else if video.platform === "youtube"}
-                        <YouTubeIcon class="w-4 h-4 flex-shrink-0" />
-                        {#if getRoomUrl(video.platform, video.room_id)}
-                          <a
-                            href={getRoomUrl(video.platform, video.room_id)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            class="text-[12px] text-accent-fg hover:underline"
-                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
-                          >
-                            {video.room_id}
-                          </a>
-                        {:else}
-                          <span class="text-[12px] text-fg">{video.room_id}</span>
-                        {/if}
                       {:else}
-                        <Globe class="table-icon text-fg-faint" />
-                        {#if getRoomUrl(video.platform, video.room_id)}
+                        {@const roomUrl = liveRoomUrl(video.platform, video.room_id)}
+                        {#if video.platform === "bilibili"}
+                          <BilibiliIcon class="w-4 h-4 flex-shrink-0" />
+                        {:else if video.platform === "douyin"}
+                          <DouyinIcon class="w-4 h-4 flex-shrink-0" />
+                        {:else if video.platform === "douyu"}
+                          <DouyuIcon class="w-4 h-4 flex-shrink-0" />
+                        {:else if video.platform === "kuaishou"}
+                          <KuaishouIcon class="w-4 h-4 flex-shrink-0" />
+                        {:else if video.platform === "huya"}
+                          <HuyaIcon class="w-4 h-4 flex-shrink-0" />
+                        {:else if video.platform === "tiktok"}
+                          <TikTokIcon class="w-5 h-5 flex-shrink-0" />
+                        {:else if video.platform === "twitch"}
+                          <TwitchIcon class="w-5 h-5 flex-shrink-0 text-purple-600" />
+                        {:else if video.platform === "youtube"}
+                          <YouTubeIcon class="w-4 h-4 flex-shrink-0" />
+                        {:else}
+                          <Globe class="table-icon text-fg-faint" />
+                        {/if}
+                        {#if roomUrl}
                           <a
-                            href={getRoomUrl(video.platform, video.room_id)}
+                            href={roomUrl}
                             target="_blank"
                             rel="noopener noreferrer"
                             class="text-[12px] text-accent-fg hover:underline"
-                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
+                            title={`打开 ${platformLabel(video.platform)} 直播间`}
                           >
                             {video.room_id}
                           </a>

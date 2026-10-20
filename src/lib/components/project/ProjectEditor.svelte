@@ -738,11 +738,14 @@
   }
 
   /** Fit the selected video overlay to the whole picture. */
-  function fillFrame() {
-    if (selectedOverlay?.kind !== "video") return;
-    const aspect = aspects.get(selectedOverlay.material_id) ?? 16 / 9;
+  async function fillFrame() {
+    const item = selectedOverlay;
+    if (item?.kind !== "video") return;
+    const url = materials.get(item.material_id)?.url;
+    // Its real ratio, which a video not shown since opening has not reported.
+    const aspect = url ? await probeAspect(item.material_id, url) : (aspects.get(item.material_id) ?? 16 / 9);
     const width = Math.round(Math.min(ELEMENT_SPACE.width, ELEMENT_SPACE.height * aspect));
-    updateOverlay(withElement({ x: ELEMENT_SPACE.width / 2, y: ELEMENT_SPACE.height / 2, width, rotation: 0 }));
+    updateOverlay(withElement({ x: ELEMENT_SPACE.width / 2, y: ELEMENT_SPACE.height / 2, width, rotation: 0 }), item.id);
     settleOverlayEdit();
   }
 
@@ -1396,7 +1399,7 @@
             />
             <span class="w-9 text-right text-[11px] tabular-nums text-fg-muted">{Math.round(video.volume * 100)}%</span>
             <span class="toolbar-separator"></span>
-            <button type="button" class="ui-btn ui-btn-sm ui-btn-ghost" onclick={fillFrame}>铺满画面</button>
+            <button type="button" class="ui-btn ui-btn-sm ui-btn-ghost" onclick={() => void fillFrame()}>铺满画面</button>
             <span class="truncate text-[11px] text-fg-muted">{materials.get(video.material_id)?.name ?? "素材已删除"}</span>
           {:else}
             <span class="truncate text-[12px] text-fg-muted">

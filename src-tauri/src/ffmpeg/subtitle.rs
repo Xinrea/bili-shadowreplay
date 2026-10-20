@@ -131,6 +131,21 @@ pub async fn encode_video_subtitle<R: ProgressReporterTrait>(
     Ok(output_filename)
 }
 
+/// Decode a 16-bit PCM WAV straight to f32 samples, scaled like
+/// `whisper_cpp_rs::convert_integer_to_float_audio`, so a long recording is
+/// never held as an i16 copy and an f32 copy at the same time.
+fn read_wav_f32(path: &Path) -> Result<(Vec<f32>, u32), String> {
+    let audio = hound::WavReader::open(path).map_err(|error| error.to_string())?;
+    let sample_rate = audio.spec().sample_rate;
+    // `len` is the exact sample count `into_samples` yields.
+    let mut samples = Vec::with_capacity(audio.len() as usize);
+    for sample in audio.into_samples::<i16>() {
+        let sample = sample.map_err(|error| format!("Failed to decode WAV samples: {error}"))?;
+        samples.push(f32::from(sample) / 32768.0);
+    }
+    Ok((samples, sample_rate))
+}
+
 /// Generate subtitles through one of the configured subtitle services.
 #[allow(clippy::too_many_arguments)]
 pub async fn generate_video_subtitle(
@@ -169,16 +184,10 @@ pub async fn generate_video_subtitle(
             }
             let full_wav = super::audio::extract_full_audio(file).await?;
             let full_wav_guard = TempArtifact::new(full_wav.clone());
-            let audio = hound::WavReader::open(&full_wav).map_err(|error| error.to_string())?;
-            let spec = audio.spec();
-            let sample_rate = spec.sample_rate;
-            let raw_samples: Vec<i16> = audio
-                .into_samples::<i16>()
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|error| format!("Failed to decode WAV samples: {error}"))?;
-            let mut f32_samples = vec![0.0f32; raw_samples.len()];
-            whisper_cpp_rs::convert_integer_to_float_audio(&raw_samples, &mut f32_samples)
-                .map_err(|error| format!("Audio conversion error: {error}"))?;
+            let (f32_samples, sample_rate) = read_wav_f32(&full_wav)?;
+            // The samples are in memory and chunks are cut from `file`, so the
+            // WAV is no longer needed. The guard also removes it if decoding fails.
+            drop(full_wav_guard);
 
             if let Some(reporter) = reporter {
                 reporter.update("检测语音片段中").await;
@@ -194,6 +203,9 @@ pub async fn generate_video_subtitle(
                 });
             }
             let (energies, frame_sec) = crate::audio_utils::rms_energies(&f32_samples, sample_rate);
+            // Chunks are re-extracted from `file` below, so free the decoded
+            // recording before the long transcription loop.
+            drop(f32_samples);
             log::info!(
                 "Silero VAD detected {} speech segments from {:.1}s audio",
                 speech_segments.len(),
@@ -293,10 +305,9 @@ pub async fn generate_video_subtitle(
                     }
                 }
             }
-            // The chunk directory and the full-audio WAV are removed by their
-            // guards, including on the early returns above.
+            // The chunk directory is removed by its guard, including on the
+            // early returns above.
             drop(temp_dir);
-            drop(full_wav_guard);
 
             let mut full_result = GenerateResult {
                 subtitle_id: String::new(),
@@ -417,5 +428,47 @@ mod subtitle_filter_tests {
         .unwrap();
         assert!(filter.ends_with(r":fontsdir=/tmp/font\\\'s\,\[test\]"));
         assert!(!filter.contains("force_style"));
+    }
+
+    fn write_pcm_wav(path: &Path, samples: &[i16]) {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(path, spec).unwrap();
+        for &sample in samples {
+            writer.write_sample(sample).unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+
+    #[test]
+    fn wav_decodes_to_the_same_f32_samples_as_whisper_conversion() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audio.wav");
+        let pcm: Vec<i16> = vec![0, 1, -1, 16384, -16384, 32767, -32768, 1234, -4321];
+        write_pcm_wav(&path, &pcm);
+
+        let mut expected = vec![0.0f32; pcm.len()];
+        whisper_cpp_rs::convert_integer_to_float_audio(&pcm, &mut expected).unwrap();
+
+        let (samples, sample_rate) = read_wav_f32(&path).unwrap();
+        assert_eq!(sample_rate, 16_000);
+        assert_eq!(samples, expected);
+    }
+
+    #[test]
+    fn truncated_wav_reports_a_decode_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audio.wav");
+        write_pcm_wav(&path, &(0..100).collect::<Vec<i16>>());
+        // Cut the data chunk short so decoding hits EOF mid-sample.
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::write(&path, &bytes[..bytes.len() - 51]).unwrap();
+
+        let error = read_wav_f32(&path).unwrap_err();
+        assert!(error.starts_with("Failed to decode WAV samples"), "{error}");
     }
 }

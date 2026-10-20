@@ -23,6 +23,8 @@ use super::{
 /// Output frame rate when no clip reports one.
 const DEFAULT_FPS: f64 = 30.0;
 const MAX_FPS: f64 = 60.0;
+/// The rate every clip's sound is resampled to.
+const SAMPLE_RATE: f64 = 48000.0;
 
 pub struct RenderClip {
     pub path: PathBuf,
@@ -100,39 +102,68 @@ fn output_fps(clips: &[RenderClip], danmu: bool) -> f64 {
     }
 }
 
+/// How many frames at `fps` and samples each clip lasts.
+///
+/// Each cut goes to the frame and the sample nearest to where it falls in the
+/// project, so rounding never adds up over the clips: frame `n` of the joined
+/// clips is always at `n / fps` in project time, where the subtitles, danmaku
+/// and overlays are laid out.
+fn clip_lengths(clips: &[RenderClip], fps: f64) -> Vec<(u64, u64)> {
+    let at = |time: f64, rate: f64| (time * rate).round() as u64;
+    let mut start = 0.0;
+    clips
+        .iter()
+        .map(|clip| {
+            let end = start + clip.duration;
+            let length = (
+                at(end, fps) - at(start, fps),
+                at(end, SAMPLE_RATE) - at(start, SAMPLE_RATE),
+            );
+            start = end;
+            length
+        })
+        .collect()
+}
+
 /// Filter graph joining the clips into `[joined]` (video) and `[{audio}]`.
 ///
-/// Each clip is padded and cut to exactly its timeline length, so a file a
+/// Each clip is padded and cut to its length from [`clip_lengths`], so a file a
 /// little shorter than its clip cannot shift the subtitles and danmaku of the
-/// clips after it.
+/// clips after it. Pictures and sound are joined apart: one concat would
+/// stretch every clip to its longer stream, and those differences add up.
 fn concat_filter(clips: &[RenderClip], fps: f64, audio: &str) -> String {
     let mut filter = String::new();
-    let mut inputs = String::new();
-    for (index, clip) in clips.iter().enumerate() {
-        let duration = clip.duration;
+    let mut pictures = String::new();
+    let mut sounds = String::new();
+    let lengths = clip_lengths(clips, fps);
+    for (index, (clip, (frames, samples))) in clips.iter().zip(lengths).enumerate() {
+        let padding = frames as f64 / fps;
         filter.push_str(&format!(
             "[{index}:v]{},setsar=1,fps={fps},format=yuv420p,setpts=PTS-STARTPTS,\
-             tpad=stop_mode=clone:stop_duration={duration:.6},trim=duration={duration:.6}[pv{index}];\n",
+             tpad=stop_mode=clone:stop_duration={padding:.6},trim=end_frame={frames}[pv{index}];\n",
             hwaccel::H264_SCALE_PAD_FILTER,
         ));
         if clip.has_audio {
             filter.push_str(&format!(
                 "[{index}:a]aresample=48000:async=1:first_pts=0,\
                  aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS,\
-                 apad,atrim=duration={duration:.6}[pa{index}];\n"
+                 apad,atrim=end_sample={samples}[pa{index}];\n"
             ));
         } else {
             filter.push_str(&format!(
-                "anullsrc=r=48000:cl=stereo,atrim=duration={:.6},\
-                 aformat=sample_fmts=fltp:channel_layouts=stereo[pa{index}];\n",
-                clip.duration
+                "anullsrc=r=48000:cl=stereo,atrim=end_sample={samples},\
+                 aformat=sample_fmts=fltp:channel_layouts=stereo[pa{index}];\n"
             ));
         }
-        inputs.push_str(&format!("[pv{index}][pa{index}]"));
+        pictures.push_str(&format!("[pv{index}]"));
+        sounds.push_str(&format!("[pa{index}]"));
     }
+    // Concat times a clip of one frame as lasting none; numbering the frames
+    // keeps each on the frame grid.
+    let count = clips.len();
     filter.push_str(&format!(
-        "{inputs}concat=n={}:v=1:a=1[joined][{audio}];\n",
-        clips.len()
+        "{pictures}concat=n={count}:v=1:a=0,setpts=N/{fps}/TB[joined];\n\
+         {sounds}concat=n={count}:v=0:a=1[{audio}];\n"
     ));
     filter
 }
@@ -391,14 +422,29 @@ mod tests {
         // Both streams of a clip last exactly its timeline duration.
         assert!(filter.contains(
             "fps=60,format=yuv420p,setpts=PTS-STARTPTS,\
-             tpad=stop_mode=clone:stop_duration=2.500000,trim=duration=2.500000[pv0]"
+             tpad=stop_mode=clone:stop_duration=2.500000,trim=end_frame=150[pv0]"
         ));
         assert!(filter.contains("[0:a]aresample=48000"));
-        assert!(filter.contains("apad,atrim=duration=2.500000[pa0]"));
+        assert!(filter.contains("apad,atrim=end_sample=120000[pa0]"));
         // A clip without audio gets silence of the same length.
-        assert!(filter.contains("anullsrc=r=48000:cl=stereo,atrim=duration=2.500000"));
+        assert!(filter.contains("anullsrc=r=48000:cl=stereo,atrim=end_sample=120000"));
         assert!(!filter.contains("[1:a]"));
-        assert!(filter.contains("[pv0][pa0][pv1][pa1]concat=n=2:v=1:a=1[joined][outa]"));
+        assert!(filter.contains("[pv0][pv1]concat=n=2:v=1:a=0,setpts=N/60/TB[joined]"));
+        assert!(filter.contains("[pa0][pa1]concat=n=2:v=0:a=1[outa]"));
+    }
+
+    #[test]
+    fn cuts_between_frames_do_not_add_up() {
+        let mut clips: Vec<_> = (0..20).map(|_| clip(true, 30.0)).collect();
+        for clip in &mut clips {
+            clip.duration = 1.02;
+        }
+        let lengths = clip_lengths(&clips, 30.0);
+        // 30.6 frames each: some clips get 31 and some 30, as their cuts fall.
+        assert_eq!(&lengths[..3], &[(31, 48960), (30, 48960), (31, 48960)]);
+        let frames: u64 = lengths.iter().map(|(frames, _)| frames).sum();
+        let samples: u64 = lengths.iter().map(|(_, samples)| samples).sum();
+        assert_eq!((frames, samples), (612, 979_200));
     }
 
     fn video_layer(has_audio: bool, rotation: f64) -> OverlayLayer {
@@ -601,6 +647,84 @@ mod tests {
         assert!(padded[0] > 150 && padded[2] < 80, "{padded:?}");
         let second = average_color(&output, 2.6).await;
         assert!(second[2] > 150 && second[0] < 80, "{second:?}");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires FFmpeg with libx264"]
+    async fn cuts_between_frames_keep_later_clips_on_the_timeline() {
+        let directory = tempfile::tempdir().unwrap();
+        let red = directory.path().join("red.mp4");
+        run_ffmpeg(
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red:s=320x180:r=30:d=2",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=2",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-c:a",
+                "aac",
+            ],
+            &red,
+        )
+        .await;
+        let blue = directory.path().join("blue.mp4");
+        run_ffmpeg(
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=blue:s=320x180:r=30:d=2",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+            ],
+            &blue,
+        )
+        .await;
+        let output = directory.path().join("out.mp4");
+        // Twenty clips of 30.6 frames, red and blue in turn.
+        let clips = (0..20)
+            .map(|index| RenderClip {
+                path: if index % 2 == 0 { &red } else { &blue }.clone(),
+                start: 0.0,
+                duration: 1.02,
+                has_audio: index % 2 == 0,
+                fps: 30.0,
+            })
+            .collect();
+        render_project(
+            &NoopReporter,
+            ProjectRender {
+                clips,
+                overlays: Vec::new(),
+                subtitle_ass: None,
+                fonts_directory: None,
+                danmus: Vec::new(),
+                danmu_options: Danmu2AssOptions::default(),
+                output: &output,
+            },
+        )
+        .await
+        .unwrap();
+        let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
+        assert!(
+            (metadata.duration - 20.4).abs() < 0.05,
+            "{}",
+            metadata.duration
+        );
+        // The last clip, blue, starts at 19.38 s as on the timeline.
+        let before = average_color(&output, 19.33).await;
+        assert!(before[0] > 150 && before[2] < 80, "{before:?}");
+        let after = average_color(&output, 19.43).await;
+        assert!(after[2] > 150 && after[0] < 80, "{after:?}");
     }
 
     fn text_danmu(ts: i64) -> DanmuEntry {

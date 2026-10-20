@@ -185,6 +185,9 @@ pub async fn generate_video_subtitle(
             let full_wav = super::audio::extract_full_audio(file).await?;
             let full_wav_guard = TempArtifact::new(full_wav.clone());
             let (f32_samples, sample_rate) = read_wav_f32(&full_wav)?;
+            // The samples are in memory and chunks are cut from `file`, so the
+            // WAV is no longer needed. The guard also removes it if decoding fails.
+            drop(full_wav_guard);
 
             if let Some(reporter) = reporter {
                 reporter.update("检测语音片段中").await;
@@ -302,10 +305,9 @@ pub async fn generate_video_subtitle(
                     }
                 }
             }
-            // The chunk directory and the full-audio WAV are removed by their
-            // guards, including on the early returns above.
+            // The chunk directory is removed by its guard, including on the
+            // early returns above.
             drop(temp_dir);
-            drop(full_wav_guard);
 
             let mut full_result = GenerateResult {
                 subtitle_id: String::new(),

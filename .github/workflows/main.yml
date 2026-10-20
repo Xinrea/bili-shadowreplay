@@ -135,15 +135,19 @@ jobs:
 
       - name: Get previous tag
         id: get_previous_tag
+        env:
+          CURRENT_TAG: ${{ steps.release_info.outputs.tag }}
         run: |
-          # Get the previous tag (excluding the current one being pushed)
-          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
-          if [ -z "$PREVIOUS_TAG" ]; then
-            # If no previous tag found, use the first commit
-            PREVIOUS_TAG=$(git rev-list --max-parents=0 HEAD | head -1)
-          fi
+          # The checkout is shallow and has no tags, so fetch just the tags.
+          git fetch --force --tags --depth=1 origin
+          # Prerelease suffixes sort before their release (v2.1.0-beta.1 < v2.1.0).
+          TAGS=$(git -c versionsort.suffix=- tag --list 'v*' --sort=-v:refname)
+          # Take the tag sorted right below the current one. Manual runs may build
+          # a version that isn't tagged yet, so fall back to the newest other tag.
+          PREVIOUS_TAG=$(echo "$TAGS" | awk -v cur="$CURRENT_TAG" 'found { print; exit } $0 == cur { found = 1 }')
+          [ -n "$PREVIOUS_TAG" ] || PREVIOUS_TAG=$(echo "$TAGS" | grep -vFx "$CURRENT_TAG" | head -1)
           echo "previous_tag=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
-          echo "current_tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          echo "current_tag=$CURRENT_TAG" >> $GITHUB_OUTPUT
         shell: bash
 
       - uses: tauri-apps/tauri-action@1ddc7b49b13c3038297360482fcb3e058764d7c9 # v0.6.2

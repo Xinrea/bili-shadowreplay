@@ -22,6 +22,8 @@
     clampFrame,
     COVER_SIZES,
     defaultFrame,
+    dragChanges,
+    ELEMENT_MIDDLE,
     ELEMENT_SPACE,
     elementArea,
     elementAt,
@@ -35,8 +37,6 @@
     reorder,
     scaledSize,
     sceneOf,
-    snapRotation,
-    snapToCenter,
     styleOf,
     TEXT_STYLES,
     zoomFrame,
@@ -51,10 +51,12 @@
   import { invoke, log } from "../../invoker";
   import ElementToolbar from "./ElementToolbar.svelte";
   import {
+    frameScheduler,
     isCrossOrigin,
     loadSticker,
     measure,
     prepareBackground,
+    redrawWhenLoaded,
     renderCover,
     STICKER_GROUPS,
     type Background,
@@ -125,7 +127,6 @@
   let previews: Partial<Record<Ratio, HTMLCanvasElement>> = $state({});
   let fileInput: HTMLInputElement = $state();
   let stageSize = $state({ width: 0, height: 0 });
-  let frameRequest: number | null = null;
 
   let size = $derived(COVER_SIZES[ratio]);
   let view = $derived(frameRect(scene, aspectOf(ratio), frames[ratio]));
@@ -165,7 +166,7 @@
     scheduleRedraw();
     return () => {
       observer.disconnect();
-      if (frameRequest !== null) cancelAnimationFrame(frameRequest);
+      cancelRedraw();
       clearTimeout(commitTimer);
     };
   });
@@ -191,13 +192,7 @@
     });
   });
 
-  function scheduleRedraw() {
-    if (frameRequest !== null) return;
-    frameRequest = requestAnimationFrame(() => {
-      frameRequest = null;
-      redraw();
-    });
-  }
+  const { schedule: scheduleRedraw, cancel: cancelRedraw } = frameScheduler(redraw);
 
   function viewOf(r: Ratio) {
     return frameRect(scene, aspectOf(r), frames[r]);
@@ -210,12 +205,7 @@
       const preview = previews[r]?.getContext("2d");
       if (preview) pending.push(...renderCover(preview, scene, viewOf(r), background, elementArea(r), covers[r]));
     }
-    if (pending.length) {
-      // Only redraw for stickers that arrived, or a failed one would loop.
-      void Promise.all(pending.map((request) => request.then(() => true, () => false))).then(
-        (loaded) => loaded.some(Boolean) && scheduleRedraw(),
-      );
-    }
+    redrawWhenLoaded(pending, scheduleRedraw);
   }
 
   const otherRatio = (r: Ratio): Ratio => (r === "home" ? "wide" : "home");
@@ -402,9 +392,6 @@
 
   // Elements
 
-  /** The middle of both covers, where new elements go. */
-  const MIDDLE = { x: ELEMENT_SPACE.width / 2, y: ELEMENT_SPACE.height / 2 };
-
   /** Unique across both covers, so only twins share an id. */
   const newId = () => nextId([...covers.home, ...covers.wide]);
 
@@ -426,7 +413,7 @@
 
   function addText(style: TextStyle = lastStyle, font = lastFont) {
     pictureSelected = false;
-    const text = { ...newText(elements, MIDDLE, style, font), id: newId() };
+    const text = { ...newText(elements, ELEMENT_MIDDLE, style, font), id: newId() };
     add(text);
     // Committed when its first edit finishes.
     startEditing(text.id, true);
@@ -441,7 +428,7 @@
       return;
     }
     const element = {
-      ...newSticker(elements, MIDDLE, src, image.naturalWidth / image.naturalHeight || 1, size),
+      ...newSticker(elements, ELEMENT_MIDDLE, src, image.naturalWidth / image.naturalHeight || 1, size),
       id: newId(),
     };
     add(element);
@@ -650,27 +637,17 @@
     if (!element) return;
     const point = toCover(event);
     const origin = drag.origin;
+    const update = dragChanges(drag.mode, origin, drag.start, point, unit, {
+      moved: drag.moved,
+      snapStep: event.shiftKey ? 15 : undefined,
+    });
+    if (!update) return;
     let changes: ElementChanges;
-    if (drag.mode === "move") {
-      const dx = point.x - drag.start.x;
-      const dy = point.y - drag.start.y;
-      // A click selects without nudging.
-      if (!drag.moved && Math.hypot(dx, dy) * unit < 3) return;
-      const to = placeable({ x: origin.x + dx, y: origin.y + dy });
-      const snapped = snapToCenter(to.x, to.y, MIDDLE, 8 / unit);
-      changes = { x: Math.round(snapped.x), y: Math.round(snapped.y) };
-      guides = { x: snapped.snapX, y: snapped.snapY };
-    } else if (drag.mode === "rotate") {
-      const from = Math.atan2(drag.start.y - origin.y, drag.start.x - origin.x);
-      const to = Math.atan2(point.y - origin.y, point.x - origin.x);
-      changes = {
-        rotation: snapRotation(origin.rotation + ((to - from) * 180) / Math.PI, event.shiftKey ? 15 : undefined),
-      };
+    if ("scale" in update) {
+      changes = scaledSize(origin, update.scale);
     } else {
-      const factor =
-        Math.hypot(point.x - origin.x, point.y - origin.y) /
-        Math.max(1, Math.hypot(drag.start.x - origin.x, drag.start.y - origin.y));
-      changes = scaledSize(origin, factor);
+      changes = update.changes;
+      if ("guides" in update) guides = update.guides;
     }
     Object.assign(element, changes);
     // From where both started, so the twin does not drift.

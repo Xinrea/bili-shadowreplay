@@ -9,6 +9,7 @@ pub mod hwaccel;
 pub mod metadata;
 pub mod playlist;
 pub mod project;
+mod project_plan;
 pub mod runner;
 pub mod subtitle;
 

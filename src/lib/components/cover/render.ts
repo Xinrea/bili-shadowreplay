@@ -65,6 +65,34 @@ export function loadSticker(src: string): Promise<HTMLImageElement> {
   return request;
 }
 
+/** Runs `draw` once per animation frame however often it is scheduled, until `cancel` stops it for good. */
+export function frameScheduler(draw: () => void): { schedule: () => void; cancel: () => void } {
+  let request: number | null = null;
+  let stopped = false;
+  return {
+    schedule() {
+      if (stopped || request !== null) return;
+      request = requestAnimationFrame(() => {
+        request = null;
+        draw();
+      });
+    },
+    cancel() {
+      stopped = true;
+      if (request !== null) cancelAnimationFrame(request);
+      request = null;
+    },
+  };
+}
+
+/** Schedules a draw once `pending` stickers arrive; only for those that did, or a failed one would loop. */
+export function redrawWhenLoaded(pending: Promise<unknown>[], schedule: () => void) {
+  if (!pending.length) return;
+  void Promise.all(pending.map((request) => request.then(() => true, () => false))).then(
+    (loaded) => loaded.some(Boolean) && schedule(),
+  );
+}
+
 function roundedRect(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) {
   const r = Math.min(radius, width / 2, height / 2);
   ctx.beginPath();

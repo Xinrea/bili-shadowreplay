@@ -30,6 +30,7 @@
   import { get_static_url, invoke, listen, log, set_title, TAURI_ENV } from "../../invoker";
   import {
     clamp,
+    ELEMENT_MIDDLE,
     ELEMENT_SPACE,
     newSticker,
     newText,
@@ -114,8 +115,6 @@
   const OVERLAY_DURATION = 3;
   /** A run of overlay changes, like dragging a color, closer than this is one undo step. */
   const OVERLAY_EDIT_DELAY_MS = 400;
-  /** The middle of the picture, where texts and stickers are added. */
-  const MIDDLE = { x: ELEMENT_SPACE.width / 2, y: ELEMENT_SPACE.height / 2 };
   const PANELS = [
     { id: "materials", label: "素材", icon: Film },
     { id: "text", label: "文字", icon: Type },
@@ -656,7 +655,7 @@
     finishEditing();
     if (!canAddOverlay()) return;
     const start = overlayStart();
-    const element = newText(elementsAt(start), MIDDLE, style, font);
+    const element = newText(elementsAt(start), ELEMENT_MIDDLE, style, font);
     const result = addOverlay(timeline, { kind: "text", element }, start, OVERLAY_DURATION);
     if (!result.id) return;
     // Added and first typed as one undo step, as on a cover.
@@ -678,7 +677,7 @@
     }
     stickerUrls = new Map(stickerUrls).set(sticker.ref, sticker.src);
     const start = overlayStart();
-    const element = newSticker(elementsAt(start), MIDDLE, sticker.ref, image.naturalWidth / image.naturalHeight || 1, size);
+    const element = newSticker(elementsAt(start), ELEMENT_MIDDLE, sticker.ref, image.naturalWidth / image.naturalHeight || 1, size);
     insertOverlay({ kind: "sticker", element }, start, OVERLAY_DURATION);
   }
 
@@ -745,7 +744,7 @@
     // Its real ratio, which a video not shown since opening has not reported.
     const aspect = url ? await probeAspect(item.material_id, url) : (aspects.get(item.material_id) ?? 16 / 9);
     const width = Math.round(Math.min(ELEMENT_SPACE.width, ELEMENT_SPACE.height * aspect));
-    updateOverlay(withElement({ x: ELEMENT_SPACE.width / 2, y: ELEMENT_SPACE.height / 2, width, rotation: 0 }), item.id);
+    updateOverlay(withElement({ ...ELEMENT_MIDDLE, width, rotation: 0 }), item.id);
     settleOverlayEdit();
   }
 

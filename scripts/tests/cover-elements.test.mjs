@@ -227,3 +227,43 @@ test("elements sit on the covers: the 4:3 cover shows the middle of the 16:9 one
   assert.deepEqual(plain(api.elementArea("wide")), { x: 0, y: 0, width: 1920, height: 1080 });
   assert.deepEqual(plain(api.elementArea("home")), { x: 240, y: 0, width: 1440, height: 1080 });
 });
+
+test("withinBox follows rotation and widens by the slop", () => {
+  const box = { x: 500, y: 500, width: 200, height: 100, rotation: 90 };
+  // Turned upright, the box is tall rather than wide.
+  assert.ok(api.withinBox(box, 500, 590));
+  assert.ok(!api.withinBox(box, 590, 500));
+  assert.ok(api.withinBox(box, 590, 500, 45));
+});
+
+test("a drag moves within the covers once past the click threshold", () => {
+  const origin = { x: 500, y: 500, rotation: 0 };
+  // Within 3 CSS pixels it is a click, not a move.
+  assert.equal(api.dragChanges("move", origin, { x: 100, y: 100 }, { x: 101, y: 101 }, 1, { moved: false }), null);
+  const kept = api.dragChanges("move", origin, { x: 100, y: 100 }, { x: 101, y: 101 }, 1, { moved: true });
+  assert.deepEqual(plain(kept), { changes: { x: 501, y: 501 }, guides: { x: false, y: false } });
+  const clamped = api.dragChanges("move", origin, { x: 100, y: 100 }, { x: 5000, y: -5000 }, 1, { moved: true });
+  assert.deepEqual(plain(clamped.changes), { x: 1920, y: 0 });
+});
+
+test("a dragged element snaps to the middle lines and reports the guides", () => {
+  const origin = { x: 500, y: 500, rotation: 0 };
+  const snapped = api.dragChanges("move", origin, { x: 100, y: 100 }, { x: 555, y: 160 }, 1, { moved: false });
+  assert.deepEqual(plain(snapped), { changes: { x: 960, y: 560 }, guides: { x: true, y: false } });
+});
+
+test("a drag turns around the element and snaps to a held step", () => {
+  const origin = { x: 500, y: 500, rotation: 10 };
+  // From the element's right, a quarter turn down.
+  const turned = api.dragChanges("rotate", origin, { x: 600, y: 500 }, { x: 500, y: 600 }, 1, { moved: true });
+  assert.equal(turned.changes.rotation, 100);
+  const stepped = api.dragChanges("rotate", origin, { x: 600, y: 500 }, { x: 500, y: 600 }, 1, { moved: true, snapStep: 15 });
+  assert.equal(stepped.changes.rotation, 105);
+});
+
+test("a drag scales by the pointer's distance from the center", () => {
+  const origin = { x: 500, y: 500, rotation: 0 };
+  close(api.dragChanges("scale", origin, { x: 600, y: 500 }, { x: 700, y: 500 }, 1, { moved: true }).scale, 2);
+  // A drag that began on the center cannot divide by zero.
+  close(api.dragChanges("scale", origin, { x: 500, y: 500 }, { x: 500, y: 550 }, 1, { moved: true }).scale, 50);
+});

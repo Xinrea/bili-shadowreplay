@@ -9,16 +9,15 @@
   import type { Snippet } from "svelte";
   import {
     clamp,
+    dragChanges,
     ELEMENT_SPACE,
     elementSize,
     scaledSize,
-    snapRotation,
-    snapToCenter,
-    toLocal,
+    withinBox,
     type TextElement,
   } from "../../cover-elements";
   import type { PlacedOverlay } from "../../project-timeline";
-  import { measure } from "../cover/render";
+  import { frameScheduler, measure, redrawWhenLoaded } from "../cover/render";
   import SelectionBox from "../cover/SelectionBox.svelte";
   import TextEditField from "../cover/TextEditField.svelte";
   import OverlayVideo from "./OverlayVideo.svelte";
@@ -93,13 +92,11 @@
   // Video overlays load this long before they come in.
   const PRELOAD = 3;
   const DEFAULT_ASPECT = 16 / 9;
-  const MIDDLE = { x: ELEMENT_SPACE.width / 2, y: ELEMENT_SPACE.height / 2 };
 
   let surface: HTMLDivElement = $state();
   let editField: ReturnType<typeof TextEditField> | undefined = $state();
   let canvases: HTMLCanvasElement[] = $state([]);
   let guides = $state({ x: false, y: false });
-  let frameRequest: number | null = null;
 
   let unit = $derived(width / ELEMENT_SPACE.width);
   let active = $derived(placed.filter((p) => time >= p.start && time < p.end));
@@ -138,13 +135,7 @@
     scheduleRedraw();
   });
 
-  function scheduleRedraw() {
-    if (frameRequest !== null) return;
-    frameRequest = requestAnimationFrame(() => {
-      frameRequest = null;
-      redraw();
-    });
-  }
+  const { schedule: scheduleRedraw, cancel: cancelRedraw } = frameScheduler(redraw);
 
   function redraw() {
     const ratio = window.devicePixelRatio || 1;
@@ -161,17 +152,10 @@
         .map((p) => p.item as DrawnOverlay);
       pending.push(...drawOverlays(canvas.getContext("2d"), items, (ref) => stickerUrls.get(ref), editingId));
     }
-    if (pending.length) {
-      // Only redraw for stickers that arrived, or a failed one would loop.
-      void Promise.all(pending.map((request) => request.then(() => true, () => false))).then(
-        (loaded) => loaded.some(Boolean) && scheduleRedraw(),
-      );
-    }
+    redrawWhenLoaded(pending, scheduleRedraw);
   }
 
-  $effect(() => () => {
-    if (frameRequest !== null) cancelAnimationFrame(frameRequest);
-  });
+  $effect(() => cancelRedraw);
 
   // Pointer interaction
 
@@ -201,9 +185,7 @@
     const point = toFrame(event);
     const slop = 4 / unit;
     for (let index = active.length - 1; index >= 0; index--) {
-      const box = boxOf(active[index]);
-      const local = toLocal(box, point.x, point.y);
-      if (Math.abs(local.x) <= box.width / 2 + slop && Math.abs(local.y) <= box.height / 2 + slop) return active[index];
+      if (withinBox(boxOf(active[index]), point.x, point.y, slop)) return active[index];
     }
     return null;
   }
@@ -245,33 +227,20 @@
     }
     const point = toFrame(event);
     const origin = drag.origin;
+    const update = dragChanges(drag.mode, origin, drag.start, point, unit, {
+      moved: drag.moved,
+      snapStep: event.shiftKey ? 15 : undefined,
+    });
+    if (!update) return;
     let changes: OverlayChanges;
-    if (drag.mode === "move") {
-      const dx = point.x - drag.start.x;
-      const dy = point.y - drag.start.y;
-      // A click selects without nudging.
-      if (!drag.moved && Math.hypot(dx, dy) * unit < 3) return;
-      const to = {
-        x: clamp(origin.x + dx, 0, ELEMENT_SPACE.width),
-        y: clamp(origin.y + dy, 0, ELEMENT_SPACE.height),
-      };
-      const snapped = snapToCenter(to.x, to.y, MIDDLE, 8 / unit);
-      changes = { x: Math.round(snapped.x), y: Math.round(snapped.y) };
-      guides = { x: snapped.snapX, y: snapped.snapY };
-    } else if (drag.mode === "rotate") {
-      const from = Math.atan2(drag.start.y - origin.y, drag.start.x - origin.x);
-      const to = Math.atan2(point.y - origin.y, point.x - origin.x);
-      changes = {
-        rotation: snapRotation(origin.rotation + ((to - from) * 180) / Math.PI, event.shiftKey ? 15 : undefined),
-      };
-    } else {
-      const factor =
-        Math.hypot(point.x - origin.x, point.y - origin.y) /
-        Math.max(1, Math.hypot(drag.start.x - origin.x, drag.start.y - origin.y));
+    if ("scale" in update) {
       changes =
         drag.kind === "video"
-          ? { width: clamp(Math.round((origin as VideoPlacement).width * factor), 64, 3840) }
-          : scaledSize(origin as TextElement, factor);
+          ? { width: clamp(Math.round((origin as VideoPlacement).width * update.scale), 64, 3840) }
+          : scaledSize(origin as TextElement, update.scale);
+    } else {
+      changes = update.changes;
+      if ("guides" in update) guides = update.guides;
     }
     drag.moved = true;
     onChange(drag.id, changes);

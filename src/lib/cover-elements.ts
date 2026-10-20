@@ -186,6 +186,19 @@ export function toLocal(element: Omit<Placement, "id">, x: number, y: number): {
   };
 }
 
+/** A possibly turned box around its center at `x`, `y`. */
+export interface CenteredBox extends Size {
+  x: number;
+  y: number;
+  rotation: number;
+}
+
+/** Whether the point is on the box; `slop` widens it on every side. */
+export function withinBox(box: CenteredBox, x: number, y: number, slop = 0): boolean {
+  const local = toLocal(box, x, y);
+  return Math.abs(local.x) <= box.width / 2 + slop && Math.abs(local.y) <= box.height / 2 + slop;
+}
+
 /** The topmost element under the point; `slop` widens every element. */
 export function elementAt(
   elements: CoverElement[],
@@ -196,9 +209,7 @@ export function elementAt(
 ): CoverElement | null {
   for (let index = elements.length - 1; index >= 0; index--) {
     const element = elements[index];
-    const { width, height } = elementSize(element, measure);
-    const local = toLocal(element, x, y);
-    if (Math.abs(local.x) <= width / 2 + slop && Math.abs(local.y) <= height / 2 + slop) return element;
+    if (withinBox({ ...element, ...elementSize(element, measure) }, x, y, slop)) return element;
   }
   return null;
 }
@@ -376,6 +387,60 @@ export function zoomFrame(
 
 /** Elements are placed in the pixels of the 16:9 cover. */
 export const ELEMENT_SPACE: Size = COVER_SIZES.wide;
+
+/** The middle of element space, where new elements go and moves snap to. */
+export const ELEMENT_MIDDLE = { x: ELEMENT_SPACE.width / 2, y: ELEMENT_SPACE.height / 2 };
+
+export type DragMode = "move" | "rotate" | "scale";
+
+export type DragUpdate =
+  | { changes: { x: number; y: number }; guides: { x: boolean; y: boolean } }
+  | { changes: { rotation: number } }
+  | { scale: number };
+
+/**
+ * What a pointer drag does to the element it began on. `origin` is the
+ * element's placement as the drag began, `start` and `point` where in element
+ * space the drag began and is now, and `unit` the CSS pixels per element-space
+ * unit. A move keeps the center on the covers and snaps it to the middle
+ * lines, reported as `guides`; until `moved`, one within the click threshold
+ * returns null, so a click selects without nudging. A rotation snaps near
+ * right angles, or to `snapStep` while it is held. A scale returns the
+ * factor, since what it sizes depends on the element's kind.
+ */
+export function dragChanges(
+  mode: DragMode,
+  origin: Pick<CenteredBox, "x" | "y" | "rotation">,
+  start: { x: number; y: number },
+  point: { x: number; y: number },
+  unit: number,
+  options: { moved: boolean; snapStep?: number },
+): DragUpdate | null {
+  if (mode === "move") {
+    const dx = point.x - start.x;
+    const dy = point.y - start.y;
+    if (!options.moved && Math.hypot(dx, dy) * unit < 3) return null;
+    const to = {
+      x: clamp(origin.x + dx, 0, ELEMENT_SPACE.width),
+      y: clamp(origin.y + dy, 0, ELEMENT_SPACE.height),
+    };
+    const snapped = snapToCenter(to.x, to.y, ELEMENT_MIDDLE, 8 / unit);
+    return {
+      changes: { x: Math.round(snapped.x), y: Math.round(snapped.y) },
+      guides: { x: snapped.snapX, y: snapped.snapY },
+    };
+  }
+  if (mode === "rotate") {
+    const from = Math.atan2(start.y - origin.y, start.x - origin.x);
+    const to = Math.atan2(point.y - origin.y, point.x - origin.x);
+    return { changes: { rotation: snapRotation(origin.rotation + ((to - from) * 180) / Math.PI, options.snapStep) } };
+  }
+  return {
+    scale:
+      Math.hypot(point.x - origin.x, point.y - origin.y) /
+      Math.max(1, Math.hypot(start.x - origin.x, start.y - origin.y)),
+  };
+}
 
 /** The part of element space a cover shows: all of it, or its middle 4:3. */
 export function elementArea(ratio: Ratio): Rect {

@@ -13,21 +13,30 @@
 //! clips, and their sound is mixed into the clips'. The frames carry project
 //! time while they are drawn on, so the overlays' spans, the subtitles and the
 //! danmaku apply unchanged in every segment.
+//!
+//! A project's segments are kept in its segment cache by a key of everything
+//! they are made of, with times from their first frame. A later render uses
+//! those it finds again, with edits elsewhere in the timeline that move them by
+//! whole frames, and renders only the others.
 
+use std::collections::HashMap;
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::UNIX_EPOCH;
 
 use async_trait::async_trait;
 use ffmpeg_utils::ffmpeg_command;
 use futures::{stream, TryStreamExt};
 use recorder::danmu::DanmuEntry;
+use sha2::{Digest, Sha256};
 
 use crate::danmu2ass::{Danmu2AssOptions, ImageDanmu, R2L_TIME};
 use crate::progress::progress_reporter::{ProgressReporterTrait, StageProgress};
 
 use super::{
     danmu, hwaccel,
-    project_plan::{plan_segments, Segment, SegmentLimits, SAMPLE_RATE},
+    project_plan::{plan_segments, PlanClip, Segment, SegmentLimits, SAMPLE_RATE},
     runner::{run_command, ProgressMode, ProgressTotal, TempArtifact},
 };
 
@@ -52,8 +61,13 @@ const LAST_FRAME_MARGIN: f64 = 1.0;
 const EPSILON: f64 = 1e-6;
 /// The stage segments report their progress in.
 const RENDER_STAGE: &str = "导出切片";
+/// Part of every segment's key: change it with what a segment's graph draws,
+/// so that segments rendered before are not used again.
+const RENDER_VERSION: u32 = 1;
 
 pub struct RenderClip {
+    /// The same however the timeline is edited around the clip.
+    pub id: String,
     pub path: PathBuf,
     /// In point within the file, in seconds.
     pub start: f64,
@@ -112,6 +126,10 @@ pub struct ProjectRender<'a> {
     pub danmus: Vec<DanmuEntry>,
     pub danmu_options: Danmu2AssOptions,
     pub output: &'a Path,
+    /// Where the project's segments are kept for later renders, which use
+    /// those unchanged again. Without it they are rendered in a temporary
+    /// folder.
+    pub segment_cache: Option<&'a Path>,
 }
 
 fn output_fps(clips: &[RenderClip], danmu: bool) -> f64 {
@@ -361,12 +379,12 @@ fn overlay_image_name(index: usize) -> String {
     format!("overlay{index}.png")
 }
 
-fn segment_video_name(index: usize) -> String {
-    format!("segment{index}.mp4")
+fn segment_video_name(key: &str) -> String {
+    format!("{key}.mp4")
 }
 
-fn segment_sound_name(index: usize) -> String {
-    format!("segment{index}.wav")
+fn segment_sound_name(key: &str) -> String {
+    format!("{key}.wav")
 }
 
 /// How far a segment has rendered, and how fast while it renders.
@@ -457,6 +475,192 @@ impl<R: ProgressReporterTrait> ProgressReporterTrait for SegmentProgress<'_, R> 
     async fn finish(&self, _success: bool, _message: &str) {}
 }
 
+/// An ASS document: its events with their times, and the rest of it.
+struct AssDocument {
+    /// Everything but the events, in order.
+    header: String,
+    events: Vec<AssEvent>,
+}
+
+struct AssEvent {
+    start: f64,
+    end: f64,
+    /// The line as written.
+    line: String,
+    /// The line without its times: what it shows.
+    content: String,
+}
+
+/// Seconds of an ASS time, `H:MM:SS.CC`.
+fn ass_time(value: &str) -> Option<f64> {
+    let mut parts = value.trim().split(':');
+    let (hours, minutes, seconds) = (parts.next()?, parts.next()?, parts.next()?);
+    let hours: f64 = hours.parse().ok()?;
+    let minutes: f64 = minutes.parse().ok()?;
+    let seconds: f64 = seconds.parse().ok()?;
+    Some(hours * 3600.0 + minutes * 60.0 + seconds)
+}
+
+impl AssDocument {
+    fn parse(text: &str) -> Self {
+        let mut header = String::new();
+        let mut events = Vec::new();
+        let mut in_events = false;
+        // Where Start and End are among an event's fields, and how many there are.
+        let mut fields: Option<(usize, usize, usize)> = None;
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('[') {
+                in_events = trimmed.eq_ignore_ascii_case("[Events]");
+            } else if in_events {
+                if let Some(format) = trimmed.strip_prefix("Format:") {
+                    let names: Vec<&str> = format.split(',').map(str::trim).collect();
+                    let position = |name: &str| {
+                        names
+                            .iter()
+                            .position(|field| field.eq_ignore_ascii_case(name))
+                    };
+                    fields = position("Start")
+                        .zip(position("End"))
+                        .map(|(start, end)| (start, end, names.len()));
+                } else if let (Some(dialogue), Some((start, end, count))) =
+                    (trimmed.strip_prefix("Dialogue:"), fields)
+                {
+                    let values: Vec<&str> = dialogue.trim_start().splitn(count, ',').collect();
+                    let time = |index: usize| values.get(index).and_then(|value| ass_time(value));
+                    if let (Some(from), Some(to)) = (time(start), time(end)) {
+                        let content: Vec<&str> = values
+                            .iter()
+                            .enumerate()
+                            .filter(|(index, _)| *index != start && *index != end)
+                            .map(|(_, value)| *value)
+                            .collect();
+                        events.push(AssEvent {
+                            start: from,
+                            end: to,
+                            line: line.to_string(),
+                            content: content.join(","),
+                        });
+                        continue;
+                    }
+                }
+            }
+            header.push_str(line);
+            header.push('\n');
+        }
+        Self { header, events }
+    }
+
+    /// The events shown during project time `start..end`.
+    fn during(&self, start: f64, end: f64) -> impl Iterator<Item = &AssEvent> {
+        self.events
+            .iter()
+            .filter(move |event| event.start < end && event.end > start)
+    }
+
+    /// The document with only the events shown during `start..end`.
+    fn excerpt(&self, start: f64, end: f64) -> String {
+        let mut text = self.header.clone();
+        for event in self.during(start, end) {
+            text.push_str(&event.line);
+            text.push('\n');
+        }
+        text
+    }
+
+    /// Note in `key` what the document shows on `frames` frames from project
+    /// time `start`: for each event what it shows on which of them, and the
+    /// header with the styles they use, if any is shown.
+    fn describe(&self, key: &mut String, start: f64, fps: f64, frames: u64) {
+        // The first frame at or after `time`.
+        let frame = |time: f64| {
+            let frame = ((time - start) * fps - EPSILON).ceil().max(0.0) as u64;
+            frame.min(frames)
+        };
+        let mut shown = String::new();
+        for event in self.during(start, start + frames as f64 / fps) {
+            let (first, last) = (frame(event.start), frame(event.end));
+            if first < last {
+                let _ = writeln!(shown, "{first} {last} {}", event.content);
+            }
+        }
+        if !shown.is_empty() {
+            key.push_str(&self.header);
+            key.push_str(&shown);
+        }
+    }
+}
+
+/// A hex digest of `bytes`, long enough to tell any two apart.
+fn digest(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .take(16)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// A file as it is now: its path, length and when it last changed.
+async fn file_identity(path: &Path) -> String {
+    let changed = |metadata: &std::fs::Metadata| {
+        metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map_or(0, |since| since.as_secs())
+    };
+    match tokio::fs::metadata(path).await {
+        Ok(metadata) => format!(
+            "{} {} {}",
+            path.display(),
+            metadata.len(),
+            changed(&metadata)
+        ),
+        Err(_) => path.display().to_string(),
+    }
+}
+
+/// Whether `name` is a segment's video or sound file, named by its key.
+fn is_segment_file(name: &std::ffi::OsStr) -> bool {
+    name.to_str()
+        .and_then(|name| {
+            name.strip_suffix(".mp4")
+                .or_else(|| name.strip_suffix(".wav"))
+        })
+        .is_some_and(|key| key.len() == 32 && key.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
+/// Removes what a render writes in its directory besides segments when it
+/// ends, done or not: graphs, subtitles, pictures and lists.
+struct Scratch<'a>(&'a Path);
+
+impl Drop for Scratch<'_> {
+    fn drop(&mut self) {
+        let Ok(entries) = std::fs::read_dir(self.0) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            if !is_segment_file(&entry.file_name()) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
+struct Subtitles {
+    /// Options of their `ass` filter.
+    options: String,
+    document: AssDocument,
+}
+
+struct Danmaku {
+    document: AssDocument,
+    /// Image danmaku of the whole project.
+    images: Vec<ImageDanmu>,
+    /// A digest of each image's file.
+    pictures: HashMap<PathBuf, String>,
+}
+
 /// What the segments of one render share.
 struct Render<'a> {
     job: &'a ProjectRender<'a>,
@@ -464,18 +668,104 @@ struct Render<'a> {
     directory: &'a Path,
     fps: f64,
     encoder: &'static str,
-    /// Options of the subtitles' `ass` filter.
-    subtitles: Option<String>,
-    /// Image danmaku of the whole project, when danmaku are burned.
-    danmaku: Option<Vec<ImageDanmu>>,
+    /// What each input file is now, by path.
+    files: HashMap<PathBuf, String>,
+    /// A digest of each overlay's picture, by its index.
+    pictures: Vec<Option<String>>,
+    subtitles: Option<Subtitles>,
+    danmaku: Option<Danmaku>,
 }
 
 impl Render<'_> {
-    /// Render segment `index` into its video and sound files.
+    fn file(&self, path: &Path) -> &str {
+        self.files.get(path).map_or("", String::as_str)
+    }
+
+    /// The key of `segment`: everything its files are made of, with times
+    /// from its first frame, so that it is the same for the segment moved by
+    /// whole frames and its files are used again.
+    fn key(&self, segment: &Segment, overlays: &[SegmentOverlay]) -> String {
+        let (job, fps) = (self.job, self.fps);
+        let start = segment.start(fps);
+        let mut key = format!(
+            "{RENDER_VERSION} {fps} {} {}\n{} {}\n",
+            self.encoder,
+            hwaccel::quality_args_for_encoder(self.encoder).join(" "),
+            segment.frames,
+            segment.samples,
+        );
+        for part in &segment.parts {
+            let clip = &job.clips[part.clip];
+            let _ = writeln!(
+                key,
+                "clip {} {:.6} {:.6} {} {} {}",
+                self.file(&clip.path),
+                clip.start + part.skip,
+                clip.file_duration,
+                clip.has_audio,
+                part.frames,
+                part.samples,
+            );
+        }
+        for shown in overlays {
+            let (from, to) = (shown.start - start, shown.end - start);
+            let _ = match &shown.overlay.layer {
+                OverlayLayer::Image { x, y, .. } => writeln!(
+                    key,
+                    "picture {from:.6} {to:.6} {} {x} {y}",
+                    self.pictures[shown.index].as_deref().unwrap_or_default(),
+                ),
+                OverlayLayer::Video(layer) => writeln!(
+                    key,
+                    "video {from:.6} {to:.6} {} {:.6} {:.6} {} {} {} {} {} {}",
+                    self.file(&layer.path),
+                    layer.source_start + shown.start - shown.overlay.start,
+                    layer.duration,
+                    layer.has_audio,
+                    layer.x,
+                    layer.y,
+                    layer.width,
+                    layer.rotation,
+                    layer.volume,
+                ),
+            };
+        }
+        if let Some(subtitles) = &self.subtitles {
+            key.push_str("subtitles\n");
+            subtitles
+                .document
+                .describe(&mut key, start, fps, segment.frames);
+        }
+        if let Some(danmaku) = &self.danmaku {
+            let options = &job.danmu_options;
+            let _ = writeln!(key, "danmaku {} {}", options.font_size, options.opacity);
+            danmaku
+                .document
+                .describe(&mut key, start, fps, segment.frames);
+            for image in segment_danmaku(&danmaku.images, start, segment.end(fps)) {
+                let _ = writeln!(
+                    key,
+                    "{:.6} {:.3} {:.3} {:.3} {}",
+                    image.start - start,
+                    image.top,
+                    image.image.width,
+                    image.image.height,
+                    danmaku
+                        .pictures
+                        .get(&image.image.path)
+                        .map_or("", String::as_str),
+                );
+            }
+        }
+        digest(key.as_bytes())
+    }
+
+    /// Render segment `index` into the video and sound files named by `key`.
     async fn segment<R: ProgressReporterTrait>(
         &self,
         index: usize,
         segment: &Segment,
+        key: &str,
         reporter: &R,
     ) -> Result<(), String> {
         let (job, fps) = (self.job, self.fps);
@@ -500,14 +790,25 @@ impl Render<'_> {
         }
         let mut current = graph.video;
         if let Some(subtitles) = &self.subtitles {
-            filter.push_str(&format!("[{current}]ass={subtitles}[subtitled];\n"));
+            filter.push_str(&format!(
+                "[{current}]ass={}[subtitled];\n",
+                subtitles.options
+            ));
             current = "subtitled".to_string();
         }
         let mut image_inputs = Vec::new();
-        if let Some(images) = &self.danmaku {
-            filter.push_str(&format!("[{current}]ass=danmu.ass[danmu0];\n"));
+        if let Some(danmaku) = &self.danmaku {
+            // Only the danmaku on screen during the segment, for it to read.
+            let danmu_name = format!("danmu{index}.ass");
+            tokio::fs::write(
+                self.directory.join(&danmu_name),
+                danmaku.document.excerpt(start, end),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+            filter.push_str(&format!("[{current}]ass={danmu_name}[danmu0];\n"));
             let (chain, slots) = danmu::image_overlay_chain(
-                &segment_danmaku(images, start, end),
+                &segment_danmaku(&danmaku.images, start, end),
                 job.danmu_options.opacity,
                 segment.parts.len() + overlays.len(),
                 "danmu",
@@ -578,11 +879,24 @@ impl Render<'_> {
             .args(["-map", "[outv]"]);
         hwaccel::apply_x264_encoder_only(&mut command, self.encoder);
         hwaccel::apply_x264_quality_args(&mut command, self.encoder);
+        // Written under other names and renamed once complete, so that a
+        // segment's files are there only when they are whole. One left
+        // without the other, by a render stopped between the two renames,
+        // goes first.
+        let (video, sound) = (segment_video_name(key), segment_sound_name(key));
+        for name in [&video, &sound] {
+            let _ = tokio::fs::remove_file(self.directory.join(name)).await;
+        }
+        let (partial_video, partial_sound) = (format!("{key}.part.mp4"), format!("{key}.part.wav"));
+        let guards = [
+            TempArtifact::new(self.directory.join(&partial_video)),
+            TempArtifact::new(self.directory.join(&partial_sound)),
+        ];
         command
             .args(["-r", &fps.to_string()])
-            .arg(segment_video_name(index))
+            .arg(&partial_video)
             .args(["-map", "[outa]", "-c:a", "pcm_s16le"])
-            .arg(segment_sound_name(index));
+            .arg(&partial_sound);
         log::info!("Render project segment {index}: {command:?}");
         log::debug!("Project segment {index} filter graph:\n{filter}");
         run_command(
@@ -593,15 +907,25 @@ impl Render<'_> {
         )
         .await
         .map_err(|error| error.to_string())?;
+        for (from, to) in [(partial_sound, sound), (partial_video, video)] {
+            tokio::fs::rename(self.directory.join(from), self.directory.join(to))
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        for guard in guards {
+            guard.keep();
+        }
         Ok(())
     }
 }
 
-/// Join the rendered segments into `output`, encoding their sound as one.
+/// Join the rendered segments, with the files named by `keys`, into
+/// `output`, encoding their sound as one.
 async fn join_segments<R: ProgressReporterTrait>(
     reporter: &R,
     directory: &Path,
     segments: &[Segment],
+    keys: &[String],
     fps: f64,
     output: &Path,
 ) -> Result<(), String> {
@@ -610,15 +934,15 @@ async fn join_segments<R: ProgressReporterTrait>(
     let micros = |frame: u64| (frame as f64 / fps * 1e6).round() as u64;
     let mut videos = String::new();
     let mut sounds = String::new();
-    for (index, segment) in segments.iter().enumerate() {
+    for (segment, key) in segments.iter().zip(keys) {
         let duration = micros(segment.first_frame + segment.frames) - micros(segment.first_frame);
         videos.push_str(&format!(
             "file '{}'\nduration {}.{:06}\n",
-            segment_video_name(index),
+            segment_video_name(key),
             duration / 1_000_000,
             duration % 1_000_000,
         ));
-        sounds.push_str(&format!("file '{}'\n", segment_sound_name(index)));
+        sounds.push_str(&format!("file '{}'\n", segment_sound_name(key)));
     }
     for (name, list) in [("videos.txt", videos), ("sounds.txt", sounds)] {
         tokio::fs::write(directory.join(name), list)
@@ -659,14 +983,22 @@ pub async fn render_project<R: ProgressReporterTrait>(
     reporter: &R,
     job: ProjectRender<'_>,
 ) -> Result<(), String> {
-    render_in_segments(reporter, &job, SEGMENT_LIMITS).await
+    render_in_segments(reporter, &job, SEGMENT_LIMITS).await?;
+    Ok(())
+}
+
+/// How many segments a render had, and how many of them it found rendered.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RenderStats {
+    segments: usize,
+    reused: usize,
 }
 
 async fn render_in_segments<R: ProgressReporterTrait>(
     reporter: &R,
     job: &ProjectRender<'_>,
     limits: SegmentLimits,
-) -> Result<(), String> {
+) -> Result<RenderStats, String> {
     let encoder = hwaccel::get_x264_encoder().await;
     render_with_encoder(reporter, job, limits, encoder).await
 }
@@ -676,33 +1008,70 @@ async fn render_with_encoder<R: ProgressReporterTrait>(
     job: &ProjectRender<'_>,
     limits: SegmentLimits,
     encoder: &'static str,
-) -> Result<(), String> {
+) -> Result<RenderStats, String> {
     if job.clips.is_empty() {
         return Err("时间轴上没有片段".to_string());
     }
     let output = std::path::absolute(job.output).map_err(|error| error.to_string())?;
-    // Generated files use fixed names in a private directory that is FFmpeg's
-    // working directory, so no user path is interpolated into the graphs. It
-    // is beside the output, on a disk with room for the video.
-    let directory = tempfile::Builder::new()
-        .prefix(".bili-project-")
-        .tempdir_in(output.parent().ok_or("导出路径无效")?)
-        .map_err(|error| error.to_string())?;
-    let burn_danmu = !job.danmus.is_empty();
-    let fps = output_fps(&job.clips, burn_danmu);
-    let durations: Vec<f64> = job.clips.iter().map(|clip| clip.duration).collect();
-    let segments = plan_segments(&durations, fps, limits);
-
-    for (index, overlay) in job.overlays.iter().enumerate() {
-        if let OverlayLayer::Image { png, .. } = &overlay.layer {
-            tokio::fs::write(directory.path().join(overlay_image_name(index)), png)
+    // Generated files use fixed names in a directory that is FFmpeg's working
+    // directory, so no user path is interpolated into the graphs: the
+    // project's segment cache, which keeps segments for the next render, or
+    // else a temporary folder beside the output, on a disk with room for it.
+    let (directory, _temporary) = match job.segment_cache {
+        Some(cache) => {
+            let cache = std::path::absolute(cache).map_err(|error| error.to_string())?;
+            tokio::fs::create_dir_all(&cache)
                 .await
                 .map_err(|error| error.to_string())?;
+            (cache, None)
+        }
+        None => {
+            let temporary = tempfile::Builder::new()
+                .prefix(".bili-project-")
+                .tempdir_in(output.parent().ok_or("导出路径无效")?)
+                .map_err(|error| error.to_string())?;
+            (temporary.path().to_path_buf(), Some(temporary))
+        }
+    };
+    let _scratch = Scratch(&directory);
+    let burn_danmu = !job.danmus.is_empty();
+    let fps = output_fps(&job.clips, burn_danmu);
+    let clips: Vec<PlanClip> = job
+        .clips
+        .iter()
+        .map(|clip| PlanClip {
+            id: &clip.id,
+            duration: clip.duration,
+        })
+        .collect();
+    let segments = plan_segments(&clips, fps, limits);
+
+    let mut pictures = Vec::with_capacity(job.overlays.len());
+    let mut files = HashMap::new();
+    for clip in &job.clips {
+        if !files.contains_key(&clip.path) {
+            files.insert(clip.path.clone(), file_identity(&clip.path).await);
+        }
+    }
+    for (index, overlay) in job.overlays.iter().enumerate() {
+        match &overlay.layer {
+            OverlayLayer::Image { png, .. } => {
+                tokio::fs::write(directory.join(overlay_image_name(index)), png)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                pictures.push(Some(digest(png)));
+            }
+            OverlayLayer::Video(layer) => {
+                if !files.contains_key(&layer.path) {
+                    files.insert(layer.path.clone(), file_identity(&layer.path).await);
+                }
+                pictures.push(None);
+            }
         }
     }
     let subtitles = match &job.subtitle_ass {
         Some(ass) => {
-            tokio::fs::write(directory.path().join("subtitle.ass"), ass)
+            tokio::fs::write(directory.join("subtitle.ass"), ass)
                 .await
                 .map_err(|error| error.to_string())?;
             let mut options = "filename=subtitle.ass".to_string();
@@ -712,43 +1081,97 @@ async fn render_with_encoder<R: ProgressReporterTrait>(
                     super::subtitle::subtitle_filter_path(fonts)?
                 ));
             }
-            Some(options)
+            Some(Subtitles {
+                options,
+                document: AssDocument::parse(ass),
+            })
         }
         None => None,
     };
     let danmaku = if burn_danmu {
-        Some(
-            danmu::prepare_danmu_layers(
-                Some(reporter),
-                &job.danmus,
-                &job.danmu_options,
-                directory.path(),
-            )
-            .await?,
+        let images = danmu::prepare_danmu_layers(
+            Some(reporter),
+            &job.danmus,
+            &job.danmu_options,
+            &directory,
         )
+        .await?;
+        let document = tokio::fs::read_to_string(directory.join("danmu.ass"))
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut pictures = HashMap::new();
+        for image in &images {
+            if !pictures.contains_key(&image.image.path) {
+                let bytes = tokio::fs::read(&image.image.path)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                pictures.insert(image.image.path.clone(), digest(&bytes));
+            }
+        }
+        Some(Danmaku {
+            document: AssDocument::parse(&document),
+            images,
+            pictures,
+        })
     } else {
         None
     };
     let render = Render {
         job,
-        directory: directory.path(),
+        directory: &directory,
         fps,
         encoder,
+        files,
+        pictures,
         subtitles,
         danmaku,
     };
 
-    log::info!("Render project in {} segments", segments.len());
+    let keys: Vec<String> = segments
+        .iter()
+        .map(|segment| {
+            let overlays = segment_overlays(&job.overlays, segment.start(fps), segment.end(fps));
+            render.key(segment, &overlays)
+        })
+        .collect();
     let total = segments.iter().map(|segment| segment.frames).sum::<u64>() as f64 / fps;
     let progress = SegmentProgress::new(reporter, segments.len(), total);
-    stream::iter(segments.iter().enumerate().map(Ok::<_, String>))
-        .try_for_each_concurrent(PARALLEL_SEGMENTS, |(index, segment)| {
+    // Each segment not rendered yet, once however often it is shown.
+    let mut pending = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (index, (segment, key)) in segments.iter().zip(&keys).enumerate() {
+        let rendered = tokio::fs::try_exists(directory.join(segment_video_name(key)))
+            .await
+            .unwrap_or(false)
+            && tokio::fs::try_exists(directory.join(segment_sound_name(key)))
+                .await
+                .unwrap_or(false);
+        if rendered || !seen.insert(key) {
+            progress
+                .segment(index, segment.frames as f64 / fps)
+                .finished()
+                .await;
+        } else {
+            pending.push((index, segment, key));
+        }
+    }
+    let stats = RenderStats {
+        segments: segments.len(),
+        reused: segments.len() - pending.len(),
+    };
+    log::info!(
+        "Render project in {} segments, {} of them rendered before",
+        stats.segments,
+        stats.reused,
+    );
+    stream::iter(pending.into_iter().map(Ok::<_, String>))
+        .try_for_each_concurrent(PARALLEL_SEGMENTS, |(index, segment, key)| {
             let (render, progress) = (
                 &render,
                 progress.segment(index, segment.frames as f64 / fps),
             );
             async move {
-                render.segment(index, segment, &progress).await?;
+                render.segment(index, segment, key, &progress).await?;
                 progress.finished().await;
                 Ok(())
             }
@@ -756,17 +1179,85 @@ async fn render_with_encoder<R: ProgressReporterTrait>(
         .await?;
 
     let output_guard = TempArtifact::new(&output);
-    join_segments(reporter, directory.path(), &segments, fps, &output).await?;
+    join_segments(reporter, &directory, &segments, &keys, fps, &output).await?;
     output_guard.keep();
-    Ok(())
+    if job.segment_cache.is_some() {
+        // The cache keeps what this render is made of.
+        let used: std::collections::HashSet<&str> = keys.iter().map(String::as_str).collect();
+        if let Ok(mut entries) = tokio::fs::read_dir(&directory).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let name = entry.file_name();
+                let key = name.to_str().and_then(|name| name.split('.').next());
+                if !is_segment_file(&name) {
+                    continue;
+                }
+                if key.is_some_and(|key| used.contains(key)) {
+                    // Used now, though maybe rendered long ago: the cache
+                    // limit goes by when segments were last used.
+                    mark_used(&entry.path());
+                } else {
+                    let _ = tokio::fs::remove_file(entry.path()).await;
+                }
+            }
+        }
+    }
+    Ok(stats)
+}
+
+/// Set the time `path` last changed to now.
+fn mark_used(path: &Path) {
+    let marked = std::fs::File::options()
+        .write(true)
+        .open(path)
+        .and_then(|file| file.set_modified(std::time::SystemTime::now()));
+    if let Err(error) = marked {
+        log::warn!("Cannot mark segment {} used: {error}", path.display());
+    }
+}
+
+/// Remove the segment caches in `root` other than `current`, the least
+/// recently used first, until all of them take at most `limit` bytes.
+pub async fn limit_segment_caches(root: &Path, current: &Path, limit: u64) {
+    let Ok(mut projects) = tokio::fs::read_dir(root).await else {
+        return;
+    };
+    let mut caches = Vec::new();
+    let mut total = 0;
+    while let Ok(Some(project)) = projects.next_entry().await {
+        let Ok(mut files) = tokio::fs::read_dir(project.path()).await else {
+            continue;
+        };
+        let (mut size, mut latest) = (0, UNIX_EPOCH);
+        while let Ok(Some(file)) = files.next_entry().await {
+            if let Ok(metadata) = file.metadata().await {
+                size += metadata.len();
+                latest = latest.max(metadata.modified().unwrap_or(UNIX_EPOCH));
+            }
+        }
+        total += size;
+        if project.path() != current {
+            caches.push((latest, size, project.path()));
+        }
+    }
+    caches.sort();
+    for (_, size, path) in caches {
+        if total <= limit {
+            break;
+        }
+        if tokio::fs::remove_dir_all(&path).await.is_ok() {
+            total -= size;
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::project_plan::{anchor_id, plain_ids};
     use super::*;
 
     fn clip(has_audio: bool, fps: f64) -> RenderClip {
         RenderClip {
+            id: String::new(),
             path: PathBuf::from("a.mp4"),
             start: 1.0,
             duration: 2.5,
@@ -777,7 +1268,16 @@ mod tests {
     }
 
     fn one_segment(durations: &[f64], fps: f64) -> Segment {
-        let mut segments = plan_segments(durations, fps, SEGMENT_LIMITS);
+        let ids = plain_ids(durations.len());
+        let clips: Vec<_> = ids
+            .iter()
+            .zip(durations)
+            .map(|(id, duration)| PlanClip {
+                id,
+                duration: *duration,
+            })
+            .collect();
+        let mut segments = plan_segments(&clips, fps, SEGMENT_LIMITS);
         assert_eq!(segments.len(), 1);
         segments.remove(0)
     }
@@ -814,7 +1314,11 @@ mod tests {
     fn a_part_cut_within_a_clip_goes_on_in_project_time() {
         let mut long = clip(true, 30.0);
         long.duration = 100.0;
-        let segments = plan_segments(&[100.0], 30.0, SEGMENT_LIMITS);
+        let clips = [PlanClip {
+            id: "long",
+            duration: 100.0,
+        }];
+        let segments = plan_segments(&clips, 30.0, SEGMENT_LIMITS);
         assert_eq!(segments.len(), 2);
         let second = &segments[1];
         assert_eq!(second.parts[0].skip, 50.0);
@@ -835,6 +1339,7 @@ mod tests {
             &[early],
             &Segment {
                 first_frame: 150,
+                cut: 5.0,
                 frames: 30,
                 samples: 48000,
                 parts: vec![crate::ffmpeg::project_plan::Part {
@@ -1065,6 +1570,209 @@ mod tests {
         assert_eq!(starts(0.0, 30.0), [0.0, 5.0, 20.0]);
     }
 
+    const ASS: &str = "[Script Info]\nPlayResX: 1920\n\n[V4+ Styles]\nFormat: Name, Fontname\n\
+        Style: Default,Arial\n\n[Events]\nFormat: Layer, Start, End, Style, Text\n\
+        Dialogue: 0,0:00:01.00,0:00:02.50,Default,one, two\n\
+        Comment: 0,0:00:00.00,0:00:09.00,Default,note\n\
+        Dialogue: 0,0:01:00.00,0:01:01.00,Default,later\n";
+
+    #[test]
+    fn ass_events_are_read_with_their_times() {
+        let document = AssDocument::parse(ASS);
+        assert_eq!(document.events.len(), 2);
+        assert_eq!(
+            (document.events[0].start, document.events[0].end),
+            (1.0, 2.5)
+        );
+        assert_eq!(document.events[0].content, "0,Default,one, two");
+        assert_eq!(document.events[1].start, 60.0);
+        // An excerpt keeps everything but the events not shown.
+        let excerpt = document.excerpt(0.0, 10.0);
+        assert!(excerpt.contains("Style: Default,Arial"));
+        assert!(excerpt.contains("Format: Layer, Start, End, Style, Text"));
+        assert!(excerpt.contains("Comment:"));
+        assert!(excerpt.contains("one, two") && !excerpt.contains("later"));
+        // Described by the frames it is on, from the start, and what it shows.
+        let mut key = String::new();
+        document.describe(&mut key, 0.5, 30.0, 60);
+        assert!(key.ends_with("\n15 60 0,Default,one, two\n"), "{key}");
+        // A segment with none of the events shown has nothing of them, not
+        // even their styles, in its key.
+        let mut none = String::new();
+        document.describe(&mut none, 20.0, 30.0, 30);
+        assert!(none.is_empty(), "{none}");
+    }
+
+    fn timed(id: &str, duration: f64) -> RenderClip {
+        RenderClip {
+            id: id.to_string(),
+            path: PathBuf::from("a.mp4"),
+            start: 0.0,
+            duration,
+            has_audio: true,
+            fps: 30.0,
+            file_duration: 0.0,
+        }
+    }
+
+    /// A job of `clips`, with a picture from `picture` to a second later at
+    /// `x`, without rendering it.
+    fn job(clips: Vec<RenderClip>, picture: f64, x: f64) -> ProjectRender<'static> {
+        ProjectRender {
+            clips,
+            overlays: vec![RenderOverlay {
+                start: picture,
+                end: picture + 1.0,
+                layer: OverlayLayer::Image {
+                    png: Vec::new(),
+                    x,
+                    y: 0.0,
+                },
+            }],
+            subtitle_ass: None,
+            fonts_directory: None,
+            danmus: Vec::new(),
+            danmu_options: Danmu2AssOptions::default(),
+            output: Path::new("out.mp4"),
+            segment_cache: None,
+        }
+    }
+
+    fn keys(job: &ProjectRender, ass: &str) -> Vec<String> {
+        let fps = output_fps(&job.clips, false);
+        let render = Render {
+            job,
+            directory: Path::new("."),
+            fps,
+            encoder: "libx264",
+            files: HashMap::new(),
+            pictures: vec![Some("picture".to_string()); job.overlays.len()],
+            subtitles: Some(Subtitles {
+                options: String::new(),
+                document: AssDocument::parse(ass),
+            }),
+            danmaku: None,
+        };
+        let clips: Vec<_> = job
+            .clips
+            .iter()
+            .map(|clip| PlanClip {
+                id: &clip.id,
+                duration: clip.duration,
+            })
+            .collect();
+        plan_segments(&clips, fps, SEGMENT_LIMITS)
+            .iter()
+            .map(|segment| {
+                let overlays =
+                    segment_overlays(&job.overlays, segment.start(fps), segment.end(fps));
+                render.key(segment, &overlays)
+            })
+            .collect()
+    }
+
+    /// Subtitles at 1 s and 6 s, `shift` later.
+    fn subtitles(shift: f64, text: &str) -> String {
+        let clock = |seconds: f64| {
+            let centis = (seconds * 100.0).round() as u64;
+            format!(
+                "0:{:02}:{:02}.{:02}",
+                centis / 6000,
+                centis / 100 % 60,
+                centis % 100
+            )
+        };
+        format!(
+            "[Script Info]\n\n[Events]\nFormat: Layer, Start, End, Style, Text\n\
+             Dialogue: 0,{},{},Default,first\nDialogue: 0,{},{},Default,{text}\n",
+            clock(1.0 + shift),
+            clock(2.0 + shift),
+            clock(6.0 + shift),
+            clock(7.0 + shift),
+        )
+    }
+
+    #[test]
+    fn segments_moved_by_whole_frames_keep_their_keys() {
+        let ids = [
+            anchor_id(0),
+            plain_ids(1)[0].clone(),
+            anchor_id(100),
+            plain_ids(2)[1].clone(),
+        ];
+        let clips = |before: Option<f64>| {
+            let mut clips: Vec<_> = ids
+                .iter()
+                .zip([2.0, 3.0, 2.5, 1.5])
+                .map(|(id, duration)| timed(id, duration))
+                .collect();
+            if let Some(duration) = before {
+                clips.insert(0, timed(&plain_ids(3)[2], duration));
+            }
+            clips
+        };
+        // Two segments: the clips from 0 s and from 5 s.
+        let first = keys(&job(clips(None), 5.5, 10.0), &subtitles(0.0, "third"));
+        assert_eq!(first.len(), 2);
+        // A clip of 30 frames before them: they are the same, a second later.
+        let moved = keys(&job(clips(Some(1.0)), 6.5, 10.0), &subtitles(1.0, "third"));
+        assert_eq!(&moved[1..], &first[..]);
+        // Moved by part of a frame, they are not.
+        let nudged = keys(
+            &job(clips(Some(1.0137)), 6.5137, 10.0),
+            &subtitles(1.0137, "third"),
+        );
+        assert_ne!(&nudged[1..], &first[..]);
+        // What a segment shows is in its key, and only in its own.
+        let retitled = keys(&job(clips(None), 5.5, 10.0), &subtitles(0.0, "changed"));
+        assert_eq!(
+            (retitled[0] == first[0], retitled[1] == first[1]),
+            (true, false)
+        );
+        let moved_picture = keys(&job(clips(None), 5.5, 20.0), &subtitles(0.0, "third"));
+        assert_eq!(
+            (moved_picture[0] == first[0], moved_picture[1] == first[1]),
+            (true, false)
+        );
+    }
+
+    #[tokio::test]
+    async fn segment_caches_beyond_the_limit_go_least_recently_used_first() {
+        let root = tempfile::tempdir().unwrap();
+        let now = std::time::SystemTime::now();
+        for (name, age) in [("old", 300), ("newer", 100), ("current", 400)] {
+            let directory = root.path().join(name);
+            std::fs::create_dir(&directory).unwrap();
+            let file = directory.join("segment.mp4");
+            std::fs::write(&file, vec![0; 300]).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&file)
+                .unwrap()
+                .set_modified(now - std::time::Duration::from_secs(age))
+                .unwrap();
+        }
+        let current = root.path().join("current");
+        let left = || {
+            let mut names: Vec<_> = std::fs::read_dir(root.path())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                .collect();
+            names.sort();
+            names
+        };
+        // Rendered long ago, used now: it is the most recently used.
+        let reused = root.path().join("old").join("segment.mp4");
+        mark_used(&reused);
+        let age = std::fs::metadata(&reused).unwrap().modified().unwrap();
+        assert!(now.duration_since(age).unwrap_or_default().as_secs() < 5);
+        limit_segment_caches(root.path(), &current, 700).await;
+        assert_eq!(left(), ["current", "old"]);
+        // The current project's stays, even over the limit.
+        limit_segment_caches(root.path(), &current, 100).await;
+        assert_eq!(left(), ["current"]);
+    }
+
     #[test]
     fn frame_rate_follows_the_fastest_clip_within_limits() {
         assert_eq!(
@@ -1165,6 +1873,7 @@ mod tests {
         .await;
         let output = directory.path().join("out.mp4");
         let clip = |path: &Path, duration: f64, has_audio: bool| RenderClip {
+            id: String::new(),
             path: path.to_path_buf(),
             start: 0.0,
             duration,
@@ -1183,6 +1892,7 @@ mod tests {
                 danmus: Vec::new(),
                 danmu_options: Danmu2AssOptions::default(),
                 output: &output,
+                segment_cache: None,
             },
         )
         .await
@@ -1211,6 +1921,7 @@ mod tests {
                 danmus: Vec::new(),
                 danmu_options: Danmu2AssOptions::default(),
                 output: &output,
+                segment_cache: None,
             },
             SegmentLimits {
                 seconds: 1.5,
@@ -1277,6 +1988,7 @@ mod tests {
         // Twenty clips of 30.6 frames, red and blue in turn.
         let clips = (0..20)
             .map(|index| RenderClip {
+                id: String::new(),
                 path: if index % 2 == 0 { &red } else { &blue }.clone(),
                 start: 0.0,
                 duration: 1.02,
@@ -1295,6 +2007,7 @@ mod tests {
                 danmus: Vec::new(),
                 danmu_options: Danmu2AssOptions::default(),
                 output: &output,
+                segment_cache: None,
             },
         )
         .await
@@ -1378,6 +2091,7 @@ mod tests {
             &ProjectRender {
                 clips: vec![
                     RenderClip {
+                        id: String::new(),
                         path: red.clone(),
                         start: 1.0,
                         duration: 2.0,
@@ -1386,6 +2100,7 @@ mod tests {
                         file_duration: 4.0,
                     },
                     RenderClip {
+                        id: String::new(),
                         path: blue.clone(),
                         start: 0.5,
                         duration: 2.0,
@@ -1404,6 +2119,7 @@ mod tests {
                 },
                 danmu_options: Danmu2AssOptions::default(),
                 output: &output,
+                segment_cache: None,
             },
             limits,
         )
@@ -1531,6 +2247,7 @@ mod tests {
             &NoopReporter,
             &ProjectRender {
                 clips: vec![RenderClip {
+                    id: String::new(),
                     path: red.clone(),
                     start: 0.0,
                     duration: 4.0,
@@ -1561,6 +2278,7 @@ mod tests {
                 danmus: Vec::new(),
                 danmu_options: Danmu2AssOptions::default(),
                 output: &output,
+                segment_cache: None,
             },
             limits,
         )
@@ -1724,6 +2442,7 @@ mod tests {
                 &NoopReporter,
                 &ProjectRender {
                     clips: vec![RenderClip {
+                        id: String::new(),
                         path: source.to_path_buf(),
                         start: 0.51,
                         duration: 4.0,
@@ -1737,6 +2456,7 @@ mod tests {
                     danmus: Vec::new(),
                     danmu_options: Danmu2AssOptions::default(),
                     output,
+                    segment_cache: None,
                 },
                 SegmentLimits { seconds, parts: 16 },
                 encoder,
@@ -1760,5 +2480,185 @@ mod tests {
         let sound = mono_samples(&cut).await;
         assert_eq!(sound.len(), 2 * 4 * 48000);
         assert!(sound == mono_samples(&whole).await);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires FFmpeg with libass and libx264"]
+    async fn a_render_uses_the_segments_it_finds_rendered_again() {
+        let directory = tempfile::tempdir().unwrap();
+        let red = directory.path().join("red.mp4");
+        run_ffmpeg(
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red:s=320x180:r=30:d=2",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=2",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-c:a",
+                "aac",
+            ],
+            &red,
+        )
+        .await;
+        let blue = directory.path().join("blue.mp4");
+        run_ffmpeg(
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=blue:s=320x180:r=30:d=2",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+            ],
+            &blue,
+        )
+        .await;
+        let cache = directory.path().join("cache");
+        let plain = plain_ids(4);
+        // Three segments of a red and a blue clip each.
+        let ids = [
+            anchor_id(0),
+            plain[0].clone(),
+            anchor_id(100),
+            plain[1].clone(),
+            anchor_id(200),
+            plain[2].clone(),
+        ];
+        let clips = |before: bool| {
+            let mut clips: Vec<_> = ids
+                .iter()
+                .enumerate()
+                .map(|(index, id)| RenderClip {
+                    id: id.clone(),
+                    path: if index % 2 == 0 { &red } else { &blue }.clone(),
+                    start: 0.0,
+                    duration: 1.5,
+                    has_audio: index % 2 == 0,
+                    fps: 30.0,
+                    file_duration: 2.0,
+                })
+                .collect();
+            if before {
+                // 30 frames of blue before them.
+                clips.insert(
+                    0,
+                    RenderClip {
+                        id: plain[3].clone(),
+                        path: blue.clone(),
+                        start: 0.0,
+                        duration: 1.0,
+                        has_audio: false,
+                        fps: 30.0,
+                        file_duration: 2.0,
+                    },
+                );
+            }
+            clips
+        };
+        let ass = |shift: f64, text: &str| {
+            format!(
+                "[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\n\n\
+                 [V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour\n\
+                 Style: Default,Arial,48,&H00FFFFFF\n\n[Events]\n\
+                 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+                 Dialogue: 0,0:00:0{:.2},0:00:0{:.2},Default,,0,0,0,,hello\n\
+                 Dialogue: 0,0:00:0{:.2},0:00:0{:.2},Default,,0,0,0,,{text}\n",
+                0.5 + shift,
+                1.0 + shift,
+                6.5 + shift,
+                7.0 + shift,
+            )
+        };
+        let render = |clips: Vec<RenderClip>, ass: String, output: PathBuf, cached: bool| {
+            let cache = cache.clone();
+            async move {
+                render_in_segments(
+                    &NoopReporter,
+                    &ProjectRender {
+                        clips,
+                        overlays: Vec::new(),
+                        subtitle_ass: Some(ass),
+                        fonts_directory: None,
+                        danmus: Vec::new(),
+                        danmu_options: Danmu2AssOptions::default(),
+                        output: &output,
+                        segment_cache: cached.then_some(cache.as_path()),
+                    },
+                    SEGMENT_LIMITS,
+                )
+                .await
+                .unwrap()
+            }
+        };
+        let output = directory.path().join("out.mp4");
+        let stats = |segments, reused| RenderStats { segments, reused };
+        assert_eq!(
+            render(clips(false), ass(0.0, "bye"), output.clone(), true).await,
+            stats(3, 0)
+        );
+        // Nothing changed: nothing to render.
+        assert_eq!(
+            render(clips(false), ass(0.0, "bye"), output.clone(), true).await,
+            stats(3, 3)
+        );
+        // A subtitle changed: only its segment.
+        assert_eq!(
+            render(clips(false), ass(0.0, "again"), output.clone(), true).await,
+            stats(3, 2)
+        );
+        // A segment's sound left without its video, as by a render stopped
+        // between renaming them: it is rendered again.
+        let videos: Vec<_> = std::fs::read_dir(&cache)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "mp4"))
+            .collect();
+        std::fs::remove_file(&videos[0]).unwrap();
+        assert_eq!(
+            render(clips(false), ass(0.0, "again"), output.clone(), true).await,
+            stats(3, 2)
+        );
+        // A second before them all: they are all found again.
+        assert_eq!(
+            render(clips(true), ass(1.0, "again"), output.clone(), true).await,
+            stats(4, 3)
+        );
+        // The cache keeps the segments of the last render, and nothing else.
+        let kept = std::fs::read_dir(&cache).unwrap().count();
+        assert_eq!(kept, 8);
+
+        // As rendered without a cache.
+        let fresh = directory.path().join("fresh.mp4");
+        assert_eq!(
+            render(clips(true), ass(1.0, "again"), fresh.clone(), false).await,
+            stats(4, 0)
+        );
+        assert_eq!(mono_samples(&output).await, mono_samples(&fresh).await);
+        for seconds in [0.5, 1.75, 3.25, 4.75, 6.25, 7.75, 9.25] {
+            let (cached, rendered) = (
+                average_color(&output, seconds).await,
+                average_color(&fresh, seconds).await,
+            );
+            let close = cached.iter().zip(rendered).all(|(a, b)| a.abs_diff(b) <= 8);
+            assert!(
+                close,
+                "{seconds} s: {cached:?} cached, {rendered:?} rendered"
+            );
+        }
+        let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
+        assert!(
+            (metadata.duration - 10.0).abs() < 0.05,
+            "{}",
+            metadata.duration
+        );
     }
 }

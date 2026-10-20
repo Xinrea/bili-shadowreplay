@@ -18,7 +18,8 @@ use crate::database::upload::UploadRow;
 use crate::database::video::VideoRow;
 use crate::database::{Database, DatabaseError};
 use crate::ffmpeg::project::{
-    render_project, OverlayLayer, ProjectRender, RenderClip, RenderOverlay, VideoLayer,
+    limit_segment_caches, render_project, OverlayLayer, ProjectRender, RenderClip, RenderOverlay,
+    VideoLayer,
 };
 use crate::ffmpeg::runner::TempArtifact;
 use crate::handlers::subtitle_fonts::prepare_subtitle_font_directory;
@@ -47,6 +48,18 @@ fn project_dir(id: i64) -> String {
 fn web_export_dir(id: i64) -> String {
     format!("exports/{id}")
 }
+
+/// Where projects' rendered segments are kept, in the cache.
+const SEGMENT_CACHES: &str = "project_segments";
+
+/// Where a project's rendered segments are kept, in the cache.
+fn segment_cache_dir(id: i64) -> String {
+    format!("{SEGMENT_CACHES}/{id}")
+}
+
+/// The most the segment caches of all projects may take together; the least
+/// recently rendered go first.
+const SEGMENT_CACHE_LIMIT: u64 = 10 * 1024 * 1024 * 1024;
 
 /// A project with what the lists and the editor show about it.
 #[derive(Debug, Clone, Serialize)]
@@ -460,6 +473,7 @@ pub async fn delete_project(state: state_type!(), id: i64) -> Result<(), String>
     for directory in [
         output_dir(&state).await.join(project_dir(id)),
         cache.join(web_export_dir(id)),
+        cache.join(segment_cache_dir(id)),
     ] {
         if directory.exists() {
             if let Err(e) = tokio::fs::remove_dir_all(&directory).await {
@@ -768,6 +782,7 @@ pub(crate) async fn project_upload_video(
         timeline,
         materials: &materials,
         danmu_options: danmu_options(state).await,
+        project: Some(project.id),
     };
     upload_render(state, event_id, source, directory).await
 }
@@ -808,6 +823,7 @@ pub(crate) async fn material_danmu_video(
         subtitle_ass: None,
         overlay_images: Vec::new(),
         danmu_options: danmu_options(state).await,
+        project: None,
     };
     upload_render(state, event_id, source, directory).await
 }
@@ -929,6 +945,8 @@ struct ExportSource<'a> {
     /// Pictures of the text and sticker overlays.
     overlay_images: Vec<OverlayImage>,
     danmu_options: Danmu2AssOptions,
+    /// The project rendered, whose segments are kept for its next render.
+    project: Option<i64>,
 }
 
 impl ExportSource<'_> {
@@ -964,6 +982,8 @@ struct ExportJob {
     overlay_images: HashMap<String, DecodedOverlayImage>,
     danmu_options: Danmu2AssOptions,
     cache: PathBuf,
+    /// Where the project's rendered segments are kept, if it is a project.
+    segment_cache: Option<PathBuf>,
     target: ExportTarget,
 }
 
@@ -1014,6 +1034,7 @@ pub async fn export_project(
         subtitle_ass,
         overlay_images: overlays.unwrap_or_default(),
         danmu_options: danmu_options(&state).await,
+        project: Some(project.id),
     };
     let (task, _) =
         queue_export(&state, &event_id, source, ExportTarget::User(path.clone())).await?;
@@ -1055,6 +1076,7 @@ async fn queue_export(
         subtitle_ass,
         overlay_images,
         danmu_options,
+        project,
     } = source;
     let output = output_dir(state).await;
     let plain = plain_material(&timeline, materials).map(|material| output.join(&material.file));
@@ -1070,9 +1092,15 @@ async fn queue_export(
         .as_deref()
         .map(ass_primary_font_name)
         .transpose()?;
-    // The render's segments are written beside the target too.
+    let cache = PathBuf::from(&state.config.read().await.cache);
+    let segment_cache = project.map(|id| cache.join(segment_cache_dir(id)));
+    // Segments are rendered into the project's cache, or else beside the
+    // target.
     let target_path = target.path();
     check_free_space(target_path.parent().unwrap_or(target_path).to_path_buf()).await?;
+    if let Some(segment_cache) = &segment_cache {
+        check_free_space(segment_cache.clone()).await?;
+    }
 
     let job = ExportJob {
         title,
@@ -1086,7 +1114,8 @@ async fn queue_export(
         font_name,
         overlay_images,
         danmu_options,
-        cache: PathBuf::from(&state.config.read().await.cache),
+        cache,
+        segment_cache,
         target,
     };
     let task = TaskRow {
@@ -1217,6 +1246,7 @@ async fn render_timeline(
         let (has_audio, fps, file_duration) =
             probe_material(&mut probed, file(clip.material_id)?).await?;
         clips.push(RenderClip {
+            id: clip.id.clone(),
             path: file(clip.material_id)?.clone(),
             start: clip.start,
             duration: clip.duration(),
@@ -1295,9 +1325,15 @@ async fn render_timeline(
             danmus,
             danmu_options: job.danmu_options.clone(),
             output,
+            segment_cache: job.segment_cache.as_deref(),
         },
     )
-    .await
+    .await?;
+    if let Some(segment_cache) = &job.segment_cache {
+        let root = job.cache.join(SEGMENT_CACHES);
+        limit_segment_caches(&root, segment_cache, SEGMENT_CACHE_LIMIT).await;
+    }
+    Ok(())
 }
 
 /// Give every video that existed before projects its own single-material
@@ -1668,6 +1704,7 @@ mod tests {
             subtitle_ass: None,
             overlay_images: images,
             danmu_options: Danmu2AssOptions::default(),
+            project: None,
         };
         let image = |data: &str, x: f64| OverlayImage {
             id: "text".into(),

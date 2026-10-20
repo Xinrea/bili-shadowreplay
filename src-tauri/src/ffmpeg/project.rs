@@ -880,8 +880,13 @@ impl Render<'_> {
         hwaccel::apply_x264_encoder_only(&mut command, self.encoder);
         hwaccel::apply_x264_quality_args(&mut command, self.encoder);
         // Written under other names and renamed once complete, so that a
-        // segment's files are there only when they are whole.
+        // segment's files are there only when they are whole. One left
+        // without the other, by a render stopped between the two renames,
+        // goes first.
         let (video, sound) = (segment_video_name(key), segment_sound_name(key));
+        for name in [&video, &sound] {
+            let _ = tokio::fs::remove_file(self.directory.join(name)).await;
+        }
         let (partial_video, partial_sound) = (format!("{key}.part.mp4"), format!("{key}.part.wav"));
         let guards = [
             TempArtifact::new(self.directory.join(&partial_video)),
@@ -2583,6 +2588,18 @@ mod tests {
             stats(3, 3)
         );
         // A subtitle changed: only its segment.
+        assert_eq!(
+            render(clips(false), ass(0.0, "again"), output.clone(), true).await,
+            stats(3, 2)
+        );
+        // A segment's sound left without its video, as by a render stopped
+        // between renaming them: it is rendered again.
+        let videos: Vec<_> = std::fs::read_dir(&cache)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "mp4"))
+            .collect();
+        std::fs::remove_file(&videos[0]).unwrap();
         assert_eq!(
             render(clips(false), ass(0.0, "again"), output.clone(), true).await,
             stats(3, 2)

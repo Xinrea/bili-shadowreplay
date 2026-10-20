@@ -50,6 +50,8 @@ const PREROLL: f64 = 1.0;
 const LAST_FRAME_MARGIN: f64 = 1.0;
 /// Overlaps this short, from rounding, do not count.
 const EPSILON: f64 = 1e-6;
+/// The stage segments report their progress in.
+const RENDER_STAGE: &str = "导出切片";
 
 pub struct RenderClip {
     pub path: PathBuf,
@@ -59,6 +61,8 @@ pub struct RenderClip {
     pub has_audio: bool,
     /// Frame rate of the file, `0.0` when unknown.
     pub fps: f64,
+    /// Length of the file's video, `0.0` when unknown.
+    pub file_duration: f64,
 }
 
 /// Something laid over the joined clips from `start` to `end`, project time.
@@ -130,10 +134,16 @@ fn output_fps(clips: &[RenderClip], danmu: bool) -> f64 {
 }
 
 /// Where the input of a part of `clip` starting `skip` seconds into it is
-/// seeked to in its file, and how long before the part that is.
+/// seeked to in its file, and how long before the part that is. Near the end
+/// of the file that is read from its last frames, to hold the last one.
 fn part_input(clip: &RenderClip, skip: f64) -> (f64, f64) {
     let start = clip.start + skip;
-    let seek = (start - PREROLL).max(0.0);
+    let from = if clip.file_duration > 0.0 {
+        start.min(clip.file_duration - LAST_FRAME_MARGIN)
+    } else {
+        start
+    };
+    let seek = (from - PREROLL).max(0.0);
     (seek, start - seek)
 }
 
@@ -154,24 +164,30 @@ fn concat_filter(clips: &[RenderClip], segment: &Segment, fps: f64, audio: &str)
         let clip = &clips[part.clip];
         let (_, preroll) = part_input(clip, part.skip);
         let (frames, samples) = (part.frames, part.samples);
-        let padding = frames as f64 / fps;
-        // Frames before the in point are dropped by `fps`.
+        // Moved `lead` later, the in point is frame `first` of the grid. The
+        // frames before it are kept until it, so that a file ending before the
+        // part still has its last frame to hold.
+        let first = (preroll * fps).ceil() as u64;
+        let lead = first as f64 / fps - preroll;
+        let padding = (first + frames) as f64 / fps;
         filter.push_str(&format!(
-            "[{index}:v]setpts=PTS-{preroll:.6}/TB,fps={fps}:start_time=0,{},setsar=1,\
-             format=yuv420p,tpad=stop_mode=clone:stop_duration={padding:.6},\
-             trim=end_frame={frames}[pv{index}];\n",
+            "[{index}:v]setpts=PTS+{lead:.6}/TB,fps={fps}:start_time=0,\
+             tpad=stop_mode=clone:stop_duration={padding:.6},\
+             trim=start_frame={first}:end_frame={},setpts=PTS-STARTPTS,{},setsar=1,\
+             format=yuv420p[pv{index}];\n",
+            first + frames,
             hwaccel::H264_SCALE_PAD_FILTER,
         ));
         if clip.has_audio {
             filter.push_str(&format!(
-                "[{index}:a]aresample=48000:async=1:first_pts=0,atrim=start_sample={},\
+                "[{index}:a]aresample={SAMPLE_RATE}:async=1:first_pts=0,atrim=start_sample={},\
                  aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS,\
                  apad,atrim=end_sample={samples}[pa{index}];\n",
                 (preroll * SAMPLE_RATE).round() as u64,
             ));
         } else {
             filter.push_str(&format!(
-                "anullsrc=r=48000:cl=stereo,atrim=end_sample={samples},\
+                "anullsrc=r={SAMPLE_RATE}:cl=stereo,atrim=end_sample={samples},\
                  aformat=sample_fmts=fltp:channel_layouts=stereo[pa{index}];\n"
             ));
         }
@@ -306,7 +322,7 @@ fn overlay_filter(
                 if layer.has_audio && layer.volume > 0.0 {
                     let delay = ((from - start) * 1000.0).round() as i64;
                     filter.push_str(&format!(
-                        "[{input}:a]aresample=48000:async=1:first_pts=0,atrim=start_sample={},\
+                        "[{input}:a]aresample={SAMPLE_RATE}:async=1:first_pts=0,atrim=start_sample={},\
                          aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS,\
                          atrim=duration={length:.6},volume={:.3},adelay={delay}|{delay},\
                          apad,atrim=end_sample={samples}[oa{index}];\n",
@@ -408,8 +424,14 @@ impl<'a, R: ProgressReporterTrait> SegmentProgress<'a, R> {
         }
     }
 
-    fn finished(&self) {
-        self.record(self.length, None);
+    async fn finished(&self) {
+        self.progress(StageProgress {
+            stage: RENDER_STAGE.to_string(),
+            processed: self.length,
+            total: Some(self.length),
+            speed: None,
+        })
+        .await;
     }
 }
 
@@ -500,10 +522,14 @@ impl Render<'_> {
             "format=yuv420p"
         };
         // Exactly as many frames as planned: `overlay` goes on as long as any
-        // of its inputs does. Then back to the segment's own time.
+        // of its inputs does, and a file ending well before its clip has no
+        // frames for the parts after its end. Then back to the segment's own
+        // time.
         filter.push_str(&format!(
-            "[{current}]trim=end_frame={},setpts=PTS-STARTPTS,{format}[outv]\n",
-            segment.frames
+            "[{current}]tpad=stop_mode=clone:stop_duration={:.6},trim=end_frame={},\
+             setpts=PTS-STARTPTS,{format}[outv]\n",
+            end - start,
+            segment.frames,
         ));
         let filter_name = format!("segment{index}.txt");
         tokio::fs::write(self.directory.join(&filter_name), &filter)
@@ -561,7 +587,7 @@ impl Render<'_> {
         log::debug!("Project segment {index} filter graph:\n{filter}");
         run_command(
             command,
-            ProgressMode::stage("导出切片", ProgressTotal::Known(end - start)),
+            ProgressMode::stage(RENDER_STAGE, ProgressTotal::Known(end - start)),
             "Render project segment",
             Some(reporter),
         )
@@ -723,7 +749,7 @@ async fn render_with_encoder<R: ProgressReporterTrait>(
             );
             async move {
                 render.segment(index, segment, &progress).await?;
-                progress.finished();
+                progress.finished().await;
                 Ok(())
             }
         })
@@ -746,6 +772,7 @@ mod tests {
             duration: 2.5,
             has_audio,
             fps,
+            file_duration: 0.0,
         }
     }
 
@@ -764,13 +791,14 @@ mod tests {
             60.0,
             "outa",
         );
-        // Read from a second before the in point, which is dropped.
-        assert!(filter.contains("[0:v]setpts=PTS-1.000000/TB,fps=60:start_time=0,scale=1920:1080"));
-        // Both streams of a clip last exactly its timeline duration.
+        // Read from a second before the in point, which is dropped. Both
+        // streams of a clip last exactly its timeline duration.
         assert!(filter.contains(
-            "setsar=1,format=yuv420p,tpad=stop_mode=clone:stop_duration=2.500000,\
-             trim=end_frame=150[pv0]"
+            "[0:v]setpts=PTS+0.000000/TB,fps=60:start_time=0,\
+             tpad=stop_mode=clone:stop_duration=3.500000,\
+             trim=start_frame=60:end_frame=210,setpts=PTS-STARTPTS,scale=1920:1080"
         ));
+        assert!(filter.contains("setsar=1,format=yuv420p[pv0]"));
         assert!(
             filter.contains("[0:a]aresample=48000:async=1:first_pts=0,atrim=start_sample=48000,")
         );
@@ -793,13 +821,38 @@ mod tests {
         // 51 s into the file, read from a second before.
         assert_eq!(part_input(&long, second.parts[0].skip), (50.0, 1.0));
         let filter = concat_filter(&[long], second, 30.0, "outa");
-        assert!(filter.contains("[0:v]setpts=PTS-1.000000/TB,fps=30:start_time=0,"));
-        assert!(filter.contains("trim=end_frame=1500[pv0]"));
+        assert!(filter.contains("[0:v]setpts=PTS+0.000000/TB,fps=30:start_time=0,"));
+        assert!(filter.contains("trim=start_frame=30:end_frame=1530,"));
         assert!(filter.contains("concat=n=1:v=1:a=0,setpts=(N+1500)/30/TB[joined]"));
         // Near the start of a file, only what there is before the in point.
         let mut early = clip(true, 30.0);
         early.start = 0.4;
         assert_eq!(part_input(&early, 0.0), (0.0, 0.4));
+        // Past the end of a file of 3 s, from its last two seconds.
+        early.file_duration = 3.0;
+        assert_eq!(part_input(&early, 4.6), (1.0, 4.0));
+        let filter = concat_filter(
+            &[early],
+            &Segment {
+                first_frame: 150,
+                frames: 30,
+                samples: 48000,
+                parts: vec![crate::ffmpeg::project_plan::Part {
+                    clip: 0,
+                    skip: 4.6,
+                    frames: 30,
+                    samples: 48000,
+                }],
+            },
+            30.0,
+            "outa",
+        );
+        // Its last frame is padded on to the part.
+        assert!(filter.contains(
+            "[0:v]setpts=PTS+0.000000/TB,fps=30:start_time=0,\
+             tpad=stop_mode=clone:stop_duration=5.000000,\
+             trim=start_frame=120:end_frame=150,"
+        ));
     }
 
     fn video_layer(has_audio: bool, rotation: f64) -> OverlayLayer {
@@ -966,7 +1019,7 @@ mod tests {
         };
         first.progress(at(2.0, 1.5)).await;
         second.progress(at(3.0, 2.0)).await;
-        first.finished();
+        first.finished().await;
         // Past its end, as FFmpeg can report, it counts as done.
         second.progress(at(7.0, 2.5)).await;
         let reported: Vec<_> = recorder
@@ -981,7 +1034,8 @@ mod tests {
             [
                 (2.0, Some(10.0), Some(1.5)),
                 (5.0, Some(10.0), Some(3.5)),
-                // The first, done, no longer adds its speed.
+                // The first reports itself done, and no longer adds its speed.
+                (7.0, Some(10.0), Some(2.0)),
                 (10.0, Some(10.0), Some(2.5)),
             ]
         );
@@ -1116,6 +1170,7 @@ mod tests {
             duration,
             has_audio,
             fps: 30.0,
+            file_duration: 2.0,
         };
         // The timeline allows a clip to end a little after its file.
         render_project(
@@ -1142,6 +1197,39 @@ mod tests {
         let padded = average_color(&output, 2.2).await;
         assert!(padded[0] > 150 && padded[2] < 80, "{padded:?}");
         let second = average_color(&output, 2.6).await;
+        assert!(second[2] > 150 && second[0] < 80, "{second:?}");
+
+        // Far longer than its file, in segments of 1.5 s: those after the
+        // file's end still show its last frame.
+        render_in_segments(
+            &NoopReporter,
+            &ProjectRender {
+                clips: vec![clip(&red, 6.0, true), clip(&blue, 2.0, false)],
+                overlays: Vec::new(),
+                subtitle_ass: None,
+                fonts_directory: None,
+                danmus: Vec::new(),
+                danmu_options: Danmu2AssOptions::default(),
+                output: &output,
+            },
+            SegmentLimits {
+                seconds: 1.5,
+                parts: 16,
+            },
+        )
+        .await
+        .unwrap();
+        let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
+        assert!(
+            (metadata.duration - 8.0).abs() < 0.1,
+            "{}",
+            metadata.duration
+        );
+        for seconds in [3.2, 5.5] {
+            let held = average_color(&output, seconds).await;
+            assert!(held[0] > 150 && held[2] < 80, "{seconds} s: {held:?}");
+        }
+        let second = average_color(&output, 6.5).await;
         assert!(second[2] > 150 && second[0] < 80, "{second:?}");
     }
 
@@ -1194,6 +1282,7 @@ mod tests {
                 duration: 1.02,
                 has_audio: index % 2 == 0,
                 fps: 30.0,
+                file_duration: 2.0,
             })
             .collect();
         render_project(
@@ -1294,6 +1383,7 @@ mod tests {
                         duration: 2.0,
                         has_audio: true,
                         fps: 30.0,
+                        file_duration: 4.0,
                     },
                     RenderClip {
                         path: blue.clone(),
@@ -1301,6 +1391,7 @@ mod tests {
                         duration: 2.0,
                         has_audio: false,
                         fps: 60.0,
+                        file_duration: 3.0,
                     },
                 ],
                 overlays: Vec::new(),
@@ -1445,6 +1536,7 @@ mod tests {
                     duration: 4.0,
                     has_audio: false,
                     fps: 30.0,
+                    file_duration: 4.0,
                 }],
                 overlays: vec![
                     // The top left quarter from 1 s to 3 s.
@@ -1637,6 +1729,7 @@ mod tests {
                         duration: 4.0,
                         has_audio: true,
                         fps: 25.0,
+                        file_duration: 6.0,
                     }],
                     overlays: Vec::new(),
                     subtitle_ass: None,

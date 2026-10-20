@@ -553,14 +553,14 @@ pub async fn get_material_danmu(state: state_type!(), id: i64) -> Result<Vec<Dan
     Ok(crate::material::load_danmus(&path).await)
 }
 
-async fn check_free_space(state: &State) -> Result<(), String> {
-    let mut output = output_dir(state).await;
-    if output.is_relative() {
+/// Refuse to start writing to `directory` with less than 1 GB free on its disk.
+async fn check_free_space(mut directory: PathBuf) -> Result<(), String> {
+    if directory.is_relative() {
         let cwd =
             std::env::current_dir().map_err(|e| format!("Failed to get current directory: {e}"))?;
-        output = cwd.join(output);
+        directory = cwd.join(directory);
     }
-    if let Ok(disk_info) = get_disk_info_inner(output).await {
+    if let Ok(disk_info) = get_disk_info_inner(directory).await {
         // Preserve 1GB for other usage.
         if disk_info.free < 1024 * 1024 * 1024 {
             return Err("存储空间不足（少于 1GB），已取消".to_string());
@@ -578,7 +578,7 @@ pub async fn generate_materials(
     params: ClipRangeParams,
     create_project: bool,
 ) -> Result<GeneratedMaterials, String> {
-    check_free_space(&state).await?;
+    check_free_space(output_dir(&state).await).await?;
     let reporter = ProgressReporter::new(state.db.clone(), &state.events, &event_id).await?;
     let mut params_without_cover = params.clone();
     params_without_cover.cover = String::new();
@@ -1056,7 +1056,9 @@ async fn queue_export(
         .as_deref()
         .map(ass_primary_font_name)
         .transpose()?;
-    check_free_space(state).await?;
+    // The render's segments are written beside the target too.
+    let target_path = target.path();
+    check_free_space(target_path.parent().unwrap_or(target_path).to_path_buf()).await?;
 
     let job = ExportJob {
         title,
@@ -1198,13 +1200,15 @@ async fn render_timeline(
     let mut probed = HashMap::new();
     let mut clips = Vec::with_capacity(job.timeline.clips.len());
     for clip in &job.timeline.clips {
-        let (has_audio, fps, _) = probe_material(&mut probed, file(clip.material_id)?).await?;
+        let (has_audio, fps, file_duration) =
+            probe_material(&mut probed, file(clip.material_id)?).await?;
         clips.push(RenderClip {
             path: file(clip.material_id)?.clone(),
             start: clip.start,
             duration: clip.duration(),
             has_audio,
             fps,
+            file_duration,
         });
     }
 

@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use base64::Engine;
+
 use crate::state::State;
 use crate::state_type;
 
@@ -9,6 +11,17 @@ use {
     tauri::State as TauriState, tauri_utils::config::WindowEffectsConfig, tokio::fs::OpenOptions,
     tokio::io::AsyncWriteExt,
 };
+
+/// The bytes of the base64 data URL `data`.
+pub(crate) fn decode_data_url(data: &str) -> Result<Vec<u8>, String> {
+    let base64 = data
+        .split("base64,")
+        .nth(1)
+        .ok_or_else(|| "Image is not a base64 data URL".to_string())?;
+    base64::engine::general_purpose::STANDARD
+        .decode(base64)
+        .map_err(|e| format!("Failed to decode image: {e}"))
+}
 
 #[allow(dead_code)]
 pub fn copy_dir_all(
@@ -507,6 +520,18 @@ pub fn sanitize_filename_advanced(name: &str, max_length: Option<usize>) -> Stri
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn decode_data_url_reads_base64_payloads_only() {
+        use super::decode_data_url;
+
+        assert_eq!(
+            decode_data_url("data:image/png;base64,aGVsbG8=").unwrap(),
+            b"hello"
+        );
+        assert!(decode_data_url("data:image/png,hello").is_err());
+        assert!(decode_data_url("data:image/png;base64,invalid!").is_err());
+    }
+
     #[test]
     #[cfg(feature = "headless")]
     fn test_sanitize_filename_advanced() {

@@ -3,7 +3,7 @@ use crate::database::upload::UploadRow;
 use crate::database::video::VideoRow;
 use crate::ffmpeg;
 use crate::handlers::subtitle_fonts::prepare_subtitle_font_directory;
-use crate::handlers::utils::get_disk_info_inner;
+use crate::handlers::utils::{decode_data_url, get_disk_info_inner};
 use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
 use crate::recorder_manager::ClipRangeParams;
 use crate::subtitle_generator::{item_to_srt, SubtitleGeneratorType};
@@ -499,19 +499,15 @@ pub(crate) async fn create_material(
     let mut cover_generate_ffmpeg = true;
     let cover_file = file.with_extension("jpg");
     if !params.cover.is_empty() {
-        if let Some(base64) = params.cover.split("base64,").nth(1) {
-            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(base64) {
-                // write cover file to fs
+        match decode_data_url(&params.cover) {
+            Ok(bytes) => {
                 tokio::fs::write(&cover_file, bytes).await.map_err(|e| {
                     log::error!("Write cover file error: {} {}", e, cover_file.display());
                     e.to_string()
                 })?;
                 cover_generate_ffmpeg = false;
-            } else {
-                log::error!("Decode base64 error: {}", params.cover);
             }
-        } else {
-            log::error!("Invalid cover base64: {}", params.cover);
+            Err(e) => log::error!("Invalid cover for {}: {e}", cover_file.display()),
         }
     }
     let mut cover_name = cover_file
@@ -991,14 +987,7 @@ pub async fn update_video_cover(
     let video = state.db.get_video(id).await?;
     let output_path = Path::new(state.config.read().await.output.as_str()).join(&video.file);
     let cover_path = output_path.with_extension("jpg");
-    // decode cover and write into file
-    let base64 = cover
-        .split("base64,")
-        .nth(1)
-        .ok_or_else(|| "Cover is not a base64 data URL".to_string())?;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(base64)
-        .map_err(|e| format!("Failed to decode cover: {e}"))?;
+    let bytes = decode_data_url(&cover)?;
     tokio::fs::write(&cover_path, bytes)
         .await
         .map_err(|e| e.to_string())?;

@@ -2,9 +2,8 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use base64::Engine;
-
 use crate::database::Database;
+use crate::handlers::utils::decode_data_url;
 use crate::recorder_manager::RecorderManagerError;
 use recorder::entry::EntryStore;
 use recorder::platforms::PlatformType;
@@ -110,11 +109,7 @@ pub async fn try_convert_live_covers(
                 continue;
             };
             if cover.starts_with("data:") {
-                let Some(base64) = cover.split("base64,").nth(1) else {
-                    log::warn!("Skipping cover with invalid data URL: {}", record.live_id);
-                    continue;
-                };
-                let bytes = match base64::engine::general_purpose::STANDARD.decode(base64) {
+                let bytes = match decode_data_url(&cover) {
                     Ok(bytes) => bytes,
                     Err(e) => {
                         log::warn!("Skipping invalid cover for {}: {e}", record.live_id);
@@ -149,11 +144,7 @@ pub async fn try_convert_clip_covers(
     for video in &videos {
         let cover = video.cover.clone();
         if cover.starts_with("data:") {
-            let Some(base64) = cover.split("base64,").nth(1) else {
-                log::warn!("Skipping cover with invalid data URL: {}", video.file);
-                continue;
-            };
-            let bytes = match base64::engine::general_purpose::STANDARD.decode(base64) {
+            let bytes = match decode_data_url(&cover) {
                 Ok(bytes) => bytes,
                 Err(e) => {
                     log::warn!("Skipping invalid cover for {}: {e}", video.file);

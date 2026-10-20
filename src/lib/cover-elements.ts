@@ -176,7 +176,7 @@ export function elementSize(element: CoverElement, measure: Measure): { width: n
 }
 
 /** The point relative to the element's center, in its unrotated frame. */
-export function toLocal(element: Placement, x: number, y: number): { x: number; y: number } {
+export function toLocal(element: Omit<Placement, "id">, x: number, y: number): { x: number; y: number } {
   const angle = (-element.rotation * Math.PI) / 180;
   const dx = x - element.x;
   const dy = y - element.y;

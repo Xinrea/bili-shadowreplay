@@ -31,8 +31,11 @@
   ];
 
   const editShortcuts: Shortcut[] = [
-    { keys: [["Ctrl/⌘", "B"]], description: "在播放头处分割片段" },
-    { keys: [["Delete"], ["Backspace"]], description: "删除选中的片段或字幕" },
+    { keys: [["Ctrl/⌘", "B"]], description: "在播放头处分割选中的叠加内容或片段" },
+    { keys: [["Delete"], ["Backspace"]], description: "删除选中的片段、字幕或叠加内容" },
+    { keys: [["Ctrl/⌘", "D"]], description: "复制选中的文字、贴纸或画中画" },
+    { keys: [["Enter"]], description: "修改选中的文字" },
+    { keys: [["←"], ["→"], ["↑"], ["↓"]], description: "点击画面后，微调选中叠加内容的位置（Shift 加大步长）" },
     { keys: [["Ctrl/⌘", "Z"]], description: "撤销" },
     { keys: [["Ctrl/⌘", "Shift", "Z"], ["Ctrl", "Y"]], description: "重做" },
     { keys: [["Ctrl/⌘", "S"]], description: "立即保存" },

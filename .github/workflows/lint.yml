@@ -41,17 +41,21 @@ jobs:
           workspaces: src-tauri -> target
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      # On a partial cache hit Swatinem/rust-cache deletes every file under
-      # non-profile `target/` subdirectories, which strips the prebuilt native
-      # libs from `target/sherpa-onnx-prebuilt` but keeps the extracted `lib`
-      # directory. `sherpa-onnx-sys`'s build script only checks that the
-      # directory exists, so it never re-downloads and linking fails. Drop the
-      # whole directory and force the crate to rebuild so it fetches them again.
+      # Swatinem/rust-cache deletes every file under non-profile `target/`
+      # subdirectories, which strips the prebuilt native libs from
+      # `target/sherpa-onnx-prebuilt` but keeps the extracted `lib` directory.
+      # `sherpa-onnx-sys`'s build script only checks that the directory exists,
+      # so whenever the crate rebuilds it never re-downloads and linking fails.
+      # It rebuilds on a partial cache hit, and also on an exact hit once a new
+      # runner image reruns the cached build scripts, so check for the libs
+      # rather than the cache result. Drop the whole directory and force the
+      # crate to rebuild so it fetches them again.
       - name: Repair sherpa-onnx prebuilt libs
-        if: steps.rust-cache.outputs.cache-hit != 'true'
         run: |
-          rm -rf src-tauri/target/sherpa-onnx-prebuilt
-          cargo clean -p sherpa-onnx-sys --manifest-path src-tauri/Cargo.toml
+          if ! find src-tauri/target/sherpa-onnx-prebuilt -name 'libsherpa-onnx-c-api.a' 2>/dev/null | grep -q .; then
+            rm -rf src-tauri/target/sherpa-onnx-prebuilt
+            cargo clean -p sherpa-onnx-sys --manifest-path src-tauri/Cargo.toml
+          fi
 
       - name: Cache pre-commit
         uses: actions/cache@v4

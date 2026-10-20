@@ -1,6 +1,8 @@
 <script lang="ts">
   import { ImagePlus, Loader2, X } from "lucide-svelte";
   import {
+    builtinStickerRef,
+    customStickerRef,
     deleteCustomSticker,
     importSticker,
     loadCustomStickers,
@@ -12,8 +14,11 @@
     /** Paste images only while the editor is open. */
     active: boolean;
     group: string;
-    /** `size` for pictures that should start larger than an emoji. */
-    onPick: (src: string, size?: number) => void;
+    /**
+     * `src` is the image's URL and `ref` names it for good, as kept in
+     * projects; `size` is for pictures that should start larger than an emoji.
+     */
+    onPick: (sticker: { src: string; ref: string }, size?: number) => void;
   }
 
   const MINE = "我的";
@@ -65,7 +70,7 @@
 
   async function remove(sticker: CustomSticker) {
     // Tauri's dialog plugin makes confirm() asynchronous.
-    if (!(await confirm("删除这个贴纸吗？已经添加到封面上的不受影响。"))) return;
+    if (!(await confirm("删除这个贴纸吗？已保存的封面不受影响，但切片中用到它的地方将无法显示。"))) return;
     try {
       await deleteCustomSticker(sticker.id);
       deleted.add(sticker.id);
@@ -145,7 +150,7 @@
             type="button"
             class="flex h-full w-full items-center justify-center rounded-[8px] bg-control/60 p-1 transition-colors hover:bg-control-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
             aria-label="添加贴纸"
-            onclick={() => onPick(sticker.url, 420)}
+            onclick={() => onPick({ src: sticker.url, ref: customStickerRef(sticker) }, 420)}
           >
             <img
               src={sticker.url}
@@ -200,7 +205,7 @@
           class="flex aspect-square items-center justify-center rounded-[8px] transition-[background-color,transform] hover:scale-110 hover:bg-control-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
           title={sticker.glyph}
           aria-label={sticker.name}
-          onclick={() => onPick(stickerUrl(sticker.id))}
+          onclick={() => onPick({ src: stickerUrl(sticker.id), ref: builtinStickerRef(sticker.id) })}
         >
           <img src={stickerUrl(sticker.id)} alt="" class="h-7 w-7" loading="lazy" decoding="async" draggable="false" />
         </button>

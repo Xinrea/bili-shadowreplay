@@ -11,17 +11,19 @@
 </script>
 
 <script lang="ts">
-  import { Film, Plus, Search } from "lucide-svelte";
+  import { Film, PictureInPicture2, Plus, Search } from "lucide-svelte";
   import { MATERIAL_DRAG_TYPE } from "./ProjectTimeline.svelte";
 
   interface Props {
     materials: BinMaterial[];
     roomId: string;
     onAdd: (material: BinMaterial) => void;
+    /** Show it over the main track at the playhead. */
+    onOverlay: (material: BinMaterial) => void;
     onPreview: (material: BinMaterial) => void;
   }
 
-  let { materials, roomId, onAdd, onPreview }: Props = $props();
+  let { materials, roomId, onAdd, onOverlay, onPreview }: Props = $props();
 
   // Without a room (a new empty project) "room" shows every material.
   let scope: "room" | "all" = $state("room");
@@ -78,7 +80,7 @@
         role="listitem"
         draggable="true"
         ondragstart={(event) => dragStart(event, material)}
-        title="拖到时间轴上插入，或点击 ＋ 添加到末尾"
+        title="拖到主轨道上插入、拖到叠加轨道上叠加在画面上，或点击 ＋ 添加到末尾"
       >
         <button type="button" class="thumb" onclick={() => onPreview(material)} title="预览素材">
           {#if material.coverUrl}
@@ -92,6 +94,9 @@
           <span class="name" title={material.name}>{material.name}</span>
           <span class="note" title={material.note}>{material.note || material.roomId}</span>
         </div>
+        <button type="button" class="add" title="在播放头处叠加到画面上（画中画）" onclick={() => onOverlay(material)}>
+          <PictureInPicture2 class="h-3.5 w-3.5" />
+        </button>
         <button type="button" class="add" title="添加到时间轴末尾" onclick={() => onAdd(material)}>
           <Plus class="h-3.5 w-3.5" />
         </button>

@@ -147,3 +147,168 @@ test("a subtitle drag keeps subtitles merged in while dragging, also when undone
   const before = plain(api.withSubtitleFrom(released, atDragStart, "s1"));
   assert.deepEqual(before.subtitles.map((s) => [s.id, s.start]), [["s1", 1], ["r1", 0]]);
 });
+
+const text = (id, clip_id, start, duration, x = 960) => ({
+  id, clip_id, start, duration, kind: "text", element: { kind: "text", id: 0, x, y: 540, rotation: 0, content: id },
+});
+const pip = (id, clip_id, start, duration, material_id = 9, source_start = 0) => ({
+  id, clip_id, start, duration, kind: "video", material_id, source_start, volume: 1,
+  element: { x: 1500, y: 800, width: 640, rotation: 0 },
+});
+const track = (id, ...items) => ({ id, items });
+const withTracks = (t, ...tracks) => ({ ...t, tracks });
+const spans = (t) => plain(api.placeOverlays(t).map((p) => [p.item.id, p.track, p.start, p.end, p.skip]));
+
+test("overlays follow the moment of their clip and run on over later clips", () => {
+  // a shows 10-20 of material 1 at 0-10, b shows 0-5 of material 2 at 10-15.
+  const t = withTracks(timeline([clip("a", 1, 10, 20), clip("b", 2, 0, 5)]), track("t1", text("x", "a", 18, 4), text("y", "b", 1, 1)));
+  assert.deepEqual(spans(t), [["x", 0, 8, 12, 0], ["y", 0, 11, 12, 0]]);
+  // Swapping the clips carries each overlay along with its clip.
+  assert.deepEqual(spans(api.moveClip(t, "b", 0)), [["x", 0, 13, 15, 0], ["y", 0, 1, 2, 0]]);
+  // Trimming the head of a clip past an anchor hides that part; trimming the
+  // tail past it hides the whole overlay.
+  const headTrimmed = withTracks(t, track("t1", text("x", "a", 9, 3)));
+  assert.deepEqual(spans(headTrimmed), [["x", 0, 0, 2, 1]]);
+  assert.deepEqual(spans(api.trimClip(t, "a", "end", 17, 30)), [["y", 0, 8, 9, 0]]);
+  // Nothing runs past the end of the project.
+  assert.deepEqual(spans(withTracks(t, track("t1", text("x", "b", 4, 9)))), [["x", 0, 14, 15, 0]]);
+});
+
+test("adding an overlay anchors it at the time given on the lowest free track", () => {
+  let t = timeline([clip("a", 1, 10, 20), clip("b", 2, 0, 5)]);
+  const content = { kind: "text", element: { content: "hi" } };
+  const first = api.addOverlay(t, content, 12, 3);
+  t = first.timeline;
+  assert.deepEqual(plain(api.findOverlay(t, first.id)), { ...content, id: first.id, clip_id: "b", start: 2, duration: 3 });
+  // Taken there: a new track above; free again later: back on the bottom one.
+  const second = api.addOverlay(t, content, 13, 1);
+  assert.equal(second.timeline.tracks.length, 2);
+  assert.equal(second.timeline.tracks[1].items[0].id, second.id);
+  const third = api.addOverlay(second.timeline, content, 4, 2);
+  assert.equal(third.timeline.tracks[0].items[1].id, third.id);
+  // Cut short at the end; nothing to anchor to without clips.
+  const late = api.addOverlay(t, content, 14.5, 3);
+  assert.equal(api.findOverlay(late.timeline, late.id).duration, 0.5);
+  assert.equal(api.addOverlay(api.emptyTimeline(), content, 0, 1).id, null);
+});
+
+test("moving an overlay re-anchors it and lands on a new track where the target is taken", () => {
+  const t = withTracks(
+    timeline([clip("a", 1, 0, 10), clip("b", 2, 0, 10)]),
+    track("t1", text("x", "a", 1, 2), text("y", "a", 5, 2)),
+    track("t2", pip("v", "b", 0, 3)),
+  );
+  const moved = api.moveOverlay(t, "x", 12, { track: 0 });
+  assert.deepEqual(plain([api.findOverlay(moved, "x").clip_id, api.findOverlay(moved, "x").start]), ["b", 2]);
+  assert.deepEqual(spans(moved), [["y", 0, 5, 7, 0], ["x", 0, 12, 14, 0], ["v", 1, 10, 13, 0]]);
+  // Onto y: x gets a track between.
+  const stacked = api.moveOverlay(t, "x", 6, { track: 0 });
+  assert.deepEqual(plain(stacked.tracks.map((tr) => tr.items.map((i) => i.id))), [["y"], ["x"], ["v"]]);
+  // Moving the only item off a track removes the track; the project end stops it.
+  const lifted = api.moveOverlay(t, "v", 30, { insert: 0 });
+  assert.deepEqual(plain(lifted.tracks.map((tr) => tr.items.map((i) => i.id))), [["v"], ["x", "y"]]);
+  assert.deepEqual(spans(lifted)[0], ["v", 0, 17, 20, 0]);
+});
+
+test("a video overlay moved or trimmed keeps showing the same material", () => {
+  // The clip's head was trimmed past the overlay's anchor: 1 s of it is hidden.
+  const t = withTracks(timeline([clip("a", 1, 5, 15)]), track("t1", pip("v", "a", 4, 3, 9, 20), text("x", "a", 9, 2)));
+  assert.deepEqual(spans(t)[0], ["v", 0, 0, 2, 1]);
+  const moved = api.findOverlay(api.moveOverlay(t, "v", 1, { track: 0 }), "v");
+  assert.deepEqual(plain([moved.start, moved.duration, moved.source_start]), [6, 2, 21]);
+  // Its start goes back no further than the material's start, its end no
+  // further than the material's end or the next item on the track.
+  const early = api.findOverlay(api.trimOverlay(t, "v", "start", -30, 60), "v");
+  assert.deepEqual(plain([early.start, early.duration, early.source_start]), [5, 2, 21]);
+  const shifted = withTracks(t, track("t1", pip("v", "a", 6, 2, 9, 21), text("x", "a", 12, 2)));
+  const extended = api.findOverlay(api.trimOverlay(shifted, "v", "start", 0, 60), "v");
+  assert.deepEqual(plain([extended.start, extended.duration, extended.source_start]), [5, 3, 20]);
+  assert.equal(api.findOverlay(api.trimOverlay(shifted, "v", "end", 9, 60), "v").duration, 6);
+  assert.equal(api.findOverlay(api.trimOverlay(shifted, "v", "end", 9, 22.5), "v").duration, 1.5);
+  const shortest = api.findOverlay(api.trimOverlay(shifted, "v", "end", 0, 60), "v").duration;
+  assert.ok(Math.abs(shortest - api.MIN_OVERLAY_DURATION) < 1e-9);
+});
+
+test("splitting an overlay leaves two items that play on from each other", () => {
+  const t = withTracks(timeline([clip("a", 1, 0, 10)]), track("t1", pip("v", "a", 2, 6, 9, 30)));
+  const { timeline: split, id } = api.splitOverlay(t, "v", 5);
+  const [left, right] = split.tracks[0].items;
+  assert.deepEqual(plain([left.start, left.duration, left.source_start]), [2, 3, 30]);
+  assert.deepEqual(plain([right.id, right.start, right.duration, right.source_start]), [id, 5, 3, 33]);
+  assert.equal(api.splitOverlay(t, "v", 2.05).id, null);
+});
+
+test("clip edits carry overlays along with their clips", () => {
+  const t = withTracks(timeline([clip("a", 1, 0, 10), clip("b", 2, 0, 10)]), track("t1", text("x", "a", 2, 1), text("y", "a", 6, 1), pip("v", "b", 1, 1, 2)));
+  const { timeline: split, clipId } = api.splitClip(t, 5);
+  assert.deepEqual(plain(split.tracks[0].items.map((i) => [i.id, i.clip_id])), [["x", "a"], ["y", clipId], ["v", "b"]]);
+  // Removing a clip removes what is anchored to it, and an emptied track.
+  assert.deepEqual(plain(api.removeClip(t, "a").tracks.map((tr) => tr.items.map((i) => i.id))), [["v"]]);
+  assert.deepEqual(plain(api.removeClip(api.removeClip(t, "a"), "b").tracks), []);
+});
+
+test("settling lifts overlays that clip edits made overlap onto new tracks", () => {
+  // Clip a ends with x running on over clip b, where y starts.
+  const t = withTracks(timeline([clip("a", 1, 0, 4), clip("b", 2, 0, 10)]), track("t1", text("x", "a", 2, 3), text("y", "b", 2, 2)), track("t2", text("z", "a", 0, 1)));
+  assert.equal(api.settleOverlays(t), t);
+  // Trimming a shortens it, so y comes closer and meets x.
+  const trimmed = api.trimClip(t, "a", "end", 2.5, 4);
+  const settled = api.settleOverlays(trimmed);
+  assert.deepEqual(plain(settled.tracks.map((tr) => tr.items.map((i) => i.id))), [["x"], ["y"], ["z"]]);
+  assert.equal(settled.tracks[0].id, "t1");
+  assert.equal(api.settleOverlays(settled), settled);
+  assert.deepEqual(plain(api.settleOverlays(withTracks(t, track("t1"), ...t.tracks)).tracks.map((tr) => tr.id)), ["t1", "t2"]);
+});
+
+test("overlays move between layers, onto new tracks where a neighbouring one is taken", () => {
+  const t = withTracks(timeline([clip("a", 1, 0, 10)]), track("t1", text("x", "a", 0, 2), text("y", "a", 5, 2)), track("t2", text("z", "a", 1, 2)));
+  const ids = (next) => plain(next.tracks.map((tr) => tr.items.map((i) => i.id)));
+  assert.deepEqual(ids(api.shiftOverlay(t, "y", 1)), [["x"], ["z", "y"]]);
+  assert.deepEqual(ids(api.shiftOverlay(t, "x", 1)), [["y"], ["x"], ["z"]]);
+  assert.deepEqual(ids(api.shiftOverlay(t, "x", -1)), [["x"], ["y"], ["z"]]);
+  assert.deepEqual(ids(api.shiftOverlay(t, "z", -1)), [["x", "y"], ["z"]]);
+  // The only item of the top track has nowhere further up to go.
+  assert.equal(api.canShiftOverlay(t, "z", 1), false);
+  assert.equal(api.canShiftOverlay(t, "x", -1), true);
+  const copy = api.duplicateOverlay(t, "x", (item) => ({ ...item, element: { ...item.element, x: item.element.x + 40 } }));
+  assert.deepEqual(ids(copy.timeline), [["x", "y"], [copy.id], ["z"]]);
+  assert.equal(api.findOverlay(copy.timeline, copy.id).element.x, 1000);
+  assert.deepEqual(ids(api.removeOverlay(t, "z")), [["x", "y"]]);
+});
+
+test("overlays of a material the backend deleted are dropped when merging", () => {
+  const clips = [clip("a", 1, 0, 10), clip("b", 2, 0, 5)];
+  const base = withTracks(timeline(clips), track("t1", pip("only", "a", 1, 2, 3)));
+  // Material 3 was only used by a video overlay; material 2's clip had a text.
+  const local = withTracks(timeline(clips), track("t1", pip("only", "a", 1, 2, 3), text("x", "b", 1, 1)), track("t2", text("keep", "a", 5, 1)));
+  const remote = timeline([clip("a", 1, 0, 10)]);
+  const merged = api.mergeRemoteTimeline(local, base, remote);
+  assert.deepEqual(plain(merged.tracks.map((tr) => tr.items.map((i) => i.id))), [["keep"]]);
+  assert.deepEqual([...api.timelineMaterials(local)].sort(), [1, 2, 3]);
+  assert.equal(api.mergeRemoteTimeline(local, local, local), local);
+  // Old timelines without tracks parse to none.
+  assert.deepEqual(plain(api.parseTimeline('{"clips":[]}').tracks), []);
+});
+
+test("deleting a middle material brings overlays together, and settling lifts them apart", () => {
+  // x on clip a runs on over b; once b goes, it meets y on clip c.
+  const clips = [clip("a", 1, 0, 4), clip("b", 2, 0, 3), clip("c", 3, 0, 10)];
+  const local = withTracks(timeline(clips), track("t1", text("x", "a", 2, 4), text("y", "c", 1, 2)));
+  const merged = api.mergeRemoteTimeline(local, local, timeline([clips[0], clips[2]]));
+  assert.deepEqual(spans(merged), [["x", 0, 2, 6, 0], ["y", 0, 5, 7, 0]]);
+  const settled = api.settleOverlays(merged);
+  assert.deepEqual(plain(settled.tracks.map((tr) => tr.items.map((i) => i.id))), [["x"], ["y"]]);
+});
+
+test("an overlay drag keeps changes merged in while dragging, also when undone", () => {
+  const clips = [clip("a", 1, 0, 10), clip("b", 2, 0, 10)];
+  const atDragStart = withTracks(timeline(clips), track("t1", text("x", "a", 1, 2)), track("t2", pip("v", "b", 0, 3, 2)));
+  // Material 2 is deleted mid-drag; the editor merges that into the live timeline.
+  const merged = api.mergeRemoteTimeline(atDragStart, atDragStart, timeline([clips[0]]));
+  const trimmed = api.trimOverlay(api.withOverlayFrom(merged, atDragStart, "x"), "x", "end", 5);
+  assert.deepEqual(plain(trimmed.tracks.map((tr) => tr.items.map((i) => [i.id, i.duration]))), [[["x", 4]]]);
+  // The undo step puts back only the dragged overlay, not the deleted video.
+  const before = plain(api.withOverlayFrom(trimmed, atDragStart, "x"));
+  assert.deepEqual(before.tracks.map((tr) => tr.items.map((i) => [i.id, i.duration])), [[["x", 2]]]);
+  assert.equal(api.withOverlayFrom(merged, atDragStart, "v"), merged);
+});

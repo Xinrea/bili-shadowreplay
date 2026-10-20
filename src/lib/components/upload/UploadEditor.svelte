@@ -14,7 +14,8 @@
   } from "lucide-svelte";
   import { onDestroy } from "svelte";
   import { get_static_url, invoke } from "../../invoker";
-  import { generateEventId, type ProjectItem, type UploadItem } from "../../interface";
+  import { generateEventId, type OverlayImage, type ProjectItem, type UploadItem } from "../../interface";
+  import { parseTimeline } from "../../project-timeline";
   import { announceTask, openTaskCenter, settleTask } from "../../stores/tasks";
   import {
     parseProfile,
@@ -24,6 +25,8 @@
     sourceLabels,
   } from "../../uploads";
   import CoverEditor from "../cover/CoverEditor.svelte";
+  import { stickerRefUrl } from "../cover/custom-stickers";
+  import { renderOverlayImages, StickerLoadError } from "../project/overlay-render";
   import TypeSelect from "../TypeSelect.svelte";
 
   interface Props {
@@ -152,22 +155,32 @@
       // Waits for saves in flight: none may land once it is posting.
       if (saveTimer) clearTimeout(saveTimer);
       await save();
-      // A project's video is rendered when posting, with its subtitles.
-      const subtitleAss =
-        upload.source === "project"
-          ? projectSubtitleAss(await invoke<ProjectItem>("get_project", { id: upload.source_id }))
-          : null;
+      // A project's video is rendered when posting, with its subtitles and
+      // its texts and stickers as its editor draws them.
+      let subtitleAss: string | null = null;
+      let overlays: OverlayImage[] | null = null;
+      if (upload.source === "project") {
+        const project = await invoke<ProjectItem>("get_project", { id: upload.source_id });
+        subtitleAss = projectSubtitleAss(project);
+        try {
+          overlays = await renderOverlayImages(parseTimeline(project.timeline), stickerRefUrl);
+        } catch (error) {
+          throw error instanceof StickerLoadError
+            ? new Error("切片中有贴纸没有加载出来，请在切片编辑窗口中删除后再投稿")
+            : error;
+        }
+      }
       announceTask({
         id: eventId,
         task_type: "upload",
         metadata: JSON.stringify({ upload_id: upload.id, title: profile.title }),
       });
-      await invoke("post_upload", { eventId, id: upload.id, subtitleAss });
+      await invoke("post_upload", { eventId, id: upload.id, subtitleAss, overlays });
       openTaskCenter(eventId);
       // Show the attempt as running before allowing another click.
       await onChanged();
     } catch (error) {
-      alert("投稿失败：" + error);
+      alert("投稿失败：" + (error instanceof Error ? error.message : error));
     } finally {
       posting = false;
       settleTask(eventId);

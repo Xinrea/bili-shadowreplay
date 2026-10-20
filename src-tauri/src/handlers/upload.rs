@@ -14,7 +14,7 @@ use crate::database::upload::UploadRow;
 use crate::events::AppEvent;
 use crate::handlers::project::{
     material_danmu_video, material_title, project_cover_file, project_upload_video,
-    remove_upload_renders, set_project_danmu, single_project_view, write_cover,
+    remove_upload_renders, set_project_danmu, single_project_view, write_cover, OverlayImage,
 };
 use crate::handlers::video::{upload_video_file, PostedVideo};
 use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
@@ -381,13 +381,15 @@ pub async fn delete_upload(state: state_type!(), id: i64) -> Result<(), String> 
 }
 
 /// Post the upload in the background, exporting a project first when its
-/// export is missing or stale. `subtitle_ass` renders the project's subtitles.
+/// export is missing or stale. `subtitle_ass` renders the project's subtitles
+/// and `overlays` its texts and stickers.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn post_upload(
     state: state_type!(),
     event_id: String,
     id: i64,
     subtitle_ass: Option<String>,
+    overlays: Option<Vec<OverlayImage>>,
 ) -> Result<(), String> {
     let upload = state.db.get_upload(id).await?;
     ensure_editable(&upload)?;
@@ -432,8 +434,16 @@ pub async fn post_upload(
     #[cfg(feature = "gui")]
     let state = (*state).clone();
     tokio::spawn(async move {
-        let result =
-            post_upload_inner(&state, &reporter, &event_id, &upload, profile, subtitle_ass).await;
+        let result = post_upload_inner(
+            &state,
+            &reporter,
+            &event_id,
+            &upload,
+            profile,
+            subtitle_ass,
+            overlays.unwrap_or_default(),
+        )
+        .await;
         if let Err(e) = finish_upload(&state, &reporter, &event_id, &upload, result).await {
             log::error!("Failed to record the result of upload {}: {e}", upload.id);
         }
@@ -541,6 +551,7 @@ async fn post_upload_inner(
     upload: &UploadRow,
     profile: Profile,
     subtitle_ass: Option<String>,
+    overlays: Vec<OverlayImage>,
 ) -> Result<PostedVideo, String> {
     let output = output_dir(state).await;
     let (file, source_cover) = match upload.source.as_str() {
@@ -580,6 +591,7 @@ async fn post_upload_inner(
                 &format!("{event_id}-export"),
                 project.id,
                 subtitle_ass,
+                overlays,
                 &output.join(upload_dir(upload.id)),
             )
             .await?;

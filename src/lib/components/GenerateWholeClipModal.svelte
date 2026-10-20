@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke, get_static_url } from "../invoker";
+  import { formatSize } from "../size-format";
   import type { RecordItem } from "../db";
   import { fade, scale } from "svelte/transition";
   import { X, FileVideo, Info } from "lucide-svelte";
@@ -154,18 +155,6 @@
     const seconds = (totalSeconds % 60).toString().padStart(2, "0");
 
     return `${hours}:${minutes}:${seconds}`;
-  }
-
-  function formatSize(size: number) {
-    if (size < 1024) {
-      return `${size} B`;
-    } else if (size < 1024 * 1024) {
-      return `${(size / 1024).toFixed(2)} KiB`;
-    } else if (size < 1024 * 1024 * 1024) {
-      return `${(size / 1024 / 1024).toFixed(2)} MiB`;
-    } else {
-      return `${(size / 1024 / 1024 / 1024).toFixed(2)} GiB`;
-    }
   }
 
 

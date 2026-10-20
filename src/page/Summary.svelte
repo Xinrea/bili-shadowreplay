@@ -1,5 +1,6 @@
 <script lang="ts">
   import { createStateRefresh, watchStateChanges } from "../lib/state-refresh";
+  import { formatSize } from "../lib/size-format";
 
   import { get_static_url, invoke } from "../lib/invoker";
   import type { RecorderList, DiskInfo } from "../lib/interface";
@@ -152,18 +153,6 @@
     return await invoke("get_account_count");
   }
 
-  function format_size(size: number) {
-    if (size < 1024) {
-      return `${size} B`;
-    } else if (size < 1024 * 1024) {
-      return `${(size / 1024).toFixed(2)} KiB`;
-    } else if (size < 1024 * 1024 * 1024) {
-      return `${(size / 1024 / 1024).toFixed(2)} MiB`;
-    } else {
-      return `${(size / 1024 / 1024 / 1024).toFixed(2)} GiB`;
-    }
-  }
-
   function format_time(time: number) {
     time = Math.round(time);
     const hours = Math.floor(time / 3600);
@@ -255,7 +244,7 @@
           <div class="min-w-0">
             <p class="text-[12px] text-fg-muted">缓存占用</p>
             <p class="text-[20px] font-semibold leading-tight text-fg tabular-nums">
-              {format_size(disk_usage)}
+              {formatSize(disk_usage)}
             </p>
           </div>
         </div>
@@ -272,11 +261,11 @@
             <div class="flex items-baseline justify-between gap-2">
               <p class="text-[12px] text-fg-muted">磁盘使用</p>
               <p class="text-[11px] text-fg-faint tabular-nums">
-                {format_size(disk_info.free)}剩余
+                {formatSize(disk_info.free)}剩余
               </p>
             </div>
             <p class="text-[20px] font-semibold leading-tight text-fg tabular-nums">
-              {format_size(disk_info.total - disk_info.free)}
+              {formatSize(disk_info.total - disk_info.free)}
             </p>
             <div class="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-sunken">
               <div
@@ -413,7 +402,7 @@
                 <p class="mt-1 text-[11px] text-fg-muted">
                   {record.platform} • {record.room_id} • {format_date(
                     record.created_at,
-                  )} • {format_size(record.size)}
+                  )} • {formatSize(record.size)}
                 </p>
               </div>
             </div>

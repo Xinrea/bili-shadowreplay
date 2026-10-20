@@ -274,7 +274,6 @@ impl Config {
         self.save();
     }
 
-    #[allow(dead_code)]
     pub fn set_whisper_language(&mut self, language: &str) {
         self.whisper_language = language.to_string();
         self.save();

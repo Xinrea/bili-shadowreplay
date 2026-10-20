@@ -1,6 +1,7 @@
 // The user's imported stickers, which the backend keeps in its output
 // directory so every client of the server shares them.
 import { get_static_url, invoke } from "../../invoker";
+import { stickerUrl } from "./render";
 
 export interface CustomSticker {
   id: string;
@@ -13,6 +14,8 @@ interface StoredSticker {
   file: string;
 }
 
+/** Where the backend keeps them, relative to the output directory. */
+const STICKER_DIR = "cover_stickers";
 /** Longest side of a saved sticker. */
 const MAX_SIDE = 1024;
 /** Longest side looked at for transparent margins. */
@@ -20,6 +23,25 @@ const MAX_SCAN = 2048;
 
 async function resolve(sticker: StoredSticker): Promise<CustomSticker> {
   return { id: sticker.id, url: await get_static_url("output", sticker.file) };
+}
+
+// Projects keep stickers by reference, as their URLs change with the server's
+// address: `builtin:<id>` or `custom:<id>`.
+
+export function builtinStickerRef(id: string): string {
+  return `builtin:${id}`;
+}
+
+export function customStickerRef(sticker: CustomSticker): string {
+  return `custom:${sticker.id}`;
+}
+
+/** The URL of the sticker `ref` names. */
+export async function stickerRefUrl(ref: string): Promise<string> {
+  const [kind, id] = [ref.slice(0, ref.indexOf(":")), ref.slice(ref.indexOf(":") + 1)];
+  if (kind === "builtin") return stickerUrl(id);
+  if (kind === "custom") return get_static_url("output", `${STICKER_DIR}/${id}`);
+  throw new Error(`Unknown sticker ${ref}`);
 }
 
 export async function loadCustomStickers(): Promise<CustomSticker[]> {

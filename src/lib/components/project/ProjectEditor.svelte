@@ -1,7 +1,10 @@
 <script lang="ts">
   import {
+    ArrowDown,
+    ArrowUp,
     BrainCircuit,
     CircleHelp,
+    Copy,
     Download,
     Eraser,
     Film,
@@ -13,7 +16,9 @@
     Redo2,
     Scissors,
     Settings,
+    Smile,
     Trash2,
+    Type,
     Undo2,
     Upload,
     Volume2,
@@ -24,44 +29,76 @@
   import { save } from "@tauri-apps/plugin-dialog";
   import { get_static_url, invoke, listen, log, set_title, TAURI_ENV } from "../../invoker";
   import {
+    clamp,
+    ELEMENT_SPACE,
+    newSticker,
+    newText,
+    styleOf,
+    TEXT_STYLES,
+    type CoverElement,
+    type TextStyle,
+  } from "../../cover-elements";
+  import {
     generateEventId,
     type ExportStarted,
     type MaterialPeaks,
+    type OverlayImage,
+    type OverlayItem,
     type ProjectItem,
     type ProjectTimeline,
     type SubtitleStyle,
     type VideoItem,
   } from "../../interface";
   import {
+    addOverlay,
     addSubtitle,
+    canShiftOverlay,
     clipAt,
+    duplicateOverlay,
+    editOverlay,
+    findOverlay,
     insertClips,
     mergeRemoteTimeline,
     parseSrt,
     parseTimeline,
     placeClips,
+    placeOverlays,
     projectCues,
     removeClip,
+    removeOverlay,
     removeSubtitle,
     setClipSubtitles,
+    settleOverlays,
+    shiftOverlay,
     splitClip,
+    splitOverlay,
     timelineDuration,
     updateSubtitleText,
     visibleSubtitles,
+    MIN_OVERLAY_DURATION,
     MIN_SUBTITLE_DURATION,
     moveSubtitle,
+    type OverlayContent,
+    type OverlayTarget,
   } from "../../project-timeline";
   import { ProjectPlayer, type PlayerSegment } from "../../project-player";
   import { buildSubtitleAss, loadSubtitleStyle } from "../../subtitle-ass";
   import { createStateRefresh, watchStateChanges } from "../../state-refresh";
   import { announceTask, openTaskCenter, settleTask, wasCancelled } from "../../stores/tasks";
   import AssSubtitlePreview from "../AssSubtitlePreview.svelte";
+  import { stickerRefUrl } from "../cover/custom-stickers";
+  import ElementToolbar from "../cover/ElementToolbar.svelte";
+  import { loadSticker, STICKER_GROUPS } from "../cover/render";
+  import StickerPanel from "../cover/StickerPanel.svelte";
+  import TextPanel from "../cover/TextPanel.svelte";
   import InspectorPanel from "../InspectorPanel.svelte";
   import ShortcutHelpModal from "../ShortcutHelpModal.svelte";
   import SubtitleStyleEditor from "../SubtitleStyleEditor.svelte";
   import TaskCenterButton from "../TaskCenterButton.svelte";
   import TitleBar from "../TitleBar.svelte";
   import MaterialBin, { type BinMaterial } from "./MaterialBin.svelte";
+  import { renderOverlayImages, StickerLoadError } from "./overlay-render";
+  import OverlayStage, { type OverlayChanges } from "./OverlayStage.svelte";
   import ProjectTimelineView, { type MaterialInfo } from "./ProjectTimeline.svelte";
   import "./project-editor.css";
 
@@ -73,6 +110,17 @@
 
   const HISTORY_LIMIT = 100;
   const SAVE_DELAY_MS = 800;
+  /** How long a text or sticker lasts when added. */
+  const OVERLAY_DURATION = 3;
+  /** A run of overlay changes, like dragging a color, closer than this is one undo step. */
+  const OVERLAY_EDIT_DELAY_MS = 400;
+  /** The middle of the picture, where texts and stickers are added. */
+  const MIDDLE = { x: ELEMENT_SPACE.width / 2, y: ELEMENT_SPACE.height / 2 };
+  const PANELS = [
+    { id: "materials", label: "素材", icon: Film },
+    { id: "text", label: "文字", icon: Type },
+    { id: "sticker", label: "贴纸", icon: Smile },
+  ] as const;
 
   let project: ProjectItem | null = $state(null);
   let loadError = $state("");
@@ -93,6 +141,22 @@
   let muted = $state(false);
   let selectedClipId: string | null = $state(null);
   let selectedSubtitleId: string | null = $state(null);
+  let selectedOverlayId: string | null = $state(null);
+  let editingOverlayId: string | null = $state(null);
+  let editSelectAll = $state(false);
+  // What the edited text reads now, applied when editing ends.
+  let editContent = "";
+  // The timeline before a run of overlay changes still open as one undo step.
+  let overlayEditBefore: ProjectTimeline | null = null;
+  let overlayEditTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastStyle: TextStyle = styleOf(TEXT_STYLES[0]);
+  let lastFont = "";
+  let leftPanel: "materials" | "text" | "sticker" = $state("materials");
+  let stickerGroup = $state(STICKER_GROUPS[0].name);
+  /** URL of each sticker reference used. */
+  let stickerUrls: Map<string, string> = $state.raw(new Map());
+  /** Width over height of the materials, as their videos report. */
+  let aspects: Map<number, number> = $state.raw(new Map());
   let showStyleEditor = $state(false);
   let showShortcutHelp = $state(false);
   let showAiModal = $state(false);
@@ -128,6 +192,10 @@
     (timeline.subtitle_style as SubtitleStyle | null) ?? loadSubtitleStyle(roomId),
   );
   let subtitleAss = $derived(buildSubtitleAss(projectCues(timeline), subtitleStyle));
+  let overlays = $derived(placeOverlays(timeline));
+  let selectedOverlay = $derived(findOverlay(timeline, selectedOverlayId));
+  let selectedPlaced = $derived(overlays.find((entry) => entry.item.id === selectedOverlayId) ?? null);
+  let materialUrls = $derived(new Map([...materials].map(([id, info]) => [id, info.url])));
   let visibleDanmuCount = $derived(
     placed.reduce((total, item) => {
       const times = danmuCounts.get(item.clip.material_id) ?? [];
@@ -186,7 +254,8 @@
     if (!base && view.timeline === syncedTimeline) return;
     const from = base ?? parseTimeline(syncedTimeline);
     syncedTimeline = view.timeline;
-    const merged = mergeRemoteTimeline(timeline, from, parseTimeline(view.timeline));
+    // Clips that left can leave overlays running on into each other.
+    const merged = settleOverlays(mergeRemoteTimeline(timeline, from, parseTimeline(view.timeline)));
     if (merged !== timeline) timeline = merged;
   }
 
@@ -277,12 +346,15 @@
     // (closing does not blur it) and wait until everything is saved.
     unlistenClose = await current.onCloseRequested(async () => {
       endEdit();
+      finishEditing();
+      settleOverlayEdit();
       await saveAll();
     });
   });
 
   onDestroy(() => {
     cancelAnimationFrame(frame);
+    if (overlayEditTimer) clearTimeout(overlayEditTimer);
     stopRange?.();
     player?.dispose();
     unlistenClose?.();
@@ -357,6 +429,10 @@
 
   /** Apply an edit as one undo step. */
   function commit(next: ProjectTimeline, before: ProjectTimeline = timeline) {
+    // A run of overlay changes still open is a step of its own before this.
+    if (overlayEditBefore) settleOverlayEdit();
+    // Moving or trimming clips can bring overlays on a track together.
+    next = settleOverlays(next);
     if (next === before) {
       timeline = before;
       return;
@@ -369,6 +445,8 @@
   }
 
   function undo() {
+    finishEditing();
+    settleOverlayEdit();
     const previous = undoStack[undoStack.length - 1];
     if (!previous) return;
     redoStack = [...redoStack, timeline];
@@ -379,6 +457,8 @@
   }
 
   function redo() {
+    finishEditing();
+    settleOverlayEdit();
     const next = redoStack[redoStack.length - 1];
     if (!next) return;
     undoStack = [...undoStack, timeline];
@@ -444,7 +524,16 @@
     selectedClipId = added?.id ?? null;
   }
 
+  /** Split the selected overlay at the playhead, or else the clip there. */
   function splitAtPlayhead() {
+    if (selectedPlaced && time > selectedPlaced.start && time < selectedPlaced.end) {
+      const result = splitOverlay(timeline, selectedPlaced.item.id, time);
+      if (result.id) {
+        commit(result.timeline);
+        selectOverlay(result.id);
+      }
+      return;
+    }
     const result = splitClip(timeline, time);
     if (!result.clipId) return;
     commit(result.timeline);
@@ -452,7 +541,9 @@
   }
 
   function deleteSelection() {
-    if (selectedSubtitleId) {
+    if (selectedOverlayId) {
+      deleteOverlay(selectedOverlayId);
+    } else if (selectedSubtitleId) {
       commit(removeSubtitle(timeline, selectedSubtitleId));
       selectedSubtitleId = null;
     } else if (selectedClipId) {
@@ -474,6 +565,268 @@
       alert("保存切片信息失败：" + error);
     }
   }
+
+  // ---- Overlays ------------------------------------------------------------
+
+  function selectOverlay(id: string | null) {
+    if (editingOverlayId && editingOverlayId !== id) finishEditing();
+    selectedOverlayId = id;
+    if (id) {
+      selectedClipId = null;
+      selectedSubtitleId = null;
+    }
+  }
+
+  /** Close a run of overlay changes as one undo step. */
+  function settleOverlayEdit() {
+    if (overlayEditTimer) clearTimeout(overlayEditTimer);
+    overlayEditTimer = null;
+    const before = overlayEditBefore;
+    overlayEditBefore = null;
+    if (before) commit(timeline, before);
+  }
+
+  /** Change an overlay; changes in quick succession make one undo step. */
+  function updateOverlay(update: (item: OverlayItem) => OverlayItem, id = selectedOverlayId) {
+    if (!id) return;
+    overlayEditBefore ??= timeline;
+    timeline = editOverlay(timeline, id, update);
+    scheduleSave();
+    if (overlayEditTimer) clearTimeout(overlayEditTimer);
+    overlayEditTimer = setTimeout(settleOverlayEdit, OVERLAY_EDIT_DELAY_MS);
+  }
+
+  const withElement = (changes: OverlayChanges) => (item: OverlayItem) =>
+    ({ ...item, element: { ...item.element, ...changes } }) as OverlayItem;
+
+  /** Drags on the preview: their changes make one undo step. */
+  function beginOverlayDrag() {
+    if (overlayEditTimer) settleOverlayEdit();
+    overlayEditBefore = timeline;
+  }
+
+  function dragOverlay(id: string, changes: OverlayChanges) {
+    timeline = editOverlay(timeline, id, withElement(changes));
+    scheduleSave();
+  }
+
+  function deleteOverlay(id: string) {
+    if (editingOverlayId === id) editingOverlayId = null;
+    commit(removeOverlay(timeline, id));
+    if (selectedOverlayId === id) selectedOverlayId = null;
+  }
+
+  /** Where an overlay added now starts: at the playhead, early enough near the end to last its length. */
+  function overlayStart(length = OVERLAY_DURATION) {
+    return Math.max(0, Math.min(time, duration - Math.min(length, duration)));
+  }
+
+  function canAddOverlay() {
+    if (duration >= MIN_OVERLAY_DURATION) return true;
+    alert("请先在时间轴上添加素材，文字、贴纸和画中画叠加在素材的画面上");
+    return false;
+  }
+
+  /** Texts and stickers shown at `at`, which a new one is placed apart from. */
+  function elementsAt(at: number): CoverElement[] {
+    return overlays
+      .filter((entry) => at >= entry.start && at < entry.end && entry.item.kind !== "video")
+      .map((entry) => entry.item.element as CoverElement);
+  }
+
+  /** Add an overlay as one undo step and select it. */
+  function insertOverlay(content: OverlayContent, start: number, length: number, target?: OverlayTarget) {
+    const result = addOverlay(timeline, content, start, length, target);
+    if (!result.id) return null;
+    commit(result.timeline);
+    selectOverlay(result.id);
+    return result.id;
+  }
+
+  function addText(style: TextStyle = lastStyle, font = lastFont) {
+    finishEditing();
+    if (!canAddOverlay()) return;
+    const start = overlayStart();
+    const element = newText(elementsAt(start), MIDDLE, style, font);
+    const result = addOverlay(timeline, { kind: "text", element }, start, OVERLAY_DURATION);
+    if (!result.id) return;
+    // Added and first typed as one undo step, as on a cover.
+    if (overlayEditTimer) settleOverlayEdit();
+    overlayEditBefore = timeline;
+    timeline = result.timeline;
+    scheduleSave();
+    startEditing(result.id, true);
+  }
+
+  async function addSticker(sticker: { src: string; ref: string }, size?: number) {
+    if (!canAddOverlay()) return;
+    let image: HTMLImageElement;
+    try {
+      image = await loadSticker(sticker.src);
+    } catch {
+      alert("贴纸加载失败，可能已被删除");
+      return;
+    }
+    stickerUrls = new Map(stickerUrls).set(sticker.ref, sticker.src);
+    const start = overlayStart();
+    const element = newSticker(elementsAt(start), MIDDLE, sticker.ref, image.naturalWidth / image.naturalHeight || 1, size);
+    insertOverlay({ kind: "sticker", element }, start, OVERLAY_DURATION);
+  }
+
+  function setAspect(materialId: number, aspect: number) {
+    if (Number.isFinite(aspect) && aspect > 0 && aspects.get(materialId) !== aspect) {
+      aspects = new Map(aspects).set(materialId, aspect);
+    }
+  }
+
+  /** Width over height of a material, read from its video. */
+  function probeAspect(materialId: number, url: string): Promise<number> {
+    const known = aspects.get(materialId);
+    if (known) return Promise.resolve(known);
+    return new Promise((resolve) => {
+      const video = document.createElement("video");
+      const done = (aspect: number) => {
+        clearTimeout(timer);
+        video.removeAttribute("src");
+        video.load();
+        resolve(aspect);
+      };
+      const timer = setTimeout(() => done(16 / 9), 5000);
+      video.preload = "metadata";
+      video.muted = true;
+      video.onloadedmetadata = () => {
+        const aspect = video.videoWidth && video.videoHeight ? video.videoWidth / video.videoHeight : 16 / 9;
+        setAspect(materialId, aspect);
+        done(aspect);
+      };
+      video.onerror = () => done(16 / 9);
+      video.src = url;
+    });
+  }
+
+  /** Show a material over the main track from `start`, as a picture in the corner. */
+  async function addVideoOverlay(materialId: number, start?: number, target?: OverlayTarget) {
+    let info = materials.get(materialId);
+    if (!info || !canAddOverlay()) return;
+    if (!info.duration) {
+      const video = await invoke<VideoItem>("get_video", { id: materialId });
+      info = { ...info, duration: video.duration || video.length };
+      materials = new Map(materials).set(materialId, info);
+    }
+    const aspect = await probeAspect(materialId, info.url);
+    const width = Math.round(ELEMENT_SPACE.width / 3);
+    const height = width / aspect;
+    const margin = 48;
+    const element = {
+      x: Math.round(ELEMENT_SPACE.width - margin - width / 2),
+      y: Math.round(ELEMENT_SPACE.height - margin - height / 2),
+      width,
+      rotation: 0,
+    };
+    // As it is after the waits, which other edits may have changed.
+    const from = start ?? overlayStart(info.duration);
+    insertOverlay({ kind: "video", material_id: materialId, source_start: 0, volume: 1, element }, from, info.duration, target);
+  }
+
+  /** Fit the selected video overlay to the whole picture. */
+  function fillFrame() {
+    if (selectedOverlay?.kind !== "video") return;
+    const aspect = aspects.get(selectedOverlay.material_id) ?? 16 / 9;
+    const width = Math.round(Math.min(ELEMENT_SPACE.width, ELEMENT_SPACE.height * aspect));
+    updateOverlay(withElement({ x: ELEMENT_SPACE.width / 2, y: ELEMENT_SPACE.height / 2, width, rotation: 0 }));
+    settleOverlayEdit();
+  }
+
+  function pickStyle(style: TextStyle) {
+    lastStyle = styleOf(style);
+    if (selectedOverlay?.kind !== "text") return addText(style);
+    updateOverlay(withElement(styleOf(style)));
+    settleOverlayEdit();
+  }
+
+  function pickFont(family: string) {
+    lastFont = family;
+    if (selectedOverlay?.kind !== "text") return addText(lastStyle, family);
+    updateOverlay(withElement({ font: family }));
+    settleOverlayEdit();
+  }
+
+  function duplicateSelectedOverlay() {
+    if (!selectedOverlayId) return;
+    // Offset, as on a cover, so the copy shows.
+    const offset = (item: OverlayItem) =>
+      withElement({
+        x: clamp(item.element.x + 40, 0, ELEMENT_SPACE.width),
+        y: clamp(item.element.y + 40, 0, ELEMENT_SPACE.height),
+      })(item);
+    const result = duplicateOverlay(timeline, selectedOverlayId, offset);
+    if (!result.id) return;
+    commit(result.timeline);
+    selectOverlay(result.id);
+  }
+
+  function nudgeOverlay(dx: number, dy: number) {
+    const item = selectedOverlay;
+    if (!item) return;
+    updateOverlay(
+      withElement({
+        x: clamp(item.element.x + dx, 0, ELEMENT_SPACE.width),
+        y: clamp(item.element.y + dy, 0, ELEMENT_SPACE.height),
+      }),
+    );
+  }
+
+  function startEditing(id: string, selectAll = false) {
+    if (editingOverlayId !== id) finishEditing();
+    const item = findOverlay(timeline, id);
+    if (item?.kind !== "text") return;
+    player?.pause();
+    if (overlayEditTimer) settleOverlayEdit();
+    overlayEditBefore ??= timeline;
+    selectedOverlayId = id;
+    selectedClipId = null;
+    selectedSubtitleId = null;
+    editContent = item.element.content;
+    editSelectAll = selectAll;
+    editingOverlayId = id;
+    // The playhead within it, so it shows.
+    const placed = placeOverlays(timeline).find((entry) => entry.item.id === id);
+    if (placed && (time < placed.start || time >= placed.end)) seek(placed.start);
+  }
+
+  /** Apply what was typed, removing a text left empty, as one undo step with its start. */
+  function finishEditing() {
+    const id = editingOverlayId;
+    if (id === null) return;
+    editingOverlayId = null;
+    if (overlayEditTimer) clearTimeout(overlayEditTimer);
+    overlayEditTimer = null;
+    const before = overlayEditBefore ?? timeline;
+    overlayEditBefore = null;
+    const content = editContent;
+    const next = content.trim()
+      ? editOverlay(timeline, id, withElement({ content }))
+      : removeOverlay(timeline, id);
+    if (!content.trim() && selectedOverlayId === id) selectedOverlayId = null;
+    commit(next, before);
+  }
+
+  // Resolve the URLs of the stickers used, once each.
+  $effect(() => {
+    const refs = new Set<string>();
+    for (const track of timeline.tracks) {
+      for (const item of track.items) if (item.kind === "sticker") refs.add(item.element.src);
+    }
+    const missing = [...refs].filter((ref) => !untrack(() => stickerUrls.has(ref)));
+    if (missing.length === 0) return;
+    void Promise.all(missing.map(async (ref) => [ref, await stickerRefUrl(ref).catch(() => "")] as const)).then(
+      (resolved) => {
+        const next = new Map(stickerUrls);
+        for (const [ref, url] of resolved) next.set(ref, url);
+        stickerUrls = next;
+      },
+    );
+  });
 
   // ---- Playback ------------------------------------------------------------
 
@@ -521,6 +874,7 @@
   function selectSubtitle(id: string, seekTo = false) {
     selectedSubtitleId = id;
     selectedClipId = null;
+    selectedOverlayId = null;
     const item = subtitles.find((entry) => entry.subtitle.id === id);
     if (seekTo && item) seek(item.start);
     tick().then(() =>
@@ -692,8 +1046,28 @@
     }
     // The export renders the saved danmaku setting, and the subtitles below
     // must include any the backend has added meanwhile.
+    finishEditing();
+    settleOverlayEdit();
     await saveAll();
     await projectRefresh.run();
+    // Texts and stickers are burned as drawn here, from the timeline exported.
+    const exported = timeline;
+    let overlayImages: OverlayImage[];
+    try {
+      overlayImages = await renderOverlayImages(exported, stickerRefUrl);
+    } catch (error) {
+      if (error instanceof StickerLoadError) {
+        selectOverlay(error.overlayId);
+        const placed = overlays.find((entry) => entry.item.id === error.overlayId);
+        if (placed) seek(placed.start);
+        alert("有贴纸没有加载出来，已选中它，请删除后再导出");
+      } else {
+        alert("导出失败：" + error);
+      }
+      return;
+    }
+    const exportedSubtitles = visibleSubtitles(exported).length > 0;
+    const exportedAss = buildSubtitleAss(projectCues(exported), subtitleStyle);
     const eventId = generateEventId();
     exporting = eventId;
     let unlisten: (() => void) | null = null;
@@ -723,8 +1097,9 @@
       started = await invoke<ExportStarted>("export_project", {
         eventId,
         id: projectId,
-        timeline,
-        subtitleAss: subtitles.length > 0 ? subtitleAss : null,
+        timeline: exported,
+        subtitleAss: exportedSubtitles ? exportedAss : null,
+        overlays: overlayImages,
         target,
         base: parseTimeline(syncedTimeline),
       });
@@ -778,10 +1153,12 @@
     }
     if (showStyleEditor || showShortcutHelp || showAiModal) return;
     const target = event.target instanceof Element ? event.target : null;
-    if (
-      target?.closest("input, textarea, select, [contenteditable='true'], [data-hotkey-block]") ||
-      event.altKey
-    ) {
+    if (target?.closest("input, textarea, select, [contenteditable], [data-hotkey-block]") || event.altKey) {
+      return;
+    }
+    if (event.key === "Escape" && selectedOverlayId) {
+      event.preventDefault();
+      selectOverlay(null);
       return;
     }
     if (event.repeat && !event.code.startsWith("Arrow")) return;
@@ -791,6 +1168,7 @@
         KeyZ: () => (event.shiftKey ? redo() : undo()),
         KeyY: redo,
         KeyB: splitAtPlayhead,
+        KeyD: duplicateSelectedOverlay,
         KeyS: () => void saveAll(),
         Digit3: () => setSubtitleBoundary("start"),
         Digit4: () => setSubtitleBoundary("end"),
@@ -809,6 +1187,9 @@
       ArrowRight: () => seek(time + step),
       Delete: deleteSelection,
       Backspace: deleteSelection,
+      Enter: () => {
+        if (selectedOverlay?.kind === "text") startEditing(selectedOverlay.id, true);
+      },
       KeyZ: () => selectAdjacentSubtitle(-1),
       KeyX: () => selectAdjacentSubtitle(1),
       KeyS: () => playSubtitlePart("whole"),
@@ -912,29 +1293,189 @@
 
   <div class="flex min-h-0 flex-1 flex-col" class:hidden={!!loadError}>
     <div class="relative flex min-h-0 flex-1 overflow-hidden">
-      <MaterialBin
-        materials={binMaterials}
-        {roomId}
-        onAdd={(material) => void addMaterial(material.id)}
-        onPreview={(material) => void invoke("open_clip", { videoId: material.id })}
-      />
+      <nav class="rail" aria-label="添加">
+        {#each PANELS as item (item.id)}
+          <button
+            type="button"
+            class="rail-button"
+            class:active={leftPanel === item.id}
+            aria-pressed={leftPanel === item.id}
+            onclick={() => (leftPanel = item.id)}
+          >
+            <item.icon class="h-[18px] w-[18px]" />
+            {item.label}
+          </button>
+        {/each}
+      </nav>
 
-      <div class="relative min-w-0 flex-1 bg-black">
-        <div bind:this={previewContainer} class="absolute inset-0 flex items-center justify-center">
-          <div class="relative aspect-video bg-black" style:width="{previewFrameWidth}px">
-            <!-- svelte-ignore a11y_media_has_caption -->
-            <video bind:this={videoA} class="preview-video" class:visible={activeVideo === 0} onclick={togglePlay}></video>
-            <!-- svelte-ignore a11y_media_has_caption -->
-            <video bind:this={videoB} class="preview-video" class:visible={activeVideo === 1} onclick={togglePlay}></video>
-            {#if player && subtitles.length > 0}
-              <AssSubtitlePreview assContent={subtitleAss} video={player} fontName={subtitleStyle.fontName} />
-            {/if}
-            {#if timeline.clips.length === 0 && project}
-              <div class="empty-preview">
-                <Film class="h-8 w-8 text-gray-600" />
-                <span>从左侧素材库添加素材开始剪辑</span>
-              </div>
-            {/if}
+      <!-- All stay mounted so a sticker import keeps running while another is shown. -->
+      <div class="left-panel" class:hidden={leftPanel !== "materials"}>
+        <MaterialBin
+          materials={binMaterials}
+          {roomId}
+          onAdd={(material) => void addMaterial(material.id)}
+          onOverlay={(material) => void addVideoOverlay(material.id)}
+          onPreview={(material) => void invoke("open_clip", { videoId: material.id })}
+        />
+      </div>
+      <div class="left-panel element-panel custom-scrollbar-light" class:hidden={leftPanel !== "text"}>
+        <TextPanel
+          selected={selectedOverlay?.kind === "text" ? selectedOverlay.element : null}
+          onAdd={() => addText()}
+          onStyle={pickStyle}
+          onFont={pickFont}
+        />
+      </div>
+      <div class="left-panel element-panel custom-scrollbar-light" class:hidden={leftPanel !== "sticker"}>
+        <StickerPanel active={leftPanel === "sticker"} bind:group={stickerGroup} onPick={addSticker} />
+      </div>
+
+      <div class="flex min-w-0 flex-1 flex-col">
+        <div class="overlay-toolbar">
+          {#if selectedOverlay?.kind === "text" || selectedOverlay?.kind === "sticker"}
+            <ElementToolbar
+              text={selectedOverlay.kind === "text" ? selectedOverlay.element : null}
+              sticker={selectedOverlay.kind === "sticker" ? selectedOverlay.element : null}
+              onUpdate={(changes) => updateOverlay(withElement(changes))}
+              onFont={pickFont}
+            />
+          {:else if selectedOverlay?.kind === "video"}
+            {@const video = selectedOverlay}
+            <button
+              type="button"
+              class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost"
+              title={video.volume > 0 ? "静音" : "取消静音"}
+              aria-label={video.volume > 0 ? "静音" : "取消静音"}
+              onclick={() => {
+                updateOverlay((item) => ({ ...item, volume: video.volume > 0 ? 0 : 1 }) as OverlayItem);
+                settleOverlayEdit();
+              }}
+            >
+              {#if video.volume > 0}
+                <Volume2 class="h-3.5 w-3.5" />
+              {:else}
+                <VolumeX class="h-3.5 w-3.5" />
+              {/if}
+            </button>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={video.volume}
+              class="w-28"
+              aria-label="画中画音量"
+              data-hotkey-block
+              oninput={(event) => {
+                const volume = Number(event.currentTarget.value);
+                updateOverlay((item) => ({ ...item, volume }) as OverlayItem);
+              }}
+            />
+            <span class="w-9 text-right text-[11px] tabular-nums text-fg-muted">{Math.round(video.volume * 100)}%</span>
+            <span class="toolbar-separator"></span>
+            <button type="button" class="ui-btn ui-btn-sm ui-btn-ghost" onclick={fillFrame}>铺满画面</button>
+            <span class="truncate text-[11px] text-fg-muted">{materials.get(video.material_id)?.name ?? "素材已删除"}</span>
+          {:else}
+            <span class="truncate text-[12px] text-fg-muted">
+              从左侧添加文字、贴纸，或把素材拖到时间轴的叠加轨道上叠加画面；点击画面中的内容可移动、旋转、缩放，双击文字可直接修改。
+            </span>
+          {/if}
+
+          {#if selectedOverlay}
+            <div class="ml-auto flex shrink-0 items-center gap-1">
+              {#if selectedPlaced}
+                <span class="mr-1 text-[11px] tabular-nums text-fg-muted">
+                  {formatTime(selectedPlaced.start)} – {formatTime(selectedPlaced.end)}
+                </span>
+              {/if}
+              <button
+                type="button"
+                class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost"
+                title="上移一层"
+                aria-label="上移一层"
+                disabled={!canShiftOverlay(timeline, selectedOverlay.id, 1)}
+                onclick={() => commit(shiftOverlay(timeline, selectedOverlay.id, 1))}
+              >
+                <ArrowUp class="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost"
+                title="下移一层"
+                aria-label="下移一层"
+                disabled={!canShiftOverlay(timeline, selectedOverlay.id, -1)}
+                onclick={() => commit(shiftOverlay(timeline, selectedOverlay.id, -1))}
+              >
+                <ArrowDown class="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost"
+                title="复制 (⌘/Ctrl+D)"
+                aria-label="复制"
+                onclick={duplicateSelectedOverlay}
+              >
+                <Copy class="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost hover:text-danger-fg"
+                title="删除 (Delete)"
+                aria-label="删除"
+                onclick={() => deleteOverlay(selectedOverlay.id)}
+              >
+                <Trash2 class="h-3.5 w-3.5" />
+              </button>
+            </div>
+          {/if}
+        </div>
+
+        <div class="relative min-h-0 flex-1 bg-black">
+          <div bind:this={previewContainer} class="absolute inset-0 flex items-center justify-center">
+            <div class="relative aspect-video bg-black" style:width="{previewFrameWidth}px">
+              <!-- svelte-ignore a11y_media_has_caption -->
+              <video bind:this={videoA} class="preview-video" class:visible={activeVideo === 0}></video>
+              <!-- svelte-ignore a11y_media_has_caption -->
+              <video bind:this={videoB} class="preview-video" class:visible={activeVideo === 1}></video>
+              <OverlayStage
+                placed={overlays}
+                trackCount={timeline.tracks.length}
+                {time}
+                {playing}
+                width={previewFrameWidth}
+                selectedId={selectedOverlayId}
+                editingId={editingOverlayId}
+                {editSelectAll}
+                {materialUrls}
+                {stickerUrls}
+                {aspects}
+                {volume}
+                {muted}
+                onSelect={selectOverlay}
+                onBackground={togglePlay}
+                onDragStart={beginOverlayDrag}
+                onChange={dragOverlay}
+                onDragEnd={settleOverlayEdit}
+                onDelete={deleteOverlay}
+                onStartEditing={(id) => startEditing(id, true)}
+                onEditInput={(content) => (editContent = content)}
+                onEditDone={() => finishEditing()}
+                onNudge={nudgeOverlay}
+                onAspect={setAspect}
+              >
+                {#snippet above()}
+                  {#if player && subtitles.length > 0}
+                    <AssSubtitlePreview assContent={subtitleAss} video={player} fontName={subtitleStyle.fontName} />
+                  {/if}
+                {/snippet}
+              </OverlayStage>
+              {#if timeline.clips.length === 0 && project}
+                <div class="empty-preview">
+                  <Film class="h-8 w-8 text-gray-600" />
+                  <span>从左侧素材库添加素材开始剪辑</span>
+                </div>
+              {/if}
+            </div>
           </div>
         </div>
       </div>
@@ -1038,11 +1579,21 @@
 
     <div class="transport">
       <div class="flex items-center gap-1">
-        <button class="icon-button" title="在播放头处分割 (⌘B)" disabled={!clipAt(timeline, time)} onclick={splitAtPlayhead}>
+        <button
+          class="icon-button"
+          title="在播放头处分割选中的叠加内容或片段 (⌘B)"
+          disabled={!clipAt(timeline, time)}
+          onclick={splitAtPlayhead}
+        >
           <Scissors class="h-4 w-4" />
           分割
         </button>
-        <button class="icon-button" title="删除选中 (Delete)" disabled={!selectedClipId && !selectedSubtitleId} onclick={deleteSelection}>
+        <button
+          class="icon-button"
+          title="删除选中 (Delete)"
+          disabled={!selectedClipId && !selectedSubtitleId && !selectedOverlayId}
+          onclick={deleteSelection}
+        >
           <Trash2 class="h-4 w-4" />
           删除
         </button>
@@ -1083,16 +1634,23 @@
       {zoom}
       {selectedClipId}
       {selectedSubtitleId}
+      {selectedOverlayId}
+      {stickerUrls}
       onSeek={seek}
       onScrub={(active) => (scrubbing = active)}
       onPreview={(next) => (timeline = next)}
       onCommit={(next, before) => commit(next, before)}
-      onSelectClip={(id) => (selectedClipId = id)}
+      onSelectClip={(id) => {
+        selectedClipId = id;
+        if (id) selectOverlay(null);
+      }}
       onSelectSubtitle={(id) => {
         if (id) selectSubtitle(id);
         else selectedSubtitleId = null;
       }}
+      onSelectOverlay={selectOverlay}
       onDropMaterial={(id, index) => void addMaterial(id, index)}
+      onDropOverlay={(id, at, target) => void addVideoOverlay(id, at, target)}
       onZoom={(value) => (zoom = value)}
     />
   </div>
@@ -1201,7 +1759,6 @@
     height: 100%;
     object-fit: contain;
     visibility: hidden;
-    cursor: pointer;
   }
 
   .preview-video.visible {
@@ -1211,6 +1768,8 @@
   .empty-preview {
     position: absolute;
     inset: 0;
+    z-index: 100;
+    pointer-events: none;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -1218,6 +1777,78 @@
     gap: 10px;
     color: #6b7280;
     font-size: 13px;
+  }
+
+  .rail {
+    display: flex;
+    width: 56px;
+    flex-shrink: 0;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    border-right: 1px solid #222a35;
+    background: #11151c;
+    padding: 10px 0;
+  }
+
+  .rail-button {
+    display: flex;
+    width: 44px;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    border-radius: 8px;
+    padding: 7px 0;
+    color: #8c98aa;
+    font-size: 11px;
+    transition: background-color 150ms ease, color 150ms ease;
+  }
+
+  .rail-button:hover {
+    background: rgb(255 255 255 / 5%);
+    color: #dce5f3;
+  }
+
+  .rail-button.active {
+    background: rgb(10 132 255 / 18%);
+    color: #55b9ff;
+  }
+
+  .left-panel {
+    display: flex;
+    flex-shrink: 0;
+  }
+
+  .left-panel.hidden {
+    display: none;
+  }
+
+  .element-panel {
+    width: 252px;
+    flex-direction: column;
+    overflow-y: auto;
+    border-right: 1px solid #222a35;
+    background: #171c25;
+    padding: 12px;
+  }
+
+  .overlay-toolbar {
+    display: flex;
+    min-height: 42px;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    border-bottom: 1px solid #222a35;
+    background: #171c25;
+    padding: 6px 10px;
+  }
+
+  .toolbar-separator {
+    margin: 0 4px;
+    height: 16px;
+    width: 1px;
+    background: rgb(var(--c-line-strong));
   }
 
   .transport {

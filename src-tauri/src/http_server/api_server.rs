@@ -32,7 +32,7 @@ use crate::{
             create_project, delete_project, export_project, generate_materials, get_material_danmu,
             get_material_peaks, get_material_usage, get_project, get_projects,
             update_project_danmu, update_project_info, update_project_timeline, ExportStarted,
-            GeneratedMaterials, ProjectBrief, ProjectView,
+            GeneratedMaterials, OverlayImage, ProjectBrief, ProjectView,
         },
         recorder::{
             add_recorder, delete_archive, delete_archives, export_danmu, fetch_hls,
@@ -1121,6 +1121,8 @@ struct ExportProjectRequest {
     #[serde(default)]
     subtitle_ass: Option<String>,
     #[serde(default)]
+    overlays: Option<Vec<OverlayImage>>,
+    #[serde(default)]
     target: Option<String>,
     #[serde(default)]
     base: Option<Timeline>,
@@ -1136,6 +1138,7 @@ async fn handler_export_project(
         param.id,
         param.timeline,
         param.subtitle_ass,
+        param.overlays,
         param.target,
         param.base,
     )
@@ -1281,6 +1284,8 @@ struct PostUploadRequest {
     id: i64,
     #[serde(default)]
     subtitle_ass: Option<String>,
+    #[serde(default)]
+    overlays: Option<Vec<OverlayImage>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1302,7 +1307,14 @@ async fn handler_post_upload(
     state: axum::extract::State<State>,
     Json(param): Json<PostUploadRequest>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
-    post_upload(state.0, param.event_id, param.id, param.subtitle_ass).await?;
+    post_upload(
+        state.0,
+        param.event_id,
+        param.id,
+        param.subtitle_ass,
+        param.overlays,
+    )
+    .await?;
     Ok(Json(ApiResponse::success(())))
 }
 

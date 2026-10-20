@@ -1,5 +1,6 @@
 //! Commands for materials (素材) and projects (切片).
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -7,7 +8,7 @@ use std::sync::Arc;
 use base64::Engine;
 use chrono::{Local, Utc};
 use recorder::danmu::DanmuEntry;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::oneshot;
 
@@ -17,7 +18,9 @@ use crate::database::task::TaskRow;
 use crate::database::upload::UploadRow;
 use crate::database::video::VideoRow;
 use crate::database::{Database, DatabaseError};
-use crate::ffmpeg::project::{render_project, ProjectRender, RenderClip};
+use crate::ffmpeg::project::{
+    render_project, OverlayLayer, ProjectRender, RenderClip, RenderOverlay, VideoLayer,
+};
 use crate::ffmpeg::runner::TempArtifact;
 use crate::handlers::subtitle_fonts::prepare_subtitle_font_directory;
 use crate::handlers::utils::get_disk_info_inner;
@@ -27,7 +30,7 @@ use crate::handlers::video::{
 };
 use crate::material::Peaks;
 use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
-use crate::project::{srt_cues, Timeline, TimelineClip};
+use crate::project::{srt_cues, OverlayContent, Timeline, TimelineClip};
 use crate::recorder_manager::ClipRangeParams;
 use crate::state::State;
 use crate::state_type;
@@ -71,6 +74,62 @@ pub struct ProjectBrief {
 pub struct GeneratedMaterials {
     pub materials: Vec<VideoRow>,
     pub project: Option<ProjectView>,
+}
+
+/// A text or sticker overlay as the editor drew it, to burn with an export.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OverlayImage {
+    /// The overlay's id.
+    pub id: String,
+    /// PNG data URL.
+    pub image: String,
+    /// Top left on the 1920×1080 picture.
+    pub x: f64,
+    pub y: f64,
+}
+
+/// Largest picture accepted for one overlay; a whole 1920×1080 frame is far less.
+const MAX_OVERLAY_IMAGE_BYTES: usize = 16 * 1024 * 1024;
+const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+
+/// An overlay's picture decoded, with its top left on the picture.
+struct DecodedOverlayImage {
+    png: Vec<u8>,
+    x: f64,
+    y: f64,
+}
+
+/// The picture of each overlay, by id.
+fn decode_overlay_images(
+    images: &[OverlayImage],
+) -> Result<HashMap<String, DecodedOverlayImage>, String> {
+    let mut decoded = HashMap::new();
+    for image in images {
+        let bytes = decode_data_url(&image.image)?;
+        if !bytes.starts_with(PNG_SIGNATURE) || bytes.len() > MAX_OVERLAY_IMAGE_BYTES {
+            return Err("文字或贴纸的画面无效".to_string());
+        }
+        if !(image.x.is_finite() && image.y.is_finite()) {
+            return Err("文字或贴纸的位置无效".to_string());
+        }
+        decoded.insert(
+            image.id.clone(),
+            DecodedOverlayImage {
+                png: bytes,
+                x: image.x,
+                y: image.y,
+            },
+        );
+    }
+    Ok(decoded)
+}
+
+/// Whether every visible text and sticker overlay has a picture to burn.
+fn has_overlay_images(timeline: &Timeline, images: &HashMap<String, DecodedOverlayImage>) -> bool {
+    timeline
+        .placed_overlays()
+        .iter()
+        .all(|placed| placed.overlay.video().is_some() || images.contains_key(&placed.overlay.id))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -682,6 +741,7 @@ pub(crate) async fn project_upload_video(
     event_id: &str,
     id: i64,
     subtitle_ass: Option<String>,
+    overlay_images: Vec<OverlayImage>,
     directory: &Path,
 ) -> Result<(PathBuf, Option<oneshot::Receiver<Result<(), String>>>), String> {
     let project = state.db.get_project(id).await?;
@@ -702,6 +762,7 @@ pub(crate) async fn project_upload_video(
         title: project.title.clone(),
         metadata: json!({ "project_id": project.id, "title": project.title }),
         subtitle_ass: subtitle_ass.filter(|_| timeline.has_visible_subtitles()),
+        overlay_images,
         timeline,
         materials: &materials,
         danmu_options: danmu_options(state).await,
@@ -743,6 +804,7 @@ pub(crate) async fn material_danmu_video(
         },
         materials: &materials,
         subtitle_ass: None,
+        overlay_images: Vec::new(),
         danmu_options: danmu_options(state).await,
     };
     upload_render(state, event_id, source, directory).await
@@ -862,6 +924,8 @@ struct ExportSource<'a> {
     timeline: Timeline,
     materials: &'a HashMap<i64, VideoRow>,
     subtitle_ass: Option<String>,
+    /// Pictures of the text and sticker overlays.
+    overlay_images: Vec<OverlayImage>,
     danmu_options: Danmu2AssOptions,
 }
 
@@ -871,6 +935,13 @@ impl ExportSource<'_> {
         let mut extra = self.subtitle_ass.clone().unwrap_or_default();
         if self.timeline.danmu {
             extra.push_str(&serde_json::to_string(&self.danmu_options).unwrap_or_default());
+        }
+        // The same overlays can look different, as with fonts installed since.
+        for image in &self.overlay_images {
+            extra.push_str(&format!(
+                "\0{}:{}:{}:{}",
+                image.id, image.x, image.y, image.image
+            ));
         }
         self.timeline.render_hash(&extra)
     }
@@ -887,6 +958,8 @@ struct ExportJob {
     files: HashMap<i64, PathBuf>,
     subtitle_ass: Option<String>,
     font_name: Option<String>,
+    /// The picture of each text and sticker overlay, by id.
+    overlay_images: HashMap<String, DecodedOverlayImage>,
     danmu_options: Danmu2AssOptions,
     cache: PathBuf,
     target: ExportTarget,
@@ -895,12 +968,14 @@ struct ExportJob {
 /// Export the timeline to `target`, a file the user picked, or without one to
 /// the cache for the web client to download.
 #[cfg_attr(feature = "gui", tauri::command)]
+#[allow(clippy::too_many_arguments)]
 pub async fn export_project(
     state: state_type!(),
     event_id: String,
     id: i64,
     timeline: Timeline,
     subtitle_ass: Option<String>,
+    overlays: Option<Vec<OverlayImage>>,
     target: Option<String>,
     base: Option<Timeline>,
 ) -> Result<ExportStarted, String> {
@@ -935,6 +1010,7 @@ pub async fn export_project(
         timeline,
         materials: &materials,
         subtitle_ass,
+        overlay_images: overlays.unwrap_or_default(),
         danmu_options: danmu_options(&state).await,
     };
     let (task, _) =
@@ -975,10 +1051,15 @@ async fn queue_export(
         timeline,
         materials,
         subtitle_ass,
+        overlay_images,
         danmu_options,
     } = source;
     let output = output_dir(state).await;
     let plain = plain_material(&timeline, materials).map(|material| output.join(&material.file));
+    let overlay_images = decode_overlay_images(&overlay_images)?;
+    if !has_overlay_images(&timeline, &overlay_images) {
+        return Err("切片有文字或贴纸，但没有提供它们的画面".to_string());
+    }
     let subtitle_ass = subtitle_ass.filter(|_| timeline.has_visible_subtitles());
     if let Some(ass) = &subtitle_ass {
         validate_ass_document(ass)?;
@@ -999,6 +1080,7 @@ async fn queue_export(
         timeline,
         subtitle_ass,
         font_name,
+        overlay_images,
         danmu_options,
         cache: PathBuf::from(&state.config.read().await.cache),
         target,
@@ -1096,31 +1178,86 @@ async fn export_project_inner(
     Ok(())
 }
 
+/// Whether the file has sound, and its frame rate.
+async fn probe_material(
+    probed: &mut HashMap<PathBuf, (bool, f64)>,
+    path: &Path,
+) -> Result<(bool, f64), String> {
+    if let Some(found) = probed.get(path) {
+        return Ok(*found);
+    }
+    let metadata = ffmpeg_utils::extract_video_metadata(path).await?;
+    let found = (!metadata.audio_codec.is_empty(), metadata.fps);
+    probed.insert(path.to_path_buf(), found);
+    Ok(found)
+}
+
 async fn render_timeline(
     reporter: &ProgressReporter,
     job: &ExportJob,
     output: &Path,
 ) -> Result<(), String> {
+    let file = |material_id: i64| {
+        job.files
+            .get(&material_id)
+            .ok_or_else(|| format!("素材 {material_id} 不存在"))
+    };
+    // Probed once per material, however many clips and overlays show it.
+    let mut probed = HashMap::new();
     let mut clips = Vec::with_capacity(job.timeline.clips.len());
     for clip in &job.timeline.clips {
-        let path = job
-            .files
-            .get(&clip.material_id)
-            .ok_or_else(|| format!("素材 {} 不存在", clip.material_id))?;
-        let metadata = ffmpeg_utils::extract_video_metadata(path).await?;
+        let (has_audio, fps) = probe_material(&mut probed, file(clip.material_id)?).await?;
         clips.push(RenderClip {
-            path: path.clone(),
+            path: file(clip.material_id)?.clone(),
             start: clip.start,
             duration: clip.duration(),
-            has_audio: !metadata.audio_codec.is_empty(),
-            fps: metadata.fps,
+            has_audio,
+            fps,
+        });
+    }
+
+    let mut overlays = Vec::new();
+    for placed in job.timeline.placed_overlays() {
+        let layer = match &placed.overlay.content {
+            OverlayContent::Video(video) => {
+                let (has_audio, _) = probe_material(&mut probed, file(video.material_id)?).await?;
+                OverlayLayer::Video(VideoLayer {
+                    path: file(video.material_id)?.clone(),
+                    source_start: video.source_start + placed.skip,
+                    has_audio,
+                    x: video.element.x,
+                    y: video.element.y,
+                    width: video.element.width,
+                    rotation: video.element.rotation,
+                    volume: video.volume,
+                })
+            }
+            OverlayContent::Text { .. } | OverlayContent::Sticker { .. } => {
+                let image = job
+                    .overlay_images
+                    .get(&placed.overlay.id)
+                    .ok_or_else(|| "缺少文字或贴纸的画面".to_string())?;
+                OverlayLayer::Image {
+                    png: image.png.clone(),
+                    x: image.x,
+                    y: image.y,
+                }
+            }
+        };
+        overlays.push(RenderOverlay {
+            start: placed.start,
+            end: placed.end,
+            layer,
         });
     }
 
     let danmus = if job.timeline.danmu {
+        // Only the main track's danmaku is burned.
         let mut by_material = HashMap::new();
-        for (id, path) in &job.files {
-            by_material.insert(*id, crate::material::load_danmus(path).await);
+        for clip in &job.timeline.clips {
+            if let Entry::Vacant(entry) = by_material.entry(clip.material_id) {
+                entry.insert(crate::material::load_danmus(file(clip.material_id)?).await);
+            }
         }
         job.timeline
             .map_danmus(|id| by_material.get(&id).map(Vec::as_slice))
@@ -1140,6 +1277,7 @@ async fn render_timeline(
         reporter,
         ProjectRender {
             clips,
+            overlays,
             subtitle_ass: job.subtitle_ass.clone(),
             fonts_directory: fonts_directory.as_ref().map(|directory| directory.path()),
             danmus,
@@ -1441,6 +1579,59 @@ mod tests {
         assert_eq!(saved.material_ids(), vec![1]);
         let stored = Timeline::parse(&db.get_project(project.id).await.unwrap().timeline).unwrap();
         assert_eq!(stored.material_ids(), vec![1]);
+    }
+
+    #[test]
+    fn texts_and_stickers_are_exported_only_with_their_pictures() {
+        let mut timeline = Timeline::from_materials(&[(1, 10.0)]);
+        let clip_id = timeline.clips[0].id.clone();
+        let overlay = |id: &str, content| crate::project::Overlay {
+            id: id.into(),
+            clip_id: clip_id.clone(),
+            start: 1.0,
+            duration: 2.0,
+            content,
+        };
+        timeline.tracks = vec![crate::project::OverlayTrack {
+            id: "t".into(),
+            items: vec![
+                overlay("text", OverlayContent::Text { element: json!({}) }),
+                overlay(
+                    "video",
+                    OverlayContent::Video(crate::project::VideoOverlay {
+                        material_id: 1,
+                        source_start: 0.0,
+                        volume: 1.0,
+                        element: crate::project::VideoPlacement {
+                            x: 960.0,
+                            y: 540.0,
+                            width: 640.0,
+                            rotation: 0.0,
+                        },
+                    }),
+                ),
+            ],
+        }];
+        let png = format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(b"\x89PNG\r\n\x1a\nrest")
+        );
+        let image = |id: &str, image: &str| OverlayImage {
+            id: id.into(),
+            image: image.into(),
+            x: 10.0,
+            y: 20.0,
+        };
+        // Videos are rendered from their material; texts need a picture.
+        assert!(!has_overlay_images(&timeline, &HashMap::new()));
+        let decoded = decode_overlay_images(&[image("text", &png)]).unwrap();
+        assert_eq!(decoded["text"].x, 10.0);
+        assert!(has_overlay_images(&timeline, &decoded));
+        let jpeg = format!(
+            "data:image/jpeg;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(b"\xff\xd8\xff")
+        );
+        assert!(decode_overlay_images(&[image("text", &jpeg)]).is_err());
     }
 
     #[test]

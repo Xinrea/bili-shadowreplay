@@ -1,4 +1,5 @@
 import { invoke } from "../lib/invoker";
+import type { StickerElement, TextElement } from "./cover-elements";
 
 // #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Default)]
 // pub struct RoomInfo {
@@ -102,14 +103,82 @@ export interface TimelineSubtitle {
   text: string;
 }
 
+/**
+ * Something drawn over the main track. Like a subtitle it is anchored to the
+ * clip it starts over, in that clip's material time, so it follows the
+ * picture when clips move or are trimmed; its length is free and may run on
+ * over later clips.
+ */
+interface OverlayBase {
+  id: string;
+  clip_id: string;
+  /** Where it starts, in the anchor clip's material time. */
+  start: number;
+  /** Length in project time. */
+  duration: number;
+}
+
+export interface TextOverlay extends OverlayBase {
+  kind: "text";
+  /** Drawn as on a cover, on the 1920×1080 picture; its `id` is unused. */
+  element: TextElement;
+}
+
+export interface StickerOverlay extends OverlayBase {
+  kind: "sticker";
+  /** As on a cover, except that `src` is a sticker reference such as `builtin:1f600`. */
+  element: StickerElement;
+}
+
+/** Where a video overlay sits on the 1920×1080 picture. */
+export interface VideoPlacement {
+  /** Center. */
+  x: number;
+  y: number;
+  /** The height follows the material's aspect ratio. */
+  width: number;
+  /** Degrees, clockwise. */
+  rotation: number;
+}
+
+export interface VideoOverlay extends OverlayBase {
+  kind: "video";
+  material_id: number;
+  /** Material time shown at the overlay's start. */
+  source_start: number;
+  /** 0 to 1. */
+  volume: number;
+  element: VideoPlacement;
+}
+
+export type OverlayItem = TextOverlay | StickerOverlay | VideoOverlay;
+
+/** A track above the main one; items on a track do not overlap in time. */
+export interface OverlayTrack {
+  id: string;
+  items: OverlayItem[];
+}
+
 export interface ProjectTimeline {
   version: number;
   /** The main track: clips play back to back. */
   clips: TimelineClip[];
   subtitles: TimelineSubtitle[];
+  /** Drawn over the main track, the bottom one first; a higher track covers lower ones. */
+  tracks: OverlayTrack[];
   subtitle_style?: SubtitleStyle | null;
   /** Burn the materials' danmaku when exporting. */
   danmu: boolean;
+}
+
+/** A text or sticker overlay drawn by the editor, which the export burns in. */
+export interface OverlayImage {
+  id: string;
+  /** PNG data URL. */
+  image: string;
+  /** Top left on the 1920×1080 picture. */
+  x: number;
+  y: number;
 }
 
 /** A project (切片) as listed by the backend. */

@@ -4,6 +4,10 @@
 //! `start..end` of a material. Subtitles are anchored to a clip in material
 //! time, so they follow the picture when clips are moved or trimmed; the part
 //! outside the clip's visible window is hidden rather than lost.
+//!
+//! Overlays (texts, stickers and videos) sit on tracks above the main one,
+//! a higher track covering lower ones. Each is anchored by where it starts,
+//! like a subtitle, and runs for its own length, also over later clips.
 
 use recorder::danmu::DanmuEntry;
 use serde::{Deserialize, Serialize};
@@ -12,6 +16,8 @@ use sha2::{Digest, Sha256};
 pub const TIMELINE_VERSION: u32 = 1;
 /// Durations closer than this are treated as the whole material.
 const FULL_MATERIAL_TOLERANCE: f64 = 0.05;
+/// Overlay spans this short, from rounding, are empty.
+const EPSILON: f64 = 1e-6;
 
 fn timeline_version() -> u32 {
     TIMELINE_VERSION
@@ -25,6 +31,9 @@ pub struct Timeline {
     pub clips: Vec<TimelineClip>,
     #[serde(default)]
     pub subtitles: Vec<TimelineSubtitle>,
+    /// Tracks drawn over the main track, the bottom one first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tracks: Vec<OverlayTrack>,
     /// The editor's `SubtitleStyle`, opaque to the backend: subtitles are burned
     /// from the ASS document the editor previews.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -40,6 +49,7 @@ impl Default for Timeline {
             version: TIMELINE_VERSION,
             clips: Vec::new(),
             subtitles: Vec::new(),
+            tracks: Vec::new(),
             subtitle_style: None,
             danmu: false,
         }
@@ -72,10 +82,92 @@ pub struct TimelineSubtitle {
     pub text: String,
 }
 
+/// A track above the main one; its items do not overlap in time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OverlayTrack {
+    pub id: String,
+    #[serde(default)]
+    pub items: Vec<Overlay>,
+}
+
+/// Something drawn over the main track, anchored to the clip it starts over.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Overlay {
+    pub id: String,
+    pub clip_id: String,
+    /// Where it starts, in the anchor clip's material time.
+    pub start: f64,
+    /// Length in project time.
+    pub duration: f64,
+    #[serde(flatten)]
+    pub content: OverlayContent,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum OverlayContent {
+    /// Drawn by the editor, which sends the picture to burn with an export.
+    Text {
+        element: serde_json::Value,
+    },
+    /// Drawn by the editor, like a text.
+    Sticker {
+        element: serde_json::Value,
+    },
+    Video(VideoOverlay),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VideoOverlay {
+    pub material_id: i64,
+    /// Material time shown at the overlay's start.
+    pub source_start: f64,
+    /// 0 to 1.
+    #[serde(default = "full_volume")]
+    pub volume: f64,
+    pub element: VideoPlacement,
+}
+
+fn full_volume() -> f64 {
+    1.0
+}
+
+/// Where a video overlay sits on the 1920×1080 picture.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VideoPlacement {
+    /// Center.
+    pub x: f64,
+    pub y: f64,
+    /// The height follows the material's aspect ratio.
+    pub width: f64,
+    /// Degrees, clockwise.
+    #[serde(default)]
+    pub rotation: f64,
+}
+
+impl Overlay {
+    pub fn video(&self) -> Option<&VideoOverlay> {
+        match &self.content {
+            OverlayContent::Video(video) => Some(video),
+            _ => None,
+        }
+    }
+}
+
 /// A clip together with where it starts on the project timeline.
 pub struct PlacedClip<'a> {
     pub clip: &'a TimelineClip,
     pub offset: f64,
+}
+
+/// The visible part of an overlay, in project time.
+pub struct PlacedOverlay<'a> {
+    pub overlay: &'a Overlay,
+    pub start: f64,
+    pub end: f64,
+    /// How much is hidden before `start`, cut off with the head of its clip; a
+    /// video overlay skips as much of its material.
+    pub skip: f64,
 }
 
 pub fn new_id() -> String {
@@ -145,6 +237,39 @@ impl Timeline {
         })
     }
 
+    /// Visible overlays, the bottom track first and each track's items in
+    /// order, which is the order they are drawn in.
+    pub fn placed_overlays(&self) -> Vec<PlacedOverlay<'_>> {
+        let placed = self.placed();
+        let total = self.duration();
+        let mut result = Vec::new();
+        for overlay in self.tracks.iter().flat_map(|track| &track.items) {
+            let Some(clip) = placed.iter().find(|p| p.clip.id == overlay.clip_id) else {
+                continue;
+            };
+            // Anchored past the out point, it was trimmed away with its clip.
+            if overlay.start >= clip.clip.end {
+                continue;
+            }
+            let from = clip.offset + overlay.start - clip.clip.start;
+            let start = from.max(clip.offset);
+            let end = (from + overlay.duration).min(total);
+            if end - start > EPSILON {
+                result.push(PlacedOverlay {
+                    overlay,
+                    start,
+                    end,
+                    skip: start - from,
+                });
+            }
+        }
+        result
+    }
+
+    pub fn has_visible_overlays(&self) -> bool {
+        !self.placed_overlays().is_empty()
+    }
+
     /// Bring the backend's own edits of a saved timeline into this one, which
     /// is being edited. Between `base`, the saved timeline the editor last
     /// knew, and `saved`, the saved one now, the backend may switch danmaku,
@@ -172,24 +297,35 @@ impl Timeline {
         self.subtitles.extend(filled);
     }
 
-    /// Distinct materials in timeline order.
+    /// Distinct materials in timeline order: the main track's, then those of
+    /// video overlays.
     pub fn material_ids(&self) -> Vec<i64> {
         let mut ids = Vec::new();
-        for clip in &self.clips {
-            if !ids.contains(&clip.material_id) {
-                ids.push(clip.material_id);
+        let overlays = self
+            .tracks
+            .iter()
+            .flat_map(|track| &track.items)
+            .filter_map(Overlay::video)
+            .map(|video| video.material_id);
+        for id in self
+            .clips
+            .iter()
+            .map(|clip| clip.material_id)
+            .chain(overlays)
+        {
+            if !ids.contains(&id) {
+                ids.push(id);
             }
         }
         ids
     }
 
     pub fn uses_material(&self, material_id: i64) -> bool {
-        self.clips
-            .iter()
-            .any(|clip| clip.material_id == material_id)
+        self.material_ids().contains(&material_id)
     }
 
-    /// Drop the material's clips and the subtitles anchored to them.
+    /// Drop the material's clips with the subtitles and overlays anchored to
+    /// them, and the video overlays showing it.
     pub fn remove_material(&mut self, material_id: i64) -> bool {
         let removed: Vec<String> = self
             .clips
@@ -197,13 +333,24 @@ impl Timeline {
             .filter(|clip| clip.material_id == material_id)
             .map(|clip| clip.id.clone())
             .collect();
-        if removed.is_empty() {
-            return false;
-        }
+        let overlays = self.overlay_count();
         self.clips.retain(|clip| clip.material_id != material_id);
         self.subtitles
             .retain(|subtitle| !removed.contains(&subtitle.clip_id));
-        true
+        for track in &mut self.tracks {
+            track.items.retain(|overlay| {
+                !removed.contains(&overlay.clip_id)
+                    && overlay
+                        .video()
+                        .is_none_or(|video| video.material_id != material_id)
+            });
+        }
+        self.tracks.retain(|track| !track.items.is_empty());
+        !removed.is_empty() || self.overlay_count() != overlays
+    }
+
+    fn overlay_count(&self) -> usize {
+        self.tracks.iter().map(|track| track.items.len()).sum()
     }
 
     /// Anchor material-time cues to `clip_id`, replacing its existing subtitles.
@@ -239,6 +386,27 @@ impl Timeline {
                 return Err(format!("第 {} 个片段的范围无效", index + 1));
             }
         }
+        for placed in self.placed_overlays() {
+            let Some(video) = placed.overlay.video() else {
+                continue;
+            };
+            let Some(duration) = material_duration(video.material_id) else {
+                return Err("画中画的素材不存在".to_string());
+            };
+            let start = video.source_start + placed.skip;
+            let placement = &video.element;
+            let valid = start.is_finite()
+                && start >= 0.0
+                && (duration <= 0.0 || start + placed.end - placed.start <= duration + 0.5)
+                && [placement.x, placement.y, placement.rotation, video.volume]
+                    .iter()
+                    .all(|value| value.is_finite())
+                && placement.width.is_finite()
+                && placement.width >= 1.0;
+            if !valid {
+                return Err("画中画的范围无效".to_string());
+            }
+        }
         Ok(())
     }
 
@@ -251,7 +419,8 @@ impl Timeline {
         let untouched = clip.start <= FULL_MATERIAL_TOLERANCE
             && material_duration > 0.0
             && clip.end >= material_duration - FULL_MATERIAL_TOLERANCE;
-        (untouched && !self.danmu && !self.has_visible_subtitles()).then_some(clip.material_id)
+        (untouched && !self.danmu && !self.has_visible_subtitles() && !self.has_visible_overlays())
+            .then_some(clip.material_id)
     }
 
     /// Identifies an export: a different hash means the output is stale.
@@ -451,6 +620,155 @@ mod tests {
         assert_eq!(timeline.render_hash(""), timeline.render_hash(""));
         assert_ne!(timeline.render_hash(""), changed.render_hash(""));
         assert_ne!(timeline.render_hash(""), timeline.render_hash("danmu"));
+    }
+
+    fn text_overlay(id: &str, clip_id: &str, start: f64, duration: f64) -> Overlay {
+        Overlay {
+            id: id.into(),
+            clip_id: clip_id.into(),
+            start,
+            duration,
+            content: OverlayContent::Text {
+                element: serde_json::json!({ "content": id }),
+            },
+        }
+    }
+
+    fn video_overlay(id: &str, clip_id: &str, start: f64, material_id: i64) -> Overlay {
+        Overlay {
+            id: id.into(),
+            clip_id: clip_id.into(),
+            start,
+            duration: 3.0,
+            content: OverlayContent::Video(VideoOverlay {
+                material_id,
+                source_start: 1.0,
+                volume: 1.0,
+                element: VideoPlacement {
+                    x: 1500.0,
+                    y: 800.0,
+                    width: 640.0,
+                    rotation: 0.0,
+                },
+            }),
+        }
+    }
+
+    fn with_tracks(tracks: Vec<Vec<Overlay>>) -> Timeline {
+        Timeline {
+            tracks: tracks
+                .into_iter()
+                .enumerate()
+                .map(|(index, items)| OverlayTrack {
+                    id: format!("t{index}"),
+                    items,
+                })
+                .collect(),
+            ..timeline()
+        }
+    }
+
+    fn spans(timeline: &Timeline) -> Vec<(String, f64, f64, f64)> {
+        timeline
+            .placed_overlays()
+            .iter()
+            .map(|p| (p.overlay.id.clone(), p.start, p.end, p.skip))
+            .collect()
+    }
+
+    #[test]
+    fn overlays_keep_the_fields_only_the_editor_reads() {
+        let json = r##"{"version":1,"clips":[],"subtitles":[],"tracks":[{"id":"t","items":[
+            {"id":"a","clip_id":"c","start":1.5,"duration":2.0,"kind":"text",
+             "element":{"kind":"text","id":0,"x":960,"y":540,"rotation":0,"content":"hi","fill":"#FFF","stroke":null}},
+            {"id":"b","clip_id":"c","start":0.0,"duration":3.0,"kind":"video","material_id":4,
+             "source_start":2.0,"volume":0.5,"element":{"x":10.0,"y":20.0,"width":640.0,"rotation":15.0}}]}],"danmu":false}"##;
+        let timeline = Timeline::parse(json).unwrap();
+        let items = &timeline.tracks[0].items;
+        assert!(
+            matches!(&items[0].content, OverlayContent::Text { element } if element["fill"] == "#FFF")
+        );
+        assert_eq!(
+            items[1].video().map(|v| (v.material_id, v.volume)),
+            Some((4, 0.5))
+        );
+        let reparsed: serde_json::Value = serde_json::from_str(&timeline.to_json()).unwrap();
+        let original: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!(reparsed, original);
+        // Timelines without overlays are saved as before.
+        assert!(!Timeline::default().to_json().contains("tracks"));
+    }
+
+    #[test]
+    fn overlays_follow_their_clip_and_run_on_over_later_ones() {
+        // a shows 10-20 at 0-10, b shows 0-5 at 10-15.
+        let timeline = with_tracks(vec![
+            vec![
+                text_overlay("x", "a", 18.0, 4.0),
+                text_overlay("tail", "a", 20.0, 1.0),
+            ],
+            vec![
+                text_overlay("head", "a", 9.0, 3.0),
+                text_overlay("end", "b", 4.0, 9.0),
+            ],
+        ]);
+        assert_eq!(
+            spans(&timeline),
+            vec![
+                ("x".to_string(), 8.0, 12.0, 0.0),
+                // Its first second went with the trimmed head of clip a.
+                ("head".to_string(), 0.0, 2.0, 1.0),
+                // Cut short at the end of the project.
+                ("end".to_string(), 14.0, 15.0, 0.0),
+            ]
+        );
+        assert!(timeline.has_visible_overlays());
+        assert!(
+            !with_tracks(vec![vec![text_overlay("x", "missing", 0.0, 1.0)]]).has_visible_overlays()
+        );
+    }
+
+    #[test]
+    fn video_overlays_count_as_used_materials_and_leave_with_them() {
+        let mut timeline = with_tracks(vec![
+            vec![
+                text_overlay("on-a", "a", 11.0, 1.0),
+                video_overlay("v3", "b", 0.0, 3),
+            ],
+            vec![video_overlay("v1", "b", 1.0, 1)],
+        ]);
+        assert_eq!(timeline.material_ids(), vec![1, 2, 3]);
+        assert!(timeline.uses_material(3));
+        assert!(timeline.remove_material(3));
+        assert_eq!(timeline.material_ids(), vec![1, 2]);
+        // Clip a goes with the overlay anchored to it, and the video of
+        // material 1, which empties the top track.
+        assert!(timeline.remove_material(1));
+        assert!(timeline.tracks.is_empty());
+        assert!(!timeline.remove_material(1));
+    }
+
+    #[test]
+    fn overlays_need_rendering_and_video_overlays_valid_ranges() {
+        let mut timeline = Timeline::from_materials(&[(7, 30.0)]);
+        let clip_id = timeline.clips[0].id.clone();
+        timeline.tracks = vec![OverlayTrack {
+            id: "t".into(),
+            items: vec![text_overlay("x", &clip_id, 1.0, 2.0)],
+        }];
+        assert_eq!(timeline.single_full_material(30.0), None);
+
+        let mut video = with_tracks(vec![vec![video_overlay("v", "a", 10.0, 3)]]);
+        assert!(video.validate(|_| Some(30.0)).is_ok());
+        // Shows 1-4 of material 3, which is only 3.2 s long.
+        assert!(video
+            .validate(|id| Some(if id == 3 { 3.2 } else { 30.0 }))
+            .is_err());
+        assert!(video.validate(|id| (id != 3).then_some(30.0)).is_err());
+        if let OverlayContent::Video(v) = &mut video.tracks[0].items[0].content {
+            v.element.width = 0.0;
+        }
+        assert!(video.validate(|_| Some(30.0)).is_err());
     }
 
     #[test]

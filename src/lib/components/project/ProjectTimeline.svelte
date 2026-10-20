@@ -12,18 +12,27 @@
 </script>
 
 <script lang="ts">
-  import { Film } from "lucide-svelte";
+  import { Film, Smile, Type } from "lucide-svelte";
   import type { MaterialPeaks, ProjectTimeline } from "../../interface";
   import {
     moveClip,
+    moveOverlay,
     moveSubtitle,
+    overlayCount,
+    placeOverlays,
+    withOverlaysFrom,
     withSubtitleFrom,
     placeClips,
     resizeSubtitle,
     timelineDuration,
+    trackIsFree,
     trimClip,
+    trimOverlay as trimOverlayEdge,
     visibleSubtitles,
+    MIN_OVERLAY_DURATION,
+    type OverlayTarget,
     type PlacedClip,
+    type PlacedOverlay,
     type PlacedSubtitle,
   } from "../../project-timeline";
 
@@ -36,6 +45,9 @@
     zoom: number;
     selectedClipId: string | null;
     selectedSubtitleId: string | null;
+    selectedOverlayId: string | null;
+    /** URL of each sticker reference, for the overlays' thumbnails. */
+    stickerUrls: Map<string, string>;
     onSeek: (time: number) => void;
     onScrub?: (active: boolean) => void;
     /** Show an edit while it is being dragged. */
@@ -44,7 +56,10 @@
     onCommit: (timeline: ProjectTimeline, before: ProjectTimeline) => void;
     onSelectClip: (id: string | null) => void;
     onSelectSubtitle: (id: string | null) => void;
+    onSelectOverlay: (id: string | null) => void;
     onDropMaterial: (materialId: number, index: number) => void;
+    /** A material dropped on the overlay tracks, to show over the main track from `time`. */
+    onDropOverlay: (materialId: number, time: number, target: OverlayTarget) => void;
     onZoom: (zoom: number) => void;
   }
 
@@ -56,19 +71,26 @@
     zoom,
     selectedClipId,
     selectedSubtitleId,
+    selectedOverlayId,
+    stickerUrls,
     onSeek,
     onScrub,
     onPreview,
     onCommit,
     onSelectClip,
     onSelectSubtitle,
+    onSelectOverlay,
     onDropMaterial,
+    onDropOverlay,
     onZoom,
   }: Props = $props();
 
   const RULER_HEIGHT = 24;
   const LANE_HEIGHT = 28;
   const VIDEO_TRACK_HEIGHT = 76;
+  const OVERLAY_TRACK_HEIGHT = 34;
+  /** The row above the overlay tracks, where a new track is made. */
+  const NEW_TRACK_HEIGHT = 22;
   const EDGE_PX = 7;
   const SNAP_PX = 8;
   const DRAG_THRESHOLD_PX = 4;
@@ -79,6 +101,9 @@
   let viewportWidth = $state(800);
   let snapTime: number | null = $state(null);
   let dropIndex: number | null = $state(null);
+  let overlayArea: HTMLElement = $state();
+  /** Where a material dragged over the overlay tracks would go. */
+  let overlayDrop: { time: number; target: OverlayTarget } | null = $state(null);
 
   type ClipDrag = {
     kind: "move";
@@ -107,7 +132,23 @@
     end: number;
     moved: boolean;
   };
-  let drag: ClipDrag | TrimDrag | SubtitleDrag | null = $state(null);
+  type OverlayDrag = {
+    kind: "overlay";
+    id: string;
+    mode: "move" | "start" | "end";
+    base: ProjectTimeline;
+    pointerTime: number;
+    pointerY: number;
+    /** The visible part and track as the drag began. */
+    start: number;
+    end: number;
+    track: number;
+    moved: boolean;
+    /** Where a move puts it, shown until it is dropped. */
+    ghost: number;
+    target: OverlayTarget;
+  };
+  let drag: ClipDrag | TrimDrag | SubtitleDrag | OverlayDrag | null = $state(null);
 
   let duration = $derived(timelineDuration(timeline));
   let pxPerSecond = $derived(
@@ -119,6 +160,11 @@
   let lanes = $derived(assignLanes(subtitles));
   let laneCount = $derived(Math.max(1, ...lanes.map((lane) => lane + 1)));
   let subtitleTrackHeight = $derived(laneCount * LANE_HEIGHT + 8);
+  let overlays = $derived(placeOverlays(timeline));
+  let trackCount = $derived(timeline.tracks.length);
+  let hiddenOverlays = $derived(overlayCount(timeline) - overlays.length);
+  // Rows from the top: the highest track, drawn over the others, first.
+  let trackRows = $derived(Array.from({ length: trackCount }, (_, row) => trackCount - 1 - row));
   let tickStep = $derived(TICK_STEPS.find((step) => step * pxPerSecond >= 84) ?? 3600);
   let ticks = $derived(
     Array.from({ length: Math.floor(contentWidth / pxPerSecond / tickStep) + 1 }, (_, i) => i * tickStep),
@@ -235,6 +281,7 @@
     if (event.target !== event.currentTarget) return;
     onSelectClip(null);
     onSelectSubtitle(null);
+    onSelectOverlay(null);
     onSeek(Math.min(timeAt(event.clientX), duration));
   }
 
@@ -247,6 +294,7 @@
     const edge = x < EDGE_PX ? "start" : rect.width - x < EDGE_PX ? "end" : null;
     onSelectClip(item.clip.id);
     onSelectSubtitle(null);
+    onSelectOverlay(null);
     if (edge) {
       drag = {
         kind: "trim",
@@ -284,7 +332,7 @@
 
   function moveClipDrag(event: PointerEvent) {
     const state = drag;
-    if (!state || state.kind === "subtitle") return;
+    if (state?.kind !== "move" && state?.kind !== "trim") return;
     if (state.kind === "move") {
       if (!state.moved && Math.abs(event.clientX - state.pointerX) < DRAG_THRESHOLD_PX) return;
       drag = { ...state, moved: true, index: insertionIndex(event.clientX, state.clipId) };
@@ -318,7 +366,7 @@
     const state = drag;
     drag = null;
     snapTime = null;
-    if (!state || state.kind === "subtitle") return;
+    if (state?.kind !== "move" && state?.kind !== "trim") return;
     if (state.kind === "move") {
       const from = timeline.clips.findIndex((clip) => clip.id === state.clipId);
       if (state.moved && state.index !== from) onCommit(moveClip(timeline, state.clipId, state.index), timeline);
@@ -370,6 +418,7 @@
     const mode = x < edgeSize ? "start" : rect.width - x < edgeSize ? "end" : "move";
     onSelectSubtitle(item.subtitle.id);
     onSelectClip(null);
+    onSelectOverlay(null);
     drag = {
       kind: "subtitle",
       id: item.subtitle.id,
@@ -419,6 +468,134 @@
     if (state?.kind !== "subtitle") return;
     if (state.moved) onCommit(timeline, withSubtitleFrom(timeline, state.base, state.id));
     else onSeek(state.start);
+  }
+
+  // Overlays: move by the body, also onto another track, trim by an edge.
+  function startOverlayDrag(event: PointerEvent, item: PlacedOverlay) {
+    if (event.button !== 0) return;
+    event.stopPropagation();
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const edgeSize = Math.min(EDGE_PX, rect.width / 3);
+    const mode = x < edgeSize ? "start" : rect.width - x < edgeSize ? "end" : "move";
+    onSelectOverlay(item.item.id);
+    drag = {
+      kind: "overlay",
+      id: item.item.id,
+      mode,
+      base: timeline,
+      pointerTime: timeAt(event.clientX),
+      pointerY: event.clientY,
+      start: item.start,
+      end: item.end,
+      track: item.track,
+      moved: false,
+      ghost: item.start,
+      target: { track: item.track },
+    };
+    window.addEventListener("pointermove", moveOverlayDrag);
+    window.addEventListener("pointerup", endOverlayDrag);
+  }
+
+  function overlaySnapTargets(excludeId: string) {
+    const targets = [time, ...clipEdges()];
+    for (const item of overlays) {
+      if (item.item.id !== excludeId) targets.push(item.start, item.end);
+    }
+    for (const item of subtitles) targets.push(item.start, item.end);
+    return targets;
+  }
+
+  /** The overlay track under the pointer, or a new one above or below them all. */
+  function trackTargetAt(clientY: number): OverlayTarget {
+    const y = clientY - overlayArea.getBoundingClientRect().top - NEW_TRACK_HEIGHT;
+    if (y < 0) return { insert: trackCount };
+    const row = Math.floor(y / OVERLAY_TRACK_HEIGHT);
+    return row >= trackCount ? { insert: 0 } : { track: trackRows[row] };
+  }
+
+  /** Top of the gap a new track at `index` would fill, within the overlay area. */
+  function insertionY(index: number) {
+    return NEW_TRACK_HEIGHT + (trackCount - index) * OVERLAY_TRACK_HEIGHT;
+  }
+
+  function moveOverlayDrag(event: PointerEvent) {
+    const state = drag;
+    if (state?.kind !== "overlay") return;
+    const delta = timeAt(event.clientX) - state.pointerTime;
+    if (
+      !state.moved &&
+      Math.abs(delta * pxPerSecond) < DRAG_THRESHOLD_PX &&
+      Math.abs(event.clientY - state.pointerY) < DRAG_THRESHOLD_PX
+    ) {
+      return;
+    }
+    const targets = overlaySnapTargets(state.id);
+    const enabled = !event.shiftKey;
+    if (state.mode === "move") {
+      const length = state.end - state.start;
+      const snapped = snapSpan(Math.max(0, state.start + delta), length, targets, enabled);
+      const ghost = Math.max(0, Math.min(snapped, duration - length));
+      let target = trackTargetAt(event.clientY);
+      // Where the track is taken, the overlay gets a new one above it.
+      if ("track" in target && !trackIsFree(overlays, target.track, ghost, ghost + length, state.id)) {
+        target = { insert: target.track + 1 };
+      }
+      drag = { ...state, moved: true, ghost, target };
+      return;
+    }
+    const edgeTime = snap((state.mode === "start" ? state.start : state.end) + delta, targets, enabled);
+    const item = overlays.find((entry) => entry.item.id === state.id)?.item;
+    const material = item?.kind === "video" ? materials.get(item.material_id) : undefined;
+    // From the overlays as the drag began, so the preview does not add up.
+    const from = withOverlaysFrom(timeline, state.base);
+    onPreview(trimOverlayEdge(from, state.id, state.mode, edgeTime, material?.duration ?? 0));
+    drag = { ...state, moved: true };
+  }
+
+  function endOverlayDrag() {
+    window.removeEventListener("pointermove", moveOverlayDrag);
+    window.removeEventListener("pointerup", endOverlayDrag);
+    const state = drag;
+    drag = null;
+    snapTime = null;
+    if (state?.kind !== "overlay") return;
+    if (!state.moved) {
+      // A click: bring it into the preview.
+      if (time < state.start || time >= state.end) onSeek(state.start);
+      return;
+    }
+    const before = withOverlaysFrom(timeline, state.base);
+    if (state.mode !== "move") {
+      onCommit(timeline, before);
+      return;
+    }
+    const stayed = "track" in state.target && state.target.track === state.track;
+    if (stayed && Math.abs(state.ghost - state.start) < 1e-6) return;
+    onCommit(moveOverlay(before, state.id, state.ghost, state.target), before);
+  }
+
+  function overlayDragOver(event: DragEvent) {
+    if (!event.dataTransfer?.types.includes(MATERIAL_DRAG_TYPE) || duration < MIN_OVERLAY_DURATION) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    const at = Math.min(timeAt(event.clientX), duration - MIN_OVERLAY_DURATION);
+    overlayDrop = { time: at, target: trackTargetAt(event.clientY) };
+  }
+
+  function overlayDropMaterial(event: DragEvent) {
+    const id = Number(event.dataTransfer?.getData(MATERIAL_DRAG_TYPE));
+    const drop = overlayDrop;
+    overlayDrop = null;
+    if (!Number.isFinite(id) || id <= 0 || !drop) return;
+    event.preventDefault();
+    onDropOverlay(id, drop.time, drop.target);
+  }
+
+  function overlayLabel(item: PlacedOverlay["item"]) {
+    if (item.kind === "text") return item.element.content.replace(/\n/g, " ") || "文字";
+    if (item.kind === "sticker") return "贴纸";
+    return materials.get(item.material_id)?.name ?? "素材已删除";
   }
 
   // Materials dragged in from the material bin.
@@ -494,6 +671,12 @@
     <div class="label" style:height="{subtitleTrackHeight}px">
       <span class="dot subtitle-dot"></span>字幕
     </div>
+    <div class="label new-track-label" style:height="{NEW_TRACK_HEIGHT}px">叠加</div>
+    {#each trackRows as track (track)}
+      <div class="label" style:height="{OVERLAY_TRACK_HEIGHT}px">
+        <span class="dot overlay-dot"></span>轨道{track + 1}
+      </div>
+    {/each}
     <div class="label" style:height="{VIDEO_TRACK_HEIGHT}px">
       <span class="dot video-dot"></span>视频
     </div>
@@ -533,6 +716,99 @@
             <span>{item.subtitle.text || "空字幕"}</span>
           </div>
         {/each}
+      </div>
+
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="overlay-area"
+        bind:this={overlayArea}
+        ondragover={overlayDragOver}
+        ondragleave={(event) => {
+          if (!overlayArea.contains(event.relatedTarget as Node)) overlayDrop = null;
+        }}
+        ondrop={overlayDropMaterial}
+      >
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <div class="track new-track" style:height="{NEW_TRACK_HEIGHT}px" onclick={clickEmpty}>
+          {#if trackCount === 0}
+            <div class="track-hint">从左侧添加文字、贴纸，或把素材拖到这里，叠加在画面上</div>
+          {:else if hiddenOverlays > 0}
+            <div class="track-hint">另有 {hiddenOverlays} 个叠加内容随片段裁剪被隐藏</div>
+          {/if}
+        </div>
+        {#each trackRows as track (track)}
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <div
+            class="track overlay-track"
+            class:target={(drag?.kind === "overlay" && drag.moved && drag.mode === "move" && "track" in drag.target && drag.target.track === track) ||
+              (overlayDrop && "track" in overlayDrop.target && overlayDrop.target.track === track)}
+            style:height="{OVERLAY_TRACK_HEIGHT}px"
+            onclick={clickEmpty}
+          >
+            {#each overlays.filter((entry) => entry.track === track) as item (item.item.id)}
+              {@const width = (item.end - item.start) * pxPerSecond}
+              {@const overlay = item.item}
+              <div
+                class="overlay {overlay.kind}"
+                class:selected={selectedOverlayId === overlay.id}
+                class:active={time >= item.start && time < item.end}
+                class:dragging={drag?.kind === "overlay" && drag.moved && drag.mode === "move" && drag.id === overlay.id}
+                class:missing={overlay.kind === "video" && !materials.has(overlay.material_id)}
+                role="button"
+                tabindex="-1"
+                style:left="{item.start * pxPerSecond}px"
+                style:width="{Math.max(3, width)}px"
+                title="{overlayLabel(overlay)}（{formatDuration(item.end - item.start)}）"
+                onpointerdown={(event) => startOverlayDrag(event, item)}
+              >
+                {#if width > 26}
+                  {#if overlay.kind === "text"}
+                    <Type class="h-3 w-3 shrink-0" />
+                  {:else if overlay.kind === "sticker"}
+                    {#if stickerUrls.get(overlay.element.src)}
+                      <img class="sticker-thumb" src={stickerUrls.get(overlay.element.src)} alt="" draggable="false" />
+                    {:else}
+                      <Smile class="h-3 w-3 shrink-0" />
+                    {/if}
+                  {:else if materials.get(overlay.material_id)?.coverUrl && width > 64}
+                    <img class="video-thumb" src={materials.get(overlay.material_id).coverUrl} alt="" draggable="false" />
+                  {:else}
+                    <Film class="h-3 w-3 shrink-0" />
+                  {/if}
+                {/if}
+                <span class="overlay-name">{overlayLabel(overlay)}</span>
+                <span class="edge start"></span>
+                <span class="edge end"></span>
+              </div>
+            {/each}
+            {#if drag?.kind === "overlay" && drag.moved && drag.mode === "move" && "track" in drag.target && drag.target.track === track}
+              <div
+                class="overlay-ghost"
+                style:left="{drag.ghost * pxPerSecond}px"
+                style:width="{Math.max(3, (drag.end - drag.start) * pxPerSecond)}px"
+              ></div>
+            {/if}
+            {#if overlayDrop && "track" in overlayDrop.target && overlayDrop.target.track === track}
+              <div class="insert-marker" style:left="{overlayDrop.time * pxPerSecond}px"></div>
+            {/if}
+          </div>
+        {/each}
+        {#if drag?.kind === "overlay" && drag.moved && drag.mode === "move" && "insert" in drag.target}
+          <div
+            class="new-track-bar"
+            style:top="{insertionY(drag.target.insert)}px"
+            style:left="{drag.ghost * pxPerSecond}px"
+            style:width="{Math.max(3, (drag.end - drag.start) * pxPerSecond)}px"
+          ></div>
+        {/if}
+        {#if overlayDrop && "insert" in overlayDrop.target}
+          <div
+            class="new-track-bar"
+            style:top="{insertionY(overlayDrop.target.insert)}px"
+            style:left="{overlayDrop.time * pxPerSecond}px"
+            style:width="80px"
+          ></div>
+        {/if}
       </div>
 
       <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -615,6 +891,8 @@
 <style>
   .timeline {
     display: flex;
+    max-height: 50vh;
+    overflow-y: auto;
     border-top: 1px solid rgb(31 41 55 / 50%);
     background: #1c1c1e;
     user-select: none;
@@ -623,6 +901,7 @@
   .labels {
     display: flex;
     width: 72px;
+    height: max-content;
     flex-shrink: 0;
     flex-direction: column;
     border-right: 1px solid rgb(31 41 55 / 70%);
@@ -635,6 +914,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    white-space: nowrap;
     border-bottom: 1px solid rgb(31 41 55 / 70%);
     padding: 0 12px;
   }
@@ -658,9 +938,19 @@
     background: #8b5cf6;
   }
 
+  .overlay-dot {
+    background: #14b8a6;
+  }
+
+  .new-track-label {
+    font-size: 10px;
+    letter-spacing: 0.05em;
+  }
+
   .viewport {
     position: relative;
     flex: 1;
+    height: max-content;
     overflow-x: auto;
     overflow-y: hidden;
   }
@@ -711,6 +1001,123 @@
 
   .video-track {
     background: rgb(46 16 101 / 10%);
+  }
+
+  .overlay-area {
+    position: relative;
+  }
+
+  .new-track {
+    background: repeating-linear-gradient(
+      -45deg,
+      rgb(20 184 166 / 4%) 0 6px,
+      transparent 6px 12px
+    );
+  }
+
+  .overlay-track {
+    background: rgb(19 78 74 / 10%);
+  }
+
+  .overlay-track.target {
+    background: rgb(20 184 166 / 14%);
+  }
+
+  .overlay {
+    position: absolute;
+    top: 4px;
+    bottom: 4px;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    overflow: hidden;
+    border: 1px solid rgb(20 184 166 / 50%);
+    border-radius: 6px;
+    background: rgb(20 184 166 / 18%);
+    padding: 0 6px;
+    color: #ccfbf1;
+    font-size: 10px;
+    cursor: grab;
+  }
+
+  .overlay.text {
+    border-color: rgb(245 158 11 / 55%);
+    background: rgb(245 158 11 / 18%);
+    color: #fef3c7;
+  }
+
+  .overlay.sticker {
+    border-color: rgb(236 72 153 / 55%);
+    background: rgb(236 72 153 / 18%);
+    color: #fce7f3;
+  }
+
+  .overlay.active {
+    filter: brightness(1.25);
+  }
+
+  .overlay.selected {
+    z-index: 20;
+    box-shadow: 0 0 0 1px rgb(255 255 255 / 85%);
+  }
+
+  .overlay.dragging {
+    opacity: 0.45;
+    cursor: grabbing;
+  }
+
+  .overlay.missing {
+    border-color: rgb(248 113 113 / 60%);
+    background: rgb(248 113 113 / 12%);
+  }
+
+  .overlay:hover .edge,
+  .overlay.selected .edge {
+    background: rgb(255 255 255 / 25%);
+  }
+
+  .overlay-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sticker-thumb {
+    height: 18px;
+    width: 18px;
+    flex-shrink: 0;
+    object-fit: contain;
+  }
+
+  .video-thumb {
+    height: 18px;
+    width: 32px;
+    flex-shrink: 0;
+    border-radius: 3px;
+    object-fit: cover;
+  }
+
+  .overlay-ghost {
+    position: absolute;
+    top: 4px;
+    bottom: 4px;
+    z-index: 25;
+    border: 1px dashed #fbbf24;
+    border-radius: 6px;
+    background: rgb(251 191 36 / 12%);
+    pointer-events: none;
+  }
+
+  .new-track-bar {
+    position: absolute;
+    z-index: 30;
+    height: 4px;
+    margin-top: -2px;
+    border-radius: 2px;
+    background: #fbbf24;
+    pointer-events: none;
   }
 
   .track-hint {

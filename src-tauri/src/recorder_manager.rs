@@ -33,7 +33,7 @@ use recorder::UserInfo;
 use recorder::{CachePath, RecorderInfo};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -167,6 +167,33 @@ async fn live_end_parent_id(
         .iter()
         .any(|record| record.platform == platform.as_str() && record.size > 0)
         .then_some(parent_id))
+}
+
+/// Map an HLS request path (`platform/room_id/live_id/...`) to a file in `cache_dir`.
+///
+/// Every `/`-separated segment must be a single plain file name: `..`, `.`, empty
+/// segments, absolute paths and Windows prefixes or `\` separators are rejected,
+/// so the result can never escape `cache_dir`. Names made only of dots and spaces
+/// (`.. `, `...`) are rejected too, since Windows trims trailing dots and spaces
+/// and could read them as `..`.
+fn resolve_hls_path(cache_dir: &Path, path: &str) -> Option<PathBuf> {
+    let path = path.replace("%7C", "|");
+    let mut resolved = cache_dir.to_path_buf();
+    for segment in path.split('/') {
+        let mut components = Path::new(segment).components();
+        match (components.next(), components.next()) {
+            (Some(Component::Normal(name)), None)
+                if !name
+                    .to_string_lossy()
+                    .trim_end_matches([' ', '.'])
+                    .is_empty() =>
+            {
+                resolved.push(name)
+            }
+            _ => return None,
+        }
+    }
+    Some(resolved)
 }
 
 impl RecorderManager {
@@ -1467,6 +1494,13 @@ impl RecorderManager {
                 err: "Invalid hls path".into(),
             });
         }
+        // Resolve before branching so room_id / live_id are vetted for playlists too.
+        let Some(file_path) = resolve_hls_path(Path::new(&cache_path), path) else {
+            log::warn!("Rejected request path outside the cache dir: {path}");
+            return Err(RecorderManagerError::HLSError {
+                err: "Invalid hls path".into(),
+            });
+        };
         // parse recorder type
         let platform = path_segs[0];
         // parse room id
@@ -1540,12 +1574,9 @@ impl RecorderManager {
             Ok(bytes)
         } else {
             // try to find requested ts file in recorder's cache
-            // cache files are stored in {cache_dir}/{room_id}/{timestamp}/{ts_file}
-            // remove path params
-            let path = path.split('?').next().unwrap_or(path);
-            let ts_file = format!("{}/{}", cache_path, path.replace("%7C", "|"));
-            let ts_file_content = tokio::fs::read(&ts_file).await.map_err(|e| {
-                log::warn!("Failed to read segment file {ts_file}: {e}");
+            // cache files are stored in {cache_dir}/{platform}/{room_id}/{live_id}/{ts_file}
+            let ts_file_content = tokio::fs::read(&file_path).await.map_err(|e| {
+                log::warn!("Failed to read segment file {}: {e}", file_path.display());
                 RecorderManagerError::HLSError {
                     err: "Segment file not found".into(),
                 }
@@ -1865,5 +1896,85 @@ mod live_end_tests {
             .unwrap(),
             Some("session-1".into())
         );
+    }
+}
+
+#[cfg(test)]
+mod hls_path_tests {
+    use super::*;
+
+    /// A temp dir holding `cache/` with a few segments, plus `secret.txt` just outside it.
+    fn cache_with_outside_secret() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        std::fs::create_dir_all(cache.join("bilibili/1/2/some_dir")).unwrap();
+        std::fs::write(cache.join("bilibili/1/2/segment.ts"), "segment").unwrap();
+        std::fs::write(cache.join("bilibili/1/2/some_dir/segment.ts"), "nested").unwrap();
+        std::fs::write(dir.path().join("secret.txt"), "secret").unwrap();
+        (dir, cache)
+    }
+
+    #[test]
+    fn resolves_segment_paths_inside_the_cache_dir() {
+        let (_dir, cache) = cache_with_outside_secret();
+        for (path, content) in [
+            ("bilibili/1/2/segment.ts", "segment"),
+            ("bilibili/1/2/some_dir/segment.ts", "nested"),
+        ] {
+            let resolved = resolve_hls_path(&cache, path).unwrap();
+            assert_eq!(std::fs::read_to_string(resolved).unwrap(), content);
+        }
+        assert_eq!(
+            resolve_hls_path(&cache, "bilibili/1/2/a%7Cb.ts"),
+            Some(cache.join("bilibili/1/2/a|b.ts"))
+        );
+    }
+
+    #[test]
+    fn rejects_paths_escaping_the_cache_dir() {
+        let (dir, cache) = cache_with_outside_secret();
+        let absolute = dir.path().join("secret.txt").to_string_lossy().into_owned();
+        for path in [
+            // What axum's `Path` extractor yields for `..%2F..%2F..%2F..%2Fsecret.txt`,
+            // and what a raw `curl --path-as-is` request carries.
+            "bilibili/1/2/../../../../secret.txt".to_string(),
+            // Room and live ids are path segments too.
+            "bilibili/../../secret.txt".to_string(),
+            "bilibili/1/2/./segment.ts".to_string(),
+            "bilibili/1/2//segment.ts".to_string(),
+            // Windows trims trailing dots and spaces, so these could act as `..`.
+            "bilibili/1/2/.. /.. /.. /.. /secret.txt".to_string(),
+            "bilibili/1/2/.. ./secret.txt".to_string(),
+            "bilibili/1/2/.../secret.txt".to_string(),
+            absolute.clone(),
+            format!("bilibili/1/2/{absolute}"),
+        ] {
+            let resolved = resolve_hls_path(&cache, &path);
+            let leaked = resolved
+                .as_ref()
+                .and_then(|p| std::fs::read_to_string(p).ok());
+            assert_eq!(
+                resolved, None,
+                "{path:?} must be rejected (reads {leaked:?})"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_windows_separators_and_prefixes() {
+        let (_dir, cache) = cache_with_outside_secret();
+        for path in [
+            "bilibili\\..\\..\\secret.txt",
+            "bilibili/1/2/C:",
+            "bilibili/1/2/C:\\secret.txt",
+            "bilibili/1/2/.. \\/.. \\/secret.txt",
+        ] {
+            assert_eq!(
+                resolve_hls_path(&cache, path),
+                None,
+                "{path:?} must be rejected"
+            );
+        }
     }
 }

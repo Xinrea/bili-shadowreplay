@@ -312,3 +312,94 @@ test("an overlay drag keeps changes merged in while dragging, also when undone",
   assert.deepEqual(before.tracks.map((tr) => tr.items.map((i) => [i.id, i.duration])), [[["x", 2]]]);
   assert.equal(api.withOverlayFrom(merged, atDragStart, "v"), merged);
 });
+
+/** Frames at `fps` each clip lasts, as export cuts them: by where they fall in the project. */
+function exportFrames(t, fps) {
+  return api.placeClips(t).map((p) => Math.round((p.offset + p.duration) * fps) - Math.round(p.offset * fps));
+}
+
+const isWhole = (duration, fps) => Math.abs(duration * fps - Math.round(duration * fps)) < 1e-6;
+
+test("with a frame rate, trims and splits leave clips of whole frames within their material", () => {
+  for (const fps of [30, 29.97, 60]) {
+    const t = timeline([clip("a", 1, 10, 10 + 300 / fps), clip("b", 2, 0, 5)]);
+    const trimmed = api.trimClip(t, "a", "end", 13.4567, 30, fps).clips[0];
+    assert.ok(isWhole(trimmed.end - trimmed.start, fps), `${fps}: ${trimmed.end - trimmed.start}`);
+    assert.ok(Math.abs(trimmed.end - 13.4567) <= 0.5 / fps + 1e-9);
+    const started = api.trimClip(t, "a", "start", 11.2345, 30, fps).clips[0];
+    assert.ok(isWhole(started.end - started.start, fps));
+    // Within the material, and no shorter than the shortest clip.
+    const longest = api.trimClip(t, "a", "end", 99, 30.01, fps).clips[0];
+    assert.ok(longest.end <= 30.01 && isWhole(longest.end - longest.start, fps));
+    assert.ok(api.trimClip(t, "a", "start", -5, 30, fps).clips[0].start >= 0);
+    // Never less than a frame, however little material is left.
+    const sliver = api.trimClip(timeline([clip("s", 1, 29.99, 30)]), "s", "end", 31, 30, fps).clips[0];
+    assert.ok(Math.round((sliver.end - sliver.start) * fps) >= 1);
+    const shortest = api.trimClip(t, "a", "end", 0, 30, fps).clips[0];
+    assert.ok(shortest.end - shortest.start >= api.MIN_CLIP_DURATION - 1e-9 && isWhole(shortest.end - shortest.start, fps));
+    const { timeline: split } = api.splitClip(t, 4.321, fps);
+    assert.ok(split.clips.slice(0, 2).every((c) => isWhole(c.end - c.start, fps)));
+  }
+});
+
+test("a trim moves the clips after it by whole frames, which export cuts the same", () => {
+  const fps = 29.97;
+  const t = api.insertClips(api.emptyTimeline(), [1, 2, 3, 4].map((m) => ({ material_id: m, start: 0.37 * m, end: 4.71 * m })), 0, fps);
+  assert.ok(t.clips.every((c) => isWhole(c.end - c.start, fps)));
+  const before = exportFrames(t, fps);
+  const trimmed = api.trimClip(t, t.clips[1].id, "end", t.clips[1].end - 0.8123, 0, fps);
+  const after = exportFrames(trimmed, fps);
+  assert.notEqual(after[1], before[1]);
+  assert.deepEqual(plain([after[0], ...after.slice(2)]), plain([before[0], ...before.slice(2)]));
+  // Every clip after it moved by whole frames.
+  const offsets = (timeline) => api.placeClips(timeline).map((p) => p.offset * fps);
+  const moved = offsets(trimmed).map((offset, index) => offset - offsets(t)[index]);
+  assert.ok(moved.slice(2).every((frames) => isWhole(frames / fps, fps) && Math.abs(frames - moved[2]) < 1e-6));
+});
+
+test("deleting or moving a clip of whole frames keeps the others' frames", () => {
+  const fps = 30;
+  const t = api.snapClips(timeline([clip("a", 1, 0.5, 3.217), clip("b", 2, 1, 4.4), clip("c", 3, 0, 2.05), clip("d", 4, 2, 6)]), fps);
+  const frames = (timeline) => Object.fromEntries(api.placeClips(timeline).map((p, i) => [p.clip.id, exportFrames(timeline, fps)[i]]));
+  const before = frames(t);
+  const removed = frames(api.removeClip(t, "a"));
+  assert.deepEqual(plain(removed), plain({ b: before.b, c: before.c, d: before.d }));
+  assert.deepEqual(plain(frames(api.moveClip(t, "d", 0))), plain(before));
+  assert.ok(api.placeClips(api.removeClip(t, "a")).every((p) => isWhole(p.offset, fps)));
+});
+
+test("snapping shortens clips to whole frames by less than one, once", () => {
+  const t = timeline([clip("a", 1, 0.5, 3.21), clip("b", 2, 0, 2)]);
+  const snapped = api.snapClips(t, 30);
+  assert.deepEqual(plain(snapped.clips.map((c) => Math.round((c.end - c.start) * 30))), [81, 60]);
+  assert.ok(t.clips[0].end - snapped.clips[0].end < 1 / 30);
+  assert.equal(snapped.clips[1], t.clips[1]);
+  assert.equal(api.snapClips(snapped, 30), snapped);
+  assert.equal(api.snapClips(t, 0), t);
+  // A file of 360 frames at 30000/1001 FPS, rounded to 12.012 s and 29.97 FPS,
+  // keeps all of them.
+  const ntsc = api.snapClips(timeline([clip("n", 1, 0, 12.012)]), 29.97);
+  assert.equal(Math.round((ntsc.clips[0].end - ntsc.clips[0].start) * 29.97 * 1e6) / 1e6, 360);
+  const inserted = api.insertClips(api.emptyTimeline(), [{ material_id: 1, start: 0, end: 12.012 }], 0, 29.97).clips[0];
+  assert.equal(Math.round((inserted.end - inserted.start) * 29.97), 360);
+  const full = api.trimClip(timeline([clip("n", 1, 0, 6)]), "n", "end", 99, 12.012, 29.97).clips[0];
+  assert.equal(Math.round(full.end * 29.97), 360);
+});
+
+test("subtitle cues sit between frames and move by whole frames with their clip", () => {
+  const fps = 60;
+  // An ASS document has centiseconds; the frame a time shows first, from it.
+  const firstFrame = (time) => Math.ceil((Math.round(time * 100) / 100) * fps - 1e-6);
+  const frames = (lead) => {
+    const t = timeline([clip("a", 1, 0, lead), clip("b", 2, 0, 9)], [sub("s", "b", 1.2345, 2.0123), sub("t", "b", 5.5, 7.77)]);
+    return api.projectCues(t, fps).flatMap((cue) => [firstFrame(cue.startTime), firstFrame(cue.endTime)]);
+  };
+  const before = frames(2);
+  for (let moved = 1; moved <= 12; moved++) {
+    assert.deepEqual(plain(frames(2 + moved / fps)), plain(before.map((frame) => frame + moved)), `moved by ${moved} frames`);
+  }
+  // Each shows from the first frame at or after its time.
+  assert.deepEqual(plain(before.slice(0, 2)), [Math.ceil(3.2345 * fps), Math.ceil(4.0123 * fps)]);
+  assert.equal(api.midFrame(0, fps), 0);
+  assert.equal(api.midFrame(1.2345, 0), 1.2345);
+});

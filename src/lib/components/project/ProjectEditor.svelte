@@ -58,6 +58,7 @@
     duplicateOverlay,
     editOverlay,
     findOverlay,
+    frameRateQuery,
     insertClips,
     mergeRemoteTimeline,
     parseSrt,
@@ -71,6 +72,7 @@
     setClipSubtitles,
     settleOverlays,
     shiftOverlay,
+    snapClips,
     splitClip,
     splitOverlay,
     timelineDuration,
@@ -132,6 +134,8 @@
   let binMaterials: BinMaterial[] = $state.raw([]);
   let peaks: Map<number, MaterialPeaks> = $state.raw(new Map());
   let danmuCounts: Map<number, number[]> = $state.raw(new Map());
+  /** The frame rate export renders the project at, which edits land on; 0 until known. */
+  let frameRate = $state(0);
 
   let time = $state(0);
   let playing = $state(false);
@@ -192,7 +196,7 @@
   let subtitleStyle: SubtitleStyle = $derived(
     (timeline.subtitle_style as SubtitleStyle | null) ?? loadSubtitleStyle(roomId),
   );
-  let subtitleAss = $derived(buildSubtitleAss(projectCues(timeline), subtitleStyle));
+  let subtitleAss = $derived(buildSubtitleAss(projectCues(timeline, frameRate), subtitleStyle));
   let overlays = $derived(placeOverlays(timeline));
   let selectedOverlay = $derived(findOverlay(timeline, selectedOverlayId));
   let selectedPlaced = $derived(overlays.find((entry) => entry.item.id === selectedOverlayId) ?? null);
@@ -218,6 +222,40 @@
   let segmentKey = $derived(segments.map((s) => `${s.clipId}:${s.url}:${s.start}:${s.end}`).join("|"));
 
   // ---- Loading -------------------------------------------------------------
+
+  // What the frame rate depends on: the main track's materials and burning danmaku.
+  let frameRateSource = $derived.by(() => {
+    const query = frameRateQuery(timeline);
+    return { query, key: `${query.materialIds.join(",")}|${query.danmu}` };
+  });
+  let frameRateKey = "";
+
+  $effect(() => {
+    const source = frameRateSource;
+    untrack(() => void loadFrameRate(source));
+  });
+
+  /**
+   * Learn the project's frame rate, and shorten its clips to whole frames at
+   * it: clips the backend made, or of a rate since changed.
+   */
+  async function loadFrameRate(source: { query: { materialIds: number[]; danmu: boolean }; key: string }) {
+    if (source.query.materialIds.length === 0 || source.key === frameRateKey) return;
+    frameRateKey = source.key;
+    try {
+      const rate = await invoke<number>("get_project_frame_rate", source.query);
+      if (frameRateKey !== source.key) return;
+      frameRate = rate;
+      const snapped = snapClips(timeline, rate);
+      if (snapped !== timeline) {
+        timeline = snapped;
+        scheduleSave();
+      }
+    } catch (error) {
+      if (frameRateKey === source.key) frameRateKey = "";
+      console.warn("Failed to load the project's frame rate:", error);
+    }
+  }
 
   async function materialInfo(video: VideoItem): Promise<MaterialInfo> {
     return {
@@ -258,8 +296,9 @@
     syncedTimeline = view.timeline;
     const merged = mergeRemoteTimeline(timeline, from, parseTimeline(view.timeline));
     // Clips that left can leave overlays on a track running into each other;
-    // lifting them apart is saved like any edit.
-    const settled = settleOverlays(merged);
+    // lifting them apart is saved like any edit, as is putting clips the
+    // backend made on frames.
+    const settled = snapClips(settleOverlays(merged), frameRate);
     if (settled !== timeline) timeline = settled;
     return settled !== merged;
   }
@@ -440,8 +479,9 @@
   function commit(next: ProjectTimeline, before: ProjectTimeline = timeline) {
     // A run of overlay changes still open is a step of its own before this.
     if (overlayEditBefore) settleOverlayEdit();
-    // Moving or trimming clips can bring overlays on a track together.
-    next = settleOverlays(next);
+    // Moving or trimming clips can bring overlays on a track together. Clips
+    // edited before the frame rate was known go on its frames.
+    next = snapClips(settleOverlays(next), frameRate);
     if (next === before) {
       timeline = before;
       return;
@@ -460,8 +500,9 @@
     if (!previous) return;
     redoStack = [...redoStack, timeline];
     undoStack = undoStack.slice(0, -1);
-    // Danmaku is a setting, not an edit, so history leaves it as it is.
-    timeline = { ...previous, danmu: timeline.danmu };
+    // Danmaku is a setting, not an edit, so history leaves it as it is. A
+    // step from before the clips were put on frames goes on them again.
+    timeline = snapClips({ ...previous, danmu: timeline.danmu }, frameRate);
     scheduleSave();
   }
 
@@ -472,7 +513,7 @@
     if (!next) return;
     undoStack = [...undoStack, timeline];
     redoStack = redoStack.slice(0, -1);
-    timeline = { ...next, danmu: timeline.danmu };
+    timeline = snapClips({ ...next, danmu: timeline.danmu }, frameRate);
     scheduleSave();
   }
 
@@ -526,7 +567,7 @@
     }
     // Insert into the timeline as it is after the wait, which other edits may have changed.
     const at = Math.min(index, timeline.clips.length);
-    let next = insertClips(timeline, [{ material_id: materialId, start: 0, end: info.duration }], at);
+    let next = insertClips(timeline, [{ material_id: materialId, start: 0, end: info.duration }], at, frameRate);
     const added = next.clips.length > timeline.clips.length ? next.clips[at] : undefined;
     if (srt && added) next = setClipSubtitles(next, added.id, parseSrt(srt));
     commit(next);
@@ -543,7 +584,7 @@
       }
       return;
     }
-    const result = splitClip(timeline, time);
+    const result = splitClip(timeline, time, frameRate);
     if (!result.clipId) return;
     commit(result.timeline);
     selectedClipId = result.clipId;
@@ -1093,7 +1134,17 @@
       return;
     }
     const exportedSubtitles = visibleSubtitles(exported).length > 0;
-    const exportedAss = buildSubtitleAss(projectCues(exported), subtitleStyle);
+    // On the frames of the render, also when exporting before the editor
+    // learned them.
+    let fps = frameRate;
+    if (!fps && exportedSubtitles) {
+      try {
+        fps = await invoke<number>("get_project_frame_rate", frameRateQuery(exported));
+      } catch (error) {
+        console.warn("Failed to load the project's frame rate:", error);
+      }
+    }
+    const exportedAss = buildSubtitleAss(projectCues(exported, fps), subtitleStyle);
     const eventId = generateEventId();
     exporting = eventId;
     let unlisten: (() => void) | null = null;
@@ -1649,6 +1700,7 @@
       {timeline}
       {materials}
       {peaks}
+      {frameRate}
       {time}
       {zoom}
       {selectedClipId}

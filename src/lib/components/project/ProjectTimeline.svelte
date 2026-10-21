@@ -41,6 +41,8 @@
     timeline: ProjectTimeline;
     materials: Map<number, MaterialInfo>;
     peaks: Map<number, MaterialPeaks>;
+    /** Trims land on frames at this rate; 0 for none. */
+    frameRate: number;
     time: number;
     /** 1 fits the whole project into view. */
     zoom: number;
@@ -68,6 +70,7 @@
     timeline,
     materials,
     peaks,
+    frameRate,
     time,
     zoom,
     selectedClipId,
@@ -348,7 +351,7 @@
     const result = trimSource(state);
     if (!result) return state.base;
     const material = materials.get(result.clip.clip.material_id);
-    return trimClip(state.base, state.clipId, state.edge, result.source, material?.duration ?? 0);
+    return trimClip(state.base, state.clipId, state.edge, result.source, material?.duration ?? 0, frameRate);
   }
 
   function endClipDrag() {
@@ -369,7 +372,7 @@
     const result = trimSource(state);
     if (!result) return;
     const material = materials.get(result.clip.clip.material_id);
-    const next = trimClip(timeline, state.clipId, state.edge, result.source, material?.duration ?? 0);
+    const next = trimClip(timeline, state.clipId, state.edge, result.source, material?.duration ?? 0, frameRate);
     onCommit(next, timeline);
     // Show the frame at the edit point.
     const item = placeClips(next).find((p) => p.clip.id === state.clipId);

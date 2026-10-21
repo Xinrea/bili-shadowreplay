@@ -15,7 +15,7 @@
   import { onDestroy } from "svelte";
   import { get_static_url, invoke } from "../../invoker";
   import { generateEventId, type OverlayImage, type ProjectItem, type UploadItem } from "../../interface";
-  import { parseTimeline } from "../../project-timeline";
+  import { frameRateQuery, parseTimeline } from "../../project-timeline";
   import { announceTask, openTaskCenter, settleTask } from "../../stores/tasks";
   import {
     parseProfile,
@@ -161,9 +161,14 @@
       let overlays: OverlayImage[] | null = null;
       if (upload.source === "project") {
         const project = await invoke<ProjectItem>("get_project", { id: upload.source_id });
-        subtitleAss = projectSubtitleAss(project);
+        const timeline = parseTimeline(project.timeline);
+        // Its subtitles on the frames the render has, as its editor puts them.
+        const fps = timeline.clips.length
+          ? await invoke<number>("get_project_frame_rate", frameRateQuery(timeline))
+          : 0;
+        subtitleAss = projectSubtitleAss(project, fps);
         try {
-          overlays = await renderOverlayImages(parseTimeline(project.timeline), stickerRefUrl);
+          overlays = await renderOverlayImages(timeline, stickerRefUrl);
         } catch (error) {
           throw error instanceof StickerLoadError
             ? new Error("切片中有贴纸没有加载出来，请在切片编辑窗口中删除后再投稿")

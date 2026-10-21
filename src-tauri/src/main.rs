@@ -1025,6 +1025,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::project::export_project,
         crate::handlers::project::get_material_usage,
         crate::handlers::project::get_material_peaks,
+        crate::handlers::project::get_project_frame_rate,
         crate::handlers::project::get_material_danmu,
         crate::handlers::project::generate_materials,
         crate::handlers::sticker::get_cover_stickers,

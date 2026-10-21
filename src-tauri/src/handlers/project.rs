@@ -18,8 +18,8 @@ use crate::database::upload::UploadRow;
 use crate::database::video::VideoRow;
 use crate::database::{Database, DatabaseError};
 use crate::ffmpeg::project::{
-    limit_segment_caches, render_project, OverlayLayer, ProjectRender, RenderClip, RenderOverlay,
-    VideoLayer,
+    limit_segment_caches, project_frame_rate, render_project, OverlayLayer, ProjectRender,
+    RenderClip, RenderOverlay, VideoLayer,
 };
 use crate::ffmpeg::runner::TempArtifact;
 use crate::handlers::subtitle_fonts::prepare_subtitle_font_directory;
@@ -551,6 +551,25 @@ async fn edit_project_timeline(
         }
     }
     Err("切片正在被修改，请稍后重试".to_string())
+}
+
+/// The frame rate a project of clips of `material_ids`, with danmaku burned or
+/// not, is rendered at; the editor puts edits on its frames.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_project_frame_rate(
+    state: state_type!(),
+    material_ids: Vec<i64>,
+    danmu: bool,
+) -> Result<f64, String> {
+    let materials = materials_by_id(&state, &material_ids).await?;
+    let output = output_dir(&state).await;
+    let mut rates = Vec::with_capacity(materials.len());
+    for material in materials.values() {
+        // Probed as an export probes it, which reads its rate the same way.
+        let (_, fps, _) = probe_material(&mut HashMap::new(), &output.join(&material.file)).await?;
+        rates.push(fps);
+    }
+    Ok(project_frame_rate(rates, danmu))
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -1301,8 +1320,10 @@ async fn render_timeline(
                 entry.insert(crate::material::load_danmus(file(clip.material_id)?).await);
             }
         }
+        // On the frames of the render, which burns danmaku.
+        let fps = project_frame_rate(clips.iter().map(|clip| clip.fps), true);
         job.timeline
-            .map_danmus(|id| by_material.get(&id).map(Vec::as_slice))
+            .map_danmus(fps, |id| by_material.get(&id).map(Vec::as_slice))
     } else {
         Vec::new()
     };

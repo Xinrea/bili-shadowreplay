@@ -133,9 +133,15 @@ pub struct ProjectRender<'a> {
 }
 
 fn output_fps(clips: &[RenderClip], danmu: bool) -> f64 {
-    let fps = clips
-        .iter()
-        .map(|clip| clip.fps)
+    project_frame_rate(clips.iter().map(|clip| clip.fps), danmu)
+}
+
+/// The frame rate a project of clips whose files have `rates` is rendered at,
+/// with danmaku burned or not: the fastest within limits. The editor puts
+/// edits on its frames.
+pub fn project_frame_rate(rates: impl IntoIterator<Item = f64>, danmu: bool) -> f64 {
+    let fps = rates
+        .into_iter()
         .filter(|fps| fps.is_finite() && *fps > 0.0)
         .fold(0.0, f64::max);
     let fps = if fps > 0.0 {
@@ -743,10 +749,12 @@ impl Render<'_> {
                 .document
                 .describe(&mut key, start, fps, segment.frames);
             for image in segment_danmaku(&danmaku.images, start, segment.end(fps)) {
+                // By its first frame, like the text: its time is rounded to
+                // the millisecond.
+                let frame = ((image.start - start) * fps - EPSILON).ceil();
                 let _ = writeln!(
                     key,
-                    "{:.6} {:.3} {:.3} {:.3} {}",
-                    image.start - start,
+                    "{frame} {:.3} {:.3} {:.3} {}",
                     image.top,
                     image.image.width,
                     image.image.height,
@@ -1639,7 +1647,21 @@ mod tests {
     }
 
     fn keys(job: &ProjectRender, ass: &str) -> Vec<String> {
-        let fps = output_fps(&job.clips, false);
+        keys_with_danmaku(job, ass, &[])
+    }
+
+    /// The segments' keys, with `danmus` in project time burned.
+    fn keys_with_danmaku(job: &ProjectRender, ass: &str, danmus: &[DanmuEntry]) -> Vec<String> {
+        let fps = output_fps(&job.clips, !danmus.is_empty());
+        let danmaku = (!danmus.is_empty()).then(|| {
+            let options = Danmu2AssOptions::default();
+            let plan = crate::danmu2ass::danmu_render_plan(danmus, &options, |_| None);
+            Danmaku {
+                document: AssDocument::parse(&plan.ass),
+                images: plan.images,
+                pictures: HashMap::new(),
+            }
+        });
         let render = Render {
             job,
             directory: Path::new("."),
@@ -1651,7 +1673,7 @@ mod tests {
                 options: String::new(),
                 document: AssDocument::parse(ass),
             }),
-            danmaku: None,
+            danmaku,
         };
         let clips: Vec<_> = job
             .clips
@@ -1734,6 +1756,102 @@ mod tests {
             (moved_picture[0] == first[0], moved_picture[1] == first[1]),
             (true, false)
         );
+    }
+
+    #[test]
+    fn subtitles_and_danmaku_moved_by_whole_frames_keep_their_keys() {
+        // Burning danmaku, at 60 FPS.
+        let fps = 60.0;
+        let ids = [anchor_id(0), plain_ids(1)[0].clone(), anchor_id(100)];
+        let lead = plain_ids(3)[2].clone();
+        // Material times of the subtitles, on the second clip, and the danmaku.
+        let cues = [(0.4567, 1.2345), (2.0123, 2.7777)];
+        let danmu_times = [123, 777, 1_450, 2_901];
+        let render = |frames: u32, between_frames: bool| {
+            let clips: Vec<_> = std::iter::once((lead.as_str(), 1.0 + f64::from(frames) / fps))
+                .chain(ids.iter().map(String::as_str).zip([2.0, 3.0, 2.5]))
+                .collect();
+            let timeline = crate::project::Timeline {
+                clips: clips
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (id, duration))| crate::project::TimelineClip {
+                        id: id.to_string(),
+                        material_id: index as i64,
+                        start: 0.0,
+                        end: *duration,
+                    })
+                    .collect(),
+                ..crate::project::Timeline::default()
+            };
+            let material = |ts: &[i64]| -> Vec<DanmuEntry> {
+                ts.iter()
+                    .map(|ts| DanmuEntry {
+                        ts: *ts,
+                        event_type: "danmu".into(),
+                        content: format!("弹幕{ts}"),
+                        emoji_content: None,
+                        user_name: None,
+                        price: None,
+                        sc_duration: None,
+                    })
+                    .collect()
+            };
+            let on_second = material(&danmu_times);
+            let danmus = timeline.map_danmus(fps, |id| (id == 2).then_some(&on_second[..]));
+            // As the editor writes them, between frames, or as they are.
+            let offset = clips[0].1 + clips[1].1;
+            let at = |time: f64| {
+                let time = offset + time;
+                let time = if between_frames {
+                    ((time * fps - EPSILON).ceil() - 0.5) / fps
+                } else {
+                    time
+                };
+                let centis = (time * 100.0).round() as u64;
+                format!(
+                    "0:{:02}:{:02}.{:02}",
+                    centis / 6000,
+                    centis / 100 % 60,
+                    centis % 100
+                )
+            };
+            let mut ass =
+                "[Script Info]\n\n[Events]\nFormat: Layer, Start, End, Style, Text\n".to_string();
+            for (start, end) in cues {
+                ass.push_str(&format!(
+                    "Dialogue: 0,{},{},Default,cue\n",
+                    at(start),
+                    at(end)
+                ));
+            }
+            let job = ProjectRender {
+                clips: clips
+                    .iter()
+                    .map(|(id, duration)| timed(id, *duration))
+                    .collect(),
+                overlays: Vec::new(),
+                subtitle_ass: None,
+                fonts_directory: None,
+                danmus: Vec::new(),
+                danmu_options: Danmu2AssOptions::default(),
+                output: Path::new("out.mp4"),
+                segment_cache: None,
+            };
+            // The lead clip's segment changes; those after it are compared.
+            keys_with_danmaku(&job, &ass, &danmus)[1..].to_vec()
+        };
+        // The lead clip's segment, one with the subtitles and danmaku, and one
+        // after.
+        let before = render(0, true);
+        assert_eq!(before.len(), 2);
+        for frames in 1..=12 {
+            assert_eq!(render(frames, true), before, "moved by {frames} frames");
+        }
+        // Subtitles at their own times change their segment's key for some
+        // of these moves, as they fall on other frames once rounded.
+        let loose = render(0, false);
+        assert!((1..=12).any(|frames| render(frames, false)[0] != loose[0]));
     }
 
     #[tokio::test]

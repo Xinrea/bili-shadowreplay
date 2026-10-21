@@ -57,13 +57,16 @@ export function draftProfile(roomId: string, title: string, saved = ""): Profile
   return { ...profile, title, videos: [] };
 }
 
-/** The subtitles of a project as its editor renders them, or null without any. */
-export function projectSubtitleAss(project: ProjectItem): string | null {
+/**
+ * The subtitles of a project as its editor renders them at the project's frame
+ * rate `fps`, or null without any.
+ */
+export function projectSubtitleAss(project: ProjectItem, fps: number): string | null {
   const timeline = parseTimeline(project.timeline);
   if (visibleSubtitles(timeline).length === 0) return null;
   const style =
     (timeline.subtitle_style as SubtitleStyle | null) ?? loadSubtitleStyle(project.room_id);
-  return buildSubtitleAss(projectCues(timeline), style);
+  return buildSubtitleAss(projectCues(timeline, fps), style);
 }
 
 export function uploadTitle(upload: UploadItem) {

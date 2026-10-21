@@ -74,11 +74,12 @@ test("only projects with visible subtitles carry an ASS document", async () => {
   const api = await loadModule();
   const clips = [{ id: "c1", material_id: 1, start: 10, end: 20 }];
   const project = (subtitles) => ({ room_id: "1", timeline: JSON.stringify({ version: 1, clips, subtitles, danmu: false }) });
-  assert.equal(api.projectSubtitleAss(project([])), null);
+  assert.equal(api.projectSubtitleAss(project([]), 30), null);
   // Outside the clip's range, so not exported.
-  assert.equal(api.projectSubtitleAss(project([{ id: "s1", clip_id: "c1", start: 30, end: 32, text: "hidden" }])), null);
-  const ass = api.projectSubtitleAss(project([{ id: "s1", clip_id: "c1", start: 12, end: 14, text: "你好" }]));
-  assert.match(ass, /^Dialogue: 0,0:00:02\.00,0:00:04\.00,.*你好$/m);
+  assert.equal(api.projectSubtitleAss(project([{ id: "s1", clip_id: "c1", start: 30, end: 32, text: "hidden" }]), 30), null);
+  // From 2 s to 4 s, between the frames before them at 30 FPS, as the editor writes them.
+  const ass = api.projectSubtitleAss(project([{ id: "s1", clip_id: "c1", start: 12, end: 14, text: "你好" }]), 30);
+  assert.match(ass, /^Dialogue: 0,0:00:01\.98,0:00:03\.98,.*你好$/m);
 });
 
 test("the source description says how the video is found", async () => {

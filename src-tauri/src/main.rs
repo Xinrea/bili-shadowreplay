@@ -967,6 +967,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::config::update_whisper_prompt,
         crate::handlers::config::update_subtitle_generator_type,
         crate::handlers::config::update_powerlive_hotwords,
+        crate::handlers::config::update_powerlive_sentence_max_length,
         crate::handlers::config::update_openai_api_key,
         crate::handlers::config::update_openai_api_endpoint,
         crate::handlers::config::update_auto_generate,

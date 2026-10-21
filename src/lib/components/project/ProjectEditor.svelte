@@ -107,7 +107,7 @@
   import { formatTimecode } from "../../time-format";
   import type { RecordItem } from "../../db";
   import { platformLabel } from "../../platform";
-  import { buildSubtitleContext, MAX_CONTEXT_CHARS } from "../../powerlive-subtitle";
+  import { buildSubtitleContext, MAX_CONTEXT_CHARS, SENTENCE_MAX_LENGTH } from "../../powerlive-subtitle";
   import { createStateRefresh, watchStateChanges } from "../../state-refresh";
   import { announceTask, openTaskCenter, settleTask, wasCancelled } from "../../stores/tasks";
   import AssSubtitlePreview from "../AssSubtitlePreview.svelte";
@@ -123,6 +123,7 @@
   import TitleBar from "../TitleBar.svelte";
   import AudioPanel, { type AudioEntry } from "./AudioPanel.svelte";
   import PowerLiveHotwords from "../PowerLiveHotwords.svelte";
+  import PowerLiveSentenceLength from "../PowerLiveSentenceLength.svelte";
   import ItemInspector, { type InspectedItem } from "./ItemInspector.svelte";
   import MaterialBin, { type BinMaterial } from "./MaterialBin.svelte";
   import { renderOverlayImages, StickerLoadError } from "./overlay-render";
@@ -204,6 +205,7 @@
   /** Whether recognizing goes through a signed-in PowerLive, which takes hints. */
   let aiPowerLive = $state(false);
   let aiHotwords: string[] = $state([]);
+  let aiSentenceLength = $state(SENTENCE_MAX_LENGTH.default);
   let aiContext = $state("");
   let aiContextLoading = $state(false);
   let exporting: string | null = $state(null);
@@ -1331,6 +1333,7 @@
         config.subtitle_generator_type === "powerlive" &&
         (!TAURI_ENV || (await invoke<{ logged_in: boolean }>("get_powerlive_status")).logged_in);
       aiHotwords = config.powerlive_hotwords ?? [];
+      aiSentenceLength = config.powerlive_sentence_max_length ?? SENTENCE_MAX_LENGTH.default;
     } catch (error) {
       console.warn("Failed to load the subtitle settings:", error);
       aiPowerLive = false;
@@ -2152,6 +2155,13 @@
                 <span class="text-[11px] text-fg-muted">全局设置，所有切片共用</span>
               </div>
               <PowerLiveHotwords bind:hotwords={aiHotwords} />
+            </div>
+            <div class="flex items-center justify-between gap-3">
+              <label for="ai-subtitle-sentence-length" class="ui-label">
+                每条字幕最多字数
+                <span class="ml-1.5 text-[11px] font-normal text-fg-muted">全局设置，范围 4–50</span>
+              </label>
+              <PowerLiveSentenceLength id="ai-subtitle-sentence-length" bind:value={aiSentenceLength} />
             </div>
             <div>
               <div class="mb-1.5 flex items-center justify-between gap-3">

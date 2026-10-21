@@ -1356,7 +1356,7 @@ impl RecorderManager {
             openai_api_key,
             openai_api_endpoint,
             whisper_language,
-            powerlive_hotwords,
+            powerlive,
         ) = {
             let config = self.config.read().await;
             (
@@ -1367,7 +1367,7 @@ impl RecorderManager {
                 config.openai_api_key.clone(),
                 config.openai_api_endpoint.clone(),
                 config.whisper_language.clone(),
-                config.powerlive_hotwords.clone(),
+                PowerLiveOptions::new(&self.db, &config),
             )
         };
 
@@ -1419,7 +1419,7 @@ impl RecorderManager {
             &openai_api_key,
             &openai_api_endpoint,
             &whisper_language,
-            Some(PowerLiveOptions::new(&self.db, powerlive_hotwords)),
+            Some(powerlive),
         )
         .await;
         // write subtitle file

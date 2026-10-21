@@ -26,6 +26,9 @@ pub struct Config {
     /// Words PowerLive should favor when recognizing, shared by every room.
     #[serde(default)]
     pub powerlive_hotwords: Vec<String>,
+    /// The most characters a PowerLive subtitle line may have.
+    #[serde(default = "default_powerlive_sentence_max_length")]
+    pub powerlive_sentence_max_length: u32,
     #[serde(default = "default_openai_api_endpoint")]
     pub openai_api_endpoint: String,
     #[serde(default = "default_openai_api_key")]
@@ -119,6 +122,10 @@ fn default_whisper_model() -> String {
     "whisper_model.bin".to_string()
 }
 
+fn default_powerlive_sentence_max_length() -> u32 {
+    crate::subtitle_generator::powerlive::DEFAULT_SENTENCE_MAX_LENGTH
+}
+
 fn default_whisper_prompt() -> String {
     "这是一段中文 你们好".to_string()
 }
@@ -199,6 +206,7 @@ impl Config {
             whisper_model: default_whisper_model(),
             whisper_prompt: default_whisper_prompt(),
             powerlive_hotwords: Vec::new(),
+            powerlive_sentence_max_length: default_powerlive_sentence_max_length(),
             openai_api_endpoint: default_openai_api_endpoint(),
             openai_api_key: default_openai_api_key(),
             clip_name_format: default_clip_name_format(),

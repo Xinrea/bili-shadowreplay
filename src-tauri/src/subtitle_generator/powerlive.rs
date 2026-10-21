@@ -14,6 +14,9 @@ use crate::{
 pub const MAX_HOTWORDS: usize = 500;
 /// The service rejects a longer context instead of shortening it.
 pub const MAX_CONTEXT_CHARS: usize = 400;
+/// The range of characters per subtitle line the service accepts.
+pub const SENTENCE_MAX_LENGTH_RANGE: std::ops::RangeInclusive<u32> = 4..=50;
+pub const DEFAULT_SENTENCE_MAX_LENGTH: u32 = 10;
 
 /// What a PowerLive request carries besides the audio.
 pub struct PowerLiveOptions<'a> {
@@ -22,16 +25,28 @@ pub struct PowerLiveOptions<'a> {
     pub hotwords: Vec<String>,
     /// A sentence or two about the recording, empty for none.
     pub context: String,
+    /// The most characters a subtitle line may have.
+    pub sentence_max_length: u32,
 }
 
 impl<'a> PowerLiveOptions<'a> {
-    pub fn new(db: &'a crate::database::Database, hotwords: Vec<String>) -> Self {
+    /// The options the settings give, without a context.
+    pub fn new(db: &'a crate::database::Database, config: &crate::config::Config) -> Self {
         Self {
             db,
-            hotwords,
+            hotwords: config.powerlive_hotwords.clone(),
             context: String::new(),
+            sentence_max_length: config.powerlive_sentence_max_length,
         }
     }
+}
+
+/// The nearest length the service accepts.
+pub fn clamp_sentence_max_length(length: u32) -> u32 {
+    length.clamp(
+        *SENTENCE_MAX_LENGTH_RANGE.start(),
+        *SENTENCE_MAX_LENGTH_RANGE.end(),
+    )
 }
 
 /// Trim, collapse inner spaces and drop empty or repeated words, keeping order.
@@ -53,6 +68,7 @@ pub struct PowerLive<'a> {
     api_base: String,
     hotwords: Vec<String>,
     context: String,
+    sentence_max_length: u32,
 }
 
 pub async fn new(options: PowerLiveOptions<'_>) -> Result<PowerLive<'_>, String> {
@@ -74,6 +90,7 @@ pub async fn new(options: PowerLiveOptions<'_>) -> Result<PowerLive<'_>, String>
             .chars()
             .take(MAX_CONTEXT_CHARS)
             .collect(),
+        sentence_max_length: clamp_sentence_max_length(options.sentence_max_length),
     })
 }
 
@@ -121,7 +138,7 @@ impl SubtitleGenerator for PowerLive<'_> {
                     .file_name(file_name.clone());
                 let mut form = Form::new()
                     .text("format", file_extension.clone())
-                    .text("sentence_max_length", "10");
+                    .text("sentence_max_length", self.sentence_max_length.to_string());
                 // One field per word: a joined field is capped at 4000 characters.
                 for hotword in &self.hotwords {
                     form = form.text("hotwords", hotword.clone());
@@ -230,6 +247,8 @@ mod tests {
                     match field.name().unwrap() {
                         "hotwords" => hotwords.push(field.text().await.unwrap()),
                         "context" => context = Some(field.text().await.unwrap()),
+                        // Clamped into the range the service accepts.
+                        "sentence_max_length" => assert_eq!(field.text().await.unwrap(), "50"),
                         _ => {}
                     }
                 }
@@ -249,6 +268,7 @@ mod tests {
             db: &db,
             hotwords: ["司徒钰芊", " 砂金", "司徒钰芊"].map(String::from).to_vec(),
             context: "直".repeat(MAX_CONTEXT_CHARS + 20),
+            sentence_max_length: 80,
         })
         .await
         .unwrap();
@@ -305,7 +325,14 @@ mod tests {
         let audio = directory.path().join("audio.opus");
         tokio::fs::write(&audio, b"test-audio").await.unwrap();
         let db = signed_in_db("test-account-token").await;
-        let mut generator = new(PowerLiveOptions::new(&db, Vec::new())).await.unwrap();
+        let mut generator = new(PowerLiveOptions {
+            db: &db,
+            hotwords: Vec::new(),
+            context: String::new(),
+            sentence_max_length: DEFAULT_SENTENCE_MAX_LENGTH,
+        })
+        .await
+        .unwrap();
         generator.api_base = endpoint;
         let result = generator
             .generate_subtitle(

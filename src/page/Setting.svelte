@@ -26,6 +26,7 @@
   import { onMount } from "svelte";
   import PowerLiveAccount from "../lib/components/PowerLiveAccount.svelte";
   import PowerLiveHotwords from "../lib/components/PowerLiveHotwords.svelte";
+  import PowerLiveSentenceLength from "../lib/components/PowerLiveSentenceLength.svelte";
   import PageTitlebar from "../lib/components/PageTitlebar.svelte";
   import { registerCommands } from "../lib/stores/commands";
   import {
@@ -110,6 +111,7 @@
         { id: "auto-subtitle", title: "自动生成字幕", keywords: ["subtitle", "auto"] },
         { id: "subtitle-generator", title: "字幕生成器类型", keywords: ["subtitle", "generator", "whisper"] },
         { id: "powerlive-hotwords", title: "PowerLive 热词", keywords: ["powerlive", "hotword", "subtitle"] },
+        { id: "powerlive-sentence-length", title: "每条字幕最多字数", keywords: ["powerlive", "sentence", "length"] },
         { id: "whisper-model", title: "Whisper 模型路径", keywords: ["whisper", "model"] },
         { id: "whisper-endpoint", title: "OpenAI API 端点", keywords: ["whisper", "endpoint"] },
         { id: "whisper-api-key", title: "OpenAI API 密钥", keywords: ["whisper", "key"] },
@@ -228,6 +230,7 @@
     whisper_model: "",
     whisper_prompt: "",
     powerlive_hotwords: [],
+    powerlive_sentence_max_length: 10,
     clip_name_format: "",
     auto_generate: {
       enabled: false,
@@ -1314,6 +1317,17 @@
                     识别时会优先认出这些词，并用它们校对同音字，让主播名、游戏和角色名不再被写错。所有房间共用；每次识别还可以在切片编辑器的「AI 字幕」窗口中补充上下文
                   </p>
                   <PowerLiveHotwords bind:hotwords={setting_model.powerlive_hotwords} />
+                </div>
+                <div class="px-4 py-3" data-setting="powerlive-sentence-length">
+                  <div class="flex items-center justify-between gap-6">
+                    <div>
+                      <h3 class="ui-label">每条字幕最多字数</h3>
+                      <p class="ui-hint mt-0.5">
+                        PowerLive 按这个长度切分字幕，数值小时每条更短、更适合竖屏，范围 4–50
+                      </p>
+                    </div>
+                    <PowerLiveSentenceLength bind:value={setting_model.powerlive_sentence_max_length} />
+                  </div>
                 </div>
               {/if}
               <!-- Whisper Model Path -->

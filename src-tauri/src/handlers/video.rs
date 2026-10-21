@@ -1041,7 +1041,7 @@ async fn generate_video_subtitle_inner(
         openai_api_endpoint,
         language_hint,
         output,
-        powerlive_hotwords,
+        powerlive,
     ) = {
         let config = state.config.read().await;
         (
@@ -1052,7 +1052,10 @@ async fn generate_video_subtitle_inner(
             config.openai_api_endpoint.clone(),
             config.whisper_language.clone(),
             config.output.clone(),
-            config.powerlive_hotwords.clone(),
+            PowerLiveOptions {
+                context,
+                ..PowerLiveOptions::new(&state.db, &config)
+            },
         )
     };
     let video = state.db.get_video(id).await?;
@@ -1084,10 +1087,7 @@ async fn generate_video_subtitle_inner(
         &openai_api_key,
         &openai_api_endpoint,
         &language_hint,
-        Some(PowerLiveOptions {
-            context,
-            ..PowerLiveOptions::new(&state.db, powerlive_hotwords)
-        }),
+        Some(powerlive),
     )
     .await
     {

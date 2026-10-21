@@ -319,6 +319,20 @@ pub async fn update_powerlive_hotwords(
     Ok(hotwords)
 }
 
+/// Save the PowerLive subtitle line length and return it as stored.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn update_powerlive_sentence_max_length(
+    state: state_type!(),
+    sentence_max_length: u32,
+) -> Result<u32, String> {
+    let length =
+        crate::subtitle_generator::powerlive::clamp_sentence_max_length(sentence_max_length);
+    let mut config = state.config.write().await;
+    config.powerlive_sentence_max_length = length;
+    config.try_save()?;
+    Ok(length)
+}
+
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_subtitle_generator_type(
     state: state_type!(),

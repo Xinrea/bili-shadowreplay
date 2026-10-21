@@ -2,6 +2,8 @@
 export const MAX_HOTWORDS = 500;
 /** PowerLive rejects a longer context. */
 export const MAX_CONTEXT_CHARS = 400;
+/** The characters per subtitle line PowerLive accepts. */
+export const SENTENCE_MAX_LENGTH = { min: 4, max: 50, default: 10 };
 
 const SEPARATORS = /[,，、;；\n\r]+/;
 const PUNCTUATION = /\p{P}/u;

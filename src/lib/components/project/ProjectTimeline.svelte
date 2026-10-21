@@ -7,20 +7,37 @@
     duration: number;
   }
 
+  /** A file of the audio library, as the timeline shows it. */
+  export interface AudioInfo {
+    id: number;
+    name: string;
+    url: string;
+    duration: number;
+  }
+
   /** dataTransfer type used when dragging a material onto the timeline. */
   export const MATERIAL_DRAG_TYPE = "application/x-bsr-material";
+  /** dataTransfer type used when dragging a file of the audio library onto the audio tracks. */
+  export const AUDIO_DRAG_TYPE = "application/x-bsr-audio";
+
+  /** What a sound dropped on the audio tracks plays: a file of the audio library, or a material's sound. */
+  export type AudioDrop = { kind: "file"; id: number } | { kind: "material"; id: number };
 </script>
 
 <script lang="ts">
-  import { Film, Smile, Type } from "lucide-svelte";
+  import { AudioLines, Film, Music, Smile, Type } from "lucide-svelte";
   import type { MaterialPeaks, ProjectTimeline } from "../../interface";
   import {
     idsAt,
+    moveAudio,
     moveClip,
     moveOverlay,
     moveSubtitle,
     overlayCount,
+    placeAudio,
     placeOverlays,
+    trimAudio,
+    withAudioFrom,
     withOverlayFrom,
     withSubtitleFrom,
     placeClips,
@@ -32,6 +49,7 @@
     visibleSubtitles,
     MIN_OVERLAY_DURATION,
     type OverlayTarget,
+    type PlacedAudio,
     type PlacedClip,
     type PlacedOverlay,
     type PlacedSubtitle,
@@ -42,6 +60,9 @@
     timeline: ProjectTimeline;
     materials: Map<number, MaterialInfo>;
     peaks: Map<number, MaterialPeaks>;
+    audioFiles: Map<number, AudioInfo>;
+    /** Waveforms of the audio library's files. */
+    audioPeaks: Map<number, MaterialPeaks>;
     /** Trims land on frames at this rate; 0 for none. */
     frameRate: number;
     time: number;
@@ -50,6 +71,7 @@
     selectedClipId: string | null;
     selectedSubtitleId: string | null;
     selectedOverlayId: string | null;
+    selectedAudioId: string | null;
     /** URL of each sticker reference, for the overlays' thumbnails. */
     stickerUrls: Map<string, string>;
     onSeek: (time: number) => void;
@@ -61,9 +83,12 @@
     onSelectClip: (id: string | null) => void;
     onSelectSubtitle: (id: string | null) => void;
     onSelectOverlay: (id: string | null) => void;
+    onSelectAudio: (id: string | null) => void;
     onDropMaterial: (materialId: number, index: number) => void;
     /** A material dropped on the overlay tracks, to show over the main track from `time`. */
     onDropOverlay: (materialId: number, time: number, target: OverlayTarget) => void;
+    /** A sound dropped on the audio tracks, to play from `time`. */
+    onDropAudio: (source: AudioDrop, time: number, target: OverlayTarget) => void;
     onZoom: (zoom: number) => void;
   }
 
@@ -71,12 +96,15 @@
     timeline,
     materials,
     peaks,
+    audioFiles,
+    audioPeaks,
     frameRate,
     time,
     zoom,
     selectedClipId,
     selectedSubtitleId,
     selectedOverlayId,
+    selectedAudioId,
     stickerUrls,
     onSeek,
     onScrub,
@@ -85,8 +113,10 @@
     onSelectClip,
     onSelectSubtitle,
     onSelectOverlay,
+    onSelectAudio,
     onDropMaterial,
     onDropOverlay,
+    onDropAudio,
     onZoom,
   }: Props = $props();
 
@@ -94,6 +124,7 @@
   const LANE_HEIGHT = 28;
   const VIDEO_TRACK_HEIGHT = 76;
   const OVERLAY_TRACK_HEIGHT = 34;
+  const AUDIO_TRACK_HEIGHT = 40;
   /** The row above the overlay tracks, where a new track is made. */
   const NEW_TRACK_HEIGHT = 22;
   const EDGE_PX = 7;
@@ -116,6 +147,9 @@
   let overlayArea: HTMLElement = $state();
   /** Where a material dragged over the overlay tracks would go. */
   let overlayDrop: { time: number; target: OverlayTarget } | null = $state(null);
+  let audioArea: HTMLElement = $state();
+  /** Where a sound dragged over the audio tracks would go. */
+  let audioDrop: { time: number; target: OverlayTarget } | null = $state(null);
 
   type ClipDrag = {
     kind: "move";
@@ -144,8 +178,10 @@
     end: number;
     moved: boolean;
   };
+  /** A drag of an overlay, or of an audio item, which are dragged the same way. */
   type OverlayDrag = {
     kind: "overlay";
+    lane: "overlay" | "audio";
     id: string;
     mode: "move" | "start" | "end";
     base: ProjectTimeline;
@@ -161,6 +197,8 @@
     target: OverlayTarget;
   };
   let drag: ClipDrag | TrimDrag | SubtitleDrag | OverlayDrag | null = $state(null);
+  /** An overlay or audio item being moved, which shows where it goes. */
+  let moving = $derived(drag?.kind === "overlay" && drag.moved && drag.mode === "move" ? drag : null);
 
   let duration = $derived(timelineDuration(timeline));
   let pxPerSecond = $derived(
@@ -173,14 +211,22 @@
   let laneCount = $derived(Math.max(1, ...lanes.map((lane) => lane + 1)));
   let subtitleTrackHeight = $derived(laneCount * LANE_HEIGHT + 8);
   let overlays = $derived(placeOverlays(timeline));
+  let audio = $derived(placeAudio(timeline));
   // What plays at the playhead, changing only as it crosses an edge: each key
   // is the same string until then, so nothing derived from it updates.
   let subtitlesKey = $derived(idsAt(subtitles, time, (item) => item.subtitle.id));
   let overlaysKey = $derived(idsAt(overlays, time, (item) => item.item.id));
+  let audioKey = $derived(idsAt(audio, time, (item) => item.item.id));
   let playingSubtitles = $derived(new Set(subtitlesKey.split("\n")));
   let playingOverlays = $derived(new Set(overlaysKey.split("\n")));
+  let playingAudio = $derived(new Set(audioKey.split("\n")));
   let trackCount = $derived(timeline.tracks.length);
   let hiddenOverlays = $derived(overlayCount(timeline) - overlays.length);
+  // Audio tracks from the top, nearest the main track.
+  let audioRows = $derived(Array.from({ length: timeline.audio_tracks.length }, (_, row) => row));
+  let hiddenAudio = $derived(
+    timeline.audio_tracks.reduce((total, track) => total + track.items.length, 0) - audio.length,
+  );
   // Rows from the top: the highest track, drawn over the others, first.
   let trackRows = $derived(Array.from({ length: trackCount }, (_, row) => trackCount - 1 - row));
   let tickStep = $derived(TICK_STEPS.find((step) => step * pxPerSecond >= 84) ?? 3600);
@@ -290,6 +336,7 @@
     onSelectClip(null);
     onSelectSubtitle(null);
     onSelectOverlay(null);
+    onSelectAudio(null);
     onSeek(Math.min(timeAt(event.clientX), duration));
   }
 
@@ -303,6 +350,7 @@
     onSelectClip(item.clip.id);
     onSelectSubtitle(null);
     onSelectOverlay(null);
+    onSelectAudio(null);
     if (edge) {
       drag = {
         kind: "trim",
@@ -427,6 +475,7 @@
     onSelectSubtitle(item.subtitle.id);
     onSelectClip(null);
     onSelectOverlay(null);
+    onSelectAudio(null);
     drag = {
       kind: "subtitle",
       id: item.subtitle.id,
@@ -478,17 +527,20 @@
     else onSeek(state.start);
   }
 
-  // Overlays: move by the body, also onto another track, trim by an edge.
-  function startOverlayDrag(event: PointerEvent, item: PlacedOverlay) {
+  // Overlays and audio items: move by the body, also onto another track of
+  // theirs, trim by an edge.
+  function startOverlayDrag(event: PointerEvent, item: PlacedOverlay | PlacedAudio, lane: OverlayDrag["lane"]) {
     if (event.button !== 0) return;
     event.stopPropagation();
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
     const x = event.clientX - rect.left;
     const edgeSize = Math.min(EDGE_PX, rect.width / 3);
     const mode = x < edgeSize ? "start" : rect.width - x < edgeSize ? "end" : "move";
-    onSelectOverlay(item.item.id);
+    if (lane === "audio") onSelectAudio(item.item.id);
+    else onSelectOverlay(item.item.id);
     drag = {
       kind: "overlay",
+      lane,
       id: item.item.id,
       mode,
       base: timeline,
@@ -507,11 +559,27 @@
 
   function overlaySnapTargets(excludeId: string) {
     const targets = [time, ...clipEdges()];
-    for (const item of overlays) {
+    for (const item of [...overlays, ...audio]) {
       if (item.item.id !== excludeId) targets.push(item.start, item.end);
     }
     for (const item of subtitles) targets.push(item.start, item.end);
     return targets;
+  }
+
+  /** The audio track under the pointer, or a new one below them all. */
+  function audioTargetAt(clientY: number): OverlayTarget {
+    const row = Math.floor((clientY - audioArea.getBoundingClientRect().top) / AUDIO_TRACK_HEIGHT);
+    return row >= 0 && row < audioRows.length ? { track: row } : { insert: audioRows.length };
+  }
+
+  /** Top of the gap a new audio track at `index` would fill, within the audio area. */
+  function audioInsertionY(index: number) {
+    return index * AUDIO_TRACK_HEIGHT;
+  }
+
+  /** The length of what an audio item plays, `0` when unknown. */
+  function soundDuration(item: PlacedAudio["item"]) {
+    return (item.kind === "file" ? audioFiles.get(item.audio_id) : materials.get(item.material_id))?.duration ?? 0;
   }
 
   /** The overlay track under the pointer, or a new one above or below them all. */
@@ -540,24 +608,32 @@
     }
     const targets = overlaySnapTargets(state.id);
     const enabled = !event.shiftKey;
+    const sound = state.lane === "audio";
     if (state.mode === "move") {
       const length = state.end - state.start;
       const snapped = snapSpan(Math.max(0, state.start + delta), length, targets, enabled);
       const ghost = Math.max(0, Math.min(snapped, duration - length));
-      let target = trackTargetAt(event.clientY);
-      // Where the track is taken, the overlay gets a new one above it.
-      if ("track" in target && !trackIsFree(overlays, target.track, ghost, ghost + length, state.id)) {
+      let target = sound ? audioTargetAt(event.clientY) : trackTargetAt(event.clientY);
+      // Where the track is taken, an overlay gets a new one above it, and
+      // an audio item one below it.
+      if ("track" in target && !trackIsFree(sound ? audio : overlays, target.track, ghost, ghost + length, state.id)) {
         target = { insert: target.track + 1 };
       }
       drag = { ...state, moved: true, ghost, target };
       return;
     }
     const edgeTime = snap((state.mode === "start" ? state.start : state.end) + delta, targets, enabled);
-    const item = overlays.find((entry) => entry.item.id === state.id)?.item;
-    const material = item?.kind === "video" ? materials.get(item.material_id) : undefined;
-    // From the overlay as the drag began, so the preview does not add up.
-    const from = withOverlayFrom(timeline, state.base, state.id);
-    onPreview(trimOverlayEdge(from, state.id, state.mode, edgeTime, material?.duration ?? 0));
+    // From the item as the drag began, so the preview does not add up.
+    if (sound) {
+      const item = audio.find((entry) => entry.item.id === state.id)?.item;
+      const from = withAudioFrom(timeline, state.base, state.id);
+      onPreview(trimAudio(from, state.id, state.mode, edgeTime, item ? soundDuration(item) : 0));
+    } else {
+      const item = overlays.find((entry) => entry.item.id === state.id)?.item;
+      const material = item?.kind === "video" ? materials.get(item.material_id) : undefined;
+      const from = withOverlayFrom(timeline, state.base, state.id);
+      onPreview(trimOverlayEdge(from, state.id, state.mode, edgeTime, material?.duration ?? 0));
+    }
     drag = { ...state, moved: true };
   }
 
@@ -573,14 +649,15 @@
       if (time < state.start || time >= state.end) onSeek(state.start);
       return;
     }
-    const before = withOverlayFrom(timeline, state.base, state.id);
+    const sound = state.lane === "audio";
+    const before = (sound ? withAudioFrom : withOverlayFrom)(timeline, state.base, state.id);
     if (state.mode !== "move") {
       onCommit(timeline, before);
       return;
     }
     const stayed = "track" in state.target && state.target.track === state.track;
     if (stayed && Math.abs(state.ghost - state.start) < 1e-6) return;
-    onCommit(moveOverlay(before, state.id, state.ghost, state.target), before);
+    onCommit((sound ? moveAudio : moveOverlay)(before, state.id, state.ghost, state.target), before);
   }
 
   function overlayDragOver(event: DragEvent) {
@@ -598,6 +675,43 @@
     if (!Number.isFinite(id) || id <= 0 || !drop) return;
     event.preventDefault();
     onDropOverlay(id, drop.time, drop.target);
+  }
+
+  // Sounds dragged in from the audio library, or materials whose sound plays.
+  function audioDragOver(event: DragEvent) {
+    const types = event.dataTransfer?.types ?? [];
+    if ((!types.includes(AUDIO_DRAG_TYPE) && !types.includes(MATERIAL_DRAG_TYPE)) || duration < MIN_OVERLAY_DURATION) {
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    const at = Math.min(timeAt(event.clientX), duration - MIN_OVERLAY_DURATION);
+    audioDrop = { time: at, target: audioTargetAt(event.clientY) };
+  }
+
+  function audioDropSound(event: DragEvent) {
+    const drop = audioDrop;
+    audioDrop = null;
+    const file = Number(event.dataTransfer?.getData(AUDIO_DRAG_TYPE));
+    const material = Number(event.dataTransfer?.getData(MATERIAL_DRAG_TYPE));
+    const source: AudioDrop | null =
+      file > 0 ? { kind: "file", id: file } : material > 0 ? { kind: "material", id: material } : null;
+    if (!source || !drop) return;
+    event.preventDefault();
+    onDropAudio(source, drop.time, drop.target);
+  }
+
+  function soundLabel(item: PlacedAudio["item"]) {
+    if (item.kind === "file") return audioFiles.get(item.audio_id)?.name ?? "音频已删除";
+    return materials.get(item.material_id)?.name ?? "素材已删除";
+  }
+
+  /** The fades of an audio item over its part heard, in seconds, as export shares them out. */
+  function fades(item: PlacedAudio) {
+    const length = item.end - item.start;
+    const [fadeIn, fadeOut] = [item.item.fade_in ?? 0, item.item.fade_out ?? 0];
+    const scale = fadeIn + fadeOut > length ? length / (fadeIn + fadeOut) : 1;
+    return { fadeIn: fadeIn * scale, fadeOut: fadeOut * scale };
   }
 
   function overlayLabel(item: PlacedOverlay["item"]) {
@@ -640,8 +754,12 @@
     }
   }
 
-  // Waveform of the visible part of a clip.
-  function waveform(canvas: HTMLCanvasElement, params: { item: PlacedClip; data: MaterialPeaks | undefined; width: number }) {
+  // Waveform of `length` seconds of a source from `from`: the visible part of
+  // a clip, or the part heard of an audio item.
+  function waveform(
+    canvas: HTMLCanvasElement,
+    params: { data: MaterialPeaks | undefined; from: number; length: number; width: number },
+  ) {
     let current = params;
     let drawn = params;
     // While zooming, the canvas stretches with its clip until the zoom settles.
@@ -657,7 +775,7 @@
     observer.observe(canvas);
     function draw(params: typeof current) {
       drawn = params;
-      const { item, data, width } = params;
+      const { data, width } = params;
       const ratio = window.devicePixelRatio || 1;
       // Browsers cap canvas size; long clips at high zoom are drawn coarser.
       const pixels = Math.min(Math.max(1, Math.round(width * ratio)), 16000);
@@ -669,8 +787,8 @@
       if (!context) return;
       context.clearRect(0, 0, canvas.width, canvas.height);
       if (!data || data.peaks.length === 0) return;
-      const from = item.clip.start * data.rate;
-      const span = item.duration * data.rate;
+      const from = params.from * data.rate;
+      const span = params.length * data.rate;
       let max = 1;
       for (let i = Math.floor(from); i < Math.min(data.peaks.length, from + span); i++) max = Math.max(max, data.peaks[i]);
       context.fillStyle = "rgba(196, 181, 253, 0.55)";
@@ -688,11 +806,7 @@
     return {
       update(next: typeof params) {
         current = next;
-        const same =
-          next.data === drawn.data &&
-          next.item.clip.material_id === drawn.item.clip.material_id &&
-          next.item.clip.start === drawn.item.clip.start &&
-          next.item.duration === drawn.item.duration;
+        const same = next.data === drawn.data && next.from === drawn.from && next.length === drawn.length;
         clearTimeout(settle);
         if (same) {
           settle = setTimeout(() => draw(current), WAVE_SETTLE_MS);
@@ -723,6 +837,12 @@
     <div class="label" style:height="{VIDEO_TRACK_HEIGHT}px">
       <span class="dot video-dot"></span>视频
     </div>
+    {#each audioRows as track (track)}
+      <div class="label" style:height="{AUDIO_TRACK_HEIGHT}px">
+        <span class="dot audio-dot"></span>音频{track + 1}
+      </div>
+    {/each}
+    <div class="label new-track-label" style:height="{NEW_TRACK_HEIGHT}px">音频</div>
   </div>
 
   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -789,7 +909,7 @@
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <div
             class="track overlay-track"
-            class:target={(drag?.kind === "overlay" && drag.moved && drag.mode === "move" && "track" in drag.target && drag.target.track === track) ||
+            class:target={(moving?.lane === "overlay" && "track" in moving.target && moving.target.track === track) ||
               (overlayDrop && "track" in overlayDrop.target && overlayDrop.target.track === track)}
             style:height="{OVERLAY_TRACK_HEIGHT}px"
             onclick={clickEmpty}
@@ -803,14 +923,14 @@
                 class="overlay {overlay.kind}"
                 class:selected={selectedOverlayId === overlay.id}
                 class:active={playingOverlays.has(item.item.id)}
-                class:dragging={drag?.kind === "overlay" && drag.moved && drag.mode === "move" && drag.id === overlay.id}
+                class:dragging={moving?.id === overlay.id}
                 class:missing={overlay.kind === "video" && !materials.has(overlay.material_id)}
                 role="button"
                 tabindex="-1"
                 style:--start={item.start}
                 style:--length={item.end - item.start}
                 title="{overlayLabel(overlay)}（{formatTimecode(item.end - item.start)}）"
-                onpointerdown={(event) => startOverlayDrag(event, item)}
+                onpointerdown={(event) => startOverlayDrag(event, item, "overlay")}
               >
                 {#if wide}
                   {#if overlay.kind === "text"}
@@ -834,11 +954,11 @@
                 <span class="edge end"></span>
               </div>
             {/each}
-            {#if drag?.kind === "overlay" && drag.moved && drag.mode === "move" && "track" in drag.target && drag.target.track === track}
+            {#if moving?.lane === "overlay" && "track" in moving.target && moving.target.track === track}
               <div
                 class="overlay-ghost"
-                style:left="{drag.ghost * pxPerSecond}px"
-                style:width="{Math.max(3, (drag.end - drag.start) * pxPerSecond)}px"
+                style:left="{moving.ghost * pxPerSecond}px"
+                style:width="{Math.max(3, (moving.end - moving.start) * pxPerSecond)}px"
               ></div>
             {/if}
             {#if overlayDrop && "track" in overlayDrop.target && overlayDrop.target.track === track}
@@ -846,12 +966,12 @@
             {/if}
           </div>
         {/each}
-        {#if drag?.kind === "overlay" && drag.moved && drag.mode === "move" && "insert" in drag.target}
+        {#if moving?.lane === "overlay" && "insert" in moving.target}
           <div
             class="new-track-bar"
-            style:top="{insertionY(drag.target.insert)}px"
-            style:left="{drag.ghost * pxPerSecond}px"
-            style:width="{Math.max(3, (drag.end - drag.start) * pxPerSecond)}px"
+            style:top="{insertionY(moving.target.insert)}px"
+            style:left="{moving.ghost * pxPerSecond}px"
+            style:width="{Math.max(3, (moving.end - moving.start) * pxPerSecond)}px"
           ></div>
         {/if}
         {#if overlayDrop && "insert" in overlayDrop.target}
@@ -909,7 +1029,7 @@
             {/if}
             <canvas
               class="clip-wave"
-              use:waveform={{ item, data: peaks.get(item.clip.material_id), width }}
+              use:waveform={{ data: peaks.get(item.clip.material_id), from: item.clip.start, length: item.duration, width }}
             ></canvas>
             <span class="edge start"></span>
             <span class="edge end"></span>
@@ -931,6 +1051,114 @@
         {/if}
         {#if dropIndex !== null}
           <div class="insert-marker" style:left="{insertionX(dropIndex)}px"></div>
+        {/if}
+      </div>
+
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="audio-area"
+        bind:this={audioArea}
+        ondragover={audioDragOver}
+        ondragleave={(event) => {
+          if (!audioArea.contains(event.relatedTarget as Node)) audioDrop = null;
+        }}
+        ondrop={audioDropSound}
+      >
+        {#each audioRows as track (track)}
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <div
+            class="track audio-track"
+            class:target={(moving?.lane === "audio" && "track" in moving.target && moving.target.track === track) ||
+              (audioDrop && "track" in audioDrop.target && audioDrop.target.track === track)}
+            style:height="{AUDIO_TRACK_HEIGHT}px"
+            onclick={clickEmpty}
+          >
+            {#each audio.filter((entry) => entry.track === track) as item (item.item.id)}
+              {@const width = (item.end - item.start) * pxPerSecond}
+              {@const sound = item.item}
+              {@const fade = fades(item)}
+              <div
+                class="sound"
+                class:labelled={width >= LABEL_MIN_PX}
+                class:of-material={sound.kind === "material"}
+                class:selected={selectedAudioId === sound.id}
+                class:active={playingAudio.has(sound.id)}
+                class:dragging={moving?.id === sound.id}
+                class:missing={sound.kind === "file" ? !audioFiles.has(sound.audio_id) : !materials.has(sound.material_id)}
+                class:muted={sound.volume <= 0}
+                role="button"
+                tabindex="-1"
+                style:--start={item.start}
+                style:--length={item.end - item.start}
+                title="{soundLabel(sound)}（{formatTimecode(item.end - item.start)}，音量 {Math.round(sound.volume * 100)}%）"
+                onpointerdown={(event) => startOverlayDrag(event, item, "audio")}
+              >
+                <canvas
+                  class="sound-wave"
+                  use:waveform={{
+                    data: sound.kind === "file" ? audioPeaks.get(sound.audio_id) : peaks.get(sound.material_id),
+                    from: sound.source_start + item.skip,
+                    length: item.end - item.start,
+                    width,
+                  }}
+                ></canvas>
+                {#if fade.fadeIn > 0}
+                  <span class="fade in" style:width="{fade.fadeIn * pxPerSecond}px"></span>
+                {/if}
+                {#if fade.fadeOut > 0}
+                  <span class="fade out" style:width="{fade.fadeOut * pxPerSecond}px"></span>
+                {/if}
+                {#if width >= LABEL_MIN_PX}
+                  <span class="sound-name">
+                    {#if width > 26}
+                      {#if sound.kind === "file"}
+                        <Music class="h-3 w-3 shrink-0" />
+                      {:else}
+                        <AudioLines class="h-3 w-3 shrink-0" />
+                      {/if}
+                    {/if}
+                    <span class="truncate">{soundLabel(sound)}</span>
+                  </span>
+                {/if}
+                <span class="edge start"></span>
+                <span class="edge end"></span>
+              </div>
+            {/each}
+            {#if moving?.lane === "audio" && "track" in moving.target && moving.target.track === track}
+              <div
+                class="overlay-ghost"
+                style:left="{moving.ghost * pxPerSecond}px"
+                style:width="{Math.max(3, (moving.end - moving.start) * pxPerSecond)}px"
+              ></div>
+            {/if}
+            {#if audioDrop && "track" in audioDrop.target && audioDrop.target.track === track}
+              <div class="insert-marker" style:left="{audioDrop.time * pxPerSecond}px"></div>
+            {/if}
+          </div>
+        {/each}
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <div class="track new-track audio-new-track" style:height="{NEW_TRACK_HEIGHT}px" onclick={clickEmpty}>
+          {#if audioRows.length === 0}
+            <div class="track-hint">把音频库里的音乐、配音，或素材拖到这里，只用它的声音</div>
+          {:else if hiddenAudio > 0}
+            <div class="track-hint">另有 {hiddenAudio} 段音频随片段裁剪被隐藏</div>
+          {/if}
+        </div>
+        {#if moving?.lane === "audio" && "insert" in moving.target}
+          <div
+            class="new-track-bar"
+            style:top="{audioInsertionY(moving.target.insert)}px"
+            style:left="{moving.ghost * pxPerSecond}px"
+            style:width="{Math.max(3, (moving.end - moving.start) * pxPerSecond)}px"
+          ></div>
+        {/if}
+        {#if audioDrop && "insert" in audioDrop.target}
+          <div
+            class="new-track-bar"
+            style:top="{audioInsertionY(audioDrop.target.insert)}px"
+            style:left="{audioDrop.time * pxPerSecond}px"
+            style:width="80px"
+          ></div>
         {/if}
       </div>
 
@@ -999,6 +1227,10 @@
 
   .overlay-dot {
     background: #14b8a6;
+  }
+
+  .audio-dot {
+    background: #34d399;
   }
 
   .new-track-label {
@@ -1076,6 +1308,117 @@
 
   .overlay-track {
     background: rgb(19 78 74 / 10%);
+  }
+
+  .audio-area {
+    position: relative;
+  }
+
+  .audio-track {
+    background: rgb(6 78 59 / 10%);
+  }
+
+  .audio-track.target {
+    background: rgb(52 211 153 / 14%);
+  }
+
+  .audio-new-track {
+    background: repeating-linear-gradient(
+      -45deg,
+      rgb(52 211 153 / 4%) 0 6px,
+      transparent 6px 12px
+    );
+  }
+
+  .sound {
+    position: absolute;
+    top: 4px;
+    bottom: 4px;
+    left: calc(var(--start) * var(--pps) * 1px);
+    width: max(3px, calc(var(--length) * var(--pps) * 1px));
+    z-index: 10;
+    overflow: hidden;
+    border: 1px solid rgb(52 211 153 / 50%);
+    background: rgb(52 211 153 / 14%);
+    color: #d1fae5;
+    font-size: 10px;
+    cursor: grab;
+  }
+
+  .sound.labelled {
+    border-radius: 6px;
+  }
+
+  .sound.of-material {
+    border-color: rgb(167 139 250 / 50%);
+    background: rgb(139 92 246 / 14%);
+    color: #ede9fe;
+  }
+
+  .sound.active {
+    filter: brightness(1.25);
+  }
+
+  .sound.selected {
+    z-index: 20;
+    box-shadow: 0 0 0 1px rgb(255 255 255 / 85%);
+  }
+
+  .sound.dragging {
+    opacity: 0.45;
+    cursor: grabbing;
+  }
+
+  .sound.missing {
+    border-color: rgb(248 113 113 / 60%);
+    background: rgb(248 113 113 / 12%);
+  }
+
+  .sound.muted .sound-wave {
+    opacity: 0.35;
+  }
+
+  .sound:hover .edge,
+  .sound.selected .edge {
+    background: rgb(255 255 255 / 25%);
+  }
+
+  .sound-wave {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+  }
+
+  .sound-name {
+    position: absolute;
+    top: 2px;
+    right: 6px;
+    left: 6px;
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 4px;
+    pointer-events: none;
+  }
+
+  /* The quieter part of a fade, darkened above its ramp. */
+  .fade {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    pointer-events: none;
+  }
+
+  .fade.in {
+    left: 0;
+    background: linear-gradient(to bottom right, rgb(0 0 0 / 45%) 50%, transparent 50%);
+  }
+
+  .fade.out {
+    right: 0;
+    background: linear-gradient(to bottom left, rgb(0 0 0 / 45%) 50%, transparent 50%);
   }
 
   .overlay-track.target {

@@ -50,6 +50,8 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
   private lastTimeUpdate = 0;
   private volumeValue = 1;
   private mutedValue = false;
+  /** Of each clip's own sound, by id; full for those not in it. */
+  private clipVolumes = new Map<string, number>();
   private disposed = false;
   private readonly forward = (event: Event) => {
     if (event.target === this.elements[this.active]) {
@@ -120,6 +122,12 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
     this.applyVolume();
   }
 
+  /** Turn each clip's own sound, by id, to its volume, 0 to 1. */
+  setClipVolumes(volumes: Map<string, number>) {
+    this.clipVolumes = volumes;
+    this.applyVolume();
+  }
+
   /** Replace the timeline, keeping the current position where possible. */
   setSegments(segments: PlayerSegment[]) {
     this.segments = segments;
@@ -176,6 +184,7 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
     const segment = this.segments[index];
     const element = this.elements[this.active];
     if (!this.playing) element.pause();
+    this.applyVolume();
     this.load(element, segment, segment.start + target - segment.offset, true);
     this.elements[1 - this.active].pause();
     if (this.playing) void this.playActive();
@@ -209,8 +218,10 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
   }
 
   private applyVolume() {
+    const clipId = this.segments[this.index]?.clipId;
+    const clip = clipId === undefined ? 1 : (this.clipVolumes.get(clipId) ?? 1);
     this.elements.forEach((element, index) => {
-      element.volume = this.volumeValue;
+      element.volume = Math.min(1, Math.max(0, this.volumeValue * clip));
       // The standby element must never be heard while it preloads.
       element.muted = this.mutedValue || index !== this.active;
     });

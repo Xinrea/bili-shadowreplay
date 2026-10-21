@@ -92,6 +92,8 @@ export interface TimelineClip {
   start: number;
   /** Out point within the material, in seconds. */
   end: number;
+  /** Of the material's own sound, 0 to 1; full when absent. */
+  volume?: number;
 }
 
 /** A subtitle anchored to a clip, timed in that clip's material time. */
@@ -159,6 +161,55 @@ export interface OverlayTrack {
   items: OverlayItem[];
 }
 
+/**
+ * Sound heard with the main track, anchored like an overlay to the clip it
+ * starts over.
+ */
+interface AudioBase extends OverlayBase {
+  /** Time in the source heard at the item's start. */
+  source_start: number;
+  /** 0 to 1. */
+  volume: number;
+  /**
+   * Seconds it fades in over from where it is first heard, and out over
+   * until where it is last heard; none when absent.
+   */
+  fade_in?: number;
+  fade_out?: number;
+}
+
+/** A file of the audio library. */
+export interface FileAudio extends AudioBase {
+  kind: "file";
+  audio_id: number;
+}
+
+/** The sound of a material, without its picture. */
+export interface MaterialAudio extends AudioBase {
+  kind: "material";
+  material_id: number;
+}
+
+export type AudioItem = FileAudio | MaterialAudio;
+
+/** A track below the main one; items on a track do not overlap in time. */
+export interface AudioTrack {
+  id: string;
+  items: AudioItem[];
+}
+
+/** A file of the audio library, shared by every project. */
+export interface AudioFile {
+  id: number;
+  name: string;
+  /** Relative to the output directory. */
+  file: string;
+  /** Seconds. */
+  duration: number;
+  size: number;
+  created_at: string;
+}
+
 export interface ProjectTimeline {
   version: number;
   /** The main track: clips play back to back. */
@@ -169,6 +220,8 @@ export interface ProjectTimeline {
   subtitle_style?: SubtitleStyle | null;
   /** Burn the materials' danmaku when exporting. */
   danmu: boolean;
+  /** Heard with the main track, the top one, nearest it, first. */
+  audio_tracks: AudioTrack[];
 }
 
 /** A text or sticker overlay drawn by the editor, which the export burns in. */

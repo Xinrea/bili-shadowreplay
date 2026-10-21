@@ -795,8 +795,9 @@
             onclick={clickEmpty}
           >
             {#each overlays.filter((entry) => entry.track === track) as item (item.item.id)}
-              {@const wide = (item.end - item.start) * pxPerSecond > 26}
-              {@const wider = (item.end - item.start) * pxPerSecond > 64}
+              {@const width = (item.end - item.start) * pxPerSecond}
+              {@const wide = width > 26}
+              {@const wider = width > 64}
               {@const overlay = item.item}
               <div
                 class="overlay {overlay.kind}"
@@ -826,7 +827,9 @@
                     <Film class="h-3 w-3 shrink-0" />
                   {/if}
                 {/if}
-                <span class="overlay-name">{overlayLabel(overlay)}</span>
+                {#if width >= LABEL_MIN_PX}
+                  <span class="overlay-name">{overlayLabel(overlay)}</span>
+                {/if}
                 <span class="edge start"></span>
                 <span class="edge end"></span>
               </div>

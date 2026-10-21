@@ -511,14 +511,16 @@ async fn previous_log(dir: &Path) -> Option<PathBuf> {
 
 /// Masks credentials that may end up in log lines, and drops NUL bytes.
 ///
-/// Besides account secrets (including `csrf`, which repeats `bili_jct` in
-/// upload URLs) this covers upload `auth`, CDN signatures (`sign`,
-/// `sk`), the viewer id and address in stream URLs (`mid`, `oi`), and webhook
-/// URLs, whose path is itself the credential.
+/// Any key ending in `secret`, `token`, `sign` or `signature` is masked, which
+/// covers CDN signatures such as `volcSecret`. Besides account secrets
+/// (including `csrf`, which repeats `bili_jct` in upload URLs) this covers
+/// upload `auth`, the stream keys `sk` and `flvsk`, the viewer id and address
+/// in stream URLs (`mid`, `oi`), and webhook URLs, whose path is itself the
+/// credential. Keys also match after a JSON-escaped `&` (`\u0026sk=`).
 fn redact(text: &str) -> String {
     static SECRET: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(
-            r#"(?i)\b(sessdata|bili_jct|csrf|csrf_token|sessionid(?:_ss)?|sid_tt|sid_guard|uid_tt|passport_csrf_token|ttwid|mstoken|dedeuserid(?:__ckmd5)?|buvid3|access_token|refresh_token|access_key|upload_token|api_key|apikey|password|passwd|secret|token|auth|auth_key|sign|signature|upsig|sk|mid|oi|wssecret|txsecret)\b(["']?\s*[:=]\s*)("[^"\n]*"|'[^'\n]*'|["']?(?:bearer\s+)?[^\s"'&;,})\]>]+)"#,
+            r#"(?i)\b([a-z0-9_]*(?:secret|token|signature|sign)|(?:u0026)?(?:sessdata|bili_jct|csrf|sessionid(?:_ss)?|sid_tt|sid_guard|uid_tt|ttwid|dedeuserid(?:__ckmd5)?|buvid3|access_key|api_key|apikey|password|passwd|auth|auth_key|upsig|sk|flvsk|mid|oi))\b(["']?\s*[:=]\s*)("[^"\n]*"|'[^'\n]*'|["']?(?:bearer\s+)?[^\s"'&;,})\]>\\]+)"#,
         )
         .expect("valid secret pattern")
     });
@@ -691,6 +693,18 @@ mod tests {
             (
                 "douyin session sessionid=s1; sessionid_ss=s2; sid_tt=s3; passport_csrf_token=p; ttwid=t; msToken=m",
                 "douyin session sessionid=[REDACTED]; sessionid_ss=[REDACTED]; sid_tt=[REDACTED]; passport_csrf_token=[REDACTED]; ttwid=[REDACTED]; msToken=[REDACTED]",
+            ),
+            (
+                "12:00:00 [INFO] [7890]   origin: https://pull-flv-l11.douyincdn.com/stage/s.flv?arch_hrchy=c1&volcSecret=DEADBEEF&volcTime=1761091200&sign=0a1b",
+                "12:00:00 [INFO] [7890]   origin: https://pull-flv-l11.douyincdn.com/stage/s.flv?arch_hrchy=c1&volcSecret=[REDACTED]&volcTime=1761091200&sign=[REDACTED]",
+            ),
+            (
+                r#"        extra: "?expires=1761091200&len=0&oi=1&pt=web&qn=10000&trid=t&sigparams=cdn,expires,len,oi&cdn=cn-gotcha01&sign=f00&flvsk=abc123&sk=def456&p2p_type=0","#,
+                r#"        extra: "?expires=1761091200&len=0&oi=[REDACTED]&pt=web&qn=10000&trid=t&sigparams=cdn,expires,len,oi&cdn=cn-gotcha01&sign=[REDACTED]&flvsk=[REDACTED]&sk=[REDACTED]&p2p_type=0","#,
+            ),
+            (
+                r#""flv":"https://pull.douyincdn.com/s.flv?expire=1\u0026sign=a\u0026mid=7\u0026volcSecret=b""#,
+                r#""flv":"https://pull.douyincdn.com/s.flv?expire=1\u0026sign=[REDACTED]\u0026mid=[REDACTED]\u0026volcSecret=[REDACTED]""#,
             ),
         ];
         for (line, expected) in cases {

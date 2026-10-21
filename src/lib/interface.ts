@@ -150,6 +150,8 @@ export interface VideoOverlay extends OverlayBase {
   source_start: number;
   /** 0 to 1. */
   volume: number;
+  /** 0 to 1; opaque when absent. */
+  opacity?: number;
   element: VideoPlacement;
 }
 

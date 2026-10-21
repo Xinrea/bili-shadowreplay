@@ -3,6 +3,10 @@
 // they swap at the cut. The player itself behaves like a media element whose
 // time is project time, so components that follow a <video> (the libass
 // subtitle preview) can follow the whole project instead.
+//
+// An element still seeking is not sent elsewhere: a seek dropped halfway
+// shows nothing, and when one follows the pointer every frame, as scrubbing
+// does, few would land. It goes on to the last time asked once it lands.
 
 export interface PlayerSegment {
   clipId: string;
@@ -36,6 +40,12 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
   private time = 0;
   private playing = false;
   private pendingSeeks = 0;
+  /** Where each element seeking goes once it lands, and whether that is a seek of the player's. */
+  private queued = new Map<HTMLVideoElement, { time: number; report: boolean }>();
+  /** The seeks counted in `pendingSeeks` of each element, to end with its file. */
+  private tracked = new Map<HTMLVideoElement, Set<() => void>>();
+  /** The seek each element makes once its file's metadata is in: only the last asked. */
+  private onMetadata = new Map<HTMLVideoElement, () => void>();
   private frame = 0;
   private lastTimeUpdate = 0;
   private volumeValue = 1;
@@ -75,7 +85,7 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
   }
 
   get seeking() {
-    return this.pendingSeeks > 0;
+    return this.pendingSeeks > 0 || this.queuedReport();
   }
 
   get readyState() {
@@ -147,11 +157,18 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
     const index = this.segmentAt(target);
     this.index = index;
     if (index < 0) {
+      this.queued.clear();
+      let ended = false;
       for (const element of this.elements) {
+        ended = this.endSeeks(element) || ended;
+        this.whenLoaded(element, null);
         element.pause();
+        // Loaded again when it comes back.
+        delete element.dataset.src;
         element.removeAttribute("src");
         element.load();
       }
+      if (ended && this.pendingSeeks === 0) this.dispatchEvent(new Event("seeked"));
       this.emitActive();
       this.emitTime(true);
       return;
@@ -169,8 +186,11 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
 
   dispose() {
     this.disposed = true;
+    this.queued.clear();
     cancelAnimationFrame(this.frame);
     for (const element of this.elements) {
+      this.endSeeks(element);
+      this.whenLoaded(element, null);
       for (const type of ["waiting", "playing", "loadedmetadata"]) {
         element.removeEventListener(type, this.forward);
       }
@@ -197,39 +217,129 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
   }
 
   private load(element: HTMLVideoElement, segment: PlayerSegment, sourceTime: number, report: boolean) {
-    const seek = () => {
-      if (Math.abs(element.currentTime - sourceTime) < 0.01) return;
-      if (report) this.trackSeek(element);
-      element.currentTime = sourceTime;
-    };
+    const seek = () => this.seekElement(element, sourceTime, report);
     if (element.dataset.src !== segment.url) {
+      // A seek queued in the file before is of no use in this one, and one
+      // going on ends without its "seeked".
+      this.queued.delete(element);
+      const ended = this.endSeeks(element);
       element.dataset.src = segment.url;
       element.src = segment.url;
-      if (report) this.trackSeek(element, "loadeddata");
-      element.addEventListener("loadedmetadata", seek, { once: true });
+      if (report) {
+        this.trackSeek(element, "loadeddata", ended);
+      } else if (ended && this.pendingSeeks === 0 && !this.queuedReport()) {
+        this.dispatchEvent(new Event("seeked"));
+        this.emitTime(true);
+      }
+      this.whenLoaded(element, seek);
     } else if (element.readyState >= 1) {
+      this.whenLoaded(element, null);
       seek();
     } else {
-      element.addEventListener("loadedmetadata", seek, { once: true });
+      this.whenLoaded(element, seek);
     }
   }
 
+  /** Make `seek` once `element` has its file's metadata, instead of any asked before; none for null. */
+  private whenLoaded(element: HTMLVideoElement, seek: (() => void) | null) {
+    const before = this.onMetadata.get(element);
+    if (before) element.removeEventListener("loadedmetadata", before);
+    this.onMetadata.delete(element);
+    if (!seek) return;
+    const run = () => {
+      this.onMetadata.delete(element);
+      seek();
+    };
+    this.onMetadata.set(element, run);
+    element.addEventListener("loadedmetadata", run, { once: true });
+  }
+
+  /** Whether a seek of the player's waits on an element still seeking. The standby's preloading is not one. */
+  private queuedReport(element?: HTMLVideoElement) {
+    if (element) return this.queued.get(element)?.report ?? false;
+    return [...this.queued.values()].some((queued) => queued.report);
+  }
+
+  /**
+   * Seek `element` to `sourceTime`, or once it lands if it is seeking. A seek
+   * `resumed` from the queue goes on with the one before, not a new one.
+   * Returns whether it seeks now.
+   */
+  private seekElement(element: HTMLVideoElement, sourceTime: number, report: boolean, resumed = false): boolean {
+    if (element.seeking) {
+      if (!this.queued.has(element)) {
+        // Also on an error, so that it never stays seeking.
+        const resume = () => {
+          element.removeEventListener("seeked", resume);
+          element.removeEventListener("error", resume);
+          this.resumeSeek(element);
+        };
+        element.addEventListener("seeked", resume);
+        element.addEventListener("error", resume);
+      }
+      const before = this.queued.get(element);
+      this.queued.set(element, { time: sourceTime, report: report || (before?.report ?? false) });
+      return false;
+    }
+    if (Math.abs(element.currentTime - sourceTime) < 0.01) return false;
+    if (report) this.trackSeek(element, "seeked", resumed);
+    element.currentTime = sourceTime;
+    return true;
+  }
+
+  /** Go on to where `element` was asked to go while it was seeking. */
+  private resumeSeek(element: HTMLVideoElement) {
+    if (this.disposed) return;
+    const queued = this.queued.get(element);
+    if (!queued) return;
+    this.queued.delete(element);
+    // Queued again if it is still seeking, as after an error.
+    const seeking = this.seekElement(element, queued.time, queued.report, true);
+    if (!seeking && queued.report && this.pendingSeeks === 0 && !this.queuedReport()) {
+      this.dispatchEvent(new Event("seeked"));
+      this.emitTime(true);
+    }
+  }
+
+  /**
+   * End the seeks counted on `element`, without their "seeked": its file is
+   * replaced, which drops them. Returns whether there were any.
+   */
+  private endSeeks(element: HTMLVideoElement): boolean {
+    const seeks = this.tracked.get(element);
+    if (!seeks?.size) return false;
+    for (const end of [...seeks]) end();
+    return true;
+  }
+
   /** Count a seek on `element` as pending until it lands. */
-  private trackSeek(element: HTMLVideoElement, done = "seeked") {
+  private trackSeek(element: HTMLVideoElement, done = "seeked", resumed = false) {
     this.pendingSeeks += 1;
-    if (this.pendingSeeks === 1) this.dispatchEvent(new Event("seeking"));
-    const finish = () => {
+    // One seek going on to the next is not a new one.
+    if (this.pendingSeeks === 1 && !resumed && !this.queuedReport()) this.dispatchEvent(new Event("seeking"));
+    const seeks = this.tracked.get(element) ?? new Set<() => void>();
+    this.tracked.set(element, seeks);
+    const stop = () => {
       clearTimeout(timer);
       element.removeEventListener(done, finish);
       element.removeEventListener("error", finish);
+      seeks.delete(stop);
       this.pendingSeeks = Math.max(0, this.pendingSeeks - 1);
-      if (this.pendingSeeks === 0) {
+    };
+    seeks.add(stop);
+    const finish = () => {
+      stop();
+      if (this.pendingSeeks === 0 && !this.queuedReport(element)) {
         this.dispatchEvent(new Event("seeked"));
         this.emitTime(true);
       }
     };
-    // Never stay "seeking" forever when an event goes missing.
-    const timer = setTimeout(finish, 3000);
+    // Never stay "seeking" forever when an event goes missing, nor wait on
+    // the seek queued behind this one.
+    const timer = setTimeout(() => {
+      this.queued.delete(element);
+      finish();
+    }, 3000);
     element.addEventListener(done, finish);
     element.addEventListener("error", finish);
   }

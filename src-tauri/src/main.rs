@@ -8,6 +8,7 @@ mod constants;
 mod danmu2ass;
 mod database;
 mod events;
+mod feedback;
 mod ffmpeg;
 mod handlers;
 #[cfg(feature = "headless")]
@@ -977,6 +978,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::powerlive::begin_powerlive_login,
         crate::powerlive::cancel_powerlive_login,
         crate::powerlive::logout_powerlive,
+        crate::feedback::submit_feedback,
         crate::handlers::config::update_llm_config,
         crate::handlers::message::get_messages,
         crate::handlers::message::read_message,

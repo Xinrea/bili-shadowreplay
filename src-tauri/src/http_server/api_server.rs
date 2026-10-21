@@ -16,6 +16,7 @@ use crate::{
         task::TaskRow,
         video::VideoRow,
     },
+    feedback::{submit_feedback, FeedbackReceipt},
     handlers::{
         account::{
             add_account, get_account_count, get_accounts, get_qr, get_qr_status, remove_account,
@@ -2009,6 +2010,21 @@ async fn handler_console_log(
     Ok(Json(ApiResponse::success(())))
 }
 
+#[derive(Debug, Deserialize)]
+struct SubmitFeedbackRequest {
+    message: String,
+    email: Option<String>,
+    screenshot: Option<String>,
+}
+
+async fn handler_submit_feedback(
+    state: axum::extract::State<State>,
+    Json(param): Json<SubmitFeedbackRequest>,
+) -> Result<Json<ApiResponse<FeedbackReceipt>>, ApiError> {
+    let receipt = submit_feedback(state.0, param.message, param.email, param.screenshot).await?;
+    Ok(Json(ApiResponse::success(receipt)))
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HttpProxyRequest {
@@ -2335,6 +2351,8 @@ pub async fn start_api_server(state: State) {
     if !state.readonly {
         app = app
             .route("/api/update_mcp_server", post(handler_update_mcp_server))
+            // Sends the operator's logs, so viewers of a readonly server cannot.
+            .route("/api/submit_feedback", post(handler_submit_feedback))
             .route("/api/get_qr", post(handler_get_qr))
             .route("/api/get_qr_status", post(handler_get_qr_status))
             .route("/api/add_account", post(handler_add_account))

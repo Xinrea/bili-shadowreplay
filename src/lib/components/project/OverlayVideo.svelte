@@ -97,6 +97,7 @@
   style:width="{width}px"
   style:height="{height}px"
   style:transform="rotate({item.element.rotation}deg)"
+  style:opacity={item.opacity ?? 1}
   onloadedmetadata={() => {
     if (video.videoWidth && video.videoHeight) onAspect(video.videoWidth / video.videoHeight);
     sync();

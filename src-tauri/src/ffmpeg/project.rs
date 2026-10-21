@@ -119,6 +119,8 @@ pub struct VideoLayer {
     pub rotation: f64,
     /// 0 to 1.
     pub volume: f64,
+    /// 0 to 1.
+    pub opacity: f64,
 }
 
 /// Sound heard with the joined clips from `start` to `end`, project time.
@@ -364,6 +366,12 @@ fn overlay_filter(
                 } else {
                     String::new()
                 };
+                // After rotating, so the corners stay clear.
+                let fade = if layer.opacity < 1.0 {
+                    format!(",lutyuv=a=val*{:.3}", layer.opacity.clamp(0.0, 1.0))
+                } else {
+                    String::new()
+                };
                 // Shifted to its place on the timeline; the clips show through
                 // before it starts. A file ending early holds its last frame
                 // until the overlay ends, as the preview does.
@@ -371,7 +379,7 @@ fn overlay_filter(
                     "[{input}:v]fps={fps}:start_time=0,\
                      tpad=stop_mode=clone:stop_duration={:.6},trim=start={skip:.6}:duration={length:.6},\
                      setpts=PTS-STARTPTS,scale={width}:-2,setsar=1,\
-                     format=yuva420p{rotate},setpts=PTS+{from:.6}/TB[ov{index}];\n\
+                     format=yuva420p{rotate}{fade},setpts=PTS+{from:.6}/TB[ov{index}];\n\
                      [{current}][ov{index}]overlay=x={:.3}-overlay_w/2:y={:.3}-overlay_h/2:\
                      eof_action=repeat:{enable}[layer{index}];\n",
                     skip + length,
@@ -774,19 +782,27 @@ impl Render<'_> {
                     "picture {from:.6} {to:.6} {} {x} {y}",
                     self.pictures[shown.index].as_deref().unwrap_or_default(),
                 ),
-                OverlayLayer::Video(layer) => writeln!(
-                    key,
-                    "video {from:.6} {to:.6} {} {:.6} {:.6} {} {} {} {} {} {}",
-                    self.file(&layer.path),
-                    layer.source_start + shown.start - shown.overlay.start,
-                    layer.duration,
-                    layer.has_audio,
-                    layer.x,
-                    layer.y,
-                    layer.width,
-                    layer.rotation,
-                    layer.volume,
-                ),
+                OverlayLayer::Video(layer) => {
+                    let _ = write!(
+                        key,
+                        "video {from:.6} {to:.6} {} {:.6} {:.6} {} {} {} {} {} {}",
+                        self.file(&layer.path),
+                        layer.source_start + shown.start - shown.overlay.start,
+                        layer.duration,
+                        layer.has_audio,
+                        layer.x,
+                        layer.y,
+                        layer.width,
+                        layer.rotation,
+                        layer.volume,
+                    );
+                    // Only when see-through, so keys from before overlays had
+                    // an opacity stay as they were.
+                    if layer.opacity != 1.0 {
+                        let _ = write!(key, " opacity {}", layer.opacity);
+                    }
+                    writeln!(key)
+                }
             };
         }
         if let Some(subtitles) = &self.subtitles {
@@ -1642,6 +1658,7 @@ mod tests {
             width: 641.0,
             rotation,
             volume: 0.5,
+            opacity: 1.0,
         })
     }
 
@@ -1707,6 +1724,38 @@ mod tests {
         // Without overlays the joined clips are used as they are.
         let none = overlay_filter(&[], 2, 30.0, (0.0, 480_000), "joined");
         assert_eq!((none.filter.as_str(), none.video.as_str()), ("", "joined"));
+    }
+
+    #[test]
+    fn a_see_through_video_overlay_fades_its_alpha_after_rotating() {
+        let mut faded = video_layer(false, 90.0);
+        if let OverlayLayer::Video(layer) = &mut faded {
+            layer.opacity = 0.4;
+        }
+        let overlays = [RenderOverlay {
+            start: 0.0,
+            end: 3.0,
+            layer: faded,
+        }];
+        let shown = segment_overlays(&overlays, 0.0, 10.0);
+        let graph = overlay_filter(&shown, 1, 30.0, (0.0, 480_000), "joined");
+        assert!(graph
+            .filter
+            .contains("oh=roth(1.570796),lutyuv=a=val*0.400,setpts=PTS+0.000000/TB[ov0]"));
+        // Opaque, it is laid on as it is.
+        let opaque = [RenderOverlay {
+            start: 0.0,
+            end: 3.0,
+            layer: video_layer(false, 0.0),
+        }];
+        let graph = overlay_filter(
+            &segment_overlays(&opaque, 0.0, 10.0),
+            1,
+            30.0,
+            (0.0, 480_000),
+            "joined",
+        );
+        assert!(!graph.filter.contains("lutyuv"));
     }
 
     #[test]
@@ -2770,6 +2819,7 @@ mod tests {
                     width,
                     rotation,
                     volume: 1.0,
+                    opacity: 1.0,
                 }),
             }
         };

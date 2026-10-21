@@ -136,6 +136,9 @@ pub struct VideoOverlay {
     /// 0 to 1.
     #[serde(default = "full_volume")]
     pub volume: f64,
+    /// 0 to 1; opaque when absent.
+    #[serde(default = "full_volume", skip_serializing_if = "is_full_volume")]
+    pub opacity: f64,
     pub element: VideoPlacement,
 }
 
@@ -639,7 +642,8 @@ impl Timeline {
                     .iter()
                     .all(|value| value.is_finite())
                 && placement.width.is_finite()
-                && placement.width >= 1.0;
+                && placement.width >= 1.0
+                && (0.0..=1.0).contains(&video.opacity);
             if !valid {
                 return Err("画中画的范围无效".to_string());
             }
@@ -952,6 +956,7 @@ mod tests {
                 material_id,
                 source_start: 1.0,
                 volume: 1.0,
+                opacity: 1.0,
                 element: VideoPlacement {
                     x: 1500.0,
                     y: 800.0,

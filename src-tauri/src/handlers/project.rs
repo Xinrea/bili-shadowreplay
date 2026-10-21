@@ -1446,6 +1446,7 @@ async fn render_timeline(
                     width: video.element.width,
                     rotation: video.element.rotation,
                     volume: video.volume,
+                    opacity: video.opacity,
                 })
             }
             OverlayContent::Text { .. } | OverlayContent::Sticker { .. } => {
@@ -1961,6 +1962,7 @@ mod tests {
                         material_id: 1,
                         source_start: 0.0,
                         volume: 1.0,
+                        opacity: 1.0,
                         element: crate::project::VideoPlacement {
                             x: 960.0,
                             y: 540.0,

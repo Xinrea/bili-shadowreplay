@@ -53,6 +53,7 @@
     type SubtitleStyle,
     type TimelineClip,
     type VideoItem,
+    type VideoOverlay,
   } from "../../interface";
   import {
     addAudio,
@@ -115,6 +116,7 @@
   import TaskCenterButton from "../TaskCenterButton.svelte";
   import TitleBar from "../TitleBar.svelte";
   import AudioPanel, { type AudioEntry } from "./AudioPanel.svelte";
+  import ItemInspector, { type InspectedItem } from "./ItemInspector.svelte";
   import MaterialBin, { type BinMaterial } from "./MaterialBin.svelte";
   import { renderOverlayImages, StickerLoadError } from "./overlay-render";
   import OverlayStage, { type OverlayChanges } from "./OverlayStage.svelte";
@@ -273,7 +275,23 @@
   let audio = $derived(placeAudio(timeline));
   let selectedAudio = $derived(findAudio(timeline, selectedAudioId));
   let selectedSound = $derived(audio.find((entry) => entry.item.id === selectedAudioId) ?? null);
-  let selectedClip = $derived(timeline.clips.find((clip) => clip.id === selectedClipId) ?? null);
+  let selectedClip = $derived(placed.find((entry) => entry.clip.id === selectedClipId) ?? null);
+  // What the inspector shows the properties of; with none, or a text or
+  // sticker selected, it lists the subtitles.
+  let inspected: InspectedItem | null = $derived.by(() => {
+    if (selectedOverlay?.kind === "video" && selectedPlaced) {
+      const aspect = aspects.get(selectedOverlay.material_id) ?? 16 / 9;
+      return { kind: "overlay", item: selectedOverlay, start: selectedPlaced.start, end: selectedPlaced.end, aspect };
+    }
+    if (selectedAudio && selectedSound) {
+      return { kind: "audio", item: selectedAudio, start: selectedSound.start, end: selectedSound.end };
+    }
+    if (selectedClip) {
+      const { clip, offset, duration } = selectedClip;
+      return { kind: "clip", item: clip, start: offset, end: offset + duration };
+    }
+    return null;
+  });
   // The sounds near the playhead, which have their own element.
   let sounds = $derived(audio.filter((entry) => time >= entry.start - SOUND_PRELOAD && time < entry.end + 0.5));
   // Clips' volumes change the preview's without loading it again.
@@ -367,6 +385,20 @@
     );
     audioFiles = new Map(entries.map((entry) => [entry.id, entry]));
     audioEntries = entries;
+  }
+
+  function materialName(materialId: number) {
+    return materials.get(materialId)?.name ?? "素材已删除";
+  }
+
+  function soundName(item: AudioItem) {
+    return item.kind === "file"
+      ? (audioFiles.get(item.audio_id)?.name ?? "音频已删除")
+      : `${materialName(item.material_id)}的声音`;
+  }
+
+  function inspectedName(entry: InspectedItem) {
+    return entry.kind === "audio" ? soundName(entry.item) : materialName(entry.item.material_id);
   }
 
   /** Where a sound plays from: a file of the audio library, or a material. */
@@ -1055,17 +1087,6 @@
     if (id) editInRun(editAudio(timeline, id, update));
   }
 
-  /** Set a fade of the selected sound, in seconds; none at 0. */
-  function setFade(edge: "fade_in" | "fade_out", seconds: number) {
-    updateAudio((item) => {
-      const next = { ...item };
-      if (Number.isFinite(seconds) && seconds > 0) next[edge] = Math.round(seconds * 10) / 10;
-      else delete next[edge];
-      return next;
-    });
-    settleOverlayEdit();
-  }
-
   function withVolume(clip: TimelineClip, volume: number): TimelineClip {
     const { volume: _, ...rest } = clip;
     return volume === 1 ? rest : { ...rest, volume };
@@ -1465,6 +1486,11 @@
       selectAudio(null);
       return;
     }
+    if (event.key === "Escape" && selectedClipId) {
+      event.preventDefault();
+      selectedClipId = null;
+      return;
+    }
     if (event.repeat && !event.code.startsWith("Arrow")) return;
     const command = event.ctrlKey || event.metaKey;
     if (command) {
@@ -1508,37 +1534,6 @@
     }
   }
 </script>
-
-{#snippet volumeControl(value: number, label: string, set: (volume: number) => void)}
-  <button
-    type="button"
-    class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost"
-    title={value > 0 ? "静音" : "取消静音"}
-    aria-label={value > 0 ? "静音" : "取消静音"}
-    onclick={() => {
-      set(value > 0 ? 0 : 1);
-      settleOverlayEdit();
-    }}
-  >
-    {#if value > 0}
-      <Volume2 class="h-3.5 w-3.5" />
-    {:else}
-      <VolumeX class="h-3.5 w-3.5" />
-    {/if}
-  </button>
-  <input
-    type="range"
-    min="0"
-    max="1"
-    step="0.05"
-    {value}
-    class="w-28"
-    aria-label={label}
-    data-hotkey-block
-    oninput={(event) => set(Number(event.currentTarget.value))}
-  />
-  <span class="w-9 text-right text-[11px] tabular-nums text-fg-muted">{Math.round(value * 100)}%</span>
-{/snippet}
 
 <svelte:window onkeydown={handleKeydown} />
 
@@ -1670,53 +1665,11 @@
               onFont={pickFont}
             />
           {:else if selectedOverlay?.kind === "video"}
-            {@const video = selectedOverlay}
-            {@render volumeControl(video.volume, "画中画音量", (volume) =>
-              updateOverlay((item) => ({ ...item, volume }) as OverlayItem),
-            )}
-            <span class="toolbar-separator"></span>
-            <button type="button" class="ui-btn ui-btn-sm ui-btn-ghost" onclick={() => void fillFrame()}>铺满画面</button>
-            <span class="truncate text-[11px] text-fg-muted">{materials.get(video.material_id)?.name ?? "素材已删除"}</span>
+            <span class="truncate text-[11px] text-fg-muted">画中画 · {materialName(selectedOverlay.material_id)}</span>
           {:else if selectedAudio}
-            {@const sound = selectedAudio}
-            {@render volumeControl(sound.volume, "音量", (volume) => updateAudio((item) => ({ ...item, volume })))}
-            <span class="toolbar-separator"></span>
-            <label class="fade-field">
-              淡入
-              <input
-                type="number"
-                min="0"
-                step="0.1"
-                value={sound.fade_in ?? 0}
-                data-hotkey-block
-                onchange={(event) => setFade("fade_in", Number(event.currentTarget.value))}
-              />
-              秒
-            </label>
-            <label class="fade-field">
-              淡出
-              <input
-                type="number"
-                min="0"
-                step="0.1"
-                value={sound.fade_out ?? 0}
-                data-hotkey-block
-                onchange={(event) => setFade("fade_out", Number(event.currentTarget.value))}
-              />
-              秒
-            </label>
-            <span class="toolbar-separator"></span>
-            <span class="truncate text-[11px] text-fg-muted">
-              {sound.kind === "file"
-                ? (audioFiles.get(sound.audio_id)?.name ?? "音频已删除")
-                : `${materials.get(sound.material_id)?.name ?? "素材已删除"}的声音`}
-            </span>
+            <span class="truncate text-[11px] text-fg-muted">音频 · {soundName(selectedAudio)}</span>
           {:else if selectedClip}
-            {@const clip = selectedClip}
-            <span class="text-[11px] text-fg-muted">原声</span>
-            {@render volumeControl(clip.volume ?? 1, "原声音量", (volume) => setClipVolume(clip.id, volume))}
-            <span class="toolbar-separator"></span>
-            <span class="truncate text-[11px] text-fg-muted">{materials.get(clip.material_id)?.name ?? "素材已删除"}</span>
+            <span class="truncate text-[11px] text-fg-muted">主轨片段 · {materialName(selectedClip.clip.material_id)}</span>
           {:else}
             <span class="truncate text-[12px] text-fg-muted">
               从左侧添加文字、贴纸，或把素材拖到时间轴的叠加轨道上叠加画面；点击画面中的内容可移动、旋转、缩放，双击文字可直接修改。
@@ -1849,101 +1802,114 @@
       </div>
 
       <InspectorPanel
-        title="字幕"
-        tabs={[{ id: "subtitle", label: "字幕", count: subtitles.length }]}
-        activeTab="subtitle"
+        title={inspected ? "属性" : `字幕${subtitles.length > 0 ? ` · ${subtitles.length}` : ""}`}
+        tabs={[{ id: "inspect", label: "检视" }]}
+        activeTab="inspect"
         collapsed={false}
         docked
       >
-        <div class="panel-toolbar">
-          <button type="button" class="tool-button" onclick={() => (showStyleEditor = true)}>
-            <Settings class="h-3.5 w-3.5" />
-            样式
-          </button>
-          <button type="button" class="tool-button" onclick={clearSubtitles} disabled={timeline.subtitles.length === 0}>
-            <Eraser class="h-3.5 w-3.5" />
-            清空
-          </button>
-          <button
-            type="button"
-            class="tool-button"
-            disabled={aiRunning || timeline.clips.length === 0}
-            onclick={() => {
-              aiOverwrite = false;
-              aiRegenerate = false;
-              showAiModal = true;
-            }}
-          >
-            {#if aiRunning}
-              <Loader2 class="h-3.5 w-3.5 animate-spin" />
-              识别中
-            {:else}
-              <BrainCircuit class="h-3.5 w-3.5" />
-              AI 字幕
-            {/if}
-          </button>
-        </div>
-
-        {#if subtitles.length > 0}
-          <!-- One pixel short: the last row's border falls on the list's own. -->
-          <div class="row-list virtual" bind:this={rowList} style:height="{subtitles.length * ROW_HEIGHT - 1}px">
-            {#each rowsShown as index (subtitles[index].subtitle.id)}
-              {@const entry = subtitles[index]}
-              <div
-                class="row"
-                style:top="{index * ROW_HEIGHT}px"
-                data-subtitle-row={entry.subtitle.id}
-                class:playing={playingSubtitles.has(entry.subtitle.id)}
-                class:selected={selectedSubtitleId === entry.subtitle.id}
-              >
-                <button type="button" class="row-index" title="选中并跳转" onclick={() => selectSubtitle(entry.subtitle.id, true)}>
-                  {index + 1}
-                </button>
-                <input
-                  type="text"
-                  class="row-text"
-                  value={entry.subtitle.text}
-                  placeholder="输入字幕文本"
-                  onfocus={() => {
-                    selectSubtitle(entry.subtitle.id);
-                    beginEdit();
-                  }}
-                  oninput={(event) => {
-                    // One undo step per edit, but saved while typing.
-                    timeline = updateSubtitleText(timeline, entry.subtitle.id, event.currentTarget.value);
-                    scheduleSave();
-                  }}
-                  onblur={endEdit}
-                  onkeydown={(event) => {
-                    if (event.isComposing || event.keyCode === 229) return;
-                    if (event.key === "Enter" || event.key === "Escape") {
-                      event.preventDefault();
-                      event.currentTarget.blur();
-                    }
-                  }}
-                />
-                <button type="button" class="row-action" title="在后面添加字幕" onclick={() => insertSubtitleAfter(entry.subtitle.id)}>
-                  <Plus class="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  class="row-action danger"
-                  title="删除字幕"
-                  onclick={() => commit(removeSubtitle(timeline, entry.subtitle.id))}
-                >
-                  <Trash2 class="h-3.5 w-3.5" />
-                </button>
-              </div>
-            {/each}
-          </div>
+        {#if inspected}
+          {@const id = inspected.item.id}
+          <ItemInspector
+            {inspected}
+            name={inspectedName(inspected)}
+            onClipVolume={(volume) => setClipVolume(id, volume)}
+            onOverlay={(update) => updateOverlay((item) => update(item as VideoOverlay), id)}
+            onAudio={(update) => updateAudio(update, id)}
+            onSettle={settleOverlayEdit}
+            onFillFrame={() => void fillFrame()}
+          />
         {:else}
-          <div class="empty-state">
-            <strong>还没有字幕</strong>
-            <span>点击「AI 字幕」识别，或在时间轴播放头处添加</span>
+          <div class="panel-toolbar">
+            <button type="button" class="tool-button" onclick={() => (showStyleEditor = true)}>
+              <Settings class="h-3.5 w-3.5" />
+              样式
+            </button>
+            <button type="button" class="tool-button" onclick={clearSubtitles} disabled={timeline.subtitles.length === 0}>
+              <Eraser class="h-3.5 w-3.5" />
+              清空
+            </button>
+            <button
+              type="button"
+              class="tool-button"
+              disabled={aiRunning || timeline.clips.length === 0}
+              onclick={() => {
+                aiOverwrite = false;
+                aiRegenerate = false;
+                showAiModal = true;
+              }}
+            >
+              {#if aiRunning}
+                <Loader2 class="h-3.5 w-3.5 animate-spin" />
+                识别中
+              {:else}
+                <BrainCircuit class="h-3.5 w-3.5" />
+                AI 字幕
+              {/if}
+            </button>
           </div>
-        {/if}
-        {#if hiddenSubtitleCount > 0}
-          <p class="hint mt-2">另有 {hiddenSubtitleCount} 条字幕位于片段裁剪范围之外，已隐藏；拉长片段后会重新显示。</p>
+
+          {#if subtitles.length > 0}
+            <!-- One pixel short: the last row's border falls on the list's own. -->
+            <div class="row-list virtual" bind:this={rowList} style:height="{subtitles.length * ROW_HEIGHT - 1}px">
+              {#each rowsShown as index (subtitles[index].subtitle.id)}
+                {@const entry = subtitles[index]}
+                <div
+                  class="row"
+                  style:top="{index * ROW_HEIGHT}px"
+                  data-subtitle-row={entry.subtitle.id}
+                  class:playing={playingSubtitles.has(entry.subtitle.id)}
+                  class:selected={selectedSubtitleId === entry.subtitle.id}
+                >
+                  <button type="button" class="row-index" title="选中并跳转" onclick={() => selectSubtitle(entry.subtitle.id, true)}>
+                    {index + 1}
+                  </button>
+                  <input
+                    type="text"
+                    class="row-text"
+                    value={entry.subtitle.text}
+                    placeholder="输入字幕文本"
+                    onfocus={() => {
+                      selectSubtitle(entry.subtitle.id);
+                      beginEdit();
+                    }}
+                    oninput={(event) => {
+                      // One undo step per edit, but saved while typing.
+                      timeline = updateSubtitleText(timeline, entry.subtitle.id, event.currentTarget.value);
+                      scheduleSave();
+                    }}
+                    onblur={endEdit}
+                    onkeydown={(event) => {
+                      if (event.isComposing || event.keyCode === 229) return;
+                      if (event.key === "Enter" || event.key === "Escape") {
+                        event.preventDefault();
+                        event.currentTarget.blur();
+                      }
+                    }}
+                  />
+                  <button type="button" class="row-action" title="在后面添加字幕" onclick={() => insertSubtitleAfter(entry.subtitle.id)}>
+                    <Plus class="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    class="row-action danger"
+                    title="删除字幕"
+                    onclick={() => commit(removeSubtitle(timeline, entry.subtitle.id))}
+                  >
+                    <Trash2 class="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              {/each}
+            </div>
+          {:else}
+            <div class="empty-state">
+              <strong>还没有字幕</strong>
+              <span>点击「AI 字幕」识别，或在时间轴播放头处添加</span>
+            </div>
+          {/if}
+          {#if hiddenSubtitleCount > 0}
+            <p class="hint mt-2">另有 {hiddenSubtitleCount} 条字幕位于片段裁剪范围之外，已隐藏；拉长片段后会重新显示。</p>
+          {/if}
         {/if}
       </InspectorPanel>
     </div>
@@ -2222,31 +2188,6 @@
     border-bottom: 1px solid #222a35;
     background: #171c25;
     padding: 6px 10px;
-  }
-
-  .toolbar-separator {
-    margin: 0 4px;
-    height: 16px;
-    width: 1px;
-    background: rgb(var(--c-line-strong));
-  }
-
-  .fade-field {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    color: rgb(var(--c-fg-muted));
-    font-size: 11px;
-  }
-
-  .fade-field input {
-    width: 52px;
-    border: 1px solid #293442;
-    border-radius: 6px;
-    background: #0f131a;
-    padding: 2px 6px;
-    color: #e9eef8;
-    font-size: 11px;
   }
 
   .transport {

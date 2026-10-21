@@ -48,8 +48,11 @@ class FakeVideo extends EventTarget {
     this.seeks.push(value);
   }
   set src(value) {
+    // As the load algorithm: a seek going on ends without "seeked".
     this.source = value;
     this.readyState = 0;
+    this.seeking = false;
+    this.position = 0;
   }
   get src() {
     return this.source;
@@ -172,5 +175,37 @@ test("an error while still seeking keeps the time asked", () => {
   assert.deepEqual(video.seeks, [110, 120]);
   video.land();
   assert.equal(instance.seeking, false);
+  assert.deepEqual(events, ["seeking", "seeked"]);
+});
+
+test("a seek moving on to another file ends the one going on", () => {
+  const [active, standby] = [new FakeVideo(), new FakeVideo()];
+  const instance = new ProjectPlayer(active, standby);
+  // The next clip starts at the head of its file.
+  instance.setSegments([
+    { clipId: "a", url: "a.mp4", start: 100, end: 110, offset: 0 },
+    { clipId: "b", url: "b.mp4", start: 0, end: 10, offset: 10 },
+  ]);
+  active.loaded();
+  active.land();
+  standby.loaded();
+  const events = [];
+  for (const type of ["seeking", "seeked"]) instance.addEventListener(type, () => events.push(type));
+  instance.seek(9);
+  // On to the cut while that seek goes on, which loads the other file.
+  instance.seek(10);
+  active.loaded();
+  assert.equal(instance.seeking, false);
+  assert.deepEqual(events, ["seeking", "seeked"]);
+});
+
+test("clearing the clips ends the seek going on", () => {
+  const { instance, video, events } = player();
+  instance.seek(10);
+  instance.setSegments([]);
+  instance.seek(0);
+  assert.equal(instance.seeking, false);
+  assert.deepEqual(events, ["seeking", "seeked"]);
+  video.land();
   assert.deepEqual(events, ["seeking", "seeked"]);
 });

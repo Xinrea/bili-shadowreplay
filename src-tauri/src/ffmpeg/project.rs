@@ -18,6 +18,11 @@
 //! they are made of, with times from their first frame. A later render uses
 //! those it finds again, with edits elsewhere in the timeline that move them by
 //! whole frames, and renders only the others.
+//!
+//! The sounds of the audio tracks are not part of the segments: they are mixed
+//! into the joined sound while it is encoded, each read on from one place
+//! however many segments it spans, so music plays on across them without a
+//! seam, and editing them renders no segment again.
 
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -77,6 +82,8 @@ pub struct RenderClip {
     pub fps: f64,
     /// Length of the file's video, `0.0` when unknown.
     pub file_duration: f64,
+    /// Of its sound, 0 to 1.
+    pub volume: f64,
 }
 
 /// Something laid over the joined clips from `start` to `end`, project time.
@@ -114,10 +121,28 @@ pub struct VideoLayer {
     pub volume: f64,
 }
 
+/// Sound heard with the joined clips from `start` to `end`, project time.
+pub struct RenderSound {
+    pub path: PathBuf,
+    pub start: f64,
+    pub end: f64,
+    /// Where in the file the sound heard at `start` is, in seconds.
+    pub source_start: f64,
+    /// Seek the file to it rather than read the file from its start: exact
+    /// in a material, which is MP4, and quicker in one hours long.
+    pub seek: bool,
+    /// 0 to 1.
+    pub volume: f64,
+    /// Seconds it fades in over from `start`, and out over until `end`.
+    pub fade_in: f64,
+    pub fade_out: f64,
+}
+
 pub struct ProjectRender<'a> {
     pub clips: Vec<RenderClip>,
     /// Drawn in order, so each covers those before it.
     pub overlays: Vec<RenderOverlay>,
+    pub sounds: Vec<RenderSound>,
     /// ASS document in project time, exactly as previewed by the editor.
     pub subtitle_ass: Option<String>,
     /// Font files the preview used for the subtitles.
@@ -202,12 +227,13 @@ fn concat_filter(clips: &[RenderClip], segment: &Segment, fps: f64, audio: &str)
             first + frames,
             hwaccel::H264_SCALE_PAD_FILTER,
         ));
-        if clip.has_audio {
+        if clip.has_audio && clip.volume > 0.0 {
             filter.push_str(&format!(
                 "[{index}:a]aresample={SAMPLE_RATE}:async=1:first_pts=0,atrim=start_sample={},\
                  aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS,\
-                 apad,atrim=end_sample={samples}[pa{index}];\n",
+                 {}apad,atrim=end_sample={samples}[pa{index}];\n",
                 (preroll * SAMPLE_RATE).round() as u64,
+                volume_filter(clip.volume),
             ));
         } else {
             filter.push_str(&format!(
@@ -227,6 +253,15 @@ fn concat_filter(clips: &[RenderClip], segment: &Segment, fps: f64, audio: &str)
          {sounds}concat=n={count}:v=0:a=1[{audio}];\n"
     ));
     filter
+}
+
+/// A volume filter followed by a comma, or nothing at full volume.
+fn volume_filter(volume: f64) -> String {
+    if volume == 1.0 {
+        String::new()
+    } else {
+        format!("volume={:.3},", volume.clamp(0.0, 1.0))
+    }
 }
 
 /// The part of an overlay within a segment.
@@ -714,7 +749,7 @@ impl Render<'_> {
         );
         for part in &segment.parts {
             let clip = &job.clips[part.clip];
-            let _ = writeln!(
+            let _ = write!(
                 key,
                 "clip {} {:.6} {:.6} {} {} {}",
                 self.file(&clip.path),
@@ -724,6 +759,12 @@ impl Render<'_> {
                 part.frames,
                 part.samples,
             );
+            // Only when turned down, so keys from before clips had a volume
+            // stay the same.
+            if clip.volume != 1.0 {
+                let _ = write!(key, " {}", volume_filter(clip.volume));
+            }
+            key.push('\n');
         }
         for shown in overlays {
             let (from, to) = (shown.start - start, shown.end - start);
@@ -939,13 +980,152 @@ impl Render<'_> {
     }
 }
 
+/// Where project time `time` falls in the joined sound of `segments`, in
+/// samples: counted from the start of its segment, as the segment's sound is.
+fn project_sample(segments: &[Segment], time: f64) -> u64 {
+    let mut before = 0;
+    let mut found = (0, 0.0);
+    for segment in segments {
+        if segment.cut > time + EPSILON {
+            break;
+        }
+        found = (before, segment.cut);
+        before += segment.samples;
+    }
+    let total: u64 = segments.iter().map(|segment| segment.samples).sum();
+    let into = ((time - found.1).max(0.0) * SAMPLE_RATE).round() as u64;
+    (found.0 + into).min(total)
+}
+
+/// A sound with where it is heard in the joined sound, in samples.
+struct PlacedSound<'a> {
+    sound: &'a RenderSound,
+    first: u64,
+    samples: u64,
+}
+
+impl PlacedSound<'_> {
+    /// Where the sound's input is seeked to in its file, and how much of the
+    /// input comes before what is heard.
+    fn seek(&self) -> (f64, f64) {
+        let start = self.sound.source_start.max(0.0);
+        let seek = if self.sound.seek {
+            (start - PREROLL).max(0.0)
+        } else {
+            0.0
+        };
+        (seek, start - seek)
+    }
+}
+
+/// `sounds` that are heard at all, where they are heard in the joined sound
+/// of `segments`, in order.
+fn place_sounds<'a>(sounds: &'a [RenderSound], segments: &[Segment]) -> Vec<PlacedSound<'a>> {
+    let mut placed: Vec<PlacedSound> = sounds
+        .iter()
+        .filter(|sound| sound.volume > 0.0)
+        .map(|sound| {
+            let first = project_sample(segments, sound.start);
+            let samples = project_sample(segments, sound.end).saturating_sub(first);
+            PlacedSound {
+                sound,
+                first,
+                samples,
+            }
+        })
+        .filter(|placed| placed.samples > 0)
+        .collect();
+    placed.sort_by_key(|placed| placed.first);
+    placed
+}
+
+/// The samples a sound of `samples` fades in and out over: no more than it
+/// has between them.
+fn fade_samples(sound: &RenderSound, samples: u64) -> (u64, u64) {
+    let at = |seconds: f64| (seconds.max(0.0) * SAMPLE_RATE).round() as u64;
+    let (fade_in, fade_out) = (at(sound.fade_in), at(sound.fade_out));
+    if fade_in + fade_out <= samples {
+        return (fade_in, fade_out);
+    }
+    let fade_in = (samples as f64 * fade_in as f64 / (fade_in + fade_out) as f64).round() as u64;
+    (fade_in, samples - fade_in)
+}
+
+/// Filter graph mixing `sounds`, inputs from 2 on, into the joined sound of
+/// the segments, input 1 and `total` samples long, as `[outa]`.
+///
+/// Sounds that do not overlap are joined, with silence between them, into one
+/// lane, which is as long as the joined sound like every input of the mix.
+fn sound_filter(sounds: &[PlacedSound], total: u64) -> String {
+    let mut filter = "[1:a]aformat=sample_fmts=fltp:channel_layouts=stereo[main];\n".to_string();
+    let silence = |label: &str, samples: u64| {
+        format!(
+            "anullsrc=r={SAMPLE_RATE}:cl=stereo,atrim=end_sample={samples},\
+             aformat=sample_fmts=fltp:channel_layouts=stereo[{label}];\n"
+        )
+    };
+    // Each lane's parts and where it ends.
+    let mut lanes: Vec<(Vec<String>, u64)> = Vec::new();
+    for (index, placed) in sounds.iter().enumerate() {
+        let (sound, samples) = (placed.sound, placed.samples);
+        let (_, skip) = placed.seek();
+        let (fade_in, fade_out) = fade_samples(sound, samples);
+        let mut fades = String::new();
+        if fade_in > 0 {
+            fades.push_str(&format!(",afade=t=in:ns={fade_in}"));
+        }
+        if fade_out > 0 {
+            fades.push_str(&format!(
+                ",afade=t=out:ss={}:ns={fade_out}",
+                samples - fade_out
+            ));
+        }
+        // Cut to the samples it is heard for, and padded to them if its file
+        // ends before.
+        filter.push_str(&format!(
+            "[{}:a]aresample={SAMPLE_RATE}:async=1:first_pts=0,atrim=start_sample={},\
+             aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS,\
+             apad,atrim=end_sample={samples},volume={:.3}{fades}[sound{index}];\n",
+            index + 2,
+            (skip * SAMPLE_RATE).round() as u64,
+            sound.volume.clamp(0.0, 1.0),
+        ));
+        let lane = match lanes.iter().position(|(_, end)| *end <= placed.first) {
+            Some(lane) => lane,
+            None => {
+                lanes.push((Vec::new(), 0));
+                lanes.len() - 1
+            }
+        };
+        let (parts, end) = &mut lanes[lane];
+        if placed.first > *end {
+            let label = format!("gap{index}");
+            filter.push_str(&silence(&label, placed.first - *end));
+            parts.push(label);
+        }
+        parts.push(format!("sound{index}"));
+        *end = placed.first + samples;
+    }
+    let mut labels = Vec::with_capacity(lanes.len());
+    for (lane, (parts, _)) in lanes.iter().enumerate() {
+        let inputs: String = parts.iter().map(|label| format!("[{label}]")).collect();
+        filter.push_str(&format!(
+            "{inputs}concat=n={}:v=0:a=1,apad,atrim=end_sample={total}[lane{lane}];\n",
+            parts.len(),
+        ));
+        labels.push(format!("lane{lane}"));
+    }
+    filter.push_str(&mix_filter("main", &labels));
+    filter
+}
+
 /// Join the rendered segments, with the files named by `keys`, into
-/// `output`, encoding their sound as one.
+/// `output`, encoding their sound as one with `mixed` mixed in.
 async fn join_segments<R: ProgressReporterTrait>(
     reporter: &R,
     directory: &Path,
-    segments: &[Segment],
-    keys: &[String],
+    (segments, keys): (&[Segment], &[String]),
+    mixed: &[RenderSound],
     fps: f64,
     output: &Path,
 ) -> Result<(), String> {
@@ -983,8 +1163,39 @@ async fn join_segments<R: ProgressReporterTrait>(
             "concat",
             "-i",
             "sounds.txt",
-        ])
-        .args(["-map", "0:v", "-map", "1:a", "-c:v", "copy"])
+        ]);
+    let mixed = place_sounds(mixed, segments);
+    if mixed.is_empty() {
+        command.args(["-map", "0:v", "-map", "1:a"]);
+    } else {
+        for placed in &mixed {
+            let (seek, skip) = placed.seek();
+            if seek > 0.0 {
+                command.args(["-ss", &format!("{seek:.6}")]);
+            }
+            let input =
+                std::path::absolute(&placed.sound.path).map_err(|error| error.to_string())?;
+            command
+                .args([
+                    "-t",
+                    &format!("{:.6}", skip + placed.samples as f64 / SAMPLE_RATE),
+                ])
+                .arg("-i")
+                .arg(input);
+        }
+        let samples = segments.iter().map(|segment| segment.samples).sum();
+        let filter = sound_filter(&mixed, samples);
+        tokio::fs::write(directory.join("mix.txt"), &filter)
+            .await
+            .map_err(|error| error.to_string())?;
+        log::debug!("Project sound filter graph:\n{filter}");
+        command
+            .arg(danmu::filter_complex_file_option().await)
+            .arg("mix.txt")
+            .args(["-map", "0:v", "-map", "[outa]"]);
+    }
+    command
+        .args(["-c:v", "copy"])
         .args(["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"])
         .arg(output);
     log::info!("Join project segments: {command:?}");
@@ -1204,7 +1415,15 @@ async fn render_with_encoder<R: ProgressReporterTrait>(
         .await?;
 
     let output_guard = TempArtifact::new(&output);
-    join_segments(reporter, &directory, &segments, &keys, fps, &output).await?;
+    join_segments(
+        reporter,
+        &directory,
+        (&segments, &keys),
+        &job.sounds,
+        fps,
+        &output,
+    )
+    .await?;
     output_guard.keep();
     if job.segment_cache.is_some() {
         // The cache keeps what this render is made of: its segments, and the
@@ -1315,6 +1534,7 @@ mod tests {
             has_audio,
             fps,
             file_duration: 0.0,
+            volume: 1.0,
         }
     }
 
@@ -1663,7 +1883,113 @@ mod tests {
             has_audio: true,
             fps: 30.0,
             file_duration: 0.0,
+            volume: 1.0,
         }
+    }
+
+    fn sound(start: f64, end: f64, source_start: f64, seek: bool) -> RenderSound {
+        RenderSound {
+            path: PathBuf::from("music.wav"),
+            start,
+            end,
+            source_start,
+            seek,
+            volume: 0.5,
+            fade_in: 0.0,
+            fade_out: 0.0,
+        }
+    }
+
+    fn timed_segment(cut: f64, samples: u64) -> Segment {
+        Segment {
+            first_frame: 0,
+            cut,
+            frames: 0,
+            samples,
+            parts: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn sounds_are_placed_by_the_samples_of_the_segment_they_fall_in() {
+        // The first segment's sound came out a sample longer than a second.
+        let segments = [timed_segment(0.0, 48_001), timed_segment(1.0, 48_000)];
+        assert_eq!(project_sample(&segments, 0.0), 0);
+        assert_eq!(project_sample(&segments, 0.5), 24_000);
+        assert_eq!(project_sample(&segments, 1.0), 48_001);
+        assert_eq!(project_sample(&segments, 1.5), 72_001);
+        assert_eq!(project_sample(&segments, 5.0), 96_001);
+    }
+
+    #[test]
+    fn sounds_are_mixed_on_as_few_lanes_as_they_overlap() {
+        let segments = [timed_segment(0.0, 96_000)];
+        let mut first = sound(0.0, 1.0, 3.0, false);
+        first.fade_in = 0.25;
+        let overlapping = sound(0.5, 1.5, 3.0, true);
+        let mut after = sound(1.25, 2.0, 0.0, false);
+        // Longer than the sound: all of it fades out.
+        after.fade_out = 2.0;
+        let mut silent = sound(0.0, 2.0, 0.0, false);
+        silent.volume = 0.0;
+        let sounds = [after, silent, overlapping, first];
+        let placed = place_sounds(&sounds, &segments);
+        assert_eq!(
+            placed
+                .iter()
+                .map(|placed| (placed.first, placed.samples))
+                .collect::<Vec<_>>(),
+            vec![(0, 48_000), (24_000, 48_000), (60_000, 36_000)]
+        );
+        let filter = sound_filter(&placed, 96_000);
+        // Read from the start of its file to 3 s in, or seeked to 1 s before.
+        assert!(
+            filter.contains("[2:a]aresample=48000:async=1:first_pts=0,atrim=start_sample=144000,")
+        );
+        assert!(
+            filter.contains("[3:a]aresample=48000:async=1:first_pts=0,atrim=start_sample=48000,")
+        );
+        assert!(filter.contains("atrim=end_sample=48000,volume=0.500,afade=t=in:ns=12000[sound0]"));
+        assert!(filter
+            .contains("atrim=end_sample=36000,volume=0.500,afade=t=out:ss=0:ns=36000[sound2]"));
+        // The first and the last on one lane with 0.25 s of silence between
+        // them, the one overlapping both on another after 0.5 s.
+        assert!(filter.contains("anullsrc=r=48000:cl=stereo,atrim=end_sample=12000,"));
+        assert!(filter.contains(
+            "[sound0][gap2][sound2]concat=n=3:v=0:a=1,apad,atrim=end_sample=96000[lane0]"
+        ));
+        assert!(
+            filter.contains("[gap1][sound1]concat=n=2:v=0:a=1,apad,atrim=end_sample=96000[lane1]")
+        );
+        assert!(filter.ends_with(
+            "[main][lane0][lane1]amix=inputs=3:duration=first:dropout_transition=0,volume=3[outa];\n"
+        ));
+        assert!(place_sounds(&[sound(1.0, 1.0, 0.0, false)], &segments).is_empty());
+    }
+
+    #[test]
+    fn a_clip_turned_down_sounds_so_in_segments_of_its_own() {
+        let segment = one_segment(&[2.5], 30.0);
+        let mut quiet = clip(true, 30.0);
+        quiet.volume = 0.5;
+        let filter = concat_filter(&[quiet], &segment, 30.0, "outa");
+        assert!(filter.contains("asetpts=PTS-STARTPTS,volume=0.500,apad,"));
+        let mut muted = clip(true, 30.0);
+        muted.volume = 0.0;
+        let filter = concat_filter(&[muted], &segment, 30.0, "outa");
+        assert!(filter.contains("anullsrc") && !filter.contains("[0:a]"));
+
+        let key = |volume: f64| {
+            let mut clip = clip(true, 30.0);
+            clip.volume = volume;
+            keys(&job(vec![clip], 0.0, 0.0), "")
+        };
+        assert_eq!(key(0.5), key(0.5));
+        assert_ne!(key(0.5), key(1.0));
+        // The sounds of audio tracks are mixed in after the segments.
+        let mut with_sounds = job(vec![clip(true, 30.0)], 0.0, 0.0);
+        with_sounds.sounds = vec![sound(0.0, 2.0, 0.0, false)];
+        assert_eq!(keys(&with_sounds, ""), key(1.0));
     }
 
     /// A job of `clips`, with a picture from `picture` to a second later at
@@ -1681,6 +2007,7 @@ mod tests {
                 },
             }],
             subtitle_ass: None,
+            sounds: Vec::new(),
             fonts_directory: None,
             danmus: Vec::new(),
             danmu_options: Danmu2AssOptions::default(),
@@ -1823,6 +2150,7 @@ mod tests {
                         material_id: index as i64,
                         start: 0.0,
                         end: *duration,
+                        volume: 1.0,
                     })
                     .collect(),
                 ..crate::project::Timeline::default()
@@ -1875,6 +2203,7 @@ mod tests {
                     .collect(),
                 overlays: Vec::new(),
                 subtitle_ass: None,
+                sounds: Vec::new(),
                 fonts_directory: None,
                 danmus: Vec::new(),
                 danmu_options: Danmu2AssOptions::default(),
@@ -2074,6 +2403,7 @@ mod tests {
             has_audio,
             fps: 30.0,
             file_duration: 2.0,
+            volume: 1.0,
         };
         // The timeline allows a clip to end a little after its file.
         render_project(
@@ -2082,6 +2412,7 @@ mod tests {
                 clips: vec![clip(&red, 2.4, true), clip(&blue, 2.0, false)],
                 overlays: Vec::new(),
                 subtitle_ass: None,
+                sounds: Vec::new(),
                 fonts_directory: None,
                 danmus: Vec::new(),
                 danmu_options: Danmu2AssOptions::default(),
@@ -2111,6 +2442,7 @@ mod tests {
                 clips: vec![clip(&red, 6.0, true), clip(&blue, 2.0, false)],
                 overlays: Vec::new(),
                 subtitle_ass: None,
+                sounds: Vec::new(),
                 fonts_directory: None,
                 danmus: Vec::new(),
                 danmu_options: Danmu2AssOptions::default(),
@@ -2189,6 +2521,7 @@ mod tests {
                 has_audio: index % 2 == 0,
                 fps: 30.0,
                 file_duration: 2.0,
+                volume: 1.0,
             })
             .collect();
         render_project(
@@ -2197,6 +2530,7 @@ mod tests {
                 clips,
                 overlays: Vec::new(),
                 subtitle_ass: None,
+                sounds: Vec::new(),
                 fonts_directory: None,
                 danmus: Vec::new(),
                 danmu_options: Danmu2AssOptions::default(),
@@ -2292,6 +2626,7 @@ mod tests {
                         has_audio: true,
                         fps: 30.0,
                         file_duration: 4.0,
+                        volume: 1.0,
                     },
                     RenderClip {
                         id: String::new(),
@@ -2301,10 +2636,12 @@ mod tests {
                         has_audio: false,
                         fps: 60.0,
                         file_duration: 3.0,
+                        volume: 1.0,
                     },
                 ],
                 overlays: Vec::new(),
                 subtitle_ass: subtitles.then(|| ass.to_string()),
+                sounds: Vec::new(),
                 fonts_directory: None,
                 danmus: if danmaku {
                     vec![text_danmu(500), text_danmu(2500)]
@@ -2448,6 +2785,7 @@ mod tests {
                     has_audio: false,
                     fps: 30.0,
                     file_duration: 4.0,
+                    volume: 1.0,
                 }],
                 overlays: vec![
                     // The top left quarter from 1 s to 3 s.
@@ -2468,6 +2806,7 @@ mod tests {
                     video(2.0, 3.5, 5.0, [480.0, 810.0, 960.0, 0.0]),
                 ],
                 subtitle_ass: None,
+                sounds: Vec::new(),
                 fonts_directory: None,
                 danmus: Vec::new(),
                 danmu_options: Danmu2AssOptions::default(),
@@ -2591,6 +2930,188 @@ mod tests {
         result.stdout
     }
 
+    /// The sound of `file`, mono, as samples.
+    async fn mono(file: &Path) -> Vec<i16> {
+        mono_samples(file)
+            .await
+            .chunks_exact(2)
+            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+            .collect()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires FFmpeg with libx264"]
+    async fn sounds_play_on_across_segments_where_they_are_placed() {
+        let directory = tempfile::tempdir().unwrap();
+        let silent = directory.path().join("silent.mp4");
+        run_ffmpeg(
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red:s=320x180:r=30:d=6",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+            ],
+            &silent,
+        )
+        .await;
+        // Music in a file of the library, and a voice in a material. Both in
+        // stereo, as the mix is: a mono sound is heard 3 dB lower on each side.
+        let music = directory.path().join("music.wav");
+        run_ffmpeg(
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=48000:duration=10",
+                "-ac",
+                "2",
+            ],
+            &music,
+        )
+        .await;
+        let voice = directory.path().join("voice.mp4");
+        run_ffmpeg(
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=blue:s=320x180:r=30:d=8",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=660:sample_rate=48000:duration=8",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-ac",
+                "2",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+            ],
+            &voice,
+        )
+        .await;
+        let ids = plain_ids(3);
+        let cache = directory.path().join("cache");
+        let render = |music_volume: f64, output: PathBuf| {
+            let (silent, music, voice, ids, cache) = (&silent, &music, &voice, &ids, &cache);
+            async move {
+                // Each a different part of the file, so that no two segments are
+                // the same.
+                let clips = ids
+                    .iter()
+                    .enumerate()
+                    .map(|(index, id)| RenderClip {
+                        id: id.clone(),
+                        path: silent.clone(),
+                        start: index as f64 * 2.0,
+                        duration: 2.0,
+                        has_audio: false,
+                        fps: 30.0,
+                        file_duration: 6.0,
+                        volume: 1.0,
+                    })
+                    .collect();
+                let sounds = vec![
+                    // Heard from 1 s, 0.5 s into the file, fading in over a second.
+                    RenderSound {
+                        path: music.clone(),
+                        start: 1.0,
+                        end: 5.0,
+                        source_start: 0.5,
+                        seek: false,
+                        volume: music_volume,
+                        fade_in: 1.0,
+                        fade_out: 0.0,
+                    },
+                    // Over the music from 3 s, 2 s into the material.
+                    RenderSound {
+                        path: voice.clone(),
+                        start: 3.0,
+                        end: 5.8,
+                        source_start: 2.0,
+                        seek: true,
+                        volume: 1.0,
+                        fade_in: 0.0,
+                        fade_out: 0.3,
+                    },
+                ];
+                let stats = render_with_encoder(
+                    &NoopReporter,
+                    &ProjectRender {
+                        clips,
+                        overlays: Vec::new(),
+                        sounds,
+                        subtitle_ass: None,
+                        fonts_directory: None,
+                        danmus: Vec::new(),
+                        danmu_options: Danmu2AssOptions::default(),
+                        output: &output,
+                        segment_cache: Some(cache),
+                    },
+                    // A segment for each clip, cut at 2 s and 4 s.
+                    SegmentLimits {
+                        seconds: 2.0,
+                        parts: 16,
+                    },
+                    "libx264",
+                )
+                .await
+                .unwrap();
+                (stats, mono(&output).await)
+            }
+        };
+        let (stats, sound) = render(0.5, directory.path().join("out.mp4")).await;
+        assert_eq!(stats.reused, 0);
+        assert_eq!(sound.len(), 6 * 48_000);
+        let (music, voice) = (mono(&music).await, mono(&voice).await);
+        // Within what encoding a tone as AAC changes; a sample out of place
+        // changes it by more than twice as much.
+        let near = |label: &str, range: std::ops::Range<usize>, expected: &dyn Fn(usize) -> f64| {
+            for n in range {
+                let error = (f64::from(sound[n]) - expected(n)).abs();
+                assert!(
+                    error <= 48.0,
+                    "{label}: sample {n} is {}, not {:.0}",
+                    sound[n],
+                    expected(n)
+                );
+            }
+        };
+        let music_at = |n: usize, volume: f64| volume * f64::from(music[n - 24_000]);
+        let voice_at = |n: usize| f64::from(voice[n - 48_000]);
+        near("before the music", 0..48_000, &|_| 0.0);
+        near("fading in", 48_000..96_000, &|n| {
+            music_at(n, 0.5) * (n - 48_000) as f64 / 48_000.0
+        });
+        // On over the cut between the first two segments.
+        near("music", 96_000..144_000, &|n| music_at(n, 0.5));
+        near("music and voice", 144_000..240_000, &|n| {
+            music_at(n, 0.5) + voice_at(n)
+        });
+        near("voice", 240_000..264_000, &|n| voice_at(n));
+        near("after the voice", 278_400..288_000, &|_| 0.0);
+
+        // Turning the music down renders no segment again.
+        let (stats, quieter) = render(0.25, directory.path().join("quieter.mp4")).await;
+        assert_eq!((stats.segments, stats.reused), (3, 3));
+        let level = |sound: &[i16]| {
+            sound[96_000..144_000]
+                .iter()
+                .map(|s| i64::from(s.unsigned_abs()))
+                .sum::<i64>()
+        };
+        let ratio = level(&quieter) as f64 / level(&sound) as f64;
+        assert!((ratio - 0.5).abs() < 0.02, "{ratio}");
+    }
+
     #[tokio::test]
     #[ignore = "requires FFmpeg with libx264"]
     async fn segments_cut_within_a_clip_join_without_a_seam() {
@@ -2643,9 +3164,11 @@ mod tests {
                         has_audio: true,
                         fps: 25.0,
                         file_duration: 6.0,
+                        volume: 1.0,
                     }],
                     overlays: Vec::new(),
                     subtitle_ass: None,
+                    sounds: Vec::new(),
                     fonts_directory: None,
                     danmus: Vec::new(),
                     danmu_options: Danmu2AssOptions::default(),
@@ -2739,6 +3262,7 @@ mod tests {
                     has_audio: index % 2 == 0,
                     fps: 30.0,
                     file_duration: 2.0,
+                    volume: 1.0,
                 })
                 .collect();
             if before {
@@ -2753,6 +3277,7 @@ mod tests {
                         has_audio: false,
                         fps: 30.0,
                         file_duration: 2.0,
+                        volume: 1.0,
                     },
                 );
             }
@@ -2781,6 +3306,7 @@ mod tests {
                         clips,
                         overlays: Vec::new(),
                         subtitle_ass: Some(ass),
+                        sounds: Vec::new(),
                         fonts_directory: None,
                         danmus: Vec::new(),
                         danmu_options: Danmu2AssOptions::default(),

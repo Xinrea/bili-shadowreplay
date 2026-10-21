@@ -8,6 +8,7 @@ use crate::{
     config::{Config, LlmConfig},
     constants::API_PORT,
     database::{
+        audio::AudioRow,
         message::MessageRow,
         record::RecordRow,
         recorder::RecorderRow,
@@ -18,6 +19,10 @@ use crate::{
     handlers::{
         account::{
             add_account, get_account_count, get_accounts, get_qr, get_qr_status, remove_account,
+        },
+        audio::{
+            delete_audio_file, get_audio_files, get_audio_peaks, get_audio_usage,
+            import_audio_file, rename_audio_file,
         },
         config::{
             get_config, get_llm_config, get_mcp_server_status, get_static_port, list_llm_models,
@@ -1339,6 +1344,69 @@ async fn handler_get_material_peaks(
     )))
 }
 
+async fn handler_get_audio_files(
+    state: axum::extract::State<State>,
+) -> Result<Json<ApiResponse<Vec<AudioRow>>>, ApiError> {
+    Ok(Json(ApiResponse::success(get_audio_files(state.0).await?)))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportAudioFileRequest {
+    file_path: String,
+    name: Option<String>,
+}
+
+async fn handler_import_audio_file(
+    state: axum::extract::State<State>,
+    Json(param): Json<ImportAudioFileRequest>,
+) -> Result<Json<ApiResponse<AudioRow>>, ApiError> {
+    Ok(Json(ApiResponse::success(
+        import_audio_file(state.0, param.file_path, param.name).await?,
+    )))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RenameAudioFileRequest {
+    id: i64,
+    name: String,
+}
+
+async fn handler_rename_audio_file(
+    state: axum::extract::State<State>,
+    Json(param): Json<RenameAudioFileRequest>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    rename_audio_file(state.0, param.id, param.name).await?;
+    Ok(Json(ApiResponse::success(())))
+}
+
+async fn handler_delete_audio_file(
+    state: axum::extract::State<State>,
+    Json(param): Json<IdRequest>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    delete_audio_file(state.0, param.id).await?;
+    Ok(Json(ApiResponse::success(())))
+}
+
+async fn handler_get_audio_usage(
+    state: axum::extract::State<State>,
+    Json(param): Json<IdRequest>,
+) -> Result<Json<ApiResponse<Vec<ProjectBrief>>>, ApiError> {
+    Ok(Json(ApiResponse::success(
+        get_audio_usage(state.0, param.id).await?,
+    )))
+}
+
+async fn handler_get_audio_peaks(
+    state: axum::extract::State<State>,
+    Json(param): Json<IdRequest>,
+) -> Result<Json<ApiResponse<Peaks>>, ApiError> {
+    Ok(Json(ApiResponse::success(
+        get_audio_peaks(state.0, param.id).await?,
+    )))
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProjectFrameRateRequest {
@@ -2402,6 +2470,9 @@ pub async fn start_api_server(state: State) {
             )
             .route("/api/delete_upload", post(handler_delete_upload))
             .route("/api/add_cover_sticker", post(handler_add_cover_sticker))
+            .route("/api/import_audio_file", post(handler_import_audio_file))
+            .route("/api/rename_audio_file", post(handler_rename_audio_file))
+            .route("/api/delete_audio_file", post(handler_delete_audio_file))
             .route(
                 "/api/delete_cover_sticker",
                 post(handler_delete_cover_sticker),
@@ -2480,6 +2551,9 @@ pub async fn start_api_server(state: State) {
         .route("/api/get_cover_stickers", post(handler_get_cover_stickers))
         .route("/api/get_material_usage", post(handler_get_material_usage))
         .route("/api/get_material_peaks", post(handler_get_material_peaks))
+        .route("/api/get_audio_files", post(handler_get_audio_files))
+        .route("/api/get_audio_usage", post(handler_get_audio_usage))
+        .route("/api/get_audio_peaks", post(handler_get_audio_peaks))
         .route(
             "/api/get_project_frame_rate",
             post(handler_get_project_frame_rate),

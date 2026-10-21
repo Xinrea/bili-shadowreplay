@@ -19,7 +19,7 @@ pub fn danmu_path(video: &Path) -> PathBuf {
     video.with_extension("danmu.json")
 }
 
-fn peaks_path(video: &Path) -> PathBuf {
+pub fn peaks_path(video: &Path) -> PathBuf {
     video.with_extension("peaks.json")
 }
 

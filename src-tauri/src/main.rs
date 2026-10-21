@@ -592,6 +592,21 @@ fn get_migrations() -> Vec<Migration> {
             sql: "ALTER TABLE uploads ADD COLUMN cover43 TEXT NOT NULL DEFAULT '';",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 23,
+            description: "add_audio_files",
+            sql: r"
+                CREATE TABLE audio_files (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL DEFAULT '',
+                    file TEXT NOT NULL,
+                    duration REAL NOT NULL DEFAULT 0,
+                    size INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+            ",
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -1029,6 +1044,12 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::project::get_material_danmu,
         crate::handlers::project::generate_materials,
         crate::handlers::sticker::get_cover_stickers,
+        crate::handlers::audio::get_audio_files,
+        crate::handlers::audio::import_audio_file,
+        crate::handlers::audio::rename_audio_file,
+        crate::handlers::audio::delete_audio_file,
+        crate::handlers::audio::get_audio_usage,
+        crate::handlers::audio::get_audio_peaks,
         crate::handlers::sticker::add_cover_sticker,
         crate::handlers::sticker::delete_cover_sticker,
         crate::handlers::upload::get_uploads,

@@ -136,3 +136,41 @@ test("leaving the clips drops the seek waiting", () => {
   assert.equal(instance.seeking, false);
   assert.deepEqual(video.seeks, []);
 });
+
+test("the standby element preloading does not hold the player seeking", () => {
+  const [active, standby] = [new FakeVideo(), new FakeVideo()];
+  const instance = new ProjectPlayer(active, standby);
+  instance.setSegments([
+    { clipId: "a", url: "a.mp4", start: 100, end: 110, offset: 0 },
+    { clipId: "b", url: "b.mp4", start: 5, end: 15, offset: 10 },
+  ]);
+  active.loaded();
+  active.land();
+  // The standby goes to the next clip's in point, and is still seeking there.
+  standby.loaded();
+  assert.deepEqual(standby.seeks, [5]);
+  const events = [];
+  for (const type of ["seeking", "seeked"]) instance.addEventListener(type, () => events.push(type));
+  instance.seek(1);
+  active.land();
+  // Done with the seek asked, though the standby still seeks on.
+  assert.equal(instance.seeking, false);
+  assert.deepEqual(events, ["seeking", "seeked"]);
+  standby.land();
+  assert.equal(instance.seeking, false);
+});
+
+test("an error while still seeking keeps the time asked", () => {
+  const { instance, video, events } = player();
+  instance.seek(10);
+  instance.seek(20);
+  // Still seeking when the error arrives.
+  video.dispatchEvent(new Event("error"));
+  assert.deepEqual(video.seeks, [110]);
+  assert.equal(instance.seeking, true);
+  video.land();
+  assert.deepEqual(video.seeks, [110, 120]);
+  video.land();
+  assert.equal(instance.seeking, false);
+  assert.deepEqual(events, ["seeking", "seeked"]);
+});

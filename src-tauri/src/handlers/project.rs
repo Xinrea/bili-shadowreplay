@@ -1738,6 +1738,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn editor_saves_drop_audio_files_deleted_since_the_editor_last_heard() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for migration in crate::get_migrations() {
+            sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
+        }
+        sqlx::raw_sql(
+            "INSERT INTO videos (id, room_id, cover, file, note, length, size, status, bvid, title, desc, tags, area, created_at, platform)
+             VALUES (1, '1', '', 'a.mp4', '', 10, 1, 0, '', '', '', '', 0, '', 'bilibili');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let db = Database::new(
+            pool,
+            CredentialCipher::new(&[0; 32]).unwrap(),
+            crate::events::EventBus::new(),
+        );
+        let mut library = Vec::new();
+        for name in ["kept", "deleted"] {
+            let audio = db
+                .add_audio_file(&AudioRow {
+                    id: 0,
+                    name: name.into(),
+                    file: format!("audio/{name}.wav"),
+                    duration: 30.0,
+                    size: 1,
+                    created_at: "2026-10-21".into(),
+                })
+                .await
+                .unwrap();
+            library.push(audio.id);
+        }
+        let mut editor = Timeline::from_materials(&[(1, 10.0)]);
+        let clip_id = editor.clips[0].id.clone();
+        editor.audio_tracks = library
+            .iter()
+            .map(|&audio_id| crate::project::AudioTrack {
+                id: format!("track{audio_id}"),
+                items: vec![crate::project::AudioItem {
+                    id: format!("sound{audio_id}"),
+                    clip_id: clip_id.clone(),
+                    start: 0.0,
+                    duration: 5.0,
+                    source: AudioSource::File { audio_id },
+                    source_start: 0.0,
+                    volume: 1.0,
+                    fade_in: 0.0,
+                    fade_out: 0.0,
+                }],
+            })
+            .collect();
+        let project = db
+            .add_project(&ProjectRow {
+                id: 0,
+                room_id: "1".into(),
+                platform: "bilibili".into(),
+                title: "t".into(),
+                note: String::new(),
+                cover: String::new(),
+                timeline: Timeline::from_materials(&[(1, 10.0)]).to_json(),
+                profile: String::new(),
+                status: 0,
+                bvid: String::new(),
+                created_at: "2026-10-21".into(),
+                updated_at: "2026-10-21".into(),
+            })
+            .await
+            .unwrap();
+
+        // Deleted while the editor, which has not heard yet, still plays it.
+        db.delete_audio_file(library[1]).await.unwrap();
+        let saved = save_editor_timeline(&db, project.id, editor, None)
+            .await
+            .unwrap();
+
+        assert_eq!(saved.audio_ids(), vec![library[0]]);
+        let stored = Timeline::parse(&db.get_project(project.id).await.unwrap().timeline).unwrap();
+        assert_eq!(stored.audio_ids(), vec![library[0]]);
+    }
+
+    #[tokio::test]
     async fn editor_saves_keep_subtitles_recognized_since_the_editor_last_heard() {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)

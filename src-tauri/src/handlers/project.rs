@@ -12,6 +12,7 @@ use serde_json::json;
 use tokio::sync::oneshot;
 
 use crate::danmu2ass::Danmu2AssOptions;
+use crate::database::audio::AudioRow;
 use crate::database::project::ProjectRow;
 use crate::database::task::TaskRow;
 use crate::database::upload::UploadRow;
@@ -19,7 +20,7 @@ use crate::database::video::VideoRow;
 use crate::database::{Database, DatabaseError};
 use crate::ffmpeg::project::{
     limit_segment_caches, project_frame_rate, render_project, OverlayLayer, ProjectRender,
-    RenderClip, RenderOverlay, VideoLayer,
+    RenderClip, RenderOverlay, RenderSound, VideoLayer,
 };
 use crate::ffmpeg::runner::TempArtifact;
 use crate::handlers::subtitle_fonts::prepare_subtitle_font_directory;
@@ -30,7 +31,7 @@ use crate::handlers::video::{
 };
 use crate::material::Peaks;
 use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
-use crate::project::{srt_cues, OverlayContent, Timeline, TimelineClip};
+use crate::project::{srt_cues, AudioSource, OverlayContent, Timeline, TimelineClip};
 use crate::recorder_manager::ClipRangeParams;
 use crate::state::State;
 use crate::state_type;
@@ -178,6 +179,29 @@ async fn materials_by_id(state: &State, ids: &[i64]) -> Result<HashMap<i64, Vide
         }
     }
     Ok(materials)
+}
+
+/// The files of the audio library with `ids` that are still there.
+async fn audio_by_id(state: &State, ids: &[i64]) -> HashMap<i64, AudioRow> {
+    let mut files = HashMap::new();
+    for &id in ids {
+        if let Ok(audio) = state.db.get_audio_file(id).await {
+            files.insert(id, audio);
+        }
+    }
+    files
+}
+
+/// Check a timeline against its materials and files of the audio library.
+fn validate_timeline(
+    timeline: &Timeline,
+    materials: &HashMap<i64, VideoRow>,
+    audio: &HashMap<i64, AudioRow>,
+) -> Result<(), String> {
+    timeline.validate(
+        |id| materials.get(&id).map(material_duration),
+        |id| audio.get(&id).map(|audio| audio.duration),
+    )
 }
 
 /// The material a project is exported and uploaded as: one untouched material
@@ -455,6 +479,13 @@ async fn save_editor_timeline(
                 timeline.remove_material(material_id);
             }
         }
+        for audio_id in timeline.audio_ids() {
+            if let Err(DatabaseError::DB(sqlx::Error::RowNotFound)) =
+                db.get_audio_file(audio_id).await
+            {
+                timeline.remove_audio(audio_id);
+            }
+        }
         let now = Local::now().to_rfc3339();
         if db
             .replace_project_timeline(id, &saved, &timeline.to_json(), &now)
@@ -531,7 +562,7 @@ const TIMELINE_EDIT_ATTEMPTS: usize = 5;
 /// Apply `edit`, which tells whether it changed anything, to the project's
 /// saved timeline. The write only replaces the timeline it was made from, so
 /// a save from the editor in between is edited again instead of overwritten.
-async fn edit_project_timeline(
+pub(crate) async fn edit_project_timeline(
     db: &Database,
     id: i64,
     mut edit: impl FnMut(&mut Timeline) -> bool,
@@ -844,7 +875,8 @@ pub(crate) async fn project_upload_video(
         return Err("切片没有片段".to_string());
     }
     let materials = materials_by_id(state, &timeline.material_ids()).await?;
-    timeline.validate(|id| materials.get(&id).map(material_duration))?;
+    let audio = audio_by_id(state, &timeline.audio_ids()).await;
+    validate_timeline(&timeline, &materials, &audio)?;
     if let Some(material) = plain_material(&timeline, &materials) {
         return Ok((output_dir(state).await.join(&material.file), None));
     }
@@ -859,6 +891,7 @@ pub(crate) async fn project_upload_video(
         overlay_images,
         timeline,
         materials: &materials,
+        audio: &audio,
         danmu_options: danmu_options(state).await,
         project: Some(project.id),
     };
@@ -882,6 +915,7 @@ pub(crate) async fn material_danmu_video(
         return Err("无法读取素材时长".to_string());
     }
     let title = material_title(material);
+    let audio = HashMap::new();
     let source = ExportSource {
         task_type: "render_material_danmu",
         metadata: json!({ "video_id": id, "title": title }),
@@ -893,11 +927,13 @@ pub(crate) async fn material_danmu_video(
                 material_id: id,
                 start: 0.0,
                 end: duration,
+                volume: 1.0,
             }],
             danmu: true,
             ..Timeline::default()
         },
         materials: &materials,
+        audio: &audio,
         subtitle_ass: None,
         overlay_images: Vec::new(),
         danmu_options: danmu_options(state).await,
@@ -1019,6 +1055,8 @@ struct ExportSource<'a> {
     metadata: serde_json::Value,
     timeline: Timeline,
     materials: &'a HashMap<i64, VideoRow>,
+    /// The files of the audio library it plays.
+    audio: &'a HashMap<i64, AudioRow>,
     subtitle_ass: Option<String>,
     /// Pictures of the text and sticker overlays.
     overlay_images: Vec<OverlayImage>,
@@ -1054,6 +1092,8 @@ struct ExportJob {
     timeline: Timeline,
     /// Each material's file, by id.
     files: HashMap<i64, PathBuf>,
+    /// Each audio library file's path, by id.
+    audio_files: HashMap<i64, PathBuf>,
     subtitle_ass: Option<String>,
     font_name: Option<String>,
     /// The picture of each text and sticker overlay, by id.
@@ -1084,7 +1124,8 @@ pub async fn export_project(
         return Err("时间轴上还没有片段".to_string());
     }
     let materials = materials_by_id(&state, &timeline.material_ids()).await?;
-    timeline.validate(|id| materials.get(&id).map(material_duration))?;
+    let audio = audio_by_id(&state, &timeline.audio_ids()).await;
+    validate_timeline(&timeline, &materials, &audio)?;
     // Rendered with the project's danmaku setting, as saved.
     let timeline = save_editor_timeline(&state.db, id, timeline, base).await?;
 
@@ -1109,6 +1150,7 @@ pub async fn export_project(
         metadata: json!({ "project_id": project.id, "title": project.title }),
         timeline,
         materials: &materials,
+        audio: &audio,
         subtitle_ass,
         overlay_images: overlays.unwrap_or_default(),
         danmu_options: danmu_options(&state).await,
@@ -1151,6 +1193,7 @@ async fn queue_export(
         metadata,
         timeline,
         materials,
+        audio,
         subtitle_ass,
         overlay_images,
         danmu_options,
@@ -1207,6 +1250,10 @@ async fn queue_export(
         files: materials
             .iter()
             .map(|(id, material)| (*id, output.join(&material.file)))
+            .collect(),
+        audio_files: audio
+            .iter()
+            .map(|(id, audio)| (*id, output.join(&audio.file)))
             .collect(),
         timeline,
         subtitle_ass,
@@ -1352,7 +1399,35 @@ async fn render_timeline(
             has_audio,
             fps,
             file_duration,
+            volume: clip.volume,
         });
+    }
+
+    let mut sounds = Vec::new();
+    for placed in job.timeline.placed_audio() {
+        let item = placed.item;
+        let (path, seek) = match item.source {
+            AudioSource::File { audio_id } => (
+                job.audio_files
+                    .get(&audio_id)
+                    .ok_or_else(|| format!("声音文件 {audio_id} 不存在"))?,
+                false,
+            ),
+            AudioSource::Material { material_id } => (file(material_id)?, true),
+        };
+        let (has_audio, _, _) = probe_material(&mut probed, path).await?;
+        if has_audio {
+            sounds.push(RenderSound {
+                path: path.clone(),
+                start: placed.start,
+                end: placed.end,
+                source_start: item.source_start + placed.skip,
+                seek,
+                volume: item.volume,
+                fade_in: item.fade_in,
+                fade_out: item.fade_out,
+            });
+        }
     }
 
     let mut overlays = Vec::new();
@@ -1421,6 +1496,7 @@ async fn render_timeline(
         ProjectRender {
             clips,
             overlays,
+            sounds,
             subtitle_ass: job.subtitle_ass.clone(),
             fonts_directory: fonts_directory.as_ref().map(|directory| directory.path()),
             danmus,
@@ -1834,7 +1910,7 @@ mod tests {
 
     #[test]
     fn a_render_is_identified_by_its_overlay_pictures_too() {
-        let materials = HashMap::new();
+        let (materials, audio) = (HashMap::new(), HashMap::new());
         let timeline = Timeline::from_materials(&[(1, 10.0)]);
         let source = |images: Vec<OverlayImage>| ExportSource {
             task_type: "export_project",
@@ -1842,6 +1918,7 @@ mod tests {
             metadata: json!({}),
             timeline: timeline.clone(),
             materials: &materials,
+            audio: &audio,
             subtitle_ass: None,
             overlay_images: images,
             danmu_options: Danmu2AssOptions::default(),

@@ -3,6 +3,7 @@ use sqlx::SqlitePool;
 use thiserror::Error;
 
 pub mod account;
+pub mod audio;
 pub mod bilibili_user;
 #[cfg_attr(
     not(feature = "credential-encryption"),

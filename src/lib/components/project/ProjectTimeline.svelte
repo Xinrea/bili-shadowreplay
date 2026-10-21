@@ -1228,6 +1228,12 @@
     border-radius: 6px;
   }
 
+  /* Without its heading, a clip's waveform fills it. */
+  .clip:not(.labelled) .clip-wave {
+    top: 0;
+    height: 100%;
+  }
+
   .clip {
     position: absolute;
     top: 4px;

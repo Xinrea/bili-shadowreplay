@@ -466,18 +466,31 @@ async fn read_logs(dir: &Path) -> Option<Vec<u8>> {
 
 /// The last `max_bytes` of a log, starting on a line boundary.
 async fn tail(path: &Path, max_bytes: usize) -> Option<String> {
-    let bytes = tokio::fs::read(path)
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    // A long session can grow the log far past `max_bytes`; read only its end.
+    let read = async {
+        let mut file = tokio::fs::File::open(path).await?;
+        let len = file.metadata().await?.len();
+        let start = len.saturating_sub(max_bytes as u64);
+        file.seek(std::io::SeekFrom::Start(start)).await?;
+        let mut bytes = Vec::new();
+        // The log may still grow while it is read; stop at the size seen above.
+        file.take(len - start).read_to_end(&mut bytes).await?;
+        Ok::<_, std::io::Error>((start, bytes))
+    };
+    let (start, bytes) = read
         .await
         .map_err(|e| log::warn!("Failed to read {} for feedback: {e}", path.display()))
         .ok()?;
-    let mut start = bytes.len().saturating_sub(max_bytes);
-    if start > 0 {
-        start = bytes[start..]
+    let skip = if start > 0 {
+        bytes
             .iter()
             .position(|&b| b == b'\n')
-            .map_or(bytes.len(), |p| start + p + 1);
-    }
-    Some(String::from_utf8_lossy(&bytes[start..]).into_owned())
+            .map_or(bytes.len(), |p| p + 1)
+    } else {
+        0
+    };
+    Some(String::from_utf8_lossy(&bytes[skip..]).into_owned())
 }
 
 /// The most recent rotated log; their timestamped names sort by age.
@@ -497,10 +510,14 @@ async fn previous_log(dir: &Path) -> Option<PathBuf> {
 }
 
 /// Masks credentials that may end up in log lines, and drops NUL bytes.
+///
+/// Besides account secrets this covers upload `auth`, CDN signatures (`sign`,
+/// `sk`), the viewer id and address in stream URLs (`mid`, `oi`), and webhook
+/// URLs, whose path is itself the credential.
 fn redact(text: &str) -> String {
     static SECRET: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(
-            r#"(?i)\b(sessdata|bili_jct|dedeuserid(?:__ckmd5)?|buvid3|access_token|refresh_token|access_key|upload_token|api_key|apikey|password|passwd|secret|token)\b(["']?\s*[:=]\s*["']?)(?:bearer\s+)?[^\s"'&;,}]+"#,
+            r#"(?i)\b(sessdata|bili_jct|dedeuserid(?:__ckmd5)?|buvid3|access_token|refresh_token|access_key|upload_token|api_key|apikey|password|passwd|secret|token|auth|auth_key|sign|signature|upsig|sk|mid|oi|wssecret|txsecret)\b(["']?\s*[:=]\s*)("[^"\n]*"|'[^'\n]*'|["']?(?:bearer\s+)?[^\s"'&;,}]+)"#,
         )
         .expect("valid secret pattern")
     });
@@ -508,9 +525,28 @@ fn redact(text: &str) -> String {
         Regex::new(r#"(?i)\b(cookies?|authorization|x-feedback-token)\b(["']?\s*[:=]\s*)[^\n]*"#)
             .expect("valid header pattern")
     });
+    static WEBHOOK: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?i)(webhook[^\n]*?https?://[^/\s?#"'<>]+)[^\s"'<>]*"#)
+            .expect("valid webhook pattern")
+    });
     let text = text.replace('\0', "");
     let text = HEADER.replace_all(&text, "$1$2[REDACTED]");
-    SECRET.replace_all(&text, "$1$2[REDACTED]").into_owned()
+    let text = WEBHOOK.replace_all(&text, "$1/[REDACTED]");
+    // A quoted value is masked up to its closing quote, since it may hold `&` or spaces.
+    SECRET
+        .replace_all(&text, |caps: &regex::Captures| {
+            let value = &caps[3];
+            let quote = value.chars().next().filter(|c| *c == '"' || *c == '\'');
+            let close = quote.filter(|q| value.len() > 1 && value.ends_with(*q));
+            format!(
+                "{}{}{}[REDACTED]{}",
+                &caps[1],
+                &caps[2],
+                quote.map(String::from).unwrap_or_default(),
+                close.map(String::from).unwrap_or_default()
+            )
+        })
+        .into_owned()
 }
 
 #[cfg(test)]
@@ -617,6 +653,40 @@ mod tests {
             text,
             "url?access_key=[REDACTED]&room=1\nCookie: [REDACTED]\n{\"refresh_token\":\"[REDACTED]\",\"token_type\":\"Bearer\"}\nauthorization: [REDACTED]\n"
         );
+    }
+
+    #[test]
+    fn credentials_in_info_log_lines_are_redacted() {
+        // The shapes BSR writes at Info level: webhook setup, upload preupload and stream URLs.
+        let cases = [
+            (
+                "12:00:00 [INFO] Creating webhook poster with URL: https://discord.com/api/webhooks/123/abcDEF",
+                "12:00:00 [INFO] Creating webhook poster with URL: https://discord.com/[REDACTED]",
+            ),
+            (
+                "12:00:00 [INFO] Updating webhook url to https://hooks.slack.com/services/T0/B0/xyz?x=1",
+                "12:00:00 [INFO] Updating webhook url to https://hooks.slack.com/[REDACTED]",
+            ),
+            (
+                "12:00:00 [INFO] Creating webhook poster with URL: ",
+                "12:00:00 [INFO] Creating webhook poster with URL: ",
+            ),
+            (
+                r#"12:00:00 [INFO] Preupload Response: PreuploadResponse { endpoint: "//upos-cs-upcdnbda2.bilivideo.com", upos_uri: "upos://ugcfx2lf/n1.mp4", auth: "ak=1&cdn=%2F%2Fupos&os=upos&sign=f00d&timestamp=1", chunk_size: 10485760, biz_id: 1 }"#,
+                r#"12:00:00 [INFO] Preupload Response: PreuploadResponse { endpoint: "//upos-cs-upcdnbda2.bilivideo.com", upos_uri: "upos://ugcfx2lf/n1.mp4", auth: "[REDACTED]", chunk_size: 10485760, biz_id: 1 }"#,
+            ),
+            (
+                "12:00:00 [INFO] [7890]   origin: https://pull-flv.douyincdn.com/stage/s.flv?expire=1761091200&sign=0a1b2c&major_anchor_level=common",
+                "12:00:00 [INFO] [7890]   origin: https://pull-flv.douyincdn.com/stage/s.flv?expire=1761091200&sign=[REDACTED]&major_anchor_level=common",
+            ),
+            (
+                "https://cn.bilivideo.com/live/1.m4s?expires=1&len=0&oi=3070230&pt=web&mid=4242&sk=deadbeef&qn=10000",
+                "https://cn.bilivideo.com/live/1.m4s?expires=1&len=0&oi=[REDACTED]&pt=web&mid=[REDACTED]&sk=[REDACTED]&qn=10000",
+            ),
+        ];
+        for (line, expected) in cases {
+            assert_eq!(redact(line), expected);
+        }
     }
 
     #[tokio::test]

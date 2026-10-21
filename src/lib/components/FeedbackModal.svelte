@@ -1,6 +1,7 @@
 <script lang="ts">
   import { CircleCheck, FolderOpen, ImagePlus, LoaderCircle, Send, X } from "lucide-svelte";
   import { invoke, TAURI_ENV } from "../invoker";
+  import { formatSize } from "../size-format";
 
   let { show = $bindable(false) }: { show?: boolean } = $props();
 
@@ -45,12 +46,6 @@
     return /^[^\s@<>",;]+@[^\s@<>",;.][^\s@<>",;]*\.[^\s@<>",;.]+$/.test(value)
       ? ""
       : "邮箱格式不正确";
-  }
-
-  function formatSize(bytes: number): string {
-    return bytes < 1024 * 1024
-      ? `${Math.max(1, Math.round(bytes / 1024))} KB`
-      : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   }
 
   function readDataUrl(blob: Blob): Promise<string> {

@@ -511,13 +511,14 @@ async fn previous_log(dir: &Path) -> Option<PathBuf> {
 
 /// Masks credentials that may end up in log lines, and drops NUL bytes.
 ///
-/// Besides account secrets this covers upload `auth`, CDN signatures (`sign`,
+/// Besides account secrets (including `csrf`, which repeats `bili_jct` in
+/// upload URLs) this covers upload `auth`, CDN signatures (`sign`,
 /// `sk`), the viewer id and address in stream URLs (`mid`, `oi`), and webhook
 /// URLs, whose path is itself the credential.
 fn redact(text: &str) -> String {
     static SECRET: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(
-            r#"(?i)\b(sessdata|bili_jct|dedeuserid(?:__ckmd5)?|buvid3|access_token|refresh_token|access_key|upload_token|api_key|apikey|password|passwd|secret|token|auth|auth_key|sign|signature|upsig|sk|mid|oi|wssecret|txsecret)\b(["']?\s*[:=]\s*)("[^"\n]*"|'[^'\n]*'|["']?(?:bearer\s+)?[^\s"'&;,}]+)"#,
+            r#"(?i)\b(sessdata|bili_jct|csrf|csrf_token|dedeuserid(?:__ckmd5)?|buvid3|access_token|refresh_token|access_key|upload_token|api_key|apikey|password|passwd|secret|token|auth|auth_key|sign|signature|upsig|sk|mid|oi|wssecret|txsecret)\b(["']?\s*[:=]\s*)("[^"\n]*"|'[^'\n]*'|["']?(?:bearer\s+)?[^\s"'&;,})\]>]+)"#,
         )
         .expect("valid secret pattern")
     });
@@ -682,6 +683,10 @@ mod tests {
             (
                 "https://cn.bilivideo.com/live/1.m4s?expires=1&len=0&oi=3070230&pt=web&mid=4242&sk=deadbeef&qn=10000",
                 "https://cn.bilivideo.com/live/1.m4s?expires=1&len=0&oi=[REDACTED]&pt=web&mid=[REDACTED]&sk=[REDACTED]&qn=10000",
+            ),
+            (
+                "12:00:00 [ERROR] Send failed error sending request for url (https://member.bilibili.com/x/vu/web/add/v3?ts=1761091200&csrf=0123abcd)",
+                "12:00:00 [ERROR] Send failed error sending request for url (https://member.bilibili.com/x/vu/web/add/v3?ts=1761091200&csrf=[REDACTED])",
             ),
         ];
         for (line, expected) in cases {

@@ -44,6 +44,8 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
   private queued = new Map<HTMLVideoElement, { time: number; report: boolean }>();
   /** The seeks counted in `pendingSeeks` of each element, to end with its file. */
   private tracked = new Map<HTMLVideoElement, Set<() => void>>();
+  /** The seek each element makes once its file's metadata is in: only the last asked. */
+  private onMetadata = new Map<HTMLVideoElement, () => void>();
   private frame = 0;
   private lastTimeUpdate = 0;
   private volumeValue = 1;
@@ -159,7 +161,10 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
       let ended = false;
       for (const element of this.elements) {
         ended = this.endSeeks(element) || ended;
+        this.whenLoaded(element, null);
         element.pause();
+        // Loaded again when it comes back.
+        delete element.dataset.src;
         element.removeAttribute("src");
         element.load();
       }
@@ -184,6 +189,8 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
     this.queued.clear();
     cancelAnimationFrame(this.frame);
     for (const element of this.elements) {
+      this.endSeeks(element);
+      this.whenLoaded(element, null);
       for (const type of ["waiting", "playing", "loadedmetadata"]) {
         element.removeEventListener(type, this.forward);
       }
@@ -224,12 +231,27 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
         this.dispatchEvent(new Event("seeked"));
         this.emitTime(true);
       }
-      element.addEventListener("loadedmetadata", seek, { once: true });
+      this.whenLoaded(element, seek);
     } else if (element.readyState >= 1) {
+      this.whenLoaded(element, null);
       seek();
     } else {
-      element.addEventListener("loadedmetadata", seek, { once: true });
+      this.whenLoaded(element, seek);
     }
+  }
+
+  /** Make `seek` once `element` has its file's metadata, instead of any asked before; none for null. */
+  private whenLoaded(element: HTMLVideoElement, seek: (() => void) | null) {
+    const before = this.onMetadata.get(element);
+    if (before) element.removeEventListener("loadedmetadata", before);
+    this.onMetadata.delete(element);
+    if (!seek) return;
+    const run = () => {
+      this.onMetadata.delete(element);
+      seek();
+    };
+    this.onMetadata.set(element, run);
+    element.addEventListener("loadedmetadata", run, { once: true });
   }
 
   /** Whether a seek of the player's waits on an element still seeking. The standby's preloading is not one. */
@@ -312,8 +334,12 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
         this.emitTime(true);
       }
     };
-    // Never stay "seeking" forever when an event goes missing.
-    const timer = setTimeout(finish, 3000);
+    // Never stay "seeking" forever when an event goes missing, nor wait on
+    // the seek queued behind this one.
+    const timer = setTimeout(() => {
+      this.queued.delete(element);
+      finish();
+    }, 3000);
     element.addEventListener(done, finish);
     element.addEventListener("error", finish);
   }

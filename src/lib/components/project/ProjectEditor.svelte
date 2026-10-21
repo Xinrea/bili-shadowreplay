@@ -1268,7 +1268,9 @@
     const selected = subtitles.find((entry) => entry.subtitle.id === selectedSubtitleId);
     if (selected) return selected;
     const current = subtitles.find((entry) => time >= entry.start && time < entry.end);
-    if (current) selectedSubtitleId = current.subtitle.id;
+    // Selected as by a click, so that the inspector shows it and Delete acts
+    // on what it shows.
+    if (current) selectSubtitle(current.subtitle.id);
     return current ?? null;
   }
 

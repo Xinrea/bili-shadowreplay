@@ -59,6 +59,7 @@
     editOverlay,
     findOverlay,
     frameRateQuery,
+    idsAt,
     insertClips,
     mergeRemoteTimeline,
     parseSrt,
@@ -85,6 +86,7 @@
     type OverlayTarget,
   } from "../../project-timeline";
   import { ProjectPlayer, type PlayerSegment } from "../../project-player";
+  import { shownRows } from "../../virtual-list";
   import { buildSubtitleAss, loadSubtitleStyle } from "../../subtitle-ass";
   import { formatTimecode } from "../../time-format";
   import { createStateRefresh, watchStateChanges } from "../../state-refresh";
@@ -192,6 +194,50 @@
   let duration = $derived(timelineDuration(timeline));
   let placed = $derived(placeClips(timeline));
   let subtitles = $derived(visibleSubtitles(timeline));
+  // The subtitle list draws only the rows in view, and the selected one so
+  // that its text stays being edited: a row per subtitle, thousands of them,
+  // cost style and layout every frame while playing.
+  const ROW_HEIGHT = 38;
+  /** Rows drawn beyond those in view, each way. */
+  const ROW_OVERSCAN = 6;
+  let rowList: HTMLElement | undefined = $state();
+  /** The part of the list in view, in its own pixels. */
+  let listView = $state({ top: 0, height: 0 });
+  let rowsShown = $derived(
+    shownRows(
+      listView,
+      ROW_HEIGHT,
+      ROW_OVERSCAN,
+      subtitles.length,
+      subtitles.findIndex((entry) => entry.subtitle.id === selectedSubtitleId),
+    ),
+  );
+
+  $effect(() => {
+    const list = rowList;
+    const scroller = list?.closest<HTMLElement>(".inspector-content");
+    // Measured again when the list gets longer or shorter, as its scroll may
+    // change without a "scroll".
+    void subtitles.length;
+    if (!list || !scroller) return;
+    const update = () => {
+      const top = list.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+      listView = { top: scroller.scrollTop - top, height: scroller.clientHeight };
+    };
+    update();
+    scroller.addEventListener("scroll", update, { passive: true });
+    const observer = new ResizeObserver(update);
+    observer.observe(scroller);
+    return () => {
+      scroller.removeEventListener("scroll", update);
+      observer.disconnect();
+    };
+  });
+
+  // The rows marked playing change only as the playhead crosses an edge: the
+  // key is the same string until then, so nothing derived from it updates.
+  let playingKey = $derived(idsAt(subtitles, time, (entry) => entry.subtitle.id));
+  let playingSubtitles = $derived(new Set(playingKey.split("\n")));
   let hiddenSubtitleCount = $derived(timeline.subtitles.length - subtitles.length);
   let subtitleStyle: SubtitleStyle = $derived(
     (timeline.subtitle_style as SubtitleStyle | null) ?? loadSubtitleStyle(roomId),
@@ -1590,12 +1636,15 @@
         </div>
 
         {#if subtitles.length > 0}
-          <div class="row-list">
-            {#each subtitles as entry, index (entry.subtitle.id)}
+          <!-- One pixel short: the last row's border falls on the list's own. -->
+          <div class="row-list virtual" bind:this={rowList} style:height="{subtitles.length * ROW_HEIGHT - 1}px">
+            {#each rowsShown as index (subtitles[index].subtitle.id)}
+              {@const entry = subtitles[index]}
               <div
                 class="row"
+                style:top="{index * ROW_HEIGHT}px"
                 data-subtitle-row={entry.subtitle.id}
-                class:playing={time >= entry.start && time < entry.end}
+                class:playing={playingSubtitles.has(entry.subtitle.id)}
                 class:selected={selectedSubtitleId === entry.subtitle.id}
               >
                 <button type="button" class="row-index" title="选中并跳转" onclick={() => selectSubtitle(entry.subtitle.id, true)}>

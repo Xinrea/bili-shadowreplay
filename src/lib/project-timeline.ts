@@ -151,6 +151,23 @@ export function midFrame(time: number, fps: number): number {
 }
 
 /**
+ * The ids of `items` shown at project time `time`, as one key that changes
+ * only when they do: derived from it, the thousands of rows and blocks that
+ * mark what plays update when the playhead crosses an edge, not every frame.
+ */
+export function idsAt<T extends { start: number; end: number }>(
+  items: readonly T[],
+  time: number,
+  id: (item: T) => string,
+): string {
+  let key = "";
+  for (const item of items) {
+    if (time >= item.start && time < item.end) key += (key ? "\n" : "") + id(item);
+  }
+  return key;
+}
+
+/**
  * Cues in project time for `buildSubtitleAss`, put between the frames at
  * `fps`, the project's frame rate: every document burned must use it, or its
  * subtitles fall on other frames than the editor's.

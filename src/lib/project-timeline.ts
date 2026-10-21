@@ -1,4 +1,6 @@
 import type {
+  AudioItem,
+  AudioTrack,
   OverlayItem,
   OverlayTrack,
   ProjectTimeline,
@@ -12,8 +14,9 @@ import type {
 // to back on one main track; subtitles are anchored to a clip in material time
 // so they follow the picture when clips move or are trimmed. Overlays (texts,
 // stickers and videos) sit on tracks above the main one and are anchored the
-// same way, by where they start. Every edit returns a new timeline so the
-// editor can keep an undo history of snapshots.
+// same way, by where they start, as are audio items (music, voiceover, the
+// sound of a material) on tracks below it. Every edit returns a new timeline
+// so the editor can keep an undo history of snapshots.
 //
 // With the project's frame rate, as export renders it, clips last whole
 // frames: trims and splits land on frames, so an edit moves the clips after
@@ -54,7 +57,15 @@ export function newId(): string {
 }
 
 export function emptyTimeline(style: SubtitleStyle | null = null): ProjectTimeline {
-  return { version: TIMELINE_VERSION, clips: [], subtitles: [], tracks: [], subtitle_style: style, danmu: false };
+  return {
+    version: TIMELINE_VERSION,
+    clips: [],
+    subtitles: [],
+    tracks: [],
+    subtitle_style: style,
+    danmu: false,
+    audio_tracks: [],
+  };
 }
 
 export function parseTimeline(json: string): ProjectTimeline {
@@ -69,17 +80,35 @@ export function parseTimeline(json: string): ProjectTimeline {
         : [],
       subtitle_style: value.subtitle_style ?? null,
       danmu: Boolean(value.danmu),
+      audio_tracks: Array.isArray(value.audio_tracks)
+        ? value.audio_tracks.map((track: AudioTrack) => ({
+            id: track.id,
+            items: Array.isArray(track.items) ? track.items : [],
+          }))
+        : [],
     };
   } catch {
     return emptyTimeline();
   }
 }
 
-/** Materials the timeline shows, on the main track or in video overlays. */
+/** Materials the timeline shows, on the main track or in video overlays, or plays on audio tracks. */
 export function timelineMaterials(timeline: ProjectTimeline): Set<number> {
   const ids = new Set(timeline.clips.map((clip) => clip.material_id));
   for (const track of timeline.tracks) {
     for (const item of track.items) if (item.kind === "video") ids.add(item.material_id);
+  }
+  for (const track of timeline.audio_tracks ?? []) {
+    for (const item of track.items) if (item.kind === "material") ids.add(item.material_id);
+  }
+  return ids;
+}
+
+/** Files of the audio library the timeline plays. */
+export function timelineAudio(timeline: ProjectTimeline): Set<number> {
+  const ids = new Set<number>();
+  for (const track of timeline.audio_tracks ?? []) {
+    for (const item of track.items) if (item.kind === "file") ids.add(item.audio_id);
   }
   return ids;
 }
@@ -235,21 +264,26 @@ export function insertClips(
   return { ...timeline, clips: next };
 }
 
-/** Remove a clip together with the subtitles and overlays anchored to it. */
+/**
+ * Remove a clip together with the subtitles and overlays anchored to it. The
+ * audio anchored to it plays on over the clip after it.
+ */
 export function removeClip(timeline: ProjectTimeline, clipId: string): ProjectTimeline {
   return {
     ...timeline,
     clips: timeline.clips.filter((clip) => clip.id !== clipId),
     subtitles: timeline.subtitles.filter((subtitle) => subtitle.clip_id !== clipId),
-    tracks: withoutOverlays(timeline.tracks, (item) => item.clip_id === clipId),
+    tracks: withoutItems(timeline.tracks, (item) => item.clip_id === clipId),
+    audio_tracks: reanchorAudio(timeline, new Set([clipId])),
   };
 }
 
 /**
  * Bring the backend's own edits of a saved timeline into one being edited.
  * Between `base`, the saved timeline the editor last knew, and `remote`, the
- * saved one now, the backend may switch danmaku, remove the clips and video
- * overlays of a deleted material and fill clips that had none with recognized
+ * saved one now, the backend may switch danmaku, remove the clips, video
+ * overlays and sounds of a deleted material, remove the sounds of a deleted
+ * file of the audio library and fill clips that had none with recognized
  * subtitles; everything else stays as edited in `local`. Returns `local`
  * itself when nothing applies.
  */
@@ -266,14 +300,28 @@ export function mergeRemoteTimeline(
   if ([...timelineMaterials(next)].some((id) => removed.has(id))) {
     const clips = next.clips.filter((clip) => !removed.has(clip.material_id));
     const kept = new Set(clips.map((clip) => clip.id));
+    const gone = new Set(next.clips.filter((clip) => !kept.has(clip.id)).map((clip) => clip.id));
     next = {
       ...next,
       clips,
       subtitles: next.subtitles.filter((subtitle) => kept.has(subtitle.clip_id)),
-      tracks: withoutOverlays(
+      tracks: withoutItems(
         next.tracks,
         (item) => !kept.has(item.clip_id) || (item.kind === "video" && removed.has(item.material_id)),
       ),
+      audio_tracks: withoutItems(
+        reanchorAudio(next, gone),
+        (item) => item.kind === "material" && removed.has(item.material_id),
+      ),
+    };
+  }
+
+  const remainingAudio = timelineAudio(remote);
+  const removedAudio = new Set([...timelineAudio(base)].filter((id) => !remainingAudio.has(id)));
+  if ([...timelineAudio(next)].some((id) => removedAudio.has(id))) {
+    next = {
+      ...next,
+      audio_tracks: withoutItems(next.audio_tracks, (item) => item.kind === "file" && removedAudio.has(item.audio_id)),
     };
   }
 
@@ -311,8 +359,8 @@ export function moveClip(timeline: ProjectTimeline, clipId: string, toIndex: num
 /**
  * Split the clip under project time `time`, at the frame nearest to it at
  * `fps`. Subtitles after the cut move to the new clip; one crossing the cut is
- * kept on both sides so it still reads as one. Overlays starting after the cut
- * are anchored to the new clip.
+ * kept on both sides so it still reads as one. Overlays and audio starting
+ * after the cut are anchored to the new clip.
  */
 export function splitClip(
   timeline: ProjectTimeline,
@@ -327,7 +375,7 @@ export function splitClip(
   if (into < MIN_CLIP_DURATION || placed.duration - into < MIN_CLIP_DURATION) return { timeline, clipId: null };
   const cut = placed.clip.start + into;
   const left = { ...placed.clip, end: cut };
-  const right = { id: newId(), material_id: placed.clip.material_id, start: cut, end: placed.clip.end };
+  const right = { ...placed.clip, id: newId(), start: cut };
   const clips = [...timeline.clips];
   clips.splice(placed.index, 1, left, right);
   const subtitles: TimelineSubtitle[] = [];
@@ -341,13 +389,16 @@ export function splitClip(
       if (subtitle.end > cut) subtitles.push({ ...subtitle, id: newId(), clip_id: right.id });
     }
   }
-  const after = (item: OverlayItem) => item.clip_id === placed.clip.id && item.start >= cut;
-  const tracks = timeline.tracks.map((track) =>
-    track.items.some(after)
-      ? { ...track, items: track.items.map((item) => (after(item) ? { ...item, clip_id: right.id } : item)) }
-      : track,
-  );
-  return { timeline: { ...timeline, clips, subtitles, tracks }, clipId: right.id };
+  const after = (item: TrackItem) => item.clip_id === placed.clip.id && item.start >= cut;
+  const moved = <T extends TrackItem>(tracks: Track<T>[]) =>
+    tracks.map((track) =>
+      track.items.some(after)
+        ? { ...track, items: track.items.map((item) => (after(item) ? { ...item, clip_id: right.id } : item)) }
+        : track,
+    );
+  const tracks = moved(timeline.tracks);
+  const audio_tracks = moved(timeline.audio_tracks ?? []);
+  return { timeline: { ...timeline, clips, subtitles, tracks, audio_tracks }, clipId: right.id };
 }
 
 /**
@@ -459,28 +510,48 @@ export function removeSubtitle(timeline: ProjectTimeline, id: string): ProjectTi
   return { ...timeline, subtitles: timeline.subtitles.filter((item) => item.id !== id) };
 }
 
-// ---- Overlays ---------------------------------------------------------------
+// ---- Tracks: overlays and audio --------------------------------------------
+//
+// Overlays sit on tracks above the main one and audio items on tracks below
+// it. Both are anchored by where they start and kept apart on their tracks the
+// same way, by the functions here taking a `Lane`.
 
-export interface PlacedOverlay {
-  item: OverlayItem;
-  /** Index of its track, the bottom one first. */
+/** What sits on a track above or below the main one. */
+export type TrackItem = OverlayItem | AudioItem;
+
+/** The tracks of overlays, above the main one, or those of audio, below it. */
+type Lane = "tracks" | "audio_tracks";
+
+interface Track<T extends TrackItem> {
+  id: string;
+  items: T[];
+}
+
+export interface Placed<T extends TrackItem> {
+  item: T;
+  /** Index of its track: of overlays the bottom one first, of audio the top one. */
   track: number;
   /** The visible part, in project time. */
   start: number;
   end: number;
   /**
    * How much of the item is hidden before `start`, cut off with the head of
-   * its clip; a video overlay skips as much of its material.
+   * its clip; a video overlay or an audio item skips as much of its source.
    */
   skip: number;
 }
 
+export type PlacedOverlay = Placed<OverlayItem>;
+export type PlacedAudio = Placed<AudioItem>;
+
 /** Where an item goes: onto an existing track, or onto a new one inserted at that index. */
 export type OverlayTarget = { track: number } | { insert: number };
 
-type Content<T> = T extends OverlayItem ? Omit<T, "id" | "clip_id" | "start" | "duration"> : never;
+type Content<T> = T extends TrackItem ? Omit<T, "id" | "clip_id" | "start" | "duration"> : never;
 /** An overlay without its place on the timeline. */
 export type OverlayContent = Content<OverlayItem>;
+/** An audio item without its place on the timeline. */
+export type AudioContent = Content<AudioItem>;
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -490,7 +561,20 @@ function overlaps(a: { start: number; end: number }, b: { start: number; end: nu
   return a.start < b.end - EPSILON && b.start < a.end - EPSILON;
 }
 
-function overlaySpan(item: OverlayItem, clip: PlacedClip | undefined, total: number) {
+function tracksOf(timeline: ProjectTimeline, lane: Lane): Track<TrackItem>[] {
+  return (timeline[lane] ?? []) as Track<TrackItem>[];
+}
+
+function withTracks(timeline: ProjectTimeline, lane: Lane, tracks: Track<TrackItem>[]): ProjectTimeline {
+  return { ...timeline, [lane]: tracks };
+}
+
+/** Whether the item plays its source from a time of its own: a video overlay or an audio item. */
+function sourced(item: TrackItem): item is VideoOverlay | AudioItem {
+  return "source_start" in item;
+}
+
+function overlaySpan(item: TrackItem, clip: PlacedClip | undefined, total: number) {
   // Anchored past the out point, it was trimmed away with the end of its clip.
   if (!clip || item.start >= clip.clip.end) return null;
   const from = toProjectTime(clip, item.start);
@@ -500,12 +584,11 @@ function overlaySpan(item: OverlayItem, clip: PlacedClip | undefined, total: num
   return { start, end, skip: start - from };
 }
 
-/** Visible overlays, the bottom track first and each track's items in order. */
-export function placeOverlays(timeline: ProjectTimeline): PlacedOverlay[] {
+function placeItems(timeline: ProjectTimeline, lane: Lane): Placed<TrackItem>[] {
   const clips = new Map(placeClips(timeline).map((placed) => [placed.clip.id, placed]));
   const total = timelineDuration(timeline);
-  const result: PlacedOverlay[] = [];
-  timeline.tracks.forEach((track, index) => {
+  const result: Placed<TrackItem>[] = [];
+  tracksOf(timeline, lane).forEach((track, index) => {
     for (const item of track.items) {
       const span = overlaySpan(item, clips.get(item.clip_id), total);
       if (span) result.push({ item, track: index, ...span });
@@ -514,22 +597,40 @@ export function placeOverlays(timeline: ProjectTimeline): PlacedOverlay[] {
   return result;
 }
 
+/** Visible overlays, the bottom track first and each track's items in order. */
+export function placeOverlays(timeline: ProjectTimeline): PlacedOverlay[] {
+  return placeItems(timeline, "tracks") as PlacedOverlay[];
+}
+
+/** Audio items heard, the top track first and each track's items in order. */
+export function placeAudio(timeline: ProjectTimeline): PlacedAudio[] {
+  return placeItems(timeline, "audio_tracks") as PlacedAudio[];
+}
+
 export function overlayCount(timeline: ProjectTimeline): number {
   return timeline.tracks.reduce((total, track) => total + track.items.length, 0);
 }
 
-export function findOverlay(timeline: ProjectTimeline, id: string | null): OverlayItem | null {
+function findItem(timeline: ProjectTimeline, lane: Lane, id: string | null): TrackItem | null {
   if (!id) return null;
-  for (const track of timeline.tracks) {
+  for (const track of tracksOf(timeline, lane)) {
     const item = track.items.find((entry) => entry.id === id);
     if (item) return item;
   }
   return null;
 }
 
+export function findOverlay(timeline: ProjectTimeline, id: string | null): OverlayItem | null {
+  return findItem(timeline, "tracks", id) as OverlayItem | null;
+}
+
+export function findAudio(timeline: ProjectTimeline, id: string | null): AudioItem | null {
+  return findItem(timeline, "audio_tracks", id) as AudioItem | null;
+}
+
 /** Whether `start..end` is free on `track`, apart from item `ignore`. */
 export function trackIsFree(
-  placed: PlacedOverlay[],
+  placed: Placed<TrackItem>[],
   track: number,
   start: number,
   end: number,
@@ -538,14 +639,20 @@ export function trackIsFree(
   return !placed.some((other) => other.track === track && other.item.id !== ignore && overlaps(other, { start, end }));
 }
 
-/** `target`, or a new track just above it when it is taken over `start..end`. */
-function freeTarget(placed: PlacedOverlay[], target: OverlayTarget, start: number, end: number, ignore: string | null) {
+/** `target`, or a new track just after it when it is taken over `start..end`. */
+function freeTarget(
+  placed: Placed<TrackItem>[],
+  target: OverlayTarget,
+  start: number,
+  end: number,
+  ignore: string | null,
+) {
   if ("track" in target && !trackIsFree(placed, target.track, start, end, ignore)) return { insert: target.track + 1 };
   return target;
 }
 
-/** The lowest track free over `start..end`, else a new one on top. */
-function lowestFree(placed: PlacedOverlay[], trackCount: number, start: number, end: number): OverlayTarget {
+/** The first track free over `start..end`, else a new one after the last. */
+function lowestFree(placed: Placed<TrackItem>[], trackCount: number, start: number, end: number): OverlayTarget {
   for (let track = 0; track < trackCount; track++) {
     if (trackIsFree(placed, track, start, end)) return { track };
   }
@@ -561,17 +668,17 @@ function anchorAt(timeline: ProjectTimeline, time: number): { clip_id: string; s
 
 /**
  * The item of `placed` anchored to start at project time `start` and run for
- * `length`; a video then shows its material from `shift` past what it showed.
+ * `length`; one playing a source then plays it from `shift` past where it did.
  */
-function reanchor(timeline: ProjectTimeline, placed: PlacedOverlay, start: number, length: number, shift = 0) {
+function reanchor(timeline: ProjectTimeline, placed: Placed<TrackItem>, start: number, length: number, shift = 0) {
   const anchored = anchorAt(timeline, start);
   if (!anchored) return null;
-  const item = { ...placed.item, ...anchored, duration: length } as OverlayItem;
-  if (item.kind === "video") item.source_start = (placed.item as VideoOverlay).source_start + placed.skip + shift;
+  const item = { ...placed.item, ...anchored, duration: length } as TrackItem;
+  if (sourced(item) && sourced(placed.item)) item.source_start = placed.item.source_start + placed.skip + shift;
   return item;
 }
 
-function putOverlay(tracks: OverlayTrack[], item: OverlayItem, target: OverlayTarget): OverlayTrack[] {
+function putItem<T extends TrackItem>(tracks: Track<T>[], item: T, target: OverlayTarget): Track<T>[] {
   if ("track" in target && tracks[target.track]) {
     return tracks.map((track, index) => (index === target.track ? { ...track, items: [...track.items, item] } : track));
   }
@@ -581,21 +688,45 @@ function putOverlay(tracks: OverlayTrack[], item: OverlayItem, target: OverlayTa
 }
 
 /** `tracks` without the items `drop` picks, and without tracks left empty. */
-function withoutOverlays(tracks: OverlayTrack[], drop: (item: OverlayItem) => boolean): OverlayTrack[] {
+function withoutItems<T extends TrackItem>(tracks: Track<T>[], drop: (item: T) => boolean): Track<T>[] {
   return tracks
     .map((track) => (track.items.some(drop) ? { ...track, items: track.items.filter((item) => !drop(item)) } : track))
     .filter((track) => track.items.length > 0);
 }
 
-function replaceOverlay(timeline: ProjectTimeline, item: OverlayItem): ProjectTimeline {
-  return {
-    ...timeline,
-    tracks: timeline.tracks.map((track) =>
+function replaceItem(timeline: ProjectTimeline, lane: Lane, item: TrackItem): ProjectTimeline {
+  return withTracks(
+    timeline,
+    lane,
+    tracksOf(timeline, lane).map((track) =>
       track.items.some((entry) => entry.id === item.id)
         ? { ...track, items: track.items.map((entry) => (entry.id === item.id ? item : entry)) }
         : track,
     ),
-  };
+  );
+}
+
+function addItem(
+  timeline: ProjectTimeline,
+  lane: Lane,
+  content: Content<TrackItem>,
+  start: number,
+  duration: number,
+  target?: OverlayTarget,
+): { timeline: ProjectTimeline; id: string | null } {
+  const total = timelineDuration(timeline);
+  const from = clamp(start, 0, total - MIN_OVERLAY_DURATION);
+  const length = Math.min(duration, total - from);
+  const anchored = length >= MIN_OVERLAY_DURATION ? anchorAt(timeline, from) : null;
+  if (!anchored) return { timeline, id: null };
+  const id = newId();
+  const item = { ...content, id, ...anchored, duration: length } as TrackItem;
+  const placed = placeItems(timeline, lane);
+  const tracks = tracksOf(timeline, lane);
+  const to = target
+    ? freeTarget(placed, target, from, from + length, null)
+    : lowestFree(placed, tracks.length, from, from + length);
+  return { timeline: withTracks(timeline, lane, putItem(tracks, item, to)), id };
 }
 
 /**
@@ -609,18 +740,28 @@ export function addOverlay(
   duration: number,
   target?: OverlayTarget,
 ): { timeline: ProjectTimeline; id: string | null } {
-  const total = timelineDuration(timeline);
-  const from = clamp(start, 0, total - MIN_OVERLAY_DURATION);
-  const length = Math.min(duration, total - from);
-  const anchored = length >= MIN_OVERLAY_DURATION ? anchorAt(timeline, from) : null;
-  if (!anchored) return { timeline, id: null };
-  const id = newId();
-  const item = { ...content, id, ...anchored, duration: length } as OverlayItem;
-  const placed = placeOverlays(timeline);
-  const to = target
-    ? freeTarget(placed, target, from, from + length, null)
-    : lowestFree(placed, timeline.tracks.length, from, from + length);
-  return { timeline: { ...timeline, tracks: putOverlay(timeline.tracks, item, to) }, id };
+  return addItem(timeline, "tracks", content, start, duration, target);
+}
+
+/** Add an audio item, as `addOverlay` adds an overlay, onto the top track free there. */
+export function addAudio(
+  timeline: ProjectTimeline,
+  content: AudioContent,
+  start: number,
+  duration: number,
+  target?: OverlayTarget,
+): { timeline: ProjectTimeline; id: string | null } {
+  return addItem(timeline, "audio_tracks", content, start, duration, target);
+}
+
+function editItem(
+  timeline: ProjectTimeline,
+  lane: Lane,
+  id: string,
+  update: (item: TrackItem) => TrackItem,
+): ProjectTimeline {
+  const item = findItem(timeline, lane, id);
+  return item ? replaceItem(timeline, lane, update(item)) : timeline;
 }
 
 /** Change an item, such as its element, in place. */
@@ -629,12 +770,45 @@ export function editOverlay(
   id: string,
   update: (item: OverlayItem) => OverlayItem,
 ): ProjectTimeline {
-  const item = findOverlay(timeline, id);
-  return item ? replaceOverlay(timeline, update(item)) : timeline;
+  return editItem(timeline, "tracks", id, update as (item: TrackItem) => TrackItem);
+}
+
+/** Change an audio item, such as its volume, in place. */
+export function editAudio(
+  timeline: ProjectTimeline,
+  id: string,
+  update: (item: AudioItem) => AudioItem,
+): ProjectTimeline {
+  return editItem(timeline, "audio_tracks", id, update as (item: TrackItem) => TrackItem);
 }
 
 export function removeOverlay(timeline: ProjectTimeline, id: string): ProjectTimeline {
-  return { ...timeline, tracks: withoutOverlays(timeline.tracks, (item) => item.id === id) };
+  return { ...timeline, tracks: withoutItems(timeline.tracks, (item) => item.id === id) };
+}
+
+export function removeAudio(timeline: ProjectTimeline, id: string): ProjectTimeline {
+  return { ...timeline, audio_tracks: withoutItems(timeline.audio_tracks ?? [], (item) => item.id === id) };
+}
+
+function moveItem(timeline: ProjectTimeline, lane: Lane, id: string, start: number, target: OverlayTarget): ProjectTimeline {
+  const placed = placeItems(timeline, lane);
+  const current = placed.find((entry) => entry.item.id === id);
+  if (!current) return timeline;
+  const length = current.end - current.start;
+  const from = clamp(start, 0, timelineDuration(timeline) - length);
+  const item = reanchor(timeline, current, from, length);
+  if (!item) return timeline;
+  const to = freeTarget(placed, target, from, from + length, id);
+  const tracks = putItem(
+    tracksOf(timeline, lane).map((track) => ({ ...track, items: track.items.filter((entry) => entry.id !== id) })),
+    item,
+    to,
+  );
+  return withTracks(
+    timeline,
+    lane,
+    tracks.filter((track) => track.items.length > 0),
+  );
 }
 
 /**
@@ -648,20 +822,45 @@ export function moveOverlay(
   start: number,
   target: OverlayTarget,
 ): ProjectTimeline {
-  const placed = placeOverlays(timeline);
+  return moveItem(timeline, "tracks", id, start, target);
+}
+
+/** Move the part heard of an audio item, as `moveOverlay` moves an overlay; a taken track gets a new one below it. */
+export function moveAudio(timeline: ProjectTimeline, id: string, start: number, target: OverlayTarget): ProjectTimeline {
+  return moveItem(timeline, "audio_tracks", id, start, target);
+}
+
+function trimItem(
+  timeline: ProjectTimeline,
+  lane: Lane,
+  id: string,
+  edge: "start" | "end",
+  time: number,
+  sourceDuration: number,
+): ProjectTimeline {
+  const placed = placeItems(timeline, lane);
   const current = placed.find((entry) => entry.item.id === id);
   if (!current) return timeline;
-  const length = current.end - current.start;
-  const from = clamp(start, 0, timelineDuration(timeline) - length);
-  const item = reanchor(timeline, current, from, length);
-  if (!item) return timeline;
-  const to = freeTarget(placed, target, from, from + length, id);
-  const tracks = putOverlay(
-    timeline.tracks.map((track) => ({ ...track, items: track.items.filter((entry) => entry.id !== id) })),
-    item,
-    to,
-  );
-  return { ...timeline, tracks: tracks.filter((track) => track.items.length > 0) };
+  const neighbours = placed.filter((entry) => entry.track === current.track && entry.item.id !== id);
+  const playing = sourced(current.item) ? current.item : null;
+  // Source time played at the visible start.
+  const source = playing ? playing.source_start + current.skip : 0;
+  let item: TrackItem | null;
+  if (edge === "start") {
+    const before = Math.max(0, ...neighbours.filter((entry) => entry.end <= current.start + EPSILON).map((entry) => entry.end));
+    const earliest = playing ? current.start - source : 0;
+    const start = clamp(time, Math.max(before, earliest), current.end - MIN_OVERLAY_DURATION);
+    item = reanchor(timeline, current, start, current.end - start, start - current.start);
+  } else {
+    const after = Math.min(
+      timelineDuration(timeline),
+      ...neighbours.filter((entry) => entry.start >= current.end - EPSILON).map((entry) => entry.start),
+    );
+    const latest = playing && sourceDuration > 0 ? current.start + sourceDuration - source : Number.POSITIVE_INFINITY;
+    const end = clamp(time, current.start + MIN_OVERLAY_DURATION, Math.min(after, latest));
+    item = reanchor(timeline, current, current.start, end - current.start);
+  }
+  return item ? replaceItem(timeline, lane, item) : timeline;
 }
 
 /**
@@ -676,29 +875,45 @@ export function trimOverlay(
   time: number,
   materialDuration = 0,
 ): ProjectTimeline {
-  const placed = placeOverlays(timeline);
-  const current = placed.find((entry) => entry.item.id === id);
-  if (!current) return timeline;
-  const neighbours = placed.filter((entry) => entry.track === current.track && entry.item.id !== id);
-  const video = current.item.kind === "video" ? current.item : null;
-  // Material time shown at the visible start.
-  const source = video ? video.source_start + current.skip : 0;
-  let item: OverlayItem | null;
-  if (edge === "start") {
-    const before = Math.max(0, ...neighbours.filter((entry) => entry.end <= current.start + EPSILON).map((entry) => entry.end));
-    const earliest = video ? current.start - source : 0;
-    const start = clamp(time, Math.max(before, earliest), current.end - MIN_OVERLAY_DURATION);
-    item = reanchor(timeline, current, start, current.end - start, start - current.start);
-  } else {
-    const after = Math.min(
-      timelineDuration(timeline),
-      ...neighbours.filter((entry) => entry.start >= current.end - EPSILON).map((entry) => entry.start),
-    );
-    const latest = video && materialDuration > 0 ? current.start + materialDuration - source : Number.POSITIVE_INFINITY;
-    const end = clamp(time, current.start + MIN_OVERLAY_DURATION, Math.min(after, latest));
-    item = reanchor(timeline, current, current.start, end - current.start);
-  }
-  return item ? replaceOverlay(timeline, item) : timeline;
+  return trimItem(timeline, "tracks", id, edge, time, materialDuration);
+}
+
+/** Move one edge of an audio item, as `trimOverlay` does, within its source, `sourceDuration` long. */
+export function trimAudio(
+  timeline: ProjectTimeline,
+  id: string,
+  edge: "start" | "end",
+  time: number,
+  sourceDuration = 0,
+): ProjectTimeline {
+  return trimItem(timeline, "audio_tracks", id, edge, time, sourceDuration);
+}
+
+function splitItem(
+  timeline: ProjectTimeline,
+  lane: Lane,
+  id: string,
+  time: number,
+): { timeline: ProjectTimeline; left: TrackItem | null; right: TrackItem | null } {
+  const none = { timeline, left: null, right: null };
+  const current = placeItems(timeline, lane).find((entry) => entry.item.id === id);
+  if (!current || time - current.start < MIN_OVERLAY_DURATION || current.end - time < MIN_OVERLAY_DURATION) return none;
+  const anchored = anchorAt(timeline, time);
+  if (!anchored) return none;
+  // Where the whole item starts, including any part hidden with its clip's head.
+  const from = current.start - current.skip;
+  const left = { ...current.item, duration: time - from } as TrackItem;
+  const right = { ...current.item, id: newId(), ...anchored, duration: from + current.item.duration - time } as TrackItem;
+  if ("element" in right) right.element = { ...right.element } as typeof right.element;
+  if (sourced(right) && sourced(current.item)) right.source_start = current.item.source_start + time - from;
+  const tracks = tracksOf(timeline, lane).map((track) => {
+    const index = track.items.findIndex((entry) => entry.id === id);
+    if (index < 0) return track;
+    const items = [...track.items];
+    items.splice(index, 1, left, right);
+    return { ...track, items };
+  });
+  return { timeline: withTracks(timeline, lane, tracks), left, right };
 }
 
 /** Split an item at project time `time`; the part after the cut becomes a new item beside it. */
@@ -707,31 +922,27 @@ export function splitOverlay(
   id: string,
   time: number,
 ): { timeline: ProjectTimeline; id: string | null } {
-  const current = placeOverlays(timeline).find((entry) => entry.item.id === id);
-  if (!current || time - current.start < MIN_OVERLAY_DURATION || current.end - time < MIN_OVERLAY_DURATION) {
-    return { timeline, id: null };
-  }
-  const anchored = anchorAt(timeline, time);
-  if (!anchored) return { timeline, id: null };
-  // Where the whole item starts, including any part hidden with its clip's head.
-  const from = current.start - current.skip;
-  const left = { ...current.item, duration: time - from } as OverlayItem;
-  const right = {
-    ...current.item,
-    element: { ...current.item.element },
-    id: newId(),
-    ...anchored,
-    duration: from + current.item.duration - time,
-  } as OverlayItem;
-  if (right.kind === "video") right.source_start = (current.item as VideoOverlay).source_start + time - from;
-  const tracks = timeline.tracks.map((track) => {
-    const index = track.items.findIndex((entry) => entry.id === id);
-    if (index < 0) return track;
-    const items = [...track.items];
-    items.splice(index, 1, left, right);
-    return { ...track, items };
-  });
-  return { timeline: { ...timeline, tracks }, id: right.id };
+  const split = splitItem(timeline, "tracks", id, time);
+  return { timeline: split.timeline, id: split.right?.id ?? null };
+}
+
+/**
+ * Split an audio item at project time `time`, as `splitOverlay` does: the
+ * part before the cut keeps its fade in, the part after it its fade out.
+ */
+export function splitAudio(
+  timeline: ProjectTimeline,
+  id: string,
+  time: number,
+): { timeline: ProjectTimeline; id: string | null } {
+  const split = splitItem(timeline, "audio_tracks", id, time);
+  if (!split.left || !split.right) return { timeline, id: null };
+  const left = { ...(split.left as AudioItem) };
+  const right = { ...(split.right as AudioItem) };
+  delete left.fade_out;
+  delete right.fade_in;
+  const next = replaceItem(replaceItem(split.timeline, "audio_tracks", left), "audio_tracks", right);
+  return { timeline: next, id: right.id };
 }
 
 /** Where moving an item one layer up or down puts it, or null at the top or bottom. */
@@ -767,24 +978,19 @@ export function duplicateOverlay(
   const current = placeOverlays(timeline).find((entry) => entry.item.id === id);
   if (!current) return { timeline, id: null };
   const copy = { ...update(current.item), id: newId() };
-  return { timeline: { ...timeline, tracks: putOverlay(timeline.tracks, copy, { insert: current.track + 1 }) }, id: copy.id };
+  return { timeline: { ...timeline, tracks: putItem(timeline.tracks, copy, { insert: current.track + 1 }) }, id: copy.id };
 }
 
-/**
- * Lift items that overlap others on their track, as moving or trimming clips
- * can leave them, onto new tracks just above, and drop empty tracks. Returns
- * `timeline` itself when nothing changes.
- */
-export function settleOverlays(timeline: ProjectTimeline): ProjectTimeline {
-  const spans = new Map(placeOverlays(timeline).map((entry) => [entry.item.id, entry]));
-  const startOf = (item: OverlayItem) => spans.get(item.id)?.start ?? Number.NEGATIVE_INFINITY;
+function settleItems(timeline: ProjectTimeline, lane: Lane): ProjectTimeline {
+  const spans = new Map(placeItems(timeline, lane).map((entry) => [entry.item.id, entry]));
+  const startOf = (item: TrackItem) => spans.get(item.id)?.start ?? Number.NEGATIVE_INFINITY;
   let changed = false;
-  const tracks: OverlayTrack[] = [];
-  for (const track of timeline.tracks) {
+  const tracks: Track<TrackItem>[] = [];
+  for (const track of tracksOf(timeline, lane)) {
     if (track.items.length === 0) changed = true;
     let current = track;
     while (current.items.length > 0) {
-      const kept: PlacedOverlay[] = [];
+      const kept: Placed<TrackItem>[] = [];
       const lifted = new Set<string>();
       for (const item of [...current.items].sort((a, b) => startOf(a) - startOf(b))) {
         const span = spans.get(item.id);
@@ -802,7 +1008,21 @@ export function settleOverlays(timeline: ProjectTimeline): ProjectTimeline {
       current = { id: newId(), items: current.items.filter((item) => lifted.has(item.id)) };
     }
   }
-  return changed ? { ...timeline, tracks } : timeline;
+  return changed ? withTracks(timeline, lane, tracks) : timeline;
+}
+
+/**
+ * Lift items that overlap others on their track, as moving or trimming clips
+ * can leave them, onto new tracks just above, and drop empty tracks. Returns
+ * `timeline` itself when nothing changes.
+ */
+export function settleOverlays(timeline: ProjectTimeline): ProjectTimeline {
+  return settleItems(timeline, "tracks");
+}
+
+/** Settle the overlays, and the audio items as well onto new tracks just below. */
+export function settleTracks(timeline: ProjectTimeline): ProjectTimeline {
+  return settleItems(settleOverlays(timeline), "audio_tracks");
 }
 
 /**
@@ -812,6 +1032,65 @@ export function settleOverlays(timeline: ProjectTimeline): ProjectTimeline {
 export function withOverlayFrom(current: ProjectTimeline, base: ProjectTimeline, id: string): ProjectTimeline {
   const original = findOverlay(base, id);
   return original ? editOverlay(current, id, () => original) : current;
+}
+
+/** `current` with audio item `id` as it is in `base`, as `withOverlayFrom` has an overlay. */
+export function withAudioFrom(current: ProjectTimeline, base: ProjectTimeline, id: string): ProjectTimeline {
+  const original = findAudio(base, id);
+  return original ? editAudio(current, id, () => original) : current;
+}
+
+/**
+ * How loud an audio item's fades leave it at project time `time`, 0 to 1, as
+ * export fades it: over the part heard, and together no longer than it.
+ */
+export function fadeGain(placed: PlacedAudio, time: number): number {
+  const length = placed.end - placed.start;
+  let fadeIn = Math.max(0, placed.item.fade_in ?? 0);
+  let fadeOut = Math.max(0, placed.item.fade_out ?? 0);
+  if (fadeIn + fadeOut > length) {
+    const scale = length / (fadeIn + fadeOut);
+    fadeIn *= scale;
+    fadeOut *= scale;
+  }
+  let gain = 1;
+  if (fadeIn > 0) gain = Math.min(gain, (time - placed.start) / fadeIn);
+  if (fadeOut > 0) gain = Math.min(gain, (placed.end - time) / fadeOut);
+  return clamp(gain, 0, 1);
+}
+
+/**
+ * The audio tracks with the items anchored to the clips of `removed`, which
+ * are about to go, moved onto the first clip after them that stays: where
+ * those clips were, playing on from where each was first heard. Those with no
+ * clip after them, or not heard at all, go. The backend does the same.
+ */
+function reanchorAudio(timeline: ProjectTimeline, removed: Set<string>): AudioTrack[] {
+  const placed = placeClips(timeline);
+  const index = new Map(placed.map((entry, at) => [entry.clip.id, at]));
+  const moved = (item: AudioItem): AudioItem | null => {
+    const at = index.get(item.clip_id);
+    if (at === undefined || !removed.has(item.clip_id)) return item;
+    const clip = placed[at];
+    const skip = Math.max(clip.offset - toProjectTime(clip, item.start), 0);
+    const heard = item.start < clip.clip.end && item.duration - skip > EPSILON;
+    const next = placed.slice(at + 1).find((entry) => !removed.has(entry.clip.id));
+    if (!heard || !next) return null;
+    return {
+      ...item,
+      clip_id: next.clip.id,
+      start: next.clip.start,
+      source_start: item.source_start + skip,
+      duration: item.duration - skip,
+    };
+  };
+  return (timeline.audio_tracks ?? [])
+    .map((track) =>
+      track.items.some((item) => removed.has(item.clip_id))
+        ? { ...track, items: track.items.map(moved).filter((item): item is AudioItem => item !== null) }
+        : track,
+    )
+    .filter((track) => track.items.length > 0);
 }
 
 function parseSrtTime(value: string): number {

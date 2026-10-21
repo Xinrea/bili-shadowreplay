@@ -422,3 +422,123 @@ test("what plays at a time is one key that only changes at an edge", () => {
   assert.equal(at(4), "");
   assert.equal(at(5), "c");
 });
+
+// ---- Audio tracks -----------------------------------------------------------
+
+const music = (start, duration, more = {}) => ({ kind: "file", audio_id: 9, source_start: 1, volume: 0.5, ...more, start, duration });
+
+function withAudio(t, tracks) {
+  return {
+    ...t,
+    audio_tracks: tracks.map((items, index) => ({ id: `a${index}`, items: items.map((item, at) => ({ id: `s${index}${at}`, ...item })) })),
+  };
+}
+
+test("audio tracks and clip volumes are read and saved, and old timelines read as without them", () => {
+  const json = JSON.stringify({
+    clips: [{ id: "c", material_id: 1, start: 0, end: 9, volume: 0.25 }],
+    audio_tracks: [{ id: "t", items: [{ id: "m", clip_id: "c", ...music(1, 4, { fade_in: 1.5 }) }] }],
+  });
+  const parsed = api.parseTimeline(json);
+  assert.equal(parsed.clips[0].volume, 0.25);
+  assert.deepEqual(plain(parsed.audio_tracks[0].items[0]), { id: "m", clip_id: "c", ...music(1, 4, { fade_in: 1.5 }) });
+  assert.deepEqual(plain(api.parseTimeline(JSON.stringify({ clips: [] })).audio_tracks), []);
+  assert.deepEqual(plain(api.emptyTimeline().audio_tracks), []);
+});
+
+test("audio is added onto the top track free, follows its clip and is heard like an overlay", () => {
+  // a shows 10-20 at 0-10, b shows 0-5 at 10-15.
+  let t = timeline([clip("a", 1, 10, 20), clip("b", 2, 0, 5)]);
+  const first = api.addAudio(t, music(0, 0), 2, 20);
+  t = first.timeline;
+  // Cut short at the end of the project.
+  assert.deepEqual(plain(api.placeAudio(t).map((p) => [p.item.id, p.track, p.start, p.end])), [[first.id, 0, 2, 15]]);
+  const second = api.addAudio(t, { kind: "material", material_id: 3, source_start: 0, volume: 1 }, 5, 2);
+  t = second.timeline;
+  // The top track is taken there, so it goes on a new one below.
+  assert.deepEqual(plain(api.placeAudio(t).map((p) => [p.item.id, p.track])), [[first.id, 0], [second.id, 1]]);
+  assert.deepEqual(plain([...api.timelineMaterials(t)]), [1, 2, 3]);
+  assert.deepEqual(plain([...api.timelineAudio(t)]), [9]);
+  // Moving clip b first moves the sound that starts over a along with a.
+  const moved = api.moveClip(t, "b", 0);
+  assert.deepEqual(plain(api.placeAudio(moved).find((p) => p.item.id === second.id)).start, 10);
+});
+
+test("an audio item moved, trimmed or split keeps playing the same sound", () => {
+  let t = withAudio(timeline([clip("a", 1, 0, 30)]), [[{ clip_id: "a", ...music(4, 10, { fade_in: 1, fade_out: 2 }) }]]);
+  const id = "s00";
+  // The source time heard at each project time.
+  const heard = (timeline, time, item = id) => {
+    const placed = api.placeAudio(timeline).find((p) => p.item.id === item && time >= p.start && time < p.end);
+    return placed ? placed.item.source_start + placed.skip + time - placed.start : null;
+  };
+  assert.equal(heard(t, 6), 3);
+  const trimmed = api.trimAudio(t, id, "start", 6, 20);
+  assert.deepEqual(plain(api.placeAudio(trimmed).map((p) => [p.start, p.end])), [[6, 14]]);
+  assert.equal(heard(trimmed, 6), 3);
+  // No earlier than the start of its source, nor later than its end.
+  assert.equal(api.placeAudio(api.trimAudio(t, id, "start", 0, 20))[0].start, 3);
+  assert.equal(api.placeAudio(api.trimAudio(t, id, "end", 40, 20))[0].end, 23);
+  const moved = api.moveAudio(t, id, 10, { track: 0 });
+  assert.equal(heard(moved, 12), 3);
+  const split = api.splitAudio(t, id, 8);
+  const parts = api.placeAudio(split.timeline).map((p) => [p.start, p.end, p.item.fade_in ?? 0, p.item.fade_out ?? 0]);
+  // The fade in stays before the cut and the fade out after it.
+  assert.deepEqual(plain(parts), [[4, 8, 1, 0], [8, 14, 0, 2]]);
+  assert.equal(api.placeAudio(split.timeline)[1].item.id, split.id);
+  assert.equal(heard(split.timeline, 9, split.id), 6);
+  t = api.editAudio(t, id, (item) => ({ ...item, volume: 0.1 }));
+  assert.equal(api.findAudio(t, id).volume, 0.1);
+  assert.equal(api.removeAudio(t, id).audio_tracks.length, 0);
+});
+
+test("audio of a deleted clip plays on over the clip after it, as the backend moves it", () => {
+  // a shows 10-20 at 0-10, b shows 0-5 at 10-15.
+  const t = withAudio(timeline([clip("a", 1, 10, 20), clip("b", 2, 0, 5)]), [
+    [
+      // Heard from 5 s into clip a.
+      { clip_id: "a", ...music(15, 8) },
+      // Its first 2 s are cut off with the head of clip a.
+      { clip_id: "a", ...music(8, 5) },
+      { clip_id: "b", ...music(1, 2) },
+    ],
+  ]);
+  const removed = api.removeClip(t, "a");
+  const items = removed.audio_tracks[0].items.map((item) => [item.clip_id, item.start, item.source_start, item.duration]);
+  assert.deepEqual(plain(items), [["b", 0, 1, 8], ["b", 0, 3, 3], ["b", 1, 1, 2]]);
+  // With no clip after it, the sound goes with its clip.
+  assert.deepEqual(plain(api.removeClip(removed, "b").audio_tracks), []);
+  // Settled onto tracks of their own, as they now overlap.
+  assert.equal(api.settleTracks(removed).audio_tracks.length, 3);
+});
+
+test("splitting a clip anchors the audio after the cut to the new clip, which keeps the clip's volume", () => {
+  const t = withAudio(timeline([{ ...clip("a", 1, 0, 10), volume: 0.5 }]), [[{ clip_id: "a", ...music(2, 1) }, { clip_id: "a", ...music(6, 1) }]]);
+  const { timeline: split, clipId } = api.splitClip(t, 5);
+  assert.deepEqual(plain(split.clips.map((c) => c.volume)), [0.5, 0.5]);
+  assert.deepEqual(plain(split.audio_tracks[0].items.map((item) => item.clip_id)), ["a", clipId]);
+  assert.deepEqual(plain(api.placeAudio(split).map((p) => p.start)), [2, 6]);
+});
+
+test("sounds of deleted materials and audio files leave a timeline being edited", () => {
+  const base = withAudio(timeline([clip("a", 1, 0, 10), clip("b", 2, 0, 10)]), [
+    [{ clip_id: "a", ...music(1, 2) }, { clip_id: "b", kind: "material", material_id: 3, source_start: 0, volume: 1, start: 1, duration: 2 }],
+    [{ clip_id: "a", ...music(5, 2, { audio_id: 4 }) }],
+  ]);
+  // The backend deleted material 1, so clip a, and material 3 and audio file 9.
+  const remote = withAudio(timeline([clip("b", 2, 0, 10)]), [[{ clip_id: "b", ...music(0, 2, { audio_id: 4 }) }]]);
+  const local = api.editAudio(base, "s10", (item) => ({ ...item, volume: 1 }));
+  const merged = api.mergeRemoteTimeline(local, base, remote);
+  // The sound of file 4, edited here, moved onto clip b with clip a gone.
+  assert.deepEqual(plain(merged.audio_tracks.map((track) => track.items.map((item) => [item.id, item.clip_id, item.volume]))), [[["s10", "b", 1]]]);
+  assert.equal(api.mergeRemoteTimeline(base, base, base), base);
+});
+
+test("an audio item fades over the part heard, as export fades it", () => {
+  const placed = (fade_in, fade_out) => ({ item: { ...music(0, 4), fade_in, fade_out }, track: 0, start: 2, end: 6, skip: 0 });
+  const gains = (item) => [2, 2.5, 3, 4, 5.5, 6].map((time) => api.fadeGain(item, time));
+  assert.deepEqual(gains(placed(1, 1)), [0, 0.5, 1, 1, 0.5, 0]);
+  assert.deepEqual(gains(placed(0, 0)), [1, 1, 1, 1, 1, 1]);
+  // Fades longer than the item share it: here 3 s in and 1 s out.
+  assert.deepEqual(gains(placed(6, 2)), [0, 0.5 / 3, 1 / 3, 2 / 3, 0.5, 0]);
+});

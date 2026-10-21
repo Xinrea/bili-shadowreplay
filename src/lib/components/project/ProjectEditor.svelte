@@ -10,6 +10,7 @@
     Film,
     Loader2,
     MessageSquareText,
+    Music,
     Pause,
     Play,
     Plus,
@@ -41,6 +42,8 @@
   } from "../../cover-elements";
   import {
     generateEventId,
+    type AudioFile,
+    type AudioItem,
     type ExportStarted,
     type MaterialPeaks,
     type OverlayImage,
@@ -48,15 +51,19 @@
     type ProjectItem,
     type ProjectTimeline,
     type SubtitleStyle,
+    type TimelineClip,
     type VideoItem,
   } from "../../interface";
   import {
+    addAudio,
     addOverlay,
     addSubtitle,
     canShiftOverlay,
     clipAt,
     duplicateOverlay,
+    editAudio,
     editOverlay,
+    findAudio,
     findOverlay,
     frameRateQuery,
     idsAt,
@@ -64,24 +71,29 @@
     mergeRemoteTimeline,
     parseSrt,
     parseTimeline,
+    placeAudio,
     placeClips,
     placeOverlays,
     projectCues,
+    removeAudio,
     removeClip,
     removeOverlay,
     removeSubtitle,
     setClipSubtitles,
-    settleOverlays,
+    settleTracks,
     shiftOverlay,
     snapClips,
+    splitAudio,
     splitClip,
     splitOverlay,
+    timelineAudio,
     timelineDuration,
     updateSubtitleText,
     visibleSubtitles,
     MIN_OVERLAY_DURATION,
     MIN_SUBTITLE_DURATION,
     moveSubtitle,
+    type AudioContent,
     type OverlayContent,
     type OverlayTarget,
   } from "../../project-timeline";
@@ -102,10 +114,12 @@
   import SubtitleStyleEditor from "../SubtitleStyleEditor.svelte";
   import TaskCenterButton from "../TaskCenterButton.svelte";
   import TitleBar from "../TitleBar.svelte";
+  import AudioPanel, { type AudioEntry } from "./AudioPanel.svelte";
   import MaterialBin, { type BinMaterial } from "./MaterialBin.svelte";
   import { renderOverlayImages, StickerLoadError } from "./overlay-render";
   import OverlayStage, { type OverlayChanges } from "./OverlayStage.svelte";
-  import ProjectTimelineView, { type MaterialInfo } from "./ProjectTimeline.svelte";
+  import ProjectTimelineView, { type AudioDrop, type MaterialInfo } from "./ProjectTimeline.svelte";
+  import TrackSound from "./TrackSound.svelte";
   import "./project-editor.css";
 
   interface Props {
@@ -120,8 +134,11 @@
   const OVERLAY_DURATION = 3;
   /** A run of overlay changes, like dragging a color, closer than this is one undo step. */
   const OVERLAY_EDIT_DELAY_MS = 400;
+  /** Sounds load this long before they come in. */
+  const SOUND_PRELOAD = 3;
   const PANELS = [
     { id: "materials", label: "素材", icon: Film },
+    { id: "audio", label: "音频", icon: Music },
     { id: "text", label: "文字", icon: Type },
     { id: "sticker", label: "贴纸", icon: Smile },
   ] as const;
@@ -135,12 +152,17 @@
   let materials: Map<number, MaterialInfo> = $state.raw(new Map());
   let binMaterials: BinMaterial[] = $state.raw([]);
   let peaks: Map<number, MaterialPeaks> = $state.raw(new Map());
+  let audioFiles: Map<number, AudioEntry> = $state.raw(new Map());
+  let audioEntries: AudioEntry[] = $state.raw([]);
+  let audioPeaks: Map<number, MaterialPeaks> = $state.raw(new Map());
   let danmuCounts: Map<number, number[]> = $state.raw(new Map());
   /** The frame rate export renders the project at, which edits land on; 0 until known. */
   let frameRate = $state(0);
 
   let time = $state(0);
   let playing = $state(false);
+  /** The preview's video waits for data, so the sounds wait with it. */
+  let waiting = $state(false);
   let scrubbing = false;
   let zoom = $state(1);
   let volume = $state(1);
@@ -148,6 +170,7 @@
   let selectedClipId: string | null = $state(null);
   let selectedSubtitleId: string | null = $state(null);
   let selectedOverlayId: string | null = $state(null);
+  let selectedAudioId: string | null = $state(null);
   let editingOverlayId: string | null = $state(null);
   let editSelectAll = $state(false);
   // What the edited text reads now, applied when editing ends.
@@ -157,7 +180,7 @@
   let overlayEditTimer: ReturnType<typeof setTimeout> | null = null;
   let lastStyle: TextStyle = styleOf(TEXT_STYLES[0]);
   let lastFont = "";
-  let leftPanel: "materials" | "text" | "sticker" = $state("materials");
+  let leftPanel: "materials" | "audio" | "text" | "sticker" = $state("materials");
   let stickerGroup = $state(STICKER_GROUPS[0].name);
   /** URL of each sticker reference used. */
   let stickerUrls: Map<string, string> = $state.raw(new Map());
@@ -247,6 +270,14 @@
   let selectedOverlay = $derived(findOverlay(timeline, selectedOverlayId));
   let selectedPlaced = $derived(overlays.find((entry) => entry.item.id === selectedOverlayId) ?? null);
   let materialUrls = $derived(new Map([...materials].map(([id, info]) => [id, info.url])));
+  let audio = $derived(placeAudio(timeline));
+  let selectedAudio = $derived(findAudio(timeline, selectedAudioId));
+  let selectedSound = $derived(audio.find((entry) => entry.item.id === selectedAudioId) ?? null);
+  let selectedClip = $derived(timeline.clips.find((clip) => clip.id === selectedClipId) ?? null);
+  // The sounds near the playhead, which have their own element.
+  let sounds = $derived(audio.filter((entry) => time >= entry.start - SOUND_PRELOAD && time < entry.end + 0.5));
+  // Clips' volumes change the preview's without loading it again.
+  let clipVolumeKey = $derived(timeline.clips.map((clip) => `${clip.id}:${clip.volume ?? 1}`).join("|"));
   let visibleDanmuCount = $derived(
     placed.reduce((total, item) => {
       const times = danmuCounts.get(item.clip.material_id) ?? [];
@@ -323,6 +354,26 @@
     }));
   }
 
+  async function loadAudioFiles() {
+    const list = await invoke<AudioFile[]>("get_audio_files");
+    const entries = await Promise.all(
+      list.map(async (file) => ({
+        id: file.id,
+        name: file.name,
+        duration: file.duration,
+        url: await get_static_url("output", file.file),
+        createdAt: file.created_at,
+      })),
+    );
+    audioFiles = new Map(entries.map((entry) => [entry.id, entry]));
+    audioEntries = entries;
+  }
+
+  /** Where a sound plays from: a file of the audio library, or a material. */
+  function soundUrl(item: AudioItem) {
+    return item.kind === "file" ? audioFiles.get(item.audio_id)?.url : materials.get(item.material_id)?.url;
+  }
+
   /**
    * Take a saved project, merging the backend's own edits of its timeline into
    * the one edited here: danmaku switched on the uploads page, clips of a
@@ -339,7 +390,7 @@
     // Clips that left can leave overlays on a track running into each other;
     // lifting them apart is saved like any edit, as is putting clips the
     // backend made on frames.
-    const settled = snapClips(settleOverlays(merged), frameRate);
+    const settled = snapClips(settleTracks(merged), frameRate);
     if (settled !== timeline) timeline = settled;
     return settled !== merged;
   }
@@ -349,13 +400,13 @@
       const view = await invoke<ProjectItem>("get_project", { id: projectId });
       // Together, so a refresh during the loads below merges into this timeline.
       const parsed = parseTimeline(view.timeline);
-      let loaded = settleOverlays(parsed);
+      let loaded = settleTracks(parsed);
       if (!loaded.subtitle_style) loaded = { ...loaded, subtitle_style: loadSubtitleStyle(view.room_id) };
       timeline = loaded;
       syncedTimeline = view.timeline;
       project = view;
-      // Overlays a material deleted meanwhile left overlapping were lifted apart.
-      if (loaded.tracks !== parsed.tracks) scheduleSave();
+      // Overlays or sounds a material deleted meanwhile left overlapping were lifted apart.
+      if (loaded.tracks !== parsed.tracks || loaded.audio_tracks !== parsed.audio_tracks) scheduleSave();
       title = view.title;
       await set_title(view.title || "切片");
       await loadMaterials();
@@ -365,8 +416,24 @@
     }
   }
 
-  /** Waveforms and danmaku times of the materials on the timeline. */
+  /** Waveforms and danmaku times of the materials on the timeline, and waveforms of its sounds. */
   async function loadMaterialData() {
+    const sounds = timeline.audio_tracks.flatMap((track) => track.items);
+    const heard = sounds.flatMap((item) => (item.kind === "material" ? [item.material_id] : []));
+    for (const id of new Set(heard)) {
+      if (!peaks.has(id)) {
+        invoke<MaterialPeaks>("get_material_peaks", { id })
+          .then((data) => (peaks = new Map(peaks).set(id, data)))
+          .catch((error) => console.warn("Failed to load waveform:", error));
+      }
+    }
+    for (const id of timelineAudio(timeline)) {
+      if (!audioPeaks.has(id)) {
+        invoke<MaterialPeaks>("get_audio_peaks", { id })
+          .then((data) => (audioPeaks = new Map(audioPeaks).set(id, data)))
+          .catch((error) => console.warn("Failed to load waveform:", error));
+      }
+    }
     for (const id of new Set(timeline.clips.map((clip) => clip.material_id))) {
       if (!peaks.has(id)) {
         invoke<MaterialPeaks>("get_material_peaks", { id })
@@ -401,6 +468,13 @@
 
   onMount(() => watchStateChanges(materialRefresh, ["videos-changed"]));
 
+  // The audio library, shared with other projects and clients.
+  const audioRefresh = createStateRefresh(loadAudioFiles);
+  onMount(() => {
+    void audioRefresh.run();
+    return watchStateChanges(audioRefresh, ["audio-changed"]);
+  });
+
   onMount(() => {
     player = new ProjectPlayer(videoA, videoB);
     const update = () => {
@@ -409,6 +483,8 @@
     player.addEventListener("timeupdate", update);
     player.addEventListener("seeked", update);
     player.addEventListener("activechange", () => (activeVideo = player.activeElement === videoA ? 0 : 1));
+    player.addEventListener("waiting", () => (waiting = true));
+    player.addEventListener("playing", () => (waiting = false));
     player.addEventListener("play", () => {
       playing = true;
       const follow = () => {
@@ -419,6 +495,7 @@
     });
     const stop = () => {
       playing = false;
+      waiting = false;
       cancelAnimationFrame(frame);
       time = player.currentTime;
     };
@@ -458,6 +535,13 @@
     if (player) {
       player.volume = volume;
       player.muted = muted;
+    }
+  });
+
+  $effect(() => {
+    clipVolumeKey;
+    if (player) {
+      untrack(() => player.setClipVolumes(new Map(timeline.clips.map((clip) => [clip.id, clip.volume ?? 1]))));
     }
   });
 
@@ -520,9 +604,9 @@
   function commit(next: ProjectTimeline, before: ProjectTimeline = timeline) {
     // A run of overlay changes still open is a step of its own before this.
     if (overlayEditBefore) settleOverlayEdit();
-    // Moving or trimming clips can bring overlays on a track together. Clips
-    // edited before the frame rate was known go on its frames.
-    next = snapClips(settleOverlays(next), frameRate);
+    // Moving or trimming clips can bring overlays or sounds on a track
+    // together. Clips edited before the frame rate was known go on its frames.
+    next = snapClips(settleTracks(next), frameRate);
     if (next === before) {
       timeline = before;
       return;
@@ -617,13 +701,21 @@
     selectedClipId = added?.id ?? null;
   }
 
-  /** Split the selected overlay at the playhead, or else the clip there. */
+  /** Split the selected overlay or sound at the playhead, or else the clip there. */
   function splitAtPlayhead() {
     if (selectedPlaced && time > selectedPlaced.start && time < selectedPlaced.end) {
       const result = splitOverlay(timeline, selectedPlaced.item.id, time);
       if (result.id) {
         commit(result.timeline);
         selectOverlay(result.id);
+      }
+      return;
+    }
+    if (selectedSound && time > selectedSound.start && time < selectedSound.end) {
+      const result = splitAudio(timeline, selectedSound.item.id, time);
+      if (result.id) {
+        commit(result.timeline);
+        selectAudio(result.id);
       }
       return;
     }
@@ -636,6 +728,9 @@
   function deleteSelection() {
     if (selectedOverlayId) {
       deleteOverlay(selectedOverlayId);
+    } else if (selectedAudioId) {
+      commit(removeAudio(timeline, selectedAudioId));
+      selectedAudioId = null;
     } else if (selectedSubtitleId) {
       commit(removeSubtitle(timeline, selectedSubtitleId));
       selectedSubtitleId = null;
@@ -667,6 +762,7 @@
     if (id) {
       selectedClipId = null;
       selectedSubtitleId = null;
+      selectedAudioId = null;
     }
   }
 
@@ -679,14 +775,18 @@
     if (before) commit(timeline, before);
   }
 
-  /** Change an overlay; changes in quick succession make one undo step. */
-  function updateOverlay(update: (item: OverlayItem) => OverlayItem, id = selectedOverlayId) {
-    if (!id) return;
+  /** Apply an edit made in quick succession with others, as with a slider: together they make one undo step. */
+  function editInRun(next: ProjectTimeline) {
     overlayEditBefore ??= timeline;
-    timeline = editOverlay(timeline, id, update);
+    timeline = next;
     scheduleSave();
     if (overlayEditTimer) clearTimeout(overlayEditTimer);
     overlayEditTimer = setTimeout(settleOverlayEdit, OVERLAY_EDIT_DELAY_MS);
+  }
+
+  /** Change an overlay; changes in quick succession make one undo step. */
+  function updateOverlay(update: (item: OverlayItem) => OverlayItem, id = selectedOverlayId) {
+    if (id) editInRun(editOverlay(timeline, id, update));
   }
 
   const withElement = (changes: OverlayChanges) => (item: OverlayItem) =>
@@ -938,6 +1038,78 @@
     }
   });
 
+  // ---- Audio ---------------------------------------------------------------
+
+  function selectAudio(id: string | null) {
+    if (id && editingOverlayId) finishEditing();
+    selectedAudioId = id;
+    if (id) {
+      selectedClipId = null;
+      selectedSubtitleId = null;
+      selectedOverlayId = null;
+    }
+  }
+
+  /** Change a sound; changes in quick succession make one undo step. */
+  function updateAudio(update: (item: AudioItem) => AudioItem, id = selectedAudioId) {
+    if (id) editInRun(editAudio(timeline, id, update));
+  }
+
+  /** Set a fade of the selected sound, in seconds; none at 0. */
+  function setFade(edge: "fade_in" | "fade_out", seconds: number) {
+    updateAudio((item) => {
+      const next = { ...item };
+      if (Number.isFinite(seconds) && seconds > 0) next[edge] = Math.round(seconds * 10) / 10;
+      else delete next[edge];
+      return next;
+    });
+    settleOverlayEdit();
+  }
+
+  function withVolume(clip: TimelineClip, volume: number): TimelineClip {
+    const { volume: _, ...rest } = clip;
+    return volume === 1 ? rest : { ...rest, volume };
+  }
+
+  /** Change a clip's own sound; changes in quick succession make one undo step. */
+  function setClipVolume(id: string, volume: number) {
+    editInRun({ ...timeline, clips: timeline.clips.map((clip) => (clip.id === id ? withVolume(clip, volume) : clip)) });
+  }
+
+  /**
+   * Play a sound on the audio tracks from `start`, or else about the
+   * playhead: a file of the audio library, or the sound of a material.
+   */
+  async function addSound(source: AudioDrop, start?: number, target?: OverlayTarget) {
+    if (duration < MIN_OVERLAY_DURATION) {
+      alert("请先在时间轴上添加素材，音频跟随素材播放");
+      return;
+    }
+    let length: number;
+    let content: AudioContent;
+    if (source.kind === "file") {
+      const file = audioFiles.get(source.id);
+      if (!file) return;
+      length = file.duration;
+      content = { kind: "file", audio_id: source.id, source_start: 0, volume: 1 };
+    } else {
+      let info = materials.get(source.id);
+      if (!info) return;
+      if (!info.duration) {
+        const video = await invoke<VideoItem>("get_video", { id: source.id });
+        info = { ...info, duration: video.duration || video.length };
+        materials = new Map(materials).set(source.id, info);
+      }
+      length = info.duration;
+      content = { kind: "material", material_id: source.id, source_start: 0, volume: 1 };
+    }
+    // As it is after the wait, which other edits may have changed.
+    const result = addAudio(timeline, content, start ?? overlayStart(length), length, target);
+    if (!result.id) return;
+    commit(result.timeline);
+    selectAudio(result.id);
+  }
+
   // ---- Playback ------------------------------------------------------------
 
   function seek(target: number) {
@@ -985,6 +1157,7 @@
     selectedSubtitleId = id;
     selectedClipId = null;
     selectedOverlayId = null;
+    selectedAudioId = null;
     const item = subtitles.find((entry) => entry.subtitle.id === id);
     if (seekTo && item) seek(item.start);
     tick().then(() =>
@@ -1287,6 +1460,11 @@
       selectOverlay(null);
       return;
     }
+    if (event.key === "Escape" && selectedAudioId) {
+      event.preventDefault();
+      selectAudio(null);
+      return;
+    }
     if (event.repeat && !event.code.startsWith("Arrow")) return;
     const command = event.ctrlKey || event.metaKey;
     if (command) {
@@ -1330,6 +1508,37 @@
     }
   }
 </script>
+
+{#snippet volumeControl(value: number, label: string, set: (volume: number) => void)}
+  <button
+    type="button"
+    class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost"
+    title={value > 0 ? "静音" : "取消静音"}
+    aria-label={value > 0 ? "静音" : "取消静音"}
+    onclick={() => {
+      set(value > 0 ? 0 : 1);
+      settleOverlayEdit();
+    }}
+  >
+    {#if value > 0}
+      <Volume2 class="h-3.5 w-3.5" />
+    {:else}
+      <VolumeX class="h-3.5 w-3.5" />
+    {/if}
+  </button>
+  <input
+    type="range"
+    min="0"
+    max="1"
+    step="0.05"
+    {value}
+    class="w-28"
+    aria-label={label}
+    data-hotkey-block
+    oninput={(event) => set(Number(event.currentTarget.value))}
+  />
+  <span class="w-9 text-right text-[11px] tabular-nums text-fg-muted">{Math.round(value * 100)}%</span>
+{/snippet}
 
 <svelte:window onkeydown={handleKeydown} />
 
@@ -1436,6 +1645,9 @@
           onPreview={(material) => void invoke("open_clip", { videoId: material.id })}
         />
       </div>
+      <div class="left-panel" class:hidden={leftPanel !== "audio"}>
+        <AudioPanel files={audioEntries} onAdd={(file) => void addSound({ kind: "file", id: file.id })} />
+      </div>
       <div class="left-panel element-panel custom-scrollbar-light" class:hidden={leftPanel !== "text"}>
         <TextPanel
           selected={selectedOverlay?.kind === "text" ? selectedOverlay.element : null}
@@ -1459,44 +1671,75 @@
             />
           {:else if selectedOverlay?.kind === "video"}
             {@const video = selectedOverlay}
-            <button
-              type="button"
-              class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost"
-              title={video.volume > 0 ? "静音" : "取消静音"}
-              aria-label={video.volume > 0 ? "静音" : "取消静音"}
-              onclick={() => {
-                updateOverlay((item) => ({ ...item, volume: video.volume > 0 ? 0 : 1 }) as OverlayItem);
-                settleOverlayEdit();
-              }}
-            >
-              {#if video.volume > 0}
-                <Volume2 class="h-3.5 w-3.5" />
-              {:else}
-                <VolumeX class="h-3.5 w-3.5" />
-              {/if}
-            </button>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.05"
-              value={video.volume}
-              class="w-28"
-              aria-label="画中画音量"
-              data-hotkey-block
-              oninput={(event) => {
-                const volume = Number(event.currentTarget.value);
-                updateOverlay((item) => ({ ...item, volume }) as OverlayItem);
-              }}
-            />
-            <span class="w-9 text-right text-[11px] tabular-nums text-fg-muted">{Math.round(video.volume * 100)}%</span>
+            {@render volumeControl(video.volume, "画中画音量", (volume) =>
+              updateOverlay((item) => ({ ...item, volume }) as OverlayItem),
+            )}
             <span class="toolbar-separator"></span>
             <button type="button" class="ui-btn ui-btn-sm ui-btn-ghost" onclick={() => void fillFrame()}>铺满画面</button>
             <span class="truncate text-[11px] text-fg-muted">{materials.get(video.material_id)?.name ?? "素材已删除"}</span>
+          {:else if selectedAudio}
+            {@const sound = selectedAudio}
+            {@render volumeControl(sound.volume, "音量", (volume) => updateAudio((item) => ({ ...item, volume })))}
+            <span class="toolbar-separator"></span>
+            <label class="fade-field">
+              淡入
+              <input
+                type="number"
+                min="0"
+                step="0.1"
+                value={sound.fade_in ?? 0}
+                data-hotkey-block
+                onchange={(event) => setFade("fade_in", Number(event.currentTarget.value))}
+              />
+              秒
+            </label>
+            <label class="fade-field">
+              淡出
+              <input
+                type="number"
+                min="0"
+                step="0.1"
+                value={sound.fade_out ?? 0}
+                data-hotkey-block
+                onchange={(event) => setFade("fade_out", Number(event.currentTarget.value))}
+              />
+              秒
+            </label>
+            <span class="toolbar-separator"></span>
+            <span class="truncate text-[11px] text-fg-muted">
+              {sound.kind === "file"
+                ? (audioFiles.get(sound.audio_id)?.name ?? "音频已删除")
+                : `${materials.get(sound.material_id)?.name ?? "素材已删除"}的声音`}
+            </span>
+          {:else if selectedClip}
+            {@const clip = selectedClip}
+            <span class="text-[11px] text-fg-muted">原声</span>
+            {@render volumeControl(clip.volume ?? 1, "原声音量", (volume) => setClipVolume(clip.id, volume))}
+            <span class="toolbar-separator"></span>
+            <span class="truncate text-[11px] text-fg-muted">{materials.get(clip.material_id)?.name ?? "素材已删除"}</span>
           {:else}
             <span class="truncate text-[12px] text-fg-muted">
               从左侧添加文字、贴纸，或把素材拖到时间轴的叠加轨道上叠加画面；点击画面中的内容可移动、旋转、缩放，双击文字可直接修改。
             </span>
+          {/if}
+
+          {#if selectedAudio}
+            <div class="ml-auto flex shrink-0 items-center gap-1">
+              {#if selectedSound}
+                <span class="mr-1 text-[11px] tabular-nums text-fg-muted">
+                  {formatTimecode(selectedSound.start)} – {formatTimecode(selectedSound.end)}
+                </span>
+              {/if}
+              <button
+                type="button"
+                class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost hover:text-danger-fg"
+                title="删除 (Delete)"
+                aria-label="删除"
+                onclick={deleteSelection}
+              >
+                <Trash2 class="h-3.5 w-3.5" />
+              </button>
+            </div>
           {/if}
 
           {#if selectedOverlay}
@@ -1588,6 +1831,12 @@
                   {/if}
                 {/snippet}
               </OverlayStage>
+              {#each sounds as placed (placed.item.id)}
+                {@const url = soundUrl(placed.item)}
+                {#if url}
+                  <TrackSound {placed} {url} {time} playing={playing && !waiting} {volume} {muted} />
+                {/if}
+              {/each}
               {#if timeline.clips.length === 0 && project}
                 <div class="empty-preview">
                   <Film class="h-8 w-8 text-gray-600" />
@@ -1703,7 +1952,7 @@
       <div class="flex items-center gap-1">
         <button
           class="icon-button"
-          title="在播放头处分割选中的叠加内容或片段 (⌘B)"
+          title="在播放头处分割选中的叠加内容、音频或片段 (⌘B)"
           disabled={!clipAt(timeline, time)}
           onclick={splitAtPlayhead}
         >
@@ -1713,7 +1962,7 @@
         <button
           class="icon-button"
           title="删除选中 (Delete)"
-          disabled={!selectedClipId && !selectedSubtitleId && !selectedOverlayId}
+          disabled={!selectedClipId && !selectedSubtitleId && !selectedOverlayId && !selectedAudioId}
           onclick={deleteSelection}
         >
           <Trash2 class="h-4 w-4" />
@@ -1752,12 +2001,15 @@
       {timeline}
       {materials}
       {peaks}
+      {audioFiles}
+      {audioPeaks}
       {frameRate}
       {time}
       {zoom}
       {selectedClipId}
       {selectedSubtitleId}
       {selectedOverlayId}
+      {selectedAudioId}
       {stickerUrls}
       onSeek={seek}
       onScrub={(active) => (scrubbing = active)}
@@ -1765,15 +2017,20 @@
       onCommit={(next, before) => commit(next, before)}
       onSelectClip={(id) => {
         selectedClipId = id;
-        if (id) selectOverlay(null);
+        if (id) {
+          selectOverlay(null);
+          selectedAudioId = null;
+        }
       }}
       onSelectSubtitle={(id) => {
         if (id) selectSubtitle(id);
         else selectedSubtitleId = null;
       }}
       onSelectOverlay={selectOverlay}
+      onSelectAudio={selectAudio}
       onDropMaterial={(id, index) => void addMaterial(id, index)}
       onDropOverlay={(id, at, target) => void addVideoOverlay(id, at, target)}
+      onDropAudio={(source, at, target) => void addSound(source, at, target)}
       onZoom={(value) => (zoom = value)}
     />
   </div>
@@ -1972,6 +2229,24 @@
     height: 16px;
     width: 1px;
     background: rgb(var(--c-line-strong));
+  }
+
+  .fade-field {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: rgb(var(--c-fg-muted));
+    font-size: 11px;
+  }
+
+  .fade-field input {
+    width: 52px;
+    border: 1px solid #293442;
+    border-radius: 6px;
+    background: #0f131a;
+    padding: 2px 6px;
+    color: #e9eef8;
+    font-size: 11px;
   }
 
   .transport {

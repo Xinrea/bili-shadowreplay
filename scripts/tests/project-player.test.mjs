@@ -261,3 +261,21 @@ test("a seek queued behind one that never lands is dropped with it", () => {
   assert.equal(instance.seeking, false);
   assert.deepEqual(events, ["seeking", "seeked"]);
 });
+
+test("each clip's sound plays at its own volume, from where it is reached", () => {
+  const [active, standby] = [new FakeVideo(), new FakeVideo()];
+  active.volume = standby.volume = 1;
+  const instance = new ProjectPlayer(active, standby);
+  instance.setSegments([
+    { clipId: "a", url: "a.mp4", start: 100, end: 110, offset: 0 },
+    { clipId: "b", url: "b.mp4", start: 0, end: 10, offset: 10 },
+  ]);
+  instance.volume = 0.8;
+  instance.setClipVolumes(new Map([["b", 0.5]]));
+  assert.equal(active.volume, 0.8);
+  // Seeked into clip b.
+  instance.seek(12);
+  assert.equal(instance.activeElement.volume, 0.4);
+  instance.setClipVolumes(new Map());
+  assert.equal(instance.activeElement.volume, 0.8);
+});

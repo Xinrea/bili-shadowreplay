@@ -405,3 +405,20 @@ test("subtitle cues sit between frames and move by whole frames with their clip"
   assert.equal(api.midFrame(0, fps), 0);
   assert.equal(api.midFrame(1.2345, 0), 1.2345);
 });
+
+test("what plays at a time is one key that only changes at an edge", () => {
+  const items = [
+    { id: "a", start: 0, end: 2 },
+    { id: "b", start: 1, end: 3 },
+    { id: "c", start: 5, end: 6 },
+  ];
+  const at = (time) => api.idsAt(items, time, (item) => item.id);
+  assert.equal(at(0.5), "a");
+  // Overlapping, both; the same key all along, so nothing derived from it changes.
+  assert.equal(at(1.2), "a\nb");
+  assert.equal(at(1.9), at(1.2));
+  // An end is not part of it.
+  assert.equal(at(2), "b");
+  assert.equal(at(4), "");
+  assert.equal(at(5), "c");
+});

@@ -124,6 +124,19 @@
   border-bottom: 0;
 }
 
+/* Rows of their own height, placed by index: only those in view are drawn. */
+.project-editor .row-list.virtual {
+  position: relative;
+}
+
+.project-editor .row-list.virtual .row {
+  position: absolute;
+  right: 0;
+  left: 0;
+  height: 38px;
+  border-bottom: 1px solid #293442;
+}
+
 .project-editor .row:hover {
   background: rgb(255 255 255 / 3%);
 }

@@ -15,6 +15,7 @@
   import { Film, Smile, Type } from "lucide-svelte";
   import type { MaterialPeaks, ProjectTimeline } from "../../interface";
   import {
+    idsAt,
     moveClip,
     moveOverlay,
     moveSubtitle,
@@ -98,6 +99,13 @@
   const EDGE_PX = 7;
   const SNAP_PX = 8;
   const DRAG_THRESHOLD_PX = 4;
+  /**
+   * Narrower than this, a block shows no text, which it has no room for:
+   * laid out again at every zoom, thousands of truncated texts cost the most.
+   */
+  const LABEL_MIN_PX = 20;
+  /** How long after a zoom waveforms are drawn again at their new width. */
+  const WAVE_SETTLE_MS = 150;
   const TRAILING_PX = 160;
   const TICK_STEPS = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
 
@@ -165,6 +173,12 @@
   let laneCount = $derived(Math.max(1, ...lanes.map((lane) => lane + 1)));
   let subtitleTrackHeight = $derived(laneCount * LANE_HEIGHT + 8);
   let overlays = $derived(placeOverlays(timeline));
+  // What plays at the playhead, changing only as it crosses an edge: each key
+  // is the same string until then, so nothing derived from it updates.
+  let subtitlesKey = $derived(idsAt(subtitles, time, (item) => item.subtitle.id));
+  let overlaysKey = $derived(idsAt(overlays, time, (item) => item.item.id));
+  let playingSubtitles = $derived(new Set(subtitlesKey.split("\n")));
+  let playingOverlays = $derived(new Set(overlaysKey.split("\n")));
   let trackCount = $derived(timeline.tracks.length);
   let hiddenOverlays = $derived(overlayCount(timeline) - overlays.length);
   // Rows from the top: the highest track, drawn over the others, first.
@@ -628,11 +642,27 @@
 
   // Waveform of the visible part of a clip.
   function waveform(canvas: HTMLCanvasElement, params: { item: PlacedClip; data: MaterialPeaks | undefined; width: number }) {
-    function draw({ item, data, width }: typeof params) {
+    let current = params;
+    let drawn = params;
+    // While zooming, the canvas stretches with its clip until the zoom settles.
+    let settle: ReturnType<typeof setTimeout> | undefined;
+    // The canvas's height as last laid out, told by an observer: reading it
+    // after other canvases changed would lay the page out again for each clip.
+    let height = 0;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry.contentRect.height === height) return;
+      height = entry.contentRect.height;
+      draw(current);
+    });
+    observer.observe(canvas);
+    function draw(params: typeof current) {
+      drawn = params;
+      const { item, data, width } = params;
       const ratio = window.devicePixelRatio || 1;
       // Browsers cap canvas size; long clips at high zoom are drawn coarser.
       const pixels = Math.min(Math.max(1, Math.round(width * ratio)), 16000);
-      const height = canvas.clientHeight || 40;
+      // Until the observer tells, about what the track gives it.
+      if (!height) height = 40;
       canvas.width = pixels;
       canvas.height = Math.round(height * ratio);
       const context = canvas.getContext("2d");
@@ -655,7 +685,26 @@
       }
     }
     draw(params);
-    return { update: draw };
+    return {
+      update(next: typeof params) {
+        current = next;
+        const same =
+          next.data === drawn.data &&
+          next.item.clip.material_id === drawn.item.clip.material_id &&
+          next.item.clip.start === drawn.item.clip.start &&
+          next.item.duration === drawn.item.duration;
+        clearTimeout(settle);
+        if (same) {
+          settle = setTimeout(() => draw(current), WAVE_SETTLE_MS);
+        } else {
+          draw(next);
+        }
+      },
+      destroy() {
+        clearTimeout(settle);
+        observer.disconnect();
+      },
+    };
   }
 </script>
 
@@ -678,7 +727,9 @@
 
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="viewport sidebar-scrollbar" bind:this={viewport} onwheel={wheel}>
-    <div class="content" style:width="{contentWidth}px">
+    <!-- Clips, subtitles and overlays are placed by CSS from the scale here, so
+         zooming sets one variable instead of thousands of positions. -->
+    <div class="content" style:width="{contentWidth}px" style:--pps={pxPerSecond}>
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div class="ruler" style:height="{RULER_HEIGHT}px" onpointerdown={startScrub}>
         {#each ticks as tick}
@@ -695,19 +746,23 @@
           <div class="track-hint">暂无字幕，可在右侧使用 AI 字幕或手动添加</div>
         {/if}
         {#each subtitles as item, index (item.subtitle.id)}
+          {@const labelled = (item.end - item.start) * pxPerSecond >= LABEL_MIN_PX}
           <div
             class="subtitle"
+            class:labelled
             class:selected={selectedSubtitleId === item.subtitle.id}
-            class:active={time >= item.start && time < item.end}
+            class:active={playingSubtitles.has(item.subtitle.id)}
             role="button"
             tabindex="-1"
-            style:left="{item.start * pxPerSecond}px"
-            style:width="{Math.max(2, (item.end - item.start) * pxPerSecond)}px"
+            style:--start={item.start}
+            style:--length={item.end - item.start}
             style:top="{4 + lanes[index] * LANE_HEIGHT}px"
             title={item.subtitle.text}
             onpointerdown={(event) => startSubtitleDrag(event, item)}
           >
-            <span>{item.subtitle.text || "空字幕"}</span>
+            {#if labelled}
+              <span>{item.subtitle.text || "空字幕"}</span>
+            {/if}
           </div>
         {/each}
       </div>
@@ -740,22 +795,23 @@
             onclick={clickEmpty}
           >
             {#each overlays.filter((entry) => entry.track === track) as item (item.item.id)}
-              {@const width = (item.end - item.start) * pxPerSecond}
+              {@const wide = (item.end - item.start) * pxPerSecond > 26}
+              {@const wider = (item.end - item.start) * pxPerSecond > 64}
               {@const overlay = item.item}
               <div
                 class="overlay {overlay.kind}"
                 class:selected={selectedOverlayId === overlay.id}
-                class:active={time >= item.start && time < item.end}
+                class:active={playingOverlays.has(item.item.id)}
                 class:dragging={drag?.kind === "overlay" && drag.moved && drag.mode === "move" && drag.id === overlay.id}
                 class:missing={overlay.kind === "video" && !materials.has(overlay.material_id)}
                 role="button"
                 tabindex="-1"
-                style:left="{item.start * pxPerSecond}px"
-                style:width="{Math.max(3, width)}px"
+                style:--start={item.start}
+                style:--length={item.end - item.start}
                 title="{overlayLabel(overlay)}（{formatTimecode(item.end - item.start)}）"
                 onpointerdown={(event) => startOverlayDrag(event, item)}
               >
-                {#if width > 26}
+                {#if wide}
                   {#if overlay.kind === "text"}
                     <Type class="h-3 w-3 shrink-0" />
                   {:else if overlay.kind === "sticker"}
@@ -764,7 +820,7 @@
                     {:else}
                       <Smile class="h-3 w-3 shrink-0" />
                     {/if}
-                  {:else if materials.get(overlay.material_id)?.coverUrl && width > 64}
+                  {:else if materials.get(overlay.material_id)?.coverUrl && wider}
                     <img class="video-thumb" src={materials.get(overlay.material_id).coverUrl} alt="" draggable="false" />
                   {:else}
                     <Film class="h-3 w-3 shrink-0" />
@@ -821,27 +877,33 @@
         {#each placed as item (item.clip.id)}
           {@const material = materials.get(item.clip.material_id)}
           {@const width = item.duration * pxPerSecond}
+          {@const wide = width > 64}
+          {@const labelled = width >= LABEL_MIN_PX}
           {@const overlay = trimOverlay(item)}
           <div
             class="clip"
+            class:labelled
             class:selected={selectedClipId === item.clip.id}
             class:dragging={drag?.kind === "move" && drag.moved && drag.clipId === item.clip.id}
             class:missing={!material}
             role="button"
             tabindex="-1"
-            style:left="{item.offset * pxPerSecond}px"
-            style:width="{Math.max(3, width)}px"
+            style:--start={item.offset}
+            style:--length={item.duration}
+            title="{material?.name ?? "素材已删除"}（{formatTimecode(item.duration)}）"
             onpointerdown={(event) => startClipDrag(event, item)}
           >
-            <div class="clip-head">
-              {#if material?.coverUrl && width > 64}
-                <img src={material.coverUrl} alt="" draggable="false" />
-              {:else}
-                <Film class="h-3 w-3 shrink-0 text-violet-300" />
-              {/if}
-              <span class="clip-name">{material?.name ?? "素材已删除"}</span>
-              <span class="clip-length">{formatTimecode(item.duration)}</span>
-            </div>
+            {#if labelled}
+              <div class="clip-head">
+                {#if material?.coverUrl && wide}
+                  <img src={material.coverUrl} alt="" draggable="false" />
+                {:else}
+                  <Film class="h-3 w-3 shrink-0 text-violet-300" />
+                {/if}
+                <span class="clip-name">{material?.name ?? "素材已删除"}</span>
+                <span class="clip-length">{formatTimecode(item.duration)}</span>
+              </div>
+            {/if}
             <canvas
               class="clip-wave"
               use:waveform={{ item, data: peaks.get(item.clip.material_id), width }}
@@ -1021,6 +1083,8 @@
     position: absolute;
     top: 4px;
     bottom: 4px;
+    left: calc(var(--start) * var(--pps) * 1px);
+    width: max(3px, calc(var(--length) * var(--pps) * 1px));
     z-index: 10;
     display: flex;
     align-items: center;
@@ -1127,13 +1191,15 @@
 
   .subtitle {
     position: absolute;
+    left: calc(var(--start) * var(--pps) * 1px);
+    width: max(2px, calc(var(--length) * var(--pps) * 1px));
     z-index: 10;
     display: flex;
     height: 24px;
     align-items: center;
     overflow: hidden;
     border: 1px solid rgb(10 132 255 / 50%);
-    border-radius: 6px;
+    /* Rounded only when labelled: thousands of rounded bordered blocks cost the most to paint at every zoom. */
     background: rgb(10 132 255 / 20%);
     padding: 0 6px;
     color: #dbeafe;
@@ -1157,13 +1223,20 @@
     box-shadow: 0 0 0 1px rgb(255 255 255 / 80%);
   }
 
+  .subtitle.labelled,
+  .clip.labelled {
+    border-radius: 6px;
+  }
+
   .clip {
     position: absolute;
     top: 4px;
     bottom: 4px;
+    left: calc(var(--start) * var(--pps) * 1px);
+    width: max(3px, calc(var(--length) * var(--pps) * 1px));
     overflow: visible;
     border: 1px solid rgb(139 92 246 / 50%);
-    border-radius: 6px;
+    /* As subtitles, rounded only when labelled. */
     background: rgb(139 92 246 / 15%);
     cursor: grab;
   }

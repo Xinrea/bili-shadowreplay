@@ -730,7 +730,20 @@
     const added = next.clips.length > timeline.clips.length ? next.clips[at] : undefined;
     if (srt && added) next = setClipSubtitles(next, added.id, parseSrt(srt));
     commit(next);
-    selectedClipId = added?.id ?? null;
+    selectClip(added?.id ?? null);
+  }
+
+  /**
+   * Select a clip of the main track, and nothing else: the inspector then
+   * shows the clip, and Delete must not act on a subtitle hidden behind it.
+   */
+  function selectClip(id: string | null) {
+    selectedClipId = id;
+    if (id) {
+      selectOverlay(null);
+      selectedAudioId = null;
+      selectedSubtitleId = null;
+    }
   }
 
   /** Split the selected overlay or sound at the playhead, or else the clip there. */
@@ -754,7 +767,7 @@
     const result = splitClip(timeline, time, frameRate);
     if (!result.clipId) return;
     commit(result.timeline);
-    selectedClipId = result.clipId;
+    selectClip(result.clipId);
   }
 
   function deleteSelection() {
@@ -1995,13 +2008,7 @@
       onScrub={(active) => (scrubbing = active)}
       onPreview={(next) => (timeline = next)}
       onCommit={(next, before) => commit(next, before)}
-      onSelectClip={(id) => {
-        selectedClipId = id;
-        if (id) {
-          selectOverlay(null);
-          selectedAudioId = null;
-        }
-      }}
+      onSelectClip={selectClip}
       onSelectSubtitle={(id) => {
         if (id) selectSubtitle(id);
         else selectedSubtitleId = null;

@@ -3,6 +3,10 @@
 // they swap at the cut. The player itself behaves like a media element whose
 // time is project time, so components that follow a <video> (the libass
 // subtitle preview) can follow the whole project instead.
+//
+// An element still seeking is not sent elsewhere: a seek dropped halfway
+// shows nothing, and when one follows the pointer every frame, as scrubbing
+// does, few would land. It goes on to the last time asked once it lands.
 
 export interface PlayerSegment {
   clipId: string;
@@ -36,6 +40,8 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
   private time = 0;
   private playing = false;
   private pendingSeeks = 0;
+  /** Where each element seeking goes once it lands. */
+  private queued = new Map<HTMLVideoElement, number>();
   private frame = 0;
   private lastTimeUpdate = 0;
   private volumeValue = 1;
@@ -75,7 +81,7 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
   }
 
   get seeking() {
-    return this.pendingSeeks > 0;
+    return this.pendingSeeks > 0 || this.queued.size > 0;
   }
 
   get readyState() {
@@ -147,6 +153,7 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
     const index = this.segmentAt(target);
     this.index = index;
     if (index < 0) {
+      this.queued.clear();
       for (const element of this.elements) {
         element.pause();
         element.removeAttribute("src");
@@ -197,12 +204,10 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
   }
 
   private load(element: HTMLVideoElement, segment: PlayerSegment, sourceTime: number, report: boolean) {
-    const seek = () => {
-      if (Math.abs(element.currentTime - sourceTime) < 0.01) return;
-      if (report) this.trackSeek(element);
-      element.currentTime = sourceTime;
-    };
+    const seek = () => this.seekElement(element, sourceTime, report);
     if (element.dataset.src !== segment.url) {
+      // A seek queued in the file before is of no use in this one.
+      this.queued.delete(element);
       element.dataset.src = segment.url;
       element.src = segment.url;
       if (report) this.trackSeek(element, "loadeddata");
@@ -214,16 +219,52 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
     }
   }
 
+  /** Seek `element` to `sourceTime`, or once it lands if it is seeking. Returns whether it seeks now. */
+  private seekElement(element: HTMLVideoElement, sourceTime: number, report: boolean): boolean {
+    if (element.seeking) {
+      if (!this.queued.has(element)) {
+        // Also on an error, so that it never stays seeking.
+        const resume = () => {
+          element.removeEventListener("seeked", resume);
+          element.removeEventListener("error", resume);
+          this.resumeSeek(element, report);
+        };
+        element.addEventListener("seeked", resume);
+        element.addEventListener("error", resume);
+      }
+      this.queued.set(element, sourceTime);
+      return false;
+    }
+    if (Math.abs(element.currentTime - sourceTime) < 0.01) return false;
+    if (report) this.trackSeek(element);
+    element.currentTime = sourceTime;
+    return true;
+  }
+
+  /** Go on to where `element` was asked to go while it was seeking. */
+  private resumeSeek(element: HTMLVideoElement, report: boolean) {
+    const sourceTime = this.queued.get(element);
+    if (sourceTime === undefined) return;
+    // Still queued while it seeks on, so the player reads as seeking throughout.
+    const seeking = this.seekElement(element, sourceTime, report);
+    this.queued.delete(element);
+    if (!seeking && report && this.pendingSeeks === 0) {
+      this.dispatchEvent(new Event("seeked"));
+      this.emitTime(true);
+    }
+  }
+
   /** Count a seek on `element` as pending until it lands. */
   private trackSeek(element: HTMLVideoElement, done = "seeked") {
     this.pendingSeeks += 1;
-    if (this.pendingSeeks === 1) this.dispatchEvent(new Event("seeking"));
+    // One seek going on to the next is not a new one.
+    if (this.pendingSeeks === 1 && !this.queued.has(element)) this.dispatchEvent(new Event("seeking"));
     const finish = () => {
       clearTimeout(timer);
       element.removeEventListener(done, finish);
       element.removeEventListener("error", finish);
       this.pendingSeeks = Math.max(0, this.pendingSeeks - 1);
-      if (this.pendingSeeks === 0) {
+      if (this.pendingSeeks === 0 && !this.queued.has(element)) {
         this.dispatchEvent(new Event("seeked"));
         this.emitTime(true);
       }

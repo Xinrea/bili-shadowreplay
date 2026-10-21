@@ -75,6 +75,9 @@ sherpa-onnx = { version = "1.13.4", default-features = false, features = ["share
 [target.'cfg(not(windows))'.dependencies]
 sherpa-onnx = "1.13.4"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem
 # DO NOT REMOVE!!

@@ -1183,8 +1183,9 @@ async fn queue_export(
             vec![(beside_target, size)]
         }
         None => {
-            // A segment cache holds segments of an export before; at most
-            // the rest is rendered.
+            // A segment cache holds segments of an export before: those this
+            // one shows are not written again, and the others are removed
+            // before it writes, so at most the rest of the budget is needed.
             let cached = match &segment_cache {
                 Some(directory) => directory_size(directory).await,
                 None => 0,

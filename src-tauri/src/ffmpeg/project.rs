@@ -1184,6 +1184,11 @@ async fn render_with_encoder<R: ProgressReporterTrait>(
         stats.segments,
         stats.reused,
     );
+    if job.segment_cache.is_some() {
+        // Segments of other renders go before this one writes its own, so
+        // that the cache never needs room for both.
+        remove_other_segments(&directory, &keys).await;
+    }
     stream::iter(pending.into_iter().map(Ok::<_, String>))
         .try_for_each_concurrent(PARALLEL_SEGMENTS, |(index, segment, key)| {
             let (render, progress) = (
@@ -1233,6 +1238,21 @@ async fn render_with_encoder<R: ProgressReporterTrait>(
         }
     }
     Ok(stats)
+}
+
+/// Remove the segments in `directory` other than those of `keys`.
+async fn remove_other_segments(directory: &Path, keys: &[String]) {
+    let used: std::collections::HashSet<&str> = keys.iter().map(String::as_str).collect();
+    let Ok(mut entries) = tokio::fs::read_dir(directory).await else {
+        return;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name();
+        let key = name.to_str().and_then(|name| name.split('.').next());
+        if is_segment_file(&name) && !key.is_some_and(|key| used.contains(key)) {
+            let _ = tokio::fs::remove_file(entry.path()).await;
+        }
+    }
 }
 
 /// Set the time `path` last changed to now.
@@ -1875,6 +1895,39 @@ mod tests {
         // of these moves, as they fall on other frames once rounded.
         let loose = render(0, false);
         assert!((1..=12).any(|frames| render(frames, false)[0] != loose[0]));
+    }
+
+    #[tokio::test]
+    async fn only_the_segments_of_a_render_stay_before_it_writes_its_own() {
+        let directory = tempfile::tempdir().unwrap();
+        let (kept, other) = ("a".repeat(32), "b".repeat(32));
+        for name in [
+            format!("{kept}.mp4"),
+            format!("{kept}.wav"),
+            format!("{other}.mp4"),
+            format!("{other}.wav"),
+            format!("image-{}.png", "c".repeat(32)),
+            "segment0.txt".to_string(),
+        ] {
+            std::fs::write(directory.path().join(name), b"x").unwrap();
+        }
+        remove_other_segments(directory.path(), std::slice::from_ref(&kept)).await;
+        let mut left: Vec<_> = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        // Danmaku images and the render's own files are left to the cleanup
+        // after it.
+        assert_eq!(
+            left,
+            [
+                format!("{kept}.mp4"),
+                format!("{kept}.wav"),
+                format!("image-{}.png", "c".repeat(32)),
+                "segment0.txt".to_string(),
+            ]
+        );
     }
 
     #[tokio::test]

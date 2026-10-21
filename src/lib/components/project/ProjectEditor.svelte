@@ -58,6 +58,7 @@
     duplicateOverlay,
     editOverlay,
     findOverlay,
+    frameRateQuery,
     insertClips,
     mergeRemoteTimeline,
     parseSrt,
@@ -224,8 +225,8 @@
 
   // What the frame rate depends on: the main track's materials and burning danmaku.
   let frameRateSource = $derived.by(() => {
-    const ids = [...new Set(timeline.clips.map((clip) => clip.material_id))].sort((a, b) => a - b);
-    return { ids, danmu: timeline.danmu, key: `${ids.join(",")}|${timeline.danmu}` };
+    const query = frameRateQuery(timeline);
+    return { query, key: `${query.materialIds.join(",")}|${query.danmu}` };
   });
   let frameRateKey = "";
 
@@ -238,11 +239,11 @@
    * Learn the project's frame rate, and shorten its clips to whole frames at
    * it: clips the backend made, or of a rate since changed.
    */
-  async function loadFrameRate(source: { ids: number[]; danmu: boolean; key: string }) {
-    if (source.ids.length === 0 || source.key === frameRateKey) return;
+  async function loadFrameRate(source: { query: { materialIds: number[]; danmu: boolean }; key: string }) {
+    if (source.query.materialIds.length === 0 || source.key === frameRateKey) return;
     frameRateKey = source.key;
     try {
-      const rate = await invoke<number>("get_project_frame_rate", { materialIds: source.ids, danmu: source.danmu });
+      const rate = await invoke<number>("get_project_frame_rate", source.query);
       if (frameRateKey !== source.key) return;
       frameRate = rate;
       const snapped = snapClips(timeline, rate);
@@ -295,8 +296,9 @@
     syncedTimeline = view.timeline;
     const merged = mergeRemoteTimeline(timeline, from, parseTimeline(view.timeline));
     // Clips that left can leave overlays on a track running into each other;
-    // lifting them apart is saved like any edit.
-    const settled = settleOverlays(merged);
+    // lifting them apart is saved like any edit, as is putting clips the
+    // backend made on frames.
+    const settled = snapClips(settleOverlays(merged), frameRate);
     if (settled !== timeline) timeline = settled;
     return settled !== merged;
   }
@@ -477,8 +479,9 @@
   function commit(next: ProjectTimeline, before: ProjectTimeline = timeline) {
     // A run of overlay changes still open is a step of its own before this.
     if (overlayEditBefore) settleOverlayEdit();
-    // Moving or trimming clips can bring overlays on a track together.
-    next = settleOverlays(next);
+    // Moving or trimming clips can bring overlays on a track together. Clips
+    // edited before the frame rate was known go on its frames.
+    next = snapClips(settleOverlays(next), frameRate);
     if (next === before) {
       timeline = before;
       return;
@@ -497,8 +500,9 @@
     if (!previous) return;
     redoStack = [...redoStack, timeline];
     undoStack = undoStack.slice(0, -1);
-    // Danmaku is a setting, not an edit, so history leaves it as it is.
-    timeline = { ...previous, danmu: timeline.danmu };
+    // Danmaku is a setting, not an edit, so history leaves it as it is. A
+    // step from before the clips were put on frames goes on them again.
+    timeline = snapClips({ ...previous, danmu: timeline.danmu }, frameRate);
     scheduleSave();
   }
 
@@ -509,7 +513,7 @@
     if (!next) return;
     undoStack = [...undoStack, timeline];
     redoStack = redoStack.slice(0, -1);
-    timeline = { ...next, danmu: timeline.danmu };
+    timeline = snapClips({ ...next, danmu: timeline.danmu }, frameRate);
     scheduleSave();
   }
 

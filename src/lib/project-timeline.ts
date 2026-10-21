@@ -150,8 +150,12 @@ export function midFrame(time: number, fps: number): number {
   return Math.max(0, (Math.ceil(time * fps - EPSILON) - 0.5) / fps);
 }
 
-/** Cues in project time for `buildSubtitleAss`, put between the frames at `fps`. */
-export function projectCues(timeline: ProjectTimeline, fps = 0) {
+/**
+ * Cues in project time for `buildSubtitleAss`, put between the frames at
+ * `fps`, the project's frame rate: every document burned must use it, or its
+ * subtitles fall on other frames than the editor's.
+ */
+export function projectCues(timeline: ProjectTimeline, fps: number) {
   return visibleSubtitles(timeline).map(({ start, end, subtitle }, index) => ({
     startTime: midFrame(start, fps),
     endTime: midFrame(end, fps),
@@ -166,6 +170,12 @@ export function projectCues(timeline: ProjectTimeline, fps = 0) {
  * 359.9996 frames at 29.97.
  */
 const FRAME_TOLERANCE = 0.01;
+
+/** What the project's frame rate depends on, for `get_project_frame_rate`. */
+export function frameRateQuery(timeline: ProjectTimeline): { materialIds: number[]; danmu: boolean } {
+  const materialIds = [...new Set(timeline.clips.map((clip) => clip.material_id))].sort((a, b) => a - b);
+  return { materialIds, danmu: timeline.danmu };
+}
 
 /** Frames at `fps` of `duration`, short of what does not make a whole frame. */
 function wholeFrames(duration: number, fps: number): number {
@@ -290,7 +300,7 @@ export function moveClip(timeline: ProjectTimeline, clipId: string, toIndex: num
 export function splitClip(
   timeline: ProjectTimeline,
   time: number,
-  fps = 0,
+  fps: number,
 ): { timeline: ProjectTimeline; clipId: string | null } {
   const placed = placeClips(timeline).find(
     (item) => time - item.offset >= MIN_CLIP_DURATION && item.offset + item.duration - time >= MIN_CLIP_DURATION,
@@ -333,7 +343,7 @@ export function trimClip(
   edge: "start" | "end",
   sourceTime: number,
   materialDuration: number,
-  fps = 0,
+  fps: number,
 ): ProjectTimeline {
   const clip = timeline.clips.find((item) => item.id === clipId);
   if (!clip) return timeline;

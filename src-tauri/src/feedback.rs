@@ -514,13 +514,13 @@ async fn previous_log(dir: &Path) -> Option<PathBuf> {
 /// Any key ending in `secret`, `token`, `sign` or `signature` is masked, which
 /// covers CDN signatures such as `volcSecret`. Besides account secrets
 /// (including `csrf`, which repeats `bili_jct` in upload URLs) this covers
-/// upload `auth`, the stream keys `sk` and `flvsk`, the viewer id and address
+/// upload `auth`, the stream keys `sk`, `flvsk`, Twitch's `sig` and Huya's `fm`, the viewer id and address
 /// in stream URLs (`mid`, `oi`), and webhook URLs, whose path is itself the
 /// credential. Keys also match after a JSON-escaped `&` (`\u0026sk=`).
 fn redact(text: &str) -> String {
     static SECRET: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(
-            r#"(?i)\b([a-z0-9_]*(?:secret|token|signature|sign)|(?:u0026)?(?:sessdata|bili_jct|csrf|sessionid(?:_ss)?|sid_tt|sid_guard|uid_tt|ttwid|dedeuserid(?:__ckmd5)?|buvid3|access_key|api_key|apikey|password|passwd|auth|auth_key|upsig|sk|flvsk|mid|oi))\b(["']?\s*[:=]\s*)("[^"\n]*"|'[^'\n]*'|["']?(?:bearer\s+)?[^\s"'&;,})\]>\\]+)"#,
+            r#"(?i)\b([a-z0-9_]*(?:secret|token|signature|sign)|(?:u0026)?(?:sessdata|bili_jct|csrf|sessionid(?:_ss)?|sid_tt|sid_guard|uid_tt|ttwid|dedeuserid(?:__ckmd5)?|buvid3|access_key|api_key|apikey|password|passwd|auth|auth_key|upsig|sig|sk|flvsk|fm|mid|oi))\b(["']?\s*[:=]\s*)("[^"\n]*"|'[^'\n]*'|["']?(?:bearer\s+)?[^\s"'&;,})\]>\\]+)"#,
         )
         .expect("valid secret pattern")
     });
@@ -705,6 +705,10 @@ mod tests {
             (
                 r#""flv":"https://pull.douyincdn.com/s.flv?expire=1\u0026sign=a\u0026mid=7\u0026volcSecret=b""#,
                 r#""flv":"https://pull.douyincdn.com/s.flv?expire=1\u0026sign=[REDACTED]\u0026mid=[REDACTED]\u0026volcSecret=[REDACTED]""#,
+            ),
+            (
+                "https://usher.ttvnw.net/api/channel/hls/x.m3u8?sig=abc&token=%7B%22a%22%7D https://tx.flv.huya.com/src/1.flv?wsSecret=w&wsTime=1&fm=RFdxOEJjSjNoNkRK&ctype=huya_live",
+                "https://usher.ttvnw.net/api/channel/hls/x.m3u8?sig=[REDACTED]&token=[REDACTED] https://tx.flv.huya.com/src/1.flv?wsSecret=[REDACTED]&wsTime=1&fm=[REDACTED]&ctype=huya_live",
             ),
         ];
         for (line, expected) in cases {

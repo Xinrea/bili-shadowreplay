@@ -233,14 +233,14 @@
         })}
       {:else}
         <!-- Not guessed: a height typed against a wrong ratio would set a wrong width. -->
-        <label class="number-field disabled" title="正在读取素材的宽高比">
+        <label class="number-field disabled" title="素材的宽高比还未读到">
           <span class="number-label">高</span>
           <input type="text" value="—" disabled />
           <span class="number-unit">px</span>
         </label>
       {/if}
     </div>
-    <p class="hint">{aspect ? "高度随素材的宽高比变化。" : "正在读取素材的宽高比…"}</p>
+    <p class="hint">{aspect ? "高度随素材的宽高比变化。" : "素材的宽高比还未读到，暂不能按高度调整。"}</p>
   </section>
 
   <section class="group">

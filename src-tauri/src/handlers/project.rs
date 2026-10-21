@@ -586,19 +586,51 @@ pub async fn get_material_danmu(state: state_type!(), id: i64) -> Result<Vec<Dan
     Ok(crate::material::load_danmus(&path).await)
 }
 
-/// Refuse to start writing to `directory` with less than 1 GB free on its disk.
-async fn check_free_space(mut directory: PathBuf) -> Result<(), String> {
-    if directory.is_relative() {
-        let cwd =
-            std::env::current_dir().map_err(|e| format!("Failed to get current directory: {e}"))?;
-        directory = cwd.join(directory);
+/// Kept free on every disk written to, for other use.
+const FREE_SPACE_RESERVE: u64 = 1024 * 1024 * 1024;
+/// Bytes an export writes per second of the project: its video, at the rate
+/// the hardware encoders keep to and libx264 seldom passes at 1080p, and its
+/// sound.
+const EXPORT_BYTES_PER_SECOND: u64 = 12_000_000 / 8 + 192_000 / 8;
+/// Bytes its segments take per second besides: the same video, and WAV sound.
+const SEGMENT_BYTES_PER_SECOND: u64 = 12_000_000 / 8 + 48_000 * 2 * 2;
+
+fn gigabytes(bytes: u64) -> String {
+    format!("{:.1} GB", bytes as f64 / 1024.0 / 1024.0 / 1024.0)
+}
+
+/// Refuse to start writing `writes`, bytes to each directory, unless every
+/// disk keeps [`FREE_SPACE_RESERVE`] free after all that goes to it.
+async fn check_free_space(writes: &[(PathBuf, u64)]) -> Result<(), String> {
+    let mut disks: Vec<(String, u64, u64)> = Vec::new();
+    for (directory, bytes) in writes {
+        let mut directory = directory.clone();
+        if directory.is_relative() {
+            let cwd = std::env::current_dir()
+                .map_err(|e| format!("Failed to get current directory: {e}"))?;
+            directory = cwd.join(directory);
+        }
+        // An export creates its folder; `df` needs one that exists.
+        let directory = existing_ancestor(&directory).await.to_path_buf();
+        let Ok(info) = get_disk_info_inner(directory).await else {
+            continue;
+        };
+        match disks.iter_mut().find(|(disk, _, _)| *disk == info.disk) {
+            Some((_, _, needed)) => *needed += bytes,
+            None => disks.push((info.disk, info.free, *bytes)),
+        }
     }
-    // An export creates its folder; `df` needs one that exists.
-    let directory = existing_ancestor(&directory).await.to_path_buf();
-    if let Ok(disk_info) = get_disk_info_inner(directory).await {
-        // Preserve 1GB for other usage.
-        if disk_info.free < 1024 * 1024 * 1024 {
-            return Err("存储空间不足（少于 1GB），已取消".to_string());
+    for (disk, free, needed) in disks {
+        if free < needed + FREE_SPACE_RESERVE {
+            return Err(if needed == 0 {
+                format!("存储空间不足（{disk} 少于 1GB），已取消")
+            } else {
+                format!(
+                    "存储空间不足：需要约 {}，{disk} 剩余 {}（另需保留 1GB），已取消",
+                    gigabytes(needed),
+                    gigabytes(free),
+                )
+            });
         }
     }
     Ok(())
@@ -625,7 +657,7 @@ pub async fn generate_materials(
     params: ClipRangeParams,
     create_project: bool,
 ) -> Result<GeneratedMaterials, String> {
-    check_free_space(output_dir(&state).await).await?;
+    check_free_space(&[(output_dir(&state).await, 0)]).await?;
     let reporter = ProgressReporter::new(state.db.clone(), &state.events, &event_id).await?;
     let mut params_without_cover = params.clone();
     params_without_cover.cover = String::new();
@@ -1113,13 +1145,25 @@ async fn queue_export(
         .transpose()?;
     let cache = PathBuf::from(&state.config.read().await.cache);
     let segment_cache = project.map(|id| cache.join(segment_cache_dir(id)));
-    // Segments are rendered into the project's cache, or else beside the
-    // target.
+    // The export beside its target, and its segments in the project's cache,
+    // or else beside the target too. A plain material is copied.
     let target_path = target.path();
-    check_free_space(target_path.parent().unwrap_or(target_path).to_path_buf()).await?;
-    if let Some(segment_cache) = &segment_cache {
-        check_free_space(segment_cache.clone()).await?;
-    }
+    let beside_target = target_path.parent().unwrap_or(target_path).to_path_buf();
+    let seconds = timeline.duration().max(0.0).ceil() as u64;
+    let writes = match &plain {
+        Some(material) => {
+            let size = tokio::fs::metadata(material).await.map_or(0, |m| m.len());
+            vec![(beside_target, size)]
+        }
+        None => vec![
+            (beside_target.clone(), seconds * EXPORT_BYTES_PER_SECOND),
+            (
+                segment_cache.clone().unwrap_or(beside_target),
+                seconds * SEGMENT_BYTES_PER_SECOND,
+            ),
+        ],
+    };
+    check_free_space(&writes).await?;
 
     let job = ExportJob {
         title,
@@ -1438,6 +1482,26 @@ pub async fn create_legacy_projects(db: Arc<Database>, output: PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn exports_need_the_space_they_write_on_each_disk() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("export");
+        let free = get_disk_info_inner(directory.path().to_path_buf())
+            .await
+            .unwrap()
+            .free;
+        let writes = |bytes: u64| {
+            vec![
+                (target.clone(), bytes / 2),
+                (target.join("segments"), bytes - bytes / 2),
+            ]
+        };
+        assert!(check_free_space(&writes(0)).await.is_ok());
+        // On one disk, the two together are what counts.
+        let error = check_free_space(&writes(free)).await.unwrap_err();
+        assert!(error.contains("需要约"), "{error}");
+    }
 
     #[tokio::test]
     async fn free_space_is_checked_on_the_nearest_folder_that_exists() {

@@ -95,7 +95,7 @@ pub fn show_in_folder(path: String) {
 
 #[derive(serde::Serialize)]
 pub struct DiskInfo {
-    disk: String,
+    pub(crate) disk: String,
     total: u64,
     pub free: u64,
 }
@@ -162,31 +162,79 @@ pub async fn get_disk_info_inner(target: PathBuf) -> Result<DiskInfo, ()> {
         Ok(DiskInfo { disk, total, free })
     }
 
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    // Off the async runtime: these are blocking calls.
+    #[cfg(target_os = "macos")]
     {
-        // check system disk info
-        let disks = sysinfo::Disks::new_with_refreshed_list();
-        // get target disk info
-        let mut disk_info = DiskInfo {
-            disk: String::new(),
-            total: 0,
-            free: 0,
-        };
-
-        // Find the disk with the longest matching mount point
-        let mut longest_match = 0;
-        for disk in disks.list() {
-            let mount_point = disk.mount_point().to_string_lossy();
-            if target.starts_with(&*mount_point) && mount_point.split('/').count() > longest_match {
-                disk_info.disk = mount_point.to_string();
-                disk_info.total = disk.total_space();
-                disk_info.free = disk.available_space();
-                longest_match = mount_point.split('/').count();
-            }
-        }
-
-        Ok(disk_info)
+        tokio::task::spawn_blocking(move || file_system_info(&target))
+            .await
+            .map_err(|e| log::error!("Disk info task failed: {e}"))?
     }
+
+    #[cfg(target_os = "windows")]
+    {
+        tokio::task::spawn_blocking(move || disk_info_of(&target))
+            .await
+            .map_err(|e| log::error!("Disk info task failed: {e}"))
+    }
+}
+
+/// The file system holding `target`, or the nearest folder above it that
+/// exists. Only it: listing every volume waits on each, as on a network share
+/// that does not answer.
+#[cfg(target_os = "macos")]
+fn file_system_info(target: &std::path::Path) -> Result<DiskInfo, ()> {
+    use std::ffi::{CStr, CString};
+    use std::os::unix::ffi::OsStrExt;
+
+    let target = target
+        .ancestors()
+        .find(|path| path.exists())
+        .unwrap_or(target);
+    let path = CString::new(target.as_os_str().as_bytes())
+        .map_err(|e| log::error!("Invalid path for disk info: {e}"))?;
+    let mut stats = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: `path` is a valid C string, and `stats` is written in full when
+    // the call succeeds.
+    if unsafe { libc::statfs(path.as_ptr(), stats.as_mut_ptr()) } != 0 {
+        log::error!(
+            "Failed to read disk info of {}: {}",
+            target.display(),
+            std::io::Error::last_os_error()
+        );
+        return Err(());
+    }
+    // SAFETY: the call succeeded.
+    let stats = unsafe { stats.assume_init() };
+    let block = u64::from(stats.f_bsize);
+    // SAFETY: the kernel writes the mount point as a NUL-terminated string.
+    let mount_point = unsafe { CStr::from_ptr(stats.f_mntonname.as_ptr()) };
+    Ok(DiskInfo {
+        disk: mount_point.to_string_lossy().into_owned(),
+        total: stats.f_blocks * block,
+        free: stats.f_bavail * block,
+    })
+}
+
+/// The disk with the longest mount point holding `target`.
+#[cfg(target_os = "windows")]
+fn disk_info_of(target: &std::path::Path) -> DiskInfo {
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let mut disk_info = DiskInfo {
+        disk: String::new(),
+        total: 0,
+        free: 0,
+    };
+    let mut longest_match = 0;
+    for disk in disks.list() {
+        let mount_point = disk.mount_point().to_string_lossy();
+        if target.starts_with(&*mount_point) && mount_point.split('/').count() > longest_match {
+            disk_info.disk = mount_point.to_string();
+            disk_info.total = disk.total_space();
+            disk_info.free = disk.available_space();
+            longest_match = mount_point.split('/').count();
+        }
+    }
+    disk_info
 }
 
 #[cfg(feature = "gui")]
@@ -582,5 +630,37 @@ mod tests {
         let short_name = "test.mp4";
         let result = sanitize_filename_advanced(short_name, Some(50));
         assert_eq!(result, "test.mp4");
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod disk_info_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn disk_info_reads_the_file_system_of_a_folder_to_be() {
+        let directory = tempfile::tempdir().unwrap();
+        let info = get_disk_info_inner(directory.path().join("to/be"))
+            .await
+            .unwrap();
+        assert!(info.total > 0 && info.free > 0 && info.free <= info.total);
+        assert!(!info.disk.is_empty());
+        // About the free space a listing of every volume reports for the one
+        // holding the folder, which also counts what macOS can purge. Not
+        // that of the system volume at `/`, which a match by path prefix
+        // took for folders such as `/tmp` and `/var`, nearly full by design.
+        let disks = sysinfo::Disks::new_with_refreshed_list();
+        let listed = disks
+            .list()
+            .iter()
+            .find(|disk| disk.mount_point().to_string_lossy() == info.disk)
+            .map(|disk| disk.available_space())
+            .unwrap();
+        assert!(
+            listed.abs_diff(info.free) < listed / 10,
+            "{listed} {}",
+            info.free
+        );
+        assert_ne!(info.disk, "/");
     }
 }

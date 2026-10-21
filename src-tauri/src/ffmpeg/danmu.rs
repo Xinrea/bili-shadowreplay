@@ -1,5 +1,7 @@
 //! Burn text and image danmaku using one shared layout. Images are downloaded
 //! once per job and decoded before layout so failures can fall back to text.
+//! Each is kept under a name of its URL, so a directory kept between jobs, as a
+//! project's segment cache is, has those of the last job already.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -13,6 +15,7 @@ use danmu_stream::EmojiContent;
 use ffmpeg_utils::ffmpeg_command;
 use futures::{stream, StreamExt};
 use recorder::danmu::DanmuEntry;
+use sha2::{Digest, Sha256};
 use url::Url;
 
 use crate::{
@@ -152,12 +155,28 @@ fn image_extension(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
+/// The file the image from `url` is decoded into in a job's directory.
+pub(super) fn image_file_name(url: &Url) -> String {
+    let digest: String = Sha256::digest(url.as_str().as_bytes())
+        .iter()
+        .take(16)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("image-{digest}.png")
+}
+
+/// Download and decode the image from `url` into `directory`, unless it is
+/// there already.
 async fn download_image(
     client: &reqwest::Client,
     url: &Url,
     directory: &Path,
     index: usize,
 ) -> Result<PathBuf, String> {
+    let output = directory.join(image_file_name(url));
+    if tokio::fs::try_exists(&output).await.unwrap_or(false) {
+        return Ok(output);
+    }
     let mut response = client
         .get(url.clone())
         .send()
@@ -184,8 +203,17 @@ async fn download_image(
     tokio::fs::write(&source, bytes)
         .await
         .map_err(|error| error.to_string())?;
-    let output = directory.join(format!("emoji-{index}.png"));
-    decode_image(&source, &output).await?;
+    // Under its own name once whole, so that a stopped job leaves none half.
+    let decoded = directory.join(format!("decoded-{index}.png"));
+    let result = decode_image(&source, &decoded).await;
+    let _ = tokio::fs::remove_file(&source).await;
+    if let Err(error) = result {
+        let _ = tokio::fs::remove_file(&decoded).await;
+        return Err(error);
+    }
+    tokio::fs::rename(&decoded, &output)
+        .await
+        .map_err(|error| error.to_string())?;
     Ok(output)
 }
 
@@ -751,6 +779,66 @@ mod tests {
         assert!(text.filter.contains("format=yuv420p[outv]"));
         let hardware = overlay_graph(&[image_event(0.0)], 0.8, 60.0, true);
         assert!(hardware.filter.ends_with("format=nv12,hwupload[outv]\n"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires FFmpeg"]
+    async fn an_image_decoded_before_is_not_downloaded_again() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let directory = tempfile::tempdir().unwrap();
+        let png = directory.path().join("source.png");
+        let made = ffmpeg_command()
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=red:s=8x8",
+                "-frames:v",
+                "1",
+            ])
+            .arg(&png)
+            .output()
+            .await
+            .unwrap();
+        assert!(made.status.success());
+        let body = std::fs::read(&png).unwrap();
+        std::fs::remove_file(&png).unwrap();
+        // Answers one request only.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = Url::parse(&format!(
+            "http://{}/emoji.png",
+            listener.local_addr().unwrap()
+        ))
+        .unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            assert!(socket.read(&mut request).await.unwrap() > 0);
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+            socket.write_all(head.as_bytes()).await.unwrap();
+            socket.write_all(&body).await.unwrap();
+        });
+        let client = reqwest::Client::new();
+        let first = download_image(&client, &url, directory.path(), 0)
+            .await
+            .unwrap();
+        server.await.unwrap();
+        assert_eq!(
+            first.file_name().unwrap().to_str().unwrap(),
+            image_file_name(&url)
+        );
+        // Nothing answers now: it is found decoded.
+        let again = download_image(&client, &url, directory.path(), 1)
+            .await
+            .unwrap();
+        assert_eq!(again, first);
+        let names: Vec<_> = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names, [image_file_name(&url)]);
     }
 
     #[tokio::test]

@@ -348,12 +348,13 @@ export function trimClip(
   const clip = timeline.clips.find((item) => item.id === clipId);
   if (!clip) return timeline;
   const shortest = fps > 0 ? Math.ceil(MIN_CLIP_DURATION * fps - EPSILON) / fps : MIN_CLIP_DURATION;
-  // The length in whole frames nearest to `length`, but no more than `longest`,
-  // and at least one.
-  const frames = (length: number, longest: number) =>
-    fps > 0
-      ? Math.max(1, Math.min(Math.round(length * fps), wholeFrames(longest, fps))) / fps
-      : Math.min(length, longest);
+  // The length in whole frames nearest to `length`, at least one, but no more
+  // than `longest`: with less than a frame of material left, all of it.
+  const frames = (length: number, longest: number) => {
+    const most = fps > 0 ? wholeFrames(longest, fps) : 0;
+    if (most < 1) return Math.min(length, longest);
+    return Math.max(1, Math.min(Math.round(length * fps), most)) / fps;
+  };
   if (edge === "start") {
     const length = frames(Math.max(clip.end - sourceTime, shortest), clip.end);
     return replaceClip(timeline, { ...clip, start: Math.max(0, clip.end - length) });

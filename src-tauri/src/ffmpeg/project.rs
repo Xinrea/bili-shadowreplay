@@ -626,6 +626,10 @@ async fn file_identity(path: &Path) -> String {
     }
 }
 
+fn is_digest(text: &str) -> bool {
+    text.len() == 32 && text.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 /// Whether `name` is a segment's video or sound file, named by its key.
 fn is_segment_file(name: &std::ffi::OsStr) -> bool {
     name.to_str()
@@ -633,11 +637,18 @@ fn is_segment_file(name: &std::ffi::OsStr) -> bool {
             name.strip_suffix(".mp4")
                 .or_else(|| name.strip_suffix(".wav"))
         })
-        .is_some_and(|key| key.len() == 32 && key.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .is_some_and(is_digest)
 }
 
-/// Removes what a render writes in its directory besides segments when it
-/// ends, done or not: graphs, subtitles, pictures and lists.
+/// Whether `name` is a decoded danmaku image, named by its URL.
+fn is_image_file(name: &std::ffi::OsStr) -> bool {
+    name.to_str()
+        .and_then(|name| name.strip_prefix("image-")?.strip_suffix(".png"))
+        .is_some_and(is_digest)
+}
+
+/// Removes what a render writes in its directory besides segments and danmaku
+/// images when it ends, done or not: graphs, subtitles, pictures and lists.
 struct Scratch<'a>(&'a Path);
 
 impl Drop for Scratch<'_> {
@@ -646,7 +657,8 @@ impl Drop for Scratch<'_> {
             return;
         };
         for entry in entries.flatten() {
-            if !is_segment_file(&entry.file_name()) {
+            let name = entry.file_name();
+            if !is_segment_file(&name) && !is_image_file(&name) {
                 let _ = std::fs::remove_file(entry.path());
             }
         }
@@ -1190,16 +1202,27 @@ async fn render_with_encoder<R: ProgressReporterTrait>(
     join_segments(reporter, &directory, &segments, &keys, fps, &output).await?;
     output_guard.keep();
     if job.segment_cache.is_some() {
-        // The cache keeps what this render is made of.
+        // The cache keeps what this render is made of: its segments, and the
+        // danmaku images it would need to render them again.
         let used: std::collections::HashSet<&str> = keys.iter().map(String::as_str).collect();
+        let images: std::collections::HashSet<&std::ffi::OsStr> = render
+            .danmaku
+            .iter()
+            .flat_map(|danmaku| &danmaku.images)
+            .filter_map(|image| image.image.path.file_name())
+            .collect();
         if let Ok(mut entries) = tokio::fs::read_dir(&directory).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let name = entry.file_name();
                 let key = name.to_str().and_then(|name| name.split('.').next());
-                if !is_segment_file(&name) {
+                let kept = if is_segment_file(&name) {
+                    key.is_some_and(|key| used.contains(key))
+                } else if is_image_file(&name) {
+                    images.contains(name.as_os_str())
+                } else {
                     continue;
-                }
-                if key.is_some_and(|key| used.contains(key)) {
+                };
+                if kept {
                     // Used now, though maybe rendered long ago: the cache
                     // limit goes by when segments were last used.
                     mark_used(&entry.path());

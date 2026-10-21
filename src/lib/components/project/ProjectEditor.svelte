@@ -236,8 +236,8 @@
   });
 
   /**
-   * Learn the project's frame rate, and shorten its clips to whole frames at
-   * it: clips the backend made, or of a rate since changed.
+   * Learn the project's frame rate. Clips go on its frames with the next edit,
+   * undo or merge, not here: an edit being dragged must not be saved.
    */
   async function loadFrameRate(source: { query: { materialIds: number[]; danmu: boolean }; key: string }) {
     if (source.query.materialIds.length === 0 || source.key === frameRateKey) return;
@@ -246,11 +246,6 @@
       const rate = await invoke<number>("get_project_frame_rate", source.query);
       if (frameRateKey !== source.key) return;
       frameRate = rate;
-      const snapped = snapClips(timeline, rate);
-      if (snapped !== timeline) {
-        timeline = snapped;
-        scheduleSave();
-      }
     } catch (error) {
       if (frameRateKey === source.key) frameRateKey = "";
       console.warn("Failed to load the project's frame rate:", error);
@@ -491,6 +486,8 @@
     timeline = next;
     scheduleSave();
     void loadMaterialData();
+    // Asked again after it failed to load.
+    if (!frameRate) void loadFrameRate(frameRateSource);
   }
 
   function undo() {
@@ -1138,8 +1135,14 @@
     // learned them.
     let fps = frameRate;
     if (!fps && exportedSubtitles) {
+      const source = frameRateSource;
       try {
         fps = await invoke<number>("get_project_frame_rate", frameRateQuery(exported));
+        // Kept for the edits after, as when the editor learns it itself.
+        if (!frameRate && frameRateSource.key === source.key) {
+          frameRate = fps;
+          frameRateKey = source.key;
+        }
       } catch (error) {
         console.warn("Failed to load the project's frame rate:", error);
       }

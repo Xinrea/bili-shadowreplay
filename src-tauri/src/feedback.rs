@@ -518,7 +518,7 @@ async fn previous_log(dir: &Path) -> Option<PathBuf> {
 fn redact(text: &str) -> String {
     static SECRET: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(
-            r#"(?i)\b(sessdata|bili_jct|csrf|csrf_token|dedeuserid(?:__ckmd5)?|buvid3|access_token|refresh_token|access_key|upload_token|api_key|apikey|password|passwd|secret|token|auth|auth_key|sign|signature|upsig|sk|mid|oi|wssecret|txsecret)\b(["']?\s*[:=]\s*)("[^"\n]*"|'[^'\n]*'|["']?(?:bearer\s+)?[^\s"'&;,})\]>]+)"#,
+            r#"(?i)\b(sessdata|bili_jct|csrf|csrf_token|sessionid(?:_ss)?|sid_tt|sid_guard|uid_tt|passport_csrf_token|ttwid|mstoken|dedeuserid(?:__ckmd5)?|buvid3|access_token|refresh_token|access_key|upload_token|api_key|apikey|password|passwd|secret|token|auth|auth_key|sign|signature|upsig|sk|mid|oi|wssecret|txsecret)\b(["']?\s*[:=]\s*)("[^"\n]*"|'[^'\n]*'|["']?(?:bearer\s+)?[^\s"'&;,})\]>]+)"#,
         )
         .expect("valid secret pattern")
     });
@@ -687,6 +687,10 @@ mod tests {
             (
                 "12:00:00 [ERROR] Send failed error sending request for url (https://member.bilibili.com/x/vu/web/add/v3?ts=1761091200&csrf=0123abcd)",
                 "12:00:00 [ERROR] Send failed error sending request for url (https://member.bilibili.com/x/vu/web/add/v3?ts=1761091200&csrf=[REDACTED])",
+            ),
+            (
+                "douyin session sessionid=s1; sessionid_ss=s2; sid_tt=s3; passport_csrf_token=p; ttwid=t; msToken=m",
+                "douyin session sessionid=[REDACTED]; sessionid_ss=[REDACTED]; sid_tt=[REDACTED]; passport_csrf_token=[REDACTED]; ttwid=[REDACTED]; msToken=[REDACTED]",
             ),
         ];
         for (line, expected) in cases {

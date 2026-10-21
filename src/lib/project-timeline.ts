@@ -206,8 +206,8 @@ function replaceClip(timeline: ProjectTimeline, clip: TimelineClip): ProjectTime
 export function insertClips(
   timeline: ProjectTimeline,
   clips: Omit<TimelineClip, "id">[],
-  index = timeline.clips.length,
-  fps = 0,
+  index: number,
+  fps: number,
 ): ProjectTimeline {
   const added = clips
     .map((clip) => (fps > 0 ? { ...clip, end: clip.start + wholeFrames(clip.end - clip.start, fps) / fps } : clip))
@@ -348,9 +348,12 @@ export function trimClip(
   const clip = timeline.clips.find((item) => item.id === clipId);
   if (!clip) return timeline;
   const shortest = fps > 0 ? Math.ceil(MIN_CLIP_DURATION * fps - EPSILON) / fps : MIN_CLIP_DURATION;
-  // The length in whole frames nearest to `length`, but no more than `longest`.
+  // The length in whole frames nearest to `length`, but no more than `longest`,
+  // and at least one.
   const frames = (length: number, longest: number) =>
-    fps > 0 ? Math.min(Math.round(length * fps), wholeFrames(longest, fps)) / fps : Math.min(length, longest);
+    fps > 0
+      ? Math.max(1, Math.min(Math.round(length * fps), wholeFrames(longest, fps))) / fps
+      : Math.min(length, longest);
   if (edge === "start") {
     const length = frames(Math.max(clip.end - sourceTime, shortest), clip.end);
     return replaceClip(timeline, { ...clip, start: Math.max(0, clip.end - length) });

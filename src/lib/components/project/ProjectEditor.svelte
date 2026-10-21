@@ -1134,7 +1134,17 @@
       return;
     }
     const exportedSubtitles = visibleSubtitles(exported).length > 0;
-    const exportedAss = buildSubtitleAss(projectCues(exported, frameRate), subtitleStyle);
+    // On the frames of the render, also when exporting before the editor
+    // learned them.
+    let fps = frameRate;
+    if (!fps && exportedSubtitles) {
+      try {
+        fps = await invoke<number>("get_project_frame_rate", frameRateQuery(exported));
+      } catch (error) {
+        console.warn("Failed to load the project's frame rate:", error);
+      }
+    }
+    const exportedAss = buildSubtitleAss(projectCues(exported, fps), subtitleStyle);
     const eventId = generateEventId();
     exporting = eventId;
     let unlisten: (() => void) | null = null;

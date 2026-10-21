@@ -332,6 +332,9 @@ test("with a frame rate, trims and splits leave clips of whole frames within the
     const longest = api.trimClip(t, "a", "end", 99, 30.01, fps).clips[0];
     assert.ok(longest.end <= 30.01 && isWhole(longest.end - longest.start, fps));
     assert.ok(api.trimClip(t, "a", "start", -5, 30, fps).clips[0].start >= 0);
+    // Never less than a frame, however little material is left.
+    const sliver = api.trimClip(timeline([clip("s", 1, 29.99, 30)]), "s", "end", 31, 30, fps).clips[0];
+    assert.ok(Math.round((sliver.end - sliver.start) * fps) >= 1);
     const shortest = api.trimClip(t, "a", "end", 0, 30, fps).clips[0];
     assert.ok(shortest.end - shortest.start >= api.MIN_CLIP_DURATION - 1e-9 && isWhole(shortest.end - shortest.start, fps));
     const { timeline: split } = api.splitClip(t, 4.321, fps);

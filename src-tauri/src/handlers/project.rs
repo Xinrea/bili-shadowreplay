@@ -595,8 +595,35 @@ const EXPORT_BYTES_PER_SECOND: u64 = 12_000_000 / 8 + 192_000 / 8;
 /// Bytes its segments take per second besides: the same video, and WAV sound.
 const SEGMENT_BYTES_PER_SECOND: u64 = 12_000_000 / 8 + 48_000 * 2 * 2;
 
-fn gigabytes(bytes: u64) -> String {
-    format!("{:.1} GB", bytes as f64 / 1024.0 / 1024.0 / 1024.0)
+/// `bytes` in GB, or in MB below one.
+fn readable_size(bytes: u64) -> String {
+    let megabytes = bytes as f64 / 1024.0 / 1024.0;
+    if megabytes < 1024.0 {
+        format!("{} MB", megabytes.ceil())
+    } else {
+        format!("{:.1} GB", megabytes / 1024.0)
+    }
+}
+
+/// What the files directly in `directory` take, 0 when it does not exist.
+async fn directory_size(directory: &Path) -> u64 {
+    let mut size = 0;
+    if let Ok(mut entries) = tokio::fs::read_dir(directory).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            if let Ok(metadata) = entry.metadata().await {
+                if metadata.is_file() {
+                    size += metadata.len();
+                }
+            }
+        }
+    }
+    size
+}
+
+/// What the segments of `seconds` of a project add to a segment cache holding
+/// `cached` bytes: those found there are used, not written again.
+fn segment_writes(seconds: u64, cached: u64) -> u64 {
+    (seconds * SEGMENT_BYTES_PER_SECOND).saturating_sub(cached)
 }
 
 /// Refuse to start writing `writes`, bytes to each directory, unless every
@@ -627,8 +654,8 @@ async fn check_free_space(writes: &[(PathBuf, u64)]) -> Result<(), String> {
             } else {
                 format!(
                     "存储空间不足：需要约 {}，{disk} 剩余 {}（另需保留 1GB），已取消",
-                    gigabytes(needed),
-                    gigabytes(free),
+                    readable_size(needed),
+                    readable_size(free),
                 )
             });
         }
@@ -1155,13 +1182,21 @@ async fn queue_export(
             let size = tokio::fs::metadata(material).await.map_or(0, |m| m.len());
             vec![(beside_target, size)]
         }
-        None => vec![
-            (beside_target.clone(), seconds * EXPORT_BYTES_PER_SECOND),
-            (
-                segment_cache.clone().unwrap_or(beside_target),
-                seconds * SEGMENT_BYTES_PER_SECOND,
-            ),
-        ],
+        None => {
+            // A segment cache holds segments of an export before; at most
+            // the rest is rendered.
+            let cached = match &segment_cache {
+                Some(directory) => directory_size(directory).await,
+                None => 0,
+            };
+            vec![
+                (beside_target.clone(), seconds * EXPORT_BYTES_PER_SECOND),
+                (
+                    segment_cache.clone().unwrap_or(beside_target),
+                    segment_writes(seconds, cached),
+                ),
+            ]
+        }
     };
     check_free_space(&writes).await?;
 
@@ -1482,6 +1517,26 @@ pub async fn create_legacy_projects(db: Arc<Database>, output: PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn segments_in_the_cache_are_not_counted_as_written_again() {
+        let directory = tempfile::tempdir().unwrap();
+        assert_eq!(directory_size(&directory.path().join("none")).await, 0);
+        std::fs::write(directory.path().join("a.mp4"), vec![0; 3000]).unwrap();
+        std::fs::write(directory.path().join("a.wav"), vec![0; 1000]).unwrap();
+        std::fs::create_dir(directory.path().join("folder")).unwrap();
+        let cached = directory_size(directory.path()).await;
+        assert_eq!(cached, 4000);
+        // Of a minute, what is cached is not written again, and nothing for
+        // a cache holding as much.
+        assert_eq!(
+            segment_writes(60, cached),
+            60 * SEGMENT_BYTES_PER_SECOND - 4000
+        );
+        assert_eq!(segment_writes(60, 60 * SEGMENT_BYTES_PER_SECOND), 0);
+        assert_eq!(readable_size(20 * 1024 * 1024), "20 MB");
+        assert_eq!(readable_size(3 * 1024 * 1024 * 1024 / 2), "1.5 GB");
+    }
 
     #[tokio::test]
     async fn exports_need_the_space_they_write_on_each_disk() {

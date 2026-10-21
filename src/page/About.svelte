@@ -1,15 +1,17 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { open, TAURI_ENV } from "../lib/invoker";
-  import { BookOpen, MessageCircle, Download, LoaderCircle, Heart, RefreshCw } from "lucide-svelte";
+  import { BookOpen, MessageCircle, MessageSquareWarning, Download, LoaderCircle, Heart, RefreshCw } from "lucide-svelte";
   import { hasNewVersion, latestVersion, updateStatus, checkForUpdates, installUpdate, isNewerVersion } from "../lib/stores/version";
   import { registerCommands } from "../lib/stores/commands";
+  import FeedbackModal from "../lib/components/FeedbackModal.svelte";
 
   const DOCS_URL = "https://bsr.xinrea.cn/";
   const COMMUNITY_URL = "https://qm.qq.com/q/v4lrE6gyum";
 
   let version = `v${__APP_VERSION__}`;
   let showDonateModal = $state(false);
+  let showFeedbackModal = $state(false);
   let releases = $state<{ version: string; date: string; description: string; url: string }[]>([]);
   let releasesError = $state("");
   let updateBusy = $derived(["checking", "downloading", "installing", "restarting"].includes($updateStatus.phase));
@@ -65,11 +67,21 @@
       {
         id: "about:community",
         group: "action",
-        title: "反馈交流群",
+        title: "交流群",
         detail: "关于",
         icon: MessageCircle,
-        keywords: ["feedback", "community", "qq", "group"],
+        keywords: ["community", "qq", "group"],
         run: () => open(COMMUNITY_URL),
+      },
+      {
+        id: "about:feedback",
+        group: "action",
+        title: "反馈问题",
+        detail: "关于",
+        icon: MessageSquareWarning,
+        keywords: ["feedback", "bug", "report", "log"],
+        page: "关于",
+        run: () => (showFeedbackModal = true),
       },
       {
         id: "about:donate",
@@ -173,7 +185,7 @@
     </div>
 
     <!-- Quick Actions -->
-    <div class="grid grid-cols-3 gap-3">
+    <div class="grid grid-cols-4 gap-3">
       <button
         class="ui-card p-4 transition-colors hover:border-line-strong hover:bg-control-hover/50"
         onclick={() => open(DOCS_URL)}
@@ -200,7 +212,22 @@
             <MessageCircle class="h-[18px] w-[18px]" />
           </div>
           <span class="text-[13px] font-medium text-fg"
-            >反馈交流群</span
+            >交流群</span
+          >
+        </div>
+      </button>
+      <button
+        class="ui-card p-4 transition-colors hover:border-line-strong hover:bg-control-hover/50"
+        onclick={() => (showFeedbackModal = true)}
+      >
+        <div class="flex flex-col items-center space-y-2">
+          <div
+            class="flex h-9 w-9 items-center justify-center rounded-full bg-accent-soft text-accent-fg"
+          >
+            <MessageSquareWarning class="h-[18px] w-[18px]" />
+          </div>
+          <span class="text-[13px] font-medium text-fg"
+            >反馈问题</span
           >
         </div>
       </button>
@@ -295,5 +322,7 @@
     </div>
   </div>
 {/if}
+
+<FeedbackModal bind:show={showFeedbackModal} />
 
 <svelte:window onmousedown={handleModalClickOutside} />

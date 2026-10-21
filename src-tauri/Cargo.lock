@@ -766,6 +766,7 @@ dependencies = [
  "platform-dirs",
  "rand 0.10.3",
  "recorder",
+ "regex",
  "reqwest 0.12.24",
  "rig-core",
  "ring",

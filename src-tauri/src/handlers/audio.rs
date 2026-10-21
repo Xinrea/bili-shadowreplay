@@ -29,10 +29,13 @@ async fn output_dir(state: &State) -> PathBuf {
 /// as it is where every web view plays and seeks it exactly, or else as AAC.
 /// MP3 is encoded again too, as players only guess where to seek in one with a
 /// variable bit rate, and the preview would not play what the export does.
+/// WAV of other samples than 16-bit, which web views may not play, becomes
+/// 16-bit, as the export mixes it.
 fn kept_as(extension: &str, codec: &str) -> (&'static str, &'static [&'static str]) {
     const COPY: &[&str] = &["-c:a", "copy"];
     match (extension, codec) {
-        ("wav", codec) if codec.starts_with("pcm_") => ("wav", COPY),
+        ("wav", "pcm_s16le") => ("wav", COPY),
+        ("wav", codec) if codec.starts_with("pcm_") => ("wav", &["-c:a", "pcm_s16le"]),
         ("flac", "flac") => ("flac", COPY),
         (_, "aac") => ("m4a", COPY),
         _ => ("m4a", &["-c:a", "aac", "-b:a", "256k"]),
@@ -206,7 +209,14 @@ mod tests {
 
     #[test]
     fn files_that_play_and_seek_everywhere_are_kept_and_others_encoded() {
-        assert_eq!(kept_as("wav", "pcm_s16le").0, "wav");
+        assert_eq!(kept_as("wav", "pcm_s16le"), ("wav", &["-c:a", "copy"][..]));
+        for codec in ["pcm_f32le", "pcm_s24le", "pcm_alaw", "pcm_mulaw"] {
+            assert_eq!(
+                kept_as("wav", codec),
+                ("wav", &["-c:a", "pcm_s16le"][..]),
+                "{codec}"
+            );
+        }
         assert_eq!(kept_as("flac", "flac").0, "flac");
         assert_eq!(kept_as("aac", "aac"), ("m4a", &["-c:a", "copy"][..]));
         assert_eq!(kept_as("m4a", "aac").0, "m4a");

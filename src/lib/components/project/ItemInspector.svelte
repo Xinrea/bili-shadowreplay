@@ -4,7 +4,8 @@
   /** What the inspector shows the properties of, with where it plays in project time. */
   export type InspectedItem =
     | { kind: "clip"; item: TimelineClip; start: number; end: number }
-    | { kind: "overlay"; item: VideoOverlay; start: number; end: number; aspect: number }
+    /** `aspect` is the material's width over height, null until known. */
+    | { kind: "overlay"; item: VideoOverlay; start: number; end: number; aspect: number | null }
     | { kind: "audio"; item: AudioItem; start: number; end: number };
 </script>
 
@@ -224,13 +225,22 @@
         place({ width });
         return width;
       })}
-      {@render numberField("高", Math.round(element.width / aspect), "px", (typed) => {
-        const width = Math.round(clamp(typed * aspect, MIN_WIDTH, MAX_WIDTH));
-        place({ width });
-        return Math.round(width / aspect);
-      })}
+      {#if aspect}
+        {@render numberField("高", Math.round(element.width / aspect), "px", (typed) => {
+          const width = Math.round(clamp(typed * aspect, MIN_WIDTH, MAX_WIDTH));
+          place({ width });
+          return Math.round(width / aspect);
+        })}
+      {:else}
+        <!-- Not guessed: a height typed against a wrong ratio would set a wrong width. -->
+        <label class="number-field disabled" title="正在读取素材的宽高比">
+          <span class="number-label">高</span>
+          <input type="text" value="—" disabled />
+          <span class="number-unit">px</span>
+        </label>
+      {/if}
     </div>
-    <p class="hint">高度随素材的宽高比变化。</p>
+    <p class="hint">{aspect ? "高度随素材的宽高比变化。" : "正在读取素材的宽高比…"}</p>
   </section>
 
   <section class="group">
@@ -456,6 +466,10 @@
 
   .number-field:focus-within {
     border-color: #0a84ff;
+  }
+
+  .number-field.disabled {
+    opacity: 0.5;
   }
 
   .number-field.compact {

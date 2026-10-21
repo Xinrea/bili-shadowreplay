@@ -280,7 +280,7 @@
   // sticker selected, it lists the subtitles.
   let inspected: InspectedItem | null = $derived.by(() => {
     if (selectedOverlay?.kind === "video" && selectedPlaced) {
-      const aspect = aspects.get(selectedOverlay.material_id) ?? 16 / 9;
+      const aspect = aspects.get(selectedOverlay.material_id) ?? null;
       return { kind: "overlay", item: selectedOverlay, start: selectedPlaced.start, end: selectedPlaced.end, aspect };
     }
     if (selectedAudio && selectedSound) {
@@ -928,6 +928,20 @@
       video.src = url;
     });
   }
+
+  // Materials whose ratio is being read for the inspector.
+  const probingAspects = new Set<number>();
+
+  // The inspector sizes a picture in picture by its material's ratio, which a
+  // video not shown since opening has not reported.
+  $effect(() => {
+    if (selectedOverlay?.kind !== "video") return;
+    const materialId = selectedOverlay.material_id;
+    const url = materials.get(materialId)?.url;
+    if (!url || probingAspects.has(materialId) || untrack(() => aspects.has(materialId))) return;
+    probingAspects.add(materialId);
+    void probeAspect(materialId, url).finally(() => probingAspects.delete(materialId));
+  });
 
   /** Show a material over the main track from `start`, as a picture in the corner. */
   async function addVideoOverlay(materialId: number, start?: number, target?: OverlayTarget) {

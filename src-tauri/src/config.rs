@@ -23,6 +23,9 @@ pub struct Config {
     pub whisper_model: String,
     #[serde(default = "default_whisper_prompt")]
     pub whisper_prompt: String,
+    /// Words PowerLive should favor when recognizing, shared by every room.
+    #[serde(default)]
+    pub powerlive_hotwords: Vec<String>,
     #[serde(default = "default_openai_api_endpoint")]
     pub openai_api_endpoint: String,
     #[serde(default = "default_openai_api_key")]
@@ -195,6 +198,7 @@ impl Config {
             subtitle_generator_type: default_subtitle_generator_type(),
             whisper_model: default_whisper_model(),
             whisper_prompt: default_whisper_prompt(),
+            powerlive_hotwords: Vec::new(),
             openai_api_endpoint: default_openai_api_endpoint(),
             openai_api_key: default_openai_api_key(),
             clip_name_format: default_clip_name_format(),

@@ -158,7 +158,7 @@ pub async fn generate_video_subtitle(
     openai_api_key: &str,
     openai_api_endpoint: &str,
     language_hint: &str,
-    powerlive_db: Option<&crate::database::Database>,
+    powerlive: Option<crate::subtitle_generator::powerlive::PowerLiveOptions<'_>>,
 ) -> Result<GenerateResult, String> {
     match generator_type {
         SubtitleGeneratorType::Whisper => {
@@ -363,8 +363,8 @@ pub async fn generate_video_subtitle(
             Ok(full_result)
         }
         SubtitleGeneratorType::PowerLive => {
-            let db = powerlive_db.ok_or("请先在设置中登录 PowerLive 账号")?;
-            let generator = crate::subtitle_generator::powerlive::new(db).await?;
+            let options = powerlive.ok_or("请先在设置中登录 PowerLive 账号")?;
+            let generator = crate::subtitle_generator::powerlive::new(options).await?;
             let extension = file
                 .extension()
                 .and_then(|extension| extension.to_str())

@@ -306,6 +306,19 @@ pub async fn update_whisper_prompt(state: state_type!(), whisper_prompt: String)
     Ok(())
 }
 
+/// Save the PowerLive hotwords and return them as stored.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn update_powerlive_hotwords(
+    state: state_type!(),
+    hotwords: Vec<String>,
+) -> Result<Vec<String>, String> {
+    let hotwords = crate::subtitle_generator::powerlive::normalize_hotwords(hotwords);
+    let mut config = state.config.write().await;
+    config.powerlive_hotwords = hotwords.clone();
+    config.try_save()?;
+    Ok(hotwords)
+}
+
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_subtitle_generator_type(
     state: state_type!(),

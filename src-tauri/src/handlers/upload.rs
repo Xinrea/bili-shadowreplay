@@ -460,15 +460,7 @@ pub async fn request_upload(state: state_type!(), source: String, id: i64) -> Re
     state
         .events
         .publish(AppEvent::UploadRequested { source, id });
-    #[cfg(feature = "gui")]
-    {
-        use tauri::Manager;
-        if let Some(window) = state.app_handle.get_webview_window("main") {
-            let _ = window.show();
-            let _ = window.unminimize();
-            let _ = window.set_focus();
-        }
-    }
+    crate::handlers::utils::focus_main_window(&state);
     Ok(())
 }
 

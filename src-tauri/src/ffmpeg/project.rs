@@ -38,6 +38,7 @@ use sha2::{Digest, Sha256};
 
 use crate::danmu2ass::{Danmu2AssOptions, ImageDanmu, R2L_TIME};
 use crate::progress::progress_reporter::{ProgressReporterTrait, StageProgress};
+use crate::project::MAX_VOLUME;
 
 use super::{
     danmu, hwaccel,
@@ -299,7 +300,7 @@ fn volume_filter(volume: f64) -> String {
     if volume == 1.0 {
         String::new()
     } else {
-        format!("volume={:.3},", volume.clamp(0.0, 1.0))
+        format!("volume={:.3},", volume.clamp(0.0, MAX_VOLUME))
     }
 }
 
@@ -431,7 +432,7 @@ fn overlay_filter(
                          atrim=duration={length:.6},volume={:.3},adelay={delay}|{delay},\
                          apad,atrim=end_sample={samples}[oa{index}];\n",
                         (skip * SAMPLE_RATE).round() as u64,
-                        layer.volume.clamp(0.0, 1.0),
+                        layer.volume.clamp(0.0, MAX_VOLUME),
                     ));
                     audio.push(format!("oa{index}"));
                 }
@@ -1150,7 +1151,7 @@ fn sound_filter(sounds: &[PlacedSound], total: u64) -> String {
              apad,atrim=end_sample={samples},volume={:.3}{fades}[sound{index}];\n",
             index + 2,
             (skip * SAMPLE_RATE).round() as u64,
-            sound.volume.clamp(0.0, 1.0),
+            sound.volume.clamp(0.0, MAX_VOLUME),
         ));
         let lane = match lanes.iter().position(|(_, end)| *end <= placed.first) {
             Some(lane) => lane,

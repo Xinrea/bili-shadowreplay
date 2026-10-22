@@ -27,12 +27,12 @@ use crate::{
         },
         config::{
             get_config, get_llm_config, get_mcp_server_status, get_static_port, list_llm_models,
-            update_auto_generate, update_clip_name_format, update_danmu_ass_options,
-            update_llm_config, update_mcp_server, update_notify, update_openai_api_endpoint,
-            update_openai_api_key, update_powerlive_hotwords, update_powerlive_sentence_max_length,
-            update_status_check_interval, update_subtitle_generator_type, update_subtitle_setting,
-            update_webhook_url, update_whisper_language, update_whisper_model,
-            update_whisper_prompt,
+            request_settings, update_auto_generate, update_clip_name_format,
+            update_danmu_ass_options, update_llm_config, update_mcp_server, update_notify,
+            update_openai_api_endpoint, update_openai_api_key, update_powerlive_hotwords,
+            update_powerlive_sentence_max_length, update_status_check_interval,
+            update_subtitle_generator_type, update_subtitle_setting, update_webhook_url,
+            update_whisper_language, update_whisper_model, update_whisper_prompt,
         },
         message::{delete_message, get_messages, read_message},
         project::{
@@ -235,6 +235,20 @@ async fn handler_get_config(
         .await
         .map_err(|_| ApiError::from("Failed to get config"))?;
     Ok(Json(ApiResponse::success(config)))
+}
+
+#[derive(Debug, Deserialize)]
+struct RequestSettingsRequest {
+    #[serde(default)]
+    target: Option<String>,
+}
+
+async fn handler_request_settings(
+    state: axum::extract::State<State>,
+    Json(param): Json<RequestSettingsRequest>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    request_settings(state.0, param.target).await?;
+    Ok(Json(ApiResponse::success(())))
 }
 
 async fn handler_get_mcp_server_status(
@@ -2563,6 +2577,7 @@ pub async fn start_api_server(state: State) {
     app = app
         // Config commands
         .route("/api/get_config", post(handler_get_config))
+        .route("/api/request_settings", post(handler_request_settings))
         .route(
             "/api/get_mcp_server_status",
             post(handler_get_mcp_server_status),

@@ -90,6 +90,11 @@ pub enum AppEvent {
         source: String,
         id: i64,
     },
+    /// A preview window asks the main window to show its settings,
+    /// scrolled to the option `target` when given.
+    SettingsRequested {
+        target: Option<String>,
+    },
 }
 
 pub struct ClientEvent {
@@ -131,6 +136,9 @@ impl AppEvent {
                 "upload-requested".into(),
                 json!({ "source": source, "id": id }),
             ),
+            Self::SettingsRequested { target } => {
+                ("settings-requested".into(), json!({ "target": target }))
+            }
         };
         ClientEvent { name, payload }
     }

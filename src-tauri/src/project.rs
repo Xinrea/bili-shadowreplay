@@ -27,6 +27,8 @@ pub const TIMELINE_VERSION: u32 = 1;
 const FULL_MATERIAL_TOLERANCE: f64 = 0.05;
 /// Overlay spans this short, from rounding, are empty.
 const EPSILON: f64 = 1e-6;
+/// Loudest a clip, picture in picture or sound is turned up to.
+pub const MAX_VOLUME: f64 = 1.5;
 
 fn timeline_version() -> u32 {
     TIMELINE_VERSION
@@ -757,7 +759,7 @@ impl Timeline {
 }
 
 fn is_volume(volume: f64) -> bool {
-    (0.0..=1.0).contains(&volume)
+    (0.0..=MAX_VOLUME).contains(&volume)
 }
 
 /// `ids` without repeats, in order.
@@ -1329,7 +1331,9 @@ mod tests {
         assert!(audio.validate(materials, |_| Some(3.2)).is_err());
         assert!(audio.validate(materials, |_| None).is_err());
         let mut loud = audio.clone();
-        loud.audio_tracks[0].items[0].volume = 1.5;
+        loud.audio_tracks[0].items[0].volume = MAX_VOLUME;
+        assert!(loud.validate(materials, |_| Some(4.0)).is_ok());
+        loud.audio_tracks[0].items[0].volume = MAX_VOLUME + 0.1;
         assert!(loud.validate(materials, |_| Some(4.0)).is_err());
         let mut fade = audio.clone();
         fade.audio_tracks[0].items[0].fade_in = f64::NAN;

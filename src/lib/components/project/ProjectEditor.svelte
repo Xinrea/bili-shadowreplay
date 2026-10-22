@@ -1046,13 +1046,14 @@
    */
   async function addMaterialAtPlayhead(materialId: number) {
     const at = time;
+    // Decided on the main track as it is after each wait, which other edits may have changed.
+    const onMain = () => at >= mainLength - MIN_OVERLAY_DURATION;
     const info = await loadMaterial(materialId);
     if (!info) return;
-    // Decided on the main track as it is after the wait, which other edits may have changed.
-    if (at >= mainLength - MIN_OVERLAY_DURATION) return addMaterial(materialId);
+    if (onMain()) return addMaterial(materialId);
     const aspect = await probeAspect(materialId, info.url);
+    if (onMain()) return addMaterial(materialId);
     const element = filledElement(aspect);
-    // As it is after the waits, which other edits may have changed.
     insertOverlay({ kind: "video", material_id: materialId, source_start: 0, volume: 1, element }, at, info.duration);
   }
 

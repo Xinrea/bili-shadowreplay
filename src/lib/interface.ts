@@ -328,7 +328,10 @@ export interface UploadItem {
   danmu: boolean;
   /** The material, or one of the project's materials, has saved danmaku. */
   danmu_available: boolean;
-  /** The material already shows its danmaku in the picture. */
+  /**
+   * The material already shows its danmaku in the picture; for a project, some
+   * of its materials do and none has danmaku left to burn.
+   */
   danmu_embedded: boolean;
   /** Relative to output. */
   display_cover: string;

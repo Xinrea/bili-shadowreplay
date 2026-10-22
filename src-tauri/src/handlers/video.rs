@@ -483,11 +483,6 @@ pub(crate) async fn create_material(
         .await?;
     log::info!("Clip range done, doing post processing");
     reporter.update("正在保存素材").await;
-    // get file metadata from fs
-    let metadata = std::fs::metadata(&file).map_err(|e| {
-        log::error!("Get file metadata error: {} {}", e, file.display());
-        e.to_string()
-    })?;
     let duration = match ffmpeg_utils::extract_video_metadata(&file).await {
         Ok(video) if video.duration > 0.0 => video.duration,
         _ => params.ranges.iter().map(|r| r.duration()).sum::<f64>(),
@@ -508,6 +503,19 @@ pub(crate) async fn create_material(
         Ok(danmus) => crate::material::save_danmus(&file, &danmus).await?,
         Err(e) => log::warn!("Failed to cut danmaku for material {}: {e}", file.display()),
     }
+    // Burning re-encodes the material; the ranges above still describe the cut.
+    let duration = if danmu_embedded {
+        match ffmpeg_utils::extract_video_metadata(&file).await {
+            Ok(video) if video.duration > 0.0 => video.duration,
+            _ => duration,
+        }
+    } else {
+        duration
+    };
+    let metadata = std::fs::metadata(&file).map_err(|e| {
+        log::error!("Get file metadata error: {} {}", e, file.display());
+        e.to_string()
+    })?;
     let mut cover_generate_ffmpeg = true;
     let cover_file = file.with_extension("jpg");
     if !params.cover.is_empty() {
@@ -593,7 +601,9 @@ pub(crate) async fn create_material(
     Ok(video)
 }
 
-/// Burn `danmus` into the material at `file`, replacing it in place.
+/// Burn `danmus` into the material at `file`, replacing it. The work happens in
+/// a private directory beside it, so no other file in the output directory is
+/// overwritten, and the cut is removed with that directory when burning fails.
 async fn burn_material_danmus(
     state: &State,
     reporter: &ProgressReporter,
@@ -601,11 +611,22 @@ async fn burn_material_danmus(
     danmus: &[DanmuEntry],
 ) -> Result<(), String> {
     let options = state.config.read().await.danmu_ass_options.clone();
-    let burned = ffmpeg::encode_video_danmu(Some(reporter), file, danmus, &options).await?;
-    tokio::fs::rename(&burned, file).await.map_err(|e| {
-        let _ = std::fs::remove_file(&burned);
-        format!("保存压制弹幕的素材失败: {} ({e})", file.display())
-    })
+    let parent = file
+        .parent()
+        .ok_or_else(|| format!("Invalid material path: {}", file.display()))?;
+    let work = tempfile::tempdir_in(parent).map_err(|e| {
+        let _ = std::fs::remove_file(file);
+        format!("创建弹幕压制目录失败: {e}")
+    })?;
+    let cut = work.path().join("material.mp4");
+    if let Err(e) = tokio::fs::rename(file, &cut).await {
+        let _ = tokio::fs::remove_file(file).await;
+        return Err(format!("移动素材失败: {} ({e})", file.display()));
+    }
+    let burned = ffmpeg::encode_video_danmu(Some(reporter), &cut, danmus, &options).await?;
+    tokio::fs::rename(&burned, file)
+        .await
+        .map_err(|e| format!("保存压制弹幕的素材失败: {} ({e})", file.display()))
 }
 
 /// Report new materials with one message and notification per batch.
@@ -1837,7 +1858,7 @@ async fn clip_video_inner(
         live_id: String::new(),
         source: String::new(),
         duration: clip_duration,
-        danmu_embedded: false,
+        danmu_embedded: parent_video.danmu_embedded,
     };
 
     let result = state.db.add_video(&clip_video).await?;

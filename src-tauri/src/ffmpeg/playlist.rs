@@ -270,13 +270,16 @@ async fn replace_output(
     Ok(())
 }
 
+/// Concatenate `playlists` into `output_path`, burning each one's danmaku
+/// track when it has one. Returns whether any danmaku made it into the video;
+/// a playlist that fails to cut is left out.
 pub async fn concat_playlists_to_video(
     reporter: Option<&impl ProgressReporterTrait>,
     playlists: &[&Path],
     danmu_tracks: Vec<Option<Vec<recorder::danmu::DanmuEntry>>>,
     danmu_options: &crate::danmu2ass::Danmu2AssOptions,
     output_path: &Path,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let output_dir = output_path
         .parent()
         .ok_or_else(|| format!("Output path has no parent: {}", output_path.display()))?;
@@ -285,6 +288,7 @@ pub async fn concat_playlists_to_video(
     let temp_dir = tempdir_in(output_dir)
         .map_err(|e| format!("Failed to create playlist concat directory: {e}"))?;
     let mut segments = Vec::new();
+    let mut burned = false;
 
     for (i, playlist) in playlists.iter().enumerate() {
         let mut video_path = temp_dir.path().join(format!("playlist-{i}.mp4"));
@@ -295,11 +299,13 @@ pub async fn concat_playlists_to_video(
         if let Some(danmus) = danmu_tracks.get(i).and_then(Option::as_ref) {
             video_path =
                 super::encode_video_danmu(reporter, &video_path, danmus, danmu_options).await?;
+            burned |= !danmus.is_empty();
         }
         segments.push(video_path);
     }
 
-    super::general::concat_videos(reporter, &segments, output_path).await
+    super::general::concat_videos(reporter, &segments, output_path).await?;
+    Ok(burned)
 }
 
 #[cfg(test)]

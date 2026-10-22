@@ -100,6 +100,11 @@ export function sourceDescription(
     case "file":
       return "直接使用选定的视频文件投稿。";
     default:
+      if (upload.danmu_embedded) {
+        return upload.source_state === "render"
+          ? "投稿时按切片的时间轴生成视频，素材画面中已压制弹幕。"
+          : "切片只包含一个完整素材，直接使用素材文件投稿，弹幕已压制在画面中。";
+      }
       return upload.source_state === "render"
         ? `投稿时按切片的时间轴生成视频，${upload.danmu ? "压制弹幕" : "不压制弹幕"}。`
         : "切片只包含一个完整素材，直接使用素材文件投稿。";

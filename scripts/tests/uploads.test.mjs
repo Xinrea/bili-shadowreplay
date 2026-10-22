@@ -90,6 +90,10 @@ test("the source description says how the video is found", async () => {
     api.sourceDescription({ source: "material", source_state: "material", danmu_embedded: true }),
     /弹幕已压制在画面中/,
   );
+  assert.match(
+    api.sourceDescription({ source: "project", source_state: "render", danmu: false, danmu_embedded: true }),
+    /素材画面中已压制弹幕/,
+  );
   assert.match(api.sourceDescription({ source: "project", source_state: "material" }), /直接使用素材文件/);
   assert.match(api.sourceDescription({ source: "project", source_state: "render", danmu: true }), /生成视频，压制弹幕/);
   assert.match(api.sourceDescription({ source: "project", source_state: "render", danmu: false }), /不压制弹幕/);

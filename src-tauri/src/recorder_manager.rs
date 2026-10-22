@@ -455,32 +455,19 @@ impl RecorderManager {
                         .await
                     {
                         log::error!("Failed to generate whole clip: {e}");
-                        let _ = reporter
-                            .finish(false, &format!("Failed to generate whole clip: {e}"))
-                            .await;
+                        let message = format!("素材生成失败: {e}");
+                        let _ = reporter.finish(false, &message).await;
                         let _ = self_clone
                             .db
-                            .update_task(
-                                &task_id,
-                                "failed",
-                                &format!("Failed to generate whole clip: {e}"),
-                                None,
-                            )
+                            .update_task(&task_id, "failed", &message, None)
                             .await;
-                        return Err(format!("Failed to generate whole clip: {e}"));
+                        return Err(message);
                     }
 
-                    let _ = reporter
-                        .finish(true, "Whole clip generated successfully")
-                        .await;
+                    let _ = reporter.finish(true, "素材生成完成").await;
                     let _ = self_clone
                         .db
-                        .update_task(
-                            &task_id,
-                            "success",
-                            "Whole clip generated successfully",
-                            None,
-                        )
+                        .update_task(&task_id, "success", "素材生成完成", None)
                         .await;
                     Ok(())
                 },
@@ -1667,10 +1654,6 @@ impl RecorderManager {
             vec![None; playlists.len()]
         };
 
-        let danmu_embedded = danmu_tracks
-            .iter()
-            .any(|track| track.as_ref().is_some_and(|danmus| !danmus.is_empty()));
-
         let output_filename = if let Some(output_name) = output_name {
             let trimmed = output_name.trim();
             if trimmed.is_empty() {
@@ -1706,7 +1689,7 @@ impl RecorderManager {
         log::info!("Concat playlists: {playlists_refs:?}");
         log::info!("Output path: {output_path:?}");
 
-        if let Err(e) = crate::ffmpeg::playlist::concat_playlists_to_video(
+        let danmu_embedded = match crate::ffmpeg::playlist::concat_playlists_to_video(
             reporter,
             &playlists_refs,
             danmu_tracks,
@@ -1715,11 +1698,14 @@ impl RecorderManager {
         )
         .await
         {
-            log::error!("Failed to concat playlists: {e}");
-            return Err(RecorderManagerError::HLSError {
-                err: "Failed to concat playlists".into(),
-            });
-        }
+            Ok(burned) => burned,
+            Err(e) => {
+                log::error!("Failed to concat playlists: {e}");
+                return Err(RecorderManagerError::HLSError {
+                    err: "Failed to concat playlists".into(),
+                });
+            }
+        };
 
         let size = std::fs::metadata(&output_path)
             .map_err(|_| RecorderManagerError::HLSError {

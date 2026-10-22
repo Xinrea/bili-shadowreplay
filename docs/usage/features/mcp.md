@@ -1,6 +1,6 @@
 # MCP Server
 
-BSR 提供 MCP Server，让支持 MCP 的外部 Agent 查询直播间、录播和切片，并使用直播间管理、切片及字幕等功能。服务采用 [MCP Streamable HTTP 传输](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#streamable-http)，支持协议版本 `2025-11-25`、`2025-06-18` 和 `2025-03-26`。
+BSR 提供 MCP Server，让支持 MCP 的外部 Agent 查询直播间、录播和素材，并使用直播间管理、素材生成及字幕等功能。服务采用 [MCP Streamable HTTP 传输](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#streamable-http)，支持协议版本 `2025-11-25`、`2025-06-18` 和 `2025-03-26`。
 
 ## 启用服务
 
@@ -54,20 +54,20 @@ BSR 必须保持运行。客户端连接后会自动发现当前可用工具，�
 | 直播间 | 查询直播间和录制状态、添加或移除直播间 | `get_recorder_list`、`get_recorder_info`、`add_recorder`、`remove_recorder` |
 | 录播 | 查询列表和详情、查询近期录制、删除录播 | `get_archives`、`get_archive`、`get_recent_record`、`get_recent_record_all`、`delete_archive`、`delete_archives` |
 | 弹幕 | 读取弹幕、分析弹幕高峰、搜索关键词 | `get_danmu_record`、`analyze_danmu_highlights`、`search_danmu_keywords` |
-| 切片及视频 | 查询列表、详情和封面，生成或删除切片 | `get_videos`、`get_all_videos`、`get_video`、`get_video_cover`、`clip_range`、`delete_video` |
-| 字幕 | 读取或生成录播及切片字幕、将字幕压制到切片 | `get_archive_subtitle`、`get_video_subtitle`、`generate_archive_subtitle`、`generate_video_subtitle`、`encode_video_subtitle` |
+| 素材 | 查询列表、详情和封面，生成或删除素材 | `get_videos`、`get_all_videos`、`get_video`、`get_video_cover`、`clip_range`、`delete_video` |
+| 字幕 | 读取或生成录播及素材字幕、将字幕压制到素材 | `get_archive_subtitle`、`get_video_subtitle`、`generate_archive_subtitle`、`generate_video_subtitle`、`encode_video_subtitle` |
 | 后台任务 | 查询任务进度、删除任务记录 | `get_background_tasks`、`delete_background_task` |
 
 `get_video_cover` 会读取输出目录内的封面文件，或解码数据库中遗留的 Base64 图片 data URL，返回图片内容块，并附带视频 ID 和封面文件名（内嵌封面为 `null`）。支持 JPEG、PNG、GIF 和 WebP，MIME 类型按图片内容判断；没有封面、文件无法读取或格式不支持时返回工具错误。
 
-`extract_video_frames` 在桌面模式和 headless 模式均可使用，返回 JPEG 图片内容块和对应时间戳。运行环境需要提供 FFmpeg 和 ffprobe，并能读取切片视频文件；只读 headless 模式也可使用此工具。
+`extract_video_frames` 在桌面模式和 headless 模式均可使用，返回 JPEG 图片内容块和对应时间戳。运行环境需要提供 FFmpeg 和 ffprobe，并能读取素材视频文件；只读 headless 模式也可使用此工具。
 
 以下工具依赖现有桌面视频处理模块，仅桌面模式提供；headless 模式不会显示这些工具。
 
 | 操作 | 工具 |
 | --- | --- |
 | 读取视频或录播的媒体元数据 | `get_video_metadata`、`get_archive_metadata` |
-| 合并切片 | `merge_videos` |
+| 合并素材 | `merge_videos` |
 | 提取视频音频 | `extract_video_audio` |
 
 具体工具、参数和说明由 MCP 的工具列表提供。MCP Server 不提供任意 FFmpeg 命令执行或打开桌面窗口的工具。

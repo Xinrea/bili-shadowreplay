@@ -106,6 +106,17 @@ impl RenderClip {
     fn is_blank(&self) -> bool {
         self.path.as_os_str().is_empty()
     }
+
+    /// How long the plan takes the clip to last at `fps`. Black after the
+    /// clips, which end on a frame, lasts whole frames, at least one, so the
+    /// project ends on a frame too.
+    fn planned_duration(&self, fps: f64) -> f64 {
+        if self.is_blank() {
+            ((self.duration * fps - EPSILON).ceil().max(1.0)) / fps
+        } else {
+            self.duration
+        }
+    }
 }
 
 /// Something laid over the joined clips from `start` to `end`, project time.
@@ -1323,7 +1334,7 @@ async fn render_with_encoder<R: ProgressReporterTrait>(
         .iter()
         .map(|clip| PlanClip {
             id: &clip.id,
-            duration: clip.duration,
+            duration: clip.planned_duration(fps),
         })
         .collect();
     let segments = plan_segments(&clips, fps, limits);
@@ -2552,6 +2563,15 @@ mod tests {
         }
         let second = average_color(&output, 6.5).await;
         assert!(second[2] > 150 && second[0] < 80, "{second:?}");
+    }
+
+    #[test]
+    fn black_after_the_clips_lasts_whole_frames() {
+        assert_eq!(RenderClip::blank(0.001).planned_duration(30.0), 1.0 / 30.0);
+        assert_eq!(RenderClip::blank(1.0).planned_duration(30.0), 1.0);
+        assert_eq!(RenderClip::blank(1.01).planned_duration(30.0), 31.0 / 30.0);
+        // Other clips last as the timeline has them.
+        assert_eq!(clip(true, 30.0).planned_duration(30.0), 2.5);
     }
 
     #[tokio::test]

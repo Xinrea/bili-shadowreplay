@@ -242,6 +242,9 @@
   let duration = $derived(timelineDuration(timeline));
   // Overlays and sounds start over the main track, and may run on past it.
   let mainLength = $derived(mainDuration(timeline));
+  // Past the end of the main track, while something runs on there: its
+  // pictures show over black, without the last clip's last frame.
+  let pastMain = $derived(time >= mainLength && duration > mainLength);
   let placed = $derived(placeClips(timeline));
   let subtitles = $derived(visibleSubtitles(timeline));
   // The subtitle list draws only the rows in view, and the selected one so
@@ -1043,9 +1046,10 @@
    */
   async function addMaterialAtPlayhead(materialId: number) {
     const at = time;
-    if (at >= mainLength - MIN_OVERLAY_DURATION) return addMaterial(materialId);
     const info = await loadMaterial(materialId);
     if (!info) return;
+    // Decided on the main track as it is after the wait, which other edits may have changed.
+    if (at >= mainLength - MIN_OVERLAY_DURATION) return addMaterial(materialId);
     const aspect = await probeAspect(materialId, info.url);
     const element = filledElement(aspect);
     // As it is after the waits, which other edits may have changed.
@@ -1952,10 +1956,9 @@
           <div bind:this={previewContainer} class="absolute inset-0 flex items-center justify-center">
             <div class="relative aspect-video bg-black" style:width="{previewFrameWidth}px">
               <!-- svelte-ignore a11y_media_has_caption -->
-              <!-- Past the end of the main track, what runs on shows over black. -->
-              <video bind:this={videoA} class="preview-video" class:visible={activeVideo === 0 && time < mainLength}></video>
+              <video bind:this={videoA} class="preview-video" class:visible={activeVideo === 0 && !pastMain}></video>
               <!-- svelte-ignore a11y_media_has_caption -->
-              <video bind:this={videoB} class="preview-video" class:visible={activeVideo === 1 && time < mainLength}></video>
+              <video bind:this={videoB} class="preview-video" class:visible={activeVideo === 1 && !pastMain}></video>
               <OverlayStage
                 bind:this={stage}
                 placed={overlays}

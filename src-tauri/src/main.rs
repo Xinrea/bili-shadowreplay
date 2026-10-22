@@ -829,6 +829,9 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
     db.finish_pending_tasks().await?;
     db.fail_interrupted_uploads().await?;
     db.finish_pending_record_summaries().await?;
+    if let Some(legacy) = &legacy {
+        legacy_dirs::relocate_uploads(&db, legacy, &app_dirs).await;
+    }
     let webhook_poster =
         webhook::poster::create_webhook_poster(&config.read().await.webhook_url, None)
             .map_err(|e| e.to_string())?;

@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use platform_dirs::AppDirs;
 
 use crate::config::Config;
+use crate::database::Database;
 
 /// The identifier older versions kept the config, cache and output under.
 pub const LEGACY_IDENTIFIER: &str = "cn.vjoi.bili-shadowreplay";
@@ -109,6 +110,27 @@ pub fn relocate_config(config: &mut Config, legacy: &AppDirs, current: &AppDirs)
     }
     if changed {
         config.save();
+    }
+}
+
+/// Point the uploads of files that were inside the legacy directories to
+/// where those have moved: unlike other paths, they are kept absolute.
+pub async fn relocate_uploads(db: &Database, legacy: &AppDirs, current: &AppDirs) {
+    let uploads = match db.get_uploads().await {
+        Ok(uploads) => uploads,
+        Err(e) => {
+            log::error!("Failed to read uploads to relocate: {e}");
+            return;
+        }
+    };
+    for upload in uploads.iter().filter(|upload| upload.source == "file") {
+        let Some(moved) = relocated(&upload.file, legacy, current) else {
+            continue;
+        };
+        match db.set_upload_file(upload.id, &moved).await {
+            Ok(_) => log::info!("Upload {} file {} moved to {moved}", upload.id, upload.file),
+            Err(e) => log::error!("Failed to relocate upload {}: {e}", upload.id),
+        }
     }
 }
 
@@ -277,5 +299,111 @@ mod tests {
         assert_eq!(path(), legacy.config_dir.join("Conf.toml"));
         write(&current.config_dir.join("Conf.toml"), "new");
         assert_eq!(path(), current.config_dir.join("Conf.toml"));
+    }
+
+    #[test]
+    fn a_move_that_failed_is_done_on_a_later_start() {
+        let root = tempfile::tempdir().unwrap();
+        let legacy = dirs(root.path(), LEGACY_IDENTIFIER);
+        let current = dirs(root.path(), "cn.vjoi.bilishadowreplay");
+        write(&legacy.cache_dir.join("cache/bilibili/1/2/0.ts"), "ts");
+        write(&current.cache_dir, "in the way");
+        migrate(&legacy, &current);
+        assert!(legacy.cache_dir.exists());
+
+        std::fs::remove_file(&current.cache_dir).unwrap();
+        migrate(&legacy, &current);
+
+        assert_eq!(
+            read(&current.cache_dir.join("cache/bilibili/1/2/0.ts")),
+            "ts"
+        );
+        assert!(!legacy.cache_dir.exists());
+    }
+
+    #[test]
+    fn windows_folders_move_from_roaming_and_local() {
+        let root = tempfile::tempdir().unwrap();
+        let windows = |identifier: &str| {
+            let local = root.path().join("Local").join(identifier);
+            AppDirs {
+                cache_dir: local.clone(),
+                config_dir: root.path().join("Roaming").join(identifier),
+                data_dir: local.clone(),
+                state_dir: local,
+            }
+        };
+        let legacy = windows(LEGACY_IDENTIFIER);
+        let current = windows("cn.vjoi.bilishadowreplay");
+        write(&legacy.config_dir.join("Conf.toml"), "conf");
+        write(&legacy.data_dir.join("output/clip.mp4"), "clip");
+        write(&legacy.cache_dir.join("cache/bilibili/1/2/0.ts"), "ts");
+        write(&current.config_dir.join("data_v2.db"), "db");
+        write(&current.cache_dir.join("EBWebView/state"), "webview");
+
+        migrate(&legacy, &current);
+
+        assert_eq!(read(&current.config_dir.join("Conf.toml")), "conf");
+        assert_eq!(read(&current.data_dir.join("output/clip.mp4")), "clip");
+        assert_eq!(
+            read(&current.cache_dir.join("cache/bilibili/1/2/0.ts")),
+            "ts"
+        );
+        assert_eq!(read(&current.cache_dir.join("EBWebView/state")), "webview");
+        assert!(!legacy.config_dir.exists());
+        assert!(!legacy.data_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn uploads_of_moved_files_follow_them() {
+        let root = tempfile::tempdir().unwrap();
+        let legacy = dirs(root.path(), LEGACY_IDENTIFIER);
+        let current = dirs(root.path(), "cn.vjoi.bilishadowreplay");
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for migration in crate::get_migrations() {
+            sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
+        }
+        let db = Database::new(
+            pool,
+            crate::database::credentials::CredentialCipher::new(&[0; 32]).unwrap(),
+            crate::events::EventBus::new(),
+        );
+        let path = |path: PathBuf| path.to_string_lossy().into_owned();
+        let moved_clip = legacy.data_dir.join("output/clip.mp4");
+        let elsewhere = root.path().join("Movies/clip.mp4");
+        write(&moved_clip, "clip");
+        write(&elsewhere, "clip");
+        let upload = |source: &str, file: &PathBuf| crate::database::upload::UploadRow {
+            id: 0,
+            source: source.into(),
+            source_id: 0,
+            file: path(file.clone()),
+            room_id: String::new(),
+            uid: "1".into(),
+            cover: String::new(),
+            cover43: String::new(),
+            profile: "{}".into(),
+            danmu: false,
+            status: "draft".into(),
+            message: String::new(),
+            bvid: String::new(),
+            created_at: "2026-10-22T00:00:00+08:00".into(),
+            updated_at: "2026-10-22T00:00:00+08:00".into(),
+        };
+        let moved = db.add_upload(&upload("file", &moved_clip)).await.unwrap();
+        let kept = db.add_upload(&upload("file", &elsewhere)).await.unwrap();
+
+        migrate(&legacy, &current);
+        relocate_uploads(&db, &legacy, &current).await;
+
+        assert_eq!(
+            db.get_upload(moved.id).await.unwrap().file,
+            path(current.data_dir.join("output/clip.mp4"))
+        );
+        assert_eq!(db.get_upload(kept.id).await.unwrap().file, path(elsewhere));
     }
 }

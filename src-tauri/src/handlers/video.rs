@@ -495,7 +495,8 @@ pub(crate) async fn create_material(
     let mut danmu_embedded = false;
     match state.recorder_manager.material_danmus(&source_params).await {
         Ok(danmus) if params.danmu => {
-            if !danmus.is_empty() {
+            // Super chats are not drawn, so they alone leave nothing to burn.
+            if danmus.iter().any(DanmuEntry::is_danmu) {
                 burn_material_danmus(state, reporter, &file, &danmus).await?;
                 danmu_embedded = true;
             }

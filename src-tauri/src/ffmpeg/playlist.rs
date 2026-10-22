@@ -299,7 +299,7 @@ pub async fn concat_playlists_to_video(
         if let Some(danmus) = danmu_tracks.get(i).and_then(Option::as_ref) {
             video_path =
                 super::encode_video_danmu(reporter, &video_path, danmus, danmu_options).await?;
-            burned |= !danmus.is_empty();
+            burned |= danmus.iter().any(recorder::danmu::DanmuEntry::is_danmu);
         }
         segments.push(video_path);
     }

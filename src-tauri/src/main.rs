@@ -748,7 +748,10 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
     if let Some(legacy) = &legacy {
         legacy_dirs::migrate(legacy, &app_dirs);
     }
-    let config_path = app_dirs.config_dir.join("Conf.toml");
+    let config_path = match &legacy {
+        Some(legacy) => legacy_dirs::config_path(legacy, &app_dirs, "Conf.toml"),
+        None => app_dirs.config_dir.join("Conf.toml"),
+    };
     let cache_path = app_dirs.cache_dir.join("cache");
     let output_path = app_dirs.data_dir.join("output");
     let mut resource_dir = app.path().resource_dir()?;

@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 use platform_dirs::AppDirs;
 
 use crate::config::Config;
-use crate::handlers::migrate::{migrate_entry, MigrateOutcome};
 
 /// The identifier older versions kept the config, cache and output under.
 pub const LEGACY_IDENTIFIER: &str = "cn.vjoi.bili-shadowreplay";
@@ -34,6 +33,10 @@ fn moves(legacy: &AppDirs, current: &AppDirs) -> Vec<(PathBuf, PathBuf)> {
 /// Move every entry of the legacy directories into the current ones, leaving
 /// those whose name is already taken there, and remove the legacy directories
 /// left empty.
+///
+/// Entries are only renamed, which moves them whole or not at all: one that
+/// cannot be, as a folder with a file open in it on Windows, stays as it was
+/// for the next start, and the config keeps pointing to it.
 pub fn migrate(legacy: &AppDirs, current: &AppDirs) {
     for (from, to) in moves(legacy, current) {
         let Ok(entries) = std::fs::read_dir(&from) else {
@@ -41,16 +44,41 @@ pub fn migrate(legacy: &AppDirs, current: &AppDirs) {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            match migrate_entry(&path, &to) {
-                Ok(MigrateOutcome::SkippedExists) => {}
-                Ok(_) => log::info!("Moved {} to {}", path.display(), to.display()),
-                Err(e) => log::error!("Failed to move {} to {}: {e}", path.display(), to.display()),
+            let target = to.join(entry.file_name());
+            if target.exists() {
+                log::warn!(
+                    "Not moving {}: {} already exists",
+                    path.display(),
+                    target.display()
+                );
+                continue;
+            }
+            match std::fs::create_dir_all(&to).and_then(|()| std::fs::rename(&path, &target)) {
+                Ok(()) => log::info!("Moved {} to {}", path.display(), target.display()),
+                Err(e) => log::error!(
+                    "Failed to move {} to {}: {e}",
+                    path.display(),
+                    target.display()
+                ),
             }
         }
         // Fails while anything is left, which stays for the next start.
         if std::fs::remove_dir(&from).is_ok() {
             log::info!("Removed legacy directory {}", from.display());
         }
+    }
+}
+
+/// The config file `name`, still in the legacy config directory while it could
+/// not be moved: a default one written in the current directory instead would
+/// take its name and keep it from ever moving.
+pub fn config_path(legacy: &AppDirs, current: &AppDirs, name: &str) -> PathBuf {
+    let path = current.config_dir.join(name);
+    let legacy_path = legacy.config_dir.join(name);
+    if !path.exists() && legacy_path.exists() {
+        legacy_path
+    } else {
+        path
     }
 }
 
@@ -173,5 +201,81 @@ mod tests {
         );
         assert_eq!(relocated(&path(elsewhere), &legacy, &current), None);
         assert_eq!(relocated("whisper_model.bin", &legacy, &current), None);
+    }
+
+    #[test]
+    fn each_directory_moves_once_on_every_layout() {
+        let root = Path::new("/home");
+        let layout = |config: &str, data: &str, cache: &str| AppDirs {
+            config_dir: root.join(config),
+            data_dir: root.join(data),
+            cache_dir: root.join(cache),
+            state_dir: root.join("state"),
+        };
+        let pair = |from: &str, to: &str| (root.join(from), root.join(to));
+
+        // Windows: data and cache are both under AppData\Local.
+        let windows = moves(
+            &layout("Roaming/old", "Local/old", "Local/old"),
+            &layout("Roaming/new", "Local/new", "Local/new"),
+        );
+        assert_eq!(
+            windows,
+            vec![
+                pair("Roaming/old", "Roaming/new"),
+                pair("Local/old", "Local/new")
+            ]
+        );
+        // Linux: three directories.
+        let linux = moves(
+            &layout(".config/old", ".local/share/old", ".cache/old"),
+            &layout(".config/new", ".local/share/new", ".cache/new"),
+        );
+        assert_eq!(
+            linux,
+            vec![
+                pair(".config/old", ".config/new"),
+                pair(".local/share/old", ".local/share/new"),
+                pair(".cache/old", ".cache/new"),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_entry_that_cannot_be_renamed_stays_whole_and_in_use() {
+        let root = tempfile::tempdir().unwrap();
+        let legacy = dirs(root.path(), LEGACY_IDENTIFIER);
+        let current = dirs(root.path(), "cn.vjoi.bilishadowreplay");
+        write(&legacy.cache_dir.join("cache/bilibili/1/2/0.ts"), "ts");
+        // A file where the current cache directory goes keeps the rename from
+        // happening, as a file open in the folder does on Windows.
+        write(&current.cache_dir, "in the way");
+
+        migrate(&legacy, &current);
+
+        assert_eq!(
+            read(&legacy.cache_dir.join("cache/bilibili/1/2/0.ts")),
+            "ts"
+        );
+        let cache = legacy
+            .cache_dir
+            .join("cache")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(relocated(&cache, &legacy, &current), None);
+    }
+
+    #[test]
+    fn the_legacy_config_is_used_until_it_has_moved() {
+        let root = tempfile::tempdir().unwrap();
+        let legacy = dirs(root.path(), LEGACY_IDENTIFIER);
+        let current = dirs(root.path(), "cn.vjoi.bilishadowreplay");
+        let path = || config_path(&legacy, &current, "Conf.toml");
+
+        assert_eq!(path(), current.config_dir.join("Conf.toml"));
+        write(&legacy.config_dir.join("Conf.toml"), "old");
+        assert_eq!(path(), legacy.config_dir.join("Conf.toml"));
+        write(&current.config_dir.join("Conf.toml"), "new");
+        assert_eq!(path(), current.config_dir.join("Conf.toml"));
     }
 }

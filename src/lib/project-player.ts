@@ -2,7 +2,9 @@
 // shows a clip, the other is already loaded at the next clip's in point, and
 // they swap at the cut. The player itself behaves like a media element whose
 // time is project time, so components that follow a <video> (the libass
-// subtitle preview) can follow the whole project instead.
+// subtitle preview) can follow the whole project instead. The project may go
+// on past its last clip, with overlays and sounds running on: there the clock
+// goes on and the last clip holds its last frame, which the editor hides.
 //
 // As in an editing application, the sound is the clock. Every sound of the
 // project, clips' own included, plays from a `PlaybackClock` (the preview's
@@ -147,8 +149,15 @@ export class VideoFollower {
   }
 }
 
+/** The time in its material a segment shows at project time `time`; past its end, its last. */
+function sourceTime(segment: PlayerSegment, time: number) {
+  return Math.min(segment.start + time - segment.offset, segment.end);
+}
+
 export class ProjectPlayer extends EventTarget implements MediaClock {
   private segments: PlayerSegment[] = [];
+  /** How long the project lasts, at least until the end of the last segment. */
+  private length = 0;
   private elements: [HTMLVideoElement, HTMLVideoElement];
   private followers: [VideoFollower, VideoFollower];
   private active = 0;
@@ -220,7 +229,7 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
 
   get duration() {
     const last = this.segments[this.segments.length - 1];
-    return last ? last.offset + last.end - last.start : 0;
+    return last ? Math.max(last.offset + last.end - last.start, this.length) : 0;
   }
 
   /** The element showing the current clip. */
@@ -236,6 +245,13 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
   setSegments(segments: PlayerSegment[]) {
     this.segments = segments;
     this.seek(Math.min(this.time, this.duration));
+  }
+
+  /** Let the project go on past its last segment until `length`, as overlays and sounds running on past it do. */
+  setLength(length: number) {
+    this.length = length;
+    // Only when it gets shorter than where it is: it plays on otherwise.
+    if (this.time > this.duration) this.seek(this.duration);
   }
 
   async play() {
@@ -258,7 +274,7 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
     for (const follower of this.followers) follower.hold();
     // Showing the frame where it stopped, which a video catching up may not.
     const segment = this.segments[this.index];
-    if (segment) this.load(this.elements[this.active], segment, segment.start + this.time - segment.offset, true);
+    if (segment) this.load(this.elements[this.active], segment, sourceTime(segment, this.time), true);
     this.dispatchEvent(new Event("pause"));
     this.emitTime(true);
   }
@@ -294,7 +310,7 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
     const segment = this.segments[index];
     const element = this.elements[this.active];
     this.followers[this.active].hold();
-    this.load(element, segment, segment.start + target - segment.offset, true);
+    this.load(element, segment, sourceTime(segment, target), true);
     this.followers[1 - this.active].hold();
     this.preloadNext();
     this.emitActive();
@@ -534,9 +550,9 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
     this.active = 1 - this.active;
     this.index = index;
     const element = this.elements[this.active];
-    const sourceTime = next.start + this.time - next.offset;
-    if (element.dataset.src !== next.url || Math.abs(element.currentTime - sourceTime) > 0.25) {
-      this.load(element, next, sourceTime, false);
+    const to = sourceTime(next, this.time);
+    if (element.dataset.src !== next.url || Math.abs(element.currentTime - to) > 0.25) {
+      this.load(element, next, to, false);
     }
     this.followers[previous].hold();
     this.preloadNext();

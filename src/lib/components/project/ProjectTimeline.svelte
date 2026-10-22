@@ -47,6 +47,7 @@
     withAudioFrom,
     withOverlayFrom,
     withSubtitleFrom,
+    mainDuration,
     placeClips,
     resizeSubtitle,
     timelineDuration,
@@ -242,6 +243,9 @@
   );
 
   let duration = $derived(timelineDuration(timeline));
+  // Overlays and sounds start over the main track, and may run on past it.
+  let mainLength = $derived(mainDuration(timeline));
+  let latestStart = $derived(mainLength - MIN_OVERLAY_DURATION);
   let pxPerSecond = $derived(
     Math.max(0.0005, ((viewportWidth - 48) / Math.max(duration, 10)) * zoom),
   );
@@ -354,7 +358,7 @@
   }
 
   function clipEdges(): number[] {
-    return [...placed.map((p) => p.offset), duration];
+    return [...placed.map((p) => p.offset), mainLength];
   }
 
   // Drags follow the pointer through window listeners, so they continue
@@ -457,10 +461,9 @@
       if (event.clientY < mainTrack.getBoundingClientRect().top && canLiftClip(timeline, state.clipId)) {
         const at = state.offset + timeAt(event.clientX) - state.pointerTime;
         const snapped = snapSpan(Math.max(0, at), state.length, overlaySnapTargets(state.clipId), !event.shiftKey);
-        // Within what is left once the clips after it close up.
-        const ghost = Math.max(0, Math.min(snapped, duration - state.length - MIN_OVERLAY_DURATION));
-        const end = Math.min(ghost + state.length, duration - state.length);
-        const target = overlayTarget(timeline, "video", trackTargetAt(event.clientY), ghost, end);
+        // Starting over what is left once the clips after it close up.
+        const ghost = Math.max(0, Math.min(snapped, latestStart - state.length));
+        const target = overlayTarget(timeline, "video", trackTargetAt(event.clientY), ghost, ghost + state.length);
         drag = { ...state, moved: true, lift: { ghost, target } };
         return;
       }
@@ -702,7 +705,7 @@
     if (state.mode === "move") {
       const length = state.end - state.start;
       const snapped = snapSpan(Math.max(0, state.start + delta), length, targets, enabled);
-      const ghost = Math.max(0, Math.min(snapped, duration - length));
+      const ghost = Math.max(0, Math.min(snapped, latestStart));
       // A video overlay dragged onto the main track goes there as a clip.
       if (state.trackKind === "video" && overMain(event.clientY)) {
         snapTime = null;
@@ -769,10 +772,10 @@
   }
 
   function overlayDragOver(event: DragEvent) {
-    if (!event.dataTransfer?.types.includes(MATERIAL_DRAG_TYPE) || duration < MIN_OVERLAY_DURATION) return;
+    if (!event.dataTransfer?.types.includes(MATERIAL_DRAG_TYPE) || mainLength < MIN_OVERLAY_DURATION) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
-    const at = Math.min(timeAt(event.clientX), duration - MIN_OVERLAY_DURATION);
+    const at = Math.min(timeAt(event.clientX), latestStart);
     // A material shows on a video track.
     const target = overlayTarget(timeline, "video", trackTargetAt(event.clientY), at, at + MIN_OVERLAY_DURATION);
     overlayDrop = { time: at, target };
@@ -790,12 +793,12 @@
   // Sounds dragged in from the audio library, or materials whose sound plays.
   function audioDragOver(event: DragEvent) {
     const types = event.dataTransfer?.types ?? [];
-    if ((!types.includes(AUDIO_DRAG_TYPE) && !types.includes(MATERIAL_DRAG_TYPE)) || duration < MIN_OVERLAY_DURATION) {
+    if ((!types.includes(AUDIO_DRAG_TYPE) && !types.includes(MATERIAL_DRAG_TYPE)) || mainLength < MIN_OVERLAY_DURATION) {
       return;
     }
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
-    const at = Math.min(timeAt(event.clientX), duration - MIN_OVERLAY_DURATION);
+    const at = Math.min(timeAt(event.clientX), latestStart);
     audioDrop = { time: at, target: audioTargetAt(event.clientY) };
   }
 

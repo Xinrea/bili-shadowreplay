@@ -73,6 +73,7 @@
     frameRateQuery,
     idsAt,
     insertClips,
+    mainDuration,
     mergeRemoteTimeline,
     parseSrt,
     parseTimeline,
@@ -239,6 +240,11 @@
 
   let roomId = $derived(project?.room_id ?? "");
   let duration = $derived(timelineDuration(timeline));
+  // Overlays and sounds start over the main track, and may run on past it.
+  let mainLength = $derived(mainDuration(timeline));
+  // Past the end of the main track, while something runs on there: its
+  // pictures show over black, without the last clip's last frame.
+  let pastMain = $derived(time >= mainLength && duration > mainLength);
   let placed = $derived(placeClips(timeline));
   let subtitles = $derived(visibleSubtitles(timeline));
   // The subtitle list draws only the rows in view, and the selected one so
@@ -627,6 +633,11 @@
   });
 
   $effect(() => {
+    const length = duration;
+    player?.setLength(length);
+  });
+
+  $effect(() => {
     // Read first, so the effect follows them before the player is made.
     const [level, silent] = [volume, muted];
     if (!player || !previewAudio) return;
@@ -770,15 +781,19 @@
     editBefore = null;
   }
 
-  async function addMaterial(materialId: number, index = timeline.clips.length) {
+  /** A material with its length, which old materials learn when first used. */
+  async function loadMaterial(materialId: number) {
     let info = materials.get(materialId);
+    if (!info || info.duration) return info;
+    const video = await invoke<VideoItem>("get_video", { id: materialId });
+    info = { ...info, duration: video.duration || video.length };
+    materials = new Map(materials).set(materialId, info);
+    return info;
+  }
+
+  async function addMaterial(materialId: number, index = timeline.clips.length) {
+    const info = await loadMaterial(materialId);
     if (!info) return;
-    if (!info.duration) {
-      // Old materials learn their exact length when first used.
-      const video = await invoke<VideoItem>("get_video", { id: materialId });
-      info = { ...info, duration: video.duration || video.length };
-      materials = new Map(materials).set(materialId, info);
-    }
     // Bring along subtitles already recognized for the material.
     let srt = "";
     try {
@@ -916,13 +931,13 @@
     if (selectedOverlayId === id) selectedOverlayId = null;
   }
 
-  /** Where an overlay added now starts: at the playhead, early enough near the end to last its length. */
-  function overlayStart(length = OVERLAY_DURATION) {
-    return Math.max(0, Math.min(time, duration - Math.min(length, duration)));
+  /** Where an overlay added now starts: at the playhead, over the main track. */
+  function overlayStart() {
+    return Math.max(0, Math.min(time, mainLength - MIN_OVERLAY_DURATION));
   }
 
   function canAddOverlay() {
-    if (duration >= MIN_OVERLAY_DURATION) return true;
+    if (mainLength >= MIN_OVERLAY_DURATION) return true;
     alert("请先在时间轴上添加素材，文字、贴纸和画中画叠加在素材的画面上");
     return false;
   }
@@ -1018,15 +1033,35 @@
     void probeAspect(materialId, url).finally(() => probingAspects.delete(materialId));
   });
 
-  /** Show a material over the main track from `start`, as a picture in the corner. */
-  async function addVideoOverlay(materialId: number, start?: number, target?: OverlayTarget) {
-    let info = materials.get(materialId);
-    if (!info || !canAddOverlay()) return;
-    if (!info.duration) {
-      const video = await invoke<VideoItem>("get_video", { id: materialId });
-      info = { ...info, duration: video.duration || video.length };
-      materials = new Map(materials).set(materialId, info);
-    }
+  /** The element of a video of ratio `aspect` filling the picture. */
+  function filledElement(aspect: number) {
+    const width = Math.round(Math.min(ELEMENT_SPACE.width, ELEMENT_SPACE.height * aspect));
+    return { ...ELEMENT_MIDDLE, width, rotation: 0 };
+  }
+
+  /**
+   * Add a material at the playhead: onto the end of the main track when the
+   * playhead is there, or else over the main track, filling the picture, on
+   * the lowest video track free there or a new one when all are taken.
+   */
+  async function addMaterialAtPlayhead(materialId: number) {
+    const at = time;
+    // Decided on the main track as it is after each wait, which other edits may have changed.
+    const onMain = () => at >= mainLength - MIN_OVERLAY_DURATION;
+    const info = await loadMaterial(materialId);
+    if (!info) return;
+    if (onMain()) return addMaterial(materialId);
+    const aspect = await probeAspect(materialId, info.url);
+    if (onMain()) return addMaterial(materialId);
+    const element = filledElement(aspect);
+    insertOverlay({ kind: "video", material_id: materialId, source_start: 0, volume: 1, element }, at, info.duration);
+  }
+
+  /** Show a material dropped on a video track from `start`, as a picture in the corner. */
+  async function addVideoOverlay(materialId: number, start: number, target: OverlayTarget) {
+    if (!canAddOverlay()) return;
+    const info = await loadMaterial(materialId);
+    if (!info) return;
     const aspect = await probeAspect(materialId, info.url);
     const width = Math.round(ELEMENT_SPACE.width / 3);
     const height = width / aspect;
@@ -1038,8 +1073,7 @@
       rotation: 0,
     };
     // As it is after the waits, which other edits may have changed.
-    const from = start ?? overlayStart(info.duration);
-    insertOverlay({ kind: "video", material_id: materialId, source_start: 0, volume: 1, element }, from, info.duration, target);
+    insertOverlay({ kind: "video", material_id: materialId, source_start: 0, volume: 1, element }, start, info.duration, target);
   }
 
   /**
@@ -1051,9 +1085,8 @@
     if (!clip) return;
     const url = materials.get(clip.material_id)?.url;
     const aspect = url ? await probeAspect(clip.material_id, url) : (aspects.get(clip.material_id) ?? 16 / 9);
-    const width = Math.round(Math.min(ELEMENT_SPACE.width, ELEMENT_SPACE.height * aspect));
     // As it is after the wait, which other edits may have changed.
-    const result = clipToOverlay(timeline, clipId, at, target, { ...ELEMENT_MIDDLE, width, rotation: 0 });
+    const result = clipToOverlay(timeline, clipId, at, target, filledElement(aspect));
     if (!result) return;
     commit(result.timeline);
     selectOverlay(result.id);
@@ -1066,8 +1099,7 @@
     const url = materials.get(item.material_id)?.url;
     // Its real ratio, which a video not shown since opening has not reported.
     const aspect = url ? await probeAspect(item.material_id, url) : (aspects.get(item.material_id) ?? 16 / 9);
-    const width = Math.round(Math.min(ELEMENT_SPACE.width, ELEMENT_SPACE.height * aspect));
-    updateOverlay(withElement({ ...ELEMENT_MIDDLE, width, rotation: 0 }), item.id);
+    updateOverlay(withElement(filledElement(aspect)), item.id);
     settleOverlayEdit();
   }
 
@@ -1208,7 +1240,7 @@
    * playhead: a file of the audio library, or the sound of a material.
    */
   async function addSound(source: AudioDrop, start?: number, target?: OverlayTarget) {
-    if (duration < MIN_OVERLAY_DURATION) {
+    if (mainLength < MIN_OVERLAY_DURATION) {
       alert("请先在时间轴上添加素材，音频跟随素材播放");
       return;
     }
@@ -1220,18 +1252,13 @@
       length = file.duration;
       content = { kind: "file", audio_id: source.id, source_start: 0, volume: 1 };
     } else {
-      let info = materials.get(source.id);
+      const info = await loadMaterial(source.id);
       if (!info) return;
-      if (!info.duration) {
-        const video = await invoke<VideoItem>("get_video", { id: source.id });
-        info = { ...info, duration: video.duration || video.length };
-        materials = new Map(materials).set(source.id, info);
-      }
       length = info.duration;
       content = { kind: "material", material_id: source.id, source_start: 0, volume: 1 };
     }
     // As it is after the wait, which other edits may have changed.
-    const result = addAudio(timeline, content, start ?? overlayStart(length), length, target);
+    const result = addAudio(timeline, content, start ?? overlayStart(), length, target);
     if (!result.id) return;
     commit(result.timeline);
     selectAudio(result.id);
@@ -1818,8 +1845,7 @@
         <MaterialBin
           materials={binMaterials}
           {roomId}
-          onAdd={(material) => void addMaterial(material.id)}
-          onOverlay={(material) => void addVideoOverlay(material.id)}
+          onAdd={(material) => void addMaterialAtPlayhead(material.id)}
           onPreview={(material) => void invoke("open_clip", { videoId: material.id })}
         />
       </div>
@@ -1931,9 +1957,9 @@
           <div bind:this={previewContainer} class="absolute inset-0 flex items-center justify-center">
             <div class="relative aspect-video bg-black" style:width="{previewFrameWidth}px">
               <!-- svelte-ignore a11y_media_has_caption -->
-              <video bind:this={videoA} class="preview-video" class:visible={activeVideo === 0}></video>
+              <video bind:this={videoA} class="preview-video" class:visible={activeVideo === 0 && !pastMain}></video>
               <!-- svelte-ignore a11y_media_has_caption -->
-              <video bind:this={videoB} class="preview-video" class:visible={activeVideo === 1}></video>
+              <video bind:this={videoB} class="preview-video" class:visible={activeVideo === 1 && !pastMain}></video>
               <OverlayStage
                 bind:this={stage}
                 placed={overlays}

@@ -19,10 +19,11 @@ import type {
 // order: video tracks show other materials, sticker tracks texts and
 // stickers. They are anchored the same way, by where they start, as are audio
 // items (music, voiceover, the sound of a material) on tracks below the main
-// one. A clip moves off the main track onto a video track, and a video
-// overlay onto the main track, as one kind of video track to another. Every
-// edit returns a new timeline so the editor can keep an undo history of
-// snapshots.
+// one. They start over the main track but may run on past its end, which the
+// project then lasts until. A clip moves off the main track onto a video
+// track, and a video overlay onto the main track, as one kind of video track
+// to another. Every edit returns a new timeline so the editor can keep an
+// undo history of snapshots.
 //
 // With the project's frame rate, as export renders it, clips last whole
 // frames: trims and splits land on frames, so an edit moves the clips after
@@ -155,8 +156,18 @@ export function placeClips(timeline: ProjectTimeline): PlacedClip[] {
   });
 }
 
-export function timelineDuration(timeline: ProjectTimeline): number {
+/** How long the clips of the main track last together. */
+export function mainDuration(timeline: ProjectTimeline): number {
   return timeline.clips.reduce((total, clip) => total + clipDuration(clip), 0);
+}
+
+/** How long the project lasts: until the end of the main track, or of what runs on past it. */
+export function timelineDuration(timeline: ProjectTimeline): number {
+  let total = mainDuration(timeline);
+  for (const lane of ["tracks", "audio_tracks"] as const) {
+    for (const placed of placeItems(timeline, lane)) total = Math.max(total, placed.end);
+  }
+  return total;
 }
 
 /** The clip shown at project time `time`; at a cut, the later one. */
@@ -474,7 +485,7 @@ export function setClipSubtitles(timeline: ProjectTimeline, clipId: string, cues
 }
 
 function anchor(timeline: ProjectTimeline, start: number, end: number) {
-  const total = timelineDuration(timeline);
+  const total = mainDuration(timeline);
   const placed = clipAt(timeline, Math.max(0, Math.min(start, total - MIN_SUBTITLE_DURATION)));
   if (!placed) return null;
   const sourceStart = toSourceTime(placed, Math.max(start, placed.offset));
@@ -604,23 +615,22 @@ function sourced(item: TrackItem): item is VideoOverlay | AudioItem {
   return "source_start" in item;
 }
 
-function overlaySpan(item: TrackItem, clip: PlacedClip | undefined, total: number) {
+function overlaySpan(item: TrackItem, clip: PlacedClip | undefined) {
   // Anchored past the out point, it was trimmed away with the end of its clip.
   if (!clip || item.start >= clip.clip.end) return null;
   const from = toProjectTime(clip, item.start);
   const start = Math.max(from, clip.offset);
-  const end = Math.min(from + item.duration, total);
+  const end = from + item.duration;
   if (end - start <= EPSILON) return null;
   return { start, end, skip: start - from };
 }
 
 function placeItems(timeline: ProjectTimeline, lane: Lane): Placed<TrackItem>[] {
   const clips = new Map(placeClips(timeline).map((placed) => [placed.clip.id, placed]));
-  const total = timelineDuration(timeline);
   const result: Placed<TrackItem>[] = [];
   tracksOf(timeline, lane).forEach((track, index) => {
     for (const item of track.items) {
-      const span = overlaySpan(item, clips.get(item.clip_id), total);
+      const span = overlaySpan(item, clips.get(item.clip_id));
       if (span) result.push({ item, track: index, ...span });
     }
   });
@@ -736,6 +746,11 @@ function lowestFree(
   return { insert: kind === "video" ? 0 : tracks.length };
 }
 
+/** The latest project time an item can start at: it starts over the main track. */
+function latestStart(timeline: ProjectTimeline): number {
+  return mainDuration(timeline) - MIN_OVERLAY_DURATION;
+}
+
 /** The anchor of an item starting at project time `time`. */
 function anchorAt(timeline: ProjectTimeline, time: number): { clip_id: string; start: number } | null {
   const placed = clipAt(timeline, time);
@@ -798,10 +813,9 @@ function addItem(
   duration: number,
   target?: OverlayTarget,
 ): { timeline: ProjectTimeline; id: string | null } {
-  const total = timelineDuration(timeline);
-  const from = clamp(start, 0, total - MIN_OVERLAY_DURATION);
-  const length = Math.min(duration, total - from);
-  const anchored = length >= MIN_OVERLAY_DURATION ? anchorAt(timeline, from) : null;
+  const from = clamp(start, 0, latestStart(timeline));
+  const length = duration;
+  const anchored = from >= 0 && length >= MIN_OVERLAY_DURATION ? anchorAt(timeline, from) : null;
   if (!anchored) return { timeline, id: null };
   const id = newId();
   const item = { ...content, id, ...anchored, duration: length } as TrackItem;
@@ -815,9 +829,9 @@ function addItem(
 }
 
 /**
- * Add an item over project time `start..start + duration`, cut short at the
- * end of the project, on `target` or else the lowest track of its kind free
- * there.
+ * Add an item over project time `start..start + duration`, starting over the
+ * main track and maybe running on past it, on `target` or else the lowest
+ * track of its kind free there.
  */
 export function addOverlay(
   timeline: ProjectTimeline,
@@ -881,7 +895,7 @@ function moveItem(timeline: ProjectTimeline, lane: Lane, id: string, start: numb
   const current = placed.find((entry) => entry.item.id === id);
   if (!current) return timeline;
   const length = current.end - current.start;
-  const from = clamp(start, 0, timelineDuration(timeline) - length);
+  const from = clamp(start, 0, latestStart(timeline));
   const item = reanchor(timeline, current, from, length);
   if (!item) return timeline;
   const kind = kindIn(lane, item);
@@ -937,13 +951,10 @@ function trimItem(
   if (edge === "start") {
     const before = Math.max(0, ...neighbours.filter((entry) => entry.end <= current.start + EPSILON).map((entry) => entry.end));
     const earliest = playing ? current.start - source : 0;
-    const start = clamp(time, Math.max(before, earliest), current.end - MIN_OVERLAY_DURATION);
+    const start = clamp(time, Math.max(before, earliest), Math.min(current.end, mainDuration(timeline)) - MIN_OVERLAY_DURATION);
     item = reanchor(timeline, current, start, current.end - start, start - current.start);
   } else {
-    const after = Math.min(
-      timelineDuration(timeline),
-      ...neighbours.filter((entry) => entry.start >= current.end - EPSILON).map((entry) => entry.start),
-    );
+    const after = Math.min(...neighbours.filter((entry) => entry.start >= current.end - EPSILON).map((entry) => entry.start));
     const latest = playing && sourceDuration > 0 ? current.start + sourceDuration - source : Number.POSITIVE_INFINITY;
     const end = clamp(time, current.start + MIN_OVERLAY_DURATION, Math.min(after, latest));
     item = reanchor(timeline, current, current.start, end - current.start);
@@ -953,8 +964,8 @@ function trimItem(
 
 /**
  * Move one edge of an item to project time `time`, short of its neighbours on
- * the track and the end of the project. A video overlay's edges stay within
- * its material, `materialDuration` long.
+ * the track; its start stays over the main track. A video overlay's edges
+ * stay within its material, `materialDuration` long.
  */
 export function trimOverlay(
   timeline: ProjectTimeline,
@@ -986,6 +997,8 @@ function splitItem(
   const none = { timeline, left: null, right: null };
   const current = placeItems(timeline, lane).find((entry) => entry.item.id === id);
   if (!current || time - current.start < MIN_OVERLAY_DURATION || current.end - time < MIN_OVERLAY_DURATION) return none;
+  // The part after the cut starts over the main track too.
+  if (time > latestStart(timeline)) return none;
   const anchored = anchorAt(timeline, time);
   if (!anchored) return none;
   // Where the whole item starts, including any part hidden with its clip's head.
@@ -1086,7 +1099,7 @@ export function duplicateOverlay(
  */
 export function canLiftClip(timeline: ProjectTimeline, clipId: string): boolean {
   const clip = timeline.clips.find((item) => item.id === clipId);
-  return clip !== undefined && timelineDuration(timeline) - clipDuration(clip) >= MIN_OVERLAY_DURATION;
+  return clip !== undefined && mainDuration(timeline) - clipDuration(clip) >= MIN_OVERLAY_DURATION;
 }
 
 /**
@@ -1094,8 +1107,8 @@ export function canLiftClip(timeline: ProjectTimeline, clipId: string): boolean 
  * starting at project time `start`, placed on the picture at `element` and as
  * loud as the clip was. The clips after it close up. What was anchored to it,
  * subtitles, overlays and audio, moves along with it, re-anchored to the
- * clips below where it lands; parts that were hidden, or that land past the
- * end, go. Null when it is the only clip.
+ * clips below where it lands; parts that were hidden, or that would start
+ * past the end of the main track, go. Null when it is the only clip.
  */
 export function clipToOverlay(
   timeline: ProjectTimeline,
@@ -1107,7 +1120,7 @@ export function clipToOverlay(
   const moved = placeClips(timeline).find((entry) => entry.clip.id === clipId);
   if (!moved || !canLiftClip(timeline, clipId)) return null;
   const rest: ProjectTimeline = { ...timeline, clips: timeline.clips.filter((clip) => clip.id !== clipId) };
-  const total = timelineDuration(rest);
+  const total = mainDuration(rest);
   if (total < MIN_OVERLAY_DURATION) return null;
   const from = clamp(start, 0, total - MIN_OVERLAY_DURATION);
   const shift = from - moved.offset;
@@ -1150,7 +1163,7 @@ export function clipToOverlay(
     volume: moved.clip.volume ?? 1,
     element,
   };
-  const to = overlayTarget(next, "video", target, from, Math.min(from + moved.duration, total));
+  const to = overlayTarget(next, "video", target, from, from + moved.duration);
   next = { ...next, tracks: putItem(next.tracks, video, to, "video") };
   return { timeline: next, id: video.id };
 }

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { X } from "lucide-svelte";
+  import type { Config } from "../interface";
   import { invoke } from "../invoker";
   import { hotwordProblem, MAX_HOTWORDS, splitHotwords } from "../powerlive-subtitle";
 
@@ -9,17 +10,22 @@
   let draft = $state("");
   let problem = $state("");
   let saving: Promise<void> = Promise.resolve();
+  let saves = 0;
 
   function save(next: string[]) {
-    const before = hotwords;
     hotwords = next;
+    const id = ++saves;
     // In order, so a quick add then remove is stored as the last one says.
     saving = saving.then(async () => {
       try {
-        hotwords = await invoke<string[]>("update_powerlive_hotwords", { hotwords: next });
+        const stored = await invoke<string[]>("update_powerlive_hotwords", { hotwords: next });
+        // An earlier reply would undo the edits made since.
+        if (id === saves) hotwords = stored;
       } catch (error) {
-        hotwords = before;
         problem = "保存热词失败：" + error;
+        // Show what is still stored.
+        const config = await invoke<Config>("get_config").catch(() => null);
+        if (config && id === saves) hotwords = config.powerlive_hotwords;
       }
     });
   }

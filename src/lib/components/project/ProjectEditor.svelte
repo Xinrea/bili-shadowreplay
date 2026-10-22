@@ -1395,11 +1395,20 @@
     aiRunning = true;
     const overwrite = aiOverwrite;
     const regenerate = aiRegenerate;
-    const context = aiPowerLive ? aiContext.trim() : "";
+    const powerLive = aiPowerLive;
+    const context = powerLive ? aiContext.trim() : "";
     const wanted = (clipId: string) =>
       overwrite || !timeline.subtitles.some((subtitle) => subtitle.clip_id === clipId);
     const cuesByMaterial = new Map<number, ReturnType<typeof parseSrt>>();
     try {
+      if (powerLive) {
+        // The fields save as they change without being waited for, and
+        // recognizing reads the stored settings: store them as shown first.
+        await Promise.all([
+          invoke("update_powerlive_hotwords", { hotwords: aiHotwords }),
+          invoke("update_powerlive_sentence_max_length", { sentenceMaxLength: aiSentenceLength }),
+        ]);
+      }
       for (const materialId of new Set(timeline.clips.map((clip) => clip.material_id))) {
         if (!timeline.clips.some((clip) => clip.material_id === materialId && wanted(clip.id))) continue;
         let srt = regenerate ? "" : await invoke<string>("get_video_subtitle", { id: materialId });
@@ -2202,7 +2211,10 @@
       </div>
       <div class="ui-modal-footer">
         <button type="button" class="ui-btn" onclick={() => (showAiModal = false)}>取消</button>
-        <button type="button" class="ui-btn ui-btn-primary" onclick={generateSubtitles}>开始识别</button>
+        <!-- The context is part of the request, so wait until it is filled. -->
+        <button type="button" class="ui-btn ui-btn-primary" disabled={aiContextLoading} onclick={generateSubtitles}>
+          开始识别
+        </button>
       </div>
     </div>
   </div>

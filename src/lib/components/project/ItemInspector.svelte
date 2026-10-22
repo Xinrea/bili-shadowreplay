@@ -312,7 +312,7 @@
     {@render volumeRow("原声音量")}
   </section>
 
-  <p class="hint">主轨片段铺满整个画面。把素材拖到时间轴的叠加轨道上作为画中画，即可调整它的大小、位置和不透明度。</p>
+  <p class="hint">主轨片段铺满整个画面。把它向上拖到其他视频轨道上作为画中画，即可调整它的大小、位置和不透明度。</p>
 {:else}
   {@const sound = inspected.item}
   <section class="group">

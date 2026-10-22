@@ -71,7 +71,7 @@
         role="listitem"
         draggable="true"
         ondragstart={(event) => dragStart(event, material)}
-        title="拖到主轨道上插入、拖到叠加轨道上叠加在画面上、拖到音频轨道上只用它的声音，或点击 ＋ 添加到末尾"
+        title="拖到主轨上插入、拖到其他视频轨道上叠加在画面上、拖到音频轨道上只用它的声音，或点击 ＋ 添加到末尾"
       >
         <button type="button" class="thumb" onclick={() => onPreview(material)} title="预览素材">
           {#if material.coverUrl}

@@ -33,6 +33,8 @@
     trackCount: number;
     time: number;
     playing: boolean;
+    /** The project's clock stopped for its own video to load. */
+    waiting: boolean;
     /** Width of the preview frame in CSS pixels. */
     width: number;
     selectedId: string | null;
@@ -42,8 +44,6 @@
     stickerUrls: Map<string, string>;
     /** Width over height of each material seen so far. */
     aspects: Map<number, number>;
-    volume: number;
-    muted: boolean;
     onSelect: (id: string | null) => void;
     /** A click on the picture away from any overlay, with none selected. */
     onBackground: () => void;
@@ -66,6 +66,7 @@
     trackCount,
     time,
     playing,
+    waiting,
     width,
     selectedId,
     editingId,
@@ -73,8 +74,6 @@
     materialUrls,
     stickerUrls,
     aspects,
-    volume,
-    muted,
     onSelect,
     onBackground,
     onDragStart,
@@ -290,10 +289,9 @@
             url={materialUrls.get(item.material_id)}
             {time}
             {playing}
+            {waiting}
             {unit}
             aspect={aspectOf(item.material_id)}
-            {volume}
-            {muted}
             onAspect={(aspect) => onAspect(item.material_id, aspect)}
           />
         {/if}

@@ -5,6 +5,8 @@
     /** Seconds. */
     duration: number;
     url: string;
+    /** Relative to the output directory. */
+    file: string;
     createdAt: string;
   }
 </script>

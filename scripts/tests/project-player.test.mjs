@@ -42,6 +42,9 @@ async function loadModule() {
 
 const { ProjectPlayer } = await loadModule();
 
+/** Settle what is waiting on promises. */
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
 /** A <video> whose seeks land when the test says. */
 class FakeVideo extends EventTarget {
   constructor() {
@@ -52,6 +55,8 @@ class FakeVideo extends EventTarget {
     this.paused = true;
     this.seeks = [];
     this.position = 0;
+    this.playbackRate = 1;
+    this.muted = false;
   }
   get currentTime() {
     return this.position;
@@ -93,9 +98,36 @@ class FakeVideo extends EventTarget {
   }
 }
 
+/** The preview's sound, whose time the test sets, and which loads when it says. */
+class FakeClock {
+  constructor() {
+    this.time = 0;
+    this.running = false;
+    this.prepared = [];
+    this.started = [];
+    this.pending = [];
+  }
+  prepare(time) {
+    this.prepared.push(time);
+    return new Promise((resolve) => this.pending.push(resolve));
+  }
+  /** Finish loading what it was asked to. */
+  loaded() {
+    for (const resolve of this.pending.splice(0)) resolve();
+  }
+  start(time) {
+    this.running = true;
+    this.time = time;
+    this.started.push(time);
+  }
+  stop() {
+    this.running = false;
+  }
+}
+
 function player() {
   const [first, second] = [new FakeVideo(), new FakeVideo()];
-  const instance = new ProjectPlayer(first, second);
+  const instance = new ProjectPlayer(first, second, new FakeClock());
   instance.setSegments([{ clipId: "a", url: "a.mp4", start: 100, end: 400, offset: 0 }]);
   const events = [];
   for (const type of ["seeking", "seeked"]) instance.addEventListener(type, () => events.push(type));
@@ -157,7 +189,7 @@ test("leaving the clips drops the seek waiting", () => {
 
 test("the standby element preloading does not hold the player seeking", () => {
   const [active, standby] = [new FakeVideo(), new FakeVideo()];
-  const instance = new ProjectPlayer(active, standby);
+  const instance = new ProjectPlayer(active, standby, new FakeClock());
   instance.setSegments([
     { clipId: "a", url: "a.mp4", start: 100, end: 110, offset: 0 },
     { clipId: "b", url: "b.mp4", start: 5, end: 15, offset: 10 },
@@ -195,7 +227,7 @@ test("an error while still seeking keeps the time asked", () => {
 
 test("a seek moving on to another file ends the one going on", () => {
   const [active, standby] = [new FakeVideo(), new FakeVideo()];
-  const instance = new ProjectPlayer(active, standby);
+  const instance = new ProjectPlayer(active, standby, new FakeClock());
   // The next clip starts at the head of its file.
   instance.setSegments([
     { clipId: "a", url: "a.mp4", start: 100, end: 110, offset: 0 },
@@ -227,7 +259,7 @@ test("clearing the clips ends the seek going on", () => {
 
 test("a file replaced before its metadata came is not seeked in the next one", () => {
   const [active, standby] = [new FakeVideo(), new FakeVideo()];
-  const instance = new ProjectPlayer(active, standby);
+  const instance = new ProjectPlayer(active, standby, new FakeClock());
   instance.setSegments([
     { clipId: "a", url: "a.mp4", start: 100, end: 110, offset: 0 },
     { clipId: "b", url: "b.mp4", start: 0, end: 10, offset: 10 },
@@ -262,20 +294,131 @@ test("a seek queued behind one that never lands is dropped with it", () => {
   assert.deepEqual(events, ["seeking", "seeked"]);
 });
 
-test("each clip's sound plays at its own volume, from where it is reached", () => {
+/** A player of two clips, playing from 0 on its clock. */
+async function playing() {
   const [active, standby] = [new FakeVideo(), new FakeVideo()];
-  active.volume = standby.volume = 1;
-  const instance = new ProjectPlayer(active, standby);
+  const clock = new FakeClock();
+  const instance = new ProjectPlayer(active, standby, clock);
   instance.setSegments([
     { clipId: "a", url: "a.mp4", start: 100, end: 110, offset: 0 },
-    { clipId: "b", url: "b.mp4", start: 0, end: 10, offset: 10 },
+    { clipId: "b", url: "b.mp4", start: 5, end: 15, offset: 10 },
   ]);
-  instance.volume = 0.8;
-  instance.setClipVolumes(new Map([["b", 0.5]]));
-  assert.equal(active.volume, 0.8);
-  // Seeked into clip b.
+  active.loaded();
+  active.land();
+  standby.loaded();
+  standby.land();
+  active.seeks.length = standby.seeks.length = 0;
+  const events = [];
+  for (const type of ["play", "waiting", "playing", "pause", "ended", "seeking"]) {
+    instance.addEventListener(type, () => events.push(type));
+  }
+  const started = instance.play();
+  await flush();
+  return { instance, active, standby, clock, events, started };
+}
+
+/** Move the clock on and let the player follow it, as an animation frame does. */
+function tick(clock, video, time) {
+  clock.time = time;
+  video.dispatchEvent(new Event("timeupdate"));
+}
+
+test("playing waits for the sound and the picture there, then the videos follow the clock, muted", async () => {
+  const { instance, active, standby, clock, events, started } = await playing();
+  assert.equal(active.muted && standby.muted, true);
+  assert.deepEqual(events, ["play", "waiting"]);
+  assert.deepEqual(clock.prepared, [0]);
+  assert.deepEqual(clock.started, []);
+  clock.loaded();
+  await started;
+  assert.deepEqual(clock.started, [0]);
+  assert.deepEqual(events, ["play", "waiting", "playing"]);
+  tick(clock, active, 2);
+  assert.equal(instance.currentTime, 2);
+  assert.equal(active.paused, false);
+  // Far off, it is seeked to where the clock will be once the seek lands.
+  assert.ok(active.seeks.at(-1) > 102 && active.seeks.at(-1) < 103.6);
+});
+
+test("a video behind the clock or ahead of it plays faster or slower until in step", async () => {
+  const { active, clock, started } = await playing();
+  clock.loaded();
+  await started;
+  active.position = 103.85;
+  tick(clock, active, 4);
+  assert.equal(active.playbackRate, 1.1);
+  active.position = 104.2;
+  tick(clock, active, 4.15);
+  assert.equal(active.playbackRate, 0.95);
+  active.position = 104.205;
+  tick(clock, active, 4.2);
+  assert.equal(active.playbackRate, 1);
+  assert.deepEqual(active.seeks, []);
+});
+
+test("pausing stops the clock and shows the frame where it stopped", async () => {
+  const { instance, active, clock, events, started } = await playing();
+  clock.loaded();
+  await started;
+  active.position = 107.2;
+  tick(clock, active, 7.25);
+  active.position = 107.1;
+  clock.time = 7.3;
+  instance.pause();
+  assert.equal(clock.running, false);
+  assert.equal(instance.currentTime, 7.3);
+  assert.equal(active.paused, true);
+  assert.equal(active.seeks.at(-1), 107.3);
+  assert.equal(instance.seeking, true);
+  assert.deepEqual(events.slice(-2), ["seeking", "pause"]);
+});
+
+test("at a cut the standby element, holding the next clip, shows it on the clock's time", async () => {
+  const { instance, active, standby, clock, started } = await playing();
+  clock.loaded();
+  await started;
+  active.position = 109.9;
+  tick(clock, active, 9.9);
+  tick(clock, active, 10.25);
+  assert.equal(instance.activeElement, standby);
+  assert.equal(instance.activeClipId, "b");
+  assert.equal(active.paused, true);
+  assert.equal(standby.paused, false);
+  // Behind by 0.25 s, as it starts later than the clock: it catches up.
+  assert.equal(standby.playbackRate, 1.2);
+  assert.deepEqual(standby.seeks, []);
+});
+
+test("a seek while playing starts the clock again once it is loaded there", async () => {
+  const { instance, active, standby, clock, events, started } = await playing();
+  clock.loaded();
+  await started;
+  active.position = 103;
+  tick(clock, active, 3);
   instance.seek(12);
-  assert.equal(instance.activeElement.volume, 0.4);
-  instance.setClipVolumes(new Map());
-  assert.equal(instance.activeElement.volume, 0.8);
+  assert.equal(clock.running, false);
+  assert.deepEqual(clock.prepared, [0, 12]);
+  assert.equal(events.filter((event) => event === "waiting").length, 2);
+  // Not before the picture there is loaded.
+  clock.loaded();
+  await flush();
+  assert.deepEqual(clock.started, [0]);
+  const shown = instance.activeElement;
+  shown.loaded();
+  assert.deepEqual(shown.seeks, [7]);
+  shown.land();
+  runTimers();
+  await flush();
+  assert.deepEqual(clock.started, [0, 12]);
+});
+
+test("the clock reaching the end of the project ends playing there", async () => {
+  const { instance, active, clock, events, started } = await playing();
+  clock.loaded();
+  await started;
+  tick(clock, active, 20.4);
+  assert.equal(instance.currentTime, 20);
+  assert.equal(instance.paused, true);
+  assert.equal(clock.running, false);
+  assert.equal(events.at(-1), "ended");
 });

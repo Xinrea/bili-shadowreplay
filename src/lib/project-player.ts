@@ -1,12 +1,20 @@
 // Seamless preview of a project timeline with two <video> elements: while one
-// plays a clip, the other is already loaded at the next clip's in point, and
+// shows a clip, the other is already loaded at the next clip's in point, and
 // they swap at the cut. The player itself behaves like a media element whose
 // time is project time, so components that follow a <video> (the libass
 // subtitle preview) can follow the whole project instead.
 //
-// An element still seeking is not sent elsewhere: a seek dropped halfway
-// shows nothing, and when one follows the pointer every frame, as scrubbing
-// does, few would land. It goes on to the last time asked once it lands.
+// As in an editing application, the sound is the clock. Every sound of the
+// project, clips' own included, plays from a `PlaybackClock` (the preview's
+// Web Audio), and the videos, always muted, only show pictures: they follow
+// the clock as a `VideoFollower` keeps them, and one that falls behind loses
+// frames, never the sound. Playing starts once the sound and the picture
+// there are loaded, rather than starting and stuttering.
+//
+// While paused, an element still seeking is not sent elsewhere: a seek dropped
+// halfway shows nothing, and when one follows the pointer every frame, as
+// scrubbing does, few would land. It goes on to the last time asked once it
+// lands.
 
 export interface PlayerSegment {
   clipId: string;
@@ -18,6 +26,20 @@ export interface PlayerSegment {
   offset: number;
 }
 
+/** What plays the project's sound and tells the time it is at, while started. */
+export interface PlaybackClock {
+  /** Project time heard now; held where it started until the sound is heard. */
+  readonly time: number;
+  /** Load what is heard from project time `time`, to start there without a gap. */
+  prepare(time: number): Promise<void>;
+  start(time: number): void;
+  stop(): void;
+  /** Called while handling a user's input: browsers start sound only then. */
+  resume?(): void;
+  /** Load, without playing, what is heard from `time`, so that playing starts there at once. */
+  preload?(time: number): void;
+}
+
 /** The parts of HTMLMediaElement that followers of a media clock read. */
 export interface MediaClock extends EventTarget {
   readonly currentTime: number;
@@ -27,18 +49,116 @@ export interface MediaClock extends EventTarget {
   readonly playbackRate: number;
 }
 
-// Switch slightly before the out point: browsers report time in steps, and a
-// frame of the next clip is better than a frame past the out point.
+// Played from the start again when asked to play this close to the end.
 const SWITCH_EARLY = 1 / 60;
 const TIME_UPDATE_INTERVAL_MS = 100;
+/** Playing starts without the picture once it has waited this long for it. */
+const READY_TIMEOUT_MS = 3000;
+const READY_POLL_MS = 30;
+
+// A seek of a playing video stops its picture until the frame is decoded from
+// the keyframe before it, which in recordings with keyframes seconds apart
+// takes WebKit long enough that the clock has moved on by more than a seek
+// corrects: seeking on drift alone keeps it seeking, a slideshow. So a video
+// is kept in step by playing a little faster or slower, and seeked only when
+// far off, then to where the clock will be once the seek lands. Muted, neither
+// is heard.
+//
+// Further off than `SEEK_DRIFT` a playing video is seeked. Further off than
+// `CATCH_UP_DRIFT` it plays faster or slower, by `CATCH_UP_RATES` for each
+// `CATCH_UP_STEP` off, until within `IN_STEP_DRIFT` again. Media elements tell
+// their time in steps, which the two apart leave room for.
+const SEEK_DRIFT = 1;
+const PAUSED_DRIFT = 0.02;
+const CATCH_UP_DRIFT = 0.04;
+const IN_STEP_DRIFT = 0.01;
+const CATCH_UP_STEP = 0.1;
+const CATCH_UP_RATES = [0.05, 0.1, 0.2, 0.3];
+/** How long a seek is taken to last before one has, and the most it is taken to. */
+const FIRST_SEEK_TIME = 0.3;
+const LONGEST_SEEK_TIME = 1.5;
+
+/** Keeps a muted video showing what a clock is at. */
+export class VideoFollower {
+  private catchingUp = false;
+  /** How long seeks of this element have lately taken, in seconds. */
+  private seekTime = FIRST_SEEK_TIME;
+  /** When the seek of ours going on was made, by `performance.now()`. */
+  private seekStarted: number | null = null;
+  private readonly seeked = () => {
+    if (this.seekStarted === null) return;
+    // The longer of the last and the one before, gently: one quick seek near
+    // a keyframe says little about the next.
+    const took = (performance.now() - this.seekStarted) / 1000;
+    this.seekTime = Math.min(LONGEST_SEEK_TIME, Math.max(took, (this.seekTime + took) / 2));
+    this.seekStarted = null;
+  };
+
+  constructor(private readonly element: HTMLVideoElement) {
+    element.addEventListener("seeked", this.seeked);
+  }
+
+  dispose() {
+    this.element.removeEventListener("seeked", this.seeked);
+  }
+
+  /** Play in step with the clock at media time `target`; at `last`, its last frame is held. */
+  play(target: number, last = Number.POSITIVE_INFINITY) {
+    const element = this.element;
+    if (element.readyState < 1) return;
+    const to = Math.min(target, last);
+    if (to >= last) return this.rest(to);
+    const drift = Math.abs(element.currentTime - to);
+    if (drift > SEEK_DRIFT && !element.seeking) {
+      this.rate(1);
+      this.seek(Math.min(to + this.seekTime, last));
+    } else if (drift > CATCH_UP_DRIFT || (this.catchingUp && drift > IN_STEP_DRIFT)) {
+      const step = CATCH_UP_RATES[Math.min(CATCH_UP_RATES.length - 1, Math.floor(drift / CATCH_UP_STEP))];
+      this.rate(element.currentTime > to ? 1 - step : 1 + step);
+    } else {
+      this.rate(1);
+    }
+    if (element.paused) element.play().catch(() => {});
+  }
+
+  /** Stop on the frame it shows. */
+  hold() {
+    this.rate(1);
+    if (!this.element.paused) this.element.pause();
+  }
+
+  /** Stop on media time `target`. */
+  rest(target: number) {
+    this.hold();
+    const element = this.element;
+    if (element.readyState >= 1 && !element.seeking && Math.abs(element.currentTime - target) > PAUSED_DRIFT) {
+      this.seek(target);
+    }
+  }
+
+  private seek(to: number) {
+    this.seekStarted = performance.now();
+    this.element.currentTime = to;
+  }
+
+  private rate(value: number) {
+    this.catchingUp = value !== 1;
+    if (this.element.playbackRate !== value) this.element.playbackRate = value;
+  }
+}
 
 export class ProjectPlayer extends EventTarget implements MediaClock {
   private segments: PlayerSegment[] = [];
   private elements: [HTMLVideoElement, HTMLVideoElement];
+  private followers: [VideoFollower, VideoFollower];
   private active = 0;
   private index = -1;
   private time = 0;
   private playing = false;
+  /** Playing, but waiting for the sound and the picture to load before the clock starts. */
+  private waiting = false;
+  /** Counts each start of playing, so one waiting to start knows it was overtaken. */
+  private run = 0;
   private pendingSeeks = 0;
   /** Where each element seeking goes once it lands, and whether that is a seek of the player's. */
   private queued = new Map<HTMLVideoElement, { time: number; report: boolean }>();
@@ -48,10 +168,6 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
   private onMetadata = new Map<HTMLVideoElement, () => void>();
   private frame = 0;
   private lastTimeUpdate = 0;
-  private volumeValue = 1;
-  private mutedValue = false;
-  /** Of each clip's own sound, by id; full for those not in it. */
-  private clipVolumes = new Map<string, number>();
   private disposed = false;
   private readonly forward = (event: Event) => {
     if (event.target === this.elements[this.active]) {
@@ -63,19 +179,23 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
     if (this.playing && event.target === this.elements[this.active]) this.step();
   };
 
-  constructor(first: HTMLVideoElement, second: HTMLVideoElement) {
+  constructor(
+    first: HTMLVideoElement,
+    second: HTMLVideoElement,
+    private readonly clock: PlaybackClock,
+  ) {
     super();
     this.elements = [first, second];
+    this.followers = [new VideoFollower(first), new VideoFollower(second)];
     for (const element of this.elements) {
       element.preload = "auto";
       element.playsInline = true;
-      for (const type of ["waiting", "playing", "loadedmetadata"]) {
-        element.addEventListener(type, this.forward);
-      }
+      // The clock plays the sound.
+      element.muted = true;
+      element.addEventListener("loadedmetadata", this.forward);
       element.addEventListener("timeupdate", this.fallback);
       element.addEventListener("ended", this.fallback);
     }
-    this.applyVolume();
   }
 
   get currentTime() {
@@ -112,22 +232,6 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
     return this.segments[this.index]?.clipId ?? null;
   }
 
-  set volume(value: number) {
-    this.volumeValue = value;
-    this.applyVolume();
-  }
-
-  set muted(value: boolean) {
-    this.mutedValue = value;
-    this.applyVolume();
-  }
-
-  /** Turn each clip's own sound, by id, to its volume, 0 to 1. */
-  setClipVolumes(volumes: Map<string, number>) {
-    this.clipVolumes = volumes;
-    this.applyVolume();
-  }
-
   /** Replace the timeline, keeping the current position where possible. */
   setSegments(segments: PlayerSegment[]) {
     this.segments = segments;
@@ -135,20 +239,26 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
   }
 
   async play() {
-    if (this.disposed || this.segments.length === 0) return;
+    if (this.disposed || this.segments.length === 0 || this.playing) return;
+    this.clock.resume?.();
     if (this.time >= this.duration - SWITCH_EARLY) this.seek(0);
     this.playing = true;
     this.dispatchEvent(new Event("play"));
-    await this.playActive();
-    this.loop();
+    await this.begin();
   }
 
   pause() {
     if (!this.playing) return;
+    this.run += 1;
+    if (!this.waiting) this.time = Math.min(this.clock.time, this.duration);
+    this.clock.stop();
     this.playing = false;
+    this.waiting = false;
     cancelAnimationFrame(this.frame);
-    for (const element of this.elements) element.pause();
-    this.syncTime();
+    for (const follower of this.followers) follower.hold();
+    // Showing the frame where it stopped, which a video catching up may not.
+    const segment = this.segments[this.index];
+    if (segment) this.load(this.elements[this.active], segment, segment.start + this.time - segment.offset, true);
     this.dispatchEvent(new Event("pause"));
     this.emitTime(true);
   }
@@ -183,30 +293,73 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
     }
     const segment = this.segments[index];
     const element = this.elements[this.active];
-    if (!this.playing) element.pause();
-    this.applyVolume();
+    this.followers[this.active].hold();
     this.load(element, segment, segment.start + target - segment.offset, true);
-    this.elements[1 - this.active].pause();
-    if (this.playing) void this.playActive();
+    this.followers[1 - this.active].hold();
     this.preloadNext();
     this.emitActive();
     this.emitTime(true);
+    // Started again from here once it is loaded.
+    if (this.playing) void this.begin();
+    else this.clock.preload?.(target);
   }
 
   dispose() {
     this.disposed = true;
     this.queued.clear();
     cancelAnimationFrame(this.frame);
+    this.clock.stop();
     for (const element of this.elements) {
       this.endSeeks(element);
       this.whenLoaded(element, null);
-      for (const type of ["waiting", "playing", "loadedmetadata"]) {
-        element.removeEventListener(type, this.forward);
-      }
+      element.removeEventListener("loadedmetadata", this.forward);
       element.removeEventListener("timeupdate", this.fallback);
       element.removeEventListener("ended", this.fallback);
       element.pause();
     }
+    for (const follower of this.followers) follower.dispose();
+  }
+
+  /**
+   * Start the clock at the current time once the sound and the picture there
+   * are loaded, unless pausing or seeking overtook it meanwhile.
+   */
+  private async begin() {
+    const run = ++this.run;
+    this.clock.stop();
+    cancelAnimationFrame(this.frame);
+    if (!this.waiting) {
+      this.waiting = true;
+      this.dispatchEvent(new Event("waiting"));
+    }
+    const time = this.time;
+    await Promise.all([this.clock.prepare(time), this.ready(run)]);
+    if (run !== this.run || !this.playing || this.disposed) return;
+    this.waiting = false;
+    this.clock.start(time);
+    this.dispatchEvent(new Event("playing"));
+    this.emitTime(true);
+    this.loop();
+  }
+
+  /**
+   * Settles once the element showing the current clip can play on, with no
+   * seek of the player's going on, or the wait is too long or overtaken.
+   */
+  private ready(run: number): Promise<void> {
+    const started = performance.now();
+    return new Promise((resolve) => {
+      const check = () => {
+        const element = this.elements[this.active];
+        const loaded = element.readyState >= 3 && !element.seeking && !this.seeking;
+        if (loaded || run !== this.run || this.disposed || performance.now() - started > READY_TIMEOUT_MS) {
+          resolve();
+        } else {
+          setTimeout(check, READY_POLL_MS);
+        }
+      };
+      check();
+    });
   }
 
   private segmentAt(time: number) {
@@ -215,16 +368,6 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
       if (time < segment.offset + segment.end - segment.start) return index;
     }
     return this.segments.length - 1;
-  }
-
-  private applyVolume() {
-    const clipId = this.segments[this.index]?.clipId;
-    const clip = clipId === undefined ? 1 : (this.clipVolumes.get(clipId) ?? 1);
-    this.elements.forEach((element, index) => {
-      element.volume = Math.min(1, Math.max(0, this.volumeValue * clip));
-      // The standby element must never be heard while it preloads.
-      element.muted = this.mutedValue || index !== this.active;
-    });
   }
 
   private load(element: HTMLVideoElement, segment: PlayerSegment, sourceTime: number, report: boolean) {
@@ -360,66 +503,42 @@ export class ProjectPlayer extends EventTarget implements MediaClock {
     if (next) this.load(this.elements[1 - this.active], next, next.start, false);
   }
 
-  private async playActive() {
-    try {
-      await this.elements[this.active].play();
-    } catch (error) {
-      // Interrupted by a seek or switch, which restarts playback itself.
-      if ((error as DOMException)?.name !== "AbortError") {
-        console.warn("Preview playback failed:", error);
-        this.pause();
-      }
-    }
-  }
-
-  private syncTime() {
-    const segment = this.segments[this.index];
-    if (!segment || this.seeking) return;
-    const element = this.elements[this.active];
-    const sourceTime = Math.min(Math.max(element.currentTime, segment.start), segment.end);
-    this.time = segment.offset + sourceTime - segment.start;
-  }
-
   private loop = () => {
     if (!this.playing || this.disposed) return;
     this.step();
     this.frame = requestAnimationFrame(this.loop);
   };
 
-  /** Follow the active element, switching at the out point. */
+  /** Follow the clock: show the clip at its time, switching at a cut. */
   private step() {
-    const segment = this.segments[this.index];
-    const element = this.elements[this.active];
-    if (!segment || this.seeking) return;
-    if (element.currentTime >= segment.end - SWITCH_EARLY || element.ended) {
-      this.advance();
-    } else {
-      this.syncTime();
-      this.emitTime(false);
-    }
-  }
-
-  private advance() {
-    const nextIndex = this.index + 1;
-    const next = this.segments[nextIndex];
-    if (!next) {
-      this.time = this.duration;
+    if (!this.playing || this.waiting || this.index < 0) return;
+    const time = this.clock.time;
+    if (time >= this.duration) {
       this.pause();
+      this.time = this.duration;
       this.dispatchEvent(new Event("ended"));
       return;
     }
-    const previous = this.elements[this.active];
+    this.time = time;
+    const index = this.segmentAt(time);
+    if (index !== this.index) this.switchTo(index);
+    const segment = this.segments[this.index];
+    this.followers[this.active].play(segment.start + time - segment.offset, segment.end);
+    this.emitTime(false);
+  }
+
+  /** Show clip `index`, reached while playing, on the standby element, which normally has it loaded. */
+  private switchTo(index: number) {
+    const next = this.segments[index];
+    const previous = this.active;
     this.active = 1 - this.active;
-    this.index = nextIndex;
-    this.time = next.offset;
+    this.index = index;
     const element = this.elements[this.active];
-    // The standby element normally holds this clip already; load it otherwise.
-    if (element.dataset.src !== next.url || Math.abs(element.currentTime - next.start) > 0.25) {
-      this.load(element, next, next.start, true);
+    const sourceTime = next.start + this.time - next.offset;
+    if (element.dataset.src !== next.url || Math.abs(element.currentTime - sourceTime) > 0.25) {
+      this.load(element, next, sourceTime, false);
     }
-    this.applyVolume();
-    previous.pause();
-    void this.playActive();
+    this.followers[previous].hold();
     this.preloadNext();
     this.emitActive();
     this.emitTime(true);

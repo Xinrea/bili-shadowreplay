@@ -157,9 +157,13 @@ export interface VideoOverlay extends OverlayBase {
 
 export type OverlayItem = TextOverlay | StickerOverlay | VideoOverlay;
 
+/** What a track above the main one holds: video overlays, or texts and stickers. */
+export type TrackKind = "video" | "sticker";
+
 /** A track above the main one; items on a track do not overlap in time. */
 export interface OverlayTrack {
   id: string;
+  kind: TrackKind;
   items: OverlayItem[];
 }
 
@@ -217,7 +221,10 @@ export interface ProjectTimeline {
   /** The main track: clips play back to back. */
   clips: TimelineClip[];
   subtitles: TimelineSubtitle[];
-  /** Drawn over the main track, the bottom one first; a higher track covers lower ones. */
+  /**
+   * Drawn over the main track, the bottom one first; a higher track covers
+   * lower ones. Video and sticker tracks come in any order.
+   */
   tracks: OverlayTrack[];
   subtitle_style?: SubtitleStyle | null;
   /** Burn the materials' danmaku when exporting. */

@@ -955,6 +955,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::account::get_qr_status,
         crate::handlers::account::get_qr,
         crate::handlers::config::get_config,
+        crate::handlers::config::request_settings,
         crate::handlers::config::get_mcp_server_status,
         crate::handlers::config::update_mcp_server,
         crate::handlers::config::get_llm_config,

@@ -36,6 +36,8 @@
   /** Narrowest a picture in picture is made, in pixels of the 1920×1080 picture. */
   const MIN_WIDTH = 16;
   const MAX_WIDTH = ELEMENT_SPACE.width * 4;
+  /** Loudest volume, in percent, as the backend allows. */
+  const MAX_VOLUME = 150;
 
   const KINDS = {
     clip: { label: "主轨片段", icon: Film },
@@ -164,7 +166,7 @@
     <input
       type="range"
       min="0"
-      max="100"
+      max={MAX_VOLUME}
       step="1"
       value={volume * 100}
       aria-label={label}
@@ -179,7 +181,7 @@
         aria-label={label}
         onchange={(event) =>
           commitNumber(event, Math.round(volume * 100), (typed) => {
-            const applied = clamp(Math.round(typed), 0, 100);
+            const applied = clamp(Math.round(typed), 0, MAX_VOLUME);
             setVolume(applied / 100);
             return applied;
           })}

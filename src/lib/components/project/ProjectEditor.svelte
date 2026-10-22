@@ -1435,6 +1435,17 @@
     if (aiPowerLive) await fillSubtitleContext();
   }
 
+  /** Sign in to PowerLive in the main window's settings. */
+  async function openPowerLiveSettings() {
+    // Reopening reads whether PowerLive is signed in again.
+    showAiModal = false;
+    try {
+      await invoke("request_settings", { target: "powerlive" });
+    } catch (error) {
+      alert("打开设置失败：" + error);
+    }
+  }
+
   /** Describe the recordings the clips come from, unless the user typed meanwhile. */
   async function fillSubtitleContext() {
     const fill = ++aiContextFills;
@@ -2291,6 +2302,14 @@
               </div>
             </div>
           </div>
+        {:else}
+          <p class="border-t border-line pt-3 text-[11px] leading-relaxed text-fg-muted">
+            PowerLive 字幕生成支持设置热词和上下文以优化准确度，请<button
+              type="button"
+              class="mx-0.5 text-accent-fg hover:underline"
+              onclick={openPowerLiveSettings}>登录</button
+            >使用。
+          </p>
         {/if}
       </div>
       <div class="ui-modal-footer">

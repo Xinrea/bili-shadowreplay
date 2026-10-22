@@ -12,6 +12,17 @@ use {
     tokio::io::AsyncWriteExt,
 };
 
+/// Bring the main window to the front, from a preview window that asked it to
+/// continue something there.
+pub(crate) fn focus_main_window(_state: &State) {
+    #[cfg(feature = "gui")]
+    if let Some(window) = _state.app_handle.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
 /// The bytes of the base64 data URL `data`.
 pub(crate) fn decode_data_url(data: &str) -> Result<Vec<u8>, String> {
     let base64 = data

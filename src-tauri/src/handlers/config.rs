@@ -14,6 +14,16 @@ pub async fn get_config(state: state_type!()) -> Result<Config, ()> {
     Ok(state.config.read().await.clone())
 }
 
+/// Show the settings in the main window, scrolled to the option `target`.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn request_settings(state: state_type!(), target: Option<String>) -> Result<(), String> {
+    state
+        .events
+        .publish(crate::events::AppEvent::SettingsRequested { target });
+    crate::handlers::utils::focus_main_window(&state);
+    Ok(())
+}
+
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_mcp_server_status(
     state: state_type!(),

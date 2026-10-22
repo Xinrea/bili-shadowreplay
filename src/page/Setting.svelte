@@ -148,7 +148,7 @@
 
   /** Scrolls to the option anchored as `data-setting={id}` and highlights it. */
   export function reveal(id: string) {
-    const target = scroller?.querySelector<HTMLElement>(`[data-setting="${id}"]`);
+    const target = scroller?.querySelector<HTMLElement>(`[data-setting="${CSS.escape(id)}"]`);
     if (!scroller || !target) return;
     const top =
       target.getBoundingClientRect().top -

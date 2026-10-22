@@ -92,7 +92,7 @@ export interface TimelineClip {
   start: number;
   /** Out point within the material, in seconds. */
   end: number;
-  /** Of the material's own sound, 0 to 1; full when absent. */
+  /** Of the material's own sound, 0 to 1.5; full when absent. */
   volume?: number;
 }
 
@@ -148,7 +148,7 @@ export interface VideoOverlay extends OverlayBase {
   material_id: number;
   /** Material time shown at the overlay's start. */
   source_start: number;
-  /** 0 to 1. */
+  /** 0 to 1.5. */
   volume: number;
   /** 0 to 1; opaque when absent. */
   opacity?: number;
@@ -174,7 +174,7 @@ export interface OverlayTrack {
 interface AudioBase extends OverlayBase {
   /** Time in the source heard at the item's start. */
   source_start: number;
-  /** 0 to 1. */
+  /** 0 to 1.5. */
   volume: number;
   /**
    * Seconds it fades in over from where it is first heard, and out over

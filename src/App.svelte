@@ -152,6 +152,19 @@
     };
   });
 
+  // A project editor window asks for an option, such as signing in to PowerLive.
+  onMount(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void listen("settings-requested", (event) => openSettings(event.payload.target ?? undefined)).then(
+      (stop) => (disposed ? stop() : (unlisten = stop)),
+    );
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  });
+
   onMount(() =>
     registerCommands([
       ...pages.map((page) => ({

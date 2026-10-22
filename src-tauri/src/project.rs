@@ -79,7 +79,7 @@ pub struct TimelineClip {
     pub start: f64,
     /// Out point within the material, in seconds.
     pub end: f64,
-    /// Of the material's own sound, 0 to 1.
+    /// Of the material's own sound, 0 to [`MAX_VOLUME`].
     #[serde(default = "full_volume", skip_serializing_if = "is_full_volume")]
     pub volume: f64,
 }
@@ -153,7 +153,7 @@ pub struct VideoOverlay {
     pub material_id: i64,
     /// Material time shown at the overlay's start.
     pub source_start: f64,
-    /// 0 to 1.
+    /// 0 to [`MAX_VOLUME`].
     #[serde(default = "full_volume")]
     pub volume: f64,
     /// 0 to 1; opaque when absent.
@@ -226,7 +226,7 @@ pub struct AudioItem {
     /// Time in the source heard at the item's start.
     #[serde(default)]
     pub source_start: f64,
-    /// 0 to 1.
+    /// 0 to [`MAX_VOLUME`].
     #[serde(default = "full_volume")]
     pub volume: f64,
     /// Seconds the sound fades in over from where it is first heard, and out
@@ -675,7 +675,8 @@ impl Timeline {
             let valid = start.is_finite()
                 && start >= 0.0
                 && (duration <= 0.0 || start + placed.end - placed.start <= duration + 0.5)
-                && [placement.x, placement.y, placement.rotation, video.volume]
+                && is_volume(video.volume)
+                && [placement.x, placement.y, placement.rotation]
                     .iter()
                     .all(|value| value.is_finite())
                 && placement.width.is_finite()
@@ -1122,6 +1123,16 @@ mod tests {
         assert!(video
             .validate(|id| (id != 3).then_some(30.0), |_| None)
             .is_err());
+        let set_volume = |timeline: &mut Timeline, volume: f64| {
+            if let OverlayContent::Video(v) = &mut timeline.tracks[0].items[0].content {
+                v.volume = volume;
+            }
+        };
+        let mut loud = video.clone();
+        set_volume(&mut loud, MAX_VOLUME);
+        assert!(loud.validate(|_| Some(30.0), |_| None).is_ok());
+        set_volume(&mut loud, MAX_VOLUME + 0.1);
+        assert!(loud.validate(|_| Some(30.0), |_| None).is_err());
         if let OverlayContent::Video(v) = &mut video.tracks[0].items[0].content {
             v.element.width = 0.0;
         }

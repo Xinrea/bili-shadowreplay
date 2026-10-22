@@ -45,7 +45,7 @@ export interface Voice {
   end: number;
   /** File time heard at `start`. */
   from: number;
-  /** 0 to 1. */
+  /** 0 to 1.5. */
   volume: number;
   /** Seconds it fades in over from `start` and out over until `end`, together no longer than it lasts. */
   fadeIn?: number;

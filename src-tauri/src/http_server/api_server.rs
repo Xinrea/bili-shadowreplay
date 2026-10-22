@@ -2565,6 +2565,8 @@ pub async fn start_api_server(state: State) {
             )
             .route("/api/post_upload", post(handler_post_upload))
             .route("/api/request_upload", post(handler_request_upload))
+            // Brings the operator's window to the settings, so viewers cannot.
+            .route("/api/request_settings", post(handler_request_settings))
             .route("/api/generate_materials", post(handler_generate_materials))
             .route(
                 "/api/upload_and_import_files",
@@ -2577,7 +2579,6 @@ pub async fn start_api_server(state: State) {
     app = app
         // Config commands
         .route("/api/get_config", post(handler_get_config))
-        .route("/api/request_settings", post(handler_request_settings))
         .route(
             "/api/get_mcp_server_status",
             post(handler_get_mcp_server_status),

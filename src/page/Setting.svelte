@@ -80,7 +80,7 @@
       icon: HardDrive,
       options: [
         { id: "cache-path", title: "缓存路径", keywords: ["cache", "storage", "path"] },
-        { id: "output-path", title: "切片保存路径", keywords: ["output", "clip", "path"] },
+        { id: "output-path", title: "素材保存路径", keywords: ["output", "material", "path"] },
         { id: "log-folder", title: "日志文件夹", keywords: ["log", "logs"] },
       ],
     },
@@ -90,7 +90,7 @@
       options: [
         { id: "notify-live-start", title: "直播开始通知", keywords: ["notification", "live start"] },
         { id: "notify-live-end", title: "下播通知", keywords: ["notification", "live end"] },
-        { id: "notify-clip", title: "切片完成通知", keywords: ["notification", "clip"] },
+        { id: "notify-clip", title: "素材生成通知", keywords: ["notification", "material"] },
         { id: "notify-post", title: "投稿完成通知", keywords: ["notification", "upload", "post"] },
       ],
     },
@@ -120,9 +120,9 @@
       ],
     },
     {
-      title: "切片文件名格式",
+      title: "素材文件名格式",
       icon: DiscAlbum,
-      options: [{ id: "clip-name-format", title: "文件名格式", keywords: ["clip", "filename", "format"] }],
+      options: [{ id: "clip-name-format", title: "文件名格式", keywords: ["material", "filename", "format"] }],
     },
     {
       title: "弹幕压制样式",
@@ -133,11 +133,11 @@
       ],
     },
     {
-      title: "自动切片",
+      title: "自动素材生成",
       icon: SquareBottomDashedScissors,
       options: [
-        { id: "auto-generate", title: "整场录播生成", keywords: ["auto", "clip", "whole"] },
-        { id: "auto-generate-danmu", title: "自动切片压制弹幕", keywords: ["auto", "clip", "danmaku"] },
+        { id: "auto-generate", title: "生成整场录播素材", keywords: ["auto", "material", "whole"] },
+        { id: "auto-generate-danmu", title: "整场生成时压制弹幕", keywords: ["auto", "material", "danmaku"] },
       ],
     },
   ];
@@ -623,7 +623,7 @@
                 <div>
                   <h3 class="ui-label">外观主题</h3>
                   <p class="ui-hint mt-0.5">
-                    选择主窗口的外观；录播与切片预览窗口始终使用暗色。
+                    选择主窗口的外观；预览与切片编辑窗口将始终使用暗色。
                   </p>
                 </div>
                 <div class="ui-tabs shrink-0" role="radiogroup" aria-label="外观主题">
@@ -759,7 +759,7 @@
                       启用 MCP Server
                     </h3>
                     <p class="ui-hint mt-0.5">
-                      允许本机外部 Agent 查询录播、管理录制及执行切片等操作，修改立即生效并自动保存
+                      允许本机外部 Agent 查询录播、管理录制及生成素材等操作，修改立即生效并自动保存
                     </p>
                   </div>
                   <label class="ui-switch">
@@ -945,8 +945,11 @@
                   <div class="flex items-center justify-between gap-6">
                     <div>
                       <h3 class="ui-label">
-                        切片保存路径
+                        素材保存路径
                       </h3>
+                      <p class="ui-hint mt-0.5">
+                        生成的素材和切片工程文件存放在这里
+                      </p>
                       <p class="ui-hint mt-0.5 break-all">
                         {setting_model.output}
                       </p>
@@ -1027,10 +1030,10 @@
                 <div class="flex items-center justify-between gap-6">
                   <div>
                     <h3 class="ui-label">
-                      切片完成通知
+                      素材生成通知
                     </h3>
                     <p class="ui-hint mt-0.5">
-                      当切片完成时，会收到通知
+                      生成新素材后，会收到通知
                     </p>
                   </div>
                   <label class="ui-switch">
@@ -1259,7 +1262,7 @@
                       自动生成字幕
                     </h3>
                     <p class="ui-hint mt-0.5">
-                      启用后，切片完成后会自动生成字幕
+                      启用后，素材生成后会自动识别字幕
                     </p>
                   </div>
                   <label class="ui-switch">
@@ -1314,7 +1317,7 @@
                 <div class="px-4 py-3" data-setting="powerlive-hotwords">
                   <h3 class="ui-label">PowerLive 热词</h3>
                   <p class="ui-hint mt-0.5 mb-2">
-                    识别时会优先认出这些词，并用它们校对同音字，让主播名、游戏和角色名不再被写错。所有房间共用；每次识别还可以在切片编辑器的「AI 字幕」窗口中补充上下文
+                    识别时会优先认出这些词，并用它们校对同音字，让主播名、游戏和角色名不再被写错；所有房间共用
                   </p>
                   <PowerLiveHotwords bind:hotwords={setting_model.powerlive_hotwords} />
                 </div>
@@ -1471,7 +1474,7 @@
           <div class="space-y-3">
             <h2 class="flex items-center gap-2 text-[14px] font-semibold text-fg">
               <DiscAlbum class="h-4 w-4 text-fg-muted" />
-              <span>切片文件名格式</span>
+              <span>素材文件名格式</span>
             </h2>
             <div class="ui-card divide-y divide-line">
               <div class="px-4 py-3" data-setting="clip-name-format">
@@ -1516,10 +1519,10 @@
                               <div>{"{platform}"}: 平台标识</div>
                               <div>{"{room_id}"}: 房间号</div>
                               <div>{"{live_id}"}: 录播 ID</div>
-                              <div>{"{x}"}: 切片起始秒</div>
-                              <div>{"{y}"}: 切片结束秒</div>
+                              <div>{"{x}"}: 素材起始秒</div>
+                              <div>{"{y}"}: 素材结束秒</div>
                               <div>{"{created_at}"}: 创建时间</div>
-                              <div>{"{length}"}: 切片时长（秒）</div>
+                              <div>{"{length}"}: 素材时长（秒）</div>
                               <div>{"{note}"}: 备注</div>
                             </div>
                           </div>
@@ -1559,7 +1562,7 @@
                       字体大小
                     </h3>
                     <p class="ui-hint mt-0.5">
-                      设置弹幕字体大小
+                      设置生成素材和导出切片时压制的弹幕字体大小
                     </p>
                   </div>
                   <div class="flex items-center space-x-2">
@@ -1607,7 +1610,7 @@
           <div class="space-y-3">
             <h2 class="flex items-center gap-2 text-[14px] font-semibold text-fg">
               <SquareBottomDashedScissors class="h-4 w-4 text-fg-muted" />
-              <span>自动切片</span>
+              <span>自动素材生成</span>
             </h2>
             <div class="ui-card divide-y divide-line">
               <!-- Auto Clip Generation -->
@@ -1615,10 +1618,10 @@
                 <div class="flex items-center justify-between gap-6">
                   <div>
                     <h3 class="ui-label">
-                      整场录播生成
+                      生成整场录播素材
                     </h3>
                     <p class="ui-hint mt-0.5">
-                      启用后，直播结束后会自动整场录播进入切片列表
+                      启用后，直播结束时会自动把整场录播生成为素材
                     </p>
                   </div>
                   <label class="ui-switch">
@@ -1641,10 +1644,10 @@
                 <div class="flex items-center justify-between gap-6">
                   <div>
                     <h3 class="ui-label">
-                      自动切片压制弹幕
+                      整场生成时压制弹幕
                     </h3>
                     <p class="ui-hint mt-0.5">
-                      启用后，自动切片时会同时压制弹幕，会显著增加生成时间
+                      启用后，自动生成整场素材时会同时压制弹幕，会显著增加生成时间
                     </p>
                   </div>
                   <label class="ui-switch">

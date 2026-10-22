@@ -56,7 +56,7 @@ function matchScore(text: string, term: string) {
   if (haystack.startsWith(term)) return 80;
   const index = haystack.indexOf(term);
   if (index >= 0) return 60 - Math.min(index, 20);
-  // Characters in order, so "切路" finds "切片保存路径"; tighter spans rank
+  // Characters in order, so "素路" finds "素材保存路径"; tighter spans rank
   // higher and widely scattered ones do not count.
   let start = -1;
   let position = -1;

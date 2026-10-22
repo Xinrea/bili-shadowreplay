@@ -1403,6 +1403,12 @@ async fn render_timeline(
         });
     }
 
+    // Black on to the end of the overlays and sounds running past the clips.
+    let tail = job.timeline.duration() - job.timeline.main_duration();
+    if tail > 1e-6 {
+        clips.push(RenderClip::blank(tail));
+    }
+
     let mut sounds = Vec::new();
     for placed in job.timeline.placed_audio() {
         let item = placed.item;

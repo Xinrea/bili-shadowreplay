@@ -163,15 +163,30 @@ test("overlays follow the moment of their clip and run on over later clips", () 
   // a shows 10-20 of material 1 at 0-10, b shows 0-5 of material 2 at 10-15.
   const t = withTracks(timeline([clip("a", 1, 10, 20), clip("b", 2, 0, 5)]), track("t1", text("x", "a", 18, 4), text("y", "b", 1, 1)));
   assert.deepEqual(spans(t), [["x", 0, 8, 12, 0], ["y", 0, 11, 12, 0]]);
-  // Swapping the clips carries each overlay along with its clip.
-  assert.deepEqual(spans(api.moveClip(t, "b", 0)), [["x", 0, 13, 15, 0], ["y", 0, 1, 2, 0]]);
+  // Swapping the clips carries each overlay along with its clip, x on past
+  // the end of the main track.
+  assert.deepEqual(spans(api.moveClip(t, "b", 0)), [["x", 0, 13, 17, 0], ["y", 0, 1, 2, 0]]);
   // Trimming the head of a clip past an anchor hides that part; trimming the
   // tail past it hides the whole overlay.
   const headTrimmed = withTracks(t, track("t1", text("x", "a", 9, 3)));
   assert.deepEqual(spans(headTrimmed), [["x", 0, 0, 2, 1]]);
   assert.deepEqual(spans(api.trimClip(t, "a", "end", 17, 30)), [["y", 0, 8, 9, 0]]);
-  // Nothing runs past the end of the project.
-  assert.deepEqual(spans(withTracks(t, track("t1", text("x", "b", 4, 9)))), [["x", 0, 14, 15, 0]]);
+  // It runs on past the end of the main track, which the project lasts until.
+  const long = withTracks(t, track("t1", text("x", "b", 4, 9)));
+  assert.deepEqual(spans(long), [["x", 0, 14, 23, 0]]);
+  assert.equal(api.mainDuration(long), 15);
+  assert.equal(api.timelineDuration(long), 23);
+});
+
+test("an overlay running past the main track is trimmed past it but split only over it", () => {
+  const t = withTracks(timeline([clip("a", 1, 0, 10)]), track("t1", text("x", "a", 8, 4)));
+  // Its end goes on as far as asked, its start stays over the main track.
+  assert.deepEqual(spans(api.trimOverlay(t, "x", "end", 20)), [["x", 0, 8, 20, 0]]);
+  const late = spans(api.trimOverlay(t, "x", "start", 11))[0];
+  assert.deepEqual([late[0], late[2].toFixed(3), late[3]], ["x", "9.900", 12]);
+  // The part after a cut past the main track would start where nothing holds it.
+  assert.equal(api.splitOverlay(t, "x", 11).id, null);
+  assert.notEqual(api.splitOverlay(t, "x", 9).id, null);
 });
 
 test("adding an overlay anchors it at the time given on the lowest free track", () => {
@@ -186,9 +201,13 @@ test("adding an overlay anchors it at the time given on the lowest free track", 
   assert.equal(second.timeline.tracks[1].items[0].id, second.id);
   const third = api.addOverlay(second.timeline, content, 4, 2);
   assert.equal(third.timeline.tracks[0].items[1].id, third.id);
-  // Cut short at the end; nothing to anchor to without clips.
+  // Running on past the end of the main track, but starting over it; nothing
+  // to anchor to without clips.
   const late = api.addOverlay(t, content, 14.5, 3);
-  assert.equal(api.findOverlay(late.timeline, late.id).duration, 0.5);
+  assert.equal(api.findOverlay(late.timeline, late.id).duration, 3);
+  assert.equal(api.timelineDuration(late.timeline), 17.5);
+  const after = api.addOverlay(t, content, 30, 3);
+  assert.equal(api.placeOverlays(after.timeline).find((p) => p.item.id === after.id).start.toFixed(3), "14.900");
   assert.equal(api.addOverlay(api.emptyTimeline(), content, 0, 1).id, null);
 });
 
@@ -204,10 +223,11 @@ test("moving an overlay re-anchors it and lands on a new track where the target 
   // Onto y: x gets a track between.
   const stacked = api.moveOverlay(t, "x", 6, { track: 0 });
   assert.deepEqual(plain(stacked.tracks.map((tr) => tr.items.map((i) => i.id))), [["y"], ["x"], ["v"]]);
-  // Moving the only item off a track removes the track; the project end stops it.
+  // Moving the only item off a track removes the track; it starts no later
+  // than the end of the main track, and runs on past it.
   const lifted = api.moveOverlay(t, "v", 30, { insert: 0 });
   assert.deepEqual(plain(lifted.tracks.map((tr) => tr.items.map((i) => i.id))), [["v"], ["x", "y"]]);
-  assert.deepEqual(spans(lifted)[0], ["v", 0, 17, 20, 0]);
+  assert.deepEqual(spans(lifted)[0].map((value) => (typeof value === "number" ? Number(value.toFixed(3)) : value)), ["v", 0, 19.9, 22.9, 0]);
 });
 
 test("a video overlay moved or trimmed keeps showing the same material", () => {
@@ -451,8 +471,9 @@ test("audio is added onto the top track free, follows its clip and is heard like
   let t = timeline([clip("a", 1, 10, 20), clip("b", 2, 0, 5)]);
   const first = api.addAudio(t, music(0, 0), 2, 20);
   t = first.timeline;
-  // Cut short at the end of the project.
-  assert.deepEqual(plain(api.placeAudio(t).map((p) => [p.item.id, p.track, p.start, p.end])), [[first.id, 0, 2, 15]]);
+  // Playing on past the end of the main track.
+  assert.deepEqual(plain(api.placeAudio(t).map((p) => [p.item.id, p.track, p.start, p.end])), [[first.id, 0, 2, 22]]);
+  assert.equal(api.timelineDuration(t), 22);
   const second = api.addAudio(t, { kind: "material", material_id: 3, source_start: 0, volume: 1 }, 5, 2);
   t = second.timeline;
   // The top track is taken there, so it goes on a new one below.

@@ -73,6 +73,8 @@ const RENDER_VERSION: u32 = 1;
 pub struct RenderClip {
     /// The same however the timeline is edited around the clip.
     pub id: String,
+    /// Empty for black and silence, as after the main track while overlays
+    /// or sounds run on past it.
     pub path: PathBuf,
     /// In point within the file, in seconds.
     pub start: f64,
@@ -84,6 +86,26 @@ pub struct RenderClip {
     pub file_duration: f64,
     /// Of its sound, 0 to 1.
     pub volume: f64,
+}
+
+impl RenderClip {
+    /// Black and silence for `duration`, after the clips of the main track.
+    pub fn blank(duration: f64) -> Self {
+        Self {
+            id: "blank".to_string(),
+            path: PathBuf::new(),
+            start: 0.0,
+            duration,
+            has_audio: false,
+            fps: 0.0,
+            file_duration: 0.0,
+            volume: 1.0,
+        }
+    }
+
+    fn is_blank(&self) -> bool {
+        self.path.as_os_str().is_empty()
+    }
 }
 
 /// Something laid over the joined clips from `start` to `end`, project time.
@@ -188,6 +210,10 @@ pub fn project_frame_rate(rates: impl IntoIterator<Item = f64>, danmu: bool) -> 
 /// seeked to in its file, and how long before the part that is. Near the end
 /// of the file that is read from its last frames, to hold the last one.
 fn part_input(clip: &RenderClip, skip: f64) -> (f64, f64) {
+    // Generated from its start, with nothing to read before it.
+    if clip.is_blank() {
+        return (0.0, 0.0);
+    }
     let start = clip.start + skip;
     let from = if clip.file_duration > 0.0 {
         start.min(clip.file_duration - LAST_FRAME_MARGIN)
@@ -920,6 +946,15 @@ impl Render<'_> {
             let clip = &job.clips[part.clip];
             let (seek, preroll) = part_input(clip, part.skip);
             let length = (part.frames as f64 / fps).max(part.samples as f64 / SAMPLE_RATE);
+            if clip.is_blank() {
+                command.args([
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    &format!("color=c=black:s=1920x1080:r={fps}:d={length:.6}"),
+                ]);
+                continue;
+            }
             let input = std::path::absolute(&clip.path).map_err(|error| error.to_string())?;
             command
                 .args(["-ss", &format!("{seek:.6}")])
@@ -1295,7 +1330,7 @@ async fn render_with_encoder<R: ProgressReporterTrait>(
 
     let mut pictures = Vec::with_capacity(job.overlays.len());
     let mut files = HashMap::new();
-    for clip in &job.clips {
+    for clip in job.clips.iter().filter(|clip| !clip.is_blank()) {
         if !files.contains_key(&clip.path) {
             files.insert(clip.path.clone(), file_identity(&clip.path).await);
         }
@@ -2517,6 +2552,93 @@ mod tests {
         }
         let second = average_color(&output, 6.5).await;
         assert!(second[2] > 150 && second[0] < 80, "{second:?}");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires FFmpeg with libx264"]
+    async fn overlays_running_past_the_clips_show_over_black() {
+        let directory = tempfile::tempdir().unwrap();
+        let [red, blue] =
+            ["red", "blue"].map(|color| directory.path().join(format!("{color}.mp4")));
+        for (path, color) in [(&red, "red"), (&blue, "blue")] {
+            run_ffmpeg(
+                &[
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    &format!("color=c={color}:s=320x180:r=30:d=4"),
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "ultrafast",
+                ],
+                path,
+            )
+            .await;
+        }
+        let output = directory.path().join("out.mp4");
+        render_project(
+            &NoopReporter,
+            ProjectRender {
+                clips: vec![
+                    RenderClip {
+                        id: String::new(),
+                        path: red.clone(),
+                        start: 0.0,
+                        duration: 2.0,
+                        has_audio: false,
+                        fps: 30.0,
+                        file_duration: 4.0,
+                        volume: 1.0,
+                    },
+                    RenderClip::blank(2.0),
+                ],
+                // Over the whole picture, from 1 s until past the clips.
+                overlays: vec![RenderOverlay {
+                    start: 1.0,
+                    end: 3.5,
+                    layer: OverlayLayer::Video(VideoLayer {
+                        path: blue.clone(),
+                        source_start: 0.0,
+                        duration: 4.0,
+                        has_audio: false,
+                        x: 960.0,
+                        y: 540.0,
+                        width: 1920.0,
+                        rotation: 0.0,
+                        volume: 1.0,
+                        opacity: 1.0,
+                    }),
+                }],
+                subtitle_ass: None,
+                sounds: Vec::new(),
+                fonts_directory: None,
+                danmus: Vec::new(),
+                danmu_options: Danmu2AssOptions::default(),
+                output: &output,
+                segment_cache: None,
+            },
+        )
+        .await
+        .unwrap();
+        let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
+        assert!(
+            (metadata.duration - 4.0).abs() < 0.1,
+            "{}",
+            metadata.duration
+        );
+        // The clip, then the overlay, on past the clip, then black.
+        let clip = average_color(&output, 0.5).await;
+        assert!(clip[0] > 150 && clip[2] < 80, "{clip:?}");
+        for seconds in [1.5, 3.0] {
+            let overlay = average_color(&output, seconds).await;
+            assert!(
+                overlay[2] > 150 && overlay[0] < 80,
+                "{seconds} s: {overlay:?}"
+            );
+        }
+        let black = average_color(&output, 3.8).await;
+        assert!(black.iter().all(|value| *value < 30), "{black:?}");
     }
 
     #[tokio::test]

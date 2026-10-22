@@ -14,6 +14,9 @@
 //! Audio items (music, voiceover, the sound of another material) sit on audio
 //! tracks below the main one and are anchored the same way; all of them are
 //! heard together with the clips' own sound.
+//!
+//! Overlays and audio items start over the main track but may run on past its
+//! end: the project then lasts until the last of them ends, over black.
 
 use recorder::danmu::DanmuEntry;
 use serde::{Deserialize, Serialize};
@@ -284,11 +287,10 @@ pub struct PlacedAudio<'a> {
 }
 
 /// The visible part of something anchored at `start` of clip `clip_id` and
-/// running `duration` on, as `(start, end, skip)` in project time like a
-/// [`PlacedOverlay`]; `None` when none of it is.
+/// running `duration` on, maybe past the main track, as `(start, end, skip)`
+/// in project time like a [`PlacedOverlay`]; `None` when none of it is.
 fn anchored_span(
     placed: &[PlacedClip],
-    total: f64,
     clip_id: &str,
     start: f64,
     duration: f64,
@@ -300,7 +302,7 @@ fn anchored_span(
     }
     let from = clip.offset + start - clip.clip.start;
     let shown = from.max(clip.offset);
-    let end = (from + duration).min(total);
+    let end = from + duration;
     (end - shown > EPSILON).then_some((shown, end, shown - from))
 }
 
@@ -350,8 +352,17 @@ impl Timeline {
             .collect()
     }
 
-    pub fn duration(&self) -> f64 {
+    /// How long the clips of the main track last together.
+    pub fn main_duration(&self) -> f64 {
         self.clips.iter().map(TimelineClip::duration).sum()
+    }
+
+    /// How long the project lasts: until the end of the main track, or of
+    /// the overlays and audio items running on past it.
+    pub fn duration(&self) -> f64 {
+        let overlays = self.placed_overlays().into_iter().map(|placed| placed.end);
+        let audio = self.placed_audio().into_iter().map(|placed| placed.end);
+        overlays.chain(audio).fold(self.main_duration(), f64::max)
     }
 
     /// Project-time span of a subtitle, or `None` when it is hidden.
@@ -376,18 +387,12 @@ impl Timeline {
     /// order, which is the order they are drawn in.
     pub fn placed_overlays(&self) -> Vec<PlacedOverlay<'_>> {
         let placed = self.placed();
-        let total = self.duration();
         self.tracks
             .iter()
             .flat_map(|track| &track.items)
             .filter_map(|overlay| {
-                let (start, end, skip) = anchored_span(
-                    &placed,
-                    total,
-                    &overlay.clip_id,
-                    overlay.start,
-                    overlay.duration,
-                )?;
+                let (start, end, skip) =
+                    anchored_span(&placed, &overlay.clip_id, overlay.start, overlay.duration)?;
                 Some(PlacedOverlay {
                     overlay,
                     start,
@@ -402,13 +407,12 @@ impl Timeline {
     /// order.
     pub fn placed_audio(&self) -> Vec<PlacedAudio<'_>> {
         let placed = self.placed();
-        let total = self.duration();
         self.audio_tracks
             .iter()
             .flat_map(|track| &track.items)
             .filter_map(|item| {
                 let (start, end, skip) =
-                    anchored_span(&placed, total, &item.clip_id, item.start, item.duration)?;
+                    anchored_span(&placed, &item.clip_id, item.start, item.duration)?;
                 Some(PlacedAudio {
                     item,
                     start,
@@ -1063,10 +1067,13 @@ mod tests {
                 ("x".to_string(), 8.0, 12.0, 0.0),
                 // Its first second went with the trimmed head of clip a.
                 ("head".to_string(), 0.0, 2.0, 1.0),
-                // Cut short at the end of the project.
-                ("end".to_string(), 14.0, 15.0, 0.0),
+                // On past the end of the main track, which the project
+                // lasts until.
+                ("end".to_string(), 14.0, 23.0, 0.0),
             ]
         );
+        assert_eq!(timeline.main_duration(), 15.0);
+        assert_eq!(timeline.duration(), 23.0);
         assert!(timeline.has_visible_overlays());
         assert!(
             !with_tracks(vec![vec![text_overlay("x", "missing", 0.0, 1.0)]]).has_visible_overlays()
@@ -1221,9 +1228,10 @@ mod tests {
             vec![
                 ("x".to_string(), 8.0, 12.0, 0.0),
                 ("head".to_string(), 0.0, 2.0, 1.0),
-                ("end".to_string(), 14.0, 15.0, 0.0),
+                ("end".to_string(), 14.0, 23.0, 0.0),
             ]
         );
+        assert_eq!(timeline.duration(), 23.0);
     }
 
     #[test]

@@ -422,3 +422,24 @@ test("the clock reaching the end of the project ends playing there", async () =>
   assert.equal(clock.running, false);
   assert.equal(events.at(-1), "ended");
 });
+
+test("past the last clip the clock plays on to the end of what runs on, holding the clip's last frame", async () => {
+  const { instance, standby, clock, events, started } = await playing();
+  instance.setLength(25);
+  assert.equal(instance.duration, 25);
+  clock.loaded();
+  await started;
+  tick(clock, standby, 12);
+  tick(clock, instance.activeElement, 22);
+  assert.equal(instance.currentTime, 22);
+  assert.equal(instance.paused, false);
+  // Seeked there, the clip is shown at its out point, not past it.
+  instance.pause();
+  assert.equal(instance.activeElement.seeks.at(-1), 15);
+  instance.seek(24);
+  assert.equal(instance.currentTime, 24);
+  // Shorter again, it goes back to the new end.
+  instance.setLength(0);
+  assert.equal(instance.currentTime, 20);
+  assert.ok(!events.includes("ended"));
+});

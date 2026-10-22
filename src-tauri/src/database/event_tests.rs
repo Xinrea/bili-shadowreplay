@@ -12,7 +12,8 @@ async fn database() -> Database {
             id INTEGER PRIMARY KEY, room_id TEXT, cover TEXT, file TEXT,
             note TEXT, length INTEGER, size INTEGER, status INTEGER, bvid TEXT,
             title TEXT, desc TEXT, tags TEXT, area INTEGER, created_at TEXT, platform TEXT,
-            live_id TEXT, source TEXT, duration REAL, needs_project INTEGER DEFAULT 0
+            live_id TEXT, source TEXT, duration REAL, needs_project INTEGER DEFAULT 0,
+            danmu_embedded INTEGER DEFAULT 0
         );
         CREATE TABLE tasks (
             id TEXT PRIMARY KEY, type TEXT, status TEXT, message TEXT,
@@ -57,6 +58,7 @@ async fn video_notifications_follow_committed_mutations() {
             live_id: "".into(),
             source: "".into(),
             duration: 10.0,
+            danmu_embedded: false,
         })
         .await
         .unwrap();

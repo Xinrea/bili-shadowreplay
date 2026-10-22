@@ -558,20 +558,20 @@ pub async fn generate_whole_clip(
                     .await
                 {
                     Ok(()) => {
-                        reporter.finish(true, "切片生成完成").await;
+                        reporter.finish(true, "素材生成完成").await;
                         let _ = state_clone
                             .db
-                            .update_task(&task_id, "success", "切片生成完成", None)
+                            .update_task(&task_id, "success", "素材生成完成", None)
                             .await;
                         Ok(())
                     }
                     Err(e) => {
-                        reporter.finish(false, &format!("切片生成失败: {e}")).await;
+                        reporter.finish(false, &format!("素材生成失败: {e}")).await;
                         let _ = state_clone
                             .db
-                            .update_task(&task_id, "failed", &format!("切片生成失败: {e}"), None)
+                            .update_task(&task_id, "failed", &format!("素材生成失败: {e}"), None)
                             .await;
-                        Err(format!("切片生成失败: {e}"))
+                        Err(format!("素材生成失败: {e}"))
                     }
                 }
             },

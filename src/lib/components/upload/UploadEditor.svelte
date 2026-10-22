@@ -302,7 +302,7 @@
               <p class="text-[11px] leading-relaxed {upload.source_state === 'missing' ? 'text-danger-fg' : 'text-fg-muted'}">
                 {sourceDescription(upload)}
               </p>
-              {#if upload.source !== "file" && upload.source_state !== "missing"}
+              {#if upload.source !== "file" && upload.source_state !== "missing" && !upload.danmu_embedded}
                 <label
                   class="flex items-start justify-between gap-3 border-t border-line pt-2.5 {canToggleDanmu
                     ? 'cursor-pointer'

@@ -34,6 +34,11 @@ pub struct VideoRow {
     #[sqlx(default)]
     #[serde(default)]
     pub duration: f64,
+    /// Danmaku burned into the picture when the material was made. Such a
+    /// material keeps no danmaku of its own, so nothing is burned in again.
+    #[sqlx(default)]
+    #[serde(default)]
+    pub danmu_embedded: bool,
 }
 
 /// Where a material was cut from, in seconds from the recording's playlist start.
@@ -88,7 +93,7 @@ impl Database {
     }
 
     pub async fn add_video(&self, video: &VideoRow) -> Result<VideoRow, DatabaseError> {
-        let sql = sqlx::query("INSERT INTO videos (room_id, cover, file, note, length, size, status, bvid, title, desc, tags, area, created_at, platform, live_id, source, duration) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)")
+        let sql = sqlx::query("INSERT INTO videos (room_id, cover, file, note, length, size, status, bvid, title, desc, tags, area, created_at, platform, live_id, source, duration, danmu_embedded) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)")
             .bind(&video.room_id)
             .bind(&video.cover)
             .bind(&video.file)
@@ -106,6 +111,7 @@ impl Database {
             .bind(&video.live_id)
             .bind(&video.source)
             .bind(video.duration)
+            .bind(video.danmu_embedded)
             .execute(&self.pool)
             .await?;
         let video = VideoRow {

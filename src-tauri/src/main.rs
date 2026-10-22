@@ -610,6 +610,12 @@ fn get_migrations() -> Vec<Migration> {
             ",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 24,
+            description: "add_video_danmu_embedded",
+            sql: "ALTER TABLE videos ADD COLUMN danmu_embedded INTEGER NOT NULL DEFAULT 0;",
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -714,7 +720,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
         config.read().await.output.clone().into(),
     ));
 
-    Ok(State {
+    let state = State {
         mcp_server: Arc::new(mcp::McpServer::default()),
         db,
         config,
@@ -724,7 +730,11 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
         events,
         resource_dir,
         readonly: args.readonly,
-    })
+    };
+    state
+        .recorder_manager
+        .on_material_created(crate::handlers::video::material_hook(&state));
+    Ok(state)
 }
 
 #[cfg(feature = "gui")]
@@ -850,7 +860,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
         output_path.clone().into(),
     ));
 
-    Ok(Some(State {
+    let state = State {
         mcp_server: Arc::new(mcp::McpServer::default()),
         events,
         db,
@@ -861,7 +871,11 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
         app_handle: app.handle().clone(),
         resource_dir,
         webhook_poster,
-    }))
+    };
+    state
+        .recorder_manager
+        .on_material_created(crate::handlers::video::material_hook(&state));
+    Ok(Some(state))
 }
 
 #[cfg(feature = "gui")]

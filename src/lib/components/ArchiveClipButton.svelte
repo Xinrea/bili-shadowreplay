@@ -39,6 +39,8 @@
   let clipNote = $state("");
   let fixEncoding = $state(false);
   let createProject = $state(true);
+  /** Burn danmaku into the material instead of saving it alongside. */
+  let embedDanmu = $state(false);
   /** Requests still awaiting a result; several may run at once. */
   let inFlight = 0;
 
@@ -89,8 +91,7 @@
       cover: "",
       live_id: archive.live_id,
       ranges: activeRanges,
-      // Materials keep their danmaku; projects burn it when exporting.
-      danmu: false,
+      danmu: embedDanmu,
       local_offset:
         localOffset ??
         (parseInt(
@@ -173,7 +174,7 @@
       <div class="ui-modal-body custom-scrollbar-light">
         <h3 class="text-[15px] font-semibold text-fg">确认生成素材</h3>
         <p class="mt-1 text-[12px] text-fg-muted">
-          每个选区生成一个素材，选区内的弹幕会一并保存，导出切片时可选择压制
+          每个选区生成一个素材
         </p>
 
         <div class="mt-4 space-y-2">
@@ -221,6 +222,37 @@
             bind:value={clipNote}
             class="ui-input w-full"
           />
+        </div>
+
+        <div class="mt-4 space-y-1.5">
+          <div class="ui-label">弹幕</div>
+          <div class="ui-tabs" role="radiogroup" aria-label="弹幕">
+            <button
+              type="button"
+              role="radio"
+              class="ui-tab"
+              class:active={!embedDanmu}
+              aria-checked={!embedDanmu}
+              onclick={() => (embedDanmu = false)}
+            >
+              外挂
+            </button>
+            <button
+              type="button"
+              role="radio"
+              class="ui-tab"
+              class:active={embedDanmu}
+              aria-checked={embedDanmu}
+              onclick={() => (embedDanmu = true)}
+            >
+              内嵌
+            </button>
+          </div>
+          <p class="text-[11px] text-fg-muted">
+            {embedDanmu
+              ? "生成时把弹幕压进画面，素材不再单独保存弹幕；压制需要重新编码，耗时较长"
+              : "弹幕和素材分开保存，导出切片或投稿时再选择是否压制"}
+          </p>
         </div>
 
         <div class="mt-4 space-y-2.5">

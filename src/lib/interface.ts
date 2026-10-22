@@ -80,6 +80,8 @@ export interface VideoItem {
   source?: string;
   /** Exact length in seconds; 0 for old rows that were never probed. */
   duration?: number;
+  /** Danmaku was burned in when the material was made; it keeps none of its own. */
+  danmu_embedded?: boolean;
 }
 
 /** A material is one video file; `VideoItem` keeps its historical name. */
@@ -326,6 +328,8 @@ export interface UploadItem {
   danmu: boolean;
   /** The material, or one of the project's materials, has saved danmaku. */
   danmu_available: boolean;
+  /** The material already shows its danmaku in the picture. */
+  danmu_embedded: boolean;
   /** Relative to output. */
   display_cover: string;
   /** Video to pick cover frames from, when it can be served. */

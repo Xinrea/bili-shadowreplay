@@ -63,8 +63,8 @@ pub struct ClipRangeParams {
     pub room_id: String,
     pub live_id: String,
     pub ranges: Vec<Range>,
-    /// Ignored: materials keep their danmaku in a sidecar file instead, and
-    /// projects burn it on export. Still accepted from older clients.
+    /// Burn the danmaku into the material instead of keeping it in a sidecar
+    /// file for projects and uploads to burn later.
     #[serde(default)]
     pub danmu: bool,
     pub local_offset: i64,
@@ -91,6 +91,11 @@ pub struct RelatedPlaylist {
     pub path: PathBuf,
 }
 
+/// Runs once a material the recorder manager made is saved, with the id of the
+/// task that made it.
+pub type MaterialHook =
+    Arc<dyn Fn(String, VideoRow) -> futures::future::BoxFuture<'static, ()> + Send + Sync>;
+
 #[derive(Clone)]
 pub struct RecorderManager {
     #[cfg(not(feature = "headless"))]
@@ -105,6 +110,7 @@ pub struct RecorderManager {
     event_tx: RecorderEventSender,
     is_migrating: Arc<AtomicBool>,
     webhook_poster: WebhookPoster,
+    material_hook: Arc<std::sync::OnceLock<MaterialHook>>,
 }
 
 #[derive(Error, Debug)]
@@ -200,6 +206,7 @@ impl RecorderManager {
             event_tx,
             is_migrating: Arc::new(AtomicBool::new(false)),
             webhook_poster,
+            material_hook: Arc::new(std::sync::OnceLock::new()),
         };
 
         // Start event listener
@@ -1586,6 +1593,12 @@ impl RecorderManager {
         }
     }
 
+    /// Set what runs after a whole-live material is saved. Only the first call
+    /// takes effect.
+    pub fn on_material_created(&self, hook: MaterialHook) {
+        let _ = self.material_hook.set(hook);
+    }
+
     pub async fn generate_whole_clip(
         &self,
         reporter: Option<&ProgressReporter>,
@@ -1653,6 +1666,10 @@ impl RecorderManager {
         } else {
             vec![None; playlists.len()]
         };
+
+        let danmu_embedded = danmu_tracks
+            .iter()
+            .any(|track| track.as_ref().is_some_and(|danmus| !danmus.is_empty()));
 
         let output_filename = if let Some(output_name) = output_name {
             let trimmed = output_name.trim();
@@ -1744,6 +1761,7 @@ impl RecorderManager {
                 live_id: String::new(),
                 source: String::new(),
                 duration,
+                danmu_embedded,
             })
             .await?;
 
@@ -1751,6 +1769,11 @@ impl RecorderManager {
             events::new_webhook_event(events::CLIP_GENERATED, events::Payload::Clip(video.clone()));
         if let Err(e) = self.webhook_poster.post_event(&event).await {
             log::error!("Post webhook event error: {e}");
+        }
+
+        if let Some(hook) = self.material_hook.get() {
+            let task_id = reporter.map(|r| r.event_id.clone()).unwrap_or_default();
+            hook(task_id, video).await;
         }
 
         Ok(())

@@ -6,7 +6,11 @@ use crate::handlers::subtitle_fonts::prepare_subtitle_font_directory;
 use crate::handlers::utils::{decode_data_url, get_disk_info_inner};
 use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
 use crate::recorder_manager::ClipRangeParams;
-use crate::subtitle_generator::{item_to_srt, powerlive::PowerLiveOptions, SubtitleGeneratorType};
+use crate::subtitle_generator::{
+    item_to_srt,
+    powerlive::{PowerLiveOptions, PowerLiveOverrides},
+    SubtitleGeneratorType,
+};
 use crate::task::{Task, TaskPriority};
 use crate::webhook::events;
 use base64::Engine;
@@ -622,7 +626,14 @@ pub(crate) async fn auto_subtitle_material(state: &State, task_id: &str, video_i
         return false;
     }
     let subtitle_event_id = format!("{task_id}_subtitle_{video_id}");
-    match generate_video_subtitle_inner(state, subtitle_event_id, video_id, String::new()).await {
+    match generate_video_subtitle_inner(
+        state,
+        subtitle_event_id,
+        video_id,
+        PowerLiveOverrides::default(),
+    )
+    .await
+    {
         Ok(_) => true,
         Err(e) => {
             log::error!("Generate video subtitle error: {e}");
@@ -1013,22 +1024,23 @@ pub async fn get_video_subtitle(state: state_type!(), id: i64) -> Result<String,
     }
 }
 
-/// `context` describes the recording to PowerLive; other services ignore it.
+/// `powerlive` adds a context and replaces settings for PowerLive; other
+/// services ignore it.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn generate_video_subtitle(
     state: state_type!(),
     event_id: String,
     id: i64,
-    context: Option<String>,
+    powerlive: Option<PowerLiveOverrides>,
 ) -> Result<String, String> {
-    generate_video_subtitle_inner(&state, event_id, id, context.unwrap_or_default()).await
+    generate_video_subtitle_inner(&state, event_id, id, powerlive.unwrap_or_default()).await
 }
 
 async fn generate_video_subtitle_inner(
     state: &State,
     event_id: String,
     id: i64,
-    context: String,
+    overrides: PowerLiveOverrides,
 ) -> Result<String, String> {
     // Copy the settings out so no config guard is held across the subtitle
     // job, and resolve them before the task row exists so a bad setting or
@@ -1052,10 +1064,7 @@ async fn generate_video_subtitle_inner(
             config.openai_api_endpoint.clone(),
             config.whisper_language.clone(),
             config.output.clone(),
-            PowerLiveOptions {
-                context,
-                ..PowerLiveOptions::new(&state.db, &config)
-            },
+            PowerLiveOptions::new(&state.db, &config).with_overrides(overrides),
         )
     };
     let video = state.db.get_video(id).await?;
@@ -2214,18 +2223,24 @@ mod queued_subtitle_tests {
         let dir = tempfile::tempdir().unwrap();
         let state = fixture(dir.path(), 1, false).await;
         // A missing video fails before the task row exists.
-        assert!(
-            generate_video_subtitle_inner(&state, "missing".into(), 404, String::new())
-                .await
-                .is_err()
-        );
+        assert!(generate_video_subtitle_inner(
+            &state,
+            "missing".into(),
+            404,
+            PowerLiveOverrides::default()
+        )
+        .await
+        .is_err());
         // So does an unknown subtitle generator.
         state.config.write().await.subtitle_generator_type = "unknown".into();
-        assert!(
-            generate_video_subtitle_inner(&state, "unknown".into(), 1, String::new())
-                .await
-                .is_err()
-        );
+        assert!(generate_video_subtitle_inner(
+            &state,
+            "unknown".into(),
+            1,
+            PowerLiveOverrides::default()
+        )
+        .await
+        .is_err());
         assert!(state.db.get_tasks().await.unwrap().is_empty());
     }
 

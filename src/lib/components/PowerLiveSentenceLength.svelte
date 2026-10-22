@@ -1,15 +1,14 @@
 <script lang="ts">
   import type { Config } from "../interface";
   import { invoke } from "../invoker";
-  import { SENTENCE_MAX_LENGTH } from "../powerlive-subtitle";
+  import { clampSentenceLength, SENTENCE_MAX_LENGTH } from "../powerlive-subtitle";
 
   /** The global PowerLive subtitle line length; saved when changed. */
   let { value = $bindable(SENTENCE_MAX_LENGTH.default), id = undefined }: { value?: number; id?: string } =
     $props();
 
   async function save() {
-    const wanted = Number.isFinite(value) ? Math.round(value) : SENTENCE_MAX_LENGTH.default;
-    value = Math.min(SENTENCE_MAX_LENGTH.max, Math.max(SENTENCE_MAX_LENGTH.min, wanted));
+    value = clampSentenceLength(value);
     try {
       value = await invoke<number>("update_powerlive_sentence_max_length", { sentenceMaxLength: value });
     } catch (error) {

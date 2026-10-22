@@ -3,6 +3,7 @@ use reqwest::{
     multipart::{Form, Part},
     Client,
 };
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::{
@@ -37,6 +38,30 @@ impl<'a> PowerLiveOptions<'a> {
             hotwords: config.powerlive_hotwords.clone(),
             context: String::new(),
             sentence_max_length: config.powerlive_sentence_max_length,
+        }
+    }
+}
+
+/// What one recognition asks of PowerLive instead of the settings, such as
+/// the editor's dialog sending its fields as shown rather than as last saved.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PowerLiveOverrides {
+    #[serde(default)]
+    pub context: String,
+    pub hotwords: Option<Vec<String>>,
+    pub sentence_max_length: Option<u32>,
+}
+
+impl PowerLiveOptions<'_> {
+    pub fn with_overrides(self, overrides: PowerLiveOverrides) -> Self {
+        Self {
+            context: overrides.context,
+            hotwords: overrides.hotwords.unwrap_or(self.hotwords),
+            sentence_max_length: overrides
+                .sentence_max_length
+                .unwrap_or(self.sentence_max_length),
+            ..self
         }
     }
 }
@@ -222,6 +247,31 @@ mod tests {
         );
         db.save_powerlive_session(&serde_json::json!({"access_token":access_token, "refresh_token":"refresh-token", "expires_at":chrono::Utc::now().timestamp()+900, "name":"Alice", "subject":"user-1"}).to_string()).await.unwrap();
         db
+    }
+
+    #[tokio::test]
+    async fn overrides_replace_only_the_settings_they_name() {
+        let db = signed_in_db("access").await;
+        let settings = || PowerLiveOptions {
+            db: &db,
+            hotwords: vec!["砂金".into()],
+            context: String::new(),
+            sentence_max_length: 12,
+        };
+        let kept = settings().with_overrides(PowerLiveOverrides {
+            context: "直播".into(),
+            ..Default::default()
+        });
+        assert_eq!(kept.hotwords, ["砂金"]);
+        assert_eq!(kept.sentence_max_length, 12);
+        assert_eq!(kept.context, "直播");
+        let replaced = settings().with_overrides(PowerLiveOverrides {
+            context: String::new(),
+            hotwords: Some(vec!["黄泉".into()]),
+            sentence_max_length: Some(20),
+        });
+        assert_eq!(replaced.hotwords, ["黄泉"]);
+        assert_eq!(replaced.sentence_max_length, 20);
     }
 
     #[test]

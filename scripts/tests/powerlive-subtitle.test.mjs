@@ -71,3 +71,15 @@ test("the context keeps whole titles within PowerLive's limit", async () => {
   assert.ok(context.endsWith("」。") || context.endsWith("」，切片标题：「切片」。"));
   assert.ok(!context.includes("第39场"));
 });
+
+test("line lengths become the nearest whole one PowerLive accepts", async () => {
+  const { clampSentenceLength } = await loadModule();
+  assert.equal(clampSentenceLength(12), 12);
+  assert.equal(clampSentenceLength(12.6), 13);
+  assert.equal(clampSentenceLength(1), 4);
+  assert.equal(clampSentenceLength(99), 50);
+  // An emptied number field binds null or undefined.
+  assert.equal(clampSentenceLength(null), 10);
+  assert.equal(clampSentenceLength(undefined), 10);
+  assert.equal(clampSentenceLength(Number.NaN), 10);
+});

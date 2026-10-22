@@ -1532,7 +1532,7 @@ struct GenerateVideoSubtitleRequest {
     event_id: String,
     id: i64,
     #[serde(default)]
-    context: Option<String>,
+    powerlive: Option<crate::subtitle_generator::powerlive::PowerLiveOverrides>,
 }
 
 async fn handler_generate_video_subtitle(
@@ -1540,7 +1540,7 @@ async fn handler_generate_video_subtitle(
     Json(param): Json<GenerateVideoSubtitleRequest>,
 ) -> Result<Json<ApiResponse<String>>, ApiError> {
     let result =
-        generate_video_subtitle(state.0, param.event_id.clone(), param.id, param.context).await?;
+        generate_video_subtitle(state.0, param.event_id.clone(), param.id, param.powerlive).await?;
     Ok(Json(ApiResponse::success(result)))
 }
 

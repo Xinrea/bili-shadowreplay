@@ -107,7 +107,12 @@
   import { formatTimecode } from "../../time-format";
   import type { RecordItem } from "../../db";
   import { platformLabel } from "../../platform";
-  import { buildSubtitleContext, MAX_CONTEXT_CHARS, SENTENCE_MAX_LENGTH } from "../../powerlive-subtitle";
+  import {
+    buildSubtitleContext,
+    clampSentenceLength,
+    MAX_CONTEXT_CHARS,
+    SENTENCE_MAX_LENGTH,
+  } from "../../powerlive-subtitle";
   import { createStateRefresh, watchStateChanges } from "../../state-refresh";
   import { announceTask, openTaskCenter, settleTask, wasCancelled } from "../../stores/tasks";
   import AssSubtitlePreview from "../AssSubtitlePreview.svelte";
@@ -208,6 +213,8 @@
   let aiSentenceLength = $state(SENTENCE_MAX_LENGTH.default);
   let aiContext = $state("");
   let aiContextLoading = $state(false);
+  /** Counts context fills, so only the latest one reports. */
+  let aiContextFills = 0;
   let exporting: string | null = $state(null);
   let requestingUpload = $state(false);
   let saveState: "saved" | "pending" | "saving" | "error" = $state("saved");
@@ -1345,14 +1352,15 @@
 
   /** Describe the recordings the clips come from, unless the user typed meanwhile. */
   async function fillSubtitleContext() {
+    const fill = ++aiContextFills;
     aiContextLoading = true;
     try {
       const context = await defaultSubtitleContext();
-      if (!aiContext.trim()) aiContext = context;
+      if (fill === aiContextFills && !aiContext.trim()) aiContext = context;
     } catch (error) {
       console.warn("Failed to build the subtitle context:", error);
     } finally {
-      aiContextLoading = false;
+      if (fill === aiContextFills) aiContextLoading = false;
     }
   }
 
@@ -1395,20 +1403,18 @@
     aiRunning = true;
     const overwrite = aiOverwrite;
     const regenerate = aiRegenerate;
-    const powerLive = aiPowerLive;
-    const context = powerLive ? aiContext.trim() : "";
+    // Sent as shown: the fields' own saves are not waited for.
+    const powerlive = aiPowerLive
+      ? {
+          context: aiContext.trim(),
+          hotwords: [...aiHotwords],
+          sentenceMaxLength: clampSentenceLength(aiSentenceLength),
+        }
+      : undefined;
     const wanted = (clipId: string) =>
       overwrite || !timeline.subtitles.some((subtitle) => subtitle.clip_id === clipId);
     const cuesByMaterial = new Map<number, ReturnType<typeof parseSrt>>();
     try {
-      if (powerLive) {
-        // The fields save as they change without being waited for, and
-        // recognizing reads the stored settings: store them as shown first.
-        await Promise.all([
-          invoke("update_powerlive_hotwords", { hotwords: aiHotwords }),
-          invoke("update_powerlive_sentence_max_length", { sentenceMaxLength: aiSentenceLength }),
-        ]);
-      }
       for (const materialId of new Set(timeline.clips.map((clip) => clip.material_id))) {
         if (!timeline.clips.some((clip) => clip.material_id === materialId && wanted(clip.id))) continue;
         let srt = regenerate ? "" : await invoke<string>("get_video_subtitle", { id: materialId });
@@ -1421,7 +1427,7 @@
           });
           openTaskCenter(eventId);
           try {
-            srt = await invoke<string>("generate_video_subtitle", { eventId, id: materialId, context });
+            srt = await invoke<string>("generate_video_subtitle", { eventId, id: materialId, powerlive });
           } finally {
             settleTask(eventId);
           }

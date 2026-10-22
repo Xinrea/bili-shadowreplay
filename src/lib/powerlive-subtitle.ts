@@ -5,6 +5,12 @@ export const MAX_CONTEXT_CHARS = 400;
 /** The characters per subtitle line PowerLive accepts. */
 export const SENTENCE_MAX_LENGTH = { min: 4, max: 50, default: 10 };
 
+/** The nearest whole length PowerLive accepts, the default for an empty field. */
+export function clampSentenceLength(value: number | null | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return SENTENCE_MAX_LENGTH.default;
+  return Math.min(SENTENCE_MAX_LENGTH.max, Math.max(SENTENCE_MAX_LENGTH.min, Math.round(value)));
+}
+
 const SEPARATORS = /[,，、;；\n\r]+/;
 const PUNCTUATION = /\p{P}/u;
 const NON_ASCII = /[^\x00-\x7f]/;

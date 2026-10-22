@@ -13,6 +13,9 @@ mod ffmpeg;
 mod handlers;
 #[cfg(feature = "headless")]
 mod http_server;
+#[cfg(any(feature = "gui", test))]
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
+mod legacy_dirs;
 mod material;
 mod mcp;
 mod migration;
@@ -739,7 +742,12 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
 
     log::info!("Setting up app state...");
     let app_dirs =
-        AppDirs::new(Some("cn.vjoi.bili-shadowreplay"), false).ok_or("系统未提供应用配置目录")?;
+        AppDirs::new(Some(&app.config().identifier), false).ok_or("系统未提供应用配置目录")?;
+    // Older versions kept the config, cache and output under another name.
+    let legacy = AppDirs::new(Some(legacy_dirs::LEGACY_IDENTIFIER), false);
+    if let Some(legacy) = &legacy {
+        legacy_dirs::migrate(legacy, &app_dirs);
+    }
     let config_path = app_dirs.config_dir.join("Conf.toml");
     let cache_path = app_dirs.cache_dir.join("cache");
     let output_path = app_dirs.data_dir.join("output");
@@ -749,13 +757,16 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
         resource_dir = Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf();
     }
     log::info!("Loading config from {config_path:?}");
-    let config = match Config::load(&config_path, &cache_path, &output_path) {
+    let mut config = match Config::load(&config_path, &cache_path, &output_path) {
         Ok(config) => config,
         Err(e) => {
             log::error!("Failed to load config, exiting: {e}");
             return Err(e.into());
         }
     };
+    if let Some(legacy) = &legacy {
+        legacy_dirs::relocate_config(&mut config, legacy, &app_dirs);
+    }
 
     let config = Arc::new(RwLock::new(config));
     let config_clone = config.clone();

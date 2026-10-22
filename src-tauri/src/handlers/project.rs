@@ -2151,6 +2151,7 @@ mod tests {
             live_id: "live".into(),
             source: String::new(),
             duration: 1.0,
+            danmu_embedded: false,
         })
         .await
         .unwrap();

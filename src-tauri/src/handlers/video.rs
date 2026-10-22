@@ -15,6 +15,7 @@ use crate::task::{Task, TaskPriority};
 use crate::webhook::events;
 use base64::Engine;
 use chrono::{Local, Utc};
+use recorder::danmu::DanmuEntry;
 use recorder::platforms::bilibili;
 use recorder::platforms::bilibili::profile::Profile;
 use serde_json::json;
@@ -482,11 +483,6 @@ pub(crate) async fn create_material(
         .await?;
     log::info!("Clip range done, doing post processing");
     reporter.update("正在保存素材").await;
-    // get file metadata from fs
-    let metadata = std::fs::metadata(&file).map_err(|e| {
-        log::error!("Get file metadata error: {} {}", e, file.display());
-        e.to_string()
-    })?;
     let duration = match ffmpeg_utils::extract_video_metadata(&file).await {
         Ok(video) if video.duration > 0.0 => video.duration,
         _ => params.ranges.iter().map(|r| r.duration()).sum::<f64>(),
@@ -496,10 +492,31 @@ pub(crate) async fn create_material(
         ranges: ranges.clone(),
         ..params.clone()
     };
+    let mut danmu_embedded = false;
     match state.recorder_manager.material_danmus(&source_params).await {
+        Ok(danmus) if params.danmu => {
+            // Super chats are not drawn, so they alone leave nothing to burn.
+            if danmus.iter().any(DanmuEntry::is_danmu) {
+                burn_material_danmus(state, reporter, &file, &danmus).await?;
+                danmu_embedded = true;
+            }
+        }
         Ok(danmus) => crate::material::save_danmus(&file, &danmus).await?,
         Err(e) => log::warn!("Failed to cut danmaku for material {}: {e}", file.display()),
     }
+    // Burning re-encodes the material; the ranges above still describe the cut.
+    let duration = if danmu_embedded {
+        match ffmpeg_utils::extract_video_metadata(&file).await {
+            Ok(video) if video.duration > 0.0 => video.duration,
+            _ => duration,
+        }
+    } else {
+        duration
+    };
+    let metadata = std::fs::metadata(&file).map_err(|e| {
+        log::error!("Get file metadata error: {} {}", e, file.display());
+        e.to_string()
+    })?;
     let mut cover_generate_ffmpeg = true;
     let cover_file = file.with_extension("jpg");
     if !params.cover.is_empty() {
@@ -572,6 +589,7 @@ pub(crate) async fn create_material(
             live_id: params.live_id.clone(),
             source: serde_json::to_string(&source).map_err(|e| e.to_string())?,
             duration,
+            danmu_embedded,
         })
         .await?;
 
@@ -582,6 +600,34 @@ pub(crate) async fn create_material(
     }
 
     Ok(video)
+}
+
+/// Burn `danmus` into the material at `file`, replacing it. The work happens in
+/// a private directory beside it, so no other file in the output directory is
+/// overwritten, and the cut is removed with that directory when burning fails.
+async fn burn_material_danmus(
+    state: &State,
+    reporter: &ProgressReporter,
+    file: &Path,
+    danmus: &[DanmuEntry],
+) -> Result<(), String> {
+    let options = state.config.read().await.danmu_ass_options.clone();
+    let parent = file
+        .parent()
+        .ok_or_else(|| format!("Invalid material path: {}", file.display()))?;
+    let work = tempfile::tempdir_in(parent).map_err(|e| {
+        let _ = std::fs::remove_file(file);
+        format!("创建弹幕压制目录失败: {e}")
+    })?;
+    let cut = work.path().join("material.mp4");
+    if let Err(e) = tokio::fs::rename(file, &cut).await {
+        let _ = tokio::fs::remove_file(file).await;
+        return Err(format!("移动素材失败: {} ({e})", file.display()));
+    }
+    let burned = ffmpeg::encode_video_danmu(Some(reporter), &cut, danmus, &options).await?;
+    tokio::fs::rename(&burned, file)
+        .await
+        .map_err(|e| format!("保存压制弹幕的素材失败: {} ({e})", file.display()))
 }
 
 /// Report new materials with one message and notification per batch.
@@ -618,6 +664,23 @@ pub(crate) async fn notify_materials_created(
             .unwrap_or_else(|e| log::warn!("Failed to show clip notification: {e}"));
     }
     Ok(())
+}
+
+/// Report a whole-live material like one cut from a recording: message,
+/// notification and automatic subtitles.
+pub(crate) fn material_hook(state: &State) -> crate::recorder_manager::MaterialHook {
+    let state = state.clone();
+    std::sync::Arc::new(move |task_id, video| {
+        let state = state.clone();
+        Box::pin(async move {
+            if let Err(e) =
+                notify_materials_created(&state, &video.room_id, std::slice::from_ref(&video)).await
+            {
+                log::error!("Failed to report material {}: {e}", video.file);
+            }
+            auto_subtitle_material(&state, &task_id, video.id).await;
+        })
+    })
 }
 
 /// Generate and save subtitles for a material when automatic subtitles are on.
@@ -1467,6 +1530,7 @@ async fn encode_video_subtitle_inner(
             live_id: video.live_id,
             source: video.source,
             duration: video.duration,
+            danmu_embedded: video.danmu_embedded,
         })
         .await?;
 
@@ -1597,6 +1661,7 @@ pub async fn import_external_video(
         live_id: String::new(),
         source: String::new(),
         duration: metadata.duration,
+        danmu_embedded: false,
     };
 
     let result = state.db.add_video(&video).await?;
@@ -1794,6 +1859,7 @@ async fn clip_video_inner(
         live_id: String::new(),
         source: String::new(),
         duration: clip_duration,
+        danmu_embedded: parent_video.danmu_embedded,
     };
 
     let result = state.db.add_video(&clip_video).await?;

@@ -48,6 +48,9 @@ pub struct UploadView {
     pub danmu: bool,
     /// The source has danmaku that could be burned.
     pub danmu_available: bool,
+    /// The material, or a project's material with no danmaku left to burn,
+    /// already shows its danmaku in the picture.
+    pub danmu_embedded: bool,
     /// Cover to show, relative to the output directory.
     pub display_cover: String,
     /// Video to pick cover frames from, when the static server can serve it.
@@ -87,6 +90,7 @@ async fn upload_view(state: &State, upload: UploadRow) -> UploadView {
         source_state: "missing",
         danmu: false,
         danmu_available: false,
+        danmu_embedded: false,
         display_cover: upload.cover.clone(),
         video: None,
         upload,
@@ -97,6 +101,7 @@ async fn upload_view(state: &State, upload: UploadRow) -> UploadView {
                 view.source_title = material_title(&material);
                 let file = output_dir(state).await.join(&material.file);
                 view.danmu_available = crate::material::danmu_path(&file).is_file();
+                view.danmu_embedded = material.danmu_embedded;
                 view.danmu = view.upload.danmu;
                 // Posting falls back to the file itself without saved danmaku.
                 view.source_state = if view.danmu && view.danmu_available {
@@ -132,14 +137,17 @@ async fn upload_view(state: &State, upload: UploadRow) -> UploadView {
             let timeline = Timeline::parse(&project.project.timeline).unwrap_or_default();
             view.danmu = timeline.danmu;
             let output = output_dir(state).await;
+            let mut any_embedded = false;
             for id in timeline.material_ids() {
                 if let Ok(material) = state.db.get_video(id).await {
+                    any_embedded |= material.danmu_embedded;
                     if crate::material::danmu_path(&output.join(&material.file)).is_file() {
                         view.danmu_available = true;
-                        break;
                     }
                 }
             }
+            // Nothing left to burn, but the picture already shows danmaku.
+            view.danmu_embedded = any_embedded && !view.danmu_available;
             // Cover frames come from the first clip's material.
             if let Some(clip) = timeline.clips.first() {
                 view.video = state

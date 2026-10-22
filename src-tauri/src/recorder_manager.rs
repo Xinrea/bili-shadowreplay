@@ -63,8 +63,8 @@ pub struct ClipRangeParams {
     pub room_id: String,
     pub live_id: String,
     pub ranges: Vec<Range>,
-    /// Ignored: materials keep their danmaku in a sidecar file instead, and
-    /// projects burn it on export. Still accepted from older clients.
+    /// Burn the danmaku into the material instead of keeping it in a sidecar
+    /// file for projects and uploads to burn later.
     #[serde(default)]
     pub danmu: bool,
     pub local_offset: i64,
@@ -91,6 +91,11 @@ pub struct RelatedPlaylist {
     pub path: PathBuf,
 }
 
+/// Runs once a material the recorder manager made is saved, with the id of the
+/// task that made it.
+pub type MaterialHook =
+    Arc<dyn Fn(String, VideoRow) -> futures::future::BoxFuture<'static, ()> + Send + Sync>;
+
 #[derive(Clone)]
 pub struct RecorderManager {
     #[cfg(not(feature = "headless"))]
@@ -105,6 +110,7 @@ pub struct RecorderManager {
     event_tx: RecorderEventSender,
     is_migrating: Arc<AtomicBool>,
     webhook_poster: WebhookPoster,
+    material_hook: Arc<std::sync::OnceLock<MaterialHook>>,
 }
 
 #[derive(Error, Debug)]
@@ -200,6 +206,7 @@ impl RecorderManager {
             event_tx,
             is_migrating: Arc::new(AtomicBool::new(false)),
             webhook_poster,
+            material_hook: Arc::new(std::sync::OnceLock::new()),
         };
 
         // Start event listener
@@ -448,32 +455,19 @@ impl RecorderManager {
                         .await
                     {
                         log::error!("Failed to generate whole clip: {e}");
-                        let _ = reporter
-                            .finish(false, &format!("Failed to generate whole clip: {e}"))
-                            .await;
+                        let message = format!("素材生成失败: {e}");
+                        let _ = reporter.finish(false, &message).await;
                         let _ = self_clone
                             .db
-                            .update_task(
-                                &task_id,
-                                "failed",
-                                &format!("Failed to generate whole clip: {e}"),
-                                None,
-                            )
+                            .update_task(&task_id, "failed", &message, None)
                             .await;
-                        return Err(format!("Failed to generate whole clip: {e}"));
+                        return Err(message);
                     }
 
-                    let _ = reporter
-                        .finish(true, "Whole clip generated successfully")
-                        .await;
+                    let _ = reporter.finish(true, "素材生成完成").await;
                     let _ = self_clone
                         .db
-                        .update_task(
-                            &task_id,
-                            "success",
-                            "Whole clip generated successfully",
-                            None,
-                        )
+                        .update_task(&task_id, "success", "素材生成完成", None)
                         .await;
                     Ok(())
                 },
@@ -1586,6 +1580,12 @@ impl RecorderManager {
         }
     }
 
+    /// Set what runs after a whole-live material is saved. Only the first call
+    /// takes effect.
+    pub fn on_material_created(&self, hook: MaterialHook) {
+        let _ = self.material_hook.set(hook);
+    }
+
     pub async fn generate_whole_clip(
         &self,
         reporter: Option<&ProgressReporter>,
@@ -1689,7 +1689,7 @@ impl RecorderManager {
         log::info!("Concat playlists: {playlists_refs:?}");
         log::info!("Output path: {output_path:?}");
 
-        if let Err(e) = crate::ffmpeg::playlist::concat_playlists_to_video(
+        let danmu_embedded = match crate::ffmpeg::playlist::concat_playlists_to_video(
             reporter,
             &playlists_refs,
             danmu_tracks,
@@ -1698,11 +1698,14 @@ impl RecorderManager {
         )
         .await
         {
-            log::error!("Failed to concat playlists: {e}");
-            return Err(RecorderManagerError::HLSError {
-                err: "Failed to concat playlists".into(),
-            });
-        }
+            Ok(burned) => burned,
+            Err(e) => {
+                log::error!("Failed to concat playlists: {e}");
+                return Err(RecorderManagerError::HLSError {
+                    err: "Failed to concat playlists".into(),
+                });
+            }
+        };
 
         let size = std::fs::metadata(&output_path)
             .map_err(|_| RecorderManagerError::HLSError {
@@ -1744,6 +1747,7 @@ impl RecorderManager {
                 live_id: String::new(),
                 source: String::new(),
                 duration,
+                danmu_embedded,
             })
             .await?;
 
@@ -1751,6 +1755,11 @@ impl RecorderManager {
             events::new_webhook_event(events::CLIP_GENERATED, events::Payload::Clip(video.clone()));
         if let Err(e) = self.webhook_poster.post_event(&event).await {
             log::error!("Post webhook event error: {e}");
+        }
+
+        if let Some(hook) = self.material_hook.get() {
+            let task_id = reporter.map(|r| r.event_id.clone()).unwrap_or_default();
+            hook(task_id, video).await;
         }
 
         Ok(())

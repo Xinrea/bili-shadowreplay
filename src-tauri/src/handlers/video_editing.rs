@@ -438,6 +438,7 @@ pub async fn merge_videos(
         live_id: String::new(),
         source: String::new(),
         duration: 0.0,
+        danmu_embedded: videos.iter().all(|video| video.danmu_embedded),
     };
 
     // Insert into database

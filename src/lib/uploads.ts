@@ -84,7 +84,9 @@ export const sourceLabels: Record<UploadItem["source"], string> = {
 };
 
 /** How the video to upload is found, for the source's current state. */
-export function sourceDescription(upload: Pick<UploadItem, "source" | "source_state" | "danmu">) {
+export function sourceDescription(
+  upload: Pick<UploadItem, "source" | "source_state" | "danmu" | "danmu_embedded">,
+) {
   if (upload.source_state === "missing") {
     return upload.source === "file" ? "视频文件已不存在，无法投稿。" : "来源已被删除，无法投稿。";
   }
@@ -92,10 +94,17 @@ export function sourceDescription(upload: Pick<UploadItem, "source" | "source_st
     case "material":
       return upload.source_state === "render"
         ? "投稿时为素材压制弹幕后生成视频。"
-        : "直接使用素材的视频文件投稿。";
+        : upload.danmu_embedded
+          ? "直接使用素材的视频文件投稿，弹幕已压制在画面中。"
+          : "直接使用素材的视频文件投稿。";
     case "file":
       return "直接使用选定的视频文件投稿。";
     default:
+      if (upload.danmu_embedded) {
+        return upload.source_state === "render"
+          ? "投稿时按切片的时间轴生成视频，素材画面中已压制弹幕。"
+          : "切片只包含一个完整素材，直接使用素材文件投稿，弹幕已压制在画面中。";
+      }
       return upload.source_state === "render"
         ? `投稿时按切片的时间轴生成视频，${upload.danmu ? "压制弹幕" : "不压制弹幕"}。`
         : "切片只包含一个完整素材，直接使用素材文件投稿。";

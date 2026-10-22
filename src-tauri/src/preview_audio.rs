@@ -117,8 +117,8 @@ pub async fn chunk_path(
     tokio::fs::create_dir_all(&dir)
         .await
         .map_err(|e| format!("创建音频缓存目录失败: {e}"))?;
-    // Cut beside it and moved in whole, so a chunk asked twice at once, or
-    // read while being cut, is never half there.
+    // Cut beside it and moved in whole, so a chunk read while being cut is
+    // never half there.
     let part = tempfile::Builder::new()
         .suffix(".flac")
         .tempfile_in(&dir)
@@ -133,10 +133,21 @@ pub async fn chunk_path(
         &part,
     )
     .await?;
-    part.persist(&path)
-        .map_err(|e| format!("保存音频块失败: {e}"))?;
+    store_chunk(part, &path)?;
     prune_now_and_then(cache);
     Ok(Some(path))
+}
+
+/// Move a chunk just cut to `path`, unless one is there already: a chunk is
+/// only ever moved in whole, so one cut at the same time, as two editors
+/// playing the same file do, is the same. Never replacing it also keeps
+/// Windows from failing where it cannot replace a file.
+fn store_chunk(part: tempfile::TempPath, path: &Path) -> Result<(), String> {
+    match part.persist_noclobber(path) {
+        Ok(()) => Ok(()),
+        Err(_) if path.is_file() => Ok(()),
+        Err(error) => Err(format!("保存音频块失败: {error}")),
+    }
 }
 
 /// Now and then, in the background, remove the chunks of files not cut
@@ -221,6 +232,23 @@ mod tests {
         assert!(chunk_path(&output, &cache, "missing.mp4", MAX_CHUNK + 1)
             .await
             .is_err());
+    }
+
+    #[test]
+    fn a_chunk_cut_twice_at_once_keeps_the_first_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("0.flac");
+        let cut = |content: &str| {
+            let part = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+            std::fs::write(part.path(), content).unwrap();
+            part.into_temp_path()
+        };
+        let (first, second) = (cut("first"), cut("second"));
+        store_chunk(first, &path).unwrap();
+        store_chunk(second, &path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first");
+        // Only the chunk is left, not the copy that lost.
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]

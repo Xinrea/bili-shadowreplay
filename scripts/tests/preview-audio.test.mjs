@@ -4,8 +4,9 @@ import { test } from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 
-/** Intervals and timeouts that run when the test says. */
+/** Intervals and timeouts that run when the test says, and a time it moves on. */
 const timers = new Map();
+let now = 0;
 let nextTimer = 1;
 function runIntervals() {
   for (const [, timer] of [...timers]) if (timer.repeat) timer.callback();
@@ -22,8 +23,8 @@ async function loadModule() {
     return id;
   };
   const context = vm.createContext({
-    console,
-    performance,
+    console: { ...console, warn: () => {} },
+    performance: { now: () => now },
     setTimeout: schedule(false),
     setInterval: schedule(true),
     clearTimeout: (id) => timers.delete(id),
@@ -90,13 +91,19 @@ class FakeContext {
   async resume() {}
 }
 
-/** A loader that answers when the test says; `null` sounds are silent. */
-function loader(silent = new Set()) {
+/**
+ * A loader that answers when the test says: chunks of `silent` have no sound,
+ * and those of `failing` fail the first time they are asked for.
+ */
+function loader(silent = new Set(), failing = new Set()) {
   const asked = [];
   const waiting = [];
   const load = (file, index) => {
     asked.push(`${file}#${index}`);
-    return new Promise((resolve) => waiting.push(() => resolve(silent.has(index) ? null : { duration: 10 })));
+    const fails = failing.delete(index);
+    return new Promise((resolve, reject) =>
+      waiting.push(() => (fails ? reject(new Error("422")) : resolve(silent.has(index) ? null : { duration: 10 }))),
+    );
   };
   return { load, asked, answer: () => waiting.splice(0).forEach((resolve) => resolve()) };
 }
@@ -105,9 +112,9 @@ function loader(silent = new Set()) {
 const voice = (more = {}) => ({ id: "v", file: "a.mp4", start: 5, end: 30, from: 8, volume: 0.5, ...more });
 const scheduled = (context) => context.sources.filter((node) => !node.stopped).map((node) => [node.when, node.offset, node.duration]);
 
-async function prepared(voices = [voice()], at = 10, silent) {
+async function prepared(voices = [voice()], at = 10, silent, failing) {
   const context = new FakeContext();
-  const chunks = loader(silent);
+  const chunks = loader(silent, failing);
   const audio = new api.PreviewAudio(context, chunks.load);
   audio.setVoices(voices);
   const ready = audio.prepare(at);
@@ -219,4 +226,21 @@ test("the clock tells the time of what is heard, and holds until the first sound
   audio.stop();
   context.currentTime = 9;
   assert.equal(+audio.time.toFixed(6), 11);
+});
+
+test("a chunk that failed is asked for again, and heard from when it comes", async () => {
+  const { context, chunks, audio } = await prepared([voice()], 10, new Set(), new Set([1]));
+  audio.start(10);
+  runIntervals();
+  assert.deepEqual(scheduled(context), []);
+  // Not again at once, but after a while.
+  assert.equal(chunks.asked.filter((name) => name === "a.mp4#1").length, 1);
+  now += 6000;
+  context.currentTime = 1;
+  runIntervals();
+  assert.equal(chunks.asked.filter((name) => name === "a.mp4#1").length, 2);
+  chunks.answer();
+  await flush();
+  runIntervals();
+  assert.deepEqual(scheduled(context), [[1.005, 3.955, 6.045]]);
 });

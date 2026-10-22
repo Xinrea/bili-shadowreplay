@@ -562,7 +562,10 @@
   onMount(() => {
     previewAudio = new PreviewAudio(new AudioContext({ sampleRate: SAMPLE_RATE }), async (file, chunk) => {
       const response = await fetch(await get_preview_audio_url(file, chunk));
-      return response.ok ? response.arrayBuffer() : null;
+      // Not found: the file is gone, or has no sound there.
+      if (response.status === 404) return null;
+      if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
+      return response.arrayBuffer();
     });
     previewAudio.volume = volume;
     previewAudio.muted = muted;

@@ -639,6 +639,10 @@ test("a clip lifted off the main track shows on a video track and takes what is 
   // The main track keeps a clip.
   assert.equal(api.canLiftClip(t, "b"), true);
   assert.equal(api.clipToOverlay(timeline([clip("a", 1, 0, 10)]), "a", 0, { insert: 0 }, element), null);
+  // Nor when what stays is too short to show it over.
+  const short = timeline([clip("a", 1, 0, 10), clip("b", 2, 0, 0.05)]);
+  assert.equal(api.canLiftClip(short, "a"), false);
+  assert.equal(api.canLiftClip(short, "b"), true);
 });
 
 test("a video overlay dropped on the main track becomes a clip of what it shows", () => {

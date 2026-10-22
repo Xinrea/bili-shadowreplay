@@ -1080,9 +1080,13 @@ export function duplicateOverlay(
 
 // ---- Between the main track and the video tracks --------------------------
 
-/** Whether clip `clipId` can leave the main track, which keeps at least one clip. */
+/**
+ * Whether clip `clipId` can leave the main track: what stays there must be
+ * long enough to show an overlay over.
+ */
 export function canLiftClip(timeline: ProjectTimeline, clipId: string): boolean {
-  return timeline.clips.length > 1 && timeline.clips.some((clip) => clip.id === clipId);
+  const clip = timeline.clips.find((item) => item.id === clipId);
+  return clip !== undefined && timelineDuration(timeline) - clipDuration(clip) >= MIN_OVERLAY_DURATION;
 }
 
 /**

@@ -66,12 +66,18 @@ export interface PreviewAudioContext {
   close?(): Promise<void>;
 }
 
-/** Fetch chunk `index` of `file`; null when it has no sound there. */
+/**
+ * Fetch chunk `index` of `file`; null when it has no sound there, which is
+ * then silent. One that fails is asked for again.
+ */
 export type ChunkLoader = (file: string, index: number) => Promise<ArrayBuffer | null>;
 
 interface Chunk {
   buffer: AudioBuffer | null;
   loading: Promise<void> | null;
+  /** No sound there, as the loader told. */
+  silent: boolean;
+  /** When it last failed to load or decode, by `performance.now()`. */
   failedAt: number;
   usedAt: number;
 }
@@ -296,9 +302,14 @@ export class PreviewAudio {
       void this.ensure(voice.file, index);
       return;
     }
-    // Failed: silent this time through.
+    if (!chunk.buffer) {
+      // Without sound it is silent; failed, it is asked for again, and heard
+      // from when it comes.
+      if (chunk.silent) sounding.scheduled.add(index);
+      else void this.ensure(voice.file, index);
+      return;
+    }
     sounding.scheduled.add(index);
-    if (!chunk.buffer) return;
     chunk.usedAt = performance.now();
     const chunkStart = index * CHUNK_SECONDS;
     const fileStart = Math.max(voice.from, chunkStart);
@@ -347,15 +358,14 @@ export class PreviewAudio {
     if (existing) {
       existing.usedAt = now;
       if (existing.loading) return existing.loading;
-      if (existing.buffer || now - existing.failedAt < RETRY_MS) return Promise.resolve();
+      if (existing.buffer || existing.silent || now - existing.failedAt < RETRY_MS) return Promise.resolve();
     }
-    const chunk: Chunk = existing ?? { buffer: null, loading: null, failedAt: 0, usedAt: now };
+    const chunk: Chunk = existing ?? { buffer: null, loading: null, silent: false, failedAt: 0, usedAt: now };
     this.chunks.set(key(file, index), chunk);
     chunk.loading = this.load(file, index)
-      .then((data) => (data ? this.context.decodeAudioData(data) : null))
-      .then((buffer) => {
-        chunk.buffer = buffer;
-        if (!buffer) chunk.failedAt = performance.now();
+      .then(async (data) => {
+        if (data) chunk.buffer = await this.context.decodeAudioData(data);
+        else chunk.silent = true;
       })
       .catch((error) => {
         console.warn(`Failed to load the preview's sound of ${file} at chunk ${index}:`, error);

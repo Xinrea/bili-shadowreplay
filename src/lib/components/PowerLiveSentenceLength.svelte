@@ -7,17 +7,25 @@
   let { value = $bindable(SENTENCE_MAX_LENGTH.default), id = undefined }: { value?: number; id?: string } =
     $props();
 
-  async function save() {
-    value = clampSentenceLength(value);
-    try {
-      value = await invoke<number>("update_powerlive_sentence_max_length", { sentenceMaxLength: value });
-    } catch (error) {
-      console.error("Failed to save the PowerLive subtitle line length:", error);
-      // Show what is still stored.
-      value = await invoke<Config>("get_config")
-        .then((config) => config.powerlive_sentence_max_length)
-        .catch(() => value);
-    }
+  let saving: Promise<void> = Promise.resolve();
+  let saves = 0;
+
+  function save() {
+    const length = clampSentenceLength(value);
+    value = length;
+    const id = ++saves;
+    // In order, so quick edits are stored as the last one says.
+    saving = saving.then(async () => {
+      try {
+        const stored = await invoke<number>("update_powerlive_sentence_max_length", { sentenceMaxLength: length });
+        if (id === saves) value = stored;
+      } catch (error) {
+        console.error("Failed to save the PowerLive subtitle line length:", error);
+        // Show what is still stored.
+        const config = await invoke<Config>("get_config").catch(() => null);
+        if (config && id === saves) value = config.powerlive_sentence_max_length;
+      }
+    });
   }
 </script>
 

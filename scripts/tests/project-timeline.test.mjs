@@ -542,3 +542,118 @@ test("an audio item fades over the part heard, as export fades it", () => {
   // Fades longer than the item share it: here 3 s in and 1 s out.
   assert.deepEqual(gains(placed(6, 2)), [0, 0.5 / 3, 1 / 3, 2 / 3, 0.5, 0]);
 });
+
+const kinded = (id, kind, ...items) => ({ id, kind, items });
+const layout = (t) => plain(t.tracks.map((tr) => [tr.kind, tr.items.map((i) => i.id)]));
+
+test("tracks from before kinds split into a video track with a sticker track over it", () => {
+  const json = JSON.stringify({
+    clips: [clip("a", 1, 0, 10)],
+    tracks: [
+      { id: "mixed", items: [text("x", "a", 0, 1), pip("v", "a", 2, 1), text("y", "a", 4, 1)] },
+      { id: "texts", items: [text("z", "a", 0, 1)] },
+      { id: "kept", kind: "video", items: [pip("w", "a", 0, 1)] },
+    ],
+  });
+  const parsed = api.parseTimeline(json);
+  assert.deepEqual(layout(parsed), [["video", ["v"]], ["sticker", ["x", "y"]], ["sticker", ["z"]], ["video", ["w"]]]);
+  assert.deepEqual(plain(parsed.tracks.map((tr) => tr.id)), ["mixed", "mixeds", "texts", "kept"]);
+  // Drawn in the same order as before.
+  assert.deepEqual(plain(api.placeOverlays(parsed).map((p) => p.item.id)), ["v", "x", "y", "z", "w"]);
+  assert.deepEqual(layout(api.parseTimeline(JSON.stringify(parsed))), layout(parsed));
+});
+
+test("overlays are added onto tracks of their kind, a new video track just over the main one", () => {
+  let t = withTracks(timeline([clip("a", 1, 0, 10)]), kinded("s", "sticker", text("x", "a", 0, 2)));
+  const video = { kind: "video", material_id: 9, source_start: 0, volume: 1, element: { x: 960, y: 540, width: 1920, rotation: 0 } };
+  const first = api.addOverlay(t, video, 5, 1);
+  t = first.timeline;
+  assert.deepEqual(layout(t), [["video", [first.id]], ["sticker", ["x"]]]);
+  // Free on the sticker track, but a sticker track does not take a video.
+  const second = api.addOverlay(t, video, 5.5, 1);
+  assert.deepEqual(layout(second.timeline), [["video", [first.id]], ["video", [second.id]], ["sticker", ["x"]]]);
+  // A text skips the video tracks below for the sticker track; aimed at a
+  // video track, it gets a sticker track of its own above it.
+  const third = api.addOverlay(t, { kind: "text", element: { content: "t" } }, 5, 1);
+  assert.deepEqual(layout(third.timeline), [["video", [first.id]], ["sticker", ["x", third.id]]]);
+  const aimed = api.addOverlay(t, { kind: "text", element: { content: "t" } }, 5, 1, { track: 0 });
+  assert.deepEqual(layout(aimed.timeline), [["video", [first.id]], ["sticker", [aimed.id]], ["sticker", ["x"]]]);
+  assert.deepEqual(plain(api.overlayTarget(t, "sticker", { track: 0 }, 0, 1)), { insert: 1 });
+  assert.deepEqual(plain(api.overlayTarget(t, "sticker", { track: 1 }, 3, 4)), { track: 1 });
+  // Moved onto a video track, a text lands on a new sticker track above it.
+  assert.deepEqual(layout(api.moveOverlay(t, "x", 0, { track: 0 })), [["video", [first.id]], ["sticker", ["x"]]]);
+  // Lifted apart by settling, a track keeps its kind.
+  const crowded = withTracks(t, kinded("v", "video", pip("p", "a", 0, 3), pip("q", "a", 1, 3)));
+  assert.deepEqual(layout(api.settleOverlays(crowded)), [["video", ["p"]], ["video", ["q"]]]);
+});
+
+test("moving a layer up or down passes a track of the other kind", () => {
+  const t = withTracks(
+    timeline([clip("a", 1, 0, 10)]),
+    kinded("v", "video", pip("p", "a", 0, 2)),
+    kinded("s", "sticker", text("x", "a", 0, 2), text("y", "a", 5, 2)),
+    kinded("w", "video", pip("q", "a", 5, 2)),
+  );
+  // The only item of its track swaps places with the sticker track.
+  assert.deepEqual(layout(api.shiftOverlay(t, "p", 1)), [["sticker", ["x", "y"]], ["video", ["p"]], ["video", ["q"]]]);
+  // One of two goes onto a track of its own past the neighbour.
+  assert.deepEqual(layout(api.shiftOverlay(t, "y", 1)), [["video", ["p"]], ["sticker", ["x"]], ["video", ["q"]], ["sticker", ["y"]]]);
+  assert.deepEqual(layout(api.shiftOverlay(t, "x", -1)), [["sticker", ["x"]], ["video", ["p"]], ["sticker", ["y"]], ["video", ["q"]]]);
+  assert.equal(api.canShiftOverlay(t, "q", 1), false);
+  assert.equal(api.canShiftOverlay(t, "p", -1), false);
+  // A copy goes onto a new track of its kind just above.
+  const copy = api.duplicateOverlay(t, "p");
+  assert.deepEqual(layout(copy.timeline)[1], ["video", [copy.id]]);
+});
+
+test("a clip lifted off the main track shows on a video track and takes what is anchored to it along", () => {
+  // a 0-10, b (2-8 of material 2) 10-16, c 16-26.
+  const t = withAudio(
+    {
+      ...withTracks(
+        timeline([clip("a", 1, 0, 10), { ...clip("b", 2, 2, 8), volume: 0.5 }, clip("c", 3, 0, 10)], [
+          sub("sa", "a", 1, 2),
+          sub("sb", "b", 3, 4),
+          sub("hidden", "b", 0, 1),
+        ]),
+        kinded("s", "sticker", text("on-b", "b", 4, 1), text("on-c", "c", 1, 1)),
+      ),
+    },
+    [[{ clip_id: "b", ...music(2, 3) }]],
+  );
+  const element = { x: 960, y: 540, width: 1920, rotation: 0 };
+  const result = api.clipToOverlay(t, "b", 3, { insert: 0 }, element);
+  const next = result.timeline;
+  // The main track closes up: a 0-10, c 10-20.
+  assert.deepEqual(plain(next.clips.map((c) => c.id)), ["a", "c"]);
+  const pipSpan = api.placeOverlays(next).find((p) => p.item.id === result.id);
+  assert.deepEqual(plain([pipSpan.track, pipSpan.start, pipSpan.end]), [0, 3, 9]);
+  assert.deepEqual(
+    plain(api.findOverlay(next, result.id)),
+    { id: result.id, kind: "video", clip_id: "a", start: 3, duration: 6, material_id: 2, source_start: 2, volume: 0.5, element },
+  );
+  // Its subtitle and sticker show where they did over it; the hidden subtitle goes.
+  assert.deepEqual(plain(api.visibleSubtitles(next).map((s) => [s.subtitle.id, s.start, s.end])), [["sa", 1, 2], ["sb", 4, 5]]);
+  assert.deepEqual(spans(next).filter(([id]) => id !== result.id), [["on-b", 1, 5, 6, 0], ["on-c", 1, 11, 12, 0]]);
+  assert.deepEqual(plain(api.placeAudio(next).map((p) => [p.start, p.end, p.item.source_start])), [[3, 6, 1]]);
+  // The main track keeps a clip.
+  assert.equal(api.canLiftClip(t, "b"), true);
+  assert.equal(api.clipToOverlay(timeline([clip("a", 1, 0, 10)]), "a", 0, { insert: 0 }, element), null);
+  // Nor when what stays is too short to show it over.
+  const short = timeline([clip("a", 1, 0, 10), clip("b", 2, 0, 0.05)]);
+  assert.equal(api.canLiftClip(short, "a"), false);
+  assert.equal(api.canLiftClip(short, "b"), true);
+});
+
+test("a video overlay dropped on the main track becomes a clip of what it shows", () => {
+  // v shows 21-24 of material 9 from 4 of clip a, which starts at 5: 1 s is hidden.
+  const t = withTracks(timeline([clip("a", 1, 5, 15), clip("b", 2, 0, 5)]), kinded("v", "video", { ...pip("v", "a", 4, 3, 9, 20), volume: 0.3 }));
+  const { timeline: next, clipId } = api.overlayToClip(t, "v", 1, 0);
+  assert.deepEqual(plain(next.clips.map((c) => [c.id === clipId ? "new" : c.id, c.material_id, c.start, c.end, c.volume ?? 1])), [
+    ["a", 1, 5, 15, 1],
+    ["new", 9, 21, 23, 0.3],
+    ["b", 2, 0, 5, 1],
+  ]);
+  assert.deepEqual(plain(next.tracks), []);
+  assert.equal(api.overlayToClip(withTracks(t, kinded("s", "sticker", text("x", "a", 6, 1))), "x", 0, 0).clipId, null);
+});

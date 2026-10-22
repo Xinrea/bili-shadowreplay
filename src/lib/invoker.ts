@@ -133,22 +133,27 @@ async function set_title(title: string) {
 
 let STATIC_PORT = 0;
 
-async function get_static_url(base: string, path: string) {
-  let staticUrl;
+async function static_origin() {
   if (TAURI_ENV) {
     if (STATIC_PORT === 0) {
       STATIC_PORT = await invoke("get_static_port");
     }
-    staticUrl = `http://localhost:${STATIC_PORT}`;
-  } else {
-    // In headless/web mode static assets are served by the same server as the
-    // API, so follow the configured endpoint as-is. Rewriting the port here
-    // breaks remapped ports, reverse proxies and HTTPS.
-    staticUrl = ENDPOINT;
+    return `http://localhost:${STATIC_PORT}`;
   }
+  // In headless/web mode static assets are served by the same server as the
+  // API, so follow the configured endpoint as-is. Rewriting the port here
+  // breaks remapped ports, reverse proxies and HTTPS.
+  return ENDPOINT;
+}
 
+async function get_static_url(base: string, path: string) {
   const encodedPath = path.split('/').map(encodeURIComponent).join('/');
-  return `${staticUrl}/${base}/${encodedPath}`;
+  return `${await static_origin()}/${base}/${encodedPath}`;
+}
+
+/** Chunk `chunk` of the sound of `file`, relative to the output directory, for the project preview. */
+async function get_preview_audio_url(file: string, chunk: number) {
+  return `${await static_origin()}/preview_audio?file=${encodeURIComponent(file)}&chunk=${chunk}`;
 }
 
 const { listen } = createEventClient({ tauri: TAURI_ENV, endpoint: ENDPOINT });
@@ -177,5 +182,6 @@ export {
   log,
   onOpenUrl,
   get_static_url,
+  get_preview_audio_url,
   normalizeEndpoint,
 };

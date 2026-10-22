@@ -17,9 +17,11 @@ mod material;
 mod mcp;
 mod migration;
 mod powerlive;
+mod preview_audio;
 mod progress;
 mod project;
 mod recorder_manager;
+mod safe_path;
 mod state;
 #[cfg(feature = "gui")]
 mod static_server;

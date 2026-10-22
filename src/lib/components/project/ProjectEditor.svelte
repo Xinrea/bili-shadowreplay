@@ -29,7 +29,7 @@
   } from "lucide-svelte";
   import { onDestroy, onMount, tick, untrack } from "svelte";
   import { save } from "@tauri-apps/plugin-dialog";
-  import { get_static_url, invoke, listen, log, set_title, TAURI_ENV } from "../../invoker";
+  import { get_preview_audio_url, get_static_url, invoke, listen, log, set_title, TAURI_ENV } from "../../invoker";
   import {
     clamp,
     ELEMENT_MIDDLE,
@@ -63,6 +63,7 @@
     addOverlay,
     addSubtitle,
     canShiftOverlay,
+    clipToOverlay,
     clipAt,
     duplicateOverlay,
     editAudio,
@@ -102,6 +103,7 @@
     type OverlayTarget,
   } from "../../project-timeline";
   import { ProjectPlayer, type PlayerSegment } from "../../project-player";
+  import { PreviewAudio, SAMPLE_RATE, type Voice } from "../../preview-audio";
   import { shownRows } from "../../virtual-list";
   import { buildSubtitleAss, loadSubtitleStyle } from "../../subtitle-ass";
   import { formatTimecode } from "../../time-format";
@@ -134,7 +136,6 @@
   import { renderOverlayImages, StickerLoadError } from "./overlay-render";
   import OverlayStage, { type OverlayChanges } from "./OverlayStage.svelte";
   import ProjectTimelineView, { type AudioDrop, type MaterialInfo } from "./ProjectTimeline.svelte";
-  import TrackSound from "./TrackSound.svelte";
   import "./project-editor.css";
 
   interface Props {
@@ -149,8 +150,6 @@
   const OVERLAY_DURATION = 3;
   /** A run of overlay changes, like dragging a color, closer than this is one undo step. */
   const OVERLAY_EDIT_DELAY_MS = 400;
-  /** Sounds load this long before they come in. */
-  const SOUND_PRELOAD = 3;
   const PANELS = [
     { id: "materials", label: "素材", icon: Film },
     { id: "audio", label: "音频", icon: Music },
@@ -176,7 +175,7 @@
 
   let time = $state(0);
   let playing = $state(false);
-  /** The preview's video waits for data, so the sounds wait with it. */
+  /** Playing, but waiting for the sound and the picture to load first. */
   let waiting = $state(false);
   let scrubbing = false;
   let zoom = $state(1);
@@ -227,6 +226,8 @@
   let videoA: HTMLVideoElement = $state();
   let videoB: HTMLVideoElement = $state();
   let player: ProjectPlayer | null = $state(null);
+  /** Plays every sound of the preview, and is its clock. */
+  let previewAudio: PreviewAudio | null = null;
   let activeVideo = $state(0);
   let previewContainer: HTMLElement = $state();
   let stage: ReturnType<typeof OverlayStage> | undefined = $state();
@@ -313,10 +314,43 @@
     }
     return null;
   });
-  // The sounds near the playhead, which have their own element.
-  let sounds = $derived(audio.filter((entry) => time >= entry.start - SOUND_PRELOAD && time < entry.end + 0.5));
-  // Clips' volumes change the preview's without loading it again.
-  let clipVolumeKey = $derived(timeline.clips.map((clip) => `${clip.id}:${clip.volume ?? 1}`).join("|"));
+  // Everything heard in the preview: clips' own sound, that of video
+  // overlays and the audio tracks', where each is seen or heard.
+  let voices: Voice[] = $derived.by(() => {
+    const result: Voice[] = [];
+    for (const item of placed) {
+      const file = materials.get(item.clip.material_id)?.file;
+      if (!file) continue;
+      const { clip, offset, duration } = item;
+      result.push({ id: clip.id, file, start: offset, end: offset + duration, from: clip.start, volume: clip.volume ?? 1 });
+    }
+    for (const entry of overlays) {
+      const item = entry.item;
+      const file = item.kind === "video" ? materials.get(item.material_id)?.file : undefined;
+      if (item.kind !== "video" || !file) continue;
+      result.push({ id: item.id, file, start: entry.start, end: entry.end, from: item.source_start + entry.skip, volume: item.volume });
+    }
+    for (const entry of audio) {
+      const item = entry.item;
+      const file = item.kind === "file" ? audioFiles.get(item.audio_id)?.file : materials.get(item.material_id)?.file;
+      if (!file) continue;
+      // Shared out over the part heard, as export does.
+      const length = entry.end - entry.start;
+      const [fadeIn, fadeOut] = [Math.max(0, item.fade_in ?? 0), Math.max(0, item.fade_out ?? 0)];
+      const scale = fadeIn + fadeOut > length ? length / (fadeIn + fadeOut) : 1;
+      result.push({
+        id: item.id,
+        file,
+        start: entry.start,
+        end: entry.end,
+        from: item.source_start + entry.skip,
+        volume: item.volume,
+        fadeIn: fadeIn * scale,
+        fadeOut: fadeOut * scale,
+      });
+    }
+    return result;
+  });
   let visibleDanmuCount = $derived(
     placed.reduce((total, item) => {
       const times = danmuCounts.get(item.clip.material_id) ?? [];
@@ -373,6 +407,7 @@
       id: video.id,
       name: video.title || video.file,
       url: await get_static_url("output", video.file),
+      file: video.file,
       coverUrl: video.cover ? await get_static_url("output", video.cover) : "",
       duration: video.duration || video.length,
     };
@@ -401,6 +436,7 @@
         name: file.name,
         duration: file.duration,
         url: await get_static_url("output", file.file),
+        file: file.file,
         createdAt: file.created_at,
       })),
     );
@@ -420,11 +456,6 @@
 
   function inspectedName(entry: InspectedItem) {
     return entry.kind === "audio" ? soundName(entry.item) : materialName(entry.item.material_id);
-  }
-
-  /** Where a sound plays from: a file of the audio library, or a material. */
-  function soundUrl(item: AudioItem) {
-    return item.kind === "file" ? audioFiles.get(item.audio_id)?.url : materials.get(item.material_id)?.url;
   }
 
   /**
@@ -529,7 +560,17 @@
   });
 
   onMount(() => {
-    player = new ProjectPlayer(videoA, videoB);
+    previewAudio = new PreviewAudio(new AudioContext({ sampleRate: SAMPLE_RATE }), async (file, chunk) => {
+      const response = await fetch(await get_preview_audio_url(file, chunk));
+      // Not found: the file is gone, or has no sound there.
+      if (response.status === 404) return null;
+      if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
+      return response.arrayBuffer();
+    });
+    previewAudio.volume = volume;
+    previewAudio.muted = muted;
+    previewAudio.setVoices(voices);
+    player = new ProjectPlayer(videoA, videoB, previewAudio);
     const update = () => {
       if (!scrubbing) time = player.currentTime;
     };
@@ -575,6 +616,7 @@
     if (overlayEditTimer) clearTimeout(overlayEditTimer);
     stopRange?.();
     player?.dispose();
+    previewAudio?.dispose();
     unlistenClose?.();
     if (saveTimer) void flushSave();
   });
@@ -585,17 +627,16 @@
   });
 
   $effect(() => {
-    if (player) {
-      player.volume = volume;
-      player.muted = muted;
-    }
+    // Read first, so the effect follows them before the player is made.
+    const [level, silent] = [volume, muted];
+    if (!player || !previewAudio) return;
+    previewAudio.volume = level;
+    previewAudio.muted = silent;
   });
 
   $effect(() => {
-    clipVolumeKey;
-    if (player) {
-      untrack(() => player.setClipVolumes(new Map(timeline.clips.map((clip) => [clip.id, clip.volume ?? 1]))));
-    }
+    const next = voices;
+    if (player) previewAudio?.setVoices(next);
   });
 
   // The encoder scales and pads to 1920×1080; preview the same frame.
@@ -999,6 +1040,23 @@
     // As it is after the waits, which other edits may have changed.
     const from = start ?? overlayStart(info.duration);
     insertOverlay({ kind: "video", material_id: materialId, source_start: 0, volume: 1, element }, from, info.duration, target);
+  }
+
+  /**
+   * Move a clip off the main track onto a video track from `at`, filling the
+   * picture as it did on the main track.
+   */
+  async function liftClip(clipId: string, at: number, target: OverlayTarget) {
+    const clip = timeline.clips.find((item) => item.id === clipId);
+    if (!clip) return;
+    const url = materials.get(clip.material_id)?.url;
+    const aspect = url ? await probeAspect(clip.material_id, url) : (aspects.get(clip.material_id) ?? 16 / 9);
+    const width = Math.round(Math.min(ELEMENT_SPACE.width, ELEMENT_SPACE.height * aspect));
+    // As it is after the wait, which other edits may have changed.
+    const result = clipToOverlay(timeline, clipId, at, target, { ...ELEMENT_MIDDLE, width, rotation: 0 });
+    if (!result) return;
+    commit(result.timeline);
+    selectOverlay(result.id);
   }
 
   /** Fit the selected video overlay to the whole picture. */
@@ -1797,7 +1855,7 @@
             <span class="truncate text-[11px] text-fg-muted">主轨片段 · {materialName(selectedClip.clip.material_id)}</span>
           {:else}
             <span class="truncate text-[12px] text-fg-muted">
-              从左侧添加文字、贴纸，或把素材拖到时间轴的叠加轨道上叠加画面；点击画面中的内容可移动、旋转、缩放，双击文字可直接修改。
+              从左侧添加文字、贴纸，或把素材拖到时间轴主轨上方的视频轨道上叠加画面；点击画面中的内容可移动、旋转、缩放，双击文字可直接修改。
             </span>
           {/if}
 
@@ -1882,6 +1940,7 @@
                 trackCount={timeline.tracks.length}
                 {time}
                 {playing}
+                {waiting}
                 width={previewFrameWidth}
                 selectedId={selectedOverlayId}
                 editingId={editingOverlayId}
@@ -1889,8 +1948,6 @@
                 {materialUrls}
                 {stickerUrls}
                 {aspects}
-                {volume}
-                {muted}
                 onSelect={selectOverlay}
                 onBackground={togglePlay}
                 onDragStart={beginOverlayDrag}
@@ -1909,12 +1966,6 @@
                   {/if}
                 {/snippet}
               </OverlayStage>
-              {#each sounds as placed (placed.item.id)}
-                {@const url = soundUrl(placed.item)}
-                {#if url}
-                  <TrackSound {placed} {url} {time} playing={playing && !waiting} {volume} {muted} />
-                {/if}
-              {/each}
               {#if timeline.clips.length === 0 && project}
                 <div class="empty-preview">
                   <Film class="h-8 w-8 text-gray-600" />
@@ -2111,6 +2162,7 @@
       onSelectAudio={selectAudio}
       onDropMaterial={(id, index) => void addMaterial(id, index)}
       onDropOverlay={(id, at, target) => void addVideoOverlay(id, at, target)}
+      onLiftClip={(id, at, target) => void liftClip(id, at, target)}
       onDropAudio={(source, at, target) => void addSound(source, at, target)}
       onZoom={(value) => (zoom = value)}
     />

@@ -5,9 +5,11 @@
 //! time, so they follow the picture when clips are moved or trimmed; the part
 //! outside the clip's visible window is hidden rather than lost.
 //!
-//! Overlays (texts, stickers and videos) sit on tracks above the main one,
-//! a higher track covering lower ones. Each is anchored by where it starts,
-//! like a subtitle, and runs for its own length, also over later clips.
+//! Overlays sit on tracks above the main one, a higher track covering lower
+//! ones: video tracks show other materials, sticker tracks texts and
+//! stickers, in any order between the main track and the subtitles. Each is
+//! anchored by where it starts, like a subtitle, and runs for its own length,
+//! also over later clips.
 //!
 //! Audio items (music, voiceover, the sound of another material) sit on audio
 //! tracks below the main one and are anchored the same way; all of them are
@@ -97,8 +99,21 @@ pub struct TimelineSubtitle {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OverlayTrack {
     pub id: String,
+    /// What the track holds; absent on tracks from before tracks had kinds,
+    /// which may hold both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<TrackKind>,
     #[serde(default)]
     pub items: Vec<Overlay>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TrackKind {
+    /// Video overlays.
+    Video,
+    /// Texts and stickers.
+    Sticker,
 }
 
 /// Something drawn over the main track, anchored to the clip it starts over.
@@ -172,6 +187,14 @@ impl Overlay {
         match &self.content {
             OverlayContent::Video(video) => Some(video),
             _ => None,
+        }
+    }
+
+    /// The kind of track it goes on.
+    pub fn track_kind(&self) -> TrackKind {
+        match self.content {
+            OverlayContent::Video(_) => TrackKind::Video,
+            OverlayContent::Text { .. } | OverlayContent::Sticker { .. } => TrackKind::Sticker,
         }
     }
 }
@@ -626,6 +649,14 @@ impl Timeline {
                 return Err("音频轨上的声音范围无效".to_string());
             }
         }
+        let misplaced = self.tracks.iter().any(|track| {
+            track
+                .kind
+                .is_some_and(|kind| track.items.iter().any(|item| item.track_kind() != kind))
+        });
+        if misplaced {
+            return Err("轨道上有不属于该轨道类型的内容".to_string());
+        }
         for placed in self.placed_overlays() {
             let Some(video) = placed.overlay.video() else {
                 continue;
@@ -974,6 +1005,7 @@ mod tests {
                 .enumerate()
                 .map(|(index, items)| OverlayTrack {
                     id: format!("t{index}"),
+                    kind: None,
                     items,
                 })
                 .collect(),
@@ -1067,6 +1099,7 @@ mod tests {
         let clip_id = timeline.clips[0].id.clone();
         timeline.tracks = vec![OverlayTrack {
             id: "t".into(),
+            kind: None,
             items: vec![text_overlay("x", &clip_id, 1.0, 2.0)],
         }];
         assert_eq!(timeline.single_full_material(30.0), None);
@@ -1084,6 +1117,23 @@ mod tests {
             v.element.width = 0.0;
         }
         assert!(video.validate(|_| Some(30.0), |_| None).is_err());
+    }
+
+    #[test]
+    fn tracks_hold_only_what_their_kind_does() {
+        let mut timeline = with_tracks(vec![vec![
+            video_overlay("v", "a", 10.0, 3),
+            text_overlay("x", "a", 15.0, 2.0),
+        ]]);
+        // Tracks from before kinds may hold both.
+        assert!(timeline.validate(|_| Some(30.0), |_| None).is_ok());
+        timeline.tracks[0].kind = Some(TrackKind::Video);
+        assert!(timeline.validate(|_| Some(30.0), |_| None).is_err());
+        timeline.tracks[0].items.pop();
+        assert!(timeline.validate(|_| Some(30.0), |_| None).is_ok());
+        let json = timeline.to_json();
+        assert!(json.contains(r#""kind":"video","items""#));
+        assert_eq!(Timeline::parse(&json).unwrap(), timeline);
     }
 
     fn sound(id: &str, clip_id: &str, start: f64, duration: f64, source: AudioSource) -> AudioItem {

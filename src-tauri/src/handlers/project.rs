@@ -1954,6 +1954,7 @@ mod tests {
         };
         timeline.tracks = vec![crate::project::OverlayTrack {
             id: "t".into(),
+            kind: None,
             items: vec![
                 overlay("text", OverlayContent::Text { element: json!({}) }),
                 overlay(

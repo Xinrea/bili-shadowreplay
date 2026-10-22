@@ -196,6 +196,140 @@ pub(crate) async fn extract_audio_segment(
     }
 }
 
+/// How the samples of a file's sound are placed in time, which cutting it
+/// sample for sample depends on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct AudioTiming {
+    pub sample_rate: u32,
+    /// Where its first sample is, in samples: a decode of the whole file
+    /// starts there, as after the priming an MP3 encoder leaves.
+    pub start: i64,
+    /// AAC, whose frames all hold 1024 samples. Recordings remuxed from FLV
+    /// stamp them to the millisecond, up to 16 samples off where they are;
+    /// snapped back to their grid they are exact.
+    pub aac: bool,
+}
+
+pub(crate) const AAC_FRAME_SAMPLES: i64 = 1024;
+
+/// The timing of a file's first sound stream; `None` without one.
+pub(crate) async fn probe_audio_timing(file: &Path) -> Result<Option<AudioTiming>, String> {
+    let output = ffprobe_command()
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=codec_name,sample_rate,start_time",
+            "-of",
+            "default=noprint_wrappers=1",
+        ])
+        .arg(path_str(file)?)
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .map_err(|error| format!("Failed to run ffprobe: {error}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(parse_audio_timing(&String::from_utf8_lossy(&output.stdout)))
+}
+
+fn parse_audio_timing(probe: &str) -> Option<AudioTiming> {
+    let field = |name: &str| {
+        probe
+            .lines()
+            .find_map(|line| line.strip_prefix(name)?.strip_prefix('='))
+            .map(str::trim)
+    };
+    let sample_rate: u32 = field("sample_rate")?
+        .parse()
+        .ok()
+        .filter(|rate| *rate > 0)?;
+    let start = field("start_time")
+        .and_then(|value| value.parse::<f64>().ok())
+        .unwrap_or(0.0);
+    Some(AudioTiming {
+        sample_rate,
+        start: (start * f64::from(sample_rate)).round() as i64,
+        aac: field("codec_name") == Some("aac"),
+    })
+}
+
+/// The filters cutting `duration` seconds from `start`, counted from the
+/// first sample a decode of the whole file has, as 48 kHz in frames of 4096
+/// samples.
+///
+/// The input keeps its timestamps (`-copyts`) and is decoded from a whole
+/// frame (`-noaccurate_seek`). Its first frame is placed by its timestamp,
+/// on its grid for AAC, the rest counted on from it, so `atrim` cuts at the
+/// very sample a decode of the whole file has there, and chunks cut next to
+/// each other join sample for sample. Frames of a fixed size, whatever the
+/// decoder gave, keep the FLAC encoder from writing a stream of varying block
+/// sizes, which Apple's decoder, and so WebKit's, cannot read.
+fn preview_audio_filters(timing: AudioTiming, start: f64, duration: f64) -> String {
+    let rate = timing.sample_rate;
+    let origin = timing.start;
+    let first = if timing.aac {
+        format!("round((STARTPTS-({origin}))/{AAC_FRAME_SAMPLES})*{AAC_FRAME_SAMPLES}")
+    } else {
+        format!("round(STARTPTS)-({origin})")
+    };
+    let from = (start * f64::from(rate)).round() as i64;
+    let to = from + (duration * f64::from(rate)).round() as i64;
+    format!(
+        "asettb=1/{rate},asetpts='{first}+N',atrim=start_pts={from}:end_pts={to},\
+         asetpts=PTS-STARTPTS,aresample=48000,asetnsamples=n=4096:p=0"
+    )
+}
+
+/// Cut `duration` seconds of a file's sound from `start` as 48 kHz stereo
+/// 16-bit FLAC for the editor's preview, decoded from up to `pre_roll`
+/// seconds before so that its first samples are as in the whole file.
+pub(crate) async fn extract_preview_audio(
+    file: &Path,
+    timing: AudioTiming,
+    start: f64,
+    duration: f64,
+    pre_roll: f64,
+    output_path: &Path,
+) -> Result<(), String> {
+    // From the start, unseeked: a seek to it drops the priming frame of AAC
+    // with the first one after it, which a decode of the whole file keeps.
+    let seek = start - pre_roll;
+    let seek = (seek > 0.0)
+        .then(|| ["-ss".to_string(), format!("{seek:.6}")])
+        .into_iter()
+        .flatten();
+    let job = FfmpegJob::new()
+        .args(["-noaccurate_seek".to_string(), "-copyts".to_string()])
+        .args(seek)
+        .args([
+            "-i".to_string(),
+            file.to_string_lossy().into_owned(),
+            "-map".to_string(),
+            "0:a:0".to_string(),
+            "-af".to_string(),
+            preview_audio_filters(timing, start, duration),
+            "-ac".to_string(),
+            "2".to_string(),
+            "-c:a".to_string(),
+            "flac".to_string(),
+            "-sample_fmt".to_string(),
+            "s16".to_string(),
+            "-f".to_string(),
+            "flac".to_string(),
+            "-y".to_string(),
+        ])
+        .output(output_path.to_path_buf())
+        .context("Extract preview audio");
+    job.run_without_reporter()
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 /// Get the duration of an audio/video file in seconds using ffprobe.
 pub(crate) async fn get_audio_duration(file: &Path) -> Result<u64, String> {
     let mut command = ffprobe_command();
@@ -243,4 +377,39 @@ pub(crate) async fn get_audio_duration(file: &Path) -> Result<u64, String> {
         return Err(format!("ffprobe exited with status {status}"));
     }
     duration.ok_or_else(|| "Failed to parse duration".to_string())
+}
+
+#[cfg(test)]
+mod preview_audio_tests {
+    use super::*;
+
+    #[test]
+    fn sound_is_counted_from_its_first_sample_and_aac_put_on_its_frame_grid() {
+        let aac = parse_audio_timing("codec_name=aac\nsample_rate=48000\nstart_time=0.000000\n");
+        assert_eq!(
+            aac,
+            Some(AudioTiming {
+                sample_rate: 48000,
+                start: 0,
+                aac: true,
+            })
+        );
+        // The priming an MP3 encoder leaves.
+        let mp3 =
+            parse_audio_timing("codec_name=mp3\nsample_rate=44100\nstart_time=0.025057\n").unwrap();
+        assert_eq!((mp3.start, mp3.aac), (1105, false));
+        let unknown =
+            parse_audio_timing("codec_name=opus\nsample_rate=48000\nstart_time=N/A\n").unwrap();
+        assert_eq!(unknown.start, 0);
+        assert_eq!(parse_audio_timing(""), None);
+
+        assert_eq!(
+            preview_audio_filters(aac.unwrap(), 50.0, 10.0),
+            "asettb=1/48000,asetpts='round((STARTPTS-(0))/1024)*1024+N',\
+             atrim=start_pts=2400000:end_pts=2880000,asetpts=PTS-STARTPTS,\
+             aresample=48000,asetnsamples=n=4096:p=0"
+        );
+        assert!(preview_audio_filters(mp3, 10.0, 10.0)
+            .starts_with("asettb=1/44100,asetpts='round(STARTPTS)-(1105)+N',atrim=start_pts=441000:end_pts=882000"));
+    }
 }

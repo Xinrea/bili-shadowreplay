@@ -6,6 +6,7 @@ use crate::database::{Database, DatabaseError};
 use crate::events::{DataChange, EventBus};
 use crate::ffmpeg::{clip_timeline_anchors, transcode, Range};
 use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
+use crate::safe_path::join_relative;
 use crate::subtitle_generator::{item_to_srt, powerlive::PowerLiveOptions, SubtitleGeneratorType};
 use crate::task::{Task, TaskManager, TaskPriority};
 use crate::webhook::events::{self, Payload};
@@ -33,7 +34,7 @@ use recorder::UserInfo;
 use recorder::{CachePath, RecorderInfo};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -169,31 +170,10 @@ async fn live_end_parent_id(
         .then_some(parent_id))
 }
 
-/// Map an HLS request path (`platform/room_id/live_id/...`) to a file in `cache_dir`.
-///
-/// Every `/`-separated segment must be a single plain file name: `..`, `.`, empty
-/// segments, absolute paths and Windows prefixes or `\` separators are rejected,
-/// so the result can never escape `cache_dir`. Names made only of dots and spaces
-/// (`.. `, `...`) are rejected too, since Windows trims trailing dots and spaces
-/// and could read them as `..`.
+/// Map an HLS request path (`platform/room_id/live_id/...`) to a file in
+/// `cache_dir`, never outside it: see [`join_relative`].
 fn resolve_hls_path(cache_dir: &Path, path: &str) -> Option<PathBuf> {
-    let path = path.replace("%7C", "|");
-    let mut resolved = cache_dir.to_path_buf();
-    for segment in path.split('/') {
-        let mut components = Path::new(segment).components();
-        match (components.next(), components.next()) {
-            (Some(Component::Normal(name)), None)
-                if !name
-                    .to_string_lossy()
-                    .trim_end_matches([' ', '.'])
-                    .is_empty() =>
-            {
-                resolved.push(name)
-            }
-            _ => return None,
-        }
-    }
-    Some(resolved)
+    join_relative(cache_dir, &path.replace("%7C", "|"))
 }
 
 impl RecorderManager {

@@ -2370,7 +2370,21 @@ pub async fn start_api_server(state: State) {
         (config.output.clone(), config.cache.clone())
     };
 
+    let (preview_output, preview_cache) = (output_path.clone(), cache_path.clone());
     let mut app = Router::new()
+        .route(
+            "/preview_audio",
+            get(
+                move |Query(query): Query<crate::preview_audio::ChunkQuery>| async move {
+                    crate::preview_audio::respond(
+                        std::path::Path::new(&preview_output),
+                        std::path::Path::new(&preview_cache),
+                        query,
+                    )
+                    .await
+                },
+            ),
+        )
         .nest_service("/output", ServeDir::new(output_path))
         .nest_service("/cache", ServeDir::new(cache_path))
         // Serve static files from dist directory

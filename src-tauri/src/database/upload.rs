@@ -255,6 +255,17 @@ impl Database {
         .await
     }
 
+    /// Point a `file` source to where the file has moved.
+    #[cfg_attr(not(feature = "gui"), allow(dead_code))]
+    pub async fn set_upload_file(&self, id: i64, file: &str) -> Result<bool, DatabaseError> {
+        self.apply_upload_update(
+            sqlx::query("UPDATE uploads SET file = $1 WHERE id = $2 AND source = 'file'")
+                .bind(file)
+                .bind(id),
+        )
+        .await
+    }
+
     /// Uploads cannot survive a restart; leave them failed so they can be retried.
     pub async fn fail_interrupted_uploads(&self) -> Result<(), DatabaseError> {
         sqlx::query(

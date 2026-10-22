@@ -6,7 +6,7 @@ use crate::database::{Database, DatabaseError};
 use crate::events::{DataChange, EventBus};
 use crate::ffmpeg::{clip_timeline_anchors, transcode, Range};
 use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
-use crate::subtitle_generator::{item_to_srt, SubtitleGeneratorType};
+use crate::subtitle_generator::{item_to_srt, powerlive::PowerLiveOptions, SubtitleGeneratorType};
 use crate::task::{Task, TaskManager, TaskPriority};
 use crate::webhook::events::{self, Payload};
 use crate::webhook::poster::WebhookPoster;
@@ -1356,6 +1356,7 @@ impl RecorderManager {
             openai_api_key,
             openai_api_endpoint,
             whisper_language,
+            powerlive,
         ) = {
             let config = self.config.read().await;
             (
@@ -1366,6 +1367,7 @@ impl RecorderManager {
                 config.openai_api_key.clone(),
                 config.openai_api_endpoint.clone(),
                 config.whisper_language.clone(),
+                PowerLiveOptions::new(&self.db, &config),
             )
         };
 
@@ -1417,7 +1419,7 @@ impl RecorderManager {
             &openai_api_key,
             &openai_api_endpoint,
             &whisper_language,
-            Some(&self.db),
+            Some(powerlive),
         )
         .await;
         // write subtitle file

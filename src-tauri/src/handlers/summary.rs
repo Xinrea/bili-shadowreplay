@@ -9,7 +9,7 @@ use crate::database::task::TaskRow;
 use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
 use crate::state::State;
 use crate::state_type;
-use crate::subtitle_generator::{item_to_srt, SubtitleGeneratorType};
+use crate::subtitle_generator::{item_to_srt, powerlive::PowerLiveOptions, SubtitleGeneratorType};
 use crate::task::{Task, TaskPriority};
 
 #[cfg(feature = "gui")]
@@ -248,7 +248,7 @@ async fn run_summary(
             &config.openai_api_key,
             &config.openai_api_endpoint,
             &config.whisper_language,
-            Some(&state.db),
+            Some(PowerLiveOptions::new(&state.db, &config)),
         )
         .await;
         let _ = tokio::fs::remove_file(&audio_path).await;

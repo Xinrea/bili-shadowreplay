@@ -29,9 +29,10 @@ use crate::{
             get_config, get_llm_config, get_mcp_server_status, get_static_port, list_llm_models,
             update_auto_generate, update_clip_name_format, update_danmu_ass_options,
             update_llm_config, update_mcp_server, update_notify, update_openai_api_endpoint,
-            update_openai_api_key, update_status_check_interval, update_subtitle_generator_type,
-            update_subtitle_setting, update_webhook_url, update_whisper_language,
-            update_whisper_model, update_whisper_prompt,
+            update_openai_api_key, update_powerlive_hotwords, update_powerlive_sentence_max_length,
+            update_status_check_interval, update_subtitle_generator_type, update_subtitle_setting,
+            update_webhook_url, update_whisper_language, update_whisper_model,
+            update_whisper_prompt,
         },
         message::{delete_message, get_messages, read_message},
         project::{
@@ -459,6 +460,34 @@ async fn handler_update_webhook_url(
 #[serde(rename_all = "camelCase")]
 struct UpdateSubtitleGeneratorTypeRequest {
     subtitle_generator_type: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdatePowerLiveHotwordsRequest {
+    hotwords: Vec<String>,
+}
+
+async fn handler_update_powerlive_hotwords(
+    state: axum::extract::State<State>,
+    Json(param): Json<UpdatePowerLiveHotwordsRequest>,
+) -> Result<Json<ApiResponse<Vec<String>>>, ApiError> {
+    let hotwords = update_powerlive_hotwords(state.0, param.hotwords).await?;
+    Ok(Json(ApiResponse::success(hotwords)))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdatePowerLiveSentenceMaxLengthRequest {
+    sentence_max_length: u32,
+}
+
+async fn handler_update_powerlive_sentence_max_length(
+    state: axum::extract::State<State>,
+    Json(param): Json<UpdatePowerLiveSentenceMaxLengthRequest>,
+) -> Result<Json<ApiResponse<u32>>, ApiError> {
+    let length = update_powerlive_sentence_max_length(state.0, param.sentence_max_length).await?;
+    Ok(Json(ApiResponse::success(length)))
 }
 
 async fn handler_update_subtitle_generator_type(
@@ -1502,13 +1531,16 @@ async fn handler_image_base64(
 struct GenerateVideoSubtitleRequest {
     event_id: String,
     id: i64,
+    #[serde(default)]
+    powerlive: Option<crate::subtitle_generator::powerlive::PowerLiveOverrides>,
 }
 
 async fn handler_generate_video_subtitle(
     state: axum::extract::State<State>,
     Json(param): Json<GenerateVideoSubtitleRequest>,
 ) -> Result<Json<ApiResponse<String>>, ApiError> {
-    let result = generate_video_subtitle(state.0, param.event_id.clone(), param.id).await?;
+    let result =
+        generate_video_subtitle(state.0, param.event_id.clone(), param.id, param.powerlive).await?;
     Ok(Json(ApiResponse::success(result)))
 }
 
@@ -2421,6 +2453,14 @@ pub async fn start_api_server(state: State) {
             .route(
                 "/api/update_subtitle_generator_type",
                 post(handler_update_subtitle_generator_type),
+            )
+            .route(
+                "/api/update_powerlive_hotwords",
+                post(handler_update_powerlive_hotwords),
+            )
+            .route(
+                "/api/update_powerlive_sentence_max_length",
+                post(handler_update_powerlive_sentence_max_length),
             )
             .route(
                 "/api/update_openai_api_endpoint",

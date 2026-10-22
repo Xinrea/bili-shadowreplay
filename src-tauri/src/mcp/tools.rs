@@ -555,6 +555,7 @@ pub(super) async fn call(state: &State, name: &str, args: Value) -> Result<Value
                 command_state,
                 event_id.clone(),
                 argument(&args, "id")?,
+                None,
             )
             .await?;
             Ok(json!({ "subtitle": subtitle, "event_id": event_id }))

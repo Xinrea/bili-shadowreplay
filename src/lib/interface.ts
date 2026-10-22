@@ -400,6 +400,8 @@ export interface Config {
   subtitle_generator_type: string;
   whisper_model: string;
   whisper_prompt: string;
+  powerlive_hotwords: string[];
+  powerlive_sentence_max_length: number;
   openai_api_endpoint: string;
   openai_api_key: string;
   clip_name_format: string;

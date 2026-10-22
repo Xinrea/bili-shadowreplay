@@ -15,6 +15,7 @@
     Play,
     Plus,
     Redo2,
+    RotateCcw,
     Scissors,
     Settings,
     Smile,
@@ -42,6 +43,8 @@
   } from "../../cover-elements";
   import {
     generateEventId,
+    type Config,
+    type RecorderList,
     type AudioFile,
     type AudioItem,
     type ExportStarted,
@@ -102,6 +105,14 @@
   import { shownRows } from "../../virtual-list";
   import { buildSubtitleAss, loadSubtitleStyle } from "../../subtitle-ass";
   import { formatTimecode } from "../../time-format";
+  import type { RecordItem } from "../../db";
+  import { platformLabel } from "../../platform";
+  import {
+    buildSubtitleContext,
+    clampSentenceLength,
+    MAX_CONTEXT_CHARS,
+    SENTENCE_MAX_LENGTH,
+  } from "../../powerlive-subtitle";
   import { createStateRefresh, watchStateChanges } from "../../state-refresh";
   import { announceTask, openTaskCenter, settleTask, wasCancelled } from "../../stores/tasks";
   import AssSubtitlePreview from "../AssSubtitlePreview.svelte";
@@ -116,6 +127,8 @@
   import TaskCenterButton from "../TaskCenterButton.svelte";
   import TitleBar from "../TitleBar.svelte";
   import AudioPanel, { type AudioEntry } from "./AudioPanel.svelte";
+  import PowerLiveHotwords from "../PowerLiveHotwords.svelte";
+  import PowerLiveSentenceLength from "../PowerLiveSentenceLength.svelte";
   import ItemInspector, { type InspectedItem } from "./ItemInspector.svelte";
   import MaterialBin, { type BinMaterial } from "./MaterialBin.svelte";
   import { renderOverlayImages, StickerLoadError } from "./overlay-render";
@@ -194,6 +207,14 @@
   let aiOverwrite = $state(false);
   let aiRegenerate = $state(false);
   let aiRunning = $state(false);
+  /** Whether recognizing goes through a signed-in PowerLive, which takes hints. */
+  let aiPowerLive = $state(false);
+  let aiHotwords: string[] = $state([]);
+  let aiSentenceLength = $state(SENTENCE_MAX_LENGTH.default);
+  let aiContext = $state("");
+  let aiContextLoading = $state(false);
+  /** Counts context fills, so only the latest one reports. */
+  let aiContextFills = 0;
   let exporting: string | null = $state(null);
   let requestingUpload = $state(false);
   let saveState: "saved" | "pending" | "saving" | "error" = $state("saved");
@@ -1308,6 +1329,73 @@
     selectedSubtitleId = null;
   }
 
+  async function openAiModal() {
+    aiOverwrite = false;
+    aiRegenerate = false;
+    aiContext = "";
+    try {
+      const config = await invoke<Config>("get_config");
+      // The web build has no PowerLive sign-in to check; its backend reports a missing one.
+      aiPowerLive =
+        config.subtitle_generator_type === "powerlive" &&
+        (!TAURI_ENV || (await invoke<{ logged_in: boolean }>("get_powerlive_status")).logged_in);
+      aiHotwords = config.powerlive_hotwords ?? [];
+      aiSentenceLength = config.powerlive_sentence_max_length ?? SENTENCE_MAX_LENGTH.default;
+    } catch (error) {
+      console.warn("Failed to load the subtitle settings:", error);
+      aiPowerLive = false;
+    }
+    // Opened once its layout is known; the context fills in after.
+    showAiModal = true;
+    if (aiPowerLive) await fillSubtitleContext();
+  }
+
+  /** Describe the recordings the clips come from, unless the user typed meanwhile. */
+  async function fillSubtitleContext() {
+    const fill = ++aiContextFills;
+    aiContextLoading = true;
+    try {
+      const context = await defaultSubtitleContext();
+      if (fill === aiContextFills && !aiContext.trim()) aiContext = context;
+    } catch (error) {
+      console.warn("Failed to build the subtitle context:", error);
+    } finally {
+      if (fill === aiContextFills) aiContextLoading = false;
+    }
+  }
+
+  /** The streamer and stream titles of the materials, the names most likely heard. */
+  async function defaultSubtitleContext() {
+    const videos = await Promise.all(
+      [...new Set(timeline.clips.map((clip) => clip.material_id))].map((id) =>
+        invoke<VideoItem>("get_video", { id }).catch(() => null),
+      ),
+    );
+    const sources = videos.filter((video): video is VideoItem => video !== null);
+    const liveTitles = await Promise.all(
+      sources
+        .filter((video) => video.live_id)
+        .map((video) =>
+          invoke<RecordItem>("get_archive", { roomId: video.room_id, liveId: video.live_id })
+            .then((record) => record.title)
+            .catch(() => ""),
+        ),
+    );
+    const room = roomId || sources[0]?.room_id || "";
+    const recorders = await invoke<RecorderList>("get_recorder_list").catch(() => null);
+    const recorder = recorders?.recorders.find((entry) => entry.room_info.room_id === room);
+    const platform = sources.find((video) => video.platform)?.platform || recorder?.room_info.platform;
+    if (!liveTitles.some(Boolean) && recorder) liveTitles.push(recorder.room_info.room_title);
+    // Unknown platforms, such as imported videos, label as their id.
+    const label = platform ? platformLabel(platform) : "";
+    return buildSubtitleContext({
+      platform: label === platform ? "" : label,
+      streamer: recorder?.user_info.user_name ?? "",
+      liveTitles,
+      clipTitle: title,
+    });
+  }
+
   /** Recognize each material once and give its clips the cues in range. */
   async function generateSubtitles() {
     showAiModal = false;
@@ -1315,6 +1403,14 @@
     aiRunning = true;
     const overwrite = aiOverwrite;
     const regenerate = aiRegenerate;
+    // Sent as shown: the fields' own saves are not waited for.
+    const powerlive = aiPowerLive
+      ? {
+          context: aiContext.trim(),
+          hotwords: [...aiHotwords],
+          sentenceMaxLength: clampSentenceLength(aiSentenceLength),
+        }
+      : undefined;
     const wanted = (clipId: string) =>
       overwrite || !timeline.subtitles.some((subtitle) => subtitle.clip_id === clipId);
     const cuesByMaterial = new Map<number, ReturnType<typeof parseSrt>>();
@@ -1331,7 +1427,7 @@
           });
           openTaskCenter(eventId);
           try {
-            srt = await invoke<string>("generate_video_subtitle", { eventId, id: materialId });
+            srt = await invoke<string>("generate_video_subtitle", { eventId, id: materialId, powerlive });
           } finally {
             settleTask(eventId);
           }
@@ -1862,11 +1958,7 @@
               type="button"
               class="tool-button"
               disabled={aiRunning || timeline.clips.length === 0}
-              onclick={() => {
-                aiOverwrite = false;
-                aiRegenerate = false;
-                showAiModal = true;
-              }}
+              onclick={openAiModal}
             >
               {#if aiRunning}
                 <Loader2 class="h-3.5 w-3.5 animate-spin" />
@@ -2027,7 +2119,12 @@
 
 {#if showAiModal}
   <div class="ui-modal-backdrop z-[1100]">
-    <div class="ui-modal w-[440px] max-w-full" role="dialog" aria-modal="true" aria-labelledby="ai-subtitle-title">
+    <div
+      class="ui-modal max-w-full {aiPowerLive ? 'w-[520px]' : 'w-[440px]'}"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="ai-subtitle-title"
+    >
       <div class="ui-modal-header">
         <h3 id="ai-subtitle-title" class="flex items-center gap-2">
           <BrainCircuit class="h-4 w-4 shrink-0 text-accent-fg" />
@@ -2062,10 +2159,68 @@
             </span>
           </label>
         </div>
+        {#if aiPowerLive}
+          <div class="space-y-3 border-t border-line pt-4">
+            <p class="text-[11px] leading-relaxed text-fg-muted">
+              PowerLive 会参考热词和上下文识别专有名词，并在识别后校对同音字。已识别过的素材直接使用缓存，修改后需勾选「忽略缓存，重新识别」才会生效。
+            </p>
+            <div>
+              <div class="mb-1.5 flex items-baseline justify-between gap-3">
+                <span class="ui-label">热词</span>
+                <span class="text-[11px] text-fg-muted">全局设置，所有切片共用</span>
+              </div>
+              <PowerLiveHotwords bind:hotwords={aiHotwords} />
+            </div>
+            <div class="flex items-center justify-between gap-3">
+              <label for="ai-subtitle-sentence-length" class="ui-label">
+                每条字幕最多字数
+                <span class="ml-1.5 text-[11px] font-normal text-fg-muted">全局设置，范围 4–50</span>
+              </label>
+              <PowerLiveSentenceLength id="ai-subtitle-sentence-length" bind:value={aiSentenceLength} />
+            </div>
+            <div>
+              <div class="mb-1.5 flex items-center justify-between gap-3">
+                <label for="ai-subtitle-context" class="ui-label">上下文</label>
+                <button
+                  type="button"
+                  class="ui-btn ui-btn-sm ui-btn-ghost -mr-1.5"
+                  disabled={aiContextLoading}
+                  onclick={() => {
+                    aiContext = "";
+                    void fillSubtitleContext();
+                  }}
+                >
+                  {#if aiContextLoading}
+                    <Loader2 class="h-3 w-3 animate-spin" />
+                  {:else}
+                    <RotateCcw class="h-3 w-3" />
+                  {/if}
+                  按素材重新生成
+                </button>
+              </div>
+              <textarea
+                id="ai-subtitle-context"
+                class="ui-input w-full resize-none"
+                rows="3"
+                maxlength={MAX_CONTEXT_CHARS}
+                bind:value={aiContext}
+                placeholder={aiContextLoading ? "正在根据素材生成…" : "一两句包含专有名词的背景，如主播名、直播标题和在玩的游戏"}
+                data-hotkey-block
+              ></textarea>
+              <div class="mt-1 flex justify-between gap-3 text-[11px]">
+                <span class="text-fg-muted">只用于这次识别，默认根据主播名和直播标题生成</span>
+                <span class="shrink-0 text-fg-faint">{[...aiContext].length} / {MAX_CONTEXT_CHARS}</span>
+              </div>
+            </div>
+          </div>
+        {/if}
       </div>
       <div class="ui-modal-footer">
         <button type="button" class="ui-btn" onclick={() => (showAiModal = false)}>取消</button>
-        <button type="button" class="ui-btn ui-btn-primary" onclick={generateSubtitles}>开始识别</button>
+        <!-- The context is part of the request, so wait until it is filled. -->
+        <button type="button" class="ui-btn ui-btn-primary" disabled={aiContextLoading} onclick={generateSubtitles}>
+          开始识别
+        </button>
       </div>
     </div>
   </div>

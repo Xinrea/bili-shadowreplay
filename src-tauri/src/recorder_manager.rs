@@ -1010,12 +1010,14 @@ impl RecorderManager {
         playlists
     }
 
+    /// Cut `params.ranges` into `clip_file`, returning it with the recording
+    /// ranges it covers (see [`crate::ffmpeg::playlist::clip_multiple_from_playlist`]).
     pub async fn clip_range(
         &self,
         reporter: Option<&ProgressReporter>,
         clip_file: PathBuf,
         params: &ClipRangeParams,
-    ) -> Result<PathBuf, RecorderManagerError> {
+    ) -> Result<(PathBuf, Vec<Range>), RecorderManagerError> {
         let cache_path = self.config.read().await.cache.clone();
         let cache_path = Path::new(&cache_path);
         let playlist_path = cache_path
@@ -1031,7 +1033,7 @@ impl RecorderManager {
             });
         }
 
-        if params.ranges.is_empty() {
+        let covered = if params.ranges.is_empty() {
             let extracting = reporter.map(|reporter| reporter.stage("提取片段"));
             crate::ffmpeg::playlist::clip_from_playlist(
                 extracting.as_ref(),
@@ -1041,6 +1043,7 @@ impl RecorderManager {
             )
             .await
             .map_err(|e| RecorderManagerError::ClipError { err: e.to_string() })?;
+            Vec::new()
         } else {
             crate::ffmpeg::playlist::clip_multiple_from_playlist(
                 reporter,
@@ -1050,8 +1053,8 @@ impl RecorderManager {
                 params.transition.as_deref(),
             )
             .await
-            .map_err(|e| RecorderManagerError::ClipError { err: e.to_string() })?;
-        }
+            .map_err(|e| RecorderManagerError::ClipError { err: e.to_string() })?
+        };
 
         if params.fix_encoding {
             // transcode clip_file
@@ -1069,7 +1072,7 @@ impl RecorderManager {
             let _ = tokio::fs::rename(tmp_clip_file, &clip_file).await;
         }
 
-        Ok(clip_file)
+        Ok((clip_file, covered))
     }
 
     /// Danmaku shown during the clipped ranges, with `ts` in milliseconds from

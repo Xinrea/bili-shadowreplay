@@ -8,13 +8,21 @@ use crate::progress::progress_reporter::ProgressReporterTrait;
 
 use super::Range;
 
+/// Cut `ranges` from a playlist and join them into `output_path`, returning the
+/// recording ranges the output covers.
+///
+/// A stream-copied cut keeps the packets up to the keyframe before its start
+/// behind an edit list and runs a little past its end. Joining decodes the
+/// pieces, which honours that edit list, so each joined piece starts where it
+/// was asked and lasts as long as its measured video track. A single range is
+/// only remuxed, so it is returned as asked for the caller to measure.
 pub async fn clip_multiple_from_playlist(
     reporter: Option<&impl ProgressReporterTrait>,
     playlist_path: &Path,
     output_path: &Path,
     ranges: &[Range],
     transition: Option<&str>,
-) -> Result<(), String> {
+) -> Result<Vec<Range>, String> {
     let output_dir = output_path
         .parent()
         .ok_or_else(|| format!("Output path has no parent: {}", output_path.display()))?;
@@ -24,6 +32,7 @@ pub async fn clip_multiple_from_playlist(
         .map_err(|e| format!("Failed to create playlist clip directory: {e}"))?;
     let count = ranges.len();
     let mut clips = Vec::with_capacity(count);
+    let mut covered = Vec::with_capacity(count);
 
     for (i, range) in ranges.iter().enumerate() {
         let video_path = temp_dir.path().join(format!("clip-{i}.mp4"));
@@ -40,6 +49,14 @@ pub async fn clip_multiple_from_playlist(
             Some(range.clone()),
         )
         .await?;
+        let duration = match ffmpeg_utils::extract_video_metadata(&video_path).await {
+            Ok(metadata) if count > 1 && metadata.duration > 0.0 => metadata.duration,
+            _ => range.duration(),
+        };
+        covered.push(Range {
+            start: range.start,
+            end: range.start + duration,
+        });
         clips.push(video_path);
     }
 
@@ -51,8 +68,14 @@ pub async fn clip_multiple_from_playlist(
             "提取片段"
         })
     });
-    super::general::concat_videos_with_transition(merging.as_ref(), &clips, output_path, transition)
-        .await
+    super::general::concat_videos_with_transition(
+        merging.as_ref(),
+        &clips,
+        output_path,
+        transition,
+    )
+    .await?;
+    Ok(covered)
 }
 
 pub async fn clip_from_playlist(
@@ -379,5 +402,91 @@ seg-3.mp4
             map_uri_before_segment(&parsed, "seg-3.mp4").as_deref(),
             Some("init-b.mp4")
         );
+    }
+
+    /// A recording with a keyframe every 2 s, cut into 2 s HLS segments.
+    async fn create_test_playlist(dir: &Path) -> std::path::PathBuf {
+        let playlist = dir.join("playlist.m3u8");
+        let output = ffmpeg_utils::ffmpeg_command()
+            .args([
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=blue:s=320x180:r=30:d=30",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=d=30",
+                "-c:v",
+                "libx264",
+                // B-frames, as live streams have, make a copied cut run past its end.
+                "-bf",
+                "3",
+                "-g",
+                "60",
+                "-keyint_min",
+                "60",
+                "-sc_threshold",
+                "0",
+                "-c:a",
+                "aac",
+                "-shortest",
+                "-f",
+                "hls",
+                "-hls_time",
+                "2",
+                "-hls_playlist_type",
+                "vod",
+                "-y",
+            ])
+            .arg(&playlist)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        playlist
+    }
+
+    #[tokio::test]
+    async fn joined_ranges_report_the_recording_the_output_covers() {
+        let dir = tempfile::tempdir().unwrap();
+        let playlist = create_test_playlist(dir.path()).await;
+        let output = dir.path().join("joined.mp4");
+        // Neither range starts on a keyframe.
+        let ranges = [
+            Range {
+                start: 7.3,
+                end: 10.3,
+            },
+            Range {
+                start: 21.2,
+                end: 24.2,
+            },
+        ];
+        let covered = clip_multiple_from_playlist(
+            None::<&crate::progress::progress_reporter::ProgressReporter>,
+            &playlist,
+            &output,
+            &ranges,
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Danmaku are anchored on these, so they must add up to the output.
+        let joined = ffmpeg_utils::extract_video_metadata(&output)
+            .await
+            .unwrap()
+            .duration;
+        let total: f64 = covered.iter().map(Range::duration).sum();
+        assert!((joined - total).abs() < 0.05, "{joined} {total}");
+        for (covered, asked) in covered.iter().zip(&ranges) {
+            assert_eq!(covered.start, asked.start);
+            assert!(covered.end >= asked.end - 0.05, "{covered:?} {asked:?}");
+        }
     }
 }

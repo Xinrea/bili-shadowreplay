@@ -660,7 +660,7 @@ ${mediaPlaylistUrl}`;
     const feed = createDanmakuFeed();
     let showLive = false;
     video.addEventListener("seeking", () => feed.reset());
-    setInterval(() => {
+    const feedStep = () => {
       if (!danmu_enabled || !floatingOverlay) {
         feed.reset();
         showLive = false;
@@ -675,7 +675,7 @@ ${mediaPlaylistUrl}`;
         atLiveEdge: isLive() && get_total() - video.currentTime <= 5,
       });
       if (step.clear) floatingOverlay.clear();
-      showLive = step.from === null;
+      showLive = step.live;
       if (step.from === null || danmu_records.length == 0) return;
 
       const times = pacedTimes();
@@ -688,7 +688,8 @@ ${mediaPlaylistUrl}`;
       for (const [time, v] of due) {
         drawFloatingEntry(v, { space: recordedSpace, now: videoClock, at: time / 1000 });
       }
-    }, FEED_TICK_MS);
+    };
+    setInterval(feedStep, FEED_TICK_MS);
 
     if (isLive()) {
       if (platform == "bilibili") {
@@ -848,6 +849,8 @@ ${mediaPlaylistUrl}`;
         floating.destroy();
       },
     };
+    // Know at once whether live danmaku arriving now are drawn.
+    feedStep();
 
     /**
      * Where a message flies. A recorded one is placed at its own time `at`,

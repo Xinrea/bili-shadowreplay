@@ -22,7 +22,9 @@ export interface FeedInput {
 export interface FeedStep {
   /** Whether what is on screen goes first. */
   clear: boolean;
-  /** Danmaku due from here up to `now`, or null for none. */
+  /** Whether live danmaku are drawn as they arrive, from now on. */
+  live: boolean;
+  /** Recorded danmaku due from here up to `now`, or null for none. */
   from: number | null;
 }
 
@@ -47,18 +49,18 @@ export function createDanmakuFeed() {
       liveEdge = input.atLiveEdge;
       if (input.atLiveEdge) {
         cursor = undefined;
-        return { clear: crossed, from: null };
+        return { clear: crossed, live: true, from: null };
       }
       const jumped =
         cursor === undefined ||
         input.offset !== offset ||
         input.now < cursor ||
         input.now - cursor > JUMP_MS;
-      if (input.paused && !jumped) return { clear: false, from: null };
+      if (input.paused && !jumped) return { clear: false, live: false, from: null };
       const from = jumped ? input.now - CATCH_UP_MS : (cursor as number);
       cursor = input.now;
       offset = input.offset;
-      return { clear: crossed || jumped, from };
+      return { clear: crossed || jumped, live: false, from };
     },
   };
 }

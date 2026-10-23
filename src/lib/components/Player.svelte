@@ -632,7 +632,6 @@ ${mediaPlaylistUrl}`;
 
     console.log("danmu loaded:", danmu_records.length);
 
-    let danmu_displayed = {};
     // Recorded danmaku go through the room's queue on the video's clock, as
     // burned videos do, so speed, pauses and seeks follow playback. Super
     // chats keep their own times.
@@ -654,12 +653,17 @@ ${mediaPlaylistUrl}`;
     // Where playback is on the danmaku's timeline, in seconds.
     const videoClock = () => video.currentTime + local_offset + global_offset;
     // history danmaku sender: hands each message over as playback reaches it,
-    // at its own time (see lib/danmaku-feed.ts).
+    // at its own time (see lib/danmaku-feed.ts). At the live edge, live
+    // danmaku are drawn as they arrive instead; the feed decides which, on
+    // the same step that clears the other kind away, so the two never both
+    // draw a message nor share the screen.
     const feed = createDanmakuFeed();
+    let showLive = false;
     video.addEventListener("seeking", () => feed.reset());
     setInterval(() => {
-      if (!danmu_enabled || danmu_records.length == 0 || !floatingOverlay) {
+      if (!danmu_enabled || !floatingOverlay) {
         feed.reset();
+        showLive = false;
         return;
       }
       const cur = Math.floor(videoClock() * 1000);
@@ -671,7 +675,8 @@ ${mediaPlaylistUrl}`;
         atLiveEdge: isLive() && get_total() - video.currentTime <= 5,
       });
       if (step.clear) floatingOverlay.clear();
-      if (step.from === null) return;
+      showLive = step.from === null;
+      if (step.from === null || danmu_records.length == 0) return;
 
       const times = pacedTimes();
       const due: [number, DanmuEntry][] = [];
@@ -681,10 +686,6 @@ ${mediaPlaylistUrl}`;
       });
       due.sort((a, b) => a[0] - b[0]);
       for (const [time, v] of due) {
-        if (danmu_displayed[v.ts]) {
-          delete danmu_displayed[v.ts];
-          continue;
-        }
         drawFloatingEntry(v, { space: recordedSpace, now: videoClock, at: time / 1000 });
       }
     }, FEED_TICK_MS);
@@ -764,17 +765,10 @@ ${mediaPlaylistUrl}`;
         }
 
         let danmu_record = event.payload;
-        // if not enabled or playback is not keep up with live, ignore the danmaku
-        if (!danmu_enabled || get_total() - video.currentTime > 5) {
-          danmuBatcher.push(danmu_record);
-          return;
-        }
-        if (Object.keys(danmu_displayed).length > 1000) {
-          danmu_displayed = {};
-        }
-        danmu_displayed[event.payload.ts] = true;
         danmuBatcher.push(danmu_record);
-        renderFloatingEntry(danmu_record);
+        // Drawn now only while playback keeps up with live; otherwise the
+        // history sender draws it when playback gets there.
+        if (danmu_enabled && showLive) renderFloatingEntry(danmu_record);
       }, { platform, room: room_id }, signal), danmuSubscription.signal, (error) => {
         danmuBatcher.cancel();
         log.error("弹幕订阅失败，将重试:", error);

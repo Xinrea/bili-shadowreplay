@@ -1484,14 +1484,22 @@ struct GenerateMaterialsRequest {
     params: ClipRangeParams,
     #[serde(default)]
     create_project: bool,
+    #[serde(default)]
+    merge: bool,
 }
 
 async fn handler_generate_materials(
     state: axum::extract::State<State>,
     Json(param): Json<GenerateMaterialsRequest>,
 ) -> Result<Json<ApiResponse<GeneratedMaterials>>, ApiError> {
-    let generated =
-        generate_materials(state.0, param.event_id, param.params, param.create_project).await?;
+    let generated = generate_materials(
+        state.0,
+        param.event_id,
+        param.params,
+        param.create_project,
+        param.merge,
+    )
+    .await?;
     Ok(Json(ApiResponse::success(generated)))
 }
 

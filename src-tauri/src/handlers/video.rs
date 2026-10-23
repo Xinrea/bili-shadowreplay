@@ -450,6 +450,7 @@ fn unused_output_path(path: PathBuf) -> PathBuf {
 /// The recording ranges a material really covers. Stream copy starts a cut at
 /// the keyframe before the requested start while the end stays where it was
 /// asked, so a single-range material begins `duration - requested` earlier.
+/// Several ranges are joined by decoding and already measured by the cut.
 fn actual_material_ranges(ranges: &[ffmpeg::Range], duration: f64) -> Vec<ffmpeg::Range> {
     match ranges {
         [range] if duration - range.duration() > 0.05 => vec![ffmpeg::Range {
@@ -477,7 +478,7 @@ pub(crate) async fn create_material(
 
     let clip_file = unused_output_path(state.config.read().await.generate_clip_name(params));
 
-    let file = state
+    let (file, covered) = state
         .recorder_manager
         .clip_range(Some(reporter), clip_file, params)
         .await?;
@@ -485,9 +486,9 @@ pub(crate) async fn create_material(
     reporter.update("正在保存素材").await;
     let duration = match ffmpeg_utils::extract_video_metadata(&file).await {
         Ok(video) if video.duration > 0.0 => video.duration,
-        _ => params.ranges.iter().map(|r| r.duration()).sum::<f64>(),
+        _ => covered.iter().map(|r| r.duration()).sum::<f64>(),
     };
-    let ranges = actual_material_ranges(&params.ranges, duration);
+    let ranges = actual_material_ranges(&covered, duration);
     let source_params = ClipRangeParams {
         ranges: ranges.clone(),
         ..params.clone()

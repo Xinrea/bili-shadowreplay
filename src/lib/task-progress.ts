@@ -105,7 +105,10 @@ export function describeTask(task: Pick<TaskRow, "metadata">) {
       (total: number, range: any) => total + Math.max(0, range.end - range.start),
       0,
     );
-    const parts = [params.title, `${ranges.length} 个选区`, formatClock(duration)];
+    const count = metadata.merge && ranges.length > 1
+      ? `${ranges.length} 个选区合并为一个`
+      : `${ranges.length} 个选区`;
+    const parts = [params.title, count, formatClock(duration)];
     return parts.filter(Boolean).join(" · ");
   }
   if (typeof metadata?.clip_title === "string") {

@@ -62,6 +62,10 @@ test("tasks are described from their metadata", async () => {
     },
   };
   assert.equal(describeTask({ metadata: JSON.stringify(clip) }), "晚间直播 · 2 个选区 · 01:30");
+  assert.equal(
+    describeTask({ metadata: JSON.stringify({ ...clip, merge: true }) }),
+    "晚间直播 · 2 个选区合并为一个 · 01:30",
+  );
   assert.equal(describeTask({ metadata: JSON.stringify({ clip_title: "高光" }) }), "高光");
   assert.equal(
     describeTask({ metadata: JSON.stringify({ clip_title: "高光", start_time: 10, end_time: 75 }) }),

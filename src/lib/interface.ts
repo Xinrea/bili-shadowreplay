@@ -560,13 +560,22 @@ export function generateEventId() {
   return Math.random().toString(36).substring(2, 15);
 }
 
-/** Cut each range into its own material, optionally in a new project. */
+/**
+ * Cut each range into its own material, or with `merge` join them into one,
+ * optionally in a new project.
+ */
 export async function generateMaterials(
   eventId: string,
   params: ClipRangeParams,
   createProject: boolean,
+  merge: boolean,
 ): Promise<GeneratedMaterials> {
-  return await invoke<GeneratedMaterials>("generate_materials", { eventId, params, createProject });
+  return await invoke<GeneratedMaterials>("generate_materials", {
+    eventId,
+    params,
+    createProject,
+    merge,
+  });
 }
 
 export interface DanmuEntry {

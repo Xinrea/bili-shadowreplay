@@ -928,7 +928,9 @@ ${mediaPlaylistUrl}`;
       if (!showLive || destroyed || !danmu_enabled) return;
       floating.clear();
       liveSpace.clear();
-      liveDrawn.sort((a, b) => a.start - b.start);
+      // Those flying first, at their own times, so those waiting take only
+      // the room left beside them.
+      liveDrawn.sort((a, b) => Number(b.flying) - Number(a.flying) || a.start - b.start);
       for (const record of liveDrawn) {
         drawFloatingEntry(record.entry, liveFlightTiming(record, true));
       }

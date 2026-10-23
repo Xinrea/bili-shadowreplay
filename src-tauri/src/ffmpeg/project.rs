@@ -36,7 +36,7 @@ use futures::{stream, TryStreamExt};
 use recorder::danmu::DanmuEntry;
 use sha2::{Digest, Sha256};
 
-use crate::danmu2ass::{Danmu2AssOptions, ImageDanmu, R2L_TIME};
+use crate::danmu2ass::{Danmu2AssOptions, ImageDanmu};
 use crate::progress::progress_reporter::{ProgressReporterTrait, StageProgress};
 use crate::project::MAX_VOLUME;
 
@@ -351,7 +351,7 @@ fn segment_overlays(overlays: &[RenderOverlay], start: f64, end: f64) -> Vec<Seg
 fn segment_danmaku(images: &[ImageDanmu], start: f64, end: f64) -> Vec<ImageDanmu> {
     images
         .iter()
-        .filter(|image| image.start < end && image.start + R2L_TIME > start)
+        .filter(|image| image.start < end && image.end > start)
         .cloned()
         .collect()
 }
@@ -861,7 +861,10 @@ impl Render<'_> {
                 let frame = ((image.start - start) * fps - EPSILON).ceil();
                 let _ = writeln!(
                     key,
-                    "{frame} {:.3} {:.3} {:.3} {}",
+                    "{frame} {:.3} {:.3} {:.3} {:.3} {:.3} {:.3} {}",
+                    image.end - image.start,
+                    image.from,
+                    image.to,
                     image.top,
                     image.image.width,
                     image.image.height,
@@ -1922,7 +1925,10 @@ mod tests {
                 height: 40.0,
             },
             start,
+            end: start + 8.0,
             top: 0.0,
+            from: 1280.0,
+            to: -40.0,
         };
         let images = [image(0.0), image(5.0), image(20.0)];
         let starts = |from: f64, to: f64| -> Vec<f64> {
@@ -1931,7 +1937,7 @@ mod tests {
                 .map(|image| image.start)
                 .collect()
         };
-        // Scrolling for R2L_TIME seconds from its start.
+        // Scrolling from its start to its end.
         assert_eq!(starts(10.0, 20.0), [5.0]);
         assert_eq!(starts(19.0, 21.0), [20.0]);
         assert_eq!(starts(0.0, 30.0), [0.0, 5.0, 20.0]);

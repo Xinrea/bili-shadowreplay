@@ -21,8 +21,8 @@ use url::Url;
 use crate::{
     constants,
     danmu2ass::{
-        danmu_render_plan, Danmu2AssOptions, DanmuImage, DanmuRenderPlan, ImageDanmu, PLAY_RES_Y,
-        R2L_TIME,
+        danmu_render_plan, image_height, Danmu2AssOptions, DanmuImage, DanmuRenderPlan, ImageDanmu,
+        PLAY_RES_Y,
     },
     progress::progress_reporter::ProgressReporterTrait,
 };
@@ -117,7 +117,7 @@ fn image_size(emoji: &EmojiContent, font_size: f64) -> (f64, f64) {
         (Some(width), Some(height)) if width > 0 && height > 0 => width as f64 / height as f64,
         _ => 1.0,
     };
-    let height = 1.5 * font_size;
+    let height = image_height(font_size);
     (height * ratio.clamp(0.25, 3.0), height)
 }
 
@@ -327,7 +327,7 @@ fn overlay_slots(images: &[ImageDanmu]) -> Vec<OverlaySlot<'_>> {
                 });
                 slots.len() - 1
             });
-        slots[index].available_at = event.start + R2L_TIME;
+        slots[index].available_at = event.end;
         slots[index].events.push(event);
     }
     slots
@@ -350,15 +350,18 @@ fn position_expression(events: &[&ImageDanmu], horizontal: bool) -> String {
     let Some(event) = events.first() else {
         return "NAN".into();
     };
+    let scale = 1080.0 / PLAY_RES_Y;
     if horizontal {
         format!(
-            "if(gte(t,{:.6})*lt(t,{:.6}),W-(W+w)*(t-{:.6})/{R2L_TIME},NAN)",
+            "if(gte(t,{:.6})*lt(t,{:.6}),{:.6}{:+.6}*(t-{:.6}),NAN)",
             event.start,
-            event.start + R2L_TIME,
+            event.end,
+            event.from * scale,
+            (event.to - event.from) * scale / (event.end - event.start),
             event.start,
         )
     } else {
-        format!("{:.6}", event.top * 1080.0 / PLAY_RES_Y)
+        format!("{:.6}", event.top * scale)
     }
 }
 
@@ -611,7 +614,10 @@ mod tests {
                 height: 54.0,
             },
             start,
+            end: start + 8.0,
             top: 0.0,
+            from: 1280.0,
+            to: -54.0,
         }
     }
 
@@ -678,17 +684,21 @@ mod tests {
     #[test]
     fn image_footprints_match_preview_and_clamp_bad_dimensions() {
         let mut metadata = emoji("https://i0.hdslb.com/a.png");
-        assert_eq!(image_size(&metadata, 36.0), (54.0, 54.0));
+        // A row high, as Bilibili draws emoticons.
+        let row = image_height(36.0);
+        assert!((row - 30.68).abs() < 0.01, "{row}");
+        assert_eq!(image_size(&metadata, 36.0), (row, row));
         metadata.width = Some(160);
-        assert_eq!(image_size(&metadata, 36.0), (108.0, 54.0));
+        assert_eq!(image_size(&metadata, 36.0), (row * 2.0, row));
         metadata.width = Some(u64::MAX);
-        assert_eq!(image_size(&metadata, 36.0), (162.0, 54.0));
+        assert_eq!(image_size(&metadata, 36.0), (row * 3.0, row));
         metadata.width = Some(1);
-        assert_eq!(image_size(&metadata, 36.0), (13.5, 54.0));
+        assert_eq!(image_size(&metadata, 36.0), (row * 0.25, row));
         metadata.height = Some(0);
-        assert_eq!(image_size(&metadata, 48.0), (72.0, 72.0));
+        let large = image_height(48.0);
+        assert_eq!(image_size(&metadata, 48.0), (large, large));
         metadata.height = None;
-        assert_eq!(image_size(&metadata, 36.0), (54.0, 54.0));
+        assert_eq!(image_size(&metadata, 36.0), (row, row));
     }
 
     #[test]
@@ -749,7 +759,7 @@ mod tests {
     #[test]
     fn large_tracks_keep_filter_count_and_expression_depth_bounded() {
         let events: Vec<_> = (0..10_000)
-            .map(|i| image_event(f64::from(i) * R2L_TIME))
+            .map(|i| image_event(f64::from(i) * 8.0))
             .collect();
         let graph = overlay_graph(&events, 1.0, 120.0, false);
         assert_eq!(graph.inputs.len(), 1);
@@ -1011,11 +1021,11 @@ mod tests {
                 "-f",
                 "lavfi",
                 "-i",
-                "color=c=black:s=320x180:r=30:d=17",
+                "color=c=black:s=320x180:r=30:d=30",
                 "-f",
                 "lavfi",
                 "-i",
-                "sine=frequency=440:duration=17",
+                "sine=frequency=440:duration=30",
                 "-c:v",
                 "libx264",
                 "-preset",
@@ -1028,13 +1038,15 @@ mod tests {
         )
         .await;
         let options = Danmu2AssOptions::default();
-        let mut entries = vec![entry(0, "image"), entry(0, "image"), entry(8000, "image")];
+        let mut entries = vec![entry(0, "image"), entry(0, "image"), entry(14000, "image")];
         let mut text = entry(0, "");
         text.content = "hello".into();
         text.emoji_content = None;
         entries.push(text);
         // Deliberately reserve a 2:1 box for a 4:1 image: object-contain must
         // preserve the image's actual aspect ratio and add transparent padding.
+        // Each 162 px image enters at x = 1971 and travels 2183 px in 13.74 s;
+        // the second, drawn 0.1 s later, goes in the row below the first.
         let plan = danmu_render_plan(&entries, &options, |entry| {
             entry.emoji_content.as_ref().map(|_| DanmuImage {
                 path: normalized.clone(),
@@ -1050,11 +1062,11 @@ mod tests {
         let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
         assert_eq!((metadata.width, metadata.height), (1920, 1080));
         assert_eq!(metadata.fps, 60.0);
-        assert!((metadata.duration - 17.0).abs() < 0.1);
+        assert!((metadata.duration - 30.0).abs() < 0.1);
         let first = rgb_frame(&output, 4.0).await;
         let bounds = red_bounds(&first, 0, 80).expect("image missing");
         assert!(
-            (bounds.0 as i64 - 879).abs() < 4,
+            (bounds.0 as i64 - 1335).abs() < 4,
             "unexpected position: {bounds:?}"
         );
         assert!(
@@ -1073,7 +1085,7 @@ mod tests {
             red_bounds(&first, 81, 162).is_some(),
             "concurrent duplicate disappeared"
         );
-        let center = (40 * 1920 + 960) * 3;
+        let center = (40 * 1920 + 1416) * 3;
         assert!(
             (90..115).contains(&first[center]),
             "alpha/opacity lost: {}",
@@ -1084,7 +1096,7 @@ mod tests {
             red_bounds(&next, 0, 80).unwrap().0 < bounds.0,
             "60 FPS motion was duplicated"
         );
-        let repeated = rgb_frame(&output, 12.0).await;
+        let repeated = rgb_frame(&output, 15.0).await;
         assert!(
             red_bounds(&repeated, 0, 80).is_some(),
             "reused overlay disappeared"
@@ -1093,7 +1105,7 @@ mod tests {
             red_bounds(&repeated, 81, 162).is_none(),
             "ended image remained visible"
         );
-        let ended = rgb_frame(&output, 16.5).await;
+        let ended = rgb_frame(&output, 28.5).await;
         assert!(
             red_bounds(&ended, 0, 162).is_none(),
             "image remained after its event ended"
@@ -1176,9 +1188,10 @@ mod tests {
         assert!(before[pixel + 2] > 200 && before[pixel] < 50);
         assert!(after[pixel] > 200 && after[pixel + 2] < 50);
         // The t=0 image is already 4 seconds into motion at media t=4, not
-        // restarted at the first decoded video frame (media t=2).
+        // restarted at the first decoded video frame (media t=2): its 81 px
+        // travel 2102 px in 13.76 s from x = 1971.
         let frame = rgb_frame(&output, 4.0).await;
-        let pixel = (40 * 1920 + 960) * 3;
+        let pixel = (40 * 1920 + 1400) * 3;
         assert!(frame[pixel + 1] > 80 && frame[pixel] < 50 && frame[pixel + 2] < 50);
     }
 

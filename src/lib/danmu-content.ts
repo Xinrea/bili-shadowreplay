@@ -4,8 +4,11 @@ import type { DanmuEntry } from "./interface";
 // must not make the user's browser send requests to arbitrary/local services.
 const EMOJI_CDN_DOMAINS = ["hdslb.com", "biliimg.com"];
 
-/** Only load images over HTTPS from supported platforms' trusted CDNs. */
-export function emojiPresentation(entry: DanmuEntry) {
+/**
+ * Only load images over HTTPS from supported platforms' trusted CDNs. Images
+ * are `heightEm` high.
+ */
+export function emojiPresentation(entry: DanmuEntry, heightEm = 1.5) {
   if (entry.type !== "danmu" || !entry.emoji_content?.url?.trim()) return null;
   const emoji = entry.emoji_content;
   let url: URL;
@@ -34,14 +37,14 @@ export function emojiPresentation(entry: DanmuEntry) {
     url: url.href,
     // Reserve the footprint before loading, keeping scrolling measurements
     // and the virtual list's fixed row heights stable when the image appears.
-    widthEm: 1.5 * Math.min(3, Math.max(0.25, ratio)),
-    heightEm: 1.5,
+    widthEm: heightEm * Math.min(3, Math.max(0.25, ratio)),
+    heightEm,
   };
 }
 
 /** Shared by the floating overlay and the Svelte list action below. */
-export function renderDanmuContent(node: HTMLElement, entry: DanmuEntry) {
-  const presentation = emojiPresentation(entry);
+export function renderDanmuContent(node: HTMLElement, entry: DanmuEntry, imageHeightEm?: number) {
+  const presentation = emojiPresentation(entry, imageHeightEm);
   node.textContent = entry.content;
   if (!presentation) return () => {};
 

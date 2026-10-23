@@ -125,11 +125,11 @@
       options: [{ id: "clip-name-format", title: "文件名格式", keywords: ["material", "filename", "format"] }],
     },
     {
-      title: "弹幕压制样式",
+      title: "弹幕样式",
       icon: Captions,
       options: [
-        { id: "danmu-font-size", title: "字体大小", keywords: ["danmaku", "font", "size"] },
-        { id: "danmu-opacity", title: "不透明度", keywords: ["danmaku", "opacity"] },
+        { id: "danmu-font-size", title: "字体大小", keywords: ["danmaku", "font", "size", "preview"] },
+        { id: "danmu-opacity", title: "不透明度", keywords: ["danmaku", "opacity", "preview"] },
       ],
     },
     {
@@ -1551,7 +1551,7 @@
           <div class="space-y-3">
             <h2 class="flex items-center gap-2 text-[14px] font-semibold text-fg">
               <Captions class="h-4 w-4 text-fg-muted" />
-              <span>弹幕压制样式</span>
+              <span>弹幕样式</span>
             </h2>
             <div class="ui-card divide-y divide-line">
               <!-- Font Size -->
@@ -1562,7 +1562,7 @@
                       字体大小
                     </h3>
                     <p class="ui-hint mt-0.5">
-                      设置生成素材和导出切片时压制的弹幕字体大小
+                      设置预览和压制时的弹幕字体大小
                     </p>
                   </div>
                   <div class="flex items-center space-x-2">
@@ -1586,7 +1586,7 @@
                       不透明度
                     </h3>
                     <p class="ui-hint mt-0.5">
-                      设置弹幕不透明度，范围
+                      设置预览和压制时的弹幕不透明度，范围
                       0.0-1.0，0.0为完全透明，1.0为完全不透明
                     </p>
                   </div>

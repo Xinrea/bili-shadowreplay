@@ -19,6 +19,7 @@
   import { keepEventSubscription } from "../event-subscription";
   import { renderDanmuContent } from "../danmu-content";
   import { createFloatingOverlay } from "../floating-overlay";
+  import { createDanmakuFeed, FEED_TICK_MS } from "../danmaku-feed";
   import {
     createDanmakuPacer,
     createDanmakuSpace,
@@ -35,13 +36,6 @@
     DANMU_FLUSH_INTERVAL_MS,
   } from "../live-preview-perf";
   const DANMU_STATISTIC_GAP = 5;
-  // How often recorded danmaku are handed over as playback reaches them.
-  const HISTORY_TICK_MS = 200;
-  // Playback moving further than this between ticks jumped, like a seek.
-  const HISTORY_JUMP_MS = 2000;
-  // After a jump, how far back danmaku are looked for that are still on
-  // screen there.
-  const HISTORY_CATCH_UP_MS = 20_000;
   // How long a super chat waits for room before it flies over the top.
   const KEEP_WAIT_S = 5;
   let destroyed = false;
@@ -660,46 +654,30 @@ ${mediaPlaylistUrl}`;
     // Where playback is on the danmaku's timeline, in seconds.
     const videoClock = () => video.currentTime + local_offset + global_offset;
     // history danmaku sender: hands each message over as playback reaches it,
-    // at its own time. A seek, a changed offset or a jump starts over where
-    // playback is, with the danmaku the video has on screen there.
-    let historyCursor: number | undefined;
-    let historyOffset = local_offset;
-    video.addEventListener("seeking", () => {
-      historyCursor = undefined;
-      floatingOverlay?.clear();
-    });
+    // at its own time (see lib/danmaku-feed.ts).
+    const feed = createDanmakuFeed();
+    video.addEventListener("seeking", () => feed.reset());
     setInterval(() => {
       if (!danmu_enabled || danmu_records.length == 0 || !floatingOverlay) {
-        historyCursor = undefined;
+        feed.reset();
         return;
       }
-      if (video.paused) return;
-
-      // using live source
-      if (isLive() && get_total() - video.currentTime <= 5) {
-        historyCursor = undefined;
-        return;
-      }
-
       const cur = Math.floor(videoClock() * 1000);
-      const jumped =
-        historyCursor === undefined ||
-        local_offset !== historyOffset ||
-        cur < historyCursor ||
-        cur - historyCursor > HISTORY_JUMP_MS;
-      if (jumped && historyCursor !== undefined) floatingOverlay.clear();
-      const from = jumped ? cur - HISTORY_CATCH_UP_MS : historyCursor;
-      historyCursor = cur;
-      historyOffset = local_offset;
+      const step = feed.step({
+        now: cur,
+        offset: local_offset,
+        paused: video.paused,
+        // using live source
+        atLiveEdge: isLive() && get_total() - video.currentTime <= 5,
+      });
+      if (step.clear) floatingOverlay.clear();
+      if (step.from === null) return;
 
       const times = pacedTimes();
       const due: [number, DanmuEntry][] = [];
       danmu_records.forEach((v, index) => {
         const time = times[index];
-        if (time === null || time < from || time >= cur) return;
-        // Super chats are not caught up: they would all enter at once.
-        if (jumped && v.type === "super_chat" && time < cur - HISTORY_TICK_MS) return;
-        due.push([time, v]);
+        if (time !== null && time >= step.from && time < cur) due.push([time, v]);
       });
       due.sort((a, b) => a[0] - b[0]);
       for (const [time, v] of due) {
@@ -709,7 +687,7 @@ ${mediaPlaylistUrl}`;
         }
         drawFloatingEntry(v, { space: recordedSpace, now: videoClock, at: time / 1000 });
       }
-    }, HISTORY_TICK_MS);
+    }, FEED_TICK_MS);
 
     if (isLive()) {
       if (platform == "bilibili") {
@@ -838,8 +816,9 @@ ${mediaPlaylistUrl}`;
     // place overlay to the top of the video
     video.parentElement.appendChild(overlay);
     const floating = createFloatingOverlay(overlay);
-    // Danmaku on screen move with the video: they pause with it, also while
-    // it waits for data, and follow its speed.
+    // Recorded danmaku on screen move with the video: they pause with it, also
+    // while it waits for data, and follow its speed. Live ones keep to the
+    // wall clock they are laid out on.
     let waiting = false;
     const syncPlayback = () => floating.setPlayback(video.paused || waiting, video.playbackRate);
     video.addEventListener("waiting", () => {
@@ -877,19 +856,19 @@ ${mediaPlaylistUrl}`;
     };
 
     /**
-     * Where a message flies. A recorded danmaku is placed at its own time
-     * `at`, already that far into its flight; others enter now. Super chats
-     * (`keep`) wait for room, then after KEEP_WAIT_S on their clock fly over
-     * the top.
+     * Where a message flies. A recorded one is placed at its own time `at`,
+     * already that far into its flight; others enter now. Super chats (`keep`)
+     * without room wait for some, entering when it frees up, and after
+     * KEEP_WAIT_S on their clock fly over the top.
      */
     function placer(timing: Timing, keep: boolean) {
       let since: number | undefined;
       return (width: number, height: number) => {
         const now = timing.now();
         const container = { width: overlay.clientWidth, height: overlay.clientHeight };
-        if (!keep && timing.at !== undefined) {
+        if (since === undefined && timing.at !== undefined) {
           const flight = timing.space.place(timing.at, width, height, container);
-          return flight && { ...flight, elapsed: now - timing.at };
+          if (flight || !keep) return flight && { ...flight, elapsed: now - timing.at };
         }
         since ??= now;
         return timing.space.place(now, width, height, container, keep && now - since >= KEEP_WAIT_S);
@@ -918,7 +897,7 @@ ${mediaPlaylistUrl}`;
         { ...record, content: record.content.trim() },
         LINE_HEIGHT,
       );
-      floating.add(danmaku, placer(timing, false), { dispose });
+      floating.add(danmaku, placer(timing, false), { dispose, follow: timing.at !== undefined });
     }
 
     // Super chats float across the screen like danmaku, rendered as an
@@ -980,7 +959,7 @@ ${mediaPlaylistUrl}`;
       card.style.zIndex = "500";
       card.style.boxShadow = "0 2px 8px rgba(0, 0, 0, 0.35)";
       // Paid messages are never dropped: on a full screen they wait for room.
-      floating.add(card, placer(timing, true), { keep: true });
+      floating.add(card, placer(timing, true), { keep: true, follow: timing.at !== undefined });
     }
 
     // Floating overlay renderers keyed by event type. New displayable event

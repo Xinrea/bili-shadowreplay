@@ -12,7 +12,8 @@ export interface FloatingFlight {
 
 /**
  * Own floating nodes until they finish, are cleared, or the player exits.
- * Their motion follows the playback state set with `setPlayback`.
+ * Those added to `follow` playback move with the state set with
+ * `setPlayback`; the rest at their own pace.
  */
 export function createFloatingOverlay(overlay: HTMLElement) {
   const cleanups = new Set<() => void>();
@@ -28,7 +29,7 @@ export function createFloatingOverlay(overlay: HTMLElement) {
   function add(
     node: HTMLElement,
     place: (width: number, height: number) => FloatingFlight | null,
-    { dispose: disposeContent = () => {}, keep = false } = {},
+    { dispose: disposeContent = () => {}, keep = false, follow = false } = {},
   ) {
     if (destroyed) {
       disposeContent();
@@ -81,16 +82,18 @@ export function createFloatingOverlay(overlay: HTMLElement) {
         { duration: flight.duration * 1000, easing: "linear" },
       );
       animation.currentTime = elapsed * 1000;
-      animation.playbackRate = playback.rate;
-      if (playback.paused) animation.pause();
       animation.onfinish = dispose;
-      animations.add(animation);
+      if (follow) {
+        animation.playbackRate = playback.rate;
+        if (playback.paused) animation.pause();
+        animations.add(animation);
+      }
     };
     frame = requestAnimationFrame(fly);
     return dispose;
   }
 
-  /** Pause, resume or speed up every node, now and to come. */
+  /** Pause, resume or speed up the nodes that follow playback, now and to come. */
   function setPlayback(paused: boolean, rate: number) {
     playback = { paused, rate };
     for (const animation of animations) {

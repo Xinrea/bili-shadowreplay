@@ -305,14 +305,23 @@ test("a recorded node starts as far into its flight as playback is", async () =>
 test("motion follows the player's pause and speed, now and to come", async () => {
   const h = await floatingHarness();
   const first = h.node();
-  h.add(first);
+  h.add(first, undefined, { follow: true });
+  // Live ones keep their own pace.
+  const live = h.node();
+  h.add(live);
   h.flushFrames();
   h.owner.setPlayback(true, 2);
   assert.equal(first.animation.paused, true);
   assert.equal(first.animation.playbackRate, 2);
+  assert.equal(live.animation.paused, false);
+  assert.equal(live.animation.playbackRate, 1);
   const second = h.node();
-  h.add(second);
+  h.add(second, undefined, { follow: true });
+  const laterLive = h.node();
+  h.add(laterLive);
   h.flushFrames();
+  assert.equal(laterLive.animation.paused, false);
+  assert.equal(laterLive.animation.playbackRate, 1);
   assert.equal(second.animation.paused, true);
   assert.equal(second.animation.playbackRate, 2);
   h.owner.setPlayback(false, 5);

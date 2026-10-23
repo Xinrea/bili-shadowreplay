@@ -115,3 +115,29 @@ export function createFloatingOverlay(overlay: HTMLElement) {
 
   return { add, setPlayback, clear, destroy };
 }
+
+/** How long a resize must settle before danmaku are laid out again. */
+const RESIZE_SETTLE_MS = 150;
+
+/**
+ * Call `relayout` once `overlay` settles at a new size: danmaku on screen
+ * keep the positions and rows they were placed with in the old one.
+ */
+export function observeResize(overlay: HTMLElement, relayout: () => void) {
+  let size = `${overlay.clientWidth}x${overlay.clientHeight}`;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const observer = new ResizeObserver(() => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      const next = `${overlay.clientWidth}x${overlay.clientHeight}`;
+      if (next === size) return;
+      size = next;
+      relayout();
+    }, RESIZE_SETTLE_MS);
+  });
+  observer.observe(overlay);
+  return () => {
+    clearTimeout(timer);
+    observer.disconnect();
+  };
+}

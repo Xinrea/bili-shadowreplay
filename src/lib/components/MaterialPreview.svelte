@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Clapperboard, Download, Film } from "lucide-svelte";
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
+  import { attachRecordedDanmaku, watchDanmakuStyle } from "../danmaku-overlay";
   import { get_static_url, invoke, set_title, TAURI_ENV } from "../invoker";
   import type { DanmuEntry, VideoItem } from "../interface";
   import TitleBar from "./TitleBar.svelte";
@@ -19,6 +20,14 @@
   let video: HTMLVideoElement = $state();
   let currentTime = $state(0);
   let list: HTMLElement = $state();
+  let stage: HTMLElement = $state();
+  let overlay: HTMLElement = $state();
+  let showDanmu = $state(true);
+  // Where the picture is within the stage, which the danmaku overlay covers.
+  let picture = $state({ left: 0, top: 0, width: 0, height: 0 });
+
+  const danmuStyle = watchDanmakuStyle();
+  onDestroy(() => danmuStyle.stop());
 
   let source = $derived.by(() => {
     try {
@@ -44,6 +53,42 @@
     } catch (cause) {
       error = String(cause);
     }
+  });
+
+  // Fit the overlay to the picture, letterboxed in the stage like the video.
+  $effect(() => {
+    if (!stage || !video) return;
+    const fit = () => {
+      const width = stage.clientWidth;
+      const height = stage.clientHeight;
+      const ratio = video.videoWidth && video.videoHeight ? video.videoWidth / video.videoHeight : width / height;
+      const fitted = width / height > ratio ? { width: height * ratio, height } : { width, height: width / ratio };
+      picture = { left: (width - fitted.width) / 2, top: (height - fitted.height) / 2, ...fitted };
+    };
+    const observer = new ResizeObserver(fit);
+    observer.observe(stage);
+    video.addEventListener("loadedmetadata", fit);
+    fit();
+    return () => {
+      observer.disconnect();
+      video.removeEventListener("loadedmetadata", fit);
+    };
+  });
+
+  // Float the danmaku over the picture as the video plays, laid out as they
+  // are burned into videos.
+  let floating: ReturnType<typeof attachRecordedDanmaku> | undefined = $state.raw();
+  $effect(() => {
+    if (!video || !overlay || danmus.length === 0) return;
+    const attached = attachRecordedDanmaku(video, overlay, danmus, danmuStyle.get);
+    floating = attached;
+    return () => {
+      attached.destroy();
+      floating = undefined;
+    };
+  });
+  $effect(() => {
+    floating?.setEnabled(showDanmu);
   });
 
   // Follow playback in the danmaku list.
@@ -109,16 +154,24 @@
     <div class="flex flex-1 items-center justify-center text-sm text-red-300">加载素材失败：{error}</div>
   {:else}
     <div class="flex min-h-0 flex-1">
-      <div class="flex min-w-0 flex-1 items-center justify-center bg-black">
+      <div bind:this={stage} class="relative min-w-0 flex-1 overflow-hidden bg-black">
         {#if url}
           <!-- svelte-ignore a11y_media_has_caption -->
           <video
             bind:this={video}
             src={url}
             controls
-            class="max-h-full max-w-full"
+            class="absolute inset-0 h-full w-full object-contain"
             ontimeupdate={() => (currentTime = video.currentTime)}
           ></video>
+          <div
+            bind:this={overlay}
+            class="pointer-events-none absolute overflow-hidden"
+            style:left="{picture.left}px"
+            style:top="{picture.top}px"
+            style:width="{picture.width}px"
+            style:height="{picture.height}px"
+          ></div>
         {/if}
       </div>
 
@@ -167,9 +220,20 @@
           </div>
         {/if}
 
-        <div class="flex items-center justify-between px-4 py-2 text-[11px] text-[#9aa6b8]">
+        <div class="flex items-center justify-between gap-2 px-4 py-2 text-[11px] text-[#9aa6b8]">
           <span>弹幕</span>
-          <span>{danmus.length} 条</span>
+          <span class="ml-auto">{danmus.length} 条</span>
+          {#if danmus.length > 0}
+            <button
+              type="button"
+              class="rounded px-1.5 py-0.5 hover:bg-white/10 {showDanmu ? 'text-[#0a84ff]' : ''}"
+              aria-pressed={showDanmu}
+              title={showDanmu ? "隐藏画面上的弹幕" : "在画面上显示弹幕"}
+              onclick={() => (showDanmu = !showDanmu)}
+            >
+              {showDanmu ? "画面弹幕：开" : "画面弹幕：关"}
+            </button>
+          {/if}
         </div>
         <div bind:this={list} class="sidebar-scrollbar flex-1 overflow-y-auto px-2 pb-2">
           {#each danmus as entry, index}

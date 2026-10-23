@@ -759,6 +759,7 @@ dependencies = [
  "hound",
  "keyring",
  "libc",
+ "liblzma-sys",
  "log",
  "m3u8-rs",
  "objc2-app-kit",
@@ -4008,9 +4009,9 @@ dependencies = [
 
 [[package]]
 name = "liblzma-sys"
-version = "0.4.4"
+version = "0.4.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01b9596486f6d60c3bbe644c0e1be1aa6ccc472ad630fe8927b456973d7cb736"
+checksum = "7c7e3581f367a78d7b7e7ae948d023310556f0cfc13156c2e4e00e25616492b9"
 dependencies = [
  "cc",
  "libc",

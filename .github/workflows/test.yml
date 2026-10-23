@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: read
+
 jobs:
   frontend:
     name: Frontend tests
@@ -23,17 +26,23 @@ jobs:
   test:
     name: Run Tests
     runs-on: ubuntu-latest
+    # Bounds stalls such as a slow apt mirror on a cache miss.
+    timeout-minutes: 45
+    env:
+      # Debug info is unused in CI but slows compiling and linking and enlarges
+      # the Rust cache. Panic messages keep their locations.
+      CARGO_PROFILE_DEV_DEBUG: "0"
 
     steps:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
 
+      # ffmpeg/ffprobe: needed for ffmpeg_utils fixture tests (fMP4 init+media probe)
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          # ffmpeg/ffprobe: needed for ffmpeg_utils fixture tests (fMP4 init+media probe)
-          sudo apt-get install -y libssl-dev pkg-config ffmpeg
+        uses: ./.github/actions/apt-install
+        with:
+          packages: libssl-dev pkg-config ffmpeg
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -42,6 +51,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          # PRs restore main's cache. Saving one per PR fills the 10 GB repo
+          # cache limit and evicts the larger Lint cache.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Run tests
         working-directory: src-tauri

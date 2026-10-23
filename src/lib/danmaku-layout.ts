@@ -81,10 +81,13 @@ interface Placed {
 export function createDanmakuSpace() {
   let placed: Placed[] = [];
 
-  /** Whether a message from `from` on overlaps `top..bottom`. */
+  /**
+   * Whether a message from `from` on overlaps `top..bottom`. Bilibili looks
+   * at the first only, which misses taller ones (super chats, images) further
+   * down the list.
+   */
   function overlaps(from: number, top: number, bottom: number) {
-    const other = placed.slice(from).find((other) => other.bottom >= top);
-    return other !== undefined && other.top <= bottom;
+    return placed.slice(from).some((other) => other.bottom >= top && other.top <= bottom);
   }
 
   /**
@@ -92,14 +95,14 @@ export function createDanmakuSpace() {
    * top of the player down, where a message entering at `now` overlaps no
    * message on screen, or follows it closely enough never to catch up with
    * it. Nothing when it would go below the player, as the room drops those,
-   * unless `keep`: then the top of the player.
+   * unless `force`: then it flies over the top row without taking up space.
    */
   function place(
     now: number,
     width: number,
     height: number,
     container: { width: number; height: number },
-    keep = false,
+    force = false,
   ): Flight | null {
     placed = placed.filter((other) => other.end > now);
     const entryX = container.width + 1 + SAFE_RIGHT;
@@ -107,8 +110,8 @@ export function createDanmakuSpace() {
     const travel = Math.ceil(entryX + width + SAFE_LEFT);
     const duration = Math.ceil((travel / speed) * 100) / 100;
     const middle = now + entryX / speed;
-    const top = findTop(now, entryX, middle, height, container.height + 1) ?? (keep ? 0 : null);
-    if (top === null) return null;
+    const top = findTop(now, entryX, middle, height, container.height + 1);
+    if (top === null) return force ? { top: 0, entryX, travel, duration } : null;
     const entry: Placed = {
       top,
       bottom: top + height,
@@ -131,7 +134,10 @@ export function createDanmakuSpace() {
       const other = placed[index];
       if (bottom > limit) break;
       if (other.bottom <= top) continue;
-      if (other.top > bottom) return top;
+      if (other.top > bottom) {
+        if (!overlaps(index + 1, top, bottom)) return top;
+        continue;
+      }
       const otherX = (other.middle - now) * other.speed;
       if (entryX > otherX + other.width && middle > other.end + FOLLOW_GAP) {
         if (bottom <= other.bottom && !overlaps(index + 1, top, bottom)) return top;
@@ -150,6 +156,44 @@ export function createDanmakuSpace() {
       placed = [];
     },
   };
+}
+
+/**
+ * The room's queue (see createDanmakuPacer) run on another clock, such as a
+ * video's: when each message arriving at `times` (ms) is drawn, or null when
+ * it is dropped. Burned videos are paced so (see danmu2ass.rs).
+ */
+export function paceTimes(times: number[]): (number | null)[] {
+  const order = times.map((_, index) => index).sort((a, b) => times[a] - times[b]);
+  const drawn: (number | null)[] = times.map(() => null);
+  const queue: number[] = [];
+  // [when it fires, the message's index]
+  const timers: [number, number][] = [];
+  let next = 0;
+  for (;;) {
+    let timer = -1;
+    for (let i = 0; i < timers.length; i++) {
+      if (timer < 0 || timers[i][0] < timers[timer][0]) timer = i;
+    }
+    const arrival = next < order.length ? times[order[next]] : undefined;
+    let now: number;
+    // Messages arriving together are all queued before a timer fires.
+    if (timer >= 0 && (arrival === undefined || timers[timer][0] < arrival)) {
+      const [at, index] = timers.splice(timer, 1)[0];
+      drawn[index] = at;
+      now = at;
+    } else if (arrival !== undefined) {
+      if (queue.length > QUEUE_LIMIT) queue.shift();
+      queue.push(order[next++]);
+      now = arrival;
+    } else {
+      break;
+    }
+    while (timers.length < MAX_TIMERS && queue.length > 0) {
+      timers.push([now + timers.length * TIMER_STEP_MS, queue.shift() as number]);
+    }
+  }
+  return drawn;
 }
 
 /**

@@ -185,7 +185,9 @@ test("virtual row updates and destruction revoke pending image sources", async (
 async function floatingHarness(place = () => ({ top: 5, entryX: 851, travel: 931, duration: 6 })) {
   const frames = new Map();
   let frameId = 0;
+  const clock = { now: 0 };
   const api = await loadModule("floating-overlay", {
+    Date: { now: () => clock.now },
     requestAnimationFrame(callback) {
       frames.set(++frameId, callback);
       return frameId;
@@ -205,6 +207,7 @@ async function floatingHarness(place = () => ({ top: 5, entryX: 851, travel: 931
       return place(...args);
     }),
     placed,
+    clock,
     content,
     overlay,
     parent,
@@ -311,17 +314,41 @@ test("cancelled transitions dispose each floating node only once", async () => {
   assert.equal(disposed, 1);
 });
 
-test("danmaku without room are dropped, and kept ones are placed anyway", async () => {
-  const h = await floatingHarness((width, height, keep) =>
-    keep ? { top: 0, entryX: 851, travel: 931, duration: 6 } : null);
+test("danmaku without room are dropped, and kept ones wait, then are forced in", async () => {
+  const h = await floatingHarness((width, height, force) =>
+    force ? { top: 0, entryX: 851, travel: 931, duration: 6 } : null);
   const { node, image } = h.addEmoji();
   const card = new Element("div");
   h.owner.add(card, undefined, true);
   h.flushFrames();
-  assert.equal(h.overlay.children.length, 1);
-  assert.equal(h.overlay.children[0], card);
-  assert.equal(card.style.transform, "translateX(-931px)");
   assert.equal(image.src, undefined);
   assert.equal(node.listeners.size, 0);
+  assert.equal(h.overlay.children.length, 1);
+  assert.equal(h.overlay.children[0], card);
+  // Waiting a frame at a time, unseen.
+  h.clock.now = 4999;
+  h.flushFrames();
+  assert.equal(card.style.visibility, "hidden");
+  assert.equal(h.frames.size, 1);
+  h.clock.now = 5000;
+  h.flushFrames();
+  assert.equal(card.style.visibility, "");
+  assert.equal(card.style.transform, "translateX(-931px)");
+  assert.equal(h.frames.size, 0);
+  assert.deepEqual(h.placed.map(([, , force]) => force), [false, false, false, true]);
+  h.owner.destroy();
+});
+
+test("a waiting node is released when cleared", async () => {
+  const h = await floatingHarness(() => null);
+  const card = new Element("div");
+  let disposed = 0;
+  h.owner.add(card, () => disposed++, true);
+  h.flushFrames();
+  assert.equal(h.frames.size, 1);
+  h.owner.clear();
+  assert.equal(h.frames.size, 0);
+  assert.equal(disposed, 1);
+  assert.equal(h.overlay.children.length, 0);
   h.owner.destroy();
 });

@@ -74,9 +74,98 @@ test("rows fill from the top, 1 px apart, and a full player drops messages", asy
   assert.equal(tops.length, 22);
   assert.deepEqual(tops.slice(0, 3), [0, 48, 96]);
   assert.equal(space.place(3, 700, 47, player), null);
-  assert.equal(space.place(3, 700, 47, player, true).top, 0);
   space.clear();
   assert.equal(space.place(3, 700, 47, player).top, 0);
+});
+
+/**
+ * Pairs of placed messages whose boxes ever intersect on screen, as CSS moves
+ * them, by more than 1 px: the duration is rounded up to 0.01 s, so CSS moves
+ * a hair slower than the layout reckons (as in Bilibili's).
+ */
+function intersections(placed) {
+  const found = [];
+  const x = (item, t) => item.flight.entryX - (item.flight.travel * (t - item.at)) / item.flight.duration;
+  for (let i = 0; i < placed.length; i++) {
+    for (let j = i + 1; j < placed.length; j++) {
+      const [a, b] = [placed[i], placed[j]];
+      if (a.flight.top >= b.flight.top + b.height || b.flight.top >= a.flight.top + a.height) continue;
+      const from = Math.max(a.at, b.at);
+      const to = Math.min(a.at + a.flight.duration, b.at + b.flight.duration);
+      for (let t = from; t <= to; t += 0.05) {
+        if (x(a, t) < x(b, t) + b.width - 1 && x(b, t) < x(a, t) + a.width - 1) {
+          found.push([i, j, Math.round(t * 100) / 100]);
+          break;
+        }
+      }
+    }
+  }
+  return found;
+}
+
+test("on a full player a super chat finds room later, and nothing crosses it", async () => {
+  const api = await loadModule();
+  const space = api.createDanmakuSpace();
+  const placed = [];
+  const place = (at, width, height) => {
+    const flight = space.place(at, width, height, player);
+    if (flight) placed.push({ at, width, height, flight });
+    return flight;
+  };
+  for (let i = 0; i < 22; i++) place(i * 0.1, 700, 47);
+  // Taller than a row and wider, so faster: no room yet.
+  let at = 2.2;
+  while (!place(at, 1200, 110)) {
+    place(at + 0.05, at * 10 % 2 < 1 ? 300 : 80, 47);
+    at += 0.1;
+    assert.ok(at < 20);
+  }
+  for (let i = 0; i < 40; i++) place(at + 0.1 + i * 0.1, i % 2 ? 300 : 80, 47);
+  assert.deepEqual(intersections(placed), []);
+});
+
+test("a forced super chat flies over the top without taking up space", async () => {
+  const api = await loadModule();
+  const space = api.createDanmakuSpace();
+  // Rows just entered, one after another, fill the player's entry.
+  for (let i = 0; i < 22; i++) assert.ok(space.place(0, 700, 47, player));
+  assert.equal(space.place(0, 420, 110, player), null);
+  assert.equal(space.place(0, 420, 110, player, true).top, 0);
+  // The rows are still all taken by the messages under it, not by it.
+  assert.equal(space.place(0, 420, 110, player), null);
+});
+
+test("messages of mixed sizes never cross", async () => {
+  const api = await loadModule();
+  // A fixed pseudo-random stream: rows, emoticons and super chat cards.
+  let seed = 7;
+  const random = () => (seed = (seed * 48271) % 2147483647) / 2147483647;
+  for (let run = 0; run < 20; run++) {
+    const space = api.createDanmakuSpace();
+    const placed = [];
+    let at = 0;
+    for (let i = 0; i < 150; i++) {
+      at += random() * 0.3;
+      const kind = random();
+      const [width, height] =
+        kind < 0.7 ? [40 + random() * 700, 47] : kind < 0.85 ? [48 + random() * 100, 48] : [200 + random() * 220, 60 + random() * 80];
+      const flight = space.place(at, width, height, player);
+      if (flight) placed.push({ at, width, height, flight });
+    }
+    assert.deepEqual(intersections(placed), [], `run ${run}`);
+  }
+});
+
+test("the queue runs on any clock", async () => {
+  const api = await loadModule();
+  const burst = api.paceTimes(Array.from({ length: 40 }, () => 1000));
+  // 10 timers and 21 waiting; the 9 oldest waiting were dropped.
+  assert.equal(burst.filter((time) => time !== null).length, 31);
+  assert.deepEqual(burst.slice(0, 11), [1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900, null]);
+  assert.equal(burst[19], 1900);
+  // Unsorted input keeps its order; a quiet stream is drawn on time.
+  assert.deepEqual(api.paceTimes([22_000, 20_000, 20_500]), [22_000, 20_000, 20_500]);
+  assert.deepEqual(api.paceTimes([]), []);
 });
 
 test("a row is reused once the message ahead cannot be caught", async () => {

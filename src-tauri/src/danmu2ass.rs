@@ -110,8 +110,9 @@ pub fn danmu_render_plan(
     let alpha = ((1.0 - opacity) * 255.0) as u8;
     let alpha_hex = format!("{:02X}", alpha);
 
-    // ASS header. Text is anchored by the middle of its left edge, which is
-    // what the layout positions; its width is only estimated.
+    // ASS header. Text is bold, as the room draws it by default, and anchored
+    // by the middle of its left edge, which is what the layout positions; its
+    // width is only estimated.
     let header = format!(
         r"[Script Info]
 Title: Bilibili Danmaku
@@ -123,7 +124,7 @@ Timer: 10.0000
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,微软雅黑,{},&H{}FFFFFF,&H{}FFFFFF,&H{}000000,&H{}000000,0,0,0,0,100,100,0,0,1,1,0,4,20,20,2,0
+Style: Default,微软雅黑,{},&H{}FFFFFF,&H{}FFFFFF,&H{}000000,&H{}000000,-1,0,0,0,100,100,0,0,1,1,0,4,20,20,2,0
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -396,8 +397,11 @@ impl Space {
                 continue;
             }
             if other.top > bottom {
-                found = Some(top);
-                break;
+                if !self.overlaps(index + 1, top, bottom) {
+                    found = Some(top);
+                    break;
+                }
+                continue;
             }
             if ENTRY_X > other.x(now) + other.width && flight.middle > other.end + FOLLOW_GAP {
                 if bottom <= other.bottom && !self.overlaps(index + 1, top, bottom) {
@@ -428,12 +432,13 @@ impl Space {
         Some(top)
     }
 
-    /// Whether a message from `from` on overlaps `top..bottom`.
+    /// Whether a message from `from` on overlaps `top..bottom`. Bilibili
+    /// looks at the first only, which misses taller ones (images) further
+    /// down the list.
     fn overlaps(&self, from: usize, top: f64, bottom: f64) -> bool {
         self.placed[from..]
             .iter()
-            .find(|other| other.bottom >= top)
-            .is_some_and(|other| other.top <= bottom)
+            .any(|other| other.bottom >= top && other.top <= bottom)
     }
 }
 
@@ -551,6 +556,53 @@ mod tests {
             .map(|line| line.split(',').nth(1).unwrap().to_string())
             .collect();
         assert_eq!(starts[21], format_time(2.1));
+    }
+
+    #[test]
+    fn messages_of_mixed_sizes_never_cross() {
+        // A fixed pseudo-random stream of rows and taller images.
+        let mut seed: u64 = 7;
+        let mut random = || {
+            seed = seed * 48271 % 2_147_483_647;
+            seed as f64 / 2_147_483_647.0
+        };
+        for run in 0..20 {
+            let mut space = Space::default();
+            let mut placed = Vec::new();
+            let mut now = 0.0;
+            for _ in 0..150 {
+                now += random() * 0.3;
+                let (width, height) = if random() < 0.7 {
+                    (40.0 + random() * 700.0, 47.0)
+                } else {
+                    (48.0 + random() * 100.0, 48.0 + random() * 60.0)
+                };
+                let flight = Flight::new(now, width);
+                if let Some(top) = space.place(now, &flight, height) {
+                    placed.push((now, width, height, top, flight.travel, flight.duration));
+                }
+            }
+            // As ASS and FFmpeg move them, within 1 px: the duration is
+            // rounded up to 0.01 s, a hair slower than the layout reckons.
+            let x = |(start, _, _, _, travel, duration): (f64, f64, f64, f64, f64, f64), t: f64| {
+                ENTRY_X - travel * (t - start) / duration
+            };
+            for (i, &a) in placed.iter().enumerate() {
+                for &b in &placed[i + 1..] {
+                    if a.3 >= b.3 + b.2 || b.3 >= a.3 + a.2 {
+                        continue;
+                    }
+                    let mut t = a.0.max(b.0);
+                    while t <= (a.0 + a.5).min(b.0 + b.5) {
+                        assert!(
+                            !(x(a, t) < x(b, t) + b.1 - 1.0 && x(b, t) < x(a, t) + a.1 - 1.0),
+                            "run {run}: {a:?} and {b:?} cross at {t}"
+                        );
+                        t += 0.05;
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -6,14 +6,18 @@ export interface FloatingFlight {
   duration: number;
 }
 
+/** How long a node that must be kept waits for room before it is forced in. */
+const KEEP_WAIT_MS = 5000;
+
 /**
  * Own floating nodes until they finish, are cleared, or the player exits.
- * `place` gets a node's size once it is laid out, and whether it must be
- * kept, and says where it flies, or nothing to drop it.
+ * `place` gets a node's size once it is laid out, and whether it must fly
+ * now, and says where it flies, or nothing for no room. Nodes without room
+ * are dropped, or with `keep`, wait a frame at a time, then are forced in.
  */
 export function createFloatingOverlay(
   overlay: HTMLElement,
-  place: (width: number, height: number, keep: boolean) => FloatingFlight | null,
+  place: (width: number, height: number, force: boolean) => FloatingFlight | null,
 ) {
   const cleanups = new Set<() => void>();
   let destroyed = false;
@@ -49,13 +53,15 @@ export function createFloatingOverlay(
     node.style.top = "0";
     node.style.visibility = "hidden";
     overlay.appendChild(node);
-    frame = requestAnimationFrame(() => {
+    const deadline = Date.now() + KEEP_WAIT_MS;
+    const fly = () => {
       frame = undefined;
       if (released) return;
       // Reading the size also lays out the starting position to move from.
-      const flight = place(node.offsetWidth, node.offsetHeight, keep);
+      const flight = place(node.offsetWidth, node.offsetHeight, keep && Date.now() >= deadline);
       if (!flight) {
-        dispose();
+        if (keep) frame = requestAnimationFrame(fly);
+        else dispose();
         return;
       }
       node.style.left = `${flight.entryX}px`;
@@ -63,7 +69,8 @@ export function createFloatingOverlay(
       node.style.visibility = "";
       node.style.transition = `transform ${flight.duration}s linear`;
       node.style.transform = `translateX(-${flight.travel}px)`;
-    });
+    };
+    frame = requestAnimationFrame(fly);
     return dispose;
   }
 

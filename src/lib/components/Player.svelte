@@ -7,28 +7,27 @@
   import { invoke, TAURI_ENV, ENDPOINT, listen, log } from "../invoker";
   import type { AccountInfo } from "../db";
   import type {
-    Config,
-    Danmu2AssOptions,
     DanmuEntry,
     Marker,
     RecorderList,
     RecorderInfo,
     Range,
   } from "../interface";
-  import { formatScPrice, getScColors } from "../superchat";
   import { keepEventSubscription } from "../event-subscription";
-  import { renderDanmuContent } from "../danmu-content";
   import { createFloatingOverlay } from "../floating-overlay";
   import { createDanmakuFeed, FEED_TICK_MS } from "../danmaku-feed";
   import {
     createDanmakuPacer,
     createDanmakuSpace,
     createPlacer,
-    danmakuFontSize,
-    LINE_HEIGHT,
-    paceTimes,
     type DanmakuSpace,
   } from "../danmaku-layout";
+  import {
+    createDanmakuNode,
+    createSuperChatCard,
+    pacedDanmakuTimes,
+    watchDanmakuStyle,
+  } from "../danmaku-overlay";
 
   import { save } from "@tauri-apps/plugin-dialog";
   import {
@@ -50,21 +49,9 @@
    */
   type Timing = { space: DanmakuSpace; now: () => number; at?: number };
   const danmuSubscription = new AbortController();
-  // The danmaku style setting, read again whenever the window comes back, as
-  // it is changed in the main window. It applies to danmaku drawn after.
-  let danmuStyle: Danmu2AssOptions = { font_size: 36, opacity: 0.8 };
-  async function loadDanmuStyle() {
-    try {
-      const config = await invoke<Config>("get_config");
-      if (config.danmu_ass_options) danmuStyle = config.danmu_ass_options;
-    } catch (error) {
-      console.warn("Failed to load the danmaku style:", error);
-    }
-  }
-  loadDanmuStyle();
-  window.addEventListener("focus", loadDanmuStyle);
+  const danmuStyle = watchDanmakuStyle();
   onDestroy(() => {
-    window.removeEventListener("focus", loadDanmuStyle);
+    danmuStyle.stop();
     destroyed = true;
     danmuSubscription.abort();
     document.removeEventListener("shaka-ui-loaded", init);
@@ -638,15 +625,7 @@ ${mediaPlaylistUrl}`;
     let paced: { records: DanmuEntry[]; times: (number | null)[] } | undefined;
     function pacedTimes() {
       if (paced?.records !== danmu_records) {
-        const queued = danmu_records.flatMap((entry, index) =>
-          entry.type === "super_chat" ? [] : [index],
-        );
-        const drawn = paceTimes(queued.map((index) => danmu_records[index].ts));
-        const times = danmu_records.map((entry) =>
-          entry.type === "super_chat" ? entry.ts : null,
-        );
-        queued.forEach((index, i) => (times[index] = drawn[i]));
-        paced = { records: danmu_records, times };
+        paced = { records: danmu_records, times: pacedDanmakuTimes(danmu_records) };
       }
       return paced.times;
     }
@@ -861,90 +840,16 @@ ${mediaPlaylistUrl}`;
     }
 
     function danmu_handler(record: DanmuEntry, timing: Timing) {
-      const danmaku = document.createElement("p");
-      // The room's default look, bold and outlined, in the font, size and
-      // opacity burned into videos, scaled to the player.
-      danmaku.style.color = "white";
-      danmaku.style.fontSize = `${danmakuFontSize(danmuStyle.font_size, overlay.clientHeight)}px`;
-      danmaku.style.opacity = `${danmuStyle.opacity}`;
-      danmaku.style.fontFamily = "'Microsoft YaHei', 微软雅黑, sans-serif";
-      danmaku.style.fontWeight = "bold";
-      danmaku.style.lineHeight = `${LINE_HEIGHT}`;
-      danmaku.style.whiteSpace = "nowrap";
-      danmaku.style.pointerEvents = "none";
-      danmaku.style.margin = "0";
-      danmaku.style.padding = "0";
-      danmaku.style.zIndex = "500";
-      danmaku.style.textShadow =
-        "1px 0 1px #000, 0 1px 1px #000, 0 -1px 1px #000, -1px 0 1px #000";
-      const dispose = renderDanmuContent(
-        danmaku,
-        { ...record, content: record.content.trim() },
-        LINE_HEIGHT,
-      );
-      floating.add(danmaku, placer(timing, false), { dispose, follow: timing.at !== undefined });
+      const { node, dispose } = createDanmakuNode(record, danmuStyle.get(), overlay.clientHeight);
+      floating.add(node, placer(timing, false), { dispose, follow: timing.at !== undefined });
     }
 
-    // Super chats float across the screen like danmaku, rendered as an
-    // SC card whose colors depend on the price (see lib/superchat.ts).
     function sc_handler(record: DanmuEntry, timing: Timing) {
-      const price = record.price ?? 0;
-      const colors = getScColors(price);
-
-      const card = document.createElement("div");
-      card.style.position = "absolute";
-      card.style.display = "flex";
-      card.style.flexDirection = "column";
-      card.style.maxWidth = "min(420px, 60%)";
-
-      const head = document.createElement("div");
-      head.style.display = "flex";
-      head.style.alignItems = "center";
-      head.style.justifyContent = "space-between";
-      head.style.gap = "8px";
-      head.style.padding = "3px 10px";
-      head.style.backgroundColor = colors.info;
-      head.style.border = `1px solid ${colors.content}`;
-      head.style.borderRadius = "8px 8px 0 0";
-      head.style.color = "#333";
-      head.style.fontSize = "0.9em";
-      const priceEl = document.createElement("span");
-      priceEl.style.fontWeight = "700";
-      priceEl.style.flexShrink = "0";
-      priceEl.style.color = colors.content;
-      priceEl.textContent = formatScPrice(price);
-      const nameEl = document.createElement("span");
-      nameEl.style.opacity = "0.78";
-      nameEl.style.minWidth = "0";
-      nameEl.style.overflow = "hidden";
-      nameEl.style.textOverflow = "ellipsis";
-      nameEl.style.whiteSpace = "nowrap";
-      nameEl.textContent = record.user_name ?? "";
-      head.appendChild(nameEl);
-      head.appendChild(priceEl);
-
-      const body = document.createElement("div");
-      body.style.padding = "3px 10px";
-      body.style.backgroundColor = colors.content;
-      body.style.borderLeft = `1px solid ${colors.content}`;
-      body.style.borderRight = `1px solid ${colors.content}`;
-      body.style.borderBottom = `1px solid ${colors.content}`;
-      body.style.borderRadius = "0 0 8px 8px";
-      body.style.color = "white";
-      // Wrap long messages within the card width so the full content stays
-      // readable while the card floats across the screen.
-      body.style.whiteSpace = "pre-wrap";
-      body.style.wordBreak = "break-word";
-      body.textContent = record.content;
-
-      card.appendChild(head);
-      card.appendChild(body);
-
-      card.style.pointerEvents = "none";
-      card.style.zIndex = "500";
-      card.style.boxShadow = "0 2px 8px rgba(0, 0, 0, 0.35)";
       // Paid messages are never dropped: on a full screen they wait for room.
-      floating.add(card, placer(timing, true), { keep: true, follow: timing.at !== undefined });
+      floating.add(createSuperChatCard(record), placer(timing, true), {
+        keep: true,
+        follow: timing.at !== undefined,
+      });
     }
 
     // Floating overlay renderers keyed by event type. New displayable event

@@ -182,7 +182,7 @@ test("virtual row updates and destruction revoke pending image sources", async (
   assert.equal(newImage.src, undefined);
 });
 
-async function floatingHarness() {
+async function floatingHarness(place = () => ({ top: 5, entryX: 851, travel: 931, duration: 6 })) {
   const frames = new Map();
   let frameId = 0;
   const api = await loadModule("floating-overlay", {
@@ -197,10 +197,14 @@ async function floatingHarness() {
   const content = await loadModule();
   const parent = new Element("div");
   const overlay = new Element("div");
-  overlay.clientWidth = 800;
   parent.append(overlay);
+  const placed = [];
   return {
-    owner: api.createFloatingOverlay(overlay),
+    owner: api.createFloatingOverlay(overlay, (...args) => {
+      placed.push(args);
+      return place(...args);
+    }),
+    placed,
     content,
     overlay,
     parent,
@@ -213,7 +217,8 @@ async function floatingHarness() {
     },
     addEmoji() {
       const node = new Element("p");
-      node.clientWidth = 30;
+      node.offsetWidth = 30;
+      node.offsetHeight = 20;
       const dispose = content.renderDanmuContent(node, emoji());
       const image = node.children[0].children[1];
       this.owner.add(node, dispose);
@@ -225,8 +230,14 @@ async function floatingHarness() {
 test("floating completion releases content and ignores unrelated transitions", async () => {
   const h = await floatingHarness();
   const { node, image } = h.addEmoji();
+  assert.equal(node.style.visibility, "hidden");
   h.flushFrames();
-  assert.equal(node.style.transform, "translateX(-830px)");
+  assert.deepEqual(h.placed, [[30, 20, false]]);
+  assert.equal(node.style.left, "851px");
+  assert.equal(node.style.top, "5px");
+  assert.equal(node.style.visibility, "");
+  assert.equal(node.style.transition, "transform 6s linear");
+  assert.equal(node.style.transform, "translateX(-931px)");
   node.dispatch("transitionend", { target: image });
   node.dispatch("transitionend", { propertyName: "opacity" });
   assert.equal(h.overlay.children.length, 1);
@@ -298,4 +309,19 @@ test("cancelled transitions dispose each floating node only once", async () => {
   h.owner.clear();
   h.owner.destroy();
   assert.equal(disposed, 1);
+});
+
+test("danmaku without room are dropped, and kept ones are placed anyway", async () => {
+  const h = await floatingHarness((width, height, keep) =>
+    keep ? { top: 0, entryX: 851, travel: 931, duration: 6 } : null);
+  const { node, image } = h.addEmoji();
+  const card = new Element("div");
+  h.owner.add(card, undefined, true);
+  h.flushFrames();
+  assert.equal(h.overlay.children.length, 1);
+  assert.equal(h.overlay.children[0], card);
+  assert.equal(card.style.transform, "translateX(-931px)");
+  assert.equal(image.src, undefined);
+  assert.equal(node.listeners.size, 0);
+  h.owner.destroy();
 });

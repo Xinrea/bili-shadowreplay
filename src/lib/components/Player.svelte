@@ -7,6 +7,8 @@
   import { invoke, TAURI_ENV, ENDPOINT, listen, log } from "../invoker";
   import type { AccountInfo } from "../db";
   import type {
+    Config,
+    Danmu2AssOptions,
     DanmuEntry,
     Marker,
     RecorderList,
@@ -17,6 +19,12 @@
   import { keepEventSubscription } from "../event-subscription";
   import { renderDanmuContent } from "../danmu-content";
   import { createFloatingOverlay } from "../floating-overlay";
+  import {
+    createDanmakuPacer,
+    createDanmakuSpace,
+    danmakuFontSize,
+    LINE_HEIGHT,
+  } from "../danmaku-layout";
 
   import { save } from "@tauri-apps/plugin-dialog";
   import {
@@ -26,13 +34,30 @@
     DANMU_FLUSH_INTERVAL_MS,
   } from "../live-preview-perf";
   const DANMU_STATISTIC_GAP = 5;
+  // How often recorded danmaku are handed over as playback reaches them.
+  const HISTORY_TICK_MS = 200;
   let destroyed = false;
   let initialized = false;
   let stopDanmu: (() => void) | undefined;
   let cancelDanmuBatch: (() => void) | undefined;
-  let floatingOverlay: ReturnType<typeof createFloatingOverlay> | undefined;
+  let floatingOverlay: { clear(): void; destroy(): void } | undefined;
+  let floatingPacer: ReturnType<typeof createDanmakuPacer<DanmuEntry>> | undefined;
   const danmuSubscription = new AbortController();
+  // The danmaku style setting, read again whenever the window comes back, as
+  // it is changed in the main window. It applies to danmaku drawn after.
+  let danmuStyle: Danmu2AssOptions = { font_size: 36, opacity: 0.8 };
+  async function loadDanmuStyle() {
+    try {
+      const config = await invoke<Config>("get_config");
+      if (config.danmu_ass_options) danmuStyle = config.danmu_ass_options;
+    } catch (error) {
+      console.warn("Failed to load the danmaku style:", error);
+    }
+  }
+  loadDanmuStyle();
+  window.addEventListener("focus", loadDanmuStyle);
   onDestroy(() => {
+    window.removeEventListener("focus", loadDanmuStyle);
     destroyed = true;
     danmuSubscription.abort();
     document.removeEventListener("shaka-ui-loaded", init);
@@ -601,23 +626,33 @@ ${mediaPlaylistUrl}`;
     console.log("danmu loaded:", danmu_records.length);
 
     let danmu_displayed = {};
-    // history danmaku sender
+    // history danmaku sender: hands each message over as playback reaches it
+    let historyCursor: number | undefined;
     setInterval(() => {
       if (video.paused || !danmu_enabled || danmu_records.length == 0) {
+        historyCursor = undefined;
         return;
       }
 
       // using live source
       if (isLive() && get_total() - video.currentTime <= 5) {
+        historyCursor = undefined;
         return;
       }
 
       const cur = Math.floor(
         (video.currentTime + local_offset + global_offset) * 1000
       );
+      // Continue from the last tick, unless playback jumped (a seek, or a
+      // stall) and the messages in between would all come at once.
+      const from =
+        historyCursor !== undefined && cur >= historyCursor && cur - historyCursor <= 1000
+          ? historyCursor
+          : cur - HISTORY_TICK_MS;
+      historyCursor = cur;
 
       let danmus = danmu_records.filter((v) => {
-        return v.ts >= cur - 1000 && v.ts < cur;
+        return v.ts >= from && v.ts < cur;
       });
       danmus.forEach((v) => {
         if (danmu_displayed[v.ts]) {
@@ -626,7 +661,7 @@ ${mediaPlaylistUrl}`;
         }
         renderFloatingEntry(v);
       });
-    }, 1000);
+    }, HISTORY_TICK_MS);
 
     if (isLive()) {
       if (platform == "bilibili") {
@@ -741,70 +776,66 @@ ${mediaPlaylistUrl}`;
 
     // Initialization can resume after unmount while awaiting archive/accounts.
     if (destroyed) return;
-    // create a area that overlay half top of the video, which shows danmakus floating from right to left
+    // An overlay over the player, which danmaku float across from right to
+    // left, laid out as in Bilibili's live room (see lib/danmaku-layout.ts).
     const overlay = document.createElement("div");
     overlay.style.width = "100%";
     overlay.style.height = "100%";
     overlay.style.position = "absolute";
     overlay.style.top = "0";
     overlay.style.left = "0";
+    overlay.style.overflow = "hidden";
     overlay.style.pointerEvents = "none";
     overlay.style.zIndex = "30";
-    overlay.style.display = "flex";
-    overlay.style.alignItems = "center";
-    overlay.style.flexDirection = "column";
-    overlay.style.paddingTop = "10%";
     // place overlay to the top of the video
     video.parentElement.appendChild(overlay);
-    const floating = createFloatingOverlay(overlay);
-    floatingOverlay = floating;
-
-    // Store the positions of the last few floating items to avoid overlap.
-    // One shared array for danmaku and SC cards so the two kinds cannot pick
-    // the same spot; very tall SC cards may still brush nearby danmaku.
-    const floatingPositions: number[] = [];
-
-    // Pick a random top position in the top 30% of the overlay, keeping at
-    // least `minGapPercent` vertical distance from recently used positions.
-    function pickTopPosition(minGapPercent: number) {
-      let topPosition = 0;
-      let attempts = 0;
-      do {
-        topPosition = Math.random() * 30;
-        attempts++;
-      } while (
-        floatingPositions.some(
-          (pos) => Math.abs(pos - topPosition) < minGapPercent,
-        ) &&
-        attempts < 10
-      );
-
-      floatingPositions.push(topPosition);
-      if (floatingPositions.length > 10) {
-        floatingPositions.shift(); // Keep the last 10 positions
-      }
-      return topPosition;
-    }
+    // One space for danmaku and SC cards, so the two kinds never overlap.
+    const space = createDanmakuSpace();
+    const floating = createFloatingOverlay(overlay, (width, height, keep) =>
+      space.place(
+        performance.now() / 1000,
+        width,
+        height,
+        { width: overlay.clientWidth, height: overlay.clientHeight },
+        keep,
+      ),
+    );
+    const pacer = createDanmakuPacer<DanmuEntry>((entry) => drawFloatingEntry(entry));
+    floatingPacer = pacer;
+    floatingOverlay = {
+      clear() {
+        pacer.clear();
+        floating.clear();
+        space.clear();
+      },
+      destroy() {
+        pacer.clear();
+        floating.destroy();
+      },
+    };
 
     function danmu_handler(record: DanmuEntry) {
       const danmaku = document.createElement("p");
-      danmaku.style.position = "absolute";
-
-      const topPosition = pickTopPosition(5);
-
-      danmaku.style.top = `${topPosition}%`;
-      danmaku.style.right = "0";
+      // The room's default look, bold and outlined, in the danmaku style's
+      // size and opacity, scaled to the player as burned into videos.
       danmaku.style.color = "white";
-      danmaku.style.fontSize = "1.2em";
+      danmaku.style.fontSize = `${danmakuFontSize(danmuStyle.font_size, overlay.clientHeight)}px`;
+      danmaku.style.opacity = `${danmuStyle.opacity}`;
+      danmaku.style.fontFamily = "SimHei, 'Microsoft JhengHei', Arial, Helvetica, sans-serif";
+      danmaku.style.fontWeight = "bold";
+      danmaku.style.lineHeight = `${LINE_HEIGHT}`;
       danmaku.style.whiteSpace = "nowrap";
-      danmaku.style.transform = "translateX(100%)";
-      danmaku.style.transition = "transform 10s linear";
       danmaku.style.pointerEvents = "none";
       danmaku.style.margin = "0";
       danmaku.style.padding = "0";
       danmaku.style.zIndex = "500";
-      danmaku.style.textShadow = "1px 1px 2px rgba(0, 0, 0, 0.6)";
-      const disposeContent = renderDanmuContent(danmaku, record);
+      danmaku.style.textShadow =
+        "1px 0 1px #000, 0 1px 1px #000, 0 -1px 1px #000, -1px 0 1px #000";
+      const disposeContent = renderDanmuContent(
+        danmaku,
+        { ...record, content: record.content.trim() },
+        LINE_HEIGHT,
+      );
       floating.add(danmaku, disposeContent);
     }
 
@@ -863,15 +894,11 @@ ${mediaPlaylistUrl}`;
       card.appendChild(head);
       card.appendChild(body);
 
-      const topPosition = pickTopPosition(12);
-      card.style.top = `${topPosition}%`;
-      card.style.right = "0";
-      card.style.transform = "translateX(100%)";
-      card.style.transition = "transform 10s linear";
       card.style.pointerEvents = "none";
       card.style.zIndex = "500";
       card.style.boxShadow = "0 2px 8px rgba(0, 0, 0, 0.35)";
-      floating.add(card);
+      // Paid messages are never dropped, even on a full screen.
+      floating.add(card, undefined, true);
     }
 
     // Floating overlay renderers keyed by event type. New displayable event
@@ -882,7 +909,15 @@ ${mediaPlaylistUrl}`;
       super_chat: (entry) => sc_handler(entry),
     };
 
+    // Arriving danmaku go through the room's queue before they are drawn;
+    // super chats, which it may drop, do not.
     function renderFloatingEntry(entry: DanmuEntry) {
+      if (destroyed || !danmu_enabled) return;
+      if (entry.type === "super_chat") drawFloatingEntry(entry);
+      else floatingPacer?.push(entry);
+    }
+
+    function drawFloatingEntry(entry: DanmuEntry) {
       if (destroyed || !danmu_enabled) return;
       const renderer = floatingRenderers[entry.type];
       if (renderer) {

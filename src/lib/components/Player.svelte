@@ -45,7 +45,7 @@
   let floatingPacer: ReturnType<typeof createDanmakuPacer<DanmuEntry>> | undefined;
   /**
    * The clock a message is laid out on, in seconds, its space, and for a
-   * recorded danmaku, its time on that clock.
+   * recorded danmaku, or a live one laid out again, its time on that clock.
    */
   type Timing = { space: DanmakuSpace; now: () => number; at?: number };
   const danmuSubscription = new AbortController();
@@ -814,7 +814,17 @@ ${mediaPlaylistUrl}`;
     const liveSpace = createDanmakuSpace();
     const recordedSpace = createDanmakuSpace();
     const liveTiming: Timing = { space: liveSpace, now: () => performance.now() / 1000 };
-    const pacer = createDanmakuPacer<DanmuEntry>((entry) => drawFloatingEntry(entry, liveTiming));
+    // Live danmaku drawn lately, with when on the wall clock, to lay out
+    // again at their own times after a resize. Longer ago, all have left.
+    const LIVE_KEPT_S = 60;
+    let liveDrawn: [DanmuEntry, number][] = [];
+    function drawLive(entry: DanmuEntry) {
+      const now = liveTiming.now();
+      liveDrawn = liveDrawn.filter(([, at]) => at > now - LIVE_KEPT_S);
+      liveDrawn.push([entry, now]);
+      drawFloatingEntry(entry, liveTiming);
+    }
+    const pacer = createDanmakuPacer<DanmuEntry>(drawLive);
     floatingPacer = pacer;
     floatingOverlay = {
       clear() {
@@ -822,6 +832,7 @@ ${mediaPlaylistUrl}`;
         floating.clear();
         liveSpace.clear();
         recordedSpace.clear();
+        liveDrawn = [];
       },
       destroy() {
         stopResize();
@@ -842,14 +853,14 @@ ${mediaPlaylistUrl}`;
 
     function danmu_handler(record: DanmuEntry, timing: Timing) {
       const { node, dispose } = createDanmakuNode(record, danmuStyle.get(), overlay.clientHeight);
-      floating.add(node, placer(timing, false), { dispose, follow: timing.at !== undefined });
+      floating.add(node, placer(timing, false), { dispose, follow: timing.space === recordedSpace });
     }
 
     function sc_handler(record: DanmuEntry, timing: Timing) {
       // Paid messages are never dropped: on a full screen they wait for room.
       floating.add(createSuperChatCard(record), placer(timing, true), {
         keep: true,
-        follow: timing.at !== undefined,
+        follow: timing.space === recordedSpace,
       });
     }
 
@@ -865,7 +876,7 @@ ${mediaPlaylistUrl}`;
     // chats, which it may drop, do not.
     function renderFloatingEntry(entry: DanmuEntry) {
       if (destroyed || !danmu_enabled) return;
-      if (entry.type === "super_chat") drawFloatingEntry(entry, liveTiming);
+      if (entry.type === "super_chat") drawLive(entry);
       else floatingPacer?.push(entry);
     }
 
@@ -878,11 +889,16 @@ ${mediaPlaylistUrl}`;
     // Step at once, now that danmaku can be drawn: whether live danmaku
     // arriving now are drawn, and what recorded ones are on screen here.
     feedStep();
-    // A new player size starts recorded danmaku over, like a seek, laying out
-    // what is in flight anew.
+    // A new player size lays out what is in flight anew: recorded danmaku
+    // start over, like after a seek, and at the live edge, live ones are
+    // placed again at the times they were drawn, as far into their flight.
     const stopResize = observeResize(overlay, () => {
       feed.reset();
       feedStep();
+      if (!showLive || destroyed || !danmu_enabled) return;
+      floating.clear();
+      liveSpace.clear();
+      for (const [entry, at] of liveDrawn) drawFloatingEntry(entry, { ...liveTiming, at });
     });
 
     shakaSpacer.appendChild(danmakuToggle);

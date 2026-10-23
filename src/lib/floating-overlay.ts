@@ -1,28 +1,35 @@
-/** Where a node flies: its left edge moves `travel` leftwards from `entryX` in `duration` seconds. */
+/**
+ * Where a node flies: its left edge moves `travel` leftwards from `entryX` in
+ * `duration` seconds, of which `elapsed` have passed already.
+ */
 export interface FloatingFlight {
   top: number;
   entryX: number;
   travel: number;
   duration: number;
+  elapsed?: number;
 }
-
-/** How long a node that must be kept waits for room before it is forced in. */
-const KEEP_WAIT_MS = 5000;
 
 /**
  * Own floating nodes until they finish, are cleared, or the player exits.
- * `place` gets a node's size once it is laid out, and whether it must fly
- * now, and says where it flies, or nothing for no room. Nodes without room
- * are dropped, or with `keep`, wait a frame at a time, then are forced in.
+ * Their motion follows the playback state set with `setPlayback`.
  */
-export function createFloatingOverlay(
-  overlay: HTMLElement,
-  place: (width: number, height: number, force: boolean) => FloatingFlight | null,
-) {
+export function createFloatingOverlay(overlay: HTMLElement) {
   const cleanups = new Set<() => void>();
+  const animations = new Set<Animation>();
+  let playback = { paused: false, rate: 1 };
   let destroyed = false;
 
-  function add(node: HTMLElement, disposeContent: () => void = () => {}, keep = false) {
+  /**
+   * Fly `node`. `place` gets its size once it is laid out, and says where it
+   * flies, or nothing for no room: then it is dropped, or with `keep`, asked
+   * again every frame.
+   */
+  function add(
+    node: HTMLElement,
+    place: (width: number, height: number) => FloatingFlight | null,
+    { dispose: disposeContent = () => {}, keep = false } = {},
+  ) {
     if (destroyed) {
       disposeContent();
       node.remove();
@@ -31,47 +38,66 @@ export function createFloatingOverlay(
 
     let released = false;
     let frame: number | undefined;
+    let animation: Animation | undefined;
     const dispose = () => {
       if (released) return;
       released = true;
       cleanups.delete(dispose);
       if (frame !== undefined) cancelAnimationFrame(frame);
-      node.removeEventListener("transitionend", onTransitionEnd);
-      node.removeEventListener("transitioncancel", onTransitionEnd);
+      if (animation) {
+        animations.delete(animation);
+        animation.onfinish = null;
+        animation.cancel();
+      }
       disposeContent();
       node.remove();
     };
-    const onTransitionEnd = (event: TransitionEvent) => {
-      if (event.target === node && event.propertyName === "transform") dispose();
-    };
     cleanups.add(dispose);
-    node.addEventListener("transitionend", onTransitionEnd);
-    node.addEventListener("transitioncancel", onTransitionEnd);
     // Laid out unseen, with the player's width to fit in, until placed.
     node.style.position = "absolute";
     node.style.left = "0";
     node.style.top = "0";
     node.style.visibility = "hidden";
     overlay.appendChild(node);
-    const deadline = Date.now() + KEEP_WAIT_MS;
     const fly = () => {
       frame = undefined;
       if (released) return;
-      // Reading the size also lays out the starting position to move from.
-      const flight = place(node.offsetWidth, node.offsetHeight, keep && Date.now() >= deadline);
+      const flight = place(node.offsetWidth, node.offsetHeight);
       if (!flight) {
         if (keep) frame = requestAnimationFrame(fly);
         else dispose();
         return;
       }
+      const elapsed = Math.max(0, flight.elapsed ?? 0);
+      if (elapsed >= flight.duration) {
+        dispose();
+        return;
+      }
       node.style.left = `${flight.entryX}px`;
       node.style.top = `${flight.top}px`;
       node.style.visibility = "";
-      node.style.transition = `transform ${flight.duration}s linear`;
-      node.style.transform = `translateX(-${flight.travel}px)`;
+      animation = node.animate(
+        [{ transform: "translateX(0)" }, { transform: `translateX(-${flight.travel}px)` }],
+        { duration: flight.duration * 1000, easing: "linear" },
+      );
+      animation.currentTime = elapsed * 1000;
+      animation.playbackRate = playback.rate;
+      if (playback.paused) animation.pause();
+      animation.onfinish = dispose;
+      animations.add(animation);
     };
     frame = requestAnimationFrame(fly);
     return dispose;
+  }
+
+  /** Pause, resume or speed up every node, now and to come. */
+  function setPlayback(paused: boolean, rate: number) {
+    playback = { paused, rate };
+    for (const animation of animations) {
+      animation.playbackRate = rate;
+      if (paused) animation.pause();
+      else animation.play();
+    }
   }
 
   function clear() {
@@ -84,5 +110,5 @@ export function createFloatingOverlay(
     overlay.remove();
   }
 
-  return { add, clear, destroy };
+  return { add, setPlayback, clear, destroy };
 }

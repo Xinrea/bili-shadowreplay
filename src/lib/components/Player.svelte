@@ -37,12 +37,24 @@
   const DANMU_STATISTIC_GAP = 5;
   // How often recorded danmaku are handed over as playback reaches them.
   const HISTORY_TICK_MS = 200;
+  // Playback moving further than this between ticks jumped, like a seek.
+  const HISTORY_JUMP_MS = 2000;
+  // After a jump, how far back danmaku are looked for that are still on
+  // screen there.
+  const HISTORY_CATCH_UP_MS = 20_000;
+  // How long a super chat waits for room before it flies over the top.
+  const KEEP_WAIT_S = 5;
   let destroyed = false;
   let initialized = false;
   let stopDanmu: (() => void) | undefined;
   let cancelDanmuBatch: (() => void) | undefined;
   let floatingOverlay: { clear(): void; destroy(): void } | undefined;
   let floatingPacer: ReturnType<typeof createDanmakuPacer<DanmuEntry>> | undefined;
+  /**
+   * The clock a message is laid out on, in seconds, its space, and for a
+   * recorded danmaku, its time on that clock.
+   */
+  type Timing = { space: ReturnType<typeof createDanmakuSpace>; now: () => number; at?: number };
   const danmuSubscription = new AbortController();
   // The danmaku style setting, read again whenever the window comes back, as
   // it is changed in the main window. It applies to danmaku drawn after.
@@ -645,9 +657,13 @@ ${mediaPlaylistUrl}`;
       }
       return paced.times;
     }
-    // history danmaku sender: hands each message over as playback reaches it
+    // Where playback is on the danmaku's timeline, in seconds.
+    const videoClock = () => video.currentTime + local_offset + global_offset;
+    // history danmaku sender: hands each message over as playback reaches it,
+    // at its own time. A seek, a changed offset or a jump starts over where
+    // playback is, with the danmaku the video has on screen there.
     let historyCursor: number | undefined;
-    // A seek starts over where playback lands, without what was on screen.
+    let historyOffset = local_offset;
     video.addEventListener("seeking", () => {
       historyCursor = undefined;
       floatingOverlay?.clear();
@@ -665,27 +681,34 @@ ${mediaPlaylistUrl}`;
         return;
       }
 
-      const cur = Math.floor(
-        (video.currentTime + local_offset + global_offset) * 1000
-      );
-      // Continue from the last tick, unless the timeline moved back or far
-      // ahead (a changed danmaku offset), which would bring a flood at once.
-      const from =
-        historyCursor !== undefined && cur >= historyCursor && cur - historyCursor <= 10_000
-          ? historyCursor
-          : cur - HISTORY_TICK_MS;
+      const cur = Math.floor(videoClock() * 1000);
+      const jumped =
+        historyCursor === undefined ||
+        local_offset !== historyOffset ||
+        cur < historyCursor ||
+        cur - historyCursor > HISTORY_JUMP_MS;
+      if (jumped && historyCursor !== undefined) floatingOverlay.clear();
+      const from = jumped ? cur - HISTORY_CATCH_UP_MS : historyCursor;
       historyCursor = cur;
+      historyOffset = local_offset;
 
       const times = pacedTimes();
+      const due: [number, DanmuEntry][] = [];
       danmu_records.forEach((v, index) => {
         const time = times[index];
         if (time === null || time < from || time >= cur) return;
+        // Super chats are not caught up: they would all enter at once.
+        if (jumped && v.type === "super_chat" && time < cur - HISTORY_TICK_MS) return;
+        due.push([time, v]);
+      });
+      due.sort((a, b) => a[0] - b[0]);
+      for (const [time, v] of due) {
         if (danmu_displayed[v.ts]) {
           delete danmu_displayed[v.ts];
-          return;
+          continue;
         }
-        drawFloatingEntry(v);
-      });
+        drawFloatingEntry(v, { space: recordedSpace, now: videoClock, at: time / 1000 });
+      }
     }, HISTORY_TICK_MS);
 
     if (isLive()) {
@@ -814,24 +837,38 @@ ${mediaPlaylistUrl}`;
     overlay.style.zIndex = "30";
     // place overlay to the top of the video
     video.parentElement.appendChild(overlay);
-    // One space for danmaku and SC cards, so the two kinds never overlap.
-    const space = createDanmakuSpace();
-    const floating = createFloatingOverlay(overlay, (width, height, force) =>
-      space.place(
-        performance.now() / 1000,
-        width,
-        height,
-        { width: overlay.clientWidth, height: overlay.clientHeight },
-        force,
-      ),
-    );
-    const pacer = createDanmakuPacer<DanmuEntry>((entry) => drawFloatingEntry(entry));
+    const floating = createFloatingOverlay(overlay);
+    // Danmaku on screen move with the video: they pause with it, also while
+    // it waits for data, and follow its speed.
+    let waiting = false;
+    const syncPlayback = () => floating.setPlayback(video.paused || waiting, video.playbackRate);
+    video.addEventListener("waiting", () => {
+      waiting = true;
+      syncPlayback();
+    });
+    video.addEventListener("playing", () => {
+      waiting = false;
+      syncPlayback();
+    });
+    for (const type of ["play", "pause", "ratechange"]) {
+      video.addEventListener(type, syncPlayback);
+    }
+    syncPlayback();
+
+    // Live danmaku are laid out on the wall clock, recorded ones on the
+    // video's (as burned videos are), each in a space of their own. Super
+    // chats share them, so the two kinds never overlap.
+    const liveSpace = createDanmakuSpace();
+    const recordedSpace = createDanmakuSpace();
+    const liveTiming: Timing = { space: liveSpace, now: () => performance.now() / 1000 };
+    const pacer = createDanmakuPacer<DanmuEntry>((entry) => drawFloatingEntry(entry, liveTiming));
     floatingPacer = pacer;
     floatingOverlay = {
       clear() {
         pacer.clear();
         floating.clear();
-        space.clear();
+        liveSpace.clear();
+        recordedSpace.clear();
       },
       destroy() {
         pacer.clear();
@@ -839,7 +876,27 @@ ${mediaPlaylistUrl}`;
       },
     };
 
-    function danmu_handler(record: DanmuEntry) {
+    /**
+     * Where a message flies. A recorded danmaku is placed at its own time
+     * `at`, already that far into its flight; others enter now. Super chats
+     * (`keep`) wait for room, then after KEEP_WAIT_S on their clock fly over
+     * the top.
+     */
+    function placer(timing: Timing, keep: boolean) {
+      let since: number | undefined;
+      return (width: number, height: number) => {
+        const now = timing.now();
+        const container = { width: overlay.clientWidth, height: overlay.clientHeight };
+        if (!keep && timing.at !== undefined) {
+          const flight = timing.space.place(timing.at, width, height, container);
+          return flight && { ...flight, elapsed: now - timing.at };
+        }
+        since ??= now;
+        return timing.space.place(now, width, height, container, keep && now - since >= KEEP_WAIT_S);
+      };
+    }
+
+    function danmu_handler(record: DanmuEntry, timing: Timing) {
       const danmaku = document.createElement("p");
       // The room's default look, bold and outlined, in the font, size and
       // opacity burned into videos, scaled to the player.
@@ -856,17 +913,17 @@ ${mediaPlaylistUrl}`;
       danmaku.style.zIndex = "500";
       danmaku.style.textShadow =
         "1px 0 1px #000, 0 1px 1px #000, 0 -1px 1px #000, -1px 0 1px #000";
-      const disposeContent = renderDanmuContent(
+      const dispose = renderDanmuContent(
         danmaku,
         { ...record, content: record.content.trim() },
         LINE_HEIGHT,
       );
-      floating.add(danmaku, disposeContent);
+      floating.add(danmaku, placer(timing, false), { dispose });
     }
 
     // Super chats float across the screen like danmaku, rendered as an
     // SC card whose colors depend on the price (see lib/superchat.ts).
-    function sc_handler(record: DanmuEntry) {
+    function sc_handler(record: DanmuEntry, timing: Timing) {
       const price = record.price ?? 0;
       const colors = getScColors(price);
 
@@ -923,33 +980,29 @@ ${mediaPlaylistUrl}`;
       card.style.zIndex = "500";
       card.style.boxShadow = "0 2px 8px rgba(0, 0, 0, 0.35)";
       // Paid messages are never dropped: on a full screen they wait for room.
-      floating.add(card, undefined, true);
+      floating.add(card, placer(timing, true), { keep: true });
     }
 
     // Floating overlay renderers keyed by event type. New displayable event
     // kinds register a renderer here; unknown types fall back to a plain
     // danmaku row so their content still shows up.
-    const floatingRenderers: Record<string, (entry: DanmuEntry) => void> = {
-      danmu: (entry) => danmu_handler(entry),
-      super_chat: (entry) => sc_handler(entry),
+    const floatingRenderers: Record<string, (entry: DanmuEntry, timing: Timing) => void> = {
+      danmu: danmu_handler,
+      super_chat: sc_handler,
     };
 
     // Live danmaku go through the room's queue before they are drawn; super
     // chats, which it may drop, do not.
     function renderFloatingEntry(entry: DanmuEntry) {
       if (destroyed || !danmu_enabled) return;
-      if (entry.type === "super_chat") drawFloatingEntry(entry);
+      if (entry.type === "super_chat") drawFloatingEntry(entry, liveTiming);
       else floatingPacer?.push(entry);
     }
 
-    function drawFloatingEntry(entry: DanmuEntry) {
+    function drawFloatingEntry(entry: DanmuEntry, timing: Timing) {
       if (destroyed || !danmu_enabled) return;
-      const renderer = floatingRenderers[entry.type];
-      if (renderer) {
-        renderer(entry);
-      } else {
-        danmu_handler(entry);
-      }
+      const renderer = floatingRenderers[entry.type] ?? danmu_handler;
+      renderer(entry, timing);
     }
 
     shakaSpacer.appendChild(danmakuToggle);

@@ -23,17 +23,31 @@ jobs:
   test:
     name: Run Tests
     runs-on: ubuntu-latest
+    # Bounds stalls such as a slow apt mirror on a cache miss.
+    timeout-minutes: 45
+    env:
+      # Debug info is unused in CI but slows compiling and linking and enlarges
+      # the Rust cache. Panic messages keep their locations.
+      CARGO_PROFILE_DEV_DEBUG: "0"
 
     steps:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
 
+      # ffmpeg/ffprobe: needed for ffmpeg_utils fixture tests (fMP4 init+media probe).
+      # Restored from the Actions cache because the Azure apt mirror is
+      # sometimes extremely slow.
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          # ffmpeg/ffprobe: needed for ffmpeg_utils fixture tests (fMP4 init+media probe)
-          sudo apt-get install -y libssl-dev pkg-config ffmpeg
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: libssl-dev pkg-config ffmpeg
+          version: 1.0
+
+      # Restoring from the cache only unpacks files, so refresh the dynamic
+      # linker cache for the libraries the test binaries load at runtime.
+      - name: Refresh shared library cache
+        run: sudo ldconfig
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable

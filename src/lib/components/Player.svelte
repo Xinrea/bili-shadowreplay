@@ -45,9 +45,18 @@
   let floatingPacer: ReturnType<typeof createDanmakuPacer<DanmuEntry>> | undefined;
   /**
    * The clock a message is laid out on, in seconds, its space, and for a
-   * recorded danmaku, or a live one laid out again, its time on that clock.
+   * recorded danmaku, or a live one laid out again, its time on that clock,
+   * and whether it flies over the top from then. `flown` hears when it
+   * starts flying, and whether over the top, and `dropped` when it never will.
    */
-  type Timing = { space: DanmakuSpace; now: () => number; at?: number };
+  type Timing = {
+    space: DanmakuSpace;
+    now: () => number;
+    at?: number;
+    over?: boolean;
+    flown?: (start: number, over: boolean) => void;
+    dropped?: () => void;
+  };
   const danmuSubscription = new AbortController();
   const danmuStyle = watchDanmakuStyle();
   onDestroy(() => {
@@ -814,15 +823,28 @@ ${mediaPlaylistUrl}`;
     const liveSpace = createDanmakuSpace();
     const recordedSpace = createDanmakuSpace();
     const liveTiming: Timing = { space: liveSpace, now: () => performance.now() / 1000 };
-    // Live danmaku drawn lately, with when on the wall clock, to lay out
-    // again at their own times after a resize. Longer ago, all have left.
-    const LIVE_KEPT_S = 60;
-    let liveDrawn: [DanmuEntry, number][] = [];
+    // Live danmaku drawn lately, to lay out again after a resize as they fly:
+    // from when they started flying on the wall clock (a super chat may have
+    // waited for room), over the top or not. Until then, from when they were
+    // drawn. Longer ago than this, all have left.
+    const LIVE_KEPT_S = 30;
+    type LiveFlight = { entry: DanmuEntry; start: number; over: boolean };
+    let liveDrawn: LiveFlight[] = [];
+    function liveFlightTiming(record: LiveFlight, at?: number): Timing {
+      return {
+        ...liveTiming,
+        at,
+        over: record.over,
+        flown: (start, over) => Object.assign(record, { start, over }),
+        dropped: () => (liveDrawn = liveDrawn.filter((other) => other !== record)),
+      };
+    }
     function drawLive(entry: DanmuEntry) {
       const now = liveTiming.now();
-      liveDrawn = liveDrawn.filter(([, at]) => at > now - LIVE_KEPT_S);
-      liveDrawn.push([entry, now]);
-      drawFloatingEntry(entry, liveTiming);
+      liveDrawn = liveDrawn.filter((record) => record.start > now - LIVE_KEPT_S);
+      const record = { entry, start: now, over: false };
+      liveDrawn.push(record);
+      drawFloatingEntry(entry, liveFlightTiming(record));
     }
     const pacer = createDanmakuPacer<DanmuEntry>(drawLive);
     floatingPacer = pacer;
@@ -843,12 +865,18 @@ ${mediaPlaylistUrl}`;
 
     /** Where a message flies; super chats (`keep`) wait for room (see createPlacer). */
     function placer(timing: Timing, keep: boolean) {
-      return createPlacer(
+      const place = createPlacer(
         timing.space,
         timing.now,
         () => ({ width: overlay.clientWidth, height: overlay.clientHeight }),
-        { at: timing.at, keep },
+        { at: timing.at, keep, over: timing.over },
       );
+      return (width: number, height: number) => {
+        const flight = place(width, height);
+        if (flight) timing.flown?.(timing.now() - flight.elapsed, flight.over);
+        else if (!keep) timing.dropped?.();
+        return flight;
+      };
     }
 
     function danmu_handler(record: DanmuEntry, timing: Timing) {
@@ -891,14 +919,17 @@ ${mediaPlaylistUrl}`;
     feedStep();
     // A new player size lays out what is in flight anew: recorded danmaku
     // start over, like after a seek, and at the live edge, live ones are
-    // placed again at the times they were drawn, as far into their flight.
+    // placed again at the times they started flying, as far into their flight.
     const stopResize = observeResize(overlay, () => {
       feed.reset();
       feedStep();
       if (!showLive || destroyed || !danmu_enabled) return;
       floating.clear();
       liveSpace.clear();
-      for (const [entry, at] of liveDrawn) drawFloatingEntry(entry, { ...liveTiming, at });
+      liveDrawn.sort((a, b) => a.start - b.start);
+      for (const record of liveDrawn) {
+        drawFloatingEntry(record.entry, liveFlightTiming(record, record.start));
+      }
     });
 
     shakaSpacer.appendChild(danmakuToggle);

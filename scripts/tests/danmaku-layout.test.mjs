@@ -231,6 +231,23 @@ test("a super chat waits for room from its own time", async () => {
   assert.deepEqual(calls, [[18, false]]);
 });
 
+test("a flight over the top is laid out again over the top, from its start", async () => {
+  const api = await loadModule();
+  const calls = [];
+  const space = {
+    place(at, width, height, container, force = false) {
+      calls.push([at, force]);
+      return { top: force ? 0 : 48, entryX: 1971, travel: 2441, duration: 13.67 };
+    },
+  };
+  const flight = api.createPlacer(space, () => 20, () => player, { at: 17, keep: true, over: true })(420, 110);
+  assert.deepEqual([flight.top, flight.elapsed, flight.over], [0, 3, true]);
+  // Without it, placed at its start, taking up space.
+  const placed = api.createPlacer(space, () => 20, () => player, { at: 17, keep: true })(420, 110);
+  assert.deepEqual([placed.top, placed.elapsed, placed.over], [48, 3, false]);
+  assert.deepEqual(calls, [[17, true], [17, false]]);
+});
+
 test("the queue runs on any clock", async () => {
   const api = await loadModule();
   const burst = api.paceTimes(Array.from({ length: 40 }, () => 1000));

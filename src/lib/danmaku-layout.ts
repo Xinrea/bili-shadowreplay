@@ -165,6 +165,9 @@ export type DanmakuSpace = ReturnType<typeof createDanmakuSpace>;
 /** How long a message that must be kept waits for room before it flies over the top. */
 export const KEEP_WAIT_S = 5;
 
+/** A placed flight, how far into it the clock is, and whether it flies over the top. */
+export type PlacedFlight = Flight & { elapsed: number; over: boolean };
+
 /**
  * Where a message flies, asked once it is laid out, and with `keep`, every
  * frame while there is no room. One with a time of its own, `at` (recorded),
@@ -174,30 +177,35 @@ export const KEEP_WAIT_S = 5;
  * are placed at their own times, which it must not get in the way of. Once
  * it has waited KEEP_WAIT_S since its time, or its first try, it flies over
  * the top without taking up space, as far into that flight as it would be
- * had it entered when the wait was over.
+ * had it entered when the wait was over. With `over`, it flies over the top
+ * from `at` straight away, as one laid out again after doing so.
  */
 export function createPlacer(
   space: DanmakuSpace,
   clock: () => number,
   container: () => { width: number; height: number },
-  { at, keep = false }: { at?: number; keep?: boolean } = {},
+  { at, keep = false, over = false }: { at?: number; keep?: boolean; over?: boolean } = {},
 ) {
   let since: number | undefined;
-  return (width: number, height: number): (Flight & { elapsed: number }) | null => {
+  return (width: number, height: number): PlacedFlight | null => {
     const now = clock();
+    if (over && at !== undefined) {
+      const flight = space.place(at, width, height, container(), true);
+      return flight && { ...flight, elapsed: now - at, over: true };
+    }
     if (since === undefined && at !== undefined) {
       since = at;
       const flight = space.place(at, width, height, container());
-      return flight && { ...flight, elapsed: now - at };
+      return flight && { ...flight, elapsed: now - at, over: false };
     }
     since ??= now;
     if (keep && now - since >= KEEP_WAIT_S) {
       const start = since + KEEP_WAIT_S;
       const flight = space.place(start, width, height, container(), true);
-      return flight && { ...flight, elapsed: now - start };
+      return flight && { ...flight, elapsed: now - start, over: true };
     }
     const flight = space.place(now, width, height, container());
-    return flight && { ...flight, elapsed: 0 };
+    return flight && { ...flight, elapsed: 0, over: false };
   };
 }
 

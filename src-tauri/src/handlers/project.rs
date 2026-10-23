@@ -706,14 +706,15 @@ async fn existing_ancestor(path: &Path) -> &Path {
     existing
 }
 
-/// Cut each range of a recording into its own material, optionally creating
-/// a project that plays them in order.
+/// Cut each range of a recording into its own material, or with `merge` join
+/// them into one, optionally creating a project that plays them in order.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn generate_materials(
     state: state_type!(),
     event_id: String,
     params: ClipRangeParams,
     create_project: bool,
+    merge: bool,
 ) -> Result<GeneratedMaterials, String> {
     check_free_space(&[(output_dir(&state).await, 0)]).await?;
     let reporter = ProgressReporter::new(state.db.clone(), &state.events, &event_id).await?;
@@ -729,6 +730,7 @@ pub async fn generate_materials(
             metadata: json!({
                 "params": params_without_cover,
                 "create_project": create_project,
+                "merge": merge,
             })
             .to_string(),
             created_at: Utc::now().to_rfc3339(),
@@ -744,9 +746,15 @@ pub async fn generate_materials(
         &state,
         &event_id,
         async move {
-            let result =
-                generate_materials_inner(&state_clone, &reporter, &task_id, params, create_project)
-                    .await;
+            let result = generate_materials_inner(
+                &state_clone,
+                &reporter,
+                &task_id,
+                params,
+                create_project,
+                merge,
+            )
+            .await;
             let (status, message) = match &result {
                 Ok(generated) => (
                     "success",
@@ -773,21 +781,29 @@ async fn generate_materials_inner(
     task_id: &str,
     params: ClipRangeParams,
     create_project: bool,
+    merge: bool,
 ) -> Result<GeneratedMaterials, String> {
-    // No ranges means the whole recording, as for `clip_range`.
-    let ranges = if params.ranges.is_empty() {
-        vec![None]
+    // No ranges means the whole recording, as for `clip_range`. A merged
+    // material joins every range first, so embedded danmaku is burned once
+    // over the joined video and external danmaku follows its timeline.
+    let ranges = if merge || params.ranges.is_empty() {
+        vec![params.ranges.clone()]
     } else {
-        params.ranges.iter().cloned().map(Some).collect()
+        params
+            .ranges
+            .iter()
+            .cloned()
+            .map(|range| vec![range])
+            .collect()
     };
     let count = ranges.len();
     let mut materials = Vec::with_capacity(count);
-    for (index, range) in ranges.into_iter().enumerate() {
+    for (index, ranges) in ranges.into_iter().enumerate() {
         let mut material_params = params.clone();
-        material_params.ranges = range.into_iter().collect();
+        material_params.ranges = ranges;
         material_params.transition = None;
         // A captured frame only represents a single range.
-        if count > 1 {
+        if params.ranges.len() > 1 {
             material_params.cover = String::new();
         }
         let stage = if count > 1 {

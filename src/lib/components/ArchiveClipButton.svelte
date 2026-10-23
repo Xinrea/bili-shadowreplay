@@ -41,10 +41,13 @@
   let createProject = $state(true);
   /** Burn danmaku into the material instead of saving it alongside. */
   let embedDanmu = $state(false);
+  /** Join the ranges into a single material instead of one per range. */
+  let mergeRanges = $state(false);
   /** Requests still awaiting a result; several may run at once. */
   let inFlight = 0;
 
   let activeRanges = $derived(ranges.filter((range) => range.activated !== false));
+  let merged = $derived(mergeRanges && activeRanges.length > 1);
 
   function openConfirm() {
     if (!archive || disabled) return;
@@ -81,6 +84,7 @@
   async function generateClip() {
     if (!archive || activeRanges.length === 0) return;
     showConfirm = false;
+    const merge = merged;
     const eventId = generateEventId();
     const params: ClipRangeParams = {
       title: archive.title,
@@ -103,13 +107,17 @@
     announceTask({
       id: eventId,
       task_type: "generate_materials",
-      metadata: JSON.stringify({ params: { ...params, cover: "" }, create_project: createProject }),
+      metadata: JSON.stringify({
+        params: { ...params, cover: "" },
+        create_project: createProject,
+        merge,
+      }),
     });
     openTaskCenter(eventId);
 
     inFlight += 1;
     try {
-      onGenerated?.(await generateMaterials(eventId, params, createProject));
+      onGenerated?.(await generateMaterials(eventId, params, createProject, merge));
     } catch (error) {
       const message = String(error);
       // Cancelled from the task center, or elsewhere such as the task page.
@@ -174,7 +182,7 @@
       <div class="ui-modal-body custom-scrollbar-light">
         <h3 class="text-[15px] font-semibold text-fg">确认生成素材</h3>
         <p class="mt-1 text-[12px] text-fg-muted">
-          每个选区生成一个素材
+          {merged ? "按选区顺序合并为一个素材" : "每个选区生成一个素材"}
         </p>
 
         <div class="mt-4 space-y-2">
@@ -224,6 +232,39 @@
           />
         </div>
 
+        {#if activeRanges.length > 1}
+          <div class="mt-4 space-y-1.5">
+            <div class="ui-label">素材</div>
+            <div class="ui-tabs" role="radiogroup" aria-label="素材">
+              <button
+                type="button"
+                role="radio"
+                class="ui-tab"
+                class:active={!mergeRanges}
+                aria-checked={!mergeRanges}
+                onclick={() => (mergeRanges = false)}
+              >
+                每个选区一个
+              </button>
+              <button
+                type="button"
+                role="radio"
+                class="ui-tab"
+                class:active={mergeRanges}
+                aria-checked={mergeRanges}
+                onclick={() => (mergeRanges = true)}
+              >
+                合并为一个
+              </button>
+            </div>
+            <p class="text-[11px] text-fg-muted">
+              {mergeRanges
+                ? "按选区顺序拼接成一个素材，可以直接投稿；拼接需要重新编码，耗时较长"
+                : "每个选区单独生成素材，可以放进切片里继续剪辑"}
+            </p>
+          </div>
+        {/if}
+
         <div class="mt-4 space-y-1.5">
           <div class="ui-label">弹幕</div>
           <div class="ui-tabs" role="radiogroup" aria-label="弹幕">
@@ -250,8 +291,12 @@
           </div>
           <p class="text-[11px] text-fg-muted">
             {embedDanmu
-              ? "生成时把弹幕压进画面，素材不再单独保存弹幕；压制需要重新编码，耗时较长"
-              : "弹幕和素材分开保存，导出切片或投稿时再选择是否压制"}
+              ? merged
+                ? "选区合并后再把弹幕压进画面，素材不再单独保存弹幕；压制需要重新编码，耗时较长"
+                : "生成时把弹幕压进画面，素材不再单独保存弹幕；压制需要重新编码，耗时较长"
+              : merged
+                ? "各选区的弹幕按合并后的时间合在一起，和素材分开保存，导出切片或投稿时再选择是否压制"
+                : "弹幕和素材分开保存，导出切片或投稿时再选择是否压制"}
           </p>
         </div>
 
@@ -264,7 +309,11 @@
             />
             <span class="text-[13px] text-fg-secondary">
               同时新建切片
-              <span class="block text-[11px] text-fg-muted">按选区顺序把生成的素材放入一个新切片，便于直接剪辑和投稿</span>
+              <span class="block text-[11px] text-fg-muted">
+                {merged
+                  ? "把合并后的素材放入一个新切片，便于继续剪辑"
+                  : "按选区顺序把生成的素材放入一个新切片，便于直接剪辑和投稿"}
+              </span>
             </span>
           </label>
 

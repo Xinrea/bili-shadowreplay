@@ -14,7 +14,7 @@
     Range,
   } from "../interface";
   import { keepEventSubscription } from "../event-subscription";
-  import { createFloatingOverlay } from "../floating-overlay";
+  import { createFloatingOverlay, observeResize } from "../floating-overlay";
   import { createDanmakuFeed, FEED_TICK_MS } from "../danmaku-feed";
   import {
     createDanmakuPacer,
@@ -824,6 +824,7 @@ ${mediaPlaylistUrl}`;
         recordedSpace.clear();
       },
       destroy() {
+        stopResize();
         pacer.clear();
         floating.destroy();
       },
@@ -877,6 +878,12 @@ ${mediaPlaylistUrl}`;
     // Step at once, now that danmaku can be drawn: whether live danmaku
     // arriving now are drawn, and what recorded ones are on screen here.
     feedStep();
+    // A new player size starts recorded danmaku over, like a seek, laying out
+    // what is in flight anew.
+    const stopResize = observeResize(overlay, () => {
+      feed.reset();
+      feedStep();
+    });
 
     shakaSpacer.appendChild(danmakuToggle);
 

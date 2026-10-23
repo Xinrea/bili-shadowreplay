@@ -7,7 +7,7 @@ import { invoke } from "./invoker";
 import type { Config, Danmu2AssOptions, DanmuEntry } from "./interface";
 import { renderDanmuContent } from "./danmu-content";
 import { formatScPrice, getScColors } from "./superchat";
-import { createFloatingOverlay } from "./floating-overlay";
+import { createFloatingOverlay, observeResize } from "./floating-overlay";
 import { createDanmakuFeed, FEED_TICK_MS } from "./danmaku-feed";
 import {
   createDanmakuSpace,
@@ -137,7 +137,7 @@ export function pacedDanmakuTimes(records: DanmuEntry[]): (number | null)[] {
 /**
  * Draw the recorded danmaku of `video`, timed in ms of it, into `overlay`,
  * which covers its picture: each as playback reaches it, moving with the
- * video, and after a seek, those in flight there.
+ * video, and after a seek or a resize, those in flight there.
  */
 export function attachRecordedDanmaku(
   video: HTMLVideoElement,
@@ -203,6 +203,11 @@ export function attachRecordedDanmaku(
   }
   const timer = setInterval(step, FEED_TICK_MS);
   step();
+  // A new size starts over, like a seek, laying out what is in flight anew.
+  const stopResize = observeResize(overlay, () => {
+    feed.reset();
+    step();
+  });
 
   return {
     /** Show or hide them; shown again, those in flight come back. */
@@ -213,6 +218,7 @@ export function attachRecordedDanmaku(
     },
     destroy() {
       clearInterval(timer);
+      stopResize();
       for (const [type, listener] of listeners) video.removeEventListener(type, listener);
       // The overlay is the caller's; only what was drawn into it goes.
       clear();

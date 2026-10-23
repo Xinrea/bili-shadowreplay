@@ -42,6 +42,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          # PRs restore main's cache. Saving one per PR fills the 10 GB repo
+          # cache limit and evicts the larger Lint cache.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Run tests
         working-directory: src-tauri

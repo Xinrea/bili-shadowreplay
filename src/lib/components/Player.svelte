@@ -23,9 +23,11 @@
   import {
     createDanmakuPacer,
     createDanmakuSpace,
+    createPlacer,
     danmakuFontSize,
     LINE_HEIGHT,
     paceTimes,
+    type DanmakuSpace,
   } from "../danmaku-layout";
 
   import { save } from "@tauri-apps/plugin-dialog";
@@ -36,8 +38,6 @@
     DANMU_FLUSH_INTERVAL_MS,
   } from "../live-preview-perf";
   const DANMU_STATISTIC_GAP = 5;
-  // How long a super chat waits for room before it flies over the top.
-  const KEEP_WAIT_S = 5;
   let destroyed = false;
   let initialized = false;
   let stopDanmu: (() => void) | undefined;
@@ -48,7 +48,7 @@
    * The clock a message is laid out on, in seconds, its space, and for a
    * recorded danmaku, its time on that clock.
    */
-  type Timing = { space: ReturnType<typeof createDanmakuSpace>; now: () => number; at?: number };
+  type Timing = { space: DanmakuSpace; now: () => number; at?: number };
   const danmuSubscription = new AbortController();
   // The danmaku style setting, read again whenever the window comes back, as
   // it is changed in the main window. It applies to danmaku drawn after.
@@ -850,24 +850,14 @@ ${mediaPlaylistUrl}`;
       },
     };
 
-    /**
-     * Where a message flies. A recorded one is placed at its own time `at`,
-     * already that far into its flight; others enter now. Super chats (`keep`)
-     * without room wait for some, entering when it frees up, and after
-     * KEEP_WAIT_S on their clock fly over the top.
-     */
+    /** Where a message flies; super chats (`keep`) wait for room (see createPlacer). */
     function placer(timing: Timing, keep: boolean) {
-      let since: number | undefined;
-      return (width: number, height: number) => {
-        const now = timing.now();
-        const container = { width: overlay.clientWidth, height: overlay.clientHeight };
-        if (since === undefined && timing.at !== undefined) {
-          const flight = timing.space.place(timing.at, width, height, container);
-          if (flight || !keep) return flight && { ...flight, elapsed: now - timing.at };
-        }
-        since ??= now;
-        return timing.space.place(now, width, height, container, keep && now - since >= KEEP_WAIT_S);
-      };
+      return createPlacer(
+        timing.space,
+        timing.now,
+        () => ({ width: overlay.clientWidth, height: overlay.clientHeight }),
+        { at: timing.at, keep },
+      );
     }
 
     function danmu_handler(record: DanmuEntry, timing: Timing) {

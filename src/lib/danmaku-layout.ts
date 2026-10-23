@@ -158,6 +158,41 @@ export function createDanmakuSpace() {
   };
 }
 
+export type DanmakuSpace = ReturnType<typeof createDanmakuSpace>;
+
+/** How long a message that must be kept waits for room before it flies over the top. */
+export const KEEP_WAIT_S = 5;
+
+/**
+ * Where a message flies, asked once it is laid out, and with `keep`, every
+ * frame while there is no room. One with a time of its own, `at` (recorded),
+ * is placed then, already as far into its flight as `clock()` is, or not at
+ * all; others enter at `clock()`. A kept one without room at its time tries
+ * again from the next frame, entering then: after the others due with it
+ * are placed at their own times, which it must not get in the way of. Once
+ * it has waited KEEP_WAIT_S since its time, or its first try, it flies over
+ * the top without taking up space.
+ */
+export function createPlacer(
+  space: DanmakuSpace,
+  clock: () => number,
+  container: () => { width: number; height: number },
+  { at, keep = false }: { at?: number; keep?: boolean } = {},
+) {
+  let since: number | undefined;
+  return (width: number, height: number): (Flight & { elapsed: number }) | null => {
+    const now = clock();
+    if (since === undefined && at !== undefined) {
+      since = at;
+      const flight = space.place(at, width, height, container());
+      return flight && { ...flight, elapsed: now - at };
+    }
+    since ??= now;
+    const flight = space.place(now, width, height, container(), keep && now - since >= KEEP_WAIT_S);
+    return flight && { ...flight, elapsed: 0 };
+  };
+}
+
 /**
  * The room's queue (see createDanmakuPacer) run on another clock, such as a
  * video's: when each message arriving at `times` (ms) is drawn, or null when

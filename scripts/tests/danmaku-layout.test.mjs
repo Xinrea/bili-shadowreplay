@@ -156,6 +156,70 @@ test("messages of mixed sizes never cross", async () => {
   }
 });
 
+test("a caught-up super chat without room at its time keeps out of the others' way", async () => {
+  const api = await loadModule();
+  const container = () => player;
+  const rows = Array.from({ length: 140 }, (_, i) => [i * 0.1, 360 + ((i * 37) % 320)]);
+  // Caught up at t=14: in one frame, each at its own time, in order.
+  const catchUp = (withCard) => {
+    const space = api.createDanmakuSpace();
+    const clock = () => 14;
+    // Due with the 22nd row, when rows fill all but 57 px.
+    const card = api.createPlacer(space, clock, container, { at: rows[21][0], keep: true });
+    const tops = [];
+    for (const [i, [at, width]] of rows.entries()) {
+      if (withCard && i === 21) assert.equal(card(420, 110), null);
+      const flight = api.createPlacer(space, clock, container, { at })(width, 47);
+      tops.push(flight && Math.round(flight.top));
+    }
+    return { space, card, tops };
+  };
+  const without = catchUp(false);
+  const withCard = catchUp(true);
+  assert.deepEqual(withCard.tops, without.tops);
+  // Next frame it tries to enter now; it has waited since its own time, so
+  // without room it flies over the top without taking up space.
+  const flight = withCard.card(420, 110);
+  assert.equal(flight.elapsed, 0);
+  if (flight.top === 0) {
+    assert.equal(api.createPlacer(withCard.space, () => 14, container, { at: 14 })(400, 47), null);
+  }
+});
+
+test("a super chat waits for room from its own time", async () => {
+  const api = await loadModule();
+  // A full player: room only when forced, over the top.
+  const calls = [];
+  const space = {
+    place(at, width, height, container, force = false) {
+      calls.push([at, force]);
+      return force ? { top: 0, entryX: 1971, travel: 2441, duration: 13.67 } : null;
+    },
+  };
+  let now = 12;
+  const card = api.createPlacer(space, () => now, () => player, { at: 10, keep: true });
+  // First at its own time only, then entering now, forced 5 s after its time.
+  assert.equal(card(420, 110), null);
+  now = 14.9;
+  assert.equal(card(420, 110), null);
+  now = 15;
+  assert.equal(card(420, 110).top, 0);
+  assert.deepEqual(calls, [[10, false], [14.9, false], [15, true]]);
+  // A live one waits from its first try.
+  calls.length = 0;
+  const live = api.createPlacer(space, () => now, () => player, { keep: true });
+  assert.equal(live(420, 110), null);
+  now = 19.9;
+  assert.equal(live(420, 110), null);
+  now = 20;
+  assert.equal(live(420, 110).elapsed, 0);
+  assert.deepEqual(calls, [[15, false], [19.9, false], [20, true]]);
+  // Others are placed at their time or dropped.
+  calls.length = 0;
+  assert.equal(api.createPlacer(space, () => now, () => player, { at: 18 })(400, 47), null);
+  assert.deepEqual(calls, [[18, false]]);
+});
+
 test("the queue runs on any clock", async () => {
   const api = await loadModule();
   const burst = api.paceTimes(Array.from({ length: 40 }, () => 1000));

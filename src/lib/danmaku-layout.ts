@@ -94,8 +94,9 @@ export function createDanmakuSpace() {
    * Bilibili's space manager for scrolling messages: the first top, from the
    * top of the player down, where a message entering at `now` overlaps no
    * message on screen, or follows it closely enough never to catch up with
-   * it. Nothing when it would go below the player, as the room drops those,
-   * unless `force`: then it flies over the top row without taking up space.
+   * it. Nothing when it would go below the player, as the room drops those.
+   * With `force`, it flies over the top row without taking up space instead,
+   * room or not.
    */
   function place(
     now: number,
@@ -104,14 +105,15 @@ export function createDanmakuSpace() {
     container: { width: number; height: number },
     force = false,
   ): Flight | null {
-    placed = placed.filter((other) => other.end > now);
     const entryX = container.width + 1 + SAFE_RIGHT;
     const speed = (container.width + width) / baseDuration(width, container.width);
     const travel = Math.ceil(entryX + width + SAFE_LEFT);
     const duration = Math.ceil((travel / speed) * 100) / 100;
+    if (force) return { top: 0, entryX, travel, duration };
+    placed = placed.filter((other) => other.end > now);
     const middle = now + entryX / speed;
     const top = findTop(now, entryX, middle, height, container.height + 1);
-    if (top === null) return force ? { top: 0, entryX, travel, duration } : null;
+    if (top === null) return null;
     const entry: Placed = {
       top,
       bottom: top + height,
@@ -171,7 +173,8 @@ export const KEEP_WAIT_S = 5;
  * again from the next frame, entering then: after the others due with it
  * are placed at their own times, which it must not get in the way of. Once
  * it has waited KEEP_WAIT_S since its time, or its first try, it flies over
- * the top without taking up space.
+ * the top without taking up space, as far into that flight as it would be
+ * had it entered when the wait was over.
  */
 export function createPlacer(
   space: DanmakuSpace,
@@ -188,7 +191,12 @@ export function createPlacer(
       return flight && { ...flight, elapsed: now - at };
     }
     since ??= now;
-    const flight = space.place(now, width, height, container(), keep && now - since >= KEEP_WAIT_S);
+    if (keep && now - since >= KEEP_WAIT_S) {
+      const start = since + KEEP_WAIT_S;
+      const flight = space.place(start, width, height, container(), true);
+      return flight && { ...flight, elapsed: now - start };
+    }
+    const flight = space.place(now, width, height, container());
     return flight && { ...flight, elapsed: 0 };
   };
 }

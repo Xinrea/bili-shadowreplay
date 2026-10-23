@@ -177,13 +177,13 @@ test("a caught-up super chat without room at its time keeps out of the others' w
   const without = catchUp(false);
   const withCard = catchUp(true);
   assert.deepEqual(withCard.tops, without.tops);
-  // Next frame it tries to enter now; it has waited since its own time, so
-  // without room it flies over the top without taking up space.
+  // Next frame its wait since its own time is long over: it flies over the
+  // top from when the wait ended, without taking up space, even with room.
   const flight = withCard.card(420, 110);
-  assert.equal(flight.elapsed, 0);
-  if (flight.top === 0) {
-    assert.equal(api.createPlacer(withCard.space, () => 14, container, { at: 14 })(400, 47), null);
-  }
+  assert.equal(flight.top, 0);
+  assert.ok(Math.abs(flight.elapsed - (14 - rows[21][0] - 5)) < 1e-9, flight.elapsed);
+  const next = (space) => api.createPlacer(space, () => 14, container, { at: 14 })(420, 110);
+  assert.deepEqual(next(withCard.space), next(without.space));
 });
 
 test("a super chat waits for room from its own time", async () => {
@@ -214,6 +214,17 @@ test("a super chat waits for room from its own time", async () => {
   now = 20;
   assert.equal(live(420, 110).elapsed, 0);
   assert.deepEqual(calls, [[15, false], [19.9, false], [20, true]]);
+  // Caught up long after its time: as far into the flight over the top as
+  // the wait's end is ago, which the overlay drops once the flight is over.
+  calls.length = 0;
+  now = 40;
+  const late = api.createPlacer(space, () => now, () => player, { at: 12, keep: true });
+  assert.equal(late(420, 110), null);
+  now = 40.02;
+  const over = late(420, 110);
+  assert.ok(Math.abs(over.elapsed - 23.02) < 1e-9, over.elapsed);
+  assert.ok(over.elapsed >= over.duration);
+  assert.deepEqual(calls, [[12, false], [17, true]]);
   // Others are placed at their time or dropped.
   calls.length = 0;
   assert.equal(api.createPlacer(space, () => now, () => player, { at: 18 })(400, 47), null);

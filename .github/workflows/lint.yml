@@ -64,13 +64,16 @@ jobs:
         id: filter
         with:
           # Everything the cargo clippy/test hooks read. `public/icon.svg` is
-          # pulled in by `include_str!` in `src-tauri/src/powerlive.rs`.
+          # pulled in by `include_str!` in `src-tauri/src/powerlive.rs`, and
+          # `tauri.conf.json` reads its version from `package.json`.
           filters: |
             rust:
               - 'src-tauri/**'
               - 'public/icon.svg'
+              - 'package.json'
               - '.pre-commit-config.yaml'
               - '.github/workflows/lint.yml'
+              - '.github/actions/apt-install/**'
 
   clippy-test:
     needs: changes
@@ -91,18 +94,10 @@ jobs:
         with:
           submodules: recursive
 
-      # The Azure apt mirror is sometimes extremely slow (one install took
-      # 46 minutes), so restore the packages from the Actions cache instead.
       - name: Install system dependencies
-        uses: awalsh128/cache-apt-pkgs-action@v1
+        uses: ./.github/actions/apt-install
         with:
           packages: ffmpeg libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-          version: 1.0
-
-      # Restoring from the cache only unpacks files, so refresh the dynamic
-      # linker cache for the libraries the test binaries load at runtime.
-      - name: Refresh shared library cache
-        run: sudo ldconfig
 
       - name: Setup Python
         uses: actions/setup-python@v5

@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: read
+
 jobs:
   frontend:
     name: Frontend tests
@@ -35,19 +38,11 @@ jobs:
         with:
           submodules: recursive
 
-      # ffmpeg/ffprobe: needed for ffmpeg_utils fixture tests (fMP4 init+media probe).
-      # Restored from the Actions cache because the Azure apt mirror is
-      # sometimes extremely slow.
+      # ffmpeg/ffprobe: needed for ffmpeg_utils fixture tests (fMP4 init+media probe)
       - name: Install system dependencies
-        uses: awalsh128/cache-apt-pkgs-action@v1
+        uses: ./.github/actions/apt-install
         with:
           packages: libssl-dev pkg-config ffmpeg
-          version: 1.0
-
-      # Restoring from the cache only unpacks files, so refresh the dynamic
-      # linker cache for the libraries the test binaries load at runtime.
-      - name: Refresh shared library cache
-        run: sudo ldconfig
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable

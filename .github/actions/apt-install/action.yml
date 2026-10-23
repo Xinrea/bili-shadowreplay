@@ -1,0 +1,60 @@
+name: Install apt packages
+description: >
+  Install apt packages with a normal `apt-get update` and `apt-get install`,
+  reusing the downloaded .deb files from the Actions cache. The Azure apt
+  mirror is sometimes extremely slow (one install took 46 minutes), and with
+  the archives cached apt only downloads packages that changed since.
+
+inputs:
+  packages:
+    description: Space-separated apt packages to install.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # The key changes with the package list and the runner image. The prefix
+    # restore reuses an older image's archives, so only updated packages are
+    # downloaded again.
+    - id: key
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        packages_hash=$(printf '%s' "$PACKAGES" | sha256sum | cut -c1-16)
+        prefix="apt-archives-$ImageOS-$packages_hash-"
+        echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+        echo "key=$prefix$ImageVersion" >> "$GITHUB_OUTPUT"
+
+    - id: restore
+      uses: actions/cache/restore@v4
+      with:
+        path: ~/apt-archives
+        key: ${{ steps.key.outputs.key }}
+        restore-keys: ${{ steps.key.outputs.prefix }}
+
+    - shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        archives="$HOME/apt-archives"
+        mkdir -p "$archives/partial"
+        # apt downloads into `partial` as its unprivileged `_apt` user.
+        sudo chown _apt "$archives/partial"
+        sudo apt-get update
+        # Word splitting of $PACKAGES is intended.
+        # shellcheck disable=SC2086
+        sudo apt-get install -y -o Dir::Cache::Archives="$archives" $PACKAGES
+        # Drop archives that the package lists no longer offer, so the cache
+        # does not grow across image updates, then make it readable for saving.
+        sudo apt-get autoclean -o Dir::Cache::Archives="$archives"
+        sudo rm -f "$archives/lock"
+        sudo chown -R "$(id -u):$(id -g)" "$archives"
+
+    # Saved right after installing rather than at the end of the job, so a
+    # later failure or cancellation still keeps the downloaded packages.
+    - if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ~/apt-archives
+        key: ${{ steps.key.outputs.key }}

@@ -46,7 +46,8 @@
   /**
    * The clock a message is laid out on, in seconds, its space, and for a
    * recorded danmaku, or a live one laid out again, its time on that clock,
-   * and whether it flies over the top from then. `flown` hears when it
+   * and whether it flies over the top from then; or for a live one laid out
+   * again while waiting for room, since when it waits. `flown` hears when it
    * starts flying, and whether over the top, and `dropped` when it never will.
    */
   type Timing = {
@@ -54,6 +55,7 @@
     now: () => number;
     at?: number;
     over?: boolean;
+    since?: number;
     flown?: (start: number, over: boolean) => void;
     dropped?: () => void;
   };
@@ -825,24 +827,23 @@ ${mediaPlaylistUrl}`;
     const liveTiming: Timing = { space: liveSpace, now: () => performance.now() / 1000 };
     // Live danmaku drawn lately, to lay out again after a resize as they fly:
     // from when they started flying on the wall clock (a super chat may have
-    // waited for room), over the top or not. Until then, from when they were
-    // drawn. Longer ago than this, all have left.
+    // waited for room), over the top or not. Until then, they still wait,
+    // since they were drawn. Longer ago than this, all have left.
     const LIVE_KEPT_S = 30;
-    type LiveFlight = { entry: DanmuEntry; start: number; over: boolean };
+    type LiveFlight = { entry: DanmuEntry; start: number; flying: boolean; over: boolean };
     let liveDrawn: LiveFlight[] = [];
-    function liveFlightTiming(record: LiveFlight, at?: number): Timing {
+    function liveFlightTiming(record: LiveFlight, again = false): Timing {
       return {
         ...liveTiming,
-        at,
-        over: record.over,
-        flown: (start, over) => Object.assign(record, { start, over }),
+        ...(again && (record.flying ? { at: record.start, over: record.over } : { since: record.start })),
+        flown: (start, over) => Object.assign(record, { start, flying: true, over }),
         dropped: () => (liveDrawn = liveDrawn.filter((other) => other !== record)),
       };
     }
     function drawLive(entry: DanmuEntry) {
       const now = liveTiming.now();
       liveDrawn = liveDrawn.filter((record) => record.start > now - LIVE_KEPT_S);
-      const record = { entry, start: now, over: false };
+      const record = { entry, start: now, flying: false, over: false };
       liveDrawn.push(record);
       drawFloatingEntry(entry, liveFlightTiming(record));
     }
@@ -869,7 +870,7 @@ ${mediaPlaylistUrl}`;
         timing.space,
         timing.now,
         () => ({ width: overlay.clientWidth, height: overlay.clientHeight }),
-        { at: timing.at, keep, over: timing.over },
+        { at: timing.at, keep, over: timing.over, since: timing.since },
       );
       return (width: number, height: number) => {
         const flight = place(width, height);
@@ -919,7 +920,8 @@ ${mediaPlaylistUrl}`;
     feedStep();
     // A new player size lays out what is in flight anew: recorded danmaku
     // start over, like after a seek, and at the live edge, live ones are
-    // placed again at the times they started flying, as far into their flight.
+    // placed again at the times they started flying, as far into their
+    // flight, and those waiting for room wait on.
     const stopResize = observeResize(overlay, () => {
       feed.reset();
       feedStep();
@@ -928,7 +930,7 @@ ${mediaPlaylistUrl}`;
       liveSpace.clear();
       liveDrawn.sort((a, b) => a.start - b.start);
       for (const record of liveDrawn) {
-        drawFloatingEntry(record.entry, liveFlightTiming(record, record.start));
+        drawFloatingEntry(record.entry, liveFlightTiming(record, true));
       }
     });
 

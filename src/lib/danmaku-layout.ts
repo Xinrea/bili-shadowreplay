@@ -178,15 +178,22 @@ export type PlacedFlight = Flight & { elapsed: number; over: boolean };
  * it has waited KEEP_WAIT_S since its time, or its first try, it flies over
  * the top without taking up space, as far into that flight as it would be
  * had it entered when the wait was over. With `over`, it flies over the top
- * from `at` straight away, as one laid out again after doing so.
+ * from `at` straight away, as one laid out again after doing so. With
+ * `since` instead of `at`, it has been waiting for room since then: it
+ * enters at `clock()` when there is room, and its wait counts from then.
  */
 export function createPlacer(
   space: DanmakuSpace,
   clock: () => number,
   container: () => { width: number; height: number },
-  { at, keep = false, over = false }: { at?: number; keep?: boolean; over?: boolean } = {},
+  {
+    at,
+    keep = false,
+    over = false,
+    since: waitingSince,
+  }: { at?: number; keep?: boolean; over?: boolean; since?: number } = {},
 ) {
-  let since: number | undefined;
+  let since = waitingSince;
   return (width: number, height: number): PlacedFlight | null => {
     const now = clock();
     if (over && at !== undefined) {

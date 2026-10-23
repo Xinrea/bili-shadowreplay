@@ -38,7 +38,7 @@ const pages = [
         <div class="nav-item palette">
           <Icon name="command" :size="16" />
           <span>命令面板</span>
-          <kbd>⌘K</kbd>
+          <kbd>⇧⌘P</kbd>
         </div>
       </nav>
     </aside>

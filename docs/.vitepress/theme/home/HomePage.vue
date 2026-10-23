@@ -91,8 +91,8 @@ function onKeydown(event: KeyboardEvent) {
 const DESIGN_WIDTH = 1120;
 const DESIGN_HEIGHT = 680;
 const stage = ref<HTMLElement | null>(null);
-const scale = ref(1);
-const stageStyle = computed(() => ({ height: `${DESIGN_HEIGHT * scale.value}px` }));
+// Until the first measurement the canvas stays hidden; the stage's own size comes from CSS.
+const scale = ref(0);
 const canvasStyle = computed(() => ({
   width: `${DESIGN_WIDTH}px`,
   height: `${DESIGN_HEIGHT}px`,
@@ -229,13 +229,15 @@ async function copyDocker() {
         >
       </div>
       <div class="wrap hero-grid">
-        <h1 class="headline">
-          <img class="logo" :src="withBase('/images/icon.svg')" alt="" />
-          <span class="name">
-            <span class="name-top">BiliBili</span>
-            <span class="name-main">ShadowReplay</span>
-          </span>
-        </h1>
+        <div class="title-box">
+          <h1 class="headline">
+            <img class="logo" :src="withBase('/images/icon.svg')" alt="" />
+            <span class="name">
+              <span class="name-top">BiliBili</span>
+              <span class="name-main">ShadowReplay</span>
+            </span>
+          </h1>
+        </div>
         <div class="hero-side">
           <p class="lead">
             ShadowReplay 在后台录制你关注的直播间。边看边圈出精彩片段，剪辑、加字幕、投稿到
@@ -286,7 +288,7 @@ async function copyDocker() {
           </button>
         </div>
 
-        <div ref="stage" class="stage" :style="stageStyle">
+        <div ref="stage" class="stage" :class="{ measured: scale > 0 }">
           <div class="canvas" :style="canvasStyle">
             <div class="window" :class="{ dark: current === 1 || current === 2 || current === 3 }">
               <span class="lights" aria-hidden="true"><i /><i /><i /></span>
@@ -483,15 +485,20 @@ p {
   gap: 32px;
 }
 
+/* The name scales with its column so "ShadowReplay" never overflows it. */
+.title-box {
+  container-type: inline-size;
+}
+
 .headline {
   display: flex;
   align-items: center;
-  gap: clamp(16px, 2.4vw, 28px);
+  gap: 3cqw;
   color: var(--h-ink);
 }
 
 .logo {
-  width: clamp(72px, 10vw, 128px);
+  width: clamp(48px, 18cqw, 128px);
   height: auto;
   flex-shrink: 0;
   filter: drop-shadow(0 14px 22px rgb(23 28 38 / 28%));
@@ -504,14 +511,14 @@ p {
 }
 
 .name-top {
-  font-size: clamp(18px, 2.2vw, 28px);
+  font-size: clamp(14px, 4cqw, 28px);
   font-weight: 600;
   line-height: 1.2;
   color: var(--h-muted);
 }
 
 .name-main {
-  font-size: clamp(34px, 6.2vw, 76px);
+  font-size: min(10.5cqw, 76px);
   font-weight: 800;
   line-height: 1.05;
   letter-spacing: -0.03em;
@@ -672,6 +679,11 @@ a:focus-visible {
 
 .stage {
   position: relative;
+  aspect-ratio: 1120 / 680;
+}
+
+.stage:not(.measured) .canvas {
+  visibility: hidden;
 }
 
 .canvas {

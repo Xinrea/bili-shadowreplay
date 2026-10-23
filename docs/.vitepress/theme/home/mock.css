@@ -1,0 +1,396 @@
+/*
+ * The demo windows reuse the app's own palette and controls (src/styles.css).
+ * `.m-follow` follows the site's light/dark switch like the main window does;
+ * `.m-dark` is the always-dark palette of the preview and editor windows.
+ */
+.m-follow,
+.m-light {
+  --canvas: #f3f5f8;
+  --chrome: #eceff3;
+  --surface: #ffffff;
+  --control: #f4f6f9;
+  --control-hover: #e9edf2;
+  --sunken: #e9ecf1;
+  --selected: #ffffff;
+  --line: #e1e5ec;
+  --line-strong: #d0d6df;
+  --fg: #171c26;
+  --fg-2: #475263;
+  --muted: #6b7687;
+  --faint: #96a0af;
+  --accent: #0a84ff;
+  --accent-soft: #e6f2ff;
+  --accent-fg: #0066d6;
+  --success: #1faa50;
+  --success-soft: #e4f7eb;
+  --success-fg: #15803d;
+  --warning: #e68c00;
+  --warning-soft: #fff4e0;
+  --warning-fg: #b46400;
+  --danger: #e5394d;
+  --danger-soft: #fdecee;
+  --danger-fg: #c82338;
+  color-scheme: light;
+}
+
+.dark .m-follow,
+.m-dark {
+  --canvas: #0e1219;
+  --chrome: #141922;
+  --surface: #171c25;
+  --control: #202733;
+  --control-hover: #293341;
+  --sunken: #0f131a;
+  --selected: #293341;
+  --line: #2b3340;
+  --line-strong: #344052;
+  --fg: #e9eef8;
+  --fg-2: #b6c0cf;
+  --muted: #8c98aa;
+  --faint: #687589;
+  --accent: #0a84ff;
+  --accent-soft: #153b5c;
+  --accent-fg: #65c2ff;
+  --success: #30d158;
+  --success-soft: #163a28;
+  --success-fg: #68e08a;
+  --warning: #ff9f0a;
+  --warning-soft: #3d2d12;
+  --warning-fg: #ffc466;
+  --danger: #ef5668;
+  --danger-soft: #3b2028;
+  --danger-fg: #ff8591;
+  color-scheme: dark;
+}
+
+.m-root {
+  position: relative;
+  overflow: hidden;
+  background: var(--canvas);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans CJK SC", "Segoe UI", sans-serif;
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: left;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+.m-root * {
+  box-sizing: border-box;
+}
+
+.m-root .num {
+  font-variant-numeric: tabular-nums;
+}
+
+.m-root .mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Title bar with room for the traffic lights. */
+.m-titlebar {
+  display: flex;
+  height: 40px;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--chrome);
+}
+
+.m-titlebar .title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  white-space: nowrap;
+}
+
+.m-btn {
+  display: inline-flex;
+  height: 30px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--control);
+  padding: 0 11px;
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 500;
+  transition: background-color 150ms ease, border-color 150ms ease, transform 120ms ease;
+}
+
+.m-btn.primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: #fff;
+}
+
+.m-btn.ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--fg-2);
+}
+
+.m-btn.sm {
+  height: 26px;
+  gap: 4px;
+  border-radius: 7px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+.m-btn.icon {
+  width: 30px;
+  padding: 0;
+}
+
+.m-btn.sm.icon {
+  width: 26px;
+}
+
+.m-btn.pressed {
+  transform: scale(0.96);
+}
+
+.m-btn.disabled {
+  opacity: 0.5;
+}
+
+.m-input {
+  display: flex;
+  height: 30px;
+  align-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--control);
+  padding: 0 10px;
+  color: var(--fg);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.m-input.focus {
+  border-color: var(--accent);
+}
+
+.m-input .placeholder {
+  color: var(--faint);
+}
+
+.m-input.area {
+  height: auto;
+  align-items: flex-start;
+  padding: 7px 10px;
+  line-height: 1.6;
+  white-space: normal;
+}
+
+.m-caret {
+  display: inline-block;
+  width: 1px;
+  height: 14px;
+  margin-left: 1px;
+  vertical-align: -2px;
+  background: var(--accent);
+  animation: m-blink 1s steps(1) infinite;
+}
+
+@keyframes m-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.m-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.m-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg);
+}
+
+.m-hint {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.m-badge {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  border-radius: 5px;
+  background: var(--control);
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 16px;
+  color: var(--muted);
+}
+
+.m-badge.accent {
+  background: var(--accent-soft);
+  color: var(--accent-fg);
+}
+
+.m-badge.success {
+  background: var(--success-soft);
+  color: var(--success-fg);
+}
+
+.m-badge.warning {
+  background: var(--warning-soft);
+  color: var(--warning-fg);
+}
+
+.m-switch {
+  position: relative;
+  display: inline-flex;
+  width: 34px;
+  height: 20px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--line-strong);
+  transition: background-color 200ms ease;
+}
+
+.m-switch::before {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 25%);
+  content: "";
+  transition: transform 200ms ease;
+}
+
+.m-switch.on {
+  background: var(--accent);
+}
+
+.m-switch.on::before {
+  transform: translateX(14px);
+}
+
+.m-check {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--control);
+  color: #fff;
+}
+
+.m-check.on {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.m-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(0 0 0 / 45%);
+  backdrop-filter: blur(3px);
+}
+
+.m-modal {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--fg);
+  box-shadow: 0 24px 60px rgb(0 0 0 / 35%);
+}
+
+.m-modal-header {
+  display: flex;
+  height: 46px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+  padding: 0 18px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.m-modal-body {
+  padding: 18px;
+}
+
+.m-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  background: var(--chrome);
+  padding: 12px 16px;
+}
+
+/* Vue <Transition name="m-pop"> for modals and new items. */
+.m-pop-enter-active,
+.m-pop-leave-active {
+  transition: opacity 200ms ease, transform 200ms ease;
+}
+
+.m-pop-enter-from,
+.m-pop-leave-to {
+  opacity: 0;
+  transform: scale(0.96);
+}
+
+.m-fade-enter-active,
+.m-fade-leave-active {
+  transition: opacity 220ms ease;
+}
+
+.m-fade-enter-from,
+.m-fade-leave-to {
+  opacity: 0;
+}
+
+.m-rise-enter-active {
+  transition: opacity 320ms ease, transform 320ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.m-rise-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .m-root *,
+  .m-root *::before {
+    animation-duration: 0s !important;
+    transition-duration: 0s !important;
+  }
+}

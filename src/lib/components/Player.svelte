@@ -849,8 +849,6 @@ ${mediaPlaylistUrl}`;
         floating.destroy();
       },
     };
-    // Know at once whether live danmaku arriving now are drawn.
-    feedStep();
 
     /**
      * Where a message flies. A recorded one is placed at its own time `at`,
@@ -980,6 +978,10 @@ ${mediaPlaylistUrl}`;
       const renderer = floatingRenderers[entry.type] ?? danmu_handler;
       renderer(entry, timing);
     }
+
+    // Step at once, now that danmaku can be drawn: whether live danmaku
+    // arriving now are drawn, and what recorded ones are on screen here.
+    feedStep();
 
     shakaSpacer.appendChild(danmakuToggle);
 

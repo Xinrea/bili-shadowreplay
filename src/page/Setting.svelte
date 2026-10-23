@@ -1640,31 +1640,33 @@
                 </div>
               </div>
               <!-- Auto Clip Encode Danmu -->
-              <div class="px-4 py-3" data-setting="auto-generate-danmu">
-                <div class="flex items-center justify-between gap-6">
-                  <div>
-                    <h3 class="ui-label">
-                      整场生成时压制弹幕
-                    </h3>
-                    <p class="ui-hint mt-0.5">
-                      启用后，自动生成整场素材时会同时压制弹幕，会显著增加生成时间
-                    </p>
+              {#if setting_model.auto_generate.enabled}
+                <div class="px-4 py-3" data-setting="auto-generate-danmu">
+                  <div class="flex items-center justify-between gap-6">
+                    <div>
+                      <h3 class="ui-label">
+                        整场生成时压制弹幕
+                      </h3>
+                      <p class="ui-hint mt-0.5">
+                        启用后，自动生成整场素材时会同时压制弹幕，会显著增加生成时间
+                      </p>
+                    </div>
+                    <label class="ui-switch">
+                      <input
+                        type="checkbox"
+                        bind:checked={setting_model.auto_generate.encode_danmu}
+                        onchange={async () => {
+                          await invoke("update_auto_generate", {
+                            enabled: setting_model.auto_generate.enabled,
+                            encodeDanmu: setting_model.auto_generate.encode_danmu,
+                          });
+                        }}
+                      />
+                      <span></span>
+                    </label>
                   </div>
-                  <label class="ui-switch">
-                    <input
-                      type="checkbox"
-                      bind:checked={setting_model.auto_generate.encode_danmu}
-                      onchange={async () => {
-                        await invoke("update_auto_generate", {
-                          enabled: setting_model.auto_generate.enabled,
-                          encodeDanmu: setting_model.auto_generate.encode_danmu,
-                        });
-                      }}
-                    />
-                    <span></span>
-                  </label>
                 </div>
-              </div>
+              {/if}
             </div>
           </div>
         {/if}

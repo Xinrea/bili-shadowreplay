@@ -78,6 +78,10 @@ sherpa-onnx = "1.13.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
+# async-compression (via reqwest and async_zip) pulls in liblzma-sys, which links
+# any liblzma pkg-config finds. On the build machine that is Homebrew's xz, and
+# the app then fails to launch on Macs without Homebrew xz. Build it from source.
+liblzma-sys = { version = "0.4", features = ["static"] }
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem

@@ -759,6 +759,7 @@ dependencies = [
  "hound",
  "keyring",
  "libc",
+ "liblzma-sys",
  "log",
  "m3u8-rs",
  "objc2-app-kit",

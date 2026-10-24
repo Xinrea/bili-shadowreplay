@@ -498,7 +498,8 @@ pub(crate) async fn create_material(
         Ok(danmus) if params.danmu => {
             // Super chats are not drawn, so they alone leave nothing to burn.
             if danmus.iter().any(DanmuEntry::is_danmu) {
-                burn_material_danmus(state, reporter, &file, &danmus).await?;
+                burn_material_danmus(state, reporter, &file, &danmus, params.video_bitrate())
+                    .await?;
                 danmu_embedded = true;
             }
         }
@@ -611,6 +612,7 @@ async fn burn_material_danmus(
     reporter: &ProgressReporter,
     file: &Path,
     danmus: &[DanmuEntry],
+    bitrate: Option<std::num::NonZeroU32>,
 ) -> Result<(), String> {
     let options = state.config.read().await.danmu_ass_options.clone();
     let parent = file
@@ -625,7 +627,8 @@ async fn burn_material_danmus(
         let _ = tokio::fs::remove_file(file).await;
         return Err(format!("移动素材失败: {} ({e})", file.display()));
     }
-    let burned = ffmpeg::encode_video_danmu(Some(reporter), &cut, danmus, &options).await?;
+    let burned =
+        ffmpeg::encode_video_danmu(Some(reporter), &cut, danmus, &options, bitrate).await?;
     tokio::fs::rename(&burned, file)
         .await
         .map_err(|e| format!("保存压制弹幕的素材失败: {} ({e})", file.display()))

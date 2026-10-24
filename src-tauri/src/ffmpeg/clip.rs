@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{num::NonZeroU32, path::Path};
 
 use crate::progress::progress_reporter::ProgressReporterTrait;
 use ffmpeg_utils::ffmpeg_command;
@@ -8,12 +8,14 @@ use super::{
     runner::{run_command, FfmpegJob, ProgressMode, ProgressTotal},
 };
 
-/// Re-encode or remux a video into `output_path`.
+/// Re-encode or remux a video into `output_path`. A re-encode targets
+/// `bitrate` (kbps) when given, otherwise the encoder's default quality.
 pub async fn transcode<R: ProgressReporterTrait>(
     reporter: Option<&R>,
     file: &Path,
     output_path: &Path,
     copy_codecs: bool,
+    bitrate: Option<NonZeroU32>,
 ) -> Result<(), String> {
     log::info!("Transcode: {} copy: {}", file.display(), copy_codecs);
     let mut command = ffmpeg_command();
@@ -29,7 +31,7 @@ pub async fn transcode<R: ProgressReporterTrait>(
             Some(hwaccel::H264_SCALE_PAD_FILTER),
         );
         command.args(["-c:a", "aac"]);
-        hwaccel::apply_x264_quality_args(&mut command, video_encoder);
+        hwaccel::apply_x264_quality_args_with_bitrate(&mut command, video_encoder, bitrate);
         command.args(["-threads", "0"]);
     }
 

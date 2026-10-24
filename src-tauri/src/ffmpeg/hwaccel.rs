@@ -194,7 +194,7 @@ pub fn project_quality_args(
         VideoQuality::Balanced => (20, 23, 8_000, "medium", "p5"),
         VideoQuality::Compact => (26, 28, 4_000, "fast", "p4"),
     };
-    for pair in args.chunks_exact_mut(2) {
+    for pair in args.as_chunks_mut::<2>().0 {
         match pair[0].as_str() {
             "-crf" => pair[1] = crf.to_string(),
             "-cq" => pair[1] = cq.to_string(),
@@ -211,7 +211,9 @@ pub fn project_quality_args(
     }
     if manual {
         args = args
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .filter(|pair| pair[0] != "-crf" && pair[0] != "-cq")
             .flatten()
             .cloned()
@@ -222,7 +224,9 @@ pub fn project_quality_args(
     if manual || args.iter().any(|arg| arg == "-b:v") {
         let kbps = if manual { settings.bitrate_kbps } else { kbps };
         args = args
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .filter(|pair| !["-b:v", "-maxrate", "-bufsize"].contains(&pair[0].as_str()))
             .flatten()
             .cloned()

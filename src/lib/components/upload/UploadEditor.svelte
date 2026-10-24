@@ -12,7 +12,8 @@
     Upload,
     X,
   } from "lucide-svelte";
-  import { onDestroy, onMount, untrack } from "svelte";
+  import { onDestroy, untrack } from "svelte";
+  import { trapFocus } from "../../focus-trap";
   import { get_static_url, invoke } from "../../invoker";
   import { generateEventId, type OverlayImage, type ProjectItem, type UploadItem } from "../../interface";
   import { frameRateQuery, parseTimeline } from "../../project-timeline";
@@ -57,7 +58,6 @@
   let videoUrl = $state("");
   let titleInput: HTMLInputElement | undefined = $state();
   let closeButton: HTMLButtonElement | undefined = $state();
-  let dialog: HTMLDivElement | undefined = $state();
 
   let editable = $derived(upload.status === "draft" || upload.status === "failed");
   let savingDanmu = $state(false);
@@ -105,9 +105,6 @@
     void upload.profile;
     untrack(adopt);
   });
-
-  // Into the dialog, away from the page it covers.
-  onMount(() => (editable ? titleInput : closeButton)?.focus());
 
   onDestroy(() => {
     if (saveTimer) {
@@ -235,37 +232,13 @@
     }
     onClose();
   }
-
-  /**
-   * Keep Tab within the dialog: whatever it covers, such as the uploads
-   * list with its delete buttons, could otherwise take focus unseen.
-   */
-  function keepTabInside(event: KeyboardEvent) {
-    if (!dialog) return;
-    const focusable = [
-      ...dialog.querySelectorAll<HTMLElement>("a[href], button, input, select, textarea, [tabindex]"),
-    ].filter((element) => element.tabIndex >= 0 && !element.matches(":disabled") && element.offsetParent);
-    if (focusable.length === 0) return;
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    const active = document.activeElement;
-    const inside = active instanceof Node && dialog.contains(active);
-    if (!inside || (event.shiftKey ? active === first : active === last)) {
-      event.preventDefault();
-      (event.shiftKey ? last : first).focus();
-    }
-  }
 </script>
 
 <svelte:window
   onkeydown={(event) => {
-    // The cover editor over it handles its own keys.
-    if (showCoverEditor) return;
-    if (event.key === "Escape") {
+    if (event.key === "Escape" && !showCoverEditor) {
       event.preventDefault();
       close();
-    } else if (event.key === "Tab") {
-      keepTabInside(event);
     }
   }}
 />
@@ -273,7 +246,7 @@
 <!-- Above full-window editors such as the clip editor (z-1000). -->
 <div class="ui-modal-backdrop z-[1100]">
   <div
-    bind:this={dialog}
+    use:trapFocus={{ initial: () => (editable ? titleInput : closeButton) }}
     class="ui-modal max-h-[90vh] w-[820px] max-w-full"
     role="dialog"
     aria-modal="true"

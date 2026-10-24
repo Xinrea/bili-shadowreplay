@@ -15,6 +15,7 @@
     type ActiveTask,
   } from "../task-progress";
   import TaskProgress from "./TaskProgress.svelte";
+  import { trapFocus } from "../focus-trap";
 
   // Mount once per window. Open it with `openTaskCenter()` from `stores/tasks`.
 
@@ -40,7 +41,8 @@
 
   // Handled in the capture phase: while open, the modal owns the keyboard, so
   // page shortcuts underneath (e.g. the player's Escape, which clears the
-  // selected range) never see the keys. Default actions such as Tab still apply.
+  // selected range) never see the keys. Default actions such as Tab still
+  // apply, kept within the dialog by `trapFocus`.
   function handleKeydown(event: KeyboardEvent) {
     if (!$taskCenter.open) return;
     event.stopPropagation();
@@ -77,6 +79,7 @@
       role="dialog"
       aria-modal="true"
       aria-labelledby="task-center-title"
+      use:trapFocus
       class="relative flex max-h-[min(480px,80vh)] w-full max-w-md flex-col overflow-hidden rounded-[12px] border border-line bg-surface shadow-2xl"
     >
       <div class="flex items-center justify-between gap-3 border-b border-line py-2 pl-4 pr-2">

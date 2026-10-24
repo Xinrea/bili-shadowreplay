@@ -31,7 +31,9 @@ use crate::handlers::video::{
 };
 use crate::material::Peaks;
 use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
-use crate::project::{srt_cues, AudioSource, OverlayContent, Timeline, TimelineClip};
+use crate::project::{
+    srt_cues, AudioSource, OverlayContent, RenderSettings, Timeline, TimelineClip, VideoQuality,
+};
 use crate::recorder_manager::ClipRangeParams;
 use crate::state::State;
 use crate::state_type;
@@ -452,8 +454,26 @@ pub async fn update_project_danmu(
     set_project_danmu(&state, id, danmu).await
 }
 
-/// Save the editor's timeline with the project's danmaku setting, which has a
-/// command of its own and may have changed on the uploads page meanwhile.
+/// Output settings are shared with uploads, independently of timeline edits.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn update_project_output_settings(
+    state: state_type!(),
+    id: i64,
+    danmu: bool,
+    render_settings: RenderSettings,
+) -> Result<(), String> {
+    render_settings.validate()?;
+    edit_project_timeline(&state.db, id, |timeline| {
+        let changed = timeline.danmu != danmu || timeline.render_settings != render_settings;
+        timeline.danmu = danmu;
+        timeline.render_settings = render_settings.clone();
+        changed
+    })
+    .await
+}
+
+/// Save timeline edits while preserving output settings changed independently
+/// in an export or upload dialog.
 async fn save_editor_timeline(
     db: &Database,
     id: i64,
@@ -465,10 +485,13 @@ async fn save_editor_timeline(
         let current = Timeline::parse(&saved)?;
         let mut timeline = edited.clone();
         // The backend's edits since the editor last heard: without what it
-        // last saw, only the danmaku setting.
+        // last saw, only the output settings.
         match &base {
             Some(base) => timeline.merge_saved_edits(base, &current),
-            None => timeline.danmu = current.danmu,
+            None => {
+                timeline.danmu = current.danmu;
+                timeline.render_settings = current.render_settings.clone();
+            }
         }
         // An editor that has not heard of a deletion yet must not restore its
         // clips; checked on each attempt, as a deletion edits the timeline.
@@ -653,8 +676,8 @@ async fn directory_size(directory: &Path) -> u64 {
 
 /// What the segments of `seconds` of a project add to a segment cache holding
 /// `cached` bytes: those found there are used, not written again.
-fn segment_writes(seconds: u64, cached: u64) -> u64 {
-    (seconds * SEGMENT_BYTES_PER_SECOND).saturating_sub(cached)
+fn segment_writes(seconds: u64, cached: u64, extra_video_bytes: u64) -> u64 {
+    (seconds * SEGMENT_BYTES_PER_SECOND + extra_video_bytes).saturating_sub(cached)
 }
 
 /// Refuse to start writing `writes`, bytes to each directory, unless every
@@ -992,6 +1015,20 @@ pub(crate) async fn set_project_danmu(state: &State, id: i64, danmu: bool) -> Re
     .await
 }
 
+pub(crate) async fn set_project_render_settings(
+    state: &State,
+    id: i64,
+    settings: RenderSettings,
+) -> Result<(), String> {
+    settings.validate()?;
+    edit_project_timeline(&state.db, id, |timeline| {
+        let changed = timeline.render_settings != settings;
+        timeline.render_settings = settings.clone();
+        changed
+    })
+    .await
+}
+
 /// A material's title, or its file name without the extension.
 pub(crate) fn material_title(material: &VideoRow) -> String {
     if material.title.is_empty() {
@@ -1236,6 +1273,15 @@ async fn queue_export(
     let target_path = target.path();
     let beside_target = target_path.parent().unwrap_or(target_path).to_path_buf();
     let seconds = timeline.duration().max(0.0).ceil() as u64;
+    // Higher selected bitrates also need more space for the output and segments.
+    let peak_kbps = if timeline.render_settings.bitrate_kbps > 0 {
+        u64::from(timeline.render_settings.bitrate_kbps) * 5 / 4
+    } else if timeline.render_settings.quality == VideoQuality::High {
+        20_000
+    } else {
+        12_000
+    };
+    let extra_video_bytes = peak_kbps.saturating_sub(12_000) * 1000 / 8 * seconds;
     let writes = match &plain {
         Some(material) => {
             let size = tokio::fs::metadata(material).await.map_or(0, |m| m.len());
@@ -1250,10 +1296,13 @@ async fn queue_export(
                 None => 0,
             };
             vec![
-                (beside_target.clone(), seconds * EXPORT_BYTES_PER_SECOND),
+                (
+                    beside_target.clone(),
+                    seconds * EXPORT_BYTES_PER_SECOND + extra_video_bytes,
+                ),
                 (
                     segment_cache.clone().unwrap_or(beside_target),
-                    segment_writes(seconds, cached),
+                    segment_writes(seconds, cached, extra_video_bytes),
                 ),
             ]
         }
@@ -1524,6 +1573,7 @@ async fn render_timeline(
             fonts_directory: fonts_directory.as_ref().map(|directory| directory.path()),
             danmus,
             danmu_options: job.danmu_options.clone(),
+            render_settings: job.timeline.render_settings.clone(),
             output,
             segment_cache: job.segment_cache.as_deref(),
         },
@@ -1630,10 +1680,14 @@ mod tests {
         // Of a minute, what is cached is not written again, and nothing for
         // a cache holding as much.
         assert_eq!(
-            segment_writes(60, cached),
+            segment_writes(60, cached, 0),
             60 * SEGMENT_BYTES_PER_SECOND - 4000
         );
-        assert_eq!(segment_writes(60, 60 * SEGMENT_BYTES_PER_SECOND), 0);
+        assert_eq!(segment_writes(60, 60 * SEGMENT_BYTES_PER_SECOND, 0), 0);
+        assert_eq!(
+            segment_writes(60, 60 * SEGMENT_BYTES_PER_SECOND, 9000),
+            9000
+        );
         assert_eq!(readable_size(20 * 1024 * 1024), "20 MB");
         assert_eq!(readable_size(3 * 1024 * 1024 * 1024 / 2), "1.5 GB");
     }
@@ -1701,7 +1755,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn editor_saves_keep_the_danmaku_setting_switched_elsewhere() {
+    async fn editor_saves_keep_output_settings_switched_elsewhere() {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -1744,18 +1798,25 @@ mod tests {
         // The uploads page turns danmaku on while the editor still has it off.
         edit_project_timeline(&db, project.id, |timeline| {
             timeline.danmu = true;
+            timeline.render_settings = RenderSettings {
+                quality: VideoQuality::High,
+                bitrate_kbps: 12_000,
+            };
             true
         })
         .await
         .unwrap();
         let mut trimmed = editor.clone();
         trimmed.clips[0].end = 8.0;
-        let saved = save_editor_timeline(&db, project.id, trimmed, None)
-            .await
-            .unwrap();
-
-        // The editor's trim is saved, and so is the setting switched elsewhere.
-        assert!(saved.danmu);
+        for base in [None, Some(editor)] {
+            let saved = save_editor_timeline(&db, project.id, trimmed.clone(), base)
+                .await
+                .unwrap();
+            // Both new and old editors preserve settings saved by the upload dialog.
+            assert!(saved.danmu);
+            assert_eq!(saved.render_settings.quality, VideoQuality::High);
+            assert_eq!(saved.render_settings.bitrate_kbps, 12_000);
+        }
         let stored = Timeline::parse(&db.get_project(project.id).await.unwrap().timeline).unwrap();
         assert_eq!((stored.danmu, stored.clips[0].end), (true, 8.0));
     }

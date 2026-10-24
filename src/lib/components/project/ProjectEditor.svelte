@@ -28,6 +28,8 @@
     X,
   } from "lucide-svelte";
   import { onDestroy, onMount, tick, untrack } from "svelte";
+  import { trapFocus } from "../../focus-trap";
+  import RenderSettingsFields from "../RenderSettingsFields.svelte";
   import { save } from "@tauri-apps/plugin-dialog";
   import { get_preview_audio_url, get_static_url, invoke, listen, log, set_title, TAURI_ENV } from "../../invoker";
   import {
@@ -66,6 +68,7 @@
     canShiftOverlay,
     clipToOverlay,
     clipAt,
+    defaultRenderSettings,
     duplicateOverlay,
     editAudio,
     editOverlay,
@@ -228,7 +231,10 @@
   let saving: Promise<void> | null = null;
   // The saved timeline as last seen, to tell the backend's edits from local ones.
   let syncedTimeline = "";
-  let danmuSaved: Promise<void> = Promise.resolve();
+  let showExportSettings = $state(false);
+  let preparingExport = $state(false);
+  let exportDanmu = $state(false);
+  let exportSettings = $state(defaultRenderSettings());
 
   let videoA: HTMLVideoElement = $state();
   let videoB: HTMLVideoElement = $state();
@@ -738,9 +744,9 @@
     if (!previous) return;
     redoStack = [...redoStack, timeline];
     undoStack = undoStack.slice(0, -1);
-    // Danmaku is a setting, not an edit, so history leaves it as it is. A
+    // Output settings are not edits, so history leaves them as they are. A
     // step from before the clips were put on frames goes on them again.
-    timeline = snapClips({ ...previous, danmu: timeline.danmu }, frameRate);
+    timeline = snapClips({ ...previous, danmu: timeline.danmu, render_settings: timeline.render_settings }, frameRate);
     scheduleSave();
   }
 
@@ -751,30 +757,13 @@
     if (!next) return;
     undoStack = [...undoStack, timeline];
     redoStack = redoStack.slice(0, -1);
-    timeline = snapClips({ ...next, danmu: timeline.danmu }, frameRate);
+    timeline = snapClips({ ...next, danmu: timeline.danmu, render_settings: timeline.render_settings }, frameRate);
     scheduleSave();
   }
 
-  /** Switch the project's danmaku setting, which has a command of its own. */
-  async function setDanmu(danmu: boolean) {
-    timeline = { ...timeline, danmu };
-    // Saved in order; exports and uploads wait for it, as they read the saved value.
-    const request = danmuSaved.then(() => invoke("update_project_danmu", { id: projectId, danmu }));
-    danmuSaved = request.then(
-      () => {},
-      () => {},
-    );
-    try {
-      await request;
-    } catch (error) {
-      timeline = { ...timeline, danmu: !danmu };
-      alert("修改弹幕设置失败：" + error);
-    }
-  }
-
-  /** Save the timeline, the title and the danmaku switch. */
+  /** Save the timeline and title before exporting or posting. */
   async function saveAll() {
-    await Promise.all([flushSave(), saveInfo(), danmuSaved]);
+    await Promise.all([flushSave(), saveInfo()]);
   }
 
   /** Begin an edit made of several updates, such as typing a subtitle. */
@@ -1558,6 +1547,41 @@
 
   // ---- Export --------------------------------------------------------------
 
+  async function openExportSettings() {
+    if (preparingExport || exporting) return;
+    player?.pause();
+    preparingExport = true;
+    try {
+      await projectRefresh.run();
+      exportDanmu = timeline.danmu;
+      exportSettings = { ...(timeline.render_settings ?? defaultRenderSettings()) };
+      showExportSettings = true;
+    } catch (error) {
+      alert("读取导出设置失败：" + error);
+    } finally {
+      preparingExport = false;
+    }
+  }
+
+  async function confirmExport() {
+    if (preparingExport || exporting) return;
+    preparingExport = true;
+    try {
+      await invoke("update_project_output_settings", {
+        id: projectId,
+        danmu: exportDanmu,
+        renderSettings: $state.snapshot(exportSettings),
+      });
+      timeline = { ...timeline, danmu: exportDanmu, render_settings: { ...exportSettings } };
+      showExportSettings = false;
+      await exportProject();
+    } catch (error) {
+      alert("导出失败：" + error);
+    } finally {
+      preparingExport = false;
+    }
+  }
+
   /** Write the timeline to a file the user picks, or download it on the web. */
   async function exportProject() {
     if (exporting || !project) return;
@@ -1601,7 +1625,7 @@
     // On the frames of the render, also when exporting before the editor
     // learned them.
     let fps = frameRate;
-    if (!fps && exportedSubtitles) {
+    if (exportedSubtitles) {
       const source = frameRateSource;
       try {
         fps = await invoke<number>("get_project_frame_rate", frameRateQuery(exported));
@@ -1715,6 +1739,13 @@
       showAiModal = false;
       return;
     }
+    if (showExportSettings) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        if (!preparingExport) showExportSettings = false;
+      }
+      return;
+    }
     if (showStyleEditor || showShortcutHelp || showAiModal || uploadDraft) return;
     const target = event.target instanceof Element ? event.target : null;
     if (target?.closest("input, textarea, select, [contenteditable], [data-hotkey-block]") || event.altKey) {
@@ -1821,16 +1852,6 @@
       <span class="mx-1 h-4 w-px bg-[#2b3340]"></span>
       <button
         type="button"
-        class="titlebar-toggle"
-        aria-pressed={timeline.danmu}
-        title="导出和投稿生成视频时{timeline.danmu ? '压制' : '不压制'}弹幕（片段范围内共 {visibleDanmuCount} 条）"
-        onclick={() => void setDanmu(!timeline.danmu)}
-      >
-        <MessageSquareText class="h-3.5 w-3.5" />
-        弹幕{timeline.danmu ? "：开" : "：关"}
-      </button>
-      <button
-        type="button"
         class="titlebar-button"
         title="编辑这个切片的投稿草稿，没有未发布的草稿时新建一条投稿记录"
         disabled={openingUpload || uploadDraft !== null || timeline.clips.length === 0}
@@ -1843,8 +1864,8 @@
         type="button"
         class="titlebar-button primary"
         title={TAURI_ENV ? "导出为视频文件" : "导出并下载视频文件"}
-        disabled={exporting !== null || timeline.clips.length === 0}
-        onclick={exportProject}
+        disabled={exporting !== null || preparingExport || timeline.clips.length === 0}
+        onclick={openExportSettings}
       >
         {#if exporting}
           <Loader2 class="h-3.5 w-3.5 animate-spin" />
@@ -2233,6 +2254,43 @@
   </div>
 </div>
 
+{#if showExportSettings}
+  <div class="ui-modal-backdrop z-[1100]">
+    <div use:trapFocus class="ui-modal max-h-[90vh] w-[420px] max-w-full" role="dialog" aria-modal="true" aria-labelledby="export-settings-title">
+      <div class="ui-modal-header">
+        <h3 id="export-settings-title" class="flex items-center gap-2">
+          <Download class="h-4 w-4 text-accent-fg" />
+          导出设置
+        </h3>
+        <button type="button" class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost" aria-label="关闭导出设置" disabled={preparingExport} onclick={() => (showExportSettings = false)}>
+          <X class="h-4 w-4" />
+        </button>
+      </div>
+      <div class="ui-modal-body space-y-4">
+        <label class="flex cursor-pointer items-start justify-between gap-3">
+          <span>
+            <span class="ui-label block">压制弹幕</span>
+            <span class="ui-hint block">将素材保存的弹幕压制到视频画面中（{visibleDanmuCount} 条）</span>
+          </span>
+          <span class="ui-switch mt-0.5">
+            <input type="checkbox" bind:checked={exportDanmu} disabled={preparingExport} />
+            <span></span>
+          </span>
+        </label>
+        <RenderSettingsFields bind:value={exportSettings} disabled={preparingExport} />
+        <p class="ui-hint">这些设置也用于此切片的投稿。</p>
+      </div>
+      <div class="ui-modal-footer">
+        <button type="button" class="ui-btn" disabled={preparingExport} onclick={() => (showExportSettings = false)}>取消</button>
+        <button type="button" class="ui-btn ui-btn-primary" disabled={preparingExport} onclick={confirmExport}>
+          {#if preparingExport}<Loader2 class="h-3.5 w-3.5 animate-spin" />{:else}<Download class="h-3.5 w-3.5" />{/if}
+          {TAURI_ENV ? "选择位置并导出" : "导出并下载"}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 {#if showAiModal}
   <div class="ui-modal-backdrop z-[1100]">
     <div
@@ -2513,8 +2571,7 @@
     padding: 6px 12px;
   }
 
-  .titlebar-button,
-  .titlebar-toggle {
+  .titlebar-button {
     display: inline-flex;
     height: 28px;
     align-items: center;
@@ -2530,8 +2587,7 @@
     transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
   }
 
-  .titlebar-button:hover:not(:disabled),
-  .titlebar-toggle:hover {
+  .titlebar-button:hover:not(:disabled) {
     border-color: #4a5a70;
   }
 
@@ -2548,16 +2604,6 @@
   .titlebar-button:disabled {
     cursor: not-allowed;
     opacity: 0.5;
-  }
-
-  .titlebar-toggle {
-    color: #8c98aa;
-  }
-
-  .titlebar-toggle[aria-pressed="true"] {
-    border-color: rgb(10 132 255 / 70%);
-    background: rgb(10 132 255 / 15%);
-    color: #55b9ff;
   }
 
   .play-button {

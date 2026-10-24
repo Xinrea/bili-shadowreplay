@@ -186,6 +186,7 @@ pub struct ProjectRender<'a> {
     /// Danmaku in project time; empty to burn none.
     pub danmus: Vec<DanmuEntry>,
     pub danmu_options: Danmu2AssOptions,
+    pub render_settings: crate::project::RenderSettings,
     pub output: &'a Path,
     /// Where the project's segments are kept for later renders, which use
     /// those unchanged again. Without it they are rendered in a temporary
@@ -789,7 +790,7 @@ impl Render<'_> {
         let mut key = format!(
             "{RENDER_VERSION} {fps} {} {}\n{} {}\n",
             self.encoder,
-            hwaccel::quality_args_for_encoder(self.encoder).join(" "),
+            hwaccel::project_quality_args(self.encoder, &job.render_settings).join(" "),
             segment.frames,
             segment.samples,
         );
@@ -1005,7 +1006,10 @@ impl Render<'_> {
             .arg(&filter_name)
             .args(["-map", "[outv]"]);
         hwaccel::apply_x264_encoder_only(&mut command, self.encoder);
-        hwaccel::apply_x264_quality_args(&mut command, self.encoder);
+        command.args(hwaccel::project_quality_args(
+            self.encoder,
+            &self.job.render_settings,
+        ));
         // Written under other names and renamed once complete, so that a
         // segment's files are there only when they are whole. One left
         // without the other, by a render stopped between the two renames,
@@ -1306,6 +1310,7 @@ async fn render_with_encoder<R: ProgressReporterTrait>(
     limits: SegmentLimits,
     encoder: &'static str,
 ) -> Result<RenderStats, String> {
+    job.render_settings.validate()?;
     if job.clips.is_empty() {
         return Err("时间轴上没有片段".to_string());
     }
@@ -2094,6 +2099,77 @@ mod tests {
         assert_eq!(keys(&with_sounds, ""), key(1.0));
     }
 
+    #[test]
+    fn changing_output_settings_invalidates_cached_segments() {
+        let mut project = job(vec![clip(true, 30.0)], 0.0, 0.0);
+        let original = keys(&project, "");
+        project.render_settings.quality = crate::project::VideoQuality::High;
+        let high = keys(&project, "");
+        assert_ne!(original, high);
+        project.render_settings.bitrate_kbps = 12_000;
+        assert_ne!(high, keys(&project, ""));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires FFmpeg with libx264"]
+    async fn selected_output_settings_render_and_replace_cached_video() {
+        use crate::project::{RenderSettings, VideoQuality};
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.mp4");
+        let output = directory.path().join("output.mp4");
+        let cache = directory.path().join("segments");
+        run_ffmpeg(
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=s=320x180:r=30:d=1",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+            ],
+            &source,
+        )
+        .await;
+        let mut project = ProjectRender {
+            clips: vec![RenderClip {
+                id: "clip".into(),
+                path: source,
+                start: 0.0,
+                duration: 1.0,
+                has_audio: false,
+                fps: 30.0,
+                file_duration: 1.0,
+                volume: 1.0,
+            }],
+            overlays: Vec::new(),
+            sounds: Vec::new(),
+            subtitle_ass: None,
+            fonts_directory: None,
+            danmus: Vec::new(),
+            danmu_options: Danmu2AssOptions::default(),
+            render_settings: RenderSettings {
+                quality: VideoQuality::High,
+                bitrate_kbps: 0,
+            },
+            output: &output,
+            segment_cache: Some(&cache),
+        };
+        async fn render(project: &ProjectRender<'_>) -> RenderStats {
+            render_with_encoder(&NoopReporter, project, SEGMENT_LIMITS, "libx264")
+                .await
+                .unwrap()
+        }
+        assert_eq!(render(&project).await.reused, 0);
+        assert_eq!(render(&project).await.reused, 1);
+        project.render_settings.bitrate_kbps = 4000;
+        assert_eq!(render(&project).await.reused, 0);
+        let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
+        assert_eq!((metadata.width, metadata.height), (1920, 1080));
+        assert!((metadata.duration - 1.0).abs() < 0.1);
+    }
+
     /// A job of `clips`, with a picture from `picture` to a second later at
     /// `x`, without rendering it.
     fn job(clips: Vec<RenderClip>, picture: f64, x: f64) -> ProjectRender<'static> {
@@ -2113,6 +2189,7 @@ mod tests {
             fonts_directory: None,
             danmus: Vec::new(),
             danmu_options: Danmu2AssOptions::default(),
+            render_settings: crate::project::RenderSettings::default(),
             output: Path::new("out.mp4"),
             segment_cache: None,
         }
@@ -2309,6 +2386,7 @@ mod tests {
                 fonts_directory: None,
                 danmus: Vec::new(),
                 danmu_options: Danmu2AssOptions::default(),
+                render_settings: crate::project::RenderSettings::default(),
                 output: Path::new("out.mp4"),
                 segment_cache: None,
             };
@@ -2518,6 +2596,7 @@ mod tests {
                 fonts_directory: None,
                 danmus: Vec::new(),
                 danmu_options: Danmu2AssOptions::default(),
+                render_settings: crate::project::RenderSettings::default(),
                 output: &output,
                 segment_cache: None,
             },
@@ -2548,6 +2627,7 @@ mod tests {
                 fonts_directory: None,
                 danmus: Vec::new(),
                 danmu_options: Danmu2AssOptions::default(),
+                render_settings: crate::project::RenderSettings::default(),
                 output: &output,
                 segment_cache: None,
             },
@@ -2642,6 +2722,7 @@ mod tests {
                 fonts_directory: None,
                 danmus: Vec::new(),
                 danmu_options: Danmu2AssOptions::default(),
+                render_settings: crate::project::RenderSettings::default(),
                 output: &output,
                 segment_cache: None,
             },
@@ -2732,6 +2813,7 @@ mod tests {
                 fonts_directory: None,
                 danmus: Vec::new(),
                 danmu_options: Danmu2AssOptions::default(),
+                render_settings: crate::project::RenderSettings::default(),
                 output: &output,
                 segment_cache: None,
             },
@@ -2847,6 +2929,7 @@ mod tests {
                     Vec::new()
                 },
                 danmu_options: Danmu2AssOptions::default(),
+                render_settings: crate::project::RenderSettings::default(),
                 output: &output,
                 segment_cache: None,
             },
@@ -3009,6 +3092,7 @@ mod tests {
                 fonts_directory: None,
                 danmus: Vec::new(),
                 danmu_options: Danmu2AssOptions::default(),
+                render_settings: crate::project::RenderSettings::default(),
                 output: &output,
                 segment_cache: None,
             },
@@ -3252,6 +3336,7 @@ mod tests {
                         fonts_directory: None,
                         danmus: Vec::new(),
                         danmu_options: Danmu2AssOptions::default(),
+                        render_settings: crate::project::RenderSettings::default(),
                         output: &output,
                         segment_cache: Some(cache),
                     },
@@ -3371,6 +3456,7 @@ mod tests {
                     fonts_directory: None,
                     danmus: Vec::new(),
                     danmu_options: Danmu2AssOptions::default(),
+                    render_settings: crate::project::RenderSettings::default(),
                     output,
                     segment_cache: None,
                 },
@@ -3509,6 +3595,7 @@ mod tests {
                         fonts_directory: None,
                         danmus: Vec::new(),
                         danmu_options: Danmu2AssOptions::default(),
+                        render_settings: crate::project::RenderSettings::default(),
                         output: &output,
                         segment_cache: cached.then_some(cache.as_path()),
                     },

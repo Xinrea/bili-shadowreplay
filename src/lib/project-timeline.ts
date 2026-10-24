@@ -4,6 +4,7 @@ import type {
   OverlayItem,
   OverlayTrack,
   ProjectTimeline,
+  RenderSettings,
   SubtitleStyle,
   TimelineClip,
   TimelineSubtitle,
@@ -63,6 +64,10 @@ export function newId(): string {
   return random.replace(/-/g, "").slice(0, 12);
 }
 
+export function defaultRenderSettings(): RenderSettings {
+  return { quality: "balanced", bitrate_kbps: 0 };
+}
+
 export function emptyTimeline(style: SubtitleStyle | null = null): ProjectTimeline {
   return {
     version: TIMELINE_VERSION,
@@ -71,6 +76,7 @@ export function emptyTimeline(style: SubtitleStyle | null = null): ProjectTimeli
     tracks: [],
     subtitle_style: style,
     danmu: false,
+    render_settings: defaultRenderSettings(),
     audio_tracks: [],
   };
 }
@@ -85,6 +91,7 @@ export function parseTimeline(json: string): ProjectTimeline {
       tracks: Array.isArray(value.tracks) ? kindTracks(value.tracks) : [],
       subtitle_style: value.subtitle_style ?? null,
       danmu: Boolean(value.danmu),
+      render_settings: value.render_settings ?? defaultRenderSettings(),
       audio_tracks: Array.isArray(value.audio_tracks)
         ? value.audio_tracks.map((track: AudioTrack) => ({
             id: track.id,
@@ -333,6 +340,9 @@ export function mergeRemoteTimeline(
 ): ProjectTimeline {
   let next = local;
   if (remote.danmu !== local.danmu) next = { ...next, danmu: remote.danmu };
+  if (JSON.stringify(remote.render_settings) !== JSON.stringify(local.render_settings)) {
+    next = { ...next, render_settings: remote.render_settings };
+  }
 
   const remaining = timelineMaterials(remote);
   const removed = new Set([...timelineMaterials(base)].filter((id) => !remaining.has(id)));

@@ -13,11 +13,12 @@ use crate::database::task::TaskRow;
 use crate::database::upload::UploadRow;
 use crate::handlers::project::{
     material_danmu_video, material_title, project_cover_file, project_upload_video,
-    remove_upload_renders, set_project_danmu, single_project_view, write_cover, OverlayImage,
+    remove_upload_renders, set_project_danmu, set_project_render_settings, single_project_view,
+    write_cover, OverlayImage,
 };
 use crate::handlers::video::{upload_video_file, PostedVideo};
 use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
-use crate::project::Timeline;
+use crate::project::{RenderSettings, Timeline};
 use crate::state::State;
 use crate::state_type;
 
@@ -45,6 +46,7 @@ pub struct UploadView {
     /// Burn danmaku into the posted video: the material's own setting, or the
     /// project's, which its editor shares.
     pub danmu: bool,
+    pub render_settings: RenderSettings,
     /// The source has danmaku that could be burned.
     pub danmu_available: bool,
     /// The material, or a project's material with no danmaku left to burn,
@@ -88,6 +90,7 @@ async fn upload_view(state: &State, upload: UploadRow) -> UploadView {
         source_title: String::new(),
         source_state: "missing",
         danmu: false,
+        render_settings: RenderSettings::default(),
         danmu_available: false,
         danmu_embedded: false,
         display_cover: upload.cover.clone(),
@@ -135,6 +138,7 @@ async fn upload_view(state: &State, upload: UploadRow) -> UploadView {
             }
             let timeline = Timeline::parse(&project.project.timeline).unwrap_or_default();
             view.danmu = timeline.danmu;
+            view.render_settings = timeline.render_settings.clone();
             let output = output_dir(state).await;
             let mut any_embedded = false;
             for id in timeline.material_ids() {
@@ -509,6 +513,21 @@ pub async fn update_upload_danmu(
     if upload.source == "project" {
         set_project_danmu(&state, upload.source_id, danmu).await?;
     }
+    Ok(upload_view(&state, state.db.get_upload(id).await?).await)
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn update_upload_render_settings(
+    state: state_type!(),
+    id: i64,
+    render_settings: RenderSettings,
+) -> Result<UploadView, String> {
+    let upload = state.db.get_upload(id).await?;
+    ensure_editable(&upload)?;
+    if upload.source != "project" {
+        return Err("只有切片项目可以设置画质和码率".to_string());
+    }
+    set_project_render_settings(&state, upload.source_id, render_settings).await?;
     Ok(upload_view(&state, state.db.get_upload(id).await?).await)
 }
 

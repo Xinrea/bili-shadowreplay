@@ -16,7 +16,7 @@
   import { trapFocus } from "../../focus-trap";
   import { get_static_url, invoke } from "../../invoker";
   import { generateEventId, type OverlayImage, type ProjectItem, type UploadItem } from "../../interface";
-  import { frameRateQuery, parseTimeline } from "../../project-timeline";
+  import { defaultRenderSettings, frameRateQuery, parseTimeline } from "../../project-timeline";
   import { announceTask, openTaskCenter, settleTask } from "../../stores/tasks";
   import {
     parseProfile,
@@ -29,6 +29,7 @@
   import { stickerRefUrl } from "../cover/custom-stickers";
   import { renderOverlayImages, StickerLoadError } from "../project/overlay-render";
   import TypeSelect from "../TypeSelect.svelte";
+  import RenderSettingsFields from "../RenderSettingsFields.svelte";
 
   interface Props {
     upload: UploadItem;
@@ -61,6 +62,12 @@
 
   let editable = $derived(upload.status === "draft" || upload.status === "failed");
   let savingDanmu = $state(false);
+  let savingRenderSettings = $state(false);
+  let renderSettings = $state(defaultRenderSettings());
+  $effect(() => {
+    const settings = upload.render_settings;
+    if (!savingRenderSettings) renderSettings = { ...(settings ?? defaultRenderSettings()) };
+  });
   // Turning it off stays possible even when there is nothing to burn.
   let canToggleDanmu = $derived(
     editable && !posting && (upload.danmu_available || upload.danmu) && !savingDanmu,
@@ -174,6 +181,22 @@
     }
   }
 
+  async function saveRenderSettings() {
+    if (!editable || posting || savingRenderSettings) return;
+    savingRenderSettings = true;
+    try {
+      await invoke("update_upload_render_settings", {
+        id: upload.id,
+        renderSettings: $state.snapshot(renderSettings),
+      });
+      await onChanged();
+    } catch (error) {
+      alert("修改画质码率失败：" + error);
+    } finally {
+      savingRenderSettings = false;
+    }
+  }
+
   async function saveCover(covers: { cover: string; cover43: string }) {
     await invoke("update_upload_cover", { id: upload.id, ...covers });
     // The previous file is gone; show the new one now.
@@ -181,7 +204,7 @@
   }
 
   async function post() {
-    if (!editable || blocker || posting || savingDanmu) return;
+    if (!editable || blocker || posting || savingDanmu || savingRenderSettings) return;
     posting = true;
     const eventId = generateEventId();
     try {
@@ -352,7 +375,7 @@
                           ? "切片使用的素材都没有保存弹幕"
                           : "这个素材没有保存弹幕"
                         : upload.source === "project"
-                          ? "与切片编辑窗口的弹幕设置相同"
+                          ? "与切片导出设置中的弹幕选项同步"
                           : "开启后投稿压制了弹幕的视频"}
                     </span>
                   </span>
@@ -369,6 +392,19 @@
               {/if}
             </div>
           </section>
+          {#if upload.source === "project" && upload.source_state !== "missing"}
+            <section class="space-y-2">
+              <span class="ui-label">画质与码率</span>
+              <div class="ui-card space-y-2 bg-control/50 p-3">
+                <RenderSettingsFields
+                  bind:value={renderSettings}
+                  disabled={!editable || posting || savingRenderSettings}
+                  onChange={saveRenderSettings}
+                />
+                <p class="ui-hint">与此切片的导出设置同步。</p>
+              </div>
+            </section>
+          {/if}
         </div>
 
         <fieldset
@@ -434,7 +470,7 @@
           <button
             type="button"
             class="ui-btn ui-btn-primary"
-            disabled={Boolean(blocker) || posting || savingDanmu}
+            disabled={Boolean(blocker) || posting || savingDanmu || savingRenderSettings}
             title={blocker || undefined}
             onclick={post}
           >

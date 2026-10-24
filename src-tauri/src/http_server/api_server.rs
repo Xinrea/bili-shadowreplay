@@ -38,8 +38,9 @@ use crate::{
         project::{
             create_project, delete_project, export_project, generate_materials, get_material_danmu,
             get_material_peaks, get_material_usage, get_project, get_project_frame_rate,
-            get_projects, update_project_danmu, update_project_info, update_project_timeline,
-            ExportStarted, GeneratedMaterials, OverlayImage, ProjectBrief, ProjectView,
+            get_projects, update_project_danmu, update_project_info,
+            update_project_output_settings, update_project_timeline, ExportStarted,
+            GeneratedMaterials, OverlayImage, ProjectBrief, ProjectView,
         },
         recorder::{
             add_recorder, delete_archive, delete_archives, export_danmu, fetch_hls,
@@ -60,7 +61,7 @@ use crate::{
         task::{delete_task, get_tasks},
         upload::{
             create_upload, delete_upload, get_upload, get_uploads, post_upload, update_upload,
-            update_upload_cover, update_upload_danmu, UploadView,
+            update_upload_cover, update_upload_danmu, update_upload_render_settings, UploadView,
         },
         utils::{
             console_log, decode_data_url, get_disk_info, list_folder, sanitize_filename_advanced,
@@ -78,7 +79,7 @@ use crate::{
     },
     http_server::websocket,
     material::Peaks,
-    project::Timeline,
+    project::{RenderSettings, Timeline},
     recorder_manager::{ClipRangeParams, GenerateWholeClipParams, RecorderList},
     state::State,
 };
@@ -1148,6 +1149,22 @@ async fn handler_update_project_danmu(
     Ok(Json(ApiResponse::success(())))
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateProjectOutputSettingsRequest {
+    id: i64,
+    danmu: bool,
+    render_settings: RenderSettings,
+}
+
+async fn handler_update_project_output_settings(
+    state: axum::extract::State<State>,
+    Json(param): Json<UpdateProjectOutputSettingsRequest>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    update_project_output_settings(state.0, param.id, param.danmu, param.render_settings).await?;
+    Ok(Json(ApiResponse::success(())))
+}
+
 async fn handler_update_project_timeline(
     state: axum::extract::State<State>,
     Json(param): Json<UpdateProjectTimelineRequest>,
@@ -1328,6 +1345,21 @@ async fn handler_update_upload_danmu(
     Json(param): Json<UpdateUploadDanmuRequest>,
 ) -> Result<Json<ApiResponse<UploadView>>, ApiError> {
     let upload = update_upload_danmu(state.0, param.id, param.danmu).await?;
+    Ok(Json(ApiResponse::success(upload)))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateUploadRenderSettingsRequest {
+    id: i64,
+    render_settings: RenderSettings,
+}
+
+async fn handler_update_upload_render_settings(
+    state: axum::extract::State<State>,
+    Json(param): Json<UpdateUploadRenderSettingsRequest>,
+) -> Result<Json<ApiResponse<UploadView>>, ApiError> {
+    let upload = update_upload_render_settings(state.0, param.id, param.render_settings).await?;
     Ok(Json(ApiResponse::success(upload)))
 }
 
@@ -2544,6 +2576,14 @@ pub async fn start_api_server(state: State) {
             .route(
                 "/api/update_project_danmu",
                 post(handler_update_project_danmu),
+            )
+            .route(
+                "/api/update_project_output_settings",
+                post(handler_update_project_output_settings),
+            )
+            .route(
+                "/api/update_upload_render_settings",
+                post(handler_update_upload_render_settings),
             )
             .route("/api/delete_project", post(handler_delete_project))
             .route("/api/export_project", post(handler_export_project))

@@ -454,19 +454,38 @@ pub async fn update_project_danmu(
     set_project_danmu(&state, id, danmu).await
 }
 
-/// Output settings are shared with uploads, independently of timeline edits.
+/// Patch output settings shared with uploads, independently of timeline edits.
+/// Omitted fields keep their latest saved values; render settings are one field
+/// because bitrate and quality together select the encoding mode.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_project_output_settings(
     state: state_type!(),
     id: i64,
-    danmu: bool,
-    render_settings: RenderSettings,
+    danmu: Option<bool>,
+    render_settings: Option<RenderSettings>,
 ) -> Result<(), String> {
-    render_settings.validate()?;
-    edit_project_timeline(&state.db, id, |timeline| {
-        let changed = timeline.danmu != danmu || timeline.render_settings != render_settings;
-        timeline.danmu = danmu;
-        timeline.render_settings = render_settings.clone();
+    patch_project_output_settings(&state.db, id, danmu, render_settings).await
+}
+
+async fn patch_project_output_settings(
+    db: &Database,
+    id: i64,
+    danmu: Option<bool>,
+    render_settings: Option<RenderSettings>,
+) -> Result<(), String> {
+    if let Some(settings) = &render_settings {
+        settings.validate()?;
+    }
+    edit_project_timeline(db, id, |timeline| {
+        let mut changed = false;
+        if let Some(danmu) = danmu {
+            changed |= timeline.danmu != danmu;
+            timeline.danmu = danmu;
+        }
+        if let Some(settings) = &render_settings {
+            changed |= timeline.render_settings != *settings;
+            timeline.render_settings = settings.clone();
+        }
         changed
     })
     .await
@@ -1752,6 +1771,123 @@ mod tests {
 
         assert!(db.get_projects().await.unwrap().is_empty());
         assert_eq!(db.get_videos_needing_project().await.unwrap().len(), 1);
+    }
+
+    async fn output_settings_project() -> (Database, ProjectRow) {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for migration in crate::get_migrations() {
+            sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
+        }
+        let db = Database::new(
+            pool,
+            CredentialCipher::new(&[0; 32]).unwrap(),
+            crate::events::EventBus::new(),
+        );
+        let project = db
+            .add_project(&ProjectRow {
+                id: 0,
+                room_id: "1".into(),
+                platform: "bilibili".into(),
+                title: "t".into(),
+                note: String::new(),
+                cover: String::new(),
+                timeline: Timeline::from_materials(&[(1, 10.0)]).to_json(),
+                profile: String::new(),
+                status: 0,
+                bvid: String::new(),
+                created_at: "2026-10-18".into(),
+                updated_at: "2026-10-18".into(),
+            })
+            .await
+            .unwrap();
+        (db, project)
+    }
+
+    #[tokio::test]
+    async fn output_settings_patches_preserve_omitted_fields_and_timeline_edits() {
+        let (db, project) = output_settings_project().await;
+        let bitrate_settings = RenderSettings {
+            quality: VideoQuality::High,
+            bitrate_kbps: 12_000,
+        };
+        // Another dialog and the editor save after this export dialog opened.
+        edit_project_timeline(&db, project.id, |timeline| {
+            timeline.danmu = true;
+            timeline.render_settings = bitrate_settings.clone();
+            timeline.clips[0].end = 8.0;
+            true
+        })
+        .await
+        .unwrap();
+        patch_project_output_settings(&db, project.id, Some(false), None)
+            .await
+            .unwrap();
+        let stored = Timeline::parse(&db.get_project(project.id).await.unwrap().timeline).unwrap();
+        assert!(!stored.danmu);
+        assert_eq!(stored.render_settings, bitrate_settings);
+        assert_eq!(stored.clips[0].end, 8.0);
+
+        patch_project_output_settings(&db, project.id, Some(true), None)
+            .await
+            .unwrap();
+        let quality_settings = RenderSettings {
+            quality: VideoQuality::Compact,
+            bitrate_kbps: 0,
+        };
+        patch_project_output_settings(&db, project.id, None, Some(quality_settings.clone()))
+            .await
+            .unwrap();
+        let stored = Timeline::parse(&db.get_project(project.id).await.unwrap().timeline).unwrap();
+        assert!(stored.danmu);
+        // Replacing render settings replaces both mode and quality, not just one.
+        assert_eq!(stored.render_settings, quality_settings);
+        assert_eq!(stored.clips[0].end, 8.0);
+    }
+
+    #[tokio::test]
+    async fn output_settings_no_op_patches_do_not_write() {
+        let (db, project) = output_settings_project().await;
+        let timeline = Timeline::parse(&project.timeline).unwrap();
+        for (danmu, settings) in [
+            (None, None),
+            (Some(timeline.danmu), Some(timeline.render_settings)),
+        ] {
+            patch_project_output_settings(&db, project.id, danmu, settings)
+                .await
+                .unwrap();
+            let stored = db.get_project(project.id).await.unwrap();
+            assert_eq!(stored.timeline, project.timeline);
+            assert_eq!(stored.updated_at, project.updated_at);
+        }
+    }
+
+    #[tokio::test]
+    async fn output_settings_invalid_patches_do_not_change_any_field() {
+        let (db, project) = output_settings_project().await;
+        let timeline = Timeline::parse(&project.timeline).unwrap();
+        for bitrate_kbps in [1, 100_001] {
+            let settings = RenderSettings {
+                quality: VideoQuality::High,
+                bitrate_kbps,
+            };
+            let expected_error = settings.validate().unwrap_err();
+            let error = patch_project_output_settings(
+                &db,
+                project.id,
+                Some(!timeline.danmu),
+                Some(settings),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error, expected_error);
+            let stored = db.get_project(project.id).await.unwrap();
+            assert_eq!(stored.timeline, project.timeline);
+            assert_eq!(stored.updated_at, project.updated_at);
+        }
     }
 
     #[tokio::test]

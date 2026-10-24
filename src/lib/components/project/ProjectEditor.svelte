@@ -235,6 +235,8 @@
   let preparingExport = $state(false);
   let exportDanmu = $state(false);
   let exportSettings = $state(defaultRenderSettings());
+  // Compare against what this dialog opened with, not a later remote refresh.
+  let exportBase = { danmu: false, renderSettings: defaultRenderSettings() };
 
   let videoA: HTMLVideoElement = $state();
   let videoB: HTMLVideoElement = $state();
@@ -1555,6 +1557,7 @@
       await projectRefresh.run();
       exportDanmu = timeline.danmu;
       exportSettings = { ...(timeline.render_settings ?? defaultRenderSettings()) };
+      exportBase = { danmu: exportDanmu, renderSettings: { ...exportSettings } };
       showExportSettings = true;
     } catch (error) {
       alert("读取导出设置失败：" + error);
@@ -1567,13 +1570,6 @@
     if (preparingExport || exporting) return;
     preparingExport = true;
     try {
-      await invoke("update_project_output_settings", {
-        id: projectId,
-        danmu: exportDanmu,
-        renderSettings: $state.snapshot(exportSettings),
-      });
-      timeline = { ...timeline, danmu: exportDanmu, render_settings: { ...exportSettings } };
-      showExportSettings = false;
       await exportProject();
     } catch (error) {
       alert("导出失败：" + error);
@@ -1604,7 +1600,20 @@
     finishEditing();
     settleOverlayEdit();
     await saveAll();
+    // Only persist after the file picker succeeds. Omitted options are kept
+    // atomically by the backend, including changes made while the picker was open.
+    const danmu = exportDanmu !== exportBase.danmu ? exportDanmu : null;
+    // Quality and bitrate together identify the encoding mode, so patch them as one option.
+    const renderSettings = exportSettings.quality !== exportBase.renderSettings.quality ||
+        exportSettings.bitrate_kbps !== exportBase.renderSettings.bitrate_kbps
+      ? $state.snapshot(exportSettings)
+      : null;
+    if (danmu !== null || renderSettings !== null) {
+      await invoke("update_project_output_settings", { id: projectId, danmu, renderSettings });
+      exportBase = { danmu: exportDanmu, renderSettings: { ...exportSettings } };
+    }
     await projectRefresh.run();
+    showExportSettings = false;
     // Texts and stickers are burned as drawn here, from the timeline exported.
     const exported = timeline;
     let overlayImages: OverlayImage[];

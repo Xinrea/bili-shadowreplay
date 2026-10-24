@@ -1153,8 +1153,8 @@ async fn handler_update_project_danmu(
 #[serde(rename_all = "camelCase")]
 struct UpdateProjectOutputSettingsRequest {
     id: i64,
-    danmu: bool,
-    render_settings: RenderSettings,
+    danmu: Option<bool>,
+    render_settings: Option<RenderSettings>,
 }
 
 async fn handler_update_project_output_settings(

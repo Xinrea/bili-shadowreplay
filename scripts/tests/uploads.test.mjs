@@ -98,7 +98,13 @@ test("a source's unposted draft is reused, and a new one started once it is post
   assert.equal(calls.length, 0);
 
   // Posted, running, or of another source: none is reused.
-  const others = [upload(1, "posted"), upload(2, "posting"), upload(4, "draft", "material"), upload(5, "draft", "project", 8)];
+  const others = [
+    upload(1, "posted"),
+    upload(2, "posting"),
+    upload(3, "exporting"),
+    upload(4, "draft", "material"),
+    upload(5, "draft", "project", 8),
+  ];
   assert.equal((await api.draftUpload(pick, others)).id, 9);
   assert.deepEqual(calls, [
     {

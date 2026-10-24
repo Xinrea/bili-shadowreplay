@@ -12,7 +12,7 @@
     Upload,
     X,
   } from "lucide-svelte";
-  import { onDestroy } from "svelte";
+  import { onDestroy, onMount, untrack } from "svelte";
   import { get_static_url, invoke } from "../../invoker";
   import { generateEventId, type OverlayImage, type ProjectItem, type UploadItem } from "../../interface";
   import { frameRateQuery, parseTimeline } from "../../project-timeline";
@@ -40,10 +40,13 @@
   let { upload, accounts, onChanged, onClose }: Props = $props();
 
   // Edited locally and saved shortly after each change; the editor is
-  // recreated for each upload.
-  const initial = () => ({ profile: parseProfile(upload.profile), uid: upload.uid });
-  let profile = $state(initial().profile);
-  let uid = $state(initial().uid);
+  // recreated for each upload. Another window can edit the same draft, so
+  // each save is made over `base`, the stored account and form the local
+  // ones came from, and the backend refuses it once the other saved since.
+  const initial = () => ({ uid: upload.uid, profile: upload.profile });
+  let base = initial();
+  let profile = $state(parseProfile(base.profile));
+  let uid = $state(base.uid);
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let saving: Promise<void> | null = null;
   let saveError = $state("");
@@ -52,6 +55,8 @@
   let coverUrl = $state("");
   let coverFailed = $state(false);
   let videoUrl = $state("");
+  let titleInput: HTMLInputElement | undefined = $state();
+  let closeButton: HTMLButtonElement | undefined = $state();
 
   let editable = $derived(upload.status === "draft" || upload.status === "failed");
   let savingDanmu = $state(false);
@@ -93,6 +98,16 @@
     void get_static_url(video.base, video.path).then((url) => (videoUrl = url));
   });
 
+  // Take up a form saved in another window as it arrives.
+  $effect(() => {
+    void upload.uid;
+    void upload.profile;
+    untrack(adopt);
+  });
+
+  // Into the dialog, away from the page it covers.
+  onMount(() => (editable ? titleInput : closeButton)?.focus());
+
   onDestroy(() => {
     if (saveTimer) {
       clearTimeout(saveTimer);
@@ -100,24 +115,44 @@
     }
   });
 
+  /** Show the account and form as stored, unless edits here are unsaved. */
+  function adopt() {
+    if (saveTimer || saving) return;
+    if (upload.uid === base.uid && upload.profile === base.profile) return;
+    base = { uid: upload.uid, profile: upload.profile };
+    profile = parseProfile(base.profile);
+    uid = base.uid;
+  }
+
   /** Save the form, after any save already in flight so the newest lands last. */
   async function save() {
     saveTimer = null;
     while (saving) await saving;
-    const snapshot = $state.snapshot(profile);
-    const request = invoke("update_upload", { id: upload.id, uid, profile: snapshot });
+    const snapshot = { uid, profile: $state.snapshot(profile) };
+    const request = invoke<string>("update_upload", {
+      id: upload.id,
+      ...snapshot,
+      baseUid: base.uid,
+      baseProfile: base.profile,
+    });
     saving = request.then(
       () => {},
       () => {},
-    ).finally(() => (saving = null));
+    );
+    let stored: string;
     try {
-      await request;
-      saveError = "";
+      stored = await request;
     } catch (error) {
+      saving = null;
       saveError = String(error);
+      // Refused as saved in another window: show what it saved instead.
+      void onChanged().then(adopt, () => {});
       throw error;
     }
-    saveRoomTemplate(upload.room_id, snapshot);
+    saving = null;
+    base = { uid: snapshot.uid, profile: stored };
+    saveError = "";
+    saveRoomTemplate(upload.room_id, snapshot.profile);
   }
 
   function scheduleSave() {
@@ -227,6 +262,7 @@
         type="button"
         class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost -mr-1.5"
         aria-label="关闭"
+        bind:this={closeButton}
         onclick={close}
       >
         <X class="h-4 w-4" />
@@ -344,7 +380,14 @@
         >
           <label class="block space-y-1.5">
             <span class="ui-label">标题</span>
-            <input type="text" bind:value={profile.title} placeholder="输入视频标题" maxlength="80" class="ui-input w-full" />
+            <input
+              type="text"
+              bind:this={titleInput}
+              bind:value={profile.title}
+              placeholder="输入视频标题"
+              maxlength="80"
+              class="ui-input w-full"
+            />
           </label>
           <div class="space-y-1.5">
             <span class="ui-label">视频分区</span>

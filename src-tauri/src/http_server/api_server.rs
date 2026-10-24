@@ -1245,14 +1245,24 @@ struct UpdateUploadRequest {
     id: i64,
     uid: String,
     profile: serde_json::Value,
+    base_uid: String,
+    base_profile: String,
 }
 
 async fn handler_update_upload(
     state: axum::extract::State<State>,
     Json(param): Json<UpdateUploadRequest>,
-) -> Result<Json<ApiResponse<()>>, ApiError> {
-    update_upload(state.0, param.id, param.uid, param.profile).await?;
-    Ok(Json(ApiResponse::success(())))
+) -> Result<Json<ApiResponse<String>>, ApiError> {
+    let profile = update_upload(
+        state.0,
+        param.id,
+        param.uid,
+        param.profile,
+        param.base_uid,
+        param.base_profile,
+    )
+    .await?;
+    Ok(Json(ApiResponse::success(profile)))
 }
 
 #[derive(Debug, Serialize, Deserialize)]

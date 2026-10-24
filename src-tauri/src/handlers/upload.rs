@@ -292,23 +292,33 @@ pub async fn create_upload(
     Ok(upload_view(&state, upload).await)
 }
 
-/// Save the draft's account and upload form.
+/// Save the draft's account and upload form over `base_uid` and
+/// `base_profile`, the stored ones the form was loaded from, and return the
+/// form as stored. Refused when another editor saved it since, so neither
+/// overwrites the other unseen.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_upload(
     state: state_type!(),
     id: i64,
     uid: String,
     profile: serde_json::Value,
-) -> Result<(), String> {
+    base_uid: String,
+    base_profile: String,
+) -> Result<String, String> {
     let now = Local::now().to_rfc3339();
+    let profile = profile.to_string();
     if state
         .db
-        .update_upload_form(id, &uid, &profile.to_string(), &now)
+        .update_upload_form(id, (&uid, &profile), (&base_uid, &base_profile), &now)
         .await?
     {
-        Ok(())
-    } else {
-        Err(not_editable(&state, id).await)
+        return Ok(profile);
+    }
+    match state.db.get_upload(id).await {
+        Ok(upload) => Err(ensure_editable(&upload)
+            .err()
+            .unwrap_or_else(|| "投稿已在其他窗口修改，已载入最新内容".to_string())),
+        Err(_) => Err("投稿已被删除".to_string()),
     }
 }
 

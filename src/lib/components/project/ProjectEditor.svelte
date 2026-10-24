@@ -1781,7 +1781,11 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="project-editor fixed inset-0 z-[1000] flex flex-col bg-[#1c1c1e] text-white">
+<!-- Out of reach of focus and clicks while the upload dialog covers it. -->
+<div
+  class="project-editor fixed inset-0 z-[1000] flex flex-col bg-[#1c1c1e] text-white"
+  inert={uploadDraft !== null}
+>
   <TitleBar tone="dark">
     <input
       class="title-input"
@@ -1829,7 +1833,7 @@
         type="button"
         class="titlebar-button"
         title="编辑这个切片的投稿草稿，没有未发布的草稿时新建一条投稿记录"
-        disabled={openingUpload || timeline.clips.length === 0}
+        disabled={openingUpload || uploadDraft !== null || timeline.clips.length === 0}
         onclick={openUpload}
       >
         <Upload class="h-3.5 w-3.5" />

@@ -218,6 +218,12 @@ export interface AudioFile {
   created_at: string;
 }
 
+export interface RenderSettings {
+  quality: "high" | "balanced" | "compact";
+  /** Zero selects quality mode; positive Kbps selects bitrate mode and ignores quality. */
+  bitrate_kbps: number;
+}
+
 export interface ProjectTimeline {
   version: number;
   /** The main track: clips play back to back. */
@@ -231,6 +237,7 @@ export interface ProjectTimeline {
   subtitle_style?: SubtitleStyle | null;
   /** Burn the materials' danmaku when exporting. */
   danmu: boolean;
+  render_settings?: RenderSettings;
   /** Heard with the main track, the top one, nearest it, first. */
   audio_tracks: AudioTrack[];
 }
@@ -328,6 +335,8 @@ export interface UploadItem {
   danmu: boolean;
   /** The material, or one of the project's materials, has saved danmaku. */
   danmu_available: boolean;
+  /** A project's shared output settings. */
+  render_settings: RenderSettings;
   /**
    * The material already shows its danmaku in the picture; for a project, some
    * of its materials do and none has danmaku left to burn.

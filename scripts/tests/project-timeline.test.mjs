@@ -26,6 +26,17 @@ function timeline(clips, subtitles = []) {
 const clip = (id, material_id, start, end) => ({ id, material_id, start, end });
 const sub = (id, clip_id, start, end, text = id) => ({ id, clip_id, start, end, text });
 
+test("output settings default for old projects and merge without losing local edits", () => {
+  const base = api.parseTimeline('{"clips":[{"id":"a","material_id":1,"start":0,"end":30}]}');
+  assert.deepEqual(plain(base.render_settings), { quality: "balanced", bitrate_kbps: 0 });
+  const remote = { ...base, render_settings: { quality: "high", bitrate_kbps: 12000 } };
+  const local = api.trimClip(base, "a", "end", 20, 30);
+  const merged = api.mergeRemoteTimeline(local, base, remote);
+  assert.equal(merged.clips[0].end, 20);
+  assert.deepEqual(plain(merged.render_settings), remote.render_settings);
+  assert.deepEqual(plain(api.parseTimeline(JSON.stringify(merged)).render_settings), remote.render_settings);
+});
+
 test("clips play back to back and the later clip owns a cut", () => {
   const t = timeline([clip("a", 1, 10, 20), clip("b", 2, 0, 5)]);
   assert.deepEqual(plain(api.placeClips(t).map((p) => p.offset)), [0, 10]);

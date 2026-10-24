@@ -169,6 +169,80 @@ pub fn quality_args_for_encoder(encoder: &str) -> &'static [&'static str] {
     }
 }
 
+/// Project-specific presets, shared by export and upload. Bitrate mode uses
+/// average bitrate control and a fixed preset, independent of saved quality.
+pub fn project_quality_args(
+    encoder: &str,
+    settings: &crate::project::RenderSettings,
+) -> Vec<String> {
+    use crate::project::VideoQuality;
+    let mut args: Vec<String> = quality_args_for_encoder(encoder)
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    if settings.is_default() {
+        return args;
+    }
+    let manual = settings.bitrate_kbps > 0;
+    let quality = if manual {
+        VideoQuality::Balanced
+    } else {
+        settings.quality
+    };
+    let (crf, cq, kbps, software_preset, nvenc_preset) = match quality {
+        VideoQuality::High => (18, 18, 16_000, "slow", "p6"),
+        VideoQuality::Balanced => (20, 23, 8_000, "medium", "p5"),
+        VideoQuality::Compact => (26, 28, 4_000, "fast", "p4"),
+    };
+    for pair in args.as_chunks_mut::<2>().0 {
+        match pair[0].as_str() {
+            "-crf" => pair[1] = crf.to_string(),
+            "-cq" => pair[1] = cq.to_string(),
+            "-preset" => {
+                pair[1] = if encoder == NVENC_ENCODER {
+                    nvenc_preset
+                } else {
+                    software_preset
+                }
+                .to_string()
+            }
+            _ => {}
+        }
+    }
+    if manual {
+        args = args
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .filter(|pair| pair[0] != "-crf" && pair[0] != "-cq")
+            .flatten()
+            .cloned()
+            .collect();
+    }
+    // Software encoding uses CRF by default; hardware encoding and manual
+    // bitrates use a target with bounded peaks.
+    if manual || args.iter().any(|arg| arg == "-b:v") {
+        let kbps = if manual { settings.bitrate_kbps } else { kbps };
+        args = args
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .filter(|pair| !["-b:v", "-maxrate", "-bufsize"].contains(&pair[0].as_str()))
+            .flatten()
+            .cloned()
+            .collect();
+        args.extend([
+            "-b:v".to_string(),
+            format!("{kbps}k"),
+            "-maxrate".to_string(),
+            format!("{}k", kbps * 5 / 4),
+            "-bufsize".to_string(),
+            format!("{}k", kbps * 2),
+        ]);
+    }
+    args
+}
+
 /// 追加视频编码器参数，并在 VAAPI 下补齐硬件上传滤镜。
 pub fn apply_x264_encoder_args(
     command: &mut tokio::process::Command,
@@ -487,6 +561,53 @@ mod tests {
             quality_args_with_bitrate("h264_v4l2m2m", NonZeroU32::new(4000)),
             ["-b:v", "4000k"]
         );
+    }
+
+    #[test]
+    fn project_presets_and_manual_bitrates_work_for_each_encoder() {
+        use crate::project::{RenderSettings, VideoQuality};
+        for encoder in [
+            "libx264",
+            "h264_nvenc",
+            "h264_qsv",
+            "h264_amf",
+            "h264_vaapi",
+            "h264_videotoolbox",
+            "h264_mf",
+            "h264_v4l2m2m",
+        ] {
+            let args = |quality, bitrate_kbps| {
+                super::project_quality_args(
+                    encoder,
+                    &RenderSettings {
+                        quality,
+                        bitrate_kbps,
+                    },
+                )
+            };
+            assert_eq!(
+                args(VideoQuality::Balanced, 0),
+                quality_args_for_encoder(encoder)
+            );
+            assert_ne!(args(VideoQuality::High, 0), args(VideoQuality::Compact, 0));
+            let manual = args(VideoQuality::High, 12_000);
+            // Old settings may still contain a quality choice in bitrate mode.
+            assert_eq!(manual, args(VideoQuality::Balanced, 12_000));
+            assert_eq!(manual, args(VideoQuality::Compact, 12_000));
+            assert!(!manual
+                .iter()
+                .any(|arg| ["-crf", "-cq"].contains(&arg.as_str())));
+            for (flag, value) in [
+                ("-b:v", "12000k"),
+                ("-maxrate", "15000k"),
+                ("-bufsize", "24000k"),
+            ] {
+                assert_eq!(manual.iter().filter(|arg| arg.as_str() == flag).count(), 1);
+                assert!(manual
+                    .windows(2)
+                    .any(|pair| pair[0] == flag && pair[1] == value));
+            }
+        }
     }
 
     #[test]

@@ -34,6 +34,37 @@ fn timeline_version() -> u32 {
     TIMELINE_VERSION
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoQuality {
+    High,
+    #[default]
+    Balanced,
+    Compact,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenderSettings {
+    #[serde(default)]
+    pub quality: VideoQuality,
+    /// Zero selects quality mode; positive Kbps selects bitrate mode and ignores quality.
+    #[serde(default)]
+    pub bitrate_kbps: u32,
+}
+
+impl RenderSettings {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.bitrate_kbps != 0 && !(500..=100_000).contains(&self.bitrate_kbps) {
+            return Err("视频码率须在 500–100000 Kbps 之间".to_string());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Timeline {
     #[serde(default = "timeline_version")]
@@ -52,6 +83,8 @@ pub struct Timeline {
     /// Burn the materials' danmaku when exporting.
     #[serde(default)]
     pub danmu: bool,
+    #[serde(default, skip_serializing_if = "RenderSettings::is_default")]
+    pub render_settings: RenderSettings,
     /// Tracks of sound below the main track, the top one first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub audio_tracks: Vec<AudioTrack>,
@@ -66,6 +99,7 @@ impl Default for Timeline {
             tracks: Vec::new(),
             subtitle_style: None,
             danmu: false,
+            render_settings: RenderSettings::default(),
             audio_tracks: Vec::new(),
         }
     }
@@ -442,6 +476,7 @@ impl Timeline {
     /// editor merges the same way when it hears of a change.
     pub fn merge_saved_edits(&mut self, base: &Timeline, saved: &Timeline) {
         self.danmu = saved.danmu;
+        self.render_settings = saved.render_settings.clone();
         let remaining = saved.material_ids();
         for material_id in base.material_ids() {
             if !remaining.contains(&material_id) {
@@ -616,6 +651,7 @@ impl Timeline {
         material_duration: impl Fn(i64) -> Option<f64>,
         audio_duration: impl Fn(i64) -> Option<f64>,
     ) -> Result<(), String> {
+        self.render_settings.validate()?;
         if self.clips.is_empty() {
             return Err("时间轴上没有片段".to_string());
         }
@@ -700,6 +736,7 @@ impl Timeline {
             && clip.end >= material_duration - FULL_MATERIAL_TOLERANCE;
         (untouched
             && !self.danmu
+            && self.render_settings.is_default()
             && !self.has_visible_subtitles()
             && !self.has_visible_overlays()
             && self.has_plain_sound())
@@ -840,6 +877,29 @@ mod tests {
             clips: vec![clip("a", 1, 10.0, 20.0), clip("b", 2, 0.0, 5.0)],
             ..Timeline::default()
         }
+    }
+
+    #[test]
+    fn output_settings_survive_old_projects_and_editor_merges() {
+        let mut edited =
+            Timeline::parse(r#"{"clips":[{"id":"a","material_id":1,"start":0,"end":30}]}"#)
+                .unwrap();
+        assert_eq!(edited.single_full_material(30.0), Some(1));
+        let base = edited.clone();
+        let mut saved = base.clone();
+        saved.render_settings = RenderSettings {
+            quality: VideoQuality::High,
+            bitrate_kbps: 12_000,
+        };
+        edited.clips[0].end = 20.0;
+        edited.merge_saved_edits(&base, &saved);
+        assert_eq!(edited.clips[0].end, 20.0);
+        assert_eq!(edited.render_settings, saved.render_settings);
+        assert_eq!(saved.single_full_material(30.0), None);
+        assert_ne!(base.render_hash(""), saved.render_hash(""));
+        assert_eq!(Timeline::parse(&saved.to_json()).unwrap(), saved);
+        saved.render_settings.bitrate_kbps = 100_001;
+        assert!(saved.validate(|_| Some(30.0), |_| None).is_err());
     }
 
     #[test]

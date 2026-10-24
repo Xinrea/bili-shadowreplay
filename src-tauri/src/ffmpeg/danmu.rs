@@ -5,6 +5,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    num::NonZeroU32,
     path::{Path, PathBuf},
     process::Stdio,
     sync::OnceLock,
@@ -493,11 +494,14 @@ pub(super) async fn prepare_danmu_layers<R: ProgressReporterTrait>(
     Ok(plan.images)
 }
 
+/// Burn `danmus` into `file`. `bitrate` (kbps) overrides the encoder's default
+/// quality.
 pub async fn encode_video_danmu<R: ProgressReporterTrait>(
     reporter: Option<&R>,
     file: &Path,
     danmus: &[DanmuEntry],
     options: &Danmu2AssOptions,
+    bitrate: Option<NonZeroU32>,
 ) -> Result<PathBuf, String> {
     // Use fixed relative names inside a private job directory. No user/CDN path
     // is interpolated into filter syntax (including Windows drive letters).
@@ -509,7 +513,7 @@ pub async fn encode_video_danmu<R: ProgressReporterTrait>(
         reporter.update("准备弹幕和表情图片中").await;
     }
     let plan = danmu_plan(danmus, options, directory.path()).await?;
-    encode_danmu_plan(reporter, file, plan, options, directory.path()).await
+    encode_danmu_plan(reporter, file, plan, options, bitrate, directory.path()).await
 }
 
 async fn encode_danmu_plan<R: ProgressReporterTrait>(
@@ -517,6 +521,7 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
     file: &Path,
     plan: DanmuRenderPlan,
     options: &Danmu2AssOptions,
+    bitrate: Option<NonZeroU32>,
     directory: &Path,
 ) -> Result<PathBuf, String> {
     let filename = file
@@ -563,7 +568,7 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
         .arg("filter.txt")
         .args(["-map", "[outv]", "-map", "0:a?"]);
     hwaccel::apply_x264_encoder_only(&mut command, encoder);
-    hwaccel::apply_x264_quality_args(&mut command, encoder);
+    hwaccel::apply_x264_quality_args_with_bitrate(&mut command, encoder, bitrate);
     command
         .args(["-c:a", "copy", "-r", &fps.to_string(), "-y"])
         .arg(&absolute_output);
@@ -901,6 +906,7 @@ mod tests {
             Path::new("missing.mp4"),
             &[],
             &options,
+            None,
         )
         .await
         .unwrap_err();
@@ -1056,7 +1062,7 @@ mod tests {
         });
         let job = directory.path().join("job");
         std::fs::create_dir(&job).unwrap();
-        let output = encode_danmu_plan(None::<&NoopReporter>, &source, plan, &options, &job)
+        let output = encode_danmu_plan(None::<&NoopReporter>, &source, plan, &options, None, &job)
             .await
             .unwrap();
         let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
@@ -1174,6 +1180,7 @@ mod tests {
             &source,
             plan,
             &options,
+            None,
             directory.path(),
         )
         .await
@@ -1220,6 +1227,8 @@ mod tests {
             &source,
             &entries,
             &Danmu2AssOptions::default(),
+            // Also exercises a chosen bitrate in place of the default quality.
+            NonZeroU32::new(2000),
         )
         .await
         .unwrap();

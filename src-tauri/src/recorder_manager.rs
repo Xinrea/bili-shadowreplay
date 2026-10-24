@@ -34,6 +34,7 @@ use recorder::UserInfo;
 use recorder::{CachePath, RecorderInfo};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
@@ -67,6 +68,10 @@ pub struct ClipRangeParams {
     /// file for projects and uploads to burn later.
     #[serde(default)]
     pub danmu: bool,
+    /// Video bitrate in kbps for burning the danmaku when `danmu` is set;
+    /// none keeps the encoder's default quality.
+    #[serde(default)]
+    pub danmu_bitrate: Option<NonZeroU32>,
     pub local_offset: i64,
     /// Fix encoding after clip
     pub fix_encoding: bool,

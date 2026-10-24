@@ -43,6 +43,14 @@
   let embedDanmu = $state(false);
   /** Join the ranges into a single material instead of one per range. */
   let mergeRanges = $state(false);
+  /** Bitrate in kbps for burning danmaku; null keeps the encoder default. */
+  let danmuBitrate = $state<number | null>(null);
+  const DANMU_BITRATES: { label: string; value: number | null }[] = [
+    { label: "自动", value: null },
+    { label: "6 Mbps", value: 6000 },
+    { label: "10 Mbps", value: 10000 },
+    { label: "16 Mbps", value: 16000 },
+  ];
   /** Requests still awaiting a result; several may run at once. */
   let inFlight = 0;
 
@@ -96,6 +104,7 @@
       live_id: archive.live_id,
       ranges: activeRanges,
       danmu: embedDanmu,
+      danmu_bitrate: embedDanmu ? danmuBitrate : null,
       local_offset:
         localOffset ??
         (parseInt(
@@ -177,7 +186,7 @@
     <div
       role="dialog"
       aria-modal="true"
-      class="ui-modal relative mx-4 w-full max-w-md text-left"
+      class="ui-modal relative mx-4 w-full max-w-3xl text-left"
     >
       <div class="ui-modal-body custom-scrollbar-light">
         <h3 class="text-[15px] font-semibold text-fg">确认生成素材</h3>
@@ -185,146 +194,179 @@
           {merged ? "按选区顺序合并为一个素材" : "每个选区生成一个素材"}
         </p>
 
-        <div class="mt-4 space-y-2">
-          <div class="ui-label">选区列表</div>
-          <div class="max-h-48 space-y-1.5 overflow-y-auto custom-scrollbar-light">
-            {#each activeRanges as range, index}
-              <div class="flex items-center justify-between rounded-[8px] border border-line bg-control px-3 py-2 transition-colors hover:border-line-strong">
-                <div class="flex items-center space-x-3">
-                  <div class="flex h-6 w-6 items-center justify-center rounded-full bg-accent-soft text-[11px] font-semibold tabular-nums text-accent-fg">
-                    {index + 1}
-                  </div>
-                  <div class="flex flex-col space-y-0.5">
-                    <div class="text-[12px] tabular-nums text-fg">
-                      {formatTime(range.start)} → {formatTime(range.end)}
+        <div class="mt-4 grid gap-x-6 gap-y-4 sm:grid-cols-2">
+          <!-- What is generated: the selections and their note. -->
+          <div class="min-w-0 space-y-4">
+            <div class="space-y-2">
+              <div class="ui-label">选区列表</div>
+              <div class="max-h-64 space-y-1.5 overflow-y-auto custom-scrollbar-light">
+                {#each activeRanges as range, index}
+                  <div class="flex items-center justify-between rounded-[8px] border border-line bg-control px-3 py-2 transition-colors hover:border-line-strong">
+                    <div class="flex items-center space-x-3">
+                      <div class="flex h-6 w-6 items-center justify-center rounded-full bg-accent-soft text-[11px] font-semibold tabular-nums text-accent-fg">
+                        {index + 1}
+                      </div>
+                      <div class="flex flex-col space-y-0.5">
+                        <div class="text-[12px] tabular-nums text-fg">
+                          {formatTime(range.start)} → {formatTime(range.end)}
+                        </div>
+                        <div class="text-[11px] text-fg-muted">
+                          时长: {formatDuration(range.end - range.start)}
+                        </div>
+                      </div>
                     </div>
-                    <div class="text-[11px] text-fg-muted">
-                      时长: {formatDuration(range.end - range.start)}
-                    </div>
                   </div>
-                </div>
+                {:else}
+                  <div class="py-4 text-center text-[12px] text-fg-muted">
+                    没有已激活的选区，请选择或添加选区。
+                  </div>
+                {/each}
               </div>
-            {:else}
-              <div class="py-4 text-center text-[12px] text-fg-muted">
-                没有已激活的选区，请选择或添加选区。
+              <div class="border-t border-line pt-2.5 text-[14px] font-semibold text-fg">
+                总时长: {formatDuration(
+                  activeRanges.reduce(
+                    (total, range) => total + range.end - range.start,
+                    0,
+                  ),
+                )}
               </div>
-            {/each}
-          </div>
-          <div class="border-t border-line pt-2.5 text-[14px] font-semibold text-fg">
-            总时长: {formatDuration(
-              activeRanges.reduce(
-                (total, range) => total + range.end - range.start,
-                0,
-              ),
-            )}
-          </div>
-        </div>
-
-        <div class="mt-4 space-y-1.5">
-          <label for="archive-clip-note" class="block text-[13px] text-fg-secondary">
-            素材备注（可选）
-          </label>
-          <input
-            id="archive-clip-note"
-            type="text"
-            bind:value={clipNote}
-            class="ui-input w-full"
-          />
-        </div>
-
-        {#if activeRanges.length > 1}
-          <div class="mt-4 space-y-1.5">
-            <div class="ui-label">素材</div>
-            <div class="ui-tabs" role="radiogroup" aria-label="素材">
-              <button
-                type="button"
-                role="radio"
-                class="ui-tab"
-                class:active={!mergeRanges}
-                aria-checked={!mergeRanges}
-                onclick={() => (mergeRanges = false)}
-              >
-                每个选区一个
-              </button>
-              <button
-                type="button"
-                role="radio"
-                class="ui-tab"
-                class:active={mergeRanges}
-                aria-checked={mergeRanges}
-                onclick={() => (mergeRanges = true)}
-              >
-                合并为一个
-              </button>
             </div>
-            <p class="text-[11px] text-fg-muted">
-              {mergeRanges
-                ? "按选区顺序拼接成一个素材，可以直接投稿；拼接需要重新编码，耗时较长"
-                : "每个选区单独生成素材，可以放进切片里继续剪辑"}
-            </p>
+
+            <div class="space-y-1.5">
+              <label for="archive-clip-note" class="block text-[13px] text-fg-secondary">
+                素材备注（可选）
+              </label>
+              <input
+                id="archive-clip-note"
+                type="text"
+                bind:value={clipNote}
+                class="ui-input w-full"
+              />
+            </div>
           </div>
-        {/if}
 
-        <div class="mt-4 space-y-1.5">
-          <div class="ui-label">弹幕</div>
-          <div class="ui-tabs" role="radiogroup" aria-label="弹幕">
-            <button
-              type="button"
-              role="radio"
-              class="ui-tab"
-              class:active={!embedDanmu}
-              aria-checked={!embedDanmu}
-              onclick={() => (embedDanmu = false)}
-            >
-              外挂
-            </button>
-            <button
-              type="button"
-              role="radio"
-              class="ui-tab"
-              class:active={embedDanmu}
-              aria-checked={embedDanmu}
-              onclick={() => (embedDanmu = true)}
-            >
-              内嵌
-            </button>
+          <!-- How it is generated. -->
+          <div class="min-w-0 space-y-4">
+            {#if activeRanges.length > 1}
+              <div class="space-y-1.5">
+                <div class="ui-label">素材</div>
+                <div class="ui-tabs" role="radiogroup" aria-label="素材">
+                  <button
+                    type="button"
+                    role="radio"
+                    class="ui-tab"
+                    class:active={!mergeRanges}
+                    aria-checked={!mergeRanges}
+                    onclick={() => (mergeRanges = false)}
+                  >
+                    分别生成
+                  </button>
+                  <button
+                    type="button"
+                    role="radio"
+                    class="ui-tab"
+                    class:active={mergeRanges}
+                    aria-checked={mergeRanges}
+                    onclick={() => (mergeRanges = true)}
+                  >
+                    合并生成
+                  </button>
+                </div>
+                <p class="text-[11px] text-fg-muted">
+                  {mergeRanges
+                    ? "按选区顺序拼接成一个素材，可以直接投稿；拼接需要重新编码，耗时较长"
+                    : "每个选区单独生成素材，可以放进切片里继续剪辑"}
+                </p>
+              </div>
+            {/if}
+
+            <div class="space-y-1.5">
+              <div class="ui-label">弹幕</div>
+              <div class="ui-tabs" role="radiogroup" aria-label="弹幕">
+                <button
+                  type="button"
+                  role="radio"
+                  class="ui-tab"
+                  class:active={!embedDanmu}
+                  aria-checked={!embedDanmu}
+                  onclick={() => (embedDanmu = false)}
+                >
+                  外挂
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  class="ui-tab"
+                  class:active={embedDanmu}
+                  aria-checked={embedDanmu}
+                  onclick={() => (embedDanmu = true)}
+                >
+                  内嵌
+                </button>
+              </div>
+              <p class="text-[11px] text-fg-muted">
+                {embedDanmu
+                  ? merged
+                    ? "选区合并后再把弹幕压进画面，素材不再单独保存弹幕；压制需要重新编码，耗时较长"
+                    : "生成时把弹幕压进画面，素材不再单独保存弹幕；压制需要重新编码，耗时较长"
+                  : merged
+                    ? "各选区的弹幕按合并后的时间合在一起，和素材分开保存，导出切片或投稿时再选择是否压制"
+                    : "弹幕和素材分开保存，导出切片或投稿时再选择是否压制"}
+              </p>
+            </div>
+
+            {#if embedDanmu}
+              <div class="space-y-1.5">
+                <div class="ui-label">码率</div>
+                <div class="ui-tabs" role="radiogroup" aria-label="码率">
+                  {#each DANMU_BITRATES as choice (choice.label)}
+                    <button
+                      type="button"
+                      role="radio"
+                      class="ui-tab"
+                      class:active={danmuBitrate === choice.value}
+                      aria-checked={danmuBitrate === choice.value}
+                      onclick={() => (danmuBitrate = choice.value)}
+                    >
+                      {choice.label}
+                    </button>
+                  {/each}
+                </div>
+                <p class="text-[11px] text-fg-muted">
+                  {danmuBitrate === null
+                    ? "按编码器默认质量压制：软件编码按画质（CRF 20），硬件编码约 8 Mbps"
+                    : "按固定目标码率压制，码率越高画面和弹幕越清晰，文件也越大"}
+                </p>
+              </div>
+            {/if}
+
+            <div class="space-y-2.5">
+              <label class="flex cursor-pointer items-start gap-2.5">
+                <input
+                  type="checkbox"
+                  bind:checked={createProject}
+                  class="ui-checkbox mt-0.5"
+                />
+                <span class="text-[13px] text-fg-secondary">
+                  同时新建切片
+                  <span class="block text-[11px] text-fg-muted">
+                    {merged
+                      ? "把合并后的素材放入一个新切片，便于继续剪辑"
+                      : "按选区顺序把生成的素材放入一个新切片，便于直接剪辑和投稿"}
+                  </span>
+                </span>
+              </label>
+
+              <label class="flex cursor-pointer items-center gap-2.5">
+                <input
+                  type="checkbox"
+                  bind:checked={fixEncoding}
+                  class="ui-checkbox"
+                />
+                <span class="text-[13px] text-fg-secondary">修复编码（素材异常时使用）</span>
+              </label>
+            </div>
           </div>
-          <p class="text-[11px] text-fg-muted">
-            {embedDanmu
-              ? merged
-                ? "选区合并后再把弹幕压进画面，素材不再单独保存弹幕；压制需要重新编码，耗时较长"
-                : "生成时把弹幕压进画面，素材不再单独保存弹幕；压制需要重新编码，耗时较长"
-              : merged
-                ? "各选区的弹幕按合并后的时间合在一起，和素材分开保存，导出切片或投稿时再选择是否压制"
-                : "弹幕和素材分开保存，导出切片或投稿时再选择是否压制"}
-          </p>
-        </div>
-
-        <div class="mt-4 space-y-2.5">
-          <label class="flex cursor-pointer items-start gap-2.5">
-            <input
-              type="checkbox"
-              bind:checked={createProject}
-              class="ui-checkbox mt-0.5"
-            />
-            <span class="text-[13px] text-fg-secondary">
-              同时新建切片
-              <span class="block text-[11px] text-fg-muted">
-                {merged
-                  ? "把合并后的素材放入一个新切片，便于继续剪辑"
-                  : "按选区顺序把生成的素材放入一个新切片，便于直接剪辑和投稿"}
-              </span>
-            </span>
-          </label>
-
-          <label class="flex cursor-pointer items-center gap-2.5">
-            <input
-              type="checkbox"
-              bind:checked={fixEncoding}
-              class="ui-checkbox"
-            />
-            <span class="text-[13px] text-fg-secondary">修复编码（素材异常时使用）</span>
-          </label>
         </div>
       </div>
 

@@ -68,8 +68,8 @@ pub struct ClipRangeParams {
     /// file for projects and uploads to burn later.
     #[serde(default)]
     pub danmu: bool,
-    /// Video bitrate in kbps for burning the danmaku when `danmu` is set;
-    /// none keeps the encoder's default quality.
+    /// Video bitrate in kbps for a material with burned danmaku; none keeps
+    /// the encoder's default quality. See [`ClipRangeParams::video_bitrate`].
     #[serde(default)]
     pub danmu_bitrate: Option<NonZeroU32>,
     pub local_offset: i64,
@@ -77,6 +77,15 @@ pub struct ClipRangeParams {
     pub fix_encoding: bool,
     /// Transition effect between clips (for multiple ranges)
     pub transition: Option<String>,
+}
+
+impl ClipRangeParams {
+    /// The bitrate every re-encode of this material targets: joining ranges,
+    /// fixing the encoding and burning danmaku. Burning works from the earlier
+    /// re-encodes, so they must not fall below the chosen bitrate either.
+    pub fn video_bitrate(&self) -> Option<NonZeroU32> {
+        self.danmu.then_some(self.danmu_bitrate).flatten()
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -1056,6 +1065,7 @@ impl RecorderManager {
                 &clip_file,
                 &params.ranges,
                 params.transition.as_deref(),
+                params.video_bitrate(),
             )
             .await
             .map_err(|e| RecorderManagerError::ClipError { err: e.to_string() })?
@@ -1065,7 +1075,15 @@ impl RecorderManager {
             // transcode clip_file
             let tmp_clip_file = clip_file.with_extension("tmp.mp4");
             let fixing = reporter.map(|reporter| reporter.stage("修复编码"));
-            if let Err(e) = transcode(fixing.as_ref(), &clip_file, &tmp_clip_file, false).await {
+            if let Err(e) = transcode(
+                fixing.as_ref(),
+                &clip_file,
+                &tmp_clip_file,
+                false,
+                params.video_bitrate(),
+            )
+            .await
+            {
                 log::error!("Failed to transcode clip file: {e}");
                 return Err(RecorderManagerError::ClipError { err: e.to_string() });
             }

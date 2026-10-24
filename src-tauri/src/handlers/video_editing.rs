@@ -396,6 +396,7 @@ pub async fn merge_videos(
             &video_paths,
             &output_path,
             Some(xfade_transition),
+            None,
         )
         .await
         .map_err(|e| format!("FFmpeg merge with transition failed: {}", e))?;

@@ -498,7 +498,8 @@ pub(crate) async fn create_material(
         Ok(danmus) if params.danmu => {
             // Super chats are not drawn, so they alone leave nothing to burn.
             if danmus.iter().any(DanmuEntry::is_danmu) {
-                burn_material_danmus(state, reporter, &file, &danmus, params.danmu_bitrate).await?;
+                burn_material_danmus(state, reporter, &file, &danmus, params.video_bitrate())
+                    .await?;
                 danmu_embedded = true;
             }
         }

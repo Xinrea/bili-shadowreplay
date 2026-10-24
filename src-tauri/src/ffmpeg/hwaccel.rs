@@ -1,4 +1,4 @@
-use std::{collections::HashSet, path::PathBuf, process::Stdio, sync::OnceLock};
+use std::{collections::HashSet, num::NonZeroU32, path::PathBuf, process::Stdio, sync::OnceLock};
 
 use ffmpeg_utils::ffmpeg_command;
 use tokio::io::AsyncReadExt;
@@ -85,12 +85,57 @@ pub fn apply_x264_encoder_only(command: &mut tokio::process::Command, encoder: &
 
 /// 按编码器类型追加质量参数。
 pub fn apply_x264_quality_args(command: &mut tokio::process::Command, encoder: &str) {
-    let quality_args = quality_args_for_encoder(encoder);
+    apply_x264_quality_args_with_bitrate(command, encoder, None);
+}
+
+/// 按编码器类型追加质量参数；指定 `bitrate`（kbps）时改用该目标码率。
+pub fn apply_x264_quality_args_with_bitrate(
+    command: &mut tokio::process::Command,
+    encoder: &str,
+    bitrate: Option<NonZeroU32>,
+) {
+    let quality_args = quality_args_with_bitrate(encoder, bitrate);
     log::info!(
         "Applying H.264 quality parameters: encoder={encoder}, args={}",
         quality_args.join(" ")
     );
     command.args(quality_args);
+}
+
+/// The encoder's quality arguments, targeting `bitrate` kbps instead of its
+/// default quality when one is given. A constant-quality setting (`-crf`,
+/// `-cq`) would override the target, so it is dropped; peaks and the buffer
+/// keep the defaults' proportions of 1.25× and 2× the target.
+pub fn quality_args_with_bitrate(encoder: &str, bitrate: Option<NonZeroU32>) -> Vec<String> {
+    let defaults = quality_args_for_encoder(encoder);
+    let Some(kbps) = bitrate.map(|bitrate| u64::from(bitrate.get())) else {
+        return defaults.iter().map(ToString::to_string).collect();
+    };
+    let rate = |flag: &str| match flag {
+        "-b:v" => Some(kbps),
+        "-maxrate" => Some(kbps * 5 / 4),
+        "-bufsize" => Some(kbps * 2),
+        _ => None,
+    };
+    let mut args = Vec::with_capacity(defaults.len() + 6);
+    let mut has_target = false;
+    for pair in defaults.chunks(2) {
+        let (flag, value) = (pair[0], pair.get(1).copied().unwrap_or_default());
+        if matches!(flag, "-crf" | "-cq") {
+            continue;
+        }
+        has_target |= flag == "-b:v";
+        args.push(flag.to_string());
+        args.push(rate(flag).map_or_else(|| value.to_string(), |rate| format!("{rate}k")));
+    }
+    // Constant-quality encoders such as libx264 have no target to replace.
+    if !has_target {
+        for flag in ["-b:v", "-maxrate", "-bufsize"] {
+            args.push(flag.to_string());
+            args.push(format!("{}k", rate(flag).unwrap_or(kbps)));
+        }
+    }
+    args
 }
 
 /// 返回指定 H.264 编码器应使用的质量参数。
@@ -459,7 +504,60 @@ pub async fn get_x264_encoder() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::quality_args_for_encoder;
+    use std::num::NonZeroU32;
+
+    use super::{quality_args_for_encoder, quality_args_with_bitrate};
+
+    const ALL_ENCODERS: [&str; 8] = [
+        "libx264",
+        "h264_nvenc",
+        "h264_videotoolbox",
+        "h264_qsv",
+        "h264_amf",
+        "h264_mf",
+        "h264_vaapi",
+        "h264_v4l2m2m",
+    ];
+
+    #[test]
+    fn quality_args_are_flag_value_pairs() {
+        for encoder in ALL_ENCODERS {
+            assert_eq!(quality_args_for_encoder(encoder).len() % 2, 0, "{encoder}");
+        }
+    }
+
+    #[test]
+    fn no_bitrate_keeps_the_default_quality() {
+        for encoder in ALL_ENCODERS {
+            assert_eq!(
+                quality_args_with_bitrate(encoder, None),
+                quality_args_for_encoder(encoder)
+            );
+        }
+    }
+
+    #[test]
+    fn bitrate_replaces_constant_quality_for_libx264() {
+        assert_eq!(
+            quality_args_with_bitrate("libx264", NonZeroU32::new(12000)),
+            ["-preset", "medium", "-b:v", "12000k", "-maxrate", "15000k", "-bufsize", "24000k"]
+        );
+    }
+
+    #[test]
+    fn bitrate_replaces_hardware_targets() {
+        assert_eq!(
+            quality_args_with_bitrate("h264_nvenc", NonZeroU32::new(4000)),
+            [
+                "-preset", "p5", "-rc", "vbr", "-b:v", "4000k", "-maxrate", "5000k", "-bufsize",
+                "8000k"
+            ]
+        );
+        assert_eq!(
+            quality_args_with_bitrate("h264_v4l2m2m", NonZeroU32::new(4000)),
+            ["-b:v", "4000k"]
+        );
+    }
 
     #[test]
     fn project_presets_and_manual_bitrates_work_for_each_encoder() {

@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{num::NonZeroU32, path::Path};
 
 use m3u8_rs::{Map, MediaPlaylist};
 use tempfile::{tempdir_in, Builder};
@@ -15,13 +15,15 @@ use super::Range;
 /// behind an edit list and runs a little past its end. Joining decodes the
 /// pieces, which honours that edit list, so each joined piece starts where it
 /// was asked and lasts as long as its measured video track. A single range is
-/// only remuxed, so it is returned as asked for the caller to measure.
+/// only remuxed, so it is returned as asked for the caller to measure. The
+/// join targets `bitrate` (kbps) when given.
 pub async fn clip_multiple_from_playlist(
     reporter: Option<&impl ProgressReporterTrait>,
     playlist_path: &Path,
     output_path: &Path,
     ranges: &[Range],
     transition: Option<&str>,
+    bitrate: Option<NonZeroU32>,
 ) -> Result<Vec<Range>, String> {
     let output_dir = output_path
         .parent()
@@ -73,6 +75,7 @@ pub async fn clip_multiple_from_playlist(
         &clips,
         output_path,
         transition,
+        bitrate,
     )
     .await?;
     Ok(covered)
@@ -165,7 +168,7 @@ pub async fn clip_from_playlist(
     // A fixed `.tmp.mp4` could collide with another job and leaked on errors.
     {
         let tmp_output_path = temporary_output_path(output_path)?;
-        super::transcode(reporter, output_path, &tmp_output_path, true).await?;
+        super::transcode(reporter, output_path, &tmp_output_path, true, None).await?;
         replace_output(output_path, tmp_output_path).await?;
     }
 
@@ -321,7 +324,8 @@ pub async fn concat_playlists_to_video(
         }
         if let Some(danmus) = danmu_tracks.get(i).and_then(Option::as_ref) {
             video_path =
-                super::encode_video_danmu(reporter, &video_path, danmus, danmu_options).await?;
+                super::encode_video_danmu(reporter, &video_path, danmus, danmu_options, None)
+                    .await?;
             burned |= danmus.iter().any(recorder::danmu::DanmuEntry::is_danmu);
         }
         segments.push(video_path);
@@ -472,6 +476,7 @@ seg-3.mp4
             &playlist,
             &output,
             &ranges,
+            None,
             None,
         )
         .await

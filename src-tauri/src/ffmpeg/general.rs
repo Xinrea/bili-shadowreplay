@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    num::NonZeroU32,
+    path::{Path, PathBuf},
+};
 
 use tempfile::Builder;
 use tokio::io::AsyncWriteExt;
@@ -283,6 +286,7 @@ async fn concat_mismatched_videos(
         output_path,
         filter_complex,
         ProgressTotal::AllInputs,
+        None,
     )
     .await
 }
@@ -364,6 +368,7 @@ async fn encode_filter_concat(
     output_path: &Path,
     filter_complex: String,
     total: ProgressTotal,
+    bitrate: Option<NonZeroU32>,
 ) -> Result<(), String> {
     let mut ffmpeg_process = ffmpeg_command();
 
@@ -393,7 +398,7 @@ async fn encode_filter_concat(
     ffmpeg_process.args(["-map", "[outa]"]);
 
     hwaccel::apply_x264_encoder_only(&mut ffmpeg_process, video_encoder);
-    hwaccel::apply_x264_quality_args(&mut ffmpeg_process, video_encoder);
+    hwaccel::apply_x264_quality_args_with_bitrate(&mut ffmpeg_process, video_encoder, bitrate);
     ffmpeg_process.args(["-c:a", "aac"]);
     ffmpeg_process.args(["-y"]);
     ffmpeg_process.args([output_path
@@ -403,12 +408,14 @@ async fn encode_filter_concat(
     handle_ffmpeg_process(reporter, ffmpeg_process, total).await
 }
 
-/// Concatenate videos with optional transition effects
+/// Concatenate videos with optional transition effects. Joining several
+/// re-encodes them, targeting `bitrate` (kbps) when given.
 pub async fn concat_videos_with_transition(
     reporter: Option<&impl ProgressReporterTrait>,
     videos: &[PathBuf],
     output_path: &Path,
     transition: Option<&str>,
+    bitrate: Option<NonZeroU32>,
 ) -> Result<(), String> {
     if videos.is_empty() {
         return Err("No videos to concatenate".to_string());
@@ -432,6 +439,7 @@ pub async fn concat_videos_with_transition(
             output_path,
             filter_complex,
             ProgressTotal::AllInputs,
+            bitrate,
         )
         .await;
     }
@@ -460,6 +468,7 @@ pub async fn concat_videos_with_transition(
         output_path,
         filter_complex,
         ProgressTotal::Known(output_duration),
+        bitrate,
     )
     .await
 }
@@ -792,6 +801,7 @@ mod concat_videos_tests {
             &[video1_path, video2_path, video3_path],
             &output_path,
             Some("fade"),
+            None,
         )
         .await;
 
@@ -955,6 +965,7 @@ mod concat_videos_tests {
             &[clip0_path, clip1_path],
             &output_path,
             None,
+            None,
         )
         .await;
         assert!(
@@ -1006,6 +1017,7 @@ mod concat_videos_tests {
             &[video1_path, video2_path],
             &output_path,
             None,
+            None,
         )
         .await;
         assert!(
@@ -1045,6 +1057,7 @@ mod concat_videos_tests {
             &[video1_path, video2_path],
             &output_path,
             Some("fade"),
+            None,
         )
         .await;
         assert!(

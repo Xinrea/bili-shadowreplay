@@ -560,6 +560,8 @@ export interface ClipRangeParams {
   live_id: string;
   ranges: Range[];
   danmu: boolean;
+  /** Video bitrate in kbps for burning danmaku; null keeps the encoder default. */
+  danmu_bitrate?: number | null;
   local_offset: number;
   fix_encoding: boolean;
   transition?: string;

@@ -28,10 +28,12 @@ function focusable(root: HTMLElement): HTMLElement[] {
 }
 
 // In the capture phase on the window, so that a dialog stopping the key's
-// propagation there, as the task center does, still has Tab kept inside.
+// propagation there, as the task center does, still has Tab kept inside. A
+// Tab already handled is left alone: a layer above all dialogs, such as the
+// command palette, keeps it for itself.
 function keepTabInside(event: KeyboardEvent) {
   const top = traps.at(-1);
-  if (event.key !== "Tab" || !top) return;
+  if (event.key !== "Tab" || event.defaultPrevented || !top) return;
   const elements = focusable(top);
   if (elements.length === 0) {
     event.preventDefault();

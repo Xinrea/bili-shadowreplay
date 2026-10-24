@@ -42,10 +42,20 @@ function fakeDom() {
     addEventListener: (type, listener, capture) => type === "keydown" && capture && listeners.add(listener),
     removeEventListener: (type, listener) => listeners.delete(listener),
   };
-  /** Press Tab, and move focus on as the browser would when not prevented. */
-  function tab(shiftKey = false) {
-    let prevented = false;
-    const event = { key: "Tab", shiftKey, preventDefault: () => (prevented = true) };
+  /**
+   * Press Tab, and move focus on as the browser would when not prevented.
+   * `handledAbove` is a layer listening earlier that keeps Tab for itself.
+   */
+  function tab(shiftKey = false, handledAbove = false) {
+    let prevented = handledAbove;
+    const event = {
+      key: "Tab",
+      shiftKey,
+      get defaultPrevented() {
+        return prevented;
+      },
+      preventDefault: () => (prevented = true),
+    };
     for (const listener of listeners) listener(event);
     return prevented;
   }
@@ -95,6 +105,12 @@ test("an open dialog takes focus and keeps Tab within it", async () => {
   page.focus();
   assert.equal(tab(), true);
   assert.equal(document.activeElement, first);
+
+  // A layer over every dialog, such as the command palette, keeps its Tab.
+  const palette = new Element();
+  palette.focus();
+  tab(true, true);
+  assert.equal(document.activeElement, palette);
 });
 
 test("only the topmost dialog holds Tab, and closing one gives focus back", async () => {

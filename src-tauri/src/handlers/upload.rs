@@ -11,7 +11,6 @@ use tokio::sync::oneshot;
 
 use crate::database::task::TaskRow;
 use crate::database::upload::UploadRow;
-use crate::events::AppEvent;
 use crate::handlers::project::{
     material_danmu_video, material_title, project_cover_file, project_upload_video,
     remove_upload_renders, set_project_danmu, single_project_view, write_cover, OverlayImage,
@@ -456,19 +455,6 @@ pub async fn post_upload(
             log::error!("Failed to record the result of upload {}: {e}", upload.id);
         }
     });
-    Ok(())
-}
-
-/// Bring up the main window to start an upload of a `material` or `project`.
-#[cfg_attr(feature = "gui", tauri::command)]
-pub async fn request_upload(state: state_type!(), source: String, id: i64) -> Result<(), String> {
-    if !matches!(source.as_str(), "material" | "project") {
-        return Err(format!("未知的投稿来源: {source}"));
-    }
-    state
-        .events
-        .publish(AppEvent::UploadRequested { source, id });
-    crate::handlers::utils::focus_main_window(&state);
     Ok(())
 }
 

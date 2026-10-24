@@ -117,7 +117,6 @@
 | `update_upload` / `update_upload_cover` | 保存草稿的账号与投稿信息 / 封面 |
 | `update_upload_danmu` | 切换压制弹幕：素材写入投稿记录，切片直接修改切片的时间轴 |
 | `post_upload` | 在后台投稿，切片先生成视频 |
-| `request_upload` | 切片编辑窗口请求主窗口为素材或切片新建投稿（`upload-requested` 事件），并把主窗口带到前台 |
 | `open_project` / `open_clip` | 打开工程编辑窗口 / 素材预览窗口 |
 
 `clip_range` 仍然可用（AI 助手与 MCP 使用），它把所有选区合并为一个素材，同样不再压制弹幕。

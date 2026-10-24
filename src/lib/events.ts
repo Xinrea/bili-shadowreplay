@@ -27,7 +27,6 @@ export type EventPayload<E extends string> =
   E extends `progress-finished:${string}` ? { id: string; success: boolean; message: string } :
   E extends "danmu" ? DanmuEntry & RoomTopic :
   E extends StateChangeEvent ? null :
-  E extends "upload-requested" ? { source: "material" | "project"; id: number } :
   E extends "settings-requested" ? { target: string | null } : unknown;
 
 /** All event types share one transport, dispatch path and subscription lifecycle. */

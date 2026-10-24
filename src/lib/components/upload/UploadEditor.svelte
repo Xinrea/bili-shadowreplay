@@ -210,7 +210,8 @@
   }}
 />
 
-<div class="ui-modal-backdrop">
+<!-- Above full-window editors such as the clip editor (z-1000). -->
+<div class="ui-modal-backdrop z-[1100]">
   <div
     class="ui-modal max-h-[90vh] w-[820px] max-w-full"
     role="dialog"

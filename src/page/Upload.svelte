@@ -15,15 +15,15 @@
   import PageTitlebar from "../lib/components/PageTitlebar.svelte";
   import UploadEditor from "../lib/components/upload/UploadEditor.svelte";
   import UploadSourceDialog from "../lib/components/upload/UploadSourceDialog.svelte";
-  import type { AccountInfo } from "../lib/db";
   import { get_static_url, invoke } from "../lib/invoker";
   import type { ProjectItem, UploadItem, UploadStatus, VideoItem } from "../lib/interface";
   import { registerCommands } from "../lib/stores/commands";
   import { createStateRefresh, watchStateChanges } from "../lib/state-refresh";
   import {
-    draftProfile,
+    draftUpload,
     isUploadActive,
     sourceLabels,
+    uploadAccounts,
     uploadRequest,
     uploadTitle,
     type UploadPick,
@@ -95,10 +95,7 @@
       loading = false;
     }
     try {
-      const info = await invoke<AccountInfo>("get_accounts");
-      accounts = info.accounts
-        .filter((account) => account.platform === "bilibili")
-        .map((account) => ({ uid: String(account.uid), name: account.name }));
+      accounts = await uploadAccounts();
     } catch (error) {
       console.error("Failed to load accounts:", error);
     }
@@ -155,46 +152,15 @@
     }
   }
 
-  function fileStem(path: string) {
-    return (path.split(/[\\/]/).pop() ?? path).replace(/\.[^.]+$/, "");
-  }
-
   /** Open the source's unposted draft, or start one. */
   async function createDraft(pick: UploadPick) {
-    if (pick.source !== "file") {
-      const draft = uploads.find(
-        (upload) =>
-          upload.source === pick.source &&
-          upload.source_id === pick.item.id &&
-          (upload.status === "draft" || upload.status === "failed"),
-      );
-      if (draft) {
-        showSourceDialog = false;
-        editingId = draft.id;
-        return;
-      }
-    }
-    const args =
-      pick.source === "material"
-        ? {
-            sourceId: pick.item.id,
-            file: "",
-            profile: draftProfile(pick.item.room_id, pick.item.title || fileStem(pick.item.file)),
-          }
-        : pick.source === "project"
-          ? {
-              sourceId: pick.item.id,
-              file: "",
-              profile: draftProfile(pick.item.room_id, pick.item.title, pick.item.profile),
-            }
-          : { sourceId: 0, file: pick.file, profile: draftProfile("", fileStem(pick.file)) };
     try {
-      const created = await toRow(
-        await invoke<UploadItem>("create_upload", { source: pick.source, ...args }),
-      );
-      uploads = [created, ...uploads.filter((upload) => upload.id !== created.id)];
+      const draft = await draftUpload(pick, uploads);
+      if (!uploads.some((upload) => upload.id === draft.id)) {
+        uploads = [await toRow(draft), ...uploads];
+      }
       showSourceDialog = false;
-      editingId = created.id;
+      editingId = draft.id;
     } catch (error) {
       alert("新建投稿失败：" + error);
     }

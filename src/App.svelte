@@ -26,7 +26,7 @@
   import { pages } from "./lib/pages";
   import { registerCommands } from "./lib/stores/commands";
   import { openTaskCenter } from "./lib/stores/tasks";
-  import { requestUpload, uploadRequest } from "./lib/uploads";
+  import { uploadRequest } from "./lib/uploads";
   import { ListChecks, PanelLeft } from "lucide-svelte";
   import { onMount, tick } from "svelte";
 
@@ -132,25 +132,12 @@
     return () => window.removeEventListener("navigate-settings", onNavSettings);
   });
 
-  // Posting from the material or project lists, or from a project editor
-  // window, continues on the uploads page.
+  // Posting from the material or project lists continues on the uploads page.
   onMount(() =>
     uploadRequest.subscribe((request) => {
       if (request) active = "投稿";
     }),
   );
-
-  onMount(() => {
-    let unlisten: (() => void) | undefined;
-    let disposed = false;
-    void listen("upload-requested", (event) => requestUpload(event.payload.source, event.payload.id)).then(
-      (stop) => (disposed ? stop() : (unlisten = stop)),
-    );
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  });
 
   // A project editor window asks for an option, such as signing in to PowerLive.
   onMount(() => {

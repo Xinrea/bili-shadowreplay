@@ -1,4 +1,6 @@
 import { writable } from "svelte/store";
+import type { AccountInfo } from "./db";
+import { invoke } from "./invoker";
 import {
   default_profile,
   type Profile,
@@ -28,6 +30,49 @@ export type UploadPick =
   | { source: "material"; item: VideoItem }
   | { source: "project"; item: ProjectItem }
   | { source: "file"; file: string };
+
+function fileStem(path: string) {
+  return (path.split(/[\\/]/).pop() ?? path).replace(/\.[^.]+$/, "");
+}
+
+/**
+ * The source's unposted draft among `uploads`, or a new one; a posted or
+ * running upload of it is left as it is.
+ */
+export async function draftUpload(pick: UploadPick, uploads: UploadItem[]): Promise<UploadItem> {
+  if (pick.source !== "file") {
+    const draft = uploads.find(
+      (upload) =>
+        upload.source === pick.source &&
+        upload.source_id === pick.item.id &&
+        (upload.status === "draft" || upload.status === "failed"),
+    );
+    if (draft) return draft;
+  }
+  const args =
+    pick.source === "material"
+      ? {
+          sourceId: pick.item.id,
+          file: "",
+          profile: draftProfile(pick.item.room_id, pick.item.title || fileStem(pick.item.file)),
+        }
+      : pick.source === "project"
+        ? {
+            sourceId: pick.item.id,
+            file: "",
+            profile: draftProfile(pick.item.room_id, pick.item.title, pick.item.profile),
+          }
+        : { sourceId: 0, file: pick.file, profile: draftProfile("", fileStem(pick.file)) };
+  return invoke<UploadItem>("create_upload", { source: pick.source, ...args });
+}
+
+/** The Bilibili accounts uploads can be posted with. */
+export async function uploadAccounts(): Promise<{ uid: string; name: string }[]> {
+  const info = await invoke<AccountInfo>("get_accounts");
+  return info.accounts
+    .filter((account) => account.platform === "bilibili")
+    .map((account) => ({ uid: String(account.uid), name: account.name }));
+}
 
 /** An upload's stored form, completed with the defaults it may lack. */
 export function parseProfile(json: string): Profile {
